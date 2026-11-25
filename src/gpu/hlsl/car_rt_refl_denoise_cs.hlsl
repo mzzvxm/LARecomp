@@ -178,7 +178,7 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     Texture2D<float4> history = g_textures[g_push.slots.x];
     Texture2D<float4> aux = g_textures[g_push.slots.z];
-    const float t = history.Load(int3(centre, 0)).a;
+    const float t = HistoryDistance(history.Load(int3(centre, 0)).a);  // RT-PARKED-PAINT: a parked car's texel holds the negated distance
     const float4 ownAux = aux.Load(int3(centre, 0));
     if (!(t > 0.0) || !(ownAux.w > 0.5))
     {
@@ -218,7 +218,7 @@ void main(uint3 id : SV_DispatchThreadID)
         {
             continue;
         }
-        const float tapT = history.Load(int3(at, 0)).a;
+        const float tapT = HistoryDistance(history.Load(int3(at, 0)).a);
         const float apart = float(step) * sqrt(float(offset.x * offset.x + offset.y * offset.y));
         const float kernel = (offset.x == 0 ? 2.0 : 1.0) * (offset.y == 0 ? 2.0 : 1.0) * MatchWeight(tapT, t, Tolerance(t, texelMeters, apart, nv));
         if (!(kernel > 0.0))

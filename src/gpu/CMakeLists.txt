@@ -365,6 +365,11 @@ add_executable(larecomp_car_rt_opp_refl_rules_test EXCLUDE_FROM_ALL car_rt_opp_r
 # traffic's share of the budget against the opponents' own plan on random scenes, the cost estimate; and that the variant, the host and the settings hold the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_traffic_rules_test, then run src/gpu/larecomp_car_rt_traffic_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_traffic_rules_test EXCLUDE_FROM_ALL car_rt_traffic_rules_test.cpp)
+# The parked cars' own ray traced paint (car_rt_parked_paint_rules.h, RT-PARKED-PAINT: the history's negated distance, the rule that marks a texel, the box's depth range, the marks' plan over the
+# traffic plan's admission, the still-car constants and their flag, the paint bit and the record radius of a parked car in the list; and that the history pass, the ray traced passes, the host, the variant
+# and the settings hold the header's numbers) likewise:
+#   cmake --build <dir> --target larecomp_car_rt_parked_paint_rules_test, then run src/gpu/larecomp_car_rt_parked_paint_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_rt_parked_paint_rules_test EXCLUDE_FROM_ALL car_rt_parked_paint_rules_test.cpp)
 # The ray traced car scene's materials (car_rt_material_rules.h: the table of the cars' shaders, a draw's material from its pixel constants, a walked part's class, the packed
 # texture coordinates, the records the shaders read, a mesh's texel density, the environment map's mapping, the reference of the shading; and that
 # hlsl/car_rt_hit_shade.hlsli, hlsl/car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers) likewise:

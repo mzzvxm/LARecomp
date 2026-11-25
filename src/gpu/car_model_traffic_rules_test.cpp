@@ -951,9 +951,9 @@ void ParkedSourceTests() {
             HasText(walk_h, "ProofReport Resolve(const temporal::Mat4& view, bool flip_z, const std::vector<car_rt_instances::OtherCar>* kept = nullptr);"),
         "the walker's Resolve takes the cars the draw path kept");
   // the scene
-  Check(HasText(scene, "walker.Resolve(frame.view, flip_z, &frame.other_cars)") && HasText(scene, "info.unclaimed = car.unclaimed;") && HasText(scene, "NoteParkedCars(proof, parked_placed, parked_instances);"),
+  Check(HasText(scene, "walker.Resolve(frame.view, flip_z, &frame.other_cars)") && HasText(scene, "info.unclaimed = car.unclaimed;") && HasText(scene, "NoteParkedCars(proof, parked_placed, parked_instances, parked_paint_cars);"),
         "the scene: the draw path's cars go to Resolve, the flag to the choice of the placed cars, the census after the placing");
-  Check(HasText(scene, "if (car.traffic && car.visible) {") && HasText(scene, "++parked_placed;") && HasText(scene, "parked_instances += resident;") && HasText(scene_h, "void NoteParkedCars(const car_model_walk::ProofReport& proof, uint32_t placed, uint32_t instances);"),
+  Check(HasText(scene, "if (car.traffic && car.visible) {") && HasText(scene, "++parked_placed;") && HasText(scene, "parked_instances += resident;") && HasText(scene_h, "void NoteParkedCars(const car_model_walk::ProofReport& proof, uint32_t placed, uint32_t instances, uint32_t paint_cars = 0);"),
         "the scene: a placed traffic car the main view shows is counted as an unclaimed car placed");
   // the log: the words the harness reads
   Check(HasText(scene, "parked cars (RT-PARKED-CARS), frames {}..{}: traffic cars the main view shows {:.2f} a frame (at most {}), of them claimed by a draw {:.2f}") &&

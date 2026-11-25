@@ -39,4 +39,12 @@ float MatchWeight(float texelDistance, float t, float tolerance)
     return texelDistance > 0.0 ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(texelDistance - t)) : 0.0;
 }
 
+// RT-PARKED-PAINT: the view distance of a history texel's alpha. A vehicle's pixel holds its distance (> 0); a PARKED car's texel (a car that writes no vehicle stencil ID, marked by the history pass: car_history_ps.hlsl)
+// holds the NEGATED distance, which the readers that ask `a > 0` (the paint variant's march, the chrome variant, the player's pass) leave alone. The ray traced passes read the distance of either kind
+// (car_rt_refl_rules.h HistoryDistance has the same arithmetic).
+float HistoryDistance(float alpha)
+{
+    return abs(alpha);
+}
+
 #endif  // CAR_RT_REFL_COMMON_HLSLI

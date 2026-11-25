@@ -98,7 +98,18 @@ void RunOnFixture() {
         "the local result follows the cube map data");
   // The ray of version 4 (src/gpu/car_selfrefl_rules.h has the same arithmetic, which car_selfrefl_rules_test.cpp checks): the
   // numbers in the helper are the ones of that header. Version 5 adds the host's ray traced image in front of the march, version 6 reads it with a 3x3 B-spline.
-  Check(sp::kCarSelfReflVariantVersion == 10, "the variant's version is 10 (the stamp rebuilds the pack's paint and the traffic paint's; 10 also carries the no double precision edit)");
+  Check(sp::kCarSelfReflVariantVersion == 11, "the variant's version is 11 (the stamp rebuilds the pack's paint and the traffic paint's; 11 also carries the no double precision edit)");
+  // Version 10 (RT-PARKED-PAINT): a draw with the flag bit 2 reads the history's distance as abs(a) in the self-test and in the lookup of the ray traced image, and nothing else changes
+  // (src/gpu/car_selfrefl_rules.h PaintHistoryDistance is the same arithmetic).
+  Check(Contains(text, "const float ownDistance = ((slots.w & 4u) != 0u) ? abs(own.a) : own.a;") && Contains(text, "if (!(ownDistance > 0.0) || agreement <= 0.0)") &&
+            Contains(text, "const float agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(ownDistance - start.w));"),
+        "version 10: the self-test takes the history's distance as abs(a) for a draw with the parked flag");
+  Check(Contains(text, "float tolerance, uint slot, uint flags)") && Contains(text, "const float texelDistance = ((flags & 4u) != 0u) ? abs(h.a) : h.a;") &&
+            Contains(text, "const float agree = (texelDistance > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(texelDistance - depth)) : 0.0;") &&
+            Contains(text, "2.0 * (0.01 + 0.004 * start.w + ray.slack), slots.z, slots.w);"),
+        "version 10: the lookup of the ray traced image takes the texels' distance as abs(a) for a draw with the parked flag");
+  Check(!Contains(text, "own.a > 0.0)") && Count(text, "texel.a > 0.0") == 1 && Count(text, "h.a > 0.0") == 0,
+        "version 10: no other read of the history's alpha changed (the march's point reads and the outline tests still ask `a > 0`: a mark is no vehicle there)");
   Check(Count(text, "CarReflNoise") == 0 && Count(text, "g_CarReflB.w") == 0 && Count(text, "more.w") == 2,
         "no per-pixel noise: the trace reads no noise frame, the constant's w is the share of the points that take the whole hit");
   Check(Count(text, "[unroll]") == 2 && Count(text, "[loop]") == 1,
@@ -139,11 +150,11 @@ void RunOnFixture() {
         "version 6: the image is read with the quadratic B-spline of the 3x3 texels around the nearest one (car_rt_refl_rules.h BSplineWeights), "
         "not the 2x2 bilinear taps");
   Check(Contains(text, "if ((slots.w & 1u) != 0u)") && Contains(text, "g_Texture2DDescriptorHeap[TFETCH_INDEX(slot)]") &&
-            Contains(text, "slots.z);") && Contains(text, "result.hit = rt.weight * agreement;"),
+            Contains(text, "slots.z, slots.w);") && Contains(text, "result.hit = rt.weight * agreement;"),
         "the image is read only where the constants' flag says the frame has one (the slot in c.z, the flag in c.w), with the self-test's "
         "agreement; without the flag version 4's march is the whole answer");
   Check(Contains(text, "known >= 0.5 * geometry") && Contains(text, "const float code = abs(t.a);") && Contains(text, "(t.a < 0.0) ? wg * wt : 0.0") &&
-            Contains(text, "1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth))"),
+            Contains(text, "1.0 - smoothstep(0.5 * tolerance, tolerance, abs(texelDistance - depth))"),
         "the lookup's rules are the ones of car_rt_refl_rules.h: the sign is a hit on another car (version 8), the texels of another surface are left out, half "
         "the matching texels must have data");
   // Version 8 (RT-HIT-SHADING-4): the clear coat's layer (car_rt_hit_rules.h CoatLayerFresnel, CoatLayerAmount, CoatLayerMix, the same arithmetic) and the debug views 6 and 7.

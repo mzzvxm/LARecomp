@@ -636,7 +636,7 @@ int main(int argc, char** argv) {
         Check(Near(Constant(variant, "static const float kCarReflCoatF0"), hr::kCoatLayerF0) && Near(Constant(variant, "static const float kCarReflCoatPower"), hr::kCoatLayerPower) &&
                   Near(Constant(variant, "static const float kCarReflCoatMax"), hr::kCoatLayerMax),
               "the paint variant's layer numbers are the header's");
-        Check(Has(variant, "(g_CarReflC.w & 2u) == 0u") && Has(selfrefl_cpp, "larecomp::settings::mcla_gpu_car_rt_coat_layer.Get()") && Has(selfrefl_cpp, "car_selfrefl::ExpBiasGain(exp_bias), rt_slot, coat_layer);"),
+        Check(Has(variant, "(g_CarReflC.w & 2u) == 0u") && Has(selfrefl_cpp, "larecomp::settings::mcla_gpu_car_rt_coat_layer.Get()") && Has(selfrefl_cpp, "car_selfrefl::ExpBiasGain(exp_bias), rt_slot, coat_layer, parked);"),
               "the paint's layer is switched by the constants' bit 1, which the host sets from mcla_gpu_car_rt_coat_layer");
       }
       Check(!cmake.empty() && Has(cmake, "larecomp_car_rt_hit_rules_test"), "the CMake file builds this test");

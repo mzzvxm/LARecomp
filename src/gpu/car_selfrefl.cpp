@@ -516,17 +516,9 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   push.lin[1] = float(p.m[2][3]);
   push.lin[2] = float(p.m[3][2]);
   push.lin[3] = float(p.m[3][3]);
-  pass_timing_->Mark(list, "car history");
-  passes_->DrawInto(list, history_, pipeline, &push, sizeof(push));
-  if (shared) {
-    ++passes_shared_;
-  }
-  if (dump_) {
-    dump_->OnHistoryImage(list, history_, divisor, p);  // the debug car dump reads this frame's image back (car_dump.h)
-  }
+  // The ray traced reflection of the same texels (car_rt_refl.h) runs after the history, with the lens it was linearised with: what it is told is known now (the marks below ask the same).
+  CarRtRefl::HistoryInfo info;
   if (rt_) {
-    // The ray traced reflection of the same texels (car_rt_refl.h): after the history, with the lens it was linearised with.
-    CarRtRefl::HistoryInfo info;
     info.image = &history_;
     info.divisor = divisor;
     info.render_width = render_w;
@@ -542,12 +534,51 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.exp_bias = exp_bias_;
     info.colour_samples = depth.host_samples;
     FillCityScreen(&info.screen);
+  }
+  pass_timing_->Mark(list, "car history");
+  passes_->DrawInto(list, history_, pipeline, &push, sizeof(push));
+  if (shared) {
+    ++passes_shared_;
+  }
+  if (rt_ && summary.stencil_slot != kNoSlot) {
+    // RT-PARKED-PAINT: the parked cars' texels, marked before the car dump reads the image and before the ray traced pass reads it
+    const std::vector<car_rt_parked_paint::Mark> marks = rt_->ParkedMarks(info);
+    if (!marks.empty()) {
+      RecordMarks(list, pipeline, push, marks);
+    }
+  }
+  if (dump_) {
+    dump_->OnHistoryImage(list, history_, divisor, p);  // the debug car dump reads this frame's image back (car_dump.h)
+  }
+  if (rt_) {
     rt_->OnHistory(list, info);
     // CITY-RT M2 R3b: the player's windows, traced inside OnHistory, are added to the main colour now (after the history pass above: the history holds no glass reflection; after the screen-space reflections: the
     // last pass that adds to the colour at the trigger). Nothing is drawn where the trace did not run this frame.
     rt_->ApplyGlass(list, *edram_, *colour, render_w, render_h);
   }
   return true;
+}
+
+// RT-PARKED-PAINT: one draw of the history pass in its mark mode (hlsl/car_history_ps.hlsl) for each mark, into the image the pass just made. The scissor is the car's rectangle in history texels; the push is
+// the pass's own with the mode, and the car's near and far view distance as float bits. Cheap by construction: only the pixels inside a parked car's rectangle run, and each reads the stencil first.
+void CarSelfRefl::RecordMarks(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, const Push& base, const std::vector<car_rt_parked_paint::Mark>& marks) {
+  std::vector<Push> pushes;
+  std::vector<plume::RenderRect> rects;
+  pushes.reserve(marks.size());
+  rects.reserve(marks.size());
+  for (const car_rt_parked_paint::Mark& mark : marks) {
+    Push push = base;
+    push.slots2[1] = 1u;
+    push.slots2[2] = std::bit_cast<uint32_t>(mark.near_depth);
+    push.slots2[3] = std::bit_cast<uint32_t>(mark.far_depth);
+    pushes.push_back(push);
+    rects.emplace_back(mark.rect.x0, mark.rect.y0, mark.rect.x1, mark.rect.y1);
+  }
+  passes_->DrawRectsInto(list, history_, pipeline, rects.data(), pushes.data(), sizeof(Push), uint32_t(pushes.size()));
+  ++mark_frames_;
+  marks_made_ += marks.size();
+  marks_most_ = std::max<uint32_t>(marks_most_, uint32_t(marks.size()));
+  mark_texels_ += car_rt_parked_paint::MarkTexels(marks);
 }
 
 // The picture's products for the city's hits (CITY-RT M2, car_rt_refl.h): lin_depth level 0 and colour_post's mip chain, as the screen owner published them this frame; invalid while the pass wants none,
@@ -623,16 +654,22 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running, 
   // The vehicle this draw belongs to: the ID its stencil write names (4 ID + {0, 1}).
   const uint32_t ids = temporal::StencilIdsWritten(state) & ~1u & ((1u << temporal::kVehicleIds) - 1u);
   const bool traffic_paint = car_rt_instances::PaintKindOf(ps_identity) == car_rt_instances::PaintKind::kTraffic;
+  // RT-PARKED-PAINT: a draw of the traffic paint that writes no vehicle ID is a PARKED car's (a moving one has an ID): it is given the constants of a still car, and the flag that says its history texels
+  // hold the negated distance (the history pass's marks of the cars the opponents' pass traces). A car with no mark has no texel at its place: the variant's self-test finds none and the game's paint stays.
+  const bool parked = !pause_view_ && car_rt_parked_paint::StillConstantsFor(ids, traffic_paint, larecomp::settings::mcla_gpu_car_rt_parked_paint.Get());
   if (ids == 0) {
     ++paint_no_id_;
     traffic_no_id_ += traffic_paint ? 1u : 0u;
-    return;
+    if (!parked) {
+      return;
+    }
+  } else {
+    traffic_with_id_ += traffic_paint ? 1u : 0u;
   }
-  traffic_with_id_ += traffic_paint ? 1u : 0u;
-  const uint32_t id = uint32_t(std::countr_zero(ids));
-  // The play view: the vehicle's own motion of the last anchor. The pause view's worlds: the car is still (OnAnchor says why).
+  const uint32_t id = ids == 0 ? 0u : uint32_t(std::countr_zero(ids));
+  // The play view: the vehicle's own motion of the last anchor. The pause view's worlds: the car is still (OnAnchor says why). A parked car is still too.
   const temporal::Mat4* motion = nullptr;
-  if (!pause_view_ && (motion_.valid & (1u << id)) != 0 && motion_frame_ == history_frame_) {
+  if (!parked && !pause_view_ && (motion_.valid & (1u << id)) != 0 && motion_frame_ == history_frame_) {
     motion = &motion_.world[id];
     ++paint_motion_;
   }
@@ -640,13 +677,22 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running, 
   car_selfrefl::HistoryMatrix(history_camera_.view_projection, motion, matrix);
   const int32_t exp_bias = state.color[0].exp_bias;
   exp_bias_ = exp_bias;  // the ray traced pass of the next frame's trigger takes it (CarRtRefl::HistoryInfo::exp_bias)
-  if (!bias_logged_) {
+  if (!bias_logged_ && !parked) {
     bias_logged_ = true;
     REXLOG_INFO("{} the first draw of the paint with a history: stencil ID {}, RT0 exponent bias {} (colour gain {}), "
                 "vehicle motion {}",
                 kPrefix, id, exp_bias, car_selfrefl::ExpBiasGain(exp_bias) * tuning_.gain,
                 motion ? "known" : pause_view_ ? "not used in this view (the car is taken as still)"
                                                : "unknown (the car is taken as still)");
+  }
+  if (parked) {
+    ++paint_parked_;
+    if (!parked_logged_) {
+      parked_logged_ = true;
+      REXLOG_INFO("{} the first draw of the traffic paint with no vehicle stencil ID given the constants of a still car (RT-PARKED-PAINT, mcla_gpu_car_rt_parked_paint): frame {}, history of frame {}, RT0 exponent "
+                  "bias {}, ray traced image {}",
+                  kPrefix, frame_, history_frame_, exp_bias, rt_ && rt_->SlotFor(history_frame_) != car_selfrefl::kNoRtImage ? "yes" : "none (the game's paint stays)");
+    }
   }
   if (pause_view_) {
     ++paint_pause_;
@@ -661,10 +707,11 @@ void CarSelfRefl::FillConstants(const XenosState& state, bool upscaler_running, 
   const uint32_t rt_slot = rt_ ? rt_->SlotFor(history_frame_) : car_selfrefl::kNoRtImage;
   const bool coat_layer = larecomp::settings::mcla_gpu_car_rt_coat_layer.Get();
   *out = car_selfrefl::MakeConstants(mode_, tuning_, matrix, history_.slot, kSamplerLinearClamp,
-                                     car_selfrefl::ExpBiasGain(exp_bias), rt_slot, coat_layer);
+                                     car_selfrefl::ExpBiasGain(exp_bias), rt_slot, coat_layer, parked);
   ++paint_with_history_;
   if (rt_slot != car_selfrefl::kNoRtImage) {
     ++paint_with_rt_;
+    paint_parked_rt_ += parked ? 1u : 0u;
     if (!coat_layer_logged_) {
       coat_layer_logged_ = true;
       REXLOG_INFO("{} the first paint draw with a ray traced image: the clear coat's layer over the reflection of another car is {} (mcla_gpu_car_rt_coat_layer; fresnel {:.2f} at N.V 0.5, {:.2f} at 0.3, {:.2f} at 0.2)",
@@ -738,6 +785,10 @@ void CarSelfRefl::Census() {
               paint_draws_, paint_with_history_, paint_motion_, paint_no_id_, paint_with_rt_, traffic_with_id_, traffic_no_id_,
               car_rt_instances::NoStencilNote(traffic_with_id_, traffic_no_id_), double(HeldBytes()) / (1024.0 * 1024.0),
               rt_ ? rt_->CensusText() : std::string());
+  // RT-PARKED-PAINT: the parked cars' marks and paint draws since the start (the words rtnext_post.py reads)
+  REXLOG_INFO("{} parked paint (RT-PARKED-PAINT), frame {}: mcla_gpu_car_rt_parked_paint {}; history passes with marks {} of {} ({} marks in all, at most {} a frame, {} history texels of their rectangles); traffic paint draws given the "
+              "constants of a still car {} ({} of them with the ray traced image)",
+              kPrefix, frame_, larecomp::settings::mcla_gpu_car_rt_parked_paint.Get() ? "on" : "off", mark_frames_, passes_run_, marks_made_, marks_most_, mark_texels_, paint_parked_, paint_parked_rt_);
   census_paint_ = paint_draws_;
   census_with_history_ = paint_with_history_;
   census_pause_ = paint_pause_;

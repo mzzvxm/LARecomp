@@ -278,6 +278,12 @@ inline float MatchWeight(float texel_distance, float t, float tolerance) {
   return 1.0f - car_selfrefl::SmoothStep(0.5f * tolerance, tolerance, std::fabs(texel_distance - t));
 }
 
+// RT-PARKED-PAINT: the view distance a ray traced pass reads from a history texel's alpha. The alpha of a vehicle's pixel is its distance (> 0); the history pass marks a PARKED car's texels (a car that
+// writes no vehicle stencil ID: car_rt_parked_paint_rules.h) with the NEGATED distance, which every reader that asks `alpha > 0` (the paint variant's march, the chrome variant, the player's pass) leaves
+// alone. The passes of this file's shader (hit colours of the history, the surface's mean, another car's seen colour, the denoise's taps, the opponents' primary pixel) read the distance of either
+// kind, so a parked car's own colour is what the camera sees of it. hlsl/car_rt_refl_common.hlsli HistoryDistance is the same arithmetic.
+inline float HistoryDistance(float alpha) { return std::fabs(alpha); }
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The cone (the pass's rays of a texel)
 // ---------------------------------------------------------------------------------------------------------------------
@@ -772,7 +778,9 @@ struct PaintRead {
 // `tolerance` of `depth`) and has data; the footprint's data must cover kUseShare of the texels that are that surface, else the march answers.
 // The colour is the mean of the weighted hits (a miss next to a hit does not darken the hit's colour); the weight is the share of the footprint the
 // hits cover.
-inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintTap tap[9], float depth, float tolerance) {
+// RT-PARKED-PAINT (variant version 10): `flags` are the constants' flags (car_selfrefl_rules.h); with kParkedFlag the history's distance of a tap is read as abs(a) (a parked car's texels hold the negated
+// distance), else as it is: a negative one is no vehicle.
+inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintTap tap[9], float depth, float tolerance, uint32_t flags = 0) {
   PaintRead out;
   float geometry = 0.0f;
   float known = 0.0f;
@@ -780,7 +788,7 @@ inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintT
   float car = 0.0f;
   float colour[3] = {};
   for (int k = 0; k < 9; ++k) {
-    const float agree = MatchWeight(tap[k].history_distance, depth, tolerance);
+    const float agree = MatchWeight(car_selfrefl::PaintHistoryDistance(tap[k].history_distance, flags), depth, tolerance);
     const float wg = wx[k % 3] * wy[k / 3] * agree;
     geometry += wg;
     const Texel texel = DecodeAlpha(tap[k].alpha);

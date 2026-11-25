@@ -84,6 +84,10 @@
 //   CHECK (pack step, nothing was built): the stamp says variants_car_selfrefl_shaders=439b193a3f675533,9a6be351ed46662d and the translated text takes the edit (the test on the retail folder);
 //   CHECK in a run: the traffic paint draws have no alpha test or alpha to coverage (else they keep the game's shader: the census of the first run says how many traffic draws took the variant),
 //   and the vehicle stencil ID of the draw (4 ID + {0, 1}) is set for an ambient car (the constants' block is off for a draw with none).
+// Version 10 (RT-PARKED-PAINT, src/gpu/car_rt_parked_paint_rules.h): a PARKED car writes no vehicle stencil ID, so the history image (a > 0 on a vehicle's pixel) never held its pixels. The host's history pass now marks them
+//   with the NEGATED distance, which every `a > 0` reader (this variant's march, the player's pass, the chrome variant) ignores, and gives a traffic paint draw with no vehicle ID the constants of a still car with
+//   the flag g_CarReflC.w bit 2. For such a draw only the two reads of the history that decide whether the paint has an answer take the distance as abs(a): the self-test (the shaded point must be found
+//   in the history at its own distance: CarReflTrace) and the lookup of the ray traced image (CarReflRtLookup: the texels that are the same surface). Without the bit the text computes what version 9 did, bit for bit.
 // The constants (112 bytes at byte 608 of the draw's SharedConstants block, src/gpu/constants.h CarSelfReflConstants):
 //   float4 g_CarReflM0..M3   world to the history frame's clip space (rows of a row-vector matrix: clip = p.x M0 + p.y M1 + p.z M2 + M3)
 //   float4 g_CarReflA        x mode (0: the game's paint, 1: occlusion, 2: occlusion and self-reflection), y ray length (m),
@@ -92,7 +96,7 @@
 //                            all inside a part, take the whole hit (0.25; it was the noise frame before version 4)
 //   uint4  g_CarReflC        x the history image's bindless slot, y a linear clamp sampler's slot (not read since version 2: the
 //                            image is read as points), z the ray traced image's bindless slot, w flags: bit 0 the frame has that image
-//                            (version 5; the constants' words zw were reserved before)
+//                            (version 5; the constants' words zw were reserved before); bit 1 the clear coat's layer (version 8); bit 2 a parked car's draw (version 10)
 // With the mode 0 the helper returns the game's colour untouched, so a draw that has no history yet (the first frames, a
 // pause view, a camera cut) is the game's own paint.
 //
@@ -116,7 +120,7 @@
 namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line variants_car_selfrefl_version).
-inline constexpr uint32_t kCarSelfReflVariantVersion = 10;  // 10: no double precision in the DXIL (the ternaries of bare literals take an f suffix): a GPU without it (the Intel iGPUs on D3D12) could not create the paint's pipelines of this variant; 9: the traffic paint (xAmbientCarPaint::PSAmbientCarPaint) has the same trace (RT-TRAFFIC-REFL; the customisable paint's text is version 8's); 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5; 6: the ray traced image is read with a 3x3 quadratic B-spline of texels (the cone's weights, no stair-steps); 7: the image's sign is "mostly on another car" and the paint adds the clear coat's layer for it (constants g_CarReflC.w bit 1), debug views 6 and 7
+inline constexpr uint32_t kCarSelfReflVariantVersion = 11;  // 11: no double precision in the DXIL (the ternaries of bare literals take an f suffix): a GPU without it (the Intel iGPUs on D3D12) could not create the paint's pipelines of this variant; 10: a draw with the constants' flag bit 2 (a PARKED car's: the history holds its texels with the negated distance, RT-PARKED-PAINT) takes the history's distance as abs(a) in the self-test and in the read of the ray traced image; the others are version 9's bit for bit; 9: the traffic paint (xAmbientCarPaint::PSAmbientCarPaint) has the same trace (RT-TRAFFIC-REFL; the customisable paint's text is version 8's); 2: the hit's colour is a point read of an image whose rgb is 0 outside the vehicles; 3: no per-pixel noise, weights that ramp, hidden-face and thin-part floors; 4: the ray is a chain of segments with a continuous cover, the outline of a part found by halving; 5: the paint reads the host's ray traced image of the car's reflection of itself in place of the march where it has data (constants g_CarReflC.zw), debug view 5; 6: the ray traced image is read with a 3x3 quadratic B-spline of texels (the cone's weights, no stair-steps); 7: the image's sign is "mostly on another car" and the paint adds the clear coat's layer for it (constants g_CarReflC.w bit 1), debug views 6 and 7
 
 // The identity on the retail game (the runtime's own: FNV-1a 64 of the microcode) and the name the translator gives it.
 inline constexpr VariantShader kCarPaint = {"xCarPaintCustomizable__PS_CarPaint", 0x439B193A3F675533ull};

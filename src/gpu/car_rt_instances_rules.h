@@ -269,6 +269,9 @@ struct OtherDraw {
   car_rt_material::Material material;
   static constexpr uint16_t kNoPart = 0xFFFFu;
   uint16_t part = kNoPart;      // a walked car's part slot (car_model_walk_rules.h: 0..54, the body, tyre, rim, model); kNoPart for a drawn car's draw
+  // RT-PARKED-PAINT: a part of a PARKED car (OtherCar::parked) that stands for a draw of the traffic paint: the model data has no shader to ask, so every part of such a car does (the
+  // primary ray of the opponents' pass finds the part at the pixel's depth; a window or a tyre is a pixel the paint variant never reads).
+  bool parked_paint = false;
 };
 
 // One kept car: its ID, its distance and the running sum of the origins of its draws.
@@ -290,6 +293,9 @@ struct OtherCar {
   bool has_paint_ab = false;
   float paint_a[3] = {};
   float paint_b[3] = {};
+  // RT-PARKED-PAINT: a walked car that the camera DOES see (a traffic car the main view shows and no draw claims: it writes no vehicle stencil ID): its pixels are in the history image, marked by
+  // a negative distance (car_rt_parked_paint_rules.h), so its parts carry the paint bit, its record's radius is positive (the colour the camera sees of it) and its paint draws are traced.
+  bool parked = false;
 
   void Add(const temporal::Mat4& model_to_world, double draw_distance) {
     for (int c = 0; c < 3; ++c) {
@@ -444,6 +450,8 @@ struct ViewBox {
   bool paint = false;
   // ... and the car's paint draws are the TRAFFIC paint's (no draw of the customisable paint): the pass's class rule treats the box as a traffic car's (car_rt_traffic_rules.h).
   bool traffic = false;
+  // ... and the car is a PARKED one (OtherCar::parked): the history holds no vehicle pixel of it until the pass marks its box (car_rt_parked_paint_rules.h).
+  bool parked = false;
   void Add(const float p[3]) {
     for (int c = 0; c < 3; ++c) {
       if (!valid) {
@@ -507,6 +515,7 @@ struct Item {
   float transform[3][4] = {};
   uint32_t mask = 0;
   PaintKind paint_kind = PaintKind::kNone;  // another car's draw of a paint shader: whose (kMaskOtherPaint is set with it); kNone for every other instance
+  bool parked = false;                      // RT-PARKED-PAINT: a part of a parked car that carries the paint bit (OtherDraw::parked_paint)
 };
 
 struct ListStats {
@@ -539,6 +548,7 @@ struct CarRecordLog {
   uint32_t stencil_id = 0;
   bool remembered = false;
   bool walked = false;
+  bool parked = false;  // RT-PARKED-PAINT
   bool has_paint = false;
   float centre[3] = {};
   float radius = 0.0f;
@@ -593,6 +603,14 @@ struct List {
     stats = ListStats{};
   }
 };
+
+// RT-PARKED-PAINT: whether a part of a walked car carries the paint bit. Only a PARKED car's parts that stand for a draw of the traffic paint do: every other walked car is one the camera does not
+// draw, with no pixel in the history for the opponents' reflection pass to find.
+inline bool ParkedPaintPart(const OtherCar& car, const OtherDraw& draw) { return car.remembered && car.parked && draw.parked_paint; }
+
+// The radius of a car's record (hlsl/car_rt_common.hlsli CarRtCar::radius): > 0 the colour is sampled from the history round the car's centre, < 0 a car the camera does not draw (its paint or a
+// fixed grey). A PARKED car is one the camera draws (its pixels are in the history, marked), so its record says so: the colour of its hidden parts is the one the camera sees of the car.
+inline float RecordRadius(const OtherCar& car) { return (car.remembered && !car.parked) ? -kCarRadius : kCarRadius; }
 
 // The kept cars, nearest first, as whole cars while their draws fit `budget` instances and there are at most `max_cars` of them (0: no count: the drawn cars'
 // own selection already holds the class's count; with the cars placed from memory among them the plan keeps the nearest `max_cars` of all, by the distance
@@ -665,8 +683,15 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     item.mask = OtherMask(draw.ps);
     item.paint_kind = PaintKindOf(draw.ps);
     if (cars[plan[size_t(slot)]].remembered) {
-      item.mask &= ~rr::kMaskOtherPaint;  // a car the camera does not draw has no pixel in the history: nothing for the opponents' reflection pass to find (car_rt_opp_refl_rules.h)
-      item.paint_kind = PaintKind::kNone;
+      if (ParkedPaintPart(cars[plan[size_t(slot)]], draw)) {
+        // RT-PARKED-PAINT: a parked car the camera sees: its pixels are in the history (marked), so its paint is something for the opponents' reflection pass to find
+        item.mask |= rr::kMaskOtherPaint;
+        item.paint_kind = PaintKind::kTraffic;
+        item.parked = true;
+      } else {
+        item.mask &= ~rr::kMaskOtherPaint;  // a car the camera does not draw has no pixel in the history: nothing for the opponents' reflection pass to find (car_rt_opp_refl_rules.h)
+        item.paint_kind = PaintKind::kNone;
+      }
     }
     if (!rr::PackInstanceTransform(draw.model_to_world, view, flip_z, item.transform)) {
       ++list->stats.bad_matrix;
@@ -716,7 +741,7 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
   }
   for (const uint32_t index : plan) {
     CarRow row;
-    row.radius = cars[index].remembered ? -kCarRadius : kCarRadius;
+    row.radius = RecordRadius(cars[index]);
     double centre[3];
     if (!cars[index].Centre(centre) || !ViewPoint(view, flip_z, centre, row.centre)) {
       row.radius = 0.0f;  // no centre: the shader finds no colour for this car (its hidden hits are misses)
@@ -743,6 +768,7 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
     log.stencil_id = cars[index].stencil_id;
     log.remembered = cars[index].remembered;
     log.walked = cars[index].walked;
+    log.parked = cars[index].parked;
     log.has_paint = cars[index].has_paint;
     for (int c = 0; c < 3; ++c) {
       log.centre[c] = row.centre[c];

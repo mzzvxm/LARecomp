@@ -179,6 +179,12 @@ class HostPasses {
   void DrawInto(plume::RenderCommandList* list, HostImage& image,
                 const plume::RenderPipeline* pipeline, const void* push, uint32_t push_size,
                 bool clear = false) const;
+  // RT-PARKED-PAINT: `count` more draws of the full-screen triangle into an image that already holds a pass's result (never cleared here), one render pass, each with the scissor
+  // rects[i] and the push block pushes + i * push_size: a pass that writes only some texels of a rectangle (its pixel shader discards the rest) and leaves the others as they were.
+  // Leaves the image readable like DrawInto. No call for count 0.
+  void DrawRectsInto(plume::RenderCommandList* list, HostImage& image,
+                     const plume::RenderPipeline* pipeline, const plume::RenderRect* rects,
+                     const void* pushes, uint32_t push_size, uint32_t count) const;
 
  private:
   Device* device_ = nullptr;

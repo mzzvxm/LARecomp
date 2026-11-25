@@ -302,4 +302,34 @@ void HostPasses::DrawInto(plume::RenderCommandList* list, HostImage& image,
   image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
+void HostPasses::DrawRectsInto(plume::RenderCommandList* list, HostImage& image,
+                               const plume::RenderPipeline* pipeline, const plume::RenderRect* rects,
+                               const void* pushes, uint32_t push_size, uint32_t count) const {
+  if (count == 0 || !rects || !pushes) {
+    return;
+  }
+  if (image.layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image.texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image.framebuffer.get());
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(image.width), float(image.height)};
+  list->setViewports(&viewport, 1);
+  Bind(list);
+  list->setPipeline(pipeline);
+  const uint8_t* block = static_cast<const uint8_t*>(pushes);
+  for (uint32_t i = 0; i < count; ++i) {
+    list->setScissors(&rects[i], 1);
+    list->setGraphicsPushConstants(0, block + size_t(i) * push_size, 0, push_size);
+    list->drawInstanced(3, 1, 0, 0);
+  }
+  list->setFramebuffer(nullptr);
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(image.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  image.layout = plume::RenderTextureLayout::SHADER_READ;
+}
+
 }  // namespace mcla::gpu

@@ -11550,5 +11550,16 @@
   ],
   "comments": [],
   "pp_depth": 0
+ },
+ "mcla_gpu_car_rt_parked_paint": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug (the fix's own switch): the PARKED cars' own ray traced paint reflections. A parked car writes no vehicle stencil ID, so its paint kept the game's reflections \"\n    \"while the player's paint reflected it. With this on, the car's texels in the car history image are marked by its box and depth (a negative distance), its parts carry the traffic paint's bit, and its paint draw is \"\n    \"given the constants of a still car, so the opponents' ray traced pass traces the parked car's paint like a moving traffic car's and the player's reflections show its exact colour. Within the traffic count of \"\n    \"mcla_gpu_car_rt_cars_traffic and the share of mcla_gpu_car_rt_traffic_refl; needs mcla_gpu_car_rt_cars_parked. off: a parked car is reflected but keeps the game's paint, as before. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
  }
 }

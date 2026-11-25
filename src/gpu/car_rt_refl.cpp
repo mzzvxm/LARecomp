@@ -387,6 +387,23 @@ void CarRtRefl::BeginFrame(bool reflection_on) {
   city_.BeginFrame(true);  // CITY-RT M2: the city in the reflections (the setting's cell; the scene service's wants)
 }
 
+// RT-PARKED-PAINT: see car_rt_refl.h. The view is the one OnHistory will trace against (the scene built it before the trigger).
+std::vector<car_rt_parked_paint::Mark> CarRtRefl::ParkedMarks(const HistoryInfo& info) {
+  if (!active_ || !ready_ || !scene_ || !info.image || !info.image->texture || info.image->slot == kNoSlot) {
+    return {};
+  }
+  CarRtOppRefl::MarkInput input;
+  input.view = &scene_->View();
+  input.render_width = info.render_width;
+  input.render_height = info.render_height;
+  input.divisor = info.divisor;
+  input.image_width = info.image->width;
+  input.image_height = info.image->height;
+  input.tan_x = info.tan_x;
+  input.tan_y = info.tan_y;
+  return opp_.ParkedMarks(input);
+}
+
 bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& info) {
   recorded_ = false;
   if (!list || !active_ || !ready_ || !info.image || !info.image->texture || info.image->slot == kNoSlot) {

@@ -285,7 +285,7 @@ struct CarReflRtRead
     float state;     // 1 no data, 2 no hit, 3 a hit on the player's own part, 4 on another car
 };
 
-CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
+CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot, uint flags)
 {
     CarReflRtRead r = (CarReflRtRead)0;
     r.state = 1.0;
@@ -308,7 +308,9 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
         const int2 texel = clamp(int2(nearest) + offset, int2(0, 0), last);
         const float wb = wx[k % 3] * wy[k / 3];
         const float4 h = history.Load(int3(texel, 0));
-        const float agree = (h.a > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth)) : 0.0;
+        // Version 10 (RT-PARKED-PAINT): the history holds a PARKED car's texels with the negated distance (flags bit 2: this draw is a parked car's); the others' alpha is read as it is
+        const float texelDistance = ((flags & 4u) != 0u) ? abs(h.a) : h.a;
+        const float agree = (texelDistance > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(texelDistance - depth)) : 0.0;
         const float wg = wb * agree;
         geometry += wg;
         const float4 t = image.Load(int3(texel, 0));
@@ -495,8 +497,10 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     ray.slack = CarReflSlack(start.w, ray.size.y, length(float3(ray.m0.y, ray.m1.y, ray.m2.y)), nv);
     ray.shape = CarReflWindowShape(start.w, ray.thickness, ray.slack);
     const float tolerance = 0.06 + 0.02 * start.w + ray.slack;
-    const float agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(own.a - start.w));
-    if (!(own.a > 0.0) || agreement <= 0.0)
+    // Version 10 (RT-PARKED-PAINT): the history holds a parked car's texels with the negated distance; the constants' flags bit 2 says this draw is a parked car's (src/gpu/car_selfrefl_rules.h kParkedFlag)
+    const float ownDistance = ((slots.w & 4u) != 0u) ? abs(own.a) : own.a;
+    const float agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(ownDistance - start.w));
+    if (!(ownDistance > 0.0) || agreement <= 0.0)
     {
         return result;
     }
@@ -508,7 +512,7 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     // another vehicle) the march runs as before; with the bit clear this block does nothing and the output is version 4's.
     if ((slots.w & 1u) != 0u)
     {
-        const CarReflRtRead rt = CarReflRtLookup(history, ray.size, startUv, start.w, 2.0 * (0.01 + 0.004 * start.w + ray.slack), slots.z);
+        const CarReflRtRead rt = CarReflRtLookup(history, ray.size, startUv, start.w, 2.0 * (0.01 + 0.004 * start.w + ray.slack), slots.z, slots.w);
         result.rt = rt.state;
         if (rt.use > 0.5)
         {

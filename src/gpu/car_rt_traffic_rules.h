@@ -154,6 +154,7 @@ struct TrafficPlan {
   uint32_t traffic_far = 0;          // left out: too far or too small
   uint32_t traffic_over = 0;         // left out: the traffic's share or the pass's limit
   uint64_t traffic_texels = 0;       // the admitted traffic cars' areas (counted in plan.texels too)
+  std::vector<uint32_t> admitted_cars;  // RT-PARKED-PAINT: the indices (into the `cars` the plan was made from) of every car admitted, opponents first, then the traffic's; the parked cars' marks are made from these
   bool operator==(const TrafficPlan&) const = default;
 };
 
@@ -186,6 +187,7 @@ inline TrafficPlan PlanDispatches(const std::vector<CarRect>& cars, uint64_t bud
     const uint64_t area = cars[i].rect.Area();
     if (admitted.empty() || double(out.plan.texels + area) <= limit) {
       admitted.push_back(cars[i].rect);
+      out.admitted_cars.push_back(i);
       out.plan.texels += area;
       ++out.plan.admitted;
     } else {
@@ -202,6 +204,7 @@ inline TrafficPlan PlanDispatches(const std::vector<CarRect>& cars, uint64_t bud
     const bool fits_share = out.traffic_admitted == 0 || double(out.traffic_texels + area) <= share;
     if (fits_pass && fits_share) {
       admitted.push_back(cars[i].rect);
+      out.admitted_cars.push_back(i);
       out.plan.texels += area;
       out.traffic_texels += area;
       ++out.traffic_admitted;

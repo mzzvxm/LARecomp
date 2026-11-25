@@ -290,12 +290,14 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     Texture2D<float4> history = g_textures[g_push.slots.x];
     const float4 own = history.Load(int3(texel, 0));
-    if (!(own.a > 0.0 && own.a < 60000.0))
+    // RT-PARKED-PAINT: a vehicle's texel holds its distance, a parked car's texel the negated one (HistoryDistance): both are another car's paint to find here
+    const float texelDistance = HistoryDistance(own.a);
+    if (!(texelDistance > 0.0 && texelDistance < 60000.0))
     {
         return;  // no vehicle here: the first dispatch's texel stands
     }
     float4 aux = float4(0.0, 0.0, 0.0, 0.0);
-    const float4 result = TraceOpponentTexel(history, texel, own, aux);
+    const float4 result = TraceOpponentTexel(history, texel, float4(own.rgb, texelDistance), aux);
     if (result.a == kNoData)
     {
         return;  // not another car's paint (or no surface of it at this distance): the first dispatch's texel stands

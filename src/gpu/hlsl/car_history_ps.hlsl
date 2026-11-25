@@ -19,6 +19,11 @@
 //
 // The planes are the EDRAM depth target's (depth and stencil views) and the main colour target's, read as textures.
 //
+// THE MARK MODE (RT-PARKED-PAINT, car_rt_parked_paint_rules.h; push slots2.y = 1): a PARKED car writes no vehicle stencil ID, so the pass above leaves its pixels at 0. One more draw per parked car, with the
+// car's rectangle as the scissor and its box's view distance range (slots2.z near, slots2.w far, float bits) in the push, marks the texels of the rectangle that the stencil gives no ID (0: the world: a vehicle's
+// own pixel is left as the first draw made it) and whose view distance is inside the range: rgb the scene colour as above, a the NEGATED distance. Any other texel is DISCARDED (the image keeps what the
+// first draw wrote). Every reader that asks `a > 0` for a vehicle's pixel ignores a mark; the ray traced passes read abs(a) (car_rt_refl_common.hlsli HistoryDistance).
+//
 // Three compilations (CAR_HISTORY_MS): 0 plain planes, 1 multisampled planes, 2 multisampled depth and stencil planes with the colour read from one single sample image of the picture's size
 // (slots.y is that image's slot: the shared screen products' colour_post, which already holds the mean of the host samples, clamped as below; the same bytes as variant 1 would make).
 
@@ -32,7 +37,7 @@ struct CarHistoryPush {
   // x the main depth plane's bindless slot, y the main colour plane's, z the depth target's stencil plane's
   // (0xFFFFFFFF: none, the image then has no car pixels), w the host samples of the planes (1: plain textures)
   uint4 slots;
-  // x the host sample that is the guest's sample 0
+  // x the host sample that is the guest's sample 0; y 1 for a mark draw (the mode above), z and w the mark's near and far view distance as float bits
   uint4 slots2;
   // xy the picture in host pixels, z the divisor (1: the image is the picture's size, 2: half of it in each direction)
   float4 sizes;
@@ -71,6 +76,35 @@ float LinearDistance(float stored) {
   return (stored > 0.0f && den != 0.0f && t > 0.0f && t < kMaxDistance) ? t : 0.0f;
 }
 
+// The depth plane's value at the pixel (the guest's sample 0 of a multisampled plane).
+float ReadStored(int2 p) {
+#if CAR_HISTORY_MS == 2
+  return g_textures_ms[g_push.slots.x].Load(p, g_push.slots2.x).r;
+#elif CAR_HISTORY_MS
+  return g_textures_ms[g_push.slots.x].Load(p, g_push.slots2.x).r;
+#else
+  return g_textures[g_push.slots.x].Load(int3(p, 0)).r;
+#endif
+}
+
+// The scene colour at the pixel: the mean over the host samples of the target (a multisampled scene), or the one image's texel.
+float3 ReadColour(int2 p) {
+#if CAR_HISTORY_MS == 2
+  // The depth and stencil planes are multisampled, the colour is the shared screen products' colour_post at the picture's size (screen_shared.h; hlsl/screen_colour_ps.hlsl made it with the
+  // loop below, in the same order): one load of the pixel.
+  return g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;
+#elif CAR_HISTORY_MS
+  const uint samples = max(g_push.slots.w, 1u);
+  float3 sum = float3(0.0f, 0.0f, 0.0f);
+  [loop] for (uint s = 0u; s < samples; ++s) {
+    sum += g_textures_ms[g_push.slots.y].Load(p, s).rgb;
+  }
+  return sum / float(samples);
+#else
+  return g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;
+#endif
+}
+
 float4 main(float4 position : SV_Position) : SV_Target {
   const float divisor = max(g_push.sizes.z, 1.0f);
   const int2 p = min(int2(position.xy * divisor), int2(g_push.sizes.xy) - 1);
@@ -81,6 +115,18 @@ float4 main(float4 position : SV_Position) : SV_Target {
 #else
     id = StencilOf(g_utextures[g_push.slots.z].Load(int3(p, 0))) >> 2;
 #endif
+  }
+  if (g_push.slots2.y != 0u) {
+    // the mark draw (RT-PARKED-PAINT): the world's texels of a parked car's rectangle that are at the car's distance; no stencil plane, no mark. The depth is read first and the colour only for a texel that is marked
+    // (the multisampled colour is a loop over the samples).
+    if (id != 0u || g_push.slots.z == kNoSlot) {
+      discard;
+    }
+    const float t = LinearDistance(ReadStored(p));
+    if (!(t > 0.0f && t >= asfloat(g_push.slots2.z) && t <= asfloat(g_push.slots2.w))) {
+      discard;
+    }
+    return float4(HeldColour(ReadColour(p)), -t);
   }
   if (id < kFirstVehicleId || id > kLastVehicleId) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);  // not a vehicle: nothing the paint reads

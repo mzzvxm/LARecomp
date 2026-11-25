@@ -368,7 +368,7 @@ float VisibleAt(Texture2D<float4> history, float3 q, float nv, out float3 colour
         const int2 texel = clamp(int2(base) + offset, int2(0, 0), last);
         const float wb = (offset.x != 0 ? fr.x : 1.0 - fr.x) * (offset.y != 0 ? fr.y : 1.0 - fr.y);
         const float4 h = history.Load(int3(texel, 0));
-        const float w = wb * MatchWeight(h.a, q.z, tolerance);
+        const float w = wb * MatchWeight(HistoryDistance(h.a), q.z, tolerance);
         coverage += w;
         sum += w * h.rgb;
     }
@@ -395,7 +395,7 @@ float3 SurfaceMean(Texture2D<float4> history, uint2 texel, float t, float nv)
         const int2 at = clamp(int2(texel) + tapOffset * int(kSurfaceSpacing), int2(0, 0), last);
         const float4 h = history.Load(int3(at, 0));
         const float tent = (tapOffset.x == 0 ? 1.0 : 0.5) * (tapOffset.y == 0 ? 1.0 : 0.5);
-        const float w = tent * MatchWeight(h.a, t, tolerance);
+        const float w = tent * MatchWeight(HistoryDistance(h.a), t, tolerance);
         total += w;
         sum += w * h.rgb;
     }
@@ -437,7 +437,7 @@ float OtherCarSeenColour(Texture2D<float4> history, CarRtCar car, out float3 col
         const int2 at = clamp(middle + tapOffset * step, int2(0, 0), last);
         const float4 h = history.Load(int3(at, 0));
         const float tent = (tapOffset.x == 0 ? 1.0 : 0.5) * (tapOffset.y == 0 ? 1.0 : 0.5);
-        const float w = tent * MatchWeight(h.a, car.centre.z, tolerance);
+        const float w = tent * MatchWeight(HistoryDistance(h.a), car.centre.z, tolerance);
         total += w;
         sum += w * h.rgb;
     }

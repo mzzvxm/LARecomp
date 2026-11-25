@@ -390,7 +390,8 @@ class CarRtScene final : public car_frame::Listener {
                       uint32_t racers_placed, uint32_t body, uint32_t tyres, uint32_t rims, uint32_t model, uint32_t wheels_held, const car_model_walk::ProofReport& proof);
   // RT-PARKED-CARS: the traffic cars the main view shows that no draw claims are placed from their model data like a hidden car (car_model_rt_rules.h UnclaimedTracker): counted per frame
   // (`placed` of them in the top level with `instances` instances) and logged as a window line.
-  void NoteParkedCars(const car_model_walk::ProofReport& proof, uint32_t placed, uint32_t instances);
+  // RT-PARKED-PAINT: `paint_cars` of the placed ones carry the traffic paint's bit (the switch is on).
+  void NoteParkedCars(const car_model_walk::ProofReport& proof, uint32_t placed, uint32_t instances, uint32_t paint_cars = 0);
   // Gives a walked mesh back (resident or staged).
   void GiveBack(uint64_t key);
 
@@ -537,6 +538,8 @@ class CarRtScene final : public car_frame::Listener {
     uint32_t shown_max = 0, unclaimed_max = 0;
     uint64_t placed_frames = 0, placed_sum = 0, instances_sum = 0;
     uint32_t placed_max = 0;
+    uint64_t paint_cars_sum = 0;                    // RT-PARKED-PAINT
+    uint32_t paint_cars_max = 0;
   } parked_stats_;
   uint64_t parked_log_frame_ = 0;
   uint32_t parked_logged_ = 0;                      // lines of the first cars logged

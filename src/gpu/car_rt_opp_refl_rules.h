@@ -346,20 +346,22 @@ inline uint32_t CountTrafficPaintInstances(const ci::List& list) {
 }
 
 // Says which of the list's boxes (one a listed other car that has an instance, nearest first: AppendOthers) are of a car that has an instance of another car's paint draw, in
-// ViewBox::paint, and which of those are a TRAFFIC car's (every paint draw of the car is the traffic paint's: ViewBox::traffic). The cars' records follow the instances' rows, kCarRows each, in
+// ViewBox::paint, and which of those are a TRAFFIC car's (every paint draw of the car is the traffic paint's: ViewBox::traffic), and which of those are a PARKED car's (RT-PARKED-PAINT: a car
+// built from its model data that the camera sees, whose parts carry the paint bit: ViewBox::parked). The cars' records follow the instances' rows, kCarRows each, in
 // the order of the boxes (a car with no instance has a record and no box), and an instance of another car
 // names its car's first row in `draw`: so box j is the j-th car with an instance. A list with no other car, or whose boxes do not match its cars, marks none.
 inline void MarkPaintBoxes(ci::List* list) {
   for (ci::ViewBox& b : list->boxes) {
     b.paint = false;
     b.traffic = false;
+    b.parked = false;
   }
   if (list->box_row == 0 || list->box_row < list->items.size() || list->box_row > list->rows.size()) {
     return;
   }
   const uint32_t first_record = uint32_t(list->items.size());
   const uint32_t cars = (list->box_row - first_record) / ci::kCarRows;
-  std::vector<uint8_t> has_instance(cars, 0), has_paint(cars, 0), has_custom(cars, 0);
+  std::vector<uint8_t> has_instance(cars, 0), has_paint(cars, 0), has_custom(cars, 0), has_parked(cars, 0);
   for (size_t i = 0; i < list->items.size() && i < list->rows.size(); ++i) {
     if ((list->items[i].mask & rr::kMaskOthers) == 0) {
       continue;  // the player's own instance: its `draw` is a place in the car frame's draws
@@ -372,6 +374,7 @@ inline void MarkPaintBoxes(ci::List* list) {
     has_instance[car] = 1;
     has_paint[car] |= (list->items[i].mask & rr::kMaskOtherPaint) != 0 ? 1 : 0;
     has_custom[car] |= list->items[i].paint_kind == ci::PaintKind::kCustom ? 1 : 0;
+    has_parked[car] |= list->items[i].parked ? 1 : 0;  // RT-PARKED-PAINT: a part of a parked car that carries the paint bit
   }
   size_t box = 0;
   for (uint32_t car = 0; car < cars; ++car) {
@@ -381,6 +384,7 @@ inline void MarkPaintBoxes(ci::List* list) {
     if (box < list->boxes.size()) {
       list->boxes[box].paint = has_paint[car] != 0;
       list->boxes[box].traffic = has_paint[car] != 0 && has_custom[car] == 0;
+      list->boxes[box].parked = has_paint[car] != 0 && has_parked[car] != 0;
     }
     ++box;
   }

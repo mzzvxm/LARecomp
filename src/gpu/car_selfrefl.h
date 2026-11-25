@@ -131,9 +131,11 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
 
+#include "car_rt_parked_paint_rules.h"
 #include "car_selfrefl_rules.h"
 #include "city_refl.h"
 #include "constants.h"
@@ -235,7 +237,7 @@ class CarSelfRefl {
   // The push block of the pass (hlsl/car_history_ps.hlsl CarHistoryPush), 64 bytes: the host pass layout's push range.
   struct Push {
     uint32_t slots[4];   // depth plane, colour plane, stencil plane (0xFFFFFFFF: none), host samples
-    uint32_t slots2[4];  // the host sample that is the guest's sample 0
+    uint32_t slots2[4];  // the host sample that is the guest's sample 0; 1: the mark draw of a parked car (RT-PARKED-PAINT); its near and far view distance as float bits
     float sizes[4];      // the picture in host pixels
     float lin[4];        // the projection's rows P22, P23, P32, P33 (ao_common.hlsli AoLinearDepth)
   };
@@ -253,6 +255,9 @@ class CarSelfRefl {
   void FillCityScreen(CityRefl::ScreenIn* out) const;
   EdramTargets::Target* ColourTarget(const EdramKey& key, plume::RenderCommandList* list);
   bool RecordHistory(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  // RT-PARKED-PAINT: after the history pass, one draw of the same pass per mark (the parked cars the opponents' pass will trace), scissored to the car's rectangle, writing the texels the stencil gives no ID
+  // that lie at the car's distance with the negated distance (hlsl/car_history_ps.hlsl, the mark mode; car_rt_parked_paint_rules.h).
+  void RecordMarks(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, const Push& base, const std::vector<car_rt_parked_paint::Mark>& marks);
   plume::RenderPipeline* Pipeline(uint32_t pass);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t pass);
   // The shaders, made where the setting is on at the start or when it is first switched on. False: they could not be made.
@@ -337,6 +342,13 @@ class CarSelfRefl {
   uint64_t paint_draws_ = 0;
   uint64_t paint_with_history_ = 0;
   uint64_t paint_no_id_ = 0;
+  uint64_t paint_parked_ = 0;     // RT-PARKED-PAINT: traffic paint draws with no vehicle stencil ID given the constants of a still car ...
+  uint64_t paint_parked_rt_ = 0;  // ... of them with the ray traced image
+  uint64_t mark_frames_ = 0;      // frames the history pass made marks, the marks and the texels of their rectangles
+  uint64_t marks_made_ = 0;
+  uint64_t mark_texels_ = 0;
+  uint32_t marks_most_ = 0;
+  bool parked_logged_ = false;
   uint64_t traffic_with_id_ = 0;  // RT-NEXT-DAY: draws of the TRAFFIC paint (car_rt_instances_rules.h kTrafficPaintPs) that reached the ID test, with a vehicle stencil ID ...
   uint64_t traffic_no_id_ = 0;    // ... and without one: a parked car carries none, and the history image, the ray traced scene's draw path and this variant are all keyed on it
   uint64_t paint_motion_ = 0;

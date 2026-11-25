@@ -168,12 +168,14 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
 
 #include "car_rt_glass_refl.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_opp_refl.h"
+#include "car_rt_parked_paint_rules.h"
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
 #include "city_refl.h"
@@ -230,6 +232,10 @@ class CarRtRefl {
   // Records the pass on `list` (outside any render pass, at the trigger, after the history pass and the scene's top-level build). True when
   // recorded. False: not wanted, no structures this frame, or the pass could not be set up; the paint then has no image for the frame.
   bool OnHistory(plume::RenderCommandList* list, const HistoryInfo& info);
+  // RT-PARKED-PAINT: the marks the history pass draws into its own image BEFORE OnHistory (car_rt_parked_paint_rules.h): the parked cars the opponents' pass will trace this frame, each a rectangle of
+  // history texels and a view distance range. `info` as OnHistory will get it (the image, the divisor, the sizes, the lens). Empty where there is nothing to mark: not wanted, no structures this
+  // frame, the opponents' pass off or not made yet, no parked car in the scene.
+  std::vector<car_rt_parked_paint::Mark> ParkedMarks(const HistoryInfo& info);
 
   // CITY-RT M2 R3b (car_rt_glass_refl.h): the player's windows' additive pass into the main colour, after OnHistory recorded this frame's trace of them (false otherwise). CarSelfRefl::RecordHistory calls it
   // with the main view's colour target and the picture's size.

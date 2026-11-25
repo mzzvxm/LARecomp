@@ -47,10 +47,12 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
 
 #include "car_rt_opp_refl_rules.h"
+#include "car_rt_parked_paint_rules.h"
 #include "city_refl.h"
 #include "host_passes.h"
 
@@ -99,6 +101,20 @@ class CarRtOppRefl {
   };
   // Records the opponents' dispatches after the player's. True when any was recorded (the images are in GENERAL still).
   bool Record(const Frame& frame);
+
+  // RT-PARKED-PAINT: what ParkedMarks needs of the frame (the history pass is about to draw: it has the lens it linearises the history with and the image's size, the opponents' pass has not run).
+  struct MarkInput {
+    const CarRtView* view = nullptr;
+    uint32_t render_width = 0;                 // the picture's
+    uint32_t render_height = 0;
+    uint32_t divisor = 1;
+    uint32_t image_width = 0;                  // the history image's size in texels
+    uint32_t image_height = 0;
+    double tan_x = 0.0;                        // the history's lens
+    double tan_y = 0.0;
+  };
+  // The marks of a frame (car_rt_parked_paint_rules.h): the parked cars this pass will trace, each a rectangle of history texels and a view distance range. Empty where nothing is to be marked.
+  std::vector<car_rt_parked_paint::Mark> ParkedMarks(const MarkInput& input);
 
   // The text CarRtRefl's census line takes; empty where nothing ran.
   std::string CensusText();
