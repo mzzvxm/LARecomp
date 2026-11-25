@@ -198,6 +198,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/display/effect_compare.cpp
     src/mc_engine/gameplay/real_weather.cpp
     src/mc_engine/gameplay/squash_stretch.cpp
+    src/mc_engine/gameplay/tire_camber.cpp
     src/mc_engine/gameplay/tire_offset.cpp
     src/mc_engine/gameplay/hud_units.cpp
     src/mc_engine/input/adaptive_triggers.cpp

@@ -10,5 +10,5 @@
 
 // sub_82354230 epilogue (0x82354A1C, r31 = mcCarModel). Runs after the whole
 // per-wheel matrix set has been rebuilt for this frame and shifts it sideways
-// by the car's TireOffset0/1 bytes.
+// by the car's TireOffset0/1 bytes, then applies tire_camber.cpp.
 void Hook_TireOffsetWheels(PPCRegister& r31);

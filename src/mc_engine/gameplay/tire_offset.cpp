@@ -1,5 +1,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "tire_offset.h"
+#include "tire_camber.h"
+#include "wheel_matrices.h"
 
 #include "mc_engine/core/logging.h"
 
@@ -70,6 +72,8 @@ REXCVAR_DEFINE_UINT32(tire_offset_targets, 31, "MCLA/Patches",
     .debug_only()
     .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
+using namespace wheel_matrices;
+
 namespace {
 
 constexpr uint32_t kModelVehicle    = 20;    // mcCarModel -> mcVehicle
@@ -77,72 +81,9 @@ constexpr uint32_t kVehicleCustom   = 132;   // mcVehicle -> CustomData
 constexpr uint32_t kReflFromCustom  = 64;    // reflection base = CustomData+0x40
 constexpr uint32_t kReflTireOffset  = 2040;  // +0 front, +1 rear
 
-constexpr uint32_t kMatrixRow0 = 0;
-constexpr uint32_t kMatrixRow3 = 48;
-
-struct WheelBlock {
-    uint32_t base;
-    uint32_t stride;
-};
-
-// Every per-wheel matrix set sub_82354230 writes, in the order of the bitmask.
-constexpr WheelBlock kBlocks[] = {
-    {1088, 64},   // tyre — confirmed through sub_8235A628
-    {1344, 64},
-    {1600, 64},
-    {1856, 128},
-    {1920, 128},
-};
-constexpr int kNumBlocks = int(sizeof(kBlocks) / sizeof(kBlocks[0]));
-constexpr int kNumWheels = 4;
-
 uint8_t* GetMembase() {
     auto* rt = rex::Runtime::instance();
     return rt ? rt->virtual_membase() : nullptr;
-}
-
-uint32_t ReadBE32(const uint8_t* base, uint32_t ea) {
-    const uint8_t* p = base + ea;
-    return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) |
-           (uint32_t(p[2]) << 8) | uint32_t(p[3]);
-}
-
-float ReadBEFloat(const uint8_t* base, uint32_t ea) {
-    const uint32_t bits = ReadBE32(base, ea);
-    float f;
-    std::memcpy(&f, &bits, sizeof(f));
-    return f;
-}
-
-void WriteBEFloat(uint8_t* base, uint32_t ea, float value) {
-    uint32_t bits;
-    std::memcpy(&bits, &value, sizeof(bits));
-    uint8_t* p = base + ea;
-    p[0] = uint8_t(bits >> 24);
-    p[1] = uint8_t(bits >> 16);
-    p[2] = uint8_t(bits >> 8);
-    p[3] = uint8_t(bits);
-}
-
-bool IsPlausibleGuestPtr(uint32_t ea) {
-    return ea >= 0x82000000u && ea < 0xC0000000u;
-}
-
-struct Vec3 {
-    float x, y, z;
-};
-
-Vec3 ReadVec3(const uint8_t* base, uint32_t ea) {
-    return {ReadBEFloat(base, ea), ReadBEFloat(base, ea + 4),
-            ReadBEFloat(base, ea + 8)};
-}
-
-bool Finite(const Vec3& v) {
-    return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z);
-}
-
-float Dot(const Vec3& a, const Vec3& b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
 }
 
 // Shifts one block of four wheel matrices. front/rear are the raw notch values.
@@ -218,16 +159,18 @@ void Hook_TireOffsetWheels(PPCRegister& r31) {
     const uint32_t refl = custom + kReflFromCustom;
     const int front = int(int8_t(base[refl + kReflTireOffset + 0]));
     const int rear = int(int8_t(base[refl + kReflTireOffset + 1]));
-    if (!front && !rear) return;  // stock car: nothing to do, no cost
-
-    const float step = float(REXCVAR_GET(tire_offset_step));
-    if (!(step > 0.0f)) return;
-
     const uint32_t targets = REXCVAR_GET(tire_offset_targets);
-    for (int b = 0; b < kNumBlocks; ++b) {
-        if (targets & (1u << b))
-            ShiftBlock(base, model, kBlocks[b], front, rear, step);
+    const float step = float(REXCVAR_GET(tire_offset_step));
+    if ((front || rear) && step > 0.0f) {
+        for (int b = 0; b < kNumBlocks; ++b) {
+            if (targets & (1u << b))
+                ShiftBlock(base, model, kBlocks[b], front, rear, step);
+        }
     }
+
+    // Camber shares this hook. After the shift, so its pivot is the tyre where
+    // it ends up.
+    ApplyTireCamber(base, model, vehicle, refl, targets);
 }
 
 #else  // REXGLUE_HAS_XEO3_TARGET
