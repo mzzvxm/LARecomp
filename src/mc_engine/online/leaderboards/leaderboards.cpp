@@ -46,8 +46,11 @@
 //
 
 #include "../online_common.h"
+#include "settings/immortal.h"
 #include "lb_client.h"
 #include "lb_protocol.h"
+#include "../online_tables.h"
+#include "larecomp_guest.h"
 
 #include <algorithm>
 #include <atomic>
@@ -57,11 +60,11 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/xam/user_profile.h>
+#include <format>
 
 REX_EXTERN(__imp__rex_sub_824FDF00);
 REX_EXTERN(__imp__rex_sub_824FE058);
@@ -71,7 +74,6 @@ REX_EXTERN(__imp__rex_sub_824FED28);
 
 namespace {
 
-constexpr uint32_t kSpaAddress = 0x82950000;   // the XEX's XDBF resource
 constexpr uint32_t kNetMgrPtr = 0x8286D800;
 constexpr uint32_t kLocalUserPtr = 0x8288E5AC;
 constexpr uint32_t kGamersAt = 4284;           // netmgr: gamer array
@@ -93,14 +95,13 @@ constexpr uint32_t kColumnSize = 24;   // XUSER_STATS_COLUMN
 
 // ── guest memory ───────────────────────────────────────────────────────────
 uint8_t* Base() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->virtual_membase() : nullptr;
+  auto* rt = REX_RUNTIME();
+  return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 uint32_t R32(uint8_t* b, uint32_t a) {
   const uint8_t* p = b + a;
   return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]);
 }
-uint16_t R16(uint8_t* b, uint32_t a) { return uint16_t((b[a] << 8) | b[a + 1]); }
 uint64_t R64(uint8_t* b, uint32_t a) { return (uint64_t(R32(b, a)) << 32) | R32(b, a + 4); }
 void W32(uint8_t* b, uint32_t a, uint32_t v) {
   b[a] = uint8_t(v >> 24); b[a + 1] = uint8_t(v >> 16); b[a + 2] = uint8_t(v >> 8); b[a + 3] = uint8_t(v);
@@ -110,10 +111,10 @@ void W64(uint8_t* b, uint32_t a, uint64_t v) { W32(b, a, uint32_t(v >> 32)); W32
 
 // Calls the guest function at `fn` (an address) with up to four integer args.
 uint32_t CallGuest(uint32_t fn, uint32_t a0 = 0, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0) {
-  auto* rt = rex::Runtime::instance();
-  PPCFunc* host = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(fn) : nullptr;
+  auto* rt = REX_RUNTIME();
+  PPCFunc* host = rt ? rt->FindFunction(fn).value_or(nullptr) : nullptr;
   if (!host) return 0;
-  return rex::ppc::GuestToHostFunction<uint32_t>(host, a0, a1, a2, a3);
+  return larecomp::guest::Call<uint32_t>(host, a0, a1, a2, a3);
 }
 
 uint32_t VCall(uint8_t* b, uint32_t obj, uint32_t slot, uint32_t a1 = 0, uint32_t a2 = 0, uint32_t a3 = 0) {
@@ -134,63 +135,26 @@ struct ViewDef {
 };
 
 std::once_flag g_schema_once;
-std::unordered_map<uint32_t, ViewDef> g_views;
+std::unordered_map<uint32_t, ViewDef>& g_views = larecomp::Leak<std::unordered_map<uint32_t, ViewDef>>();
 
 void LoadSchema() {
-  uint8_t* b = Base();
-  if (!b || std::memcmp(b + kSpaAddress, "XDBF", 4) != 0) {
-    LARECOMP_APP_WARN("[leaderboards] no XDBF at {:08X}; writes cannot be mapped", kSpaAddress);
+  using namespace larecomp::online_tables;
+  StatsSchema schema;
+  const StatsStatus status = ReadStatsSchema(LiveGuestReader(), kSpaAddress, &schema);
+  if (status != StatsStatus::kOk) {
+    LARECOMP_APP_WARN("[leaderboards] {} (at {:08X}); writes cannot be mapped", StatsStatusText(status),
+                      kSpaAddress);
     return;
   }
-  const uint32_t etl = R32(b, kSpaAddress + 8);
-  const uint32_t ec = R32(b, kSpaAddress + 12);
-  const uint32_t fstl = R32(b, kSpaAddress + 16);
-  const uint32_t data = kSpaAddress + 0x18 + etl * 18 + fstl * 8;
-  uint32_t xvc2 = 0, xvc2_len = 0;
-  for (uint32_t i = 0; i < ec && i < etl; ++i) {
-    const uint32_t e = kSpaAddress + 0x18 + i * 18;
-    if (R16(b, e) == 1 && R64(b, e + 2) == 0x58564332ull) {  // section 1, "XVC2"
-      xvc2 = data + R32(b, e + 10);
-      xvc2_len = R32(b, e + 14);
+  for (const StatsView& v : schema.views) {
+    ViewDef& def = g_views[v.id];
+    def.columns.clear();
+    for (const StatsColumn& c : schema.column_sets[v.column_set]) {
+      def.columns.push_back(ColumnDef{c.prop, c.attr, c.agg});
     }
-  }
-  if (!xvc2 || std::memcmp(b + xvc2, "XVC2", 4) != 0) {
-    LARECOMP_APP_WARN("[leaderboards] the SPA has no XVC2 section");
-    return;
-  }
-  const uint32_t end = xvc2 + xvc2_len;
-  uint32_t p = xvc2 + 12;
-  const uint16_t nshared = R16(b, p);
-  p += 2;
-  std::vector<std::vector<ColumnDef>> shared;
-  for (uint16_t s = 0; s < nshared && p < end; ++s) {
-    const uint16_t ncol = R16(b, p), nrow = R16(b, p + 2);
-    p += 12;
-    std::vector<ColumnDef> cols;
-    for (uint16_t c = 0; c < ncol; ++c, p += 32) {
-      ColumnDef d;
-      d.prop = R32(b, p + 4);
-      d.attr = R16(b, p + 12);
-      d.agg = static_cast<uint8_t>(R16(b, p + 16) & 0xFF);
-      cols.push_back(d);
-    }
-    p += 32u * nrow;
-    if (std::memcmp(b + p, "XPBM", 4) != 0) {
-      LARECOMP_APP_WARN("[leaderboards] XVC2 shared view {} is not followed by XPBM", s);
-      return;
-    }
-    p += 20 + 4 * R32(b, p + 16);
-    shared.push_back(std::move(cols));
-  }
-  const uint16_t nviews = R16(b, p);
-  p += 2;
-  for (uint16_t v = 0; v < nviews && p + 16 <= end; ++v, p += 16) {
-    const uint32_t id = R32(b, p);
-    const uint16_t si = R16(b, p + 8);
-    if (si < shared.size()) g_views[id].columns = shared[si];
   }
   LARECOMP_APP_INFO("[leaderboards] {} stats views from the SPA ({} column sets), backend: {}",
-                    g_views.size(), shared.size(), lb::client::DescribeTarget());
+                    g_views.size(), schema.column_sets.size(), lb::client::DescribeTarget());
 }
 
 const ViewDef* FindView(uint32_t id) {
@@ -234,13 +198,12 @@ std::string LocalGamertag(uint8_t* b) {
 
 // ── XUIDs handed to the game ───────────────────────────────────────────────
 std::mutex g_xuid_mutex;
-std::unordered_map<uint64_t, uint64_t> g_owner_by_xuid;  // made-up XUID -> owner
+std::unordered_map<uint64_t, uint64_t>& g_owner_by_xuid = larecomp::Leak<std::unordered_map<uint64_t, uint64_t>>();  // made-up XUID -> owner
 
 // The XUID the game itself signed in with.
 uint64_t LocalXuid() {
-  auto* ks = rex::system::kernel_state();
-  const auto* profile = ks ? ks->user_profile() : nullptr;
-  return profile ? profile->xuid() : kLegacyLocalXuid;
+  auto* rt = REX_RUNTIME();
+  return rt ? rt->GetUserProfile().GetXUID() : kLegacyLocalXuid;
 }
 
 uint64_t XuidForOwner(uint64_t owner) {
@@ -277,7 +240,7 @@ struct Pending {
 };
 
 std::mutex g_pending_mutex;
-std::unordered_map<uint32_t, Pending> g_pending;  // by command
+std::unordered_map<uint32_t, Pending>& g_pending = larecomp::Leak<std::unordered_map<uint32_t, Pending>>();  // by command
 
 uint32_t BufferSize(uint32_t rows, size_t columns) {
   return kResultsSize + kViewSize + rows * (kRowSize + static_cast<uint32_t>(columns) * kColumnSize);
@@ -514,7 +477,7 @@ extern "C" REX_FUNC(rex_sub_824FED28) {
         if (lb::client::Diag() || !ok) {
           LARECOMP_APP_INFO("[leaderboards] view {} type {}: {} of {} row(s){}", p.view, p.type,
                             p.resp.rows.size(), p.resp.total,
-                            ok ? "" : fmt::format(" FAILED (err {})", p.resp.err));
+                            ok ? "" : std::format(" FAILED (err {})", p.resp.err));
         }
       }
       it = g_pending.erase(it);
@@ -579,7 +542,7 @@ void Hook_LeaderboardWrite(PPCRegister& r25, PPCRegister& r5, PPCRegister& r6) {
         val.agg = c.agg;
         val.bits = bits;
         req.columns.push_back(val);
-        detail += fmt::format(" {:X}={}", c.attr, bits);
+        detail += std::format(" {:X}={}", c.attr, bits);
       }
     }
     if (req.columns.empty()) continue;

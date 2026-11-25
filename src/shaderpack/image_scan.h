@@ -11,7 +11,7 @@
 // 119 containers as carving the image (checked on this PC's image).
 //
 // Typical use inside larecomp.exe, once the runtime has built the guest memory:
-//   const uint8_t* membase = rex::Runtime::instance()->virtual_membase();
+//   const uint8_t* membase = larecomp::guest::Membase();
 //   ImageScan scan = ScanImage(membase + kGuestImageBase, kGuestImageSize);
 // and in a tool, from a flat dump of the image (native\work\image.bin):
 //   std::vector<uint8_t> image; LoadFlatImage(path, image);

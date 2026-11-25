@@ -17,6 +17,8 @@
 #define MCLA_GPU_AO_COMMON_HLSLI
 
 #include "host_pass_common.hlsli"
+#include "gbuffer_common.hlsli"
+#include "blue_noise.hlsli"
 
 #ifndef AO_DEPTH_MS
 #define AO_DEPTH_MS 0
@@ -70,6 +72,11 @@ struct AoPush {
   // slots2.y as the slot of the depth history (R32_FLOAT), lens.z as the weight the bounce's history
   // keeps and lens.w as the width of its clip. The a-trous pass (ao_atrous_ps) takes slots2.x as its step
   // in pixels.
+  //
+  // The normal image's bindless slot (AoNormalAt below; 0 = none) rides where the pass has no other use for the field and the push's default is 0: the main pass (plain and bounce
+  // light) in lin.y as a number (as the traced image's slot in lin.x; it is set for that pass, lin.y holds a projection row otherwise), the denoise (all three modes) and the a-trous
+  // filter in slots2.w, the accumulation (both) and the contact march in the high 16 bits of slots.y (the low bits are the host sample, bindless slots are below 32768), the apply
+  // in the high 16 bits of slots.w (the low 16 are the depth image's slot). The normal pass (ao_normal_ps) has its own fields, listed in its file.
 };
 
 #ifdef __spirv__
@@ -184,9 +191,44 @@ float3 AoNormalFromImage(uint slot, int2 p, int2 size, float tc, float3 pc) {
   return len > 1e-20f ? n / len : float3(0.0f, 0.0f, -1.0f);
 }
 
-// Interleaved gradient noise (Jimenez 2014) of a pixel position.
+// THE NORMAL IMAGE (GB-E; ao_normal_ps.hlsl, ao_gbuffer_normal.hlsli, ao_gbuffer.h): where the frame has the G-buffer's normal plane one pass makes the unit view-space normal of every
+// pixel of the traced image once (R16G16_UNORM, octahedral: the plane's normal turned into view space where a pixel has one that faces the camera, the depth's normal, this file's
+// AoNormalFromImage, where it has not) and the passes load it here. `normal_slot` is the image's bindless slot, 0 for none (the heap's reserved null texture): without the image,
+// a frame without the G-buffer, or with mcla_gpu_ao_gbuffer_normals off, this is AoNormalFromImage and the pass is what it was. The slot rides in a field each pass does not
+// otherwise use, where the push block's default is 0 (ao.h lists them), so a pass that is not given one reconstructs.
+float3 AoNormalAt(uint normal_slot, uint depth_slot, int2 p, int2 size, float tc, float3 pc) {
+  if (normal_slot == 0u) {
+    return AoNormalFromImage(depth_slot, p, size, tc, pc);
+  }
+  return GbOctDecode(g_textures[normal_slot].Load(int3(p, 0)).xy);
+}
+
+// Interleaved gradient noise (Jimenez 2014) of a pixel position. The first version's per-pixel noise, kept for mcla_gpu_ao_blue_noise false. It is a lattice (a linear
+// phase of the position: its spectrum is a few sharp peaks), so the sampling error it leaves after the blur and the average over frames is a diagonal lattice of
+// thin lines on the road and on the kerbs (blue_noise.h has the numbers).
 float AoNoise(float2 p) {
   return frac(52.9829189f * frac(dot(p, float2(0.06711056f, 0.00583715f))));
+}
+
+// WHICH PER-PIXEL NOISE: bit 29 of slots2.y (ao_stable.h kBlueNoiseFlag), set by ao.cpp unless mcla_gpu_ao_blue_noise is off. The tile (blue_noise.hlsli: 32 x 32
+// pixels, two channels, each every value of 0 to 1 once) has no energy at the low spatial frequencies and no peak: the error of neighbouring pixels does not add up
+// in any direction and the 3x3 blur takes what is left. The pass's frame shift (AoNoiseShift) is added to it as it was added to the gradient noise.
+static const uint kAoNoiseBlueFlag = 1u << 29;
+bool AoBlueNoise() { return (g_push.slots2.y & kAoNoiseBlueFlag) != 0u; }
+// The pixel's two noises (the slice rotation's and the step offsets').
+float2 AoSpatialNoise(int2 pixel) {
+  if (AoBlueNoise()) {
+    return BlueNoiseTile2At(pixel.x, pixel.y);
+  }
+  const float2 p = float2(pixel);
+  return float2(AoNoise(p), AoNoise(p.yx + float2(31.0f, 11.0f)));
+}
+// The pixel's first noise alone (the contact march's start offset).
+float AoSpatialNoise1(int2 pixel) {
+  if (AoBlueNoise()) {
+    return BlueNoiseTileAt(pixel.x, pixel.y, 0u);
+  }
+  return AoNoise(float2(pixel));
 }
 
 // The frame's shift of the main pass's noise, from slots2.y (ao_stable.h DecodeShift): the phase m (0 to 12) of a lattice of 13 frames,
@@ -216,12 +258,21 @@ static const float kEdgeRangeSigma = 0.2f;
 static const float kEdgeSpatialSigma = 0.9f;
 static const float kEdgePlanePixels = 4.0f;
 static const float kEdgePlaneFloor = 0.01f;
+// THE MARK (contact_trace.h "the vehicle march's stipple"): a vehicle pixel that marched its short ray stores its visibility v as
+// v - kVehicleMarkOffset, a value in -2 to -1 (the others store 0 to 1). Between two marked pixels the visibility's weight is 1: the noise
+// of the march's start is in both values, and the average of the 3 x 3 is the smooth answer the noise stands for. The filter's output is a
+// plain visibility. Only ao_contact_ps writes a marked value and only the two filters below read the image.
+static const float kVehicleMarkOffset = 2.0f;
+bool AoIsMarked(float stored) { return stored < -0.5f; }
+float AoUnmarked(float stored) { return AoIsMarked(stored) ? stored + kVehicleMarkOffset : stored; }
 float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, float tc, float3 pc,
                       float3 normal) {
   const float2 size = float2(isize);
   const float footprint = 2.0f * g_push.lens.y / size.y * tc;
   const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
-  const float centre = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const float centre_stored = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const bool centre_marked = AoIsMarked(centre_stored);
+  const float centre = AoUnmarked(centre_stored);
   float sum = centre;
   float weights = 1.0f;
   for (int dy = -1; dy <= 1; ++dy) {
@@ -236,8 +287,10 @@ float AoBilateralEdge(uint vis_slot, uint depth_slot, int2 pixel, int2 isize, fl
       const float w_depth = exp(-0.5f * off_plane * off_plane);
       const float w_space =
           exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
-      const float value = g_textures[vis_slot].Load(int3(q, 0)).x;
-      const float off_range = (value - centre) / kEdgeRangeSigma;
+      const float stored = g_textures[vis_slot].Load(int3(q, 0)).x;
+      const bool marked = AoIsMarked(stored);
+      const float value = AoUnmarked(stored);
+      const float off_range = (centre_marked && marked) ? 0.0f : (value - centre) / kEdgeRangeSigma;
       const float w = w_depth * w_space * exp(-0.5f * off_range * off_range);
       sum += value * w;
       weights += w;
@@ -256,7 +309,9 @@ float AoBilateralEdgeFolded(uint vis_slot, uint depth_slot, int2 pixel, int2 isi
   const float2 size = float2(isize);
   const float footprint = 2.0f * g_push.lens.y / size.y * tc;
   const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
-  const float centre = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const float centre_stored = g_textures[vis_slot].Load(int3(pixel, 0)).x;
+  const bool centre_marked = AoIsMarked(centre_stored);
+  const float centre = AoUnmarked(centre_stored);
   float sum = centre;
   float weights = 1.0f;
   [unroll] for (int dy = -1; dy <= 1; ++dy) {
@@ -278,8 +333,10 @@ float AoBilateralEdgeFolded(uint vis_slot, uint depth_slot, int2 pixel, int2 isi
       const float w_depth = exp(-0.5f * off_plane * off_plane);
       const float w_space =
           exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
-      const float value = g_textures[vis_slot].Load(int3(q, 0)).x;
-      const float off_range = (value - centre) / kEdgeRangeSigma;
+      const float stored = g_textures[vis_slot].Load(int3(q, 0)).x;
+      const bool marked = AoIsMarked(stored);
+      const float value = AoUnmarked(stored);
+      const float off_range = (centre_marked && marked) ? 0.0f : (value - centre) / kEdgeRangeSigma;
       const float w = w_depth * w_space * exp(-0.5f * off_range * off_range);
       sum += value * w;
       weights += w;

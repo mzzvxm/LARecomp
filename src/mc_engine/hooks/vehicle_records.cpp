@@ -36,11 +36,13 @@
 // moved by owned_cars.cpp, which the same wrappers below call.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/xam/content_manager.h>
+#include <rex/xam/user_profile.h>
+#include <rex/path_settings.h>
 
 #include <algorithm>
 #include <array>
@@ -58,13 +60,7 @@
 #include "larecomp_log.h"
 #include "owned_cars.h"
 #include "../online/car_guard.h"
-
-REXCVAR_DEFINE_BOOL(vehicle_records_relocate, true, "MCLA/Patches",
-    "Keep the parts bought for each car model in a table sized to the roster, so the game "
-    "takes more than 77 vehicles. Off = the game's own 77-slot table: past 77 vehicles it "
-    "overwrites other profile data, and a large roster crashes the boot.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_8238C9B0);  // LocalOptions reset
 REX_EXTERN(__imp__rex_sub_8238C278);  // new-game defaults: a record per roster vehicle
@@ -115,7 +111,7 @@ std::array<std::atomic<bool>, kSiteCount> g_site_seen{};
 uint64_t g_slots_hash = 0;
 bool g_slots_hash_valid = false;
 
-bool Enabled() { return REXCVAR_GET(vehicle_records_relocate); }
+bool Enabled() { return larecomp::settings::vehicle_records_relocate.Get(); }
 
 uint16_t ReadGuestU16(const uint8_t* b, uint32_t a) {
     return static_cast<uint16_t>((uint32_t(b[a]) << 8) | uint32_t(b[a + 1]));
@@ -161,9 +157,9 @@ bool EnsureCapacity(uint8_t* b, uint32_t needed, const char* why) {
     if (old && needed <= cap) return true;
     uint32_t want = std::max<uint32_t>({needed + kSlack, cap * 2, kMinRecords});
     want = (want + 63) & ~63u;
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     const uint32_t block =
-        rt && rt->memory() ? rt->memory()->SystemHeapAlloc(want * kRecordSize, 0x1000) : 0;
+        rt && larecomp::guest::AddressSpace(rt) ? larecomp::guest::AddressSpace(rt)->SystemHeapAlloc(want * kRecordSize, 0x1000) : 0;
     if (!block) {
         LARECOMP_APP_ERROR("[vehicle-records] no guest memory for {} records ({})", want, why);
         return old != 0;
@@ -207,27 +203,18 @@ struct SidecarHeader {
 };
 static_assert(sizeof(SidecarHeader) == 32);
 
-// The directory the content store files this profile under: the fork names it
-// after the configured profile (UserProfile::ConfiguredName), the stock SDK
-// after the hex XUID.
-template <typename Profile>
+// The directory the content store files the signed in profile under (the sanitized profile name, the hex XUID for any
+// other): the content manager's own answer.
 std::string ProfileDirFor() {
-    if constexpr (requires { Profile::ConfiguredName(); }) {
-        std::string name = Profile::ConfiguredName();
-        if (!name.empty()) return name;
-    }
-    auto* ks = rex::system::kernel_state();
-    const Profile* profile = ks ? ks->user_profile() : nullptr;
-    if (!profile) return {};
-    char xuid[17];
-    std::snprintf(xuid, sizeof(xuid), "%016llX", static_cast<unsigned long long>(profile->xuid()));
-    return xuid;
+    auto* rt = REX_RUNTIME();
+    if (!rt) return {};
+    return rt->GetContentManager().ProfileDirName(rt->GetUserProfile().GetXUID());
 }
 
 fs::path SidecarPath() {
-    auto* rt = rex::Runtime::instance();
-    const fs::path root = rt ? rt->user_data_root() : fs::path{};
-    const std::string dir = ProfileDirFor<rex::system::xam::UserProfile>();
+    auto* rt = REX_RUNTIME();
+    const fs::path root = rt ? rex::GetPathSettings().user_root.Get() : fs::path{};
+    const std::string dir = ProfileDirFor();
     if (root.empty() || dir.empty()) return {};
     return root / dir / "545407F8" / "mc4_vehicle_records.bin";
 }

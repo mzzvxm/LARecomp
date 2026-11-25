@@ -16,6 +16,17 @@ debug_table_pattern = "^kDebug"
 
 # The exception list: cvars with no pause-menu or launcher row that are still ordinary settings of the game. They are NOT `.debug_only()`.
 [[exception]]
+why = "garage, car and menu fixes and their limits: on by default, switched off in larecomp.toml or the F4 panel if one of them misbehaves; no pause-menu or launcher row yet"
+names = [
+  "owned_cars_limit", "owned_cars_recover_unmatched", "garage_menu_fixes", "garage_camber", "car_mesh_fixes",
+  "vinyl_layers_per_frame", "vinyl_shape_prefetch", "mouse_menu_drag", "cam_freelook_boom",
+]
+
+[[exception]]
+why = "online: the session size and the notice shown for a repaired car config; no pause-menu or launcher row yet"
+names = ["net_max_players", "online_car_guard_notice"]
+
+[[exception]]
 why = "keyboard rebinding: the F4 panel is the only place to rebind a key and the launcher has no key picker"
 names = [
   "kb_ui_accept", "kb_ui_back", "kb_ui_x", "kb_ui_y",
@@ -35,9 +46,13 @@ why = "keyboard steering feel (KBM-DESIGN.md P5): the ramp's two times are F4-on
 names = ["kb_steer_rise", "kb_steer_return"]
 
 [[exception]]
+why = "photo album export (photo_export.cpp, 63312657): on by default it turns the dead PUBLISH ALBUM button (the Social Club is closed) into EXPORT ALBUM; the folder is a text path, which no pause-menu row type takes. F4 only, like the online address"
+names = ["photo_album_export", "photo_album_export_dir"]
+
+[[exception]]
 why = "online choices that have no row and need a text box (settings.cpp offers copy and paste for a server address); SETTINGS-REVIEW.md question 8: stay in F4 for now"
 names = [
-  "online_master_server", "server_browser_servers", "server_browser_show_icons",
+  "server_browser_servers", "server_browser_show_icons",
   "rmr_enabled", "rmr_server", "rmr_server_port", "leaderboards_enabled",
 ]
 
@@ -59,12 +74,30 @@ names = [
   "larecomp_discord_rpc", "larecomp_discord_rpc_language",
   "mcla_gpu_adapter", "unlock_ride_height", "unlock_wheel_fit",
   "profile_auto_select", "model_mods",
+  "online_master_server",
   "wheel_mode", "wheel_ffb", "wheel_ffb_strength", "wheel_ffb_boost", "wheel_ffb_centering", "wheel_ffb_sign",
   "wheel_device_range", "wheel_game_range", "wheel_steer_deadzone",
 ]
+
+[[launcher_row]]
+why = "rexglue 0.11 only: the launcher's Graphics API row (SettingsSchema.cs) writes it, the pause menu has none (a restart setting). On 0.10 it was the SDK's own setting, so this check never saw it; on 0.11 LARecomp declares it (settings/larecomp_app_settings.h) and it is a player setting again (bf515e8c)"
+names = ["graphics_backend"]
+
 # SX-G7 gave the pause menu rows for camera_shake_scale, rearview_cars, map_mouse, map_mouse_zoom, map_mouse_hide_cursor,
 # map_mouse_magnet, trigger_throttle, trigger_brake and skip_intro, so they left this list: they are rows of both surfaces now.
+
+# World AO uses the existing mcla_gpu_ao player row. Its diagnostics and A/B settings are debug-only
+# and live. The live_debug group in live_readers.toml checks those tags and readers as definitions land.
 
 # No [[pending]] list: SX-G5 took every DEBUG and REMOVE row out of the normal pause-menu tables, so a `.debug_only()` cvar that a
 # normal row names fails the check outright. (A row that names a key that is not a cvar, like the old RENDERER row, would be a
 # [[virtual_row]] entry: `rows` is the constructor's key, `names` the cvars it writes. None is left.)
+
+# gpu.driver (the renderer: larecomp, or d3d12 / vulkan / any for the XENIA renderer) is the SDK's own startup-only setting, so no source of ours
+# defines it and the check never lists it: it needs no entry above (a name here that no source defines is only a warning, and it is not an
+# exception, a launcher row or a pause-menu row). It has ONE row, on the hidden DEBUG menu: RENDERING > RENDERER (debug_menu_pages.cpp,
+# PM_RxDbgRenderer), the way to the XENIA renderer that stays in the program as a fallback (owner, 2026-11-19; gpu/renderer_fallback.h). That row
+# breaks the rule of the other debug rows on purpose: it is not live, it HOLDS the choice (pause_menu.cpp kDeferredCvars) and the next save writes
+# it to larecomp.toml, and the check does not see it (a dotted name does not match its row pattern). Nothing in the normal pause menus or in
+# the launcher offers it. The box that says the native renderer could not start, the shader build's failure dialog and the offer after two
+# starts that never got going write the same setting (renderer_fallback.h).

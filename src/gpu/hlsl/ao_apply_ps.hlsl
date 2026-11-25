@@ -26,7 +26,12 @@
 //     distance_fade  1 up to shape.w, to 0 at extra.y (smoothstep).
 //
 //   contact_factor 1 - sun_share * strength * (1 - cs) * fade: the contact shadows darken only the
-//                  sun's share of the light, so they cannot darken what the game already shadows
+//                  sun's share of the light, so they cannot darken what the game already shadows. The share is
+//                  taken PER COLOUR CHANNEL (sun_share_c = S_c * N.L * vis / (A_c + S_c * N.L * vis), the two lights'
+//                  colours in shape.w: contact_trace.h "the contact factor per colour channel"): a shadow takes the
+//                  sun's colour away and leaves the sky's, as the game's own shadow does; a grey light gives the luma's
+//                  share below, bit for bit. (The luma's share darkened the right amount in the wrong colour: the car's
+//                  shadow at noon, which the car's map owns, was warmer than the game's own shadows beside it.)
 //     cs             the contact visibility (ao_contact_ps and its one edge-keeping filter pass), upsampled as ao is; with
 //                    mcla_gpu_contact_shadows_fast (flag bit 25, AoContactFilter, only at the picture's size) the image
 //                    is the march's own and this pass does the filter (AoBilateralEdgeFolded: the same 3x3 weights),
@@ -37,13 +42,23 @@
 //     sun_share      Ls * N.L * vis / (La + Ls * N.L * vis), vis the game's sun shadow mask where
 //                    the frame has one (flag bit 24: slots2.w its bindless slot, shape.x the factor
 //                    that turns its stored value into a visibility, 2: the lit shaders multiply it
-//                    by 2), 1 where it has none (6 h, 18 h, rain, night);
+//                    by 2), 1 where it has none (6 h, 18 h, rain, night); on a vehicle's pixel not the
+//                    mask (it is made before the cars are drawn, so at a car's pixel it is the world
+//                    behind the car's, and a car's own shader does not use it: contact_trace.h
+//                    "the game's sun shadow mask is not a car's"; the R34's trunk lid under the wing
+//                    had the iron fence's bars behind it as a comb) but what the car's own shader
+//                    uses, the game's car sun image at the pixel's place on the ground (see
+//                    CarAwareSunVisibility; a car in a building's shade has vis 0 and no contact
+//                    shadow of the sun's), 1 where the frame has no such image;
 //     strength       extra.w: the setting's, times the sun's elevation gate and the wetness gate
 //                    (ao.cpp), so 0 never reaches this shader;
 //     fade           1 up to lens.z, to 0 at lens.w (smoothstep): a ray of a few tenths of a metre
 //                    is under a pixel far away.
 //
 // Where the factor is near 1 (the sky, flat surfaces, past the fades) the pixel is not written.
+//
+// shape.w of this pass is the lights' colours (four 7 bit values, contact_trace.h kChromaScale: the ambient's and the sun's red and blue over their luma in 1/32;
+// kNeutralChroma is grey), no longer the distance fade's start: that is half of extra.y, as ao.cpp FillPush has always made it.
 //
 // THE PAINT (ao_paint.h has the story, the numbers and the test). The game draws a car's paint as one colour, and the
 // factor multiplies all of it: on dark glossy paint nearly all of that colour is the reflection of the environment, which
@@ -94,7 +109,8 @@
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
 // of 0.04, bits 26-31 the cap in units of 0.25 (the ceiling and, in the colour chain, the radiance cap); bit 25 is
 // the contact filter flag (above: the apply does the contact filter itself), the same in both compilations.
-// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on.
+// The sun shadow mask (flag bit 24, slots2.w, shape.x) is read for T whether or not the contact shadows are on; a vehicle's pixel takes 1 for it
+// there too (CarAwareSunVisibility).
 // Debug views 16-21 (flags bits 0-7): 16 the factor in colour, 17 the bounce
 // the pixel gets (four times as bright as the others), 18 the albedo estimate (colour / T, 0 to 1), 19 T, 20 the
 // share of the colour that is a surface (white; black: a source), 21 the picture's change against the game's
@@ -106,17 +122,36 @@
 // black none, grey part of it), 7 the occlusion's own factor (the visibility with the ambient share, the
 // strength and the distance fade, without the contact shadows; the picture's factor when they are off),
 // 8 the contact factor, 9 the contact visibility, 10 the sun's
-// visibility (the mask, or 1), 11 the sun's share of the light, 12 the pixels the depth pass took for
-// vehicles (white); written as a grey of 0.3 of the value so
+// visibility (the game's mask as it is, or 1: a vehicle's pixel shows the world behind it there), 11 the sun's share of the light, 12 the pixels the depth pass took for
+// vehicles (white), 13 the sun's visibility the share took (the mask on the world, the game's car sun image on a vehicle, 1 on a vehicle where
+// the frame has no such image); written as a grey of 0.3 of the value so
 // that 1.0 reads below the tone map's white.
 
 #include "ao_common.hlsli"
+#include "cabin_shadow_rules.hlsli"
 #include "host_pass_samplers.hlsli"
+#include "nan_guard.hlsli"
 #if AO_GI
 #include "ssgi_common.hlsli"
 #endif
 
 static const float kViewScale = 0.3f;
+static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
+// The two lights' colours (contact_trace.h ChromaRgb, SunShareRgb: keep in step): shape.w holds, 7 bits each, the chroma = channel / luma in 1/32 of the
+// ambient's red and blue and of the sun's red and blue (bits 0-27, the top bits are a marker); the green follows from the luma weights.
+static const float kChromaScale = 32.0f;
+float3 ChromaRgb(uint red_byte, uint blue_byte) {
+  const float r = float(red_byte) * (1.0f / kChromaScale);
+  const float b = float(blue_byte) * (1.0f / kChromaScale);
+  return float3(r, max((1.0f - 0.2126f * r - 0.0722f * b) / 0.7152f, 0.0f), b);
+}
+// The sun's share of the light in each channel: S_c * lit / (A_c + S_c * lit), lit = N.L times the sun's visibility; the lumas are light.w and extra.x.
+float3 SunShareRgb(float ambient_luma, float sun_luma, float lit) {
+  const uint code = asuint(g_push.shape.w);
+  const float3 amb = ambient_luma * ChromaRgb(code & 0x7Fu, (code >> 7) & 0x7Fu);
+  const float3 sunlit = (sun_luma * lit) * ChromaRgb((code >> 14) & 0x7Fu, (code >> 21) & 0x7Fu);
+  return sunlit / max(amb + sunlit, 1e-6f);
+}
 // The folded contact filter (AoContactFilter in this pass) is not run where the contact shadows change the factor
 // by less than this (the filter keeps cs between 0 and 1, so the factor moves by at most the weight).
 static const float kFoldedFilterSkip = 0.002f;
@@ -129,7 +164,11 @@ bool MaskOn() { return (g_push.slots2.z & (1u << 24)) != 0u; }
 // linear depth whose slot is in the high 16 bits of slots2.y (the low 16 are the bounce light's colour chain slot). Without the flag the
 // contact image is at the passes' size and its depth is slots.w, as before.
 bool AoContactFull() { return (g_push.slots2.z & (1u << 21)) != 0u; }
-uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : g_push.slots.w; }
+// The depth image's slot (the occlusion's linear depth, level 0) is the low 16 bits of slots.w; the high 16 are the normal image's slot, at the picture's size (0: none: the pass takes
+// the normal from the depth, below). ao.cpp RecordApply, ao_gbuffer.h: the apply reads the normal image only where one has the picture's size.
+uint ApplyDepthSlot() { return g_push.slots.w & 0xFFFFu; }
+uint ApplyNormalSlot() { return g_push.slots.w >> 16; }
+uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : ApplyDepthSlot(); }
 int2 ContactImageSize() { return AoContactFull() ? int2(g_push.sizes.xy) : int2(g_push.sizes.zw); }
 uint ColourSlot() { return g_push.slots2.y & 0xFFFFu; }
 // The paint power's code (ao_paint.h): flags bits 17-20, the place of the denoise's radius, which this pass does not read (ao.cpp
@@ -143,12 +182,23 @@ bool AoPaintOn() { return AoPaintCode() != 15u; }
 // units of 0.25.
 float GiLimit() { return float((g_push.slots2.z >> 8) & 0xFFu) * 0.04f; }
 float GiCap() { return float((g_push.slots2.z >> 26) & 0x3Fu) * 0.25f; }
-static const float3 kLuma = float3(0.2126f, 0.7152f, 0.0722f);
 #endif
+
+// The apply's slots.x and slots.y carry two more things beside the depth plane's slot and the host sample (contact_trace.h "a car's own sun
+// visibility"): the low 16 bits of slots.x are the depth plane's bindless slot and the high 16 the car sun image's; the low 8 bits of slots.y are
+// the host sample, bit 8 says that the frame has a car sun image, and the high 16 bits are the slot of the 4x1 image that holds its lookup.
+// (ao_common.hlsli's AoLoadStored reads the whole words; the apply reads its own.)
+float ApplyLoadStored(int2 p) {
+#if AO_DEPTH_MS
+  return g_textures_ms[g_push.slots.x & 0xFFFFu].Load(p, g_push.slots.y & 0xFFu).r;
+#else
+  return g_textures[g_push.slots.x & 0xFFFFu].Load(int3(p, 0)).r;
+#endif
+}
 
 // The stored depth at `p` clamped into the target, as a linear distance.
 float LinearAt(int2 p, int2 last) {
-  return AoLinearDepth(AoLoadStored(clamp(p, int2(0, 0), last)));
+  return AoLinearDepth(ApplyLoadStored(clamp(p, int2(0, 0), last)));
 }
 
 // A visibility image (the AO's or the contact shadows') at the pixel of the picture: as it is, or,
@@ -158,7 +208,7 @@ float LinearAt(int2 p, int2 last) {
 // anyway, so it costs next to nothing at half size and one load of the pixel's own depth at full size.
 float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
   if (!AoLow()) {
-    vehicle = AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel)) ? 1.0f : 0.0f;
+    vehicle = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), pixel)) ? 1.0f : 0.0f;
     return g_textures[slot].Load(int3(pixel, 0)).x;
   }
   const int2 asize = int2(g_push.sizes.zw);
@@ -172,7 +222,7 @@ float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
     for (int i = 0; i < 2; ++i) {
       const int2 c = clamp(q0 + int2(i, j), int2(0, 0), asize - 1);
       const float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
-      const float td = AoLoadLinear(g_push.slots.w, c);
+      const float td = AoLoadLinear(ApplyDepthSlot(), c);
       const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
       sum += g_textures[slot].Load(int3(c, 0)).x * w;
@@ -202,6 +252,43 @@ float PaintVisibility(float ao, float vehicle) {
   return lerp(ao, pow(ao, AoPaintPower()), on_car);
 }
 
+// Whether the depth pass marked the pixel as a vehicle's (the lowest bit of the level-0 depth): in the contact shadows' own full size depth where they
+// have one (flag bit 21), else in the occlusion's level 0 (half size where AoLow, as the debug view 12 reads it).
+bool PixelIsVehicle(int2 pixel) {
+  if (AoContactFull()) {
+    return AoIsVehicle(AoLoadLinear(ContactDepthSlot(), pixel));
+  }
+  const int2 asize = int2(g_push.sizes.zw);
+  return AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1)));
+}
+
+// The game's car sun image is in this frame's push (slots.y bit 8; ao.cpp FindCarSunSlot, RecordCarSunLookup).
+bool CarSunOn() { return (g_push.slots.y & 0x100u) != 0u; }
+
+// The sun's visibility a car's shader takes at the view-space point `pc`, from the game's car sun image (contact_trace.h "a car's own sun
+// visibility", the twin CarSunUv and CarSunFromImage): a 256 m wide top-down image around the camera, one texel a metre, read at the point's world x
+// and z relative to the truncated camera, saturate(s - 0.25) * 4/3 of its stored value, with the guest's bilinear sampler. The 4x1 lookup image holds
+// the 8 numbers that take a view-space point to the world's x and z (texel 0: ax, ox; texel 1: az, oz).
+float CarSunVisibility(float3 pc) {
+  const uint lookup = g_push.slots.y >> 16;
+  const float4 a = g_textures[lookup].Load(int3(0, 0, 0));
+  const float4 b = g_textures[lookup].Load(int3(1, 0, 0));
+  const float2 uv = float2(dot(a.xyz, pc) + a.w, dot(b.xyz, pc) + b.w) * (1.0f / 256.0f) + 0.5f;
+  const float s = g_textures[g_push.slots.x >> 16].SampleLevel(g_samplers[kSamplerLinearClamp], uv, 0.0f).x;
+  return min(saturate(s - 0.25f) * 1.3333325f, 1.0f);
+}
+
+// The sun's visibility the share of the light is worked out with (contact_trace.h CarAwareSunVisibility): the game's sun shadow mask's value `mask_vis`
+// at the pixel on the world's pixels; on a vehicle's pixel (`vehicle`) not that: the game collects the mask before the cars are drawn, so at a car's pixel
+// it is the world behind the car's (the fence's bars on the R34's trunk lid: the comb under the wing), and a car's own shader does not use it. It uses the
+// car sun image (CarSunVisibility), so a vehicle's pixel takes that, and 1 where the frame has none.
+float CarAwareSunVisibility(float mask_vis, bool vehicle, float3 pc) {
+  if (!vehicle) {
+    return mask_vis;
+  }
+  return CarSunOn() ? CarSunVisibility(pc) : 1.0f;
+}
+
 #if AO_GI
 // The image of the visibility and the bounce (`gi_slot`) and the colour chain's level 0 (`colour_slot`) at the
 // pixel of the picture: as they are, or, from the half resolution ones, one bilinear upsample whose weights fall
@@ -212,7 +299,7 @@ void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, o
   if (!AoLow()) {
     gi = g_textures[gi_slot].Load(int3(pixel, 0));
     colour = g_textures[colour_slot].Load(int3(pixel, 0));
-    vehicle = AoIsVehicle(AoLoadLinear(g_push.slots.w, pixel)) ? 1.0f : 0.0f;
+    vehicle = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), pixel)) ? 1.0f : 0.0f;
     return;
   }
   const int2 asize = int2(g_push.sizes.zw);
@@ -227,7 +314,7 @@ void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, o
     for (int i = 0; i < 2; ++i) {
       const int2 c = clamp(q0 + int2(i, j), int2(0, 0), asize - 1);
       const float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
-      const float td = AoLoadLinear(g_push.slots.w, c);
+      const float td = AoLoadLinear(ApplyDepthSlot(), c);
       const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
       gi_sum += g_textures[gi_slot].Load(int3(c, 0)) * w;
@@ -270,21 +357,32 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle) : 1.0f;
 #endif
 
-  // The normal from the full resolution depth, as the main pass has it.
+  // The normal: the normal image's where the frame has one at this size (GB-E; ao_normal_ps.hlsl: the G-buffer's where a pixel has it, else the depth's), else from the full
+  // resolution depth, as the main pass has it. The four neighbours' depths below are the folded contact filter's too (they are read for it where the normal comes from the image).
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float tl = LinearAt(pixel + int2(-1, 0), last);
-  const float tr = LinearAt(pixel + int2(1, 0), last);
-  const float tt = LinearAt(pixel + int2(0, -1), last);
-  const float tb = LinearAt(pixel + int2(0, 1), last);
-  const float3 h = abs(tl - tc) < abs(tr - tc)
-                       ? pc - AoViewPos(float2(pixel + int2(-1, 0)) + 0.5f, size, tl)
-                       : AoViewPos(float2(pixel + int2(1, 0)) + 0.5f, size, tr) - pc;
-  const float3 v = abs(tt - tc) < abs(tb - tc)
-                       ? AoViewPos(float2(pixel + int2(0, -1)) + 0.5f, size, tt) - pc
-                       : pc - AoViewPos(float2(pixel + int2(0, 1)) + 0.5f, size, tb);
-  float3 normal = cross(v, h);
-  const float normal_len = length(normal);
-  normal = normal_len > 1e-20f ? normal / normal_len : float3(0.0f, 0.0f, -1.0f);
+  const uint normal_slot = ApplyNormalSlot();
+  float3 normal;
+  float tl = 0.0f;
+  float tr = 0.0f;
+  float tt = 0.0f;
+  float tb = 0.0f;
+  if (normal_slot != 0u) {
+    normal = GbOctDecode(g_textures[normal_slot].Load(int3(pixel, 0)).xy);
+  } else {
+    tl = LinearAt(pixel + int2(-1, 0), last);
+    tr = LinearAt(pixel + int2(1, 0), last);
+    tt = LinearAt(pixel + int2(0, -1), last);
+    tb = LinearAt(pixel + int2(0, 1), last);
+    const float3 h = abs(tl - tc) < abs(tr - tc)
+                         ? pc - AoViewPos(float2(pixel + int2(-1, 0)) + 0.5f, size, tl)
+                         : AoViewPos(float2(pixel + int2(1, 0)) + 0.5f, size, tr) - pc;
+    const float3 v = abs(tt - tc) < abs(tb - tc)
+                         ? AoViewPos(float2(pixel + int2(0, -1)) + 0.5f, size, tt) - pc
+                         : pc - AoViewPos(float2(pixel + int2(0, 1)) + 0.5f, size, tb);
+    normal = cross(v, h);
+    const float normal_len = length(normal);
+    normal = normal_len > 1e-20f ? normal / normal_len : float3(0.0f, 0.0f, -1.0f);
+  }
 
   // The share of the light that is ambient.
   const float ambient = g_push.light.w;
@@ -292,24 +390,30 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float sun = g_push.extra.x * n_dot_l;
   const float ambient_share = (ambient + sun) > 1e-6f ? ambient / (ambient + sun) : 1.0f;
   const float share = lerp(ambient_share, 1.0f, saturate(g_push.extra.z));
-  const float fade = 1.0f - smoothstep(g_push.shape.w, fade_end, tc);
+  const float fade = 1.0f - smoothstep(0.5f * fade_end, fade_end, tc);
   // The visibility the factor takes: ao itself on the world, the paint's on a vehicle (PaintVisibility).
   const float ao_seen = ao_on ? PaintVisibility(ao, ao_vehicle) : 1.0f;
   const float ao_factor = ao_on ? lerp(1.0f, ao_seen, saturate(g_push.shape.z * share * fade)) : 1.0f;
 
   // The contact shadows: on the sun's share of the light only.
   float cs = 1.0f;
-  float sun_vis = 1.0f;
+  float sun_vis = 1.0f;      // the game's mask as it is (the debug view 10)
+  float sun_vis_used = 1.0f; // what the share takes: a vehicle's pixel has the car sun image's value, or 1 (CarAwareSunVisibility; the debug view 13)
   float sun_share = 0.0f;
-  float contact_factor = 1.0f;
+  float contact_factor = 1.0f;                       // the luma's (the debug view 8)
+  float3 contact_factor3 = float3(1.0f, 1.0f, 1.0f); // the one the picture takes: the sun's share of each channel
   if (contact_on) {
     if (MaskOn()) {
       const float2 uv = (float2(pixel) + 0.5f) / size;
       sun_vis = saturate(g_push.shape.x *
-                         g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
+                         g_textures[g_push.slots2.w & 0xFFFFu].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                  uv, 0.0f).x);
+      sun_vis_used = sun_vis;
     }
-    const float sun_lit = sun * sun_vis;
+    if (MaskOn() || CarSunOn()) {
+      sun_vis_used = CarAwareSunVisibility(sun_vis_used, PixelIsVehicle(pixel), pc);
+    }
+    const float sun_lit = sun * sun_vis_used;
     sun_share = (ambient + sun_lit) > 1e-6f ? sun_lit / (ambient + sun_lit) : 0.0f;
     const float contact_fade = 1.0f - smoothstep(g_push.lens.z, g_push.lens.w, tc);
     const float contact_weight = g_push.extra.w * sun_share * contact_fade;
@@ -326,12 +430,33 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // half of kFoldedFilterSkip), which is exact only because a pixel with weight <= kFoldedFilterSkip never reads the
       // image. Change the weight (sun_share, the fade, the mask's sample position or gain) or this test and that bound
       // changes with it (contact_trace.h MaskCannotLight).
+      if (normal_slot != 0u) {
+        tl = LinearAt(pixel + int2(-1, 0), last);
+        tr = LinearAt(pixel + int2(1, 0), last);
+        tt = LinearAt(pixel + int2(0, -1), last);
+        tb = LinearAt(pixel + int2(0, 1), last);
+      }
       cs = AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize(), tc, pc, normal,
                                  float4(tl, tr, tt, tb));
     }
+    // Give back a share of the sun removed by the combined mask, after filtering and history.
+    const uint player_id = CabinApplyId(g_push.slots.y);
+    if (view == 0u && player_id != 0u) {
+      const uint stencil_slot = g_push.slots2.w >> 16;
+#if AO_DEPTH_MS
+      const uint stencil = StencilOf(g_utextures_ms[stencil_slot].Load(pixel, g_push.slots.y & 0xFFu));
+#else
+      const uint stencil = StencilOf(g_utextures[stencil_slot].Load(int3(pixel, 0)));
+#endif
+      // CHECK: Tune the alternate fill on gauges and skin by day, in shade and at night.
+      cs = CabinFillVisibility(cs, player_id, stencil >> 2);
+    }
     contact_factor = 1.0f - saturate(contact_weight * (1.0f - cs));
+    const float3 share_rgb = SunShareRgb(ambient, g_push.extra.x, n_dot_l * sun_vis_used);
+    contact_factor3 = 1.0f - saturate((g_push.extra.w * contact_fade * (1.0f - cs)) * share_rgb);
   }
-  const float factor = ao_factor * contact_factor;
+  const float3 factor3 = NgNumberOr3(ao_factor * contact_factor3, 1.0f);   // the picture is multiplied by this: a NaN or an infinity is no change (decided by the bits, nan_guard.hlsli)
+  const float factor = dot(factor3, kLuma);  // its luma: the ceiling's room and the debug views
 
 #if AO_GI
   // The bounce light. T is the light the game's constants say fell on the pixel: the ambient and the sun's
@@ -344,8 +469,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (MaskOn()) {
     const float2 gi_uv = (float2(pixel) + 0.5f) / size;
     gi_sun_vis = saturate(g_push.shape.x *
-                          g_textures[g_push.slots2.w].SampleLevel(g_samplers[kSamplerLinearClamp],
+                          g_textures[g_push.slots2.w & 0xFFFFu].SampleLevel(g_samplers[kSamplerLinearClamp],
                                                                   gi_uv, 0.0f).x);
+  }
+  if (MaskOn() || CarSunOn()) {
+    gi_sun_vis = CarAwareSunVisibility(gi_sun_vis, PixelIsVehicle(pixel), pc);
   }
   const float light_t = max(ambient + sun * gi_sun_vis, 1e-3f);
   const float luma_c = dot(gi_colour.rgb, kLuma);
@@ -365,7 +493,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (added > 1e-6f) {
     bounce *= SsgiSoftClip(added, room) / added;
   }
-  const float3 gi_factor = factor + bounce;
+  const float3 gi_factor = NgNumberOr3(factor3 + bounce, 1.0f);   // (nan_guard.hlsli: a NaN or an infinity is no change)
   if (view >= 16u) {
     float3 shown = gi_factor * kViewScale;
     if (view == 17u) {
@@ -401,7 +529,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // The pixels the depth pass marked as vehicles (white).
       const int2 asize = int2(g_push.sizes.zw);
       const int2 q = clamp(AoLow() ? (pixel >> 1) : pixel, int2(0, 0), asize - 1);
-      const float v = AoIsVehicle(AoLoadLinear(g_push.slots.w, q)) ? 1.0f : 0.0f;
+      const float v = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), q)) ? 1.0f : 0.0f;
       grey = float3(v, v, v);
     } else if (view == 8u) {
       grey = float3(contact_factor, contact_factor, contact_factor);
@@ -411,6 +539,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
       grey = float3(sun_vis, sun_vis, sun_vis);
     } else if (view == 11u) {
       grey = float3(sun_share, sun_share, sun_share);
+    } else if (view == 13u) {
+      grey = float3(sun_vis_used, sun_vis_used, sun_vis_used);  // what the share took: the mask on the world, the car sun image on a vehicle
     }
     return float4(grey * kViewScale, 1.0f);
   }
@@ -420,9 +550,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   return float4(gi_factor, 1.0f);
 #else
-  if (factor >= 0.999f) {
+  if (all(factor3 >= 0.999f)) {
     discard;
   }
-  return float4(factor, factor, factor, 1.0f);
+  return float4(factor3, 1.0f);
 #endif
 }

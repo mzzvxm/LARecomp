@@ -31,7 +31,7 @@
 //     normalised, so the game's own filter reads the finer atlas as it is: the same width in the world
 //     (count x 1/1280 of the cascade), a smoother edge, nothing to change. The variant takes its centre and
 //     radius from the game's own tap coordinates and multiplies the radius by the constant that
-//     Scene::UploadShadowFilterConstants sets from this class's scale (shadow_filter.h AtlasRadiusScale,
+//     Scene::FillVariantBlock sets from this class's scale (shadow_filter.h AtlasRadiusScale,
 //     1 / scale): the soft filter keeps its width in ATLAS TEXELS, so its edge is 1/2 (2x) and 1/3 (3x) as
 //     wide in the world. Its Gather taps read the host texture's own size (getTexture2DDimensions). With
 //     pcss (G1c) the blocker search covers twice that radius and the kernel's floor (0.75 atlas texels) and cap
@@ -90,31 +90,18 @@
 #include <cstdint>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/graphics/xenos.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/format.h>
 
 #include "edram.h"
 #include "live_text.h"
 #include "side_views.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_shadow_resolution, "auto", "MCLA/GPU",
-    "How fine the sun's shadows can be: the game draws them into four 640x640 maps in one 1280x1280 "
-    "picture, which limits how sharp an edge can get. game (the game's own 1280x1280), high "
-    "(2560x2560), ultra (3840x3840), or auto (game on an integrated graphics chip, high on any other "
-    "card). With SHADOW FILTER on soft the edge of a shadow is half as wide on high and a third as "
-    "wide on ultra; with the game's own filter it keeps its width and gets smoother. Costs a little "
-    "graphics card time and video memory (about 25 MiB for high, 56 MiB for ultra, and as much again "
-    "for the maps being drawn). The sun's shadows show from 8 to 17 hours in clear weather. Live; "
-    "the first time it changes the graphics card builds its shaders (a short stutter).")
-    .allowed({"auto", "game", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace mcla::gpu {
 
 namespace {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 
 constexpr uint16_t kPitch = 640;
 constexpr uint8_t kSamples = 4;

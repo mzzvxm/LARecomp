@@ -43,10 +43,12 @@
 #include "max_players.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -56,11 +58,6 @@
 #include <mutex>
 
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_INT32(net_max_players, 31, "MCLA/Online",
-    "Largest MaxPlayers the host menu offers (2..31). 16 is the game's own limit; above 16 "
-    "the menu lists 2, 4, ... and the odd value itself as the last entry.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 REX_EXTERN(__imp__rex_sub_82631A20);  // value row: writes its values into its Flash element
 REX_EXTERN(__imp__rex_sub_82630158);  // the next `_global.menu.elements` entry of the movie
@@ -112,7 +109,7 @@ bool g_logged_mismatch = false;
 // when the row has more values than a menu movie's element array.
 thread_local uint32_t g_row_need = 0;
 
-inline uint8_t* Base() { return rex::Runtime::instance()->virtual_membase(); }
+inline uint8_t* Base() { return larecomp::guest::Membase(); }
 
 inline uint32_t Rd32(const uint8_t* b, uint32_t a) {
     return (uint32_t(b[a]) << 24) | (uint32_t(b[a + 1]) << 16) | (uint32_t(b[a + 2]) << 8) |
@@ -131,13 +128,13 @@ int IndexToValue(int i, int n) { return std::min(2 * (i + 1), n); }
 // Builds the value strings once: entry i = IndexToValue(i, N), 8 bytes each.
 bool EnsureTables() {
     std::call_once(g_once, [] {
-        auto* rt = rex::Runtime::instance();
-        if (!rt || !rt->memory()) return;
+        auto* memory = larecomp::guest::AddressSpace();
+        if (!memory) return;
         const uint32_t ptr_bytes = kSpinnerSlots * 4;
         const uint32_t str_bytes = kSpinnerSlots * 8;
         const uint32_t priv_bytes = kPrivateSlots * 4;
         const uint32_t block =
-            rt->memory()->SystemHeapAlloc(ptr_bytes + str_bytes + priv_bytes, 0x1000);
+            memory->SystemHeapAlloc(ptr_bytes + str_bytes + priv_bytes, 0x1000);
         if (!block) {
             LARECOMP_APP_ERROR("[max-players] no guest memory for the spinner tables");
             return;
@@ -182,29 +179,26 @@ uint32_t RowValueCount(const uint8_t* b, uint32_t row) {
     return n > 0 ? uint32_t(n) : 0;
 }
 
-uint32_t Call(uint32_t fn_addr, PPCContext& ctx, uint8_t* base,
+uint32_t Call(uint32_t fn_addr, PPCContext&, uint8_t* base,
               std::initializer_list<uint32_t> gpr) {
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(fn_addr)
-                                                  : nullptr;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr) : nullptr;
     if (!fn) return 0;
-    PPCContext c{};
-    c.r1 = ctx.r1;
+    larecomp::guest::ThreadFile file;
+    if (!file) return 0;
+    PPCContext& c = file.ctx();
     c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
     PPCRegister* regs[] = {&c.r3, &c.r4, &c.r5, &c.r6, &c.r7, &c.r8};
     size_t i = 0;
     for (uint32_t v : gpr) regs[i++]->u64 = v;
     fn(c, base);
-    ctx.fpscr = c.fpscr;
     return c.r3.u32;
 }
 
 bool EnsureScratch(PPCContext& ctx, uint8_t* b) {
     if (g_scratch) return true;
-    auto* rt = rex::Runtime::instance();
-    const uint32_t s = rt && rt->memory() ? rt->memory()->SystemHeapAlloc(kScratchSize, 0x1000) : 0;
+    auto* memory = larecomp::guest::AddressSpace();
+    const uint32_t s = memory ? memory->SystemHeapAlloc(kScratchSize, 0x1000) : 0;
     if (!s) return false;
     std::memset(b + s, 0, kScratchSize);
     std::memcpy(b + s + kStrElements, "elements", 9);
@@ -286,7 +280,7 @@ void GrowRowElements(PPCContext& ctx, uint8_t* b, uint32_t element_value, uint32
 
 namespace net_limits {
 int MaxPlayers() {
-    const int v = REXCVAR_GET(net_max_players);
+    const int v = larecomp::settings::net_max_players.Get();
     return std::clamp(v, 2, kHardMax);
 }
 bool MaxPlayersChanged() { return MaxPlayers() != kGameMax; }

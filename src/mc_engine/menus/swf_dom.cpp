@@ -2,16 +2,18 @@
 //.
 
 #include "swf_dom.h"
+#include "larecomp_guest.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include <atomic>
 #include <cstring>
 
 #include "mc_engine/hooks/hooks_internal.h"
 #include "mc_engine/core/logging.h"
+#include "mc_engine/input/menu_mouse.h"
 #include "pause_menu.h"
 #include "swf_import.h"
 #include "ui_palette.h"
@@ -139,19 +141,19 @@ int PoolFree(const uint8_t* base, uint32_t ctx) {
 
 Bind::Bind(uint8_t* base, uint32_t movie_ctx) : base_(base), ctx_(movie_ctx) {
     if (!Plausible(ctx_) || base_[ctx_ + kCtxInUpdate]) return;
-    rex::ppc::GuestToHostFunction<void>(__imp__rex_sub_825ED3A8, ctx_, 1u);
+    larecomp::guest::Call<void>(__imp__rex_sub_825ED3A8, ctx_, 1u);
     bound_ = true;
 }
 
 Bind::~Bind() {
     if (!bound_ || base_[ctx_ + kCtxInUpdate]) return;
     for (const uint32_t g : kBoundGlobals) WriteGuestU32(base_, g, 0);
-    rex::ppc::GuestToHostFunction<void>(__imp__rex_sub_821C8F70, kSwfLock);
+    larecomp::guest::Call<void>(__imp__rex_sub_821C8F70, kSwfLock);
 }
 
 uint32_t Place(uint8_t* base, uint32_t parent, uint16_t depth, uint32_t character) {
     if (!Plausible(parent) || !Plausible(character)) return 0;
-    const uint32_t inst = rex::ppc::GuestToHostFunction<uint32_t>(
+    const uint32_t inst = larecomp::guest::Call<uint32_t>(
         __imp__rex_sub_825FC5E0, parent, uint32_t(depth), 0u, 0u, character);
     if (!Plausible(inst)) return 0;
     // What attachMovie (sub_825F9B58) sets on its instances: drawn, and placed by
@@ -167,7 +169,7 @@ uint32_t Place(uint8_t* base, uint32_t parent, uint16_t depth, uint32_t characte
 void Remove(uint8_t* base, uint32_t parent, uint16_t depth) {
     (void)base;
     if (!Plausible(parent)) return;
-    rex::ppc::GuestToHostFunction<void>(__imp__rex_sub_825FA390, parent, uint32_t(depth));
+    larecomp::guest::Call<void>(__imp__rex_sub_825FA390, parent, uint32_t(depth));
 }
 
 void SetMatrix(uint8_t* base, uint32_t inst, float a, float b, float c, float d, float tx,
@@ -231,7 +233,7 @@ void SetBaseTranslation(uint8_t* base, uint32_t inst, float tx, float ty) {
     if (!s_matrix) return;
     const float m[6] = {1.0f, 0.0f, 0.0f, 1.0f, tx, ty};
     for (int i = 0; i < 6; ++i) WriteGuestF32(base, s_matrix + 4 * i, m[i]);
-    rex::ppc::GuestToHostFunction<void>(__imp__rex_sub_8260AAD8, inst + kInstLocalMatrix,
+    larecomp::guest::Call<void>(__imp__rex_sub_8260AAD8, inst + kInstLocalMatrix,
                                         s_matrix);
 }
 
@@ -273,6 +275,7 @@ extern "C" REX_FUNC(rex_sub_821FC588) {
     const uint64_t r3 = ctx.r3.u64;
     PauseMenuFormsTick();
     larecomp::UiPaletteTick(base);
+    larecomp::MenuMouseTick(base);  // the mouse in the menus: the pointer's hover / clicks / wheel (input/menu_mouse.cpp)
     ctx.r3.u64 = r3;
 }
 

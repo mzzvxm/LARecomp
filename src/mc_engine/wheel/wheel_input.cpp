@@ -1,7 +1,8 @@
 // See wheel_input.h. The pieces:
 //
-//   Wheel thread    owns this exe's own copy of SDL (the SDK's is a different instance inside
-//                   rexruntime.dll, so its joystick layer is invisible from here). Starts SDL's
+//   Wheel thread    owns this exe's own copy of SDL (on the 0.10 line the SDK's is a different instance
+//                   inside rexruntime.dll, so its joystick layer is invisible from here and the thread
+//                   starts, hints and polls its own: see mc_engine/input/sdl_instance.h). Starts SDL's
 //                   joystick subsystem, looks for wheels once a second, opens / closes them and
 //                   samples the open one every few milliseconds into a snapshot. FFB (item 5) will
 //                   run on this same thread: it is the only thread that calls SDL.
@@ -18,9 +19,10 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "wheel_input.h"
+#include "settings/immortal.h"
 #include "wheel_ffb.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_joystick.h>
@@ -55,89 +57,9 @@
 #endif
 
 #include "larecomp_log.h"
+#include "mc_engine/input/own_sdl.h"
+#include "mc_engine/input/sdl_instance.h"
 #include "wheel_dinput.h"
-
-REXCVAR_DEFINE_STRING(wheel_mode, "auto", "MCLA/Wheel",
-    "Who drives when a wheel is connected. auto: the wheel until the gamepad is moved, the gamepad "
-    "until the wheel is. wheel: always the wheel. gamepad: the wheel is ignored and the game sees "
-    "the pad. Only the driving controls switch; Start, Back, A, B and the D-pad work from both.")
-    .allowed({"auto", "wheel", "gamepad"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(wheel_device, "auto", "MCLA/Wheel",
-    "Which joystick is the wheel. auto: the first one SDL calls a wheel or a known wheel model. off: "
-    "none. Anything else is matched against the device name (part of it, any case) or written as "
-    "vendor:product in hex (046d:c24f) and opens that device even if SDL does not call it a wheel. "
-    "Takes effect when the device is next scanned (about a second).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_INT32(wheel_device_range, 900, "MCLA/Wheel",
-    "The lock-to-lock rotation the wheel is set to in its own driver, in degrees. The wheel reports "
-    "-1..1 over that range; this and wheel_game_range turn it into the game's range.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(wheel_game_range, 540, "MCLA/Wheel",
-    "The lock-to-lock rotation that reaches full steering lock in the game, in degrees. The game "
-    "reads steering as 8 bits (255 steps), so a smaller range steers finer: 270 deg = 1.06 deg per "
-    "step, 540 = 2.1, 900 = 3.5. Full lock is reached before the wheel's own end stop when this is "
-    "smaller than wheel_device_range.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(wheel_steer_deadzone, 0.01, "MCLA/Wheel",
-    "Fraction of the wheel's range around centre that reads as straight ahead (0.01 = 1%).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(wheel_steer_gamma, 1.0, "MCLA/Wheel",
-    "Shapes steering after the range scaling: 1 is linear, above 1 softens the centre. The game "
-    "applies its own curve afterwards, so leave this at 1 unless the car feels twitchy.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(wheel_virtual, "off", "MCLA/Wheel",
-    "Test aid: create a virtual SDL wheel (type wheel, 4 axes, 20 buttons, a hat) driven from the "
-    "keyboard (A/D steer, W throttle, S brake, Q/E paddles) so the whole SDL path can be run without "
-    "hardware. off, low (pedals rest at -32768) or high (pedals rest at +32767).")
-    .allowed({"off", "low", "high"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_learn, false, "MCLA/Wheel",
-    "Run the wheel setup: a console window walks through the steering, the pedals, the paddles and "
-    "the H-shifter, watches which axes and buttons move, and writes the wheel's section of "
-    "wheel_profiles.ini. Switches itself off when it is done. Start the game with --wheel_learn=true "
-    "before playing.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_auto_setup, true, "MCLA/Wheel",
-    "The first time a wheel is found that has no section in wheel_profiles.ini, ask whether to run the setup "
-    "now (a yes/no box, shown once the game window is up). Answering no writes a marker so it is not asked "
-    "again; the setup can always be started with wheel_learn. Off: never ask.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(wheel_cancel_game_deadzone, 0.05, "MCLA/Wheel",
-    "The game puts a dead zone of about 5% on its stick and pedal axes (measured: steering comes out as "
-    "(x - 0.05) / 0.95), written for a thumb stick. A wheel is precise, so the first few degrees would do nothing. "
-    "This lifts the wheel's output by that amount, so the game's own dead zone cancels and the response is "
-    "linear. 0 turns it off. Set it to what you measure if a wheel still feels dead around centre.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_trace, false, "MCLA/Wheel",
-    "Log, once a second, every axis and pressed button SDL reads from the wheel and what the game is given "
-    "(who drives, steering, pedals, buttons). For finding out why a wheel behaves oddly: start the game with it, "
-    "reproduce the problem, send the log.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_pedal_autorange, true, "MCLA/Wheel",
-    "Pedals that never reach the end of their travel read full once they have been pressed to where "
-    "they do reach (after the first firm press). Off: the pedals use their full nominal range. A "
-    "pedal with throttle_full / brake_full in the profile is never auto-ranged.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace larecomp::wheel {
 
@@ -343,7 +265,7 @@ bool KnownWheel(uint16_t vid, uint16_t pid) {
 // ---------------------------------------------------------------------------
 
 uint16_t ButtonByName(const std::string& n) {
-    static const std::map<std::string, uint16_t> m = {
+    static const std::map<std::string, uint16_t>& m = *new const std::map<std::string, uint16_t>{
         {"a", kBtnA}, {"b", kBtnB}, {"x", kBtnX}, {"y", kBtnY}, {"lb", kLb}, {"rb", kRb},
         {"start", kStart}, {"back", kBack}, {"l3", kL3}, {"r3", kR3}, {"up", kDpadUp},
         {"down", kDpadDown}, {"left", kDpadLeft}, {"right", kDpadRight}, {"none", 0}};
@@ -457,7 +379,7 @@ void WriteReport(const Device& d, SDL_JoystickID id) {
     out << "profile: " << d.prof.name << " (" << d.prof.origin << ")\n";
     out << "  steer " << d.prof.steer_axis << "  throttle " << d.throttle << "  brake " << d.brake
         << "  clutch " << d.clutch << "  combined_pedals " << d.prof.combined_pedals << "\n";
-    out << "  device_range " << (d.prof.device_range > 0 ? d.prof.device_range : REXCVAR_GET(wheel_device_range))
+    out << "  device_range " << (d.prof.device_range > 0 ? d.prof.device_range : larecomp::settings::wheel_device_range.Get())
         << "  steer_center " << d.prof.steer_center << "\n";
     for (int i = 0; i < 3; ++i) {
         static const char* names[3] = {"throttle", "brake", "clutch"};
@@ -569,8 +491,8 @@ void OpenDevice(Shared& sh, SDL_JoystickID id, bool virt) {
         sh.ini_time = std::filesystem::last_write_time("wheel_profiles.ini", ec);
     }
     {
-        const int dev = sh.dev.prof.device_range > 0 ? sh.dev.prof.device_range : REXCVAR_GET(wheel_device_range);
-        const int game = REXCVAR_GET(wheel_game_range);
+        const int dev = sh.dev.prof.device_range > 0 ? sh.dev.prof.device_range : larecomp::settings::wheel_device_range.Get();
+        const int game = larecomp::settings::wheel_game_range.Get();
         LARECOMP_APP_INFO("[wheel] steering scale: the wheel is taken to be set to {} deg lock to lock, the game reaches "
                           "full lock at {} deg (x{:.2f}); if that is not what the wheel's driver is set to, set "
                           "device_range in wheel_profiles.ini", dev, game, double(dev) / double(std::max(1, game)));
@@ -614,7 +536,7 @@ bool KeyDown(int) { return false; }
 // The virtual wheel: a test source that goes through SDL like a real one.
 void FeedVirtual(Shared& sh) {
     if (!sh.virtual_js) return;
-    const std::string rest_mode = REXCVAR_GET(wheel_virtual);
+    const std::string rest_mode = larecomp::settings::wheel_virtual.Get();
     const int16_t rest = rest_mode == "high" ? 32767 : -32768;
     const int16_t pressed = rest_mode == "high" ? -32768 : 32767;
     float target = 0.0f;
@@ -657,7 +579,7 @@ void FeedVirtual(Shared& sh) {
 }
 
 void EnsureVirtual(Shared& sh) {
-    const bool want = REXCVAR_GET(wheel_virtual) != "off";
+    const bool want = larecomp::settings::wheel_virtual.Get() != "off";
     if (want && !sh.virtual_js) {
         SDL_VirtualJoystickDesc desc;
         SDL_INIT_INTERFACE(&desc);
@@ -678,7 +600,7 @@ void EnsureVirtual(Shared& sh) {
             FeedVirtual(sh);
             SDL_UpdateJoysticks();
             LARECOMP_APP_INFO("[wheel] wheel_virtual={}: virtual wheel attached (id {})",
-                              REXCVAR_GET(wheel_virtual), sh.virtual_id);
+                              larecomp::settings::wheel_virtual.Get(), sh.virtual_id);
         }
     } else if (!want && sh.virtual_js) {
         if (sh.have_dev && sh.dev.js == sh.virtual_js) CloseDevice(sh);
@@ -780,7 +702,7 @@ void Scan(Shared& sh) {
     EnsureVirtual(sh);
     MaybeReloadProfile(sh);
     if (sh.have_dev && !SDL_JoystickConnected(sh.dev.js)) CloseDevice(sh);
-    const std::string want = REXCVAR_GET(wheel_device);
+    const std::string want = larecomp::settings::wheel_device.Get();
     if (sh.have_dev && Lower(want) == "off") CloseDevice(sh);
 
     int n = 0;
@@ -850,7 +772,7 @@ float Pedal(Device& d, int slot, int axis, bool invert) {
     }
     float span = float(f - r);
     if (span == 0.0f) return 0.0f;
-    if (!explicit_full && REXCVAR_GET(wheel_pedal_autorange) && (r >= 16384 || r <= -16384)) {
+    if (!explicit_full && larecomp::settings::wheel_pedal_autorange.Get() && (r >= 16384 || r <= -16384)) {
         int& seen = d.seen[size_t(axis)];
         if (seen == INT_MIN) seen = r;
         seen = span > 0 ? std::max(seen, v) : std::min(seen, v);
@@ -866,15 +788,15 @@ WheelFrame ReadFrame(Device& d) {
     if (d.prof.steer_axis >= 0 && d.prof.steer_axis < d.naxes) {
         float s = float(Ax(d, d.prof.steer_axis) - d.prof.steer_center) / 32767.0f;
         if (d.prof.invert_steer) s = -s;
-        const double dev = std::max(30, d.prof.device_range > 0 ? d.prof.device_range : REXCVAR_GET(wheel_device_range));
-        const double game = std::max(30, REXCVAR_GET(wheel_game_range));
+        const double dev = std::max(30, d.prof.device_range > 0 ? d.prof.device_range : larecomp::settings::wheel_device_range.Get());
+        const double game = std::max(30, larecomp::settings::wheel_game_range.Get());
         f.pos_raw = std::clamp(s, -1.0f, 1.0f);
         s = float(std::clamp(double(s) * dev / game, -1.0, 1.0));
         f.pos = s;
-        const float dz = float(std::clamp(REXCVAR_GET(wheel_steer_deadzone), 0.0, 0.3));
+        const float dz = float(std::clamp(larecomp::settings::wheel_steer_deadzone.Get(), 0.0, 0.3));
         const float a = std::fabs(s);
         float m = a <= dz ? 0.0f : (a - dz) / (1.0f - dz);
-        const float gamma = float(std::clamp(REXCVAR_GET(wheel_steer_gamma), 0.2, 4.0));
+        const float gamma = float(std::clamp(larecomp::settings::wheel_steer_gamma.Get(), 0.2, 4.0));
         if (gamma != 1.0f) m = std::pow(m, gamma);
         f.steer = s < 0 ? -m : m;
     }
@@ -1156,7 +1078,7 @@ void RunWizard(Shared& sh) {
     }
     if (cand.empty()) {
         Say("No joystick found. Connect the wheel (and its driver), then start the game with --wheel_learn=true.");
-        rex::cvar::SetFlagByName("wheel_learn", "false");
+        larecomp::cvar::SetFlagByName("wheel_learn", "false");
         Sleep_ms(6000);
         ConsoleDown();
         return;
@@ -1191,7 +1113,7 @@ void RunWizard(Shared& sh) {
         }
         if (found < 0) {
             Say("Nothing moved. Setup cancelled.");
-            rex::cvar::SetFlagByName("wheel_learn", "false");
+            larecomp::cvar::SetFlagByName("wheel_learn", "false");
             Sleep_ms(4000);
             ConsoleDown();
             return;
@@ -1202,7 +1124,7 @@ void RunWizard(Shared& sh) {
     d.js = SDL_OpenJoystick(chosen);
     if (!d.js) {
         Say(std::string("Could not open the joystick: ") + SDL_GetError());
-        rex::cvar::SetFlagByName("wheel_learn", "false");
+        larecomp::cvar::SetFlagByName("wheel_learn", "false");
         Sleep_ms(4000);
         ConsoleDown();
         return;
@@ -1265,7 +1187,7 @@ void RunWizard(Shared& sh) {
     // 1b. The wheel's rotation angle: SDL cannot read it, and the game's steering scale depends on it.
     if (ok) {
         Say("GO: type the rotation angle your wheel is set to in its driver, in degrees (for example 900), then press "
-            "Enter. Wait 15 s to keep the default of " + std::to_string(REXCVAR_GET(wheel_device_range)) + ".");
+            "Enter. Wait 15 s to keep the default of " + std::to_string(larecomp::settings::wheel_device_range.Get()) + ".");
         const std::string typed = ReadLine(15000);
         const int deg = typed.empty() ? 0 : std::atoi(typed.c_str());
         if (deg >= 90 && deg <= 3600) {
@@ -1400,7 +1322,7 @@ void RunWizard(Shared& sh) {
         Say("Setup did not finish; nothing was saved.");
     }
     SDL_CloseJoystick(d.js);
-    rex::cvar::SetFlagByName("wheel_learn", "false");
+    larecomp::cvar::SetFlagByName("wheel_learn", "false");
     Sleep_ms(ok ? 5000 : 7000);
     g_wizard_active.store(false);
     ConsoleDown();
@@ -1435,7 +1357,7 @@ std::wstring Widen(const std::string& u8) {
 // A wheel with no profile gets one question, once: set it up now? The answer yes starts the setup; no leaves
 // a marker section so it is not asked again (the section holds no values, so the generic profile still applies).
 void OfferSetup(Shared& sh) {
-    if (!sh.have_dev || !REXCVAR_GET(wheel_auto_setup) || REXCVAR_GET(wheel_learn)) return;
+    if (!sh.have_dev || !larecomp::settings::wheel_auto_setup.Get() || larecomp::settings::wheel_learn.Get()) return;
     const std::string key = Hex4(sh.dev.vid) + ":" + Hex4(sh.dev.pid);
     if (sh.offered == key) return;
     if (ProfileSectionExists(sh.dev.vid, sh.dev.pid)) {
@@ -1454,7 +1376,7 @@ void OfferSetup(Shared& sh) {
                                    MB_YESNO | MB_ICONQUESTION | MB_TOPMOST | MB_SETFOREGROUND);
     if (answer == IDYES) {
         LARECOMP_APP_INFO("[wheel] setup accepted");
-        rex::cvar::SetFlagByName("wheel_learn", "true");
+        larecomp::cvar::SetFlagByName("wheel_learn", "true");
     } else {
         LARECOMP_APP_INFO("[wheel] setup declined; it will not be asked again for {} (wheel_learn=true runs it)", key);
         SaveProfileSection(sh.dev.vid, sh.dev.pid, "name = " + sh.dev.name + "\nsetup = declined\n");
@@ -1467,53 +1389,51 @@ void OfferSetup(Shared& sh) {
 // ---------------------------------------------------------------------------
 
 bool WantSdl() {
-    return Lower(REXCVAR_GET(wheel_device)) != "off" || REXCVAR_GET(wheel_virtual) != "off" ||
-           REXCVAR_GET(wheel_learn);
+    return Lower(larecomp::settings::wheel_device.Get()) != "off" || larecomp::settings::wheel_virtual.Get() != "off" ||
+           larecomp::settings::wheel_learn.Get();
 }
 
 void WheelThread() {
     Shared& sh = S();
-    // This SDL instance has to stay away from every pad: the SDK's own driver owns those. Only
-    // DirectInput devices are enumerated, and the HID drivers that would init a pad are off.
-    //
-    // Not when the SDK's own driver is SDL itself (input_backend = "sdl", which is what Linux
-    // runs): it needs HIDAPI for the Xbox One, DualShock and Switch pads, and this process shares
-    // one SDL with it.
-    if (rex::cvar::GetFlagByName("input_backend") != "sdl") {
-        SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-        SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-        SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
-        SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
-    }
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // Is this executable's SDL the SDK's? (mc_engine/input/sdl_instance.h.) On the 0.10 line on Windows it is
+    // not: the window, the pump and the SDK's SDL input driver belong to the copy inside rexruntime.dll, and
+    // this copy is a second one nobody else touches. Then this thread starts and polls ITS OWN copy
+    // deliberately, and never asks about or pushes events into the SDK's side (it cannot reach it).
+    const std::string backend = larecomp::cvar::GetFlagByName("input_backend");
+    const bool one_sdl = sdlinst::OneSdl(backend);
+    // With two SDLs this copy has to stay away from every pad the SDK's copy owns: only DirectInput devices
+    // are enumerated, the HID drivers that would open a pad a second time are off. With one SDL the driver
+    // needs HIDAPI for the Xbox One, DualShock and Switch pads and shares this very SDL, so nothing is turned
+    // off (what Linux and the 0.11 line run).
+    sdlinst::ApplyOwnCopyHints(backend);
+    LARECOMP_APP_INFO("[wheel] SDL: {}", sdlinst::DescribeOwnCopy(backend));
 
     // SDL3 sends GAMEPAD_ADDED only for pads plugged in after its gamepad layer is up, and the SDK's SDL driver
     // lists pads only from that event: a pad already connected at launch stays unseen until it is replugged.
     // Once the driver has had time to start and drain its queue, hand it the event for each pad it has not
-    // opened (SDL_GetGamepadFromID is null until the driver opens it).
-    const bool sdk_on_sdl = rex::cvar::GetFlagByName("input_backend") == "sdl";
-    bool pads_announced = !sdk_on_sdl;
-    Clock::time_point gamepad_seen{};
+    // opened (SDL_GetGamepadFromID is null until the driver opens it). One SDL only: with two, the event would
+    // go into this copy's own queue, where the driver cannot see it.
+    sdlinst::PadAnnounceTimer announce(one_sdl);
+    const auto now_ms = [] {
+        return int64_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+    };
+    // The SDK driver's gamepad layer, when it is this very SDL; with two SDLs there is nothing to ask.
+    const auto sdk_gamepad_layer_up = [one_sdl] { return one_sdl && SDL_WasInit(SDL_INIT_GAMEPAD) != 0; };
 
     while (true) {
-        if (!pads_announced && SDL_WasInit(SDL_INIT_GAMEPAD)) {
-            const Clock::time_point t = Clock::now();
-            if (gamepad_seen.time_since_epoch().count() == 0) gamepad_seen = t;
-            if (t - gamepad_seen >= std::chrono::seconds(3)) {
-                pads_announced = true;
-                int n = 0;
-                SDL_JoystickID* ids = SDL_GetGamepads(&n);
-                for (int i = 0; ids && i < n; ++i) {
-                    if (SDL_GetGamepadFromID(ids[i])) continue;
-                    SDL_Event ev{};
-                    ev.type = SDL_EVENT_GAMEPAD_ADDED;
-                    ev.gdevice.which = ids[i];
-                    SDL_PushEvent(&ev);
-                    LARECOMP_APP_INFO("[input] pad '{}' was connected before the SDK driver started: announcing it",
-                                      SDL_GetGamepadNameForID(ids[i]) ? SDL_GetGamepadNameForID(ids[i]) : "?");
-                }
-                SDL_free(ids);
+        if (!announce.Finished() && announce.Due(sdk_gamepad_layer_up(), now_ms())) {
+            int n = 0;
+            SDL_JoystickID* ids = SDL_GetGamepads(&n);
+            for (int i = 0; ids && i < n; ++i) {
+                if (SDL_GetGamepadFromID(ids[i])) continue;
+                SDL_Event ev{};
+                ev.type = SDL_EVENT_GAMEPAD_ADDED;
+                ev.gdevice.which = ids[i];
+                SDL_PushEvent(&ev);
+                LARECOMP_APP_INFO("[input] pad '{}' was connected before the SDK driver started: announcing it",
+                                  SDL_GetGamepadNameForID(ids[i]) ? SDL_GetGamepadNameForID(ids[i]) : "?");
             }
+            SDL_free(ids);
         }
         if (!WantSdl()) {
             if (sh.sdl_up) {
@@ -1532,7 +1452,9 @@ void WheelThread() {
             // posts GAMEPAD_ADDED for pads already present when the joystick layer was started by someone
             // else, so initing joystick first leaves the driver blind to every pad (seen on Linux: no
             // "OnControllerDeviceAdded" in the log, pad works in the pickers but not in the game).
-            if (rex::cvar::GetFlagByName("input_backend") == "sdl" && !SDL_WasInit(SDL_INIT_GAMEPAD)) {
+            // With two SDLs there is no such wait: the SDK's gamepad layer is in the other copy, and this copy's
+            // own gamepad layer is only started by a dialog (waiting for it kept the wheel layer from coming up).
+            if (sdlinst::MustWaitForSdkGamepadLayer(one_sdl, sdk_gamepad_layer_up())) {
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 continue;
             }
@@ -1543,10 +1465,12 @@ void WheelThread() {
             }
             sh.sdl_up = true;
             sh.last_scan = Clock::time_point{};
+            sdlinst::SilenceOwnCopyEvents(backend);  // two SDLs: nothing drains this copy's queue, state is polled
             LARECOMP_APP_INFO("[wheel] SDL joystick layer up on the wheel thread");
+            LARECOMP_APP_INFO("[wheel] SDL: {}", sdlinst::DescribeOwnCopy(backend));
         }
 
-        if (REXCVAR_GET(wheel_learn)) {
+        if (larecomp::settings::wheel_learn.Get()) {
             EnsureVirtual(sh);
             if (sh.virtual_js) FeedVirtual(sh);
             RunWizard(sh);
@@ -1625,7 +1549,7 @@ void WheelThread() {
             }
             sh.snap_stamp = now;
         }
-        if (sh.have_dev && REXCVAR_GET(wheel_trace) && now - sh.trace_stamp > std::chrono::seconds(1)) {
+        if (sh.have_dev && larecomp::settings::wheel_trace.Get() && now - sh.trace_stamp > std::chrono::seconds(1)) {
             sh.trace_stamp = now;
             std::ostringstream o;
             o << "axes:";
@@ -1704,41 +1628,116 @@ bool Snapshot(WheelFrame& out) {
 
 }  // namespace
 
-void EarlyInit() {
-    // Wheels SDL is likely to also map as a gamepad would otherwise be opened twice: by the SDK's
-    // SDL input driver as a stick on user 0, and by us. Known models are hidden from the gamepad
-    // layer only; they stay visible as joysticks. The SDK's SDL is another instance (inside
-    // rexruntime.dll), so a hint set here would not reach it: SDL also reads hints from the
-    // environment, which both see.
-    std::string list;
-    auto add = [&](uint16_t v, uint16_t p) {
-        char b[32];
-        std::snprintf(b, sizeof(b), "0x%04x/0x%04x,", v, p);
-        list += b;
-    };
-    for (uint16_t p : {0xc294, 0xc295, 0xc298, 0xc299, 0xc29a, 0xc29b, 0xc24f}) add(0x046d, p);
-    for (uint16_t p : {0xb65d, 0xb65e, 0xb66d, 0xb66e, 0xb66f, 0xb677, 0xb67e, 0xb689, 0xb669, 0xb664}) {
-        add(0x044f, p);
-    }
-    // A wheel the user named by vendor:product is theirs too.
-    const std::string want = Lower(REXCVAR_GET(wheel_device));
-    if (want.size() == 9 && want[4] == ':') {
-        list += "0x" + want.substr(0, 4) + "/0x" + want.substr(5) + ",";
-    }
-    if (!list.empty()) list.pop_back();
 #ifdef _WIN32
-    // Keep whatever the user already put there.
-    char existing[1024] = {};
-    const DWORD n = GetEnvironmentVariableA("SDL_GAMECONTROLLER_IGNORE_DEVICES", existing, sizeof(existing));
-    if (n > 0 && n < sizeof(existing)) list = std::string(existing) + "," + list;
-    SetEnvironmentVariableA("SDL_GAMECONTROLLER_IGNORE_DEVICES", list.c_str());
+namespace {
+
+constexpr const char* kIgnoreVar = "SDL_GAMECONTROLLER_IGNORE_DEVICES";
+
+std::string EnvA(const char* name) {
+    const DWORD n = GetEnvironmentVariableA(name, nullptr, 0);
+    if (n == 0) return {};
+    std::string v(size_t(n), '\0');
+    const DWORD got = GetEnvironmentVariableA(name, v.data(), n);
+    v.resize(got < n ? got : 0);
+    return v;
+}
+
+// What the process-start step did, for the log line EarlyInit writes once logging is up.
+struct IgnoreAtStart {
+    bool ran = false;
+    std::string value;
+    std::string clock;
+    long long ms_after_process_start = -1;
+};
+
+IgnoreAtStart& AtStart() {
+    static IgnoreAtStart& a = larecomp::Leak<IgnoreAtStart>();
+    return a;
+}
+
+// Puts `wheel_device` (when it is a vendor:product pair) and the known wheel models into the environment variable
+// next to whatever the user had there. Returns whether the value changed.
+bool SetIgnoreVariable(const std::string& wheel_device, std::string& value_out) {
+    const std::string before = EnvA(kIgnoreVar);
+    value_out = sdlinst::IgnoreDevicesList(before, wheel_device);
+    if (value_out == before) return false;
+    SetEnvironmentVariableA(kIgnoreVar, value_out.c_str());
+    return true;
+}
+
+// WHEN this runs is the point. SDL reads its hints from the process environment through a snapshot taken on
+// the first SDL call of each SDL copy in the process. On the 0.10 line the SDK's SDL (inside rexruntime.dll)
+// makes that first call when it opens the window, in wWinMain, long before the app exists, so a variable set in
+// SetupEnvironment (EarlyInit) is too late for it (it never hid a wheel from the SDK's gamepad layer); and an
+// SDL_SetHint from this exe cannot reach that copy at all. A static initialiser of the executable runs before
+// wWinMain and after the DLLs are loaded (their loading calls no SDL), so the variable is in the environment
+// when the SDK's SDL takes the snapshot. On the 0.11 line (one SDL, SDL3.dll) the same holds: the SDK's UI and
+// input modules start SDL before OnInit. The settings are not read yet, so only the known models and a
+// --wheel_device given on the command line can be in the list; EarlyInit adds one named in larecomp.toml.
+struct IgnoreDevicesAtProcessStart {
+    IgnoreDevicesAtProcessStart() {
+        IgnoreAtStart& a = AtStart();
+        SetIgnoreVariable(sdlinst::OptionValue(GetCommandLineA(), "wheel_device"), a.value);
+        a.ran = true;
+        SYSTEMTIME st;
+        GetLocalTime(&st);
+        char hms[16];
+        std::snprintf(hms, sizeof hms, "%02u:%02u:%02u.%03u", unsigned(st.wHour), unsigned(st.wMinute),
+                      unsigned(st.wSecond), unsigned(st.wMilliseconds));
+        a.clock = hms;
+        FILETIME created, exited, kernel, user, now_ft;
+        if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+            GetSystemTimeAsFileTime(&now_ft);
+            ULARGE_INTEGER c, n;
+            c.LowPart = created.dwLowDateTime;
+            c.HighPart = created.dwHighDateTime;
+            n.LowPart = now_ft.dwLowDateTime;
+            n.HighPart = now_ft.dwHighDateTime;
+            a.ms_after_process_start = n.QuadPart >= c.QuadPart ? (long long)((n.QuadPart - c.QuadPart) / 10000) : 0;
+        }
+    }
+};
+const IgnoreDevicesAtProcessStart g_ignore_devices_at_process_start;
+
+}  // namespace
+#endif
+
+void EarlyInit() {
+    // Wheels SDL is likely to also map as a gamepad would otherwise be opened twice: by the SDK's SDL input
+    // driver as a stick on user 0, and by us. Known models are hidden from the gamepad layer only; they stay
+    // visible as joysticks. The list went into the environment at process start (above), the one moment before
+    // the SDK's SDL reads it; what is left to do here is the wheel the settings name, for the SDL copies that have
+    // not read the environment yet (this exe's own).
+#ifdef _WIN32
+    const IgnoreAtStart& at_start = AtStart();
+    if (at_start.ran) {
+        // The SDK's SDL reads the environment on its first call, which opens the window; its "SDL video driver:"
+        // line comes right after. This line's time (at {}) is the moment the variable was set: earlier than that
+        // line means the SDK's SDL saw it.
+        LARECOMP_APP_INFO("[wheel] {} set at process start, {} ms after the process began, at {} (the SDK's SDL reads "
+                          "the environment when it opens the window: that is the 'SDL video driver:' line, later than "
+                          "this time): {}",
+                          kIgnoreVar, at_start.ms_after_process_start, at_start.clock, at_start.value);
+    } else {
+        LARECOMP_APP_WARN("[wheel] {} was NOT set at process start: the SDK's SDL has not seen the known wheels", kIgnoreVar);
+    }
+    std::string late;
+    if (SetIgnoreVariable(Lower(larecomp::settings::wheel_device.Get()), late)) {
+        // A wheel named only in the settings file: known now, too late for the SDK's SDL on the 0.10 line (its
+        // snapshot was taken). Hint it into this exe's SDL as well, which is the SDK's own when there is one SDL.
+        SDL_SetHint(SDL_HINT_GAMECONTROLLER_IGNORE_DEVICES, late.c_str());
+        LARECOMP_APP_INFO("[wheel] wheel_device '{}' came from the settings, after process start: added to {} and "
+                          "hinted to this exe's SDL ({}): {}", larecomp::settings::wheel_device.Get(), kIgnoreVar,
+                          sdlinst::kExeSdlIsSdks ? "the SDK's too" : "not the SDK's, which has read the environment",
+                          late);
+    }
 #endif
     EnsureThread();
 }
 
 bool WheelPresent() {
     EnsureThread();
-    if (Lower(REXCVAR_GET(wheel_mode)) == "gamepad") return false;
+    if (Lower(larecomp::settings::wheel_mode.Get()) == "gamepad") return false;
     WheelFrame f;
     return Snapshot(f);
 }
@@ -1856,7 +1855,7 @@ uint16_t ShifterBits(Shared& sh, const WheelFrame& f, bool manual, Clock::time_p
 bool ApplyToState(PadIn& pad, bool manual_transmission) {
     EnsureThread();
     Shared& sh = S();
-    if (Lower(REXCVAR_GET(wheel_mode)) == "gamepad") {
+    if (Lower(larecomp::settings::wheel_mode.Get()) == "gamepad") {
         sh.driving.store(false, std::memory_order_relaxed);
         return false;
     }
@@ -1864,7 +1863,7 @@ bool ApplyToState(PadIn& pad, bool manual_transmission) {
     if (!Snapshot(f)) return false;
 
     std::lock_guard<std::mutex> lock(sh.policy_mutex);
-    const std::string mode = Lower(REXCVAR_GET(wheel_mode));
+    const std::string mode = Lower(larecomp::settings::wheel_mode.Get());
     const Clock::time_point now = Clock::now();
     if (!sh.was_present) {
         // A wheel just appeared (or came back): it drives until the gamepad is moved.
@@ -1891,7 +1890,7 @@ bool ApplyToState(PadIn& pad, bool manual_transmission) {
     sh.driving.store(sh.wheel_active, std::memory_order_relaxed);
 
     // The game takes a dead zone off every analog axis it reads; give it back (wheel_cancel_game_deadzone).
-    const float dz = float(std::clamp(REXCVAR_GET(wheel_cancel_game_deadzone), 0.0, 0.3));
+    const float dz = float(std::clamp(larecomp::settings::wheel_cancel_game_deadzone.Get(), 0.0, 0.3));
     auto lift = [&](float v, float noise) {
         const float a = std::fabs(v);
         if (a <= noise) return 0.0f;

@@ -3,31 +3,21 @@
 // See texture_registry.h for the reverse-engineering provenance.
 
 #include "texture_registry.h"
+#include "settings/immortal.h"
 
 #include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d_structs.h"
 #include "guest_resources.h"
 #include "texture_format.h"
 #include "texture_ownership.h"
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_texture_registry, false, "MCLA/NativeGfx",
-                    "Record every texture the game creates: name, dimensions, format, and "
-                    "which road built it (a header placed over streamed resource memory, or a "
-                    "real D3DDevice_CreateTexture). Observation only -- the guest still owns "
-                    "and creates everything, the hook just reads the result. Answers what the "
-                    "address-keyed texture cache cannot: which asset a given guest address is. "
-                    "Overwrites mcla_native_gfx_textures.txt every 600 frame boundaries, so "
-                    "the file always reflects the current state rather than the boot state.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::native_gfx {
 
@@ -57,7 +47,7 @@ struct Registry {
 constexpr uint64_t kDumpEveryFrames = 600;
 
 Registry& registry() {
-  static Registry r;
+  static Registry& r = larecomp::Leak<Registry>();
   return r;
 }
 
@@ -102,7 +92,7 @@ std::string ReadGuestString(const uint8_t* base, uint32_t ea, uint32_t max_len =
 // header rather than the road that produced the object.
 void RecordTexture(const uint8_t* base, uint32_t grc_texture_va, uint32_t name_va,
                    TextureOrigin forced_origin) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
+  if (!larecomp::settings::mcla_native_gfx_texture_registry.Get()) {
     return;
   }
   if (!base || grc_texture_va < 0x1000u ||
@@ -165,7 +155,7 @@ void NoteTextureCreated(const uint8_t* base, uint32_t grc_texture_va, uint32_t n
 }
 
 void NoteTextureFromResource(const uint8_t* base, uint32_t grc_texture_va) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
+  if (!larecomp::settings::mcla_native_gfx_texture_registry.Get()) {
     return;
   }
   // The resource constructor fixes up grc+24 only when it is non-null, so a
@@ -179,7 +169,7 @@ void NoteTextureFromResource(const uint8_t* base, uint32_t grc_texture_va) {
 }
 
 void NoteTextureDestroyed(const uint8_t* base, uint32_t grc_texture_va) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
+  if (!larecomp::settings::mcla_native_gfx_texture_registry.Get()) {
     return;
   }
   if (!base || grc_texture_va < 0x1000u ||
@@ -234,7 +224,7 @@ uint64_t TextureRegistryLiveCount() {
 }
 
 void DumpTextureRegistry() {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_registry)) {
+  if (!larecomp::settings::mcla_native_gfx_texture_registry.Get()) {
     return;
   }
   Registry& r = registry();

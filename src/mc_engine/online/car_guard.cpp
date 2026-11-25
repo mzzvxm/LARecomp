@@ -104,18 +104,14 @@
 #include <string_view>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/memory/utils.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(online_car_guard_notice, true, "MCLA/Multiplayer",
-                    "Show a message box when a rigged car was fixed (broken vinyl layers, or "
-                    "tuning values the game cannot produce) -- another player's, a Rate My "
-                    "Ride ride or your own garage car once you drive it. The car is fixed "
-                    "either way.");
+#include "settings/larecomp_settings.h"
+#include <rex/memory/endian.h>
+#include <rex/kernel/heap.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 namespace larecomp::car_guard {
 namespace {
@@ -227,28 +223,28 @@ std::vector<Pending> g_garage;      // under g_mutex
 bool g_theirs_pending = false;      // under g_mutex
 uint32_t g_theirs_cfg = 0;          // under g_mutex: the imported CarConfig
 Report g_theirs;                    // under g_mutex
+using GuestMemory = rex::kernel::GuestAddressSpace;
+
 int g_theirs_more = 0;              // under g_mutex: rigged cars after the first
 Clock::time_point g_last_theirs{};  // under g_mutex
 
-rex::memory::Memory* Mem() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->memory() : nullptr;
+GuestMemory* Mem() {
+  return larecomp::guest::AddressSpace();
 }
 
 template <typename... Args>
 uint32_t CallGuest(uint32_t fn_addr, Args... args) {
-  auto* rt = rex::Runtime::instance();
-  auto* dispatcher = rt ? rt->function_dispatcher() : nullptr;
-  PPCFunc* fn = dispatcher ? dispatcher->GetFunction(fn_addr) : nullptr;
+  auto* rt = REX_RUNTIME();
+  PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr) : nullptr;
   if (!fn) return 0;
-  return rex::ppc::GuestToHostFunction<uint32_t>(fn, static_cast<uint32_t>(args)...);
+  return larecomp::guest::Call<uint32_t>(fn, static_cast<uint32_t>(args)...);
 }
 
 // ---------------------------------------------------------------- vinyl ---
 
 bool HalfFinite(uint16_t h) { return (h & 0x7C00) != 0x7C00; }
 
-bool ShapeKnown(rex::memory::Memory* mem, uint16_t raw) {
+bool ShapeKnown(GuestMemory* mem, uint16_t raw) {
   const int16_t id = static_cast<int16_t>(raw);
   if (id < 0) return false;
   const uint32_t group = static_cast<uint32_t>(id) / 1000;
@@ -259,7 +255,7 @@ bool ShapeKnown(rex::memory::Memory* mem, uint16_t raw) {
   return index < GuestRead16(mem, catalog + kCatalogGroups + 8 * group + 4);
 }
 
-bool LayerBroken(rex::memory::Memory* mem, uint32_t layer) {
+bool LayerBroken(GuestMemory* mem, uint32_t layer) {
   const uint16_t shape = GuestRead16(mem, layer + 16);
   if (shape == 0xFFFF) return false;
   static constexpr uint32_t kHalves[] = {0, 2, 4, 6, 12, 14};
@@ -269,7 +265,7 @@ bool LayerBroken(rex::memory::Memory* mem, uint32_t layer) {
 }
 
 // sub_8236E2E8's empty layer.
-void ClearLayer(rex::memory::Memory* mem, uint32_t layer) {
+void ClearLayer(GuestMemory* mem, uint32_t layer) {
   for (uint32_t at = 0; at < 8; at += 2) GuestWrite16(mem, layer + at, 0);
   GuestWrite32(mem, layer + 8, 0xFFFFFFFFu);
   GuestWrite16(mem, layer + 12, 0);
@@ -280,7 +276,7 @@ void ClearLayer(rex::memory::Memory* mem, uint32_t layer) {
 }
 
 // Moves a surface's used layers back to its first slots, in order.
-void PackSurface(rex::memory::Memory* mem, uint32_t layers, uint32_t first, uint32_t cap) {
+void PackSurface(GuestMemory* mem, uint32_t layers, uint32_t first, uint32_t cap) {
   uint8_t* host = mem->TranslateVirtual<uint8_t*>(layers);
   uint32_t out = first;
   for (uint32_t k = first; k < first + cap; ++k) {
@@ -295,7 +291,7 @@ void PackSurface(rex::memory::Memory* mem, uint32_t layers, uint32_t first, uint
 }
 
 // Clears the broken layers of the CarConfig at `cfg`.
-void ScrubVinyl(rex::memory::Memory* mem, uint32_t cfg, Report& r) {
+void ScrubVinyl(GuestMemory* mem, uint32_t cfg, Report& r) {
   const uint32_t layers = cfg + kLayersAt;
   int cleared = 0;
   for (uint32_t k = 0; k < kLayerSlots; ++k) {
@@ -328,7 +324,7 @@ std::string Num(float f) {
   return buf;
 }
 
-void ClampByte(rex::memory::Memory* mem, uint32_t addr, uint8_t lo, uint8_t hi, const char* label,
+void ClampByte(GuestMemory* mem, uint32_t addr, uint8_t lo, uint8_t hi, const char* label,
                Report& r) {
   uint8_t* p = mem->TranslateVirtual<uint8_t*>(addr);
   const uint8_t v = *p;
@@ -338,7 +334,7 @@ void ClampByte(rex::memory::Memory* mem, uint32_t addr, uint8_t lo, uint8_t hi, 
   r.Add(label, Num(int(v)), Num(int(fixed)));
 }
 
-void FixCamber(rex::memory::Memory* mem, uint32_t addr, float fallback, Report& r) {
+void FixCamber(GuestMemory* mem, uint32_t addr, float fallback, Report& r) {
   const uint32_t bits = GuestRead32(mem, addr);
   float f;
   std::memcpy(&f, &bits, 4);
@@ -351,7 +347,7 @@ void FixCamber(rex::memory::Memory* mem, uint32_t addr, float fallback, Report& 
 
 // Puts the tuning values of the CarConfig at `cfg` that the game cannot make
 // back in range.
-void ScrubTuning(rex::memory::Memory* mem, uint32_t cfg, Report& r) {
+void ScrubTuning(GuestMemory* mem, uint32_t cfg, Report& r) {
   // Shown the way the garage counts them: stock is level 1, fully upgraded 3.
   for (int k = 0; k < 13; ++k) {
     uint8_t* p = mem->TranslateVirtual<uint8_t*>(cfg + kPartStates + k);
@@ -395,7 +391,7 @@ void ScrubTuning(rex::memory::Memory* mem, uint32_t cfg, Report& r) {
   }
 }
 
-Report Scrub(rex::memory::Memory* mem, uint32_t cfg) {
+Report Scrub(GuestMemory* mem, uint32_t cfg) {
   Report r;
   if (!mem || !IsGuestPtr(cfg)) return r;
   ScrubTuning(mem, cfg, r);
@@ -404,7 +400,7 @@ Report Scrub(rex::memory::Memory* mem, uint32_t cfg) {
 }
 
 // Printable ASCII of a guest string, for the message box.
-std::string Printable(rex::memory::Memory* mem, uint32_t addr, uint32_t maxlen) {
+std::string Printable(GuestMemory* mem, uint32_t addr, uint32_t maxlen) {
   std::string s;
   for (char ch : GuestCStr(mem, addr, maxlen))
     if (ch >= 0x20 && ch < 0x7F && !(ch == ' ' && (s.empty() || s.back() == ' '))) s += ch;
@@ -414,7 +410,7 @@ std::string Printable(rex::memory::Memory* mem, uint32_t addr, uint32_t maxlen) 
 
 // The name the player knows the car by: the config's display name ("83 GOLF/GTI"),
 // or the vehicle name when that is a missing string key ("!!..._shrt!!").
-std::string CarName(rex::memory::Memory* mem, uint32_t cfg) {
+std::string CarName(GuestMemory* mem, uint32_t cfg) {
   std::string name = Printable(mem, cfg + kCarDisplayName, 34);
   if (name.empty() || name.rfind("!!", 0) == 0) name = Printable(mem, cfg + kCarVehicleName, 32);
   return name;
@@ -422,7 +418,7 @@ std::string CarName(rex::memory::Memory* mem, uint32_t cfg) {
 
 // ------------------------------------------------------------ the dialog ---
 
-uint32_t GuestCopy(rex::memory::Memory* mem, std::string_view s) {
+uint32_t GuestCopy(GuestMemory* mem, std::string_view s) {
   const uint32_t p = CallGuest(kGuestNewFn, static_cast<uint32_t>(s.size() + 1));
   if (!IsGuestPtr(p)) return 0;
   uint8_t* host = mem->TranslateVirtual<uint8_t*>(p);
@@ -431,13 +427,13 @@ uint32_t GuestCopy(rex::memory::Memory* mem, std::string_view s) {
   return p;
 }
 
-uint32_t GuestName(rex::memory::Memory* mem) {
+uint32_t GuestName(GuestMemory* mem) {
   static uint32_t name = 0;
   if (!name) name = GuestCopy(mem, kDialogState);
   return name;
 }
 
-uint32_t Hsm(rex::memory::Memory* mem) {
+uint32_t Hsm(GuestMemory* mem) {
   const uint32_t ui = GuestRead32(mem, kUiManagerPtr);
   if (!IsGuestPtr(ui)) return 0;
   const uint32_t root = GuestRead32(mem, ui + 52);
@@ -445,7 +441,7 @@ uint32_t Hsm(rex::memory::Memory* mem) {
 }
 
 // Modal message boxes FlashNavigator has up right now.
-uint32_t OpenMessageBoxes(rex::memory::Memory* mem) {
+uint32_t OpenMessageBoxes(GuestMemory* mem) {
   const uint32_t ui = GuestRead32(mem, kUiManagerPtr);
   const uint32_t nav = IsGuestPtr(ui) ? GuestRead32(mem, ui + 52) : 0;
   if (!IsGuestPtr(nav)) return 0;
@@ -468,7 +464,7 @@ uint32_t KeyHash(std::string_view s) {
   return h;
 }
 
-uint32_t TableEntry(rex::memory::Memory* mem, uint32_t hash) {
+uint32_t TableEntry(GuestMemory* mem, uint32_t hash) {
   const uint32_t mgr = GuestRead32(mem, kStringTableMgr);
   const uint32_t map = IsGuestPtr(mgr) ? GuestRead32(mem, mgr + kMgrTable) : 0;
   if (!IsGuestPtr(map)) return 0;
@@ -482,7 +478,7 @@ uint32_t TableEntry(rex::memory::Memory* mem, uint32_t hash) {
 }
 
 // True when the display cache holds a buffer for the key (sub_826BDDB0).
-bool KeyCached(rex::memory::Memory* mem, uint32_t hash) {
+bool KeyCached(GuestMemory* mem, uint32_t hash) {
   const uint32_t mgr = GuestRead32(mem, kStringTableMgr);
   if (!IsGuestPtr(mgr)) return true;
   const uint32_t array = GuestRead32(mem, mgr + kMgrCache);
@@ -534,7 +530,7 @@ struct Showing {
 };
 Showing g_show;
 
-void RestoreText(rex::memory::Memory* mem) {
+void RestoreText(GuestMemory* mem) {
   if (g_show.entry && GuestRead32(mem, g_show.entry + kEntryText) == g_show.mine)
     GuestWrite32(mem, g_show.entry + kEntryText, g_show.original);
   g_show = Showing{};
@@ -542,7 +538,7 @@ void RestoreText(rex::memory::Memory* mem) {
 
 // Opens the message box with `head` and the report under it. False when the
 // dialog is not there to open.
-bool Show(rex::memory::Memory* mem, std::string_view head, const Report& r, int more_cars) {
+bool Show(GuestMemory* mem, std::string_view head, const Report& r, int more_cars) {
   const uint32_t hsm = Hsm(mem);
   const uint32_t name = GuestName(mem);
   const uint32_t state = (hsm && name) ? CallGuest(kFindStateFn, hsm, name) : 0;
@@ -571,13 +567,13 @@ bool Show(rex::memory::Memory* mem, std::string_view head, const Report& r, int 
   return true;
 }
 
-bool SameCar(rex::memory::Memory* mem, uint32_t cfg, const Pending& p) {
+bool SameCar(GuestMemory* mem, uint32_t cfg, const Pending& p) {
   return IsGuestPtr(cfg) && GuestCStr(mem, cfg + kCarVehicleName, 32) == p.vehicle &&
          GuestCStr(mem, cfg + kCarDisplayName, 34) == p.display &&
          GuestCStr(mem, cfg + kCarPlate, 7) == p.plate;
 }
 
-uint32_t OwnedSlots(rex::memory::Memory* mem) {
+uint32_t OwnedSlots(GuestMemory* mem) {
   const int32_t count = static_cast<int32_t>(GuestRead32(mem, kOwnedCount));
   const uint32_t cap = owned_cars::Cap();
   return count <= 0 ? 0 : (static_cast<uint32_t>(count) < cap ? static_cast<uint32_t>(count) : cap);
@@ -585,7 +581,7 @@ uint32_t OwnedSlots(rex::memory::Memory* mem) {
 
 // The report of the garage car being driven, if it has one; taken out of the
 // list. Reports whose car is gone from the garage are dropped.
-bool TakeCurrentCarReport(rex::memory::Memory* mem, Pending& out) {
+bool TakeCurrentCarReport(GuestMemory* mem, Pending& out) {
   std::lock_guard<std::mutex> lock(g_mutex);
   if (g_garage.empty()) return false;
   const int32_t cur = static_cast<int32_t>(GuestRead32(mem, kCurrentSlot));
@@ -677,7 +673,7 @@ void Tick() {
     road_since = Clock::now();
   }
   if (Clock::now() - road_since < std::chrono::seconds(3)) return;
-  if (!REXCVAR_GET(online_car_guard_notice)) return;
+  if (!larecomp::settings::online_car_guard_notice.Get()) return;
 
   // Another player's car first: it is in the session right now.
   {

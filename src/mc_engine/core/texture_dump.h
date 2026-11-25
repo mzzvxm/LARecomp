@@ -3,19 +3,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <span>
 
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/format.h>
 #include <rex/hash.h>
 
 namespace mcla {
 
-namespace xenos = rex::graphics::xenos;
+namespace xenos = rex::xenos;
 
 // Content hash of a guest texture. Must stay XXH3-64 over the raw guest bytes:
 // it is what names the dump file, and what the SDK's replacement lookup keys
 // on, so the two have to agree.
 inline uint64_t HashGuestTexture(const uint8_t* data, size_t size) {
-  return XXH3_64bits(data, size);
+  return rex::HashXXH3(std::span<const uint8_t>(data, size));  // XXH3-64, what XXH3_64bits(data, size) gave
 }
 
 // Where dumps go: <mod folder>/textures_dump/ (mc::modloader::ModRootDir), or

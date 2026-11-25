@@ -46,7 +46,7 @@ inline constexpr uint32_t kBuilderVersion = 1;
 // The names of the variant step's lines the builder itself writes and checks.
 inline constexpr const char* kStampVariantsFormats = "variants_formats";           // the formats the variant pack carries
 inline constexpr const char* kStampVariantsMainPackXxh3 = "variants_main_pack_xxh3";  // the main pack it was built beside
-inline constexpr const char* kStampVariantsPackSize = "variants_pack_size";         // size of mcla_shaders_variants.v2.pack
+inline constexpr const char* kStampVariantsPackSize = "variants_pack_size";         // size of mcla_shaders_variants.v3.pack
 inline constexpr const char* kStampVariantsPrefix = "variants_";
 // variants_<name>_left_out: the reason a variant that was tried was left out of the pack (informational; the
 // variant's version line is there too, so its absence from the pack does not make the stamp stale).
@@ -79,7 +79,7 @@ class Stamp {
   std::string ToText() const;
   static Stamp Parse(std::string_view text);
   static bool Read(const std::filesystem::path& path, Stamp* out, std::string* error);
-  // Writes <path>.tmp and moves it into place.
+  // Writes a temporary file of its own beside <path> and moves it into place in one step (os/file_replace.h).
   bool Write(const std::filesystem::path& path, std::string* error) const;
 
  private:

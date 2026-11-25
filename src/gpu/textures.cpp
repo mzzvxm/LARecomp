@@ -16,12 +16,12 @@
 #include <cstring>
 #include <format>
 
-#include <rex/cvar.h>
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/xenos.h>
-#include <rex/hash.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/texture.h>
+#include <rex/xenos/fetch.h>
+#include <rex/xenos/format.h>
+#include "xxhash_inline.h"
+#include <rex/logging/log_category.h>
 
 #include "constants.h"
 #include "device.h"
@@ -34,60 +34,10 @@
 #include "upload.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_texture_dump, false, "MCLA/GPU",
-    "Write every texture the NATIVE renderer uploads to <mods>/textures_dump/<dictionary>/"
-    "<name>__<hash>.dds, once per texture per session (F2 does it for one frame). Texture mods "
-    "replace a texture by the hash at the end of the file name, from "
-    "<mods>/<Mod>/textures_replace/; <mods> is modloader/, mods/ or models/.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    texture_mods, true, "MCLA/Textures",
-    "Use the texture mods (<mods>/<Mod>/textures_replace/). False shows the game's own textures; "
-    "changing it re-indexes the mods at the start of the next frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    texture_reload, false, "MCLA/Textures",
-    "Set to true to reload the texture mods (<mods>/<Mod>/textures_replace/) at the start of the "
-    "next frame, the same as RELOAD TEXTURE MODS in the pause menu. It clears itself afterwards.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_texture_decode_threads, -1, "MCLA/GPU",
-    "Threads that decode the textures of the draws queued behind the one the renderer is on "
-    "(untile, byte swap), so a burst of new textures as the game streams in the next stretch of "
-    "road does not stall the render thread. -1: one thread per 4 logical processors, up to 3, none "
-    "below 4 processors. 0: the render thread decodes every texture itself, when its draw needs "
-    "it. The threads run below the game's.")
-    .debug_only()
-    .range(-1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_texture_decode_selftest, false, "MCLA/GPU",
-    "Test only: at start-up, decodes a few thousand random texture levels (every block size, "
-    "endian, tiled and linear, packed-tail offsets, DXT decompression) with the fast decoder and "
-    "with the plain per-block one, and logs whether every byte matched.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_texture_decode_verify, false, "MCLA/GPU",
-    "Test only: every texture level the game uploads is decoded a second time with the plain "
-    "per-block decoder and compared byte for byte with the fast one's; a difference is logged "
-    "once per texture. Slow: it brings the old cost back.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace mcla::gpu {
 
-namespace xe = rex::graphics::xenos;
-namespace tu = rex::graphics::texture_util;
-using rex::graphics::FormatInfo;
+namespace xe = rex::xenos;
+using rex::xenos::FormatInfo;
 
 namespace {
 
@@ -125,12 +75,12 @@ enum class PlanResult { kOk, kSkip, kFail };
 // What Upload and Prefetch both start from.
 PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const FormatInfo& info,
                      const format::TextureHostFormat& host, bool decompressed,
-                     const tu::TextureGuestLayout& layout, uint32_t level, TextureLevelPlan* plan,
+                     const xe::GuestTextureLayout& layout, uint32_t level, TextureLevelPlan* plan,
                      std::string* why) {
   // Where the level is stored (util.h): the base under base_address with the
   // fetch's pitch, the mips under mip_address at mip_offsets_bytes, levels
   // from the packed one on inside a tail at GetPackedMipOffset.
-  const tu::TextureGuestLayout::Level* stored;
+  const xe::GuestTextureLayout::Level* stored;
   uint32_t address;
   if (level == 0) {
     if (!key.base_page) {
@@ -150,12 +100,12 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
   texture_decode::Request& r = plan->request;
   r = texture_decode::Request{};
   r.source.row_pitch_bytes = stored->row_pitch_bytes;
-  r.source.bytes_per_block = info.bytes_per_block();
+  r.source.bytes_per_block = info.GetBytesPerBlock();
   r.source.tiled = key.tiled != 0;
   r.source.endian = key.endian;
   if (key.packed_mips && level >= layout.packed_level) {
     uint32_t ox = 0, oy = 0, oz = 0;
-    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
+    xe::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
                            oz);
     r.source.offset_x = ox;
     r.source.offset_y = oy;
@@ -194,14 +144,14 @@ PlanResult PlanLevel(const GuestMemory& memory, const TextureKey& key, const For
 }
 
 // The guest layout of a 2D texture's key (what every range, plan and extent below comes from).
-tu::TextureGuestLayout LayoutOf(const TextureKey& key) {
-  return tu::GetGuestTextureLayout(xe::DataDimension::k2DOrStacked, key.pitch, key.width,
+xe::GuestTextureLayout LayoutOf(const TextureKey& key) {
+  return xe::GetGuestTextureLayout(xe::DataDimension::k2DOrStacked, key.pitch, key.width,
                                    key.height, 1, key.tiled != 0, xe::TextureFormat(key.format),
                                    key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
 }
 
 // TextureGuestRanges from a layout that is already at hand.
-void RangesOfLayout(const TextureKey& key, const tu::TextureGuestLayout& layout,
+void RangesOfLayout(const TextureKey& key, const xe::GuestTextureLayout& layout,
                     uint32_t ranges[2][2]) {
   ranges[0][0] = ranges[0][1] = ranges[1][0] = ranges[1][1] = 0;
   if (key.base_page) {
@@ -307,7 +257,7 @@ std::string TextureKey::Describe() const {
 
 TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
   TextureFetch out;
-  xe::xe_gpu_texture_fetch_t f;
+  xe::TextureFetch f;
   std::memcpy(&f, dwords, sizeof(f));
   if (f.type != xe::FetchConstantType::kTexture) {
     return out;
@@ -325,7 +275,7 @@ TextureFetch ReadTextureFetch(const uint32_t dwords[6]) {
   out.image_base_page = uint32_t(f.base_address) & 0x1FFFF;
   uint32_t width_minus_1 = 0, height_minus_1 = 0, depth_minus_1 = 0;
   uint32_t base_page = 0, mip_page = 0, mip_min = 0, mip_max = 0;
-  tu::GetSubresourcesFromFetchConstant(f, &width_minus_1, &height_minus_1, &depth_minus_1,
+  xe::GetSubresourcesFromFetchConstant(f, &width_minus_1, &height_minus_1, &depth_minus_1,
                                        &base_page, &mip_page, &mip_min, &mip_max);
   TextureKey& k = out.key;
   k.base_page = base_page;
@@ -360,13 +310,13 @@ void TextureGuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
 
 bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage* out) {
   const FormatInfo* info = FormatInfo::Get(key.format);
-  if (!info || info->bytes_per_block() == 0) {
+  if (!info || info->GetBytesPerBlock() == 0) {
     return false;
   }
-  const tu::TextureGuestLayout layout = tu::GetGuestTextureLayout(
+  const xe::GuestTextureLayout layout = xe::GetGuestTextureLayout(
       xe::DataDimension::k2DOrStacked, key.pitch, key.width, key.height, 1, key.tiled != 0,
       xe::TextureFormat(key.format), key.packed_mips != 0, key.base_page != 0, key.mip_max_level);
-  const tu::TextureGuestLayout::Level* stored;
+  const xe::GuestTextureLayout::Level* stored;
   if (level == 0) {
     if (!key.base_page) {
       return false;
@@ -385,12 +335,12 @@ bool GetTextureLevelStorage(const TextureKey& key, uint32_t level, TextureLevelS
   texture_decode::Request& r = out->request;
   r = texture_decode::Request{};
   r.source.row_pitch_bytes = stored->row_pitch_bytes;
-  r.source.bytes_per_block = info->bytes_per_block();
+  r.source.bytes_per_block = info->GetBytesPerBlock();
   r.source.tiled = key.tiled != 0;
   r.source.endian = key.endian;
   if (key.packed_mips && level >= layout.packed_level) {
     uint32_t ox = 0, oy = 0, oz = 0;
-    tu::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
+    xe::GetPackedMipOffset(key.width, key.height, 1, xe::TextureFormat(key.format), level, ox, oy,
                            oz);
     r.source.offset_x = ox;
     r.source.offset_y = oy;
@@ -409,7 +359,7 @@ uint16_t GuestToHostSwizzle(uint16_t fetch_swizzle, uint16_t host_format_swizzle
   for (uint32_t i = 0; i < 4; ++i) {
     const uint32_t guest = (fetch_swizzle >> (3 * i)) & 7;
     uint32_t component;
-    if (guest >= xe::XE_GPU_TEXTURE_SWIZZLE_0) {
+    if (guest >= xe::REXGPU_SWIZZLE_0) {
       // 6 and 7 folded to 0 and 1, as Xenia does against broken games.
       component = guest & 0b101;
     } else {
@@ -482,7 +432,7 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   resolve_ = &resolve;
   subscriber_ = memory.Subscribe("textures");
   mods_.Initialize();
-  if (REXCVAR_GET(mcla_gpu_texture_decode_selftest)) {
+  if (larecomp::settings::mcla_gpu_texture_decode_selftest.Get()) {
     const auto t0 = Clock::now();
     const texture_decode::SelfTestResult test = texture_decode::SelfTest(1500);
     const double ms = double(NsSince(t0)) / 1e6;
@@ -501,7 +451,7 @@ void TextureCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
                    test.mismatches, test.runs, test.first);
     }
   }
-  const int32_t threads_setting = REXCVAR_GET(mcla_gpu_texture_decode_threads);
+  const int32_t threads_setting = larecomp::settings::mcla_gpu_texture_decode_threads.Get();
   const uint32_t threads =
       threads_setting < 0 ? DecodePool::AutoThreads() : uint32_t(threads_setting);
   pool_.Start(threads);
@@ -575,14 +525,14 @@ void TextureCache::Shutdown() {
 void TextureCache::BeginFrame(uint32_t slot) {
   slot_ = slot;
   ++frame_;
-  static bool mods_were_on = REXCVAR_GET(texture_mods);
-  if (mods_were_on != REXCVAR_GET(texture_mods)) {
-    mods_were_on = REXCVAR_GET(texture_mods);
+  static bool mods_were_on = larecomp::settings::texture_mods.Get();
+  if (mods_were_on != larecomp::settings::texture_mods.Get()) {
+    mods_were_on = larecomp::settings::texture_mods.Get();
     reload_requested_.store(true, std::memory_order_relaxed);
   }
-  if (REXCVAR_GET(texture_reload)) {
+  if (larecomp::settings::texture_reload.Get()) {
     // A trigger, not a setting: put it back so setting it again reloads again.
-    rex::cvar::SetFlagByName("texture_reload", "false");
+    larecomp::cvar::SetFlagByName("texture_reload", "false");
     reload_requested_.store(true, std::memory_order_relaxed);
   }
   if (reload_requested_.exchange(false, std::memory_order_relaxed)) {
@@ -956,11 +906,44 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
   return bound(slot, e->mode == Mode::kHashed);
 }
 
+uint32_t TextureCache::Peek2D(const TextureFetch& fetch) {
+  const TextureKey& key = fetch.key;
+  if (!fetch.is_texture || key.dimension != uint8_t(xe::DataDimension::k2DOrStacked) || key.stacked) {
+    return kNullTexture2DSlot;
+  }
+  const format::TextureHostFormat host = format::TextureHost(key.format);
+  if (host.status != format::Status::kOk) {
+    return kNullTexture2DSlot;
+  }
+  const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
+  const uint16_t host_swizzle = GuestToHostSwizzle(fetch.swizzle, host.host_swizzle);
+  // A resolve product of this image (the vinyl's render target, a car's livery): read as it is. A product made by a depth source is no colour to shade with.
+  if (ResolveCache::Product* product = resolve_->Find(key, fetch.image_base_page)) {
+    if (product->depth_source || !product->texture) {
+      return kNullTexture2DSlot;
+    }
+    const uint32_t slot = product->views.Slot(*device_, *heap_, *product->texture, product->format, key.levels(), host_swizzle, "resolve product view");
+    return slot == kInvalidBindlessSlot ? kNullTexture2DSlot : (slot | gamma_bit);
+  }
+  const auto it = entries_.find(key);
+  if (it == entries_.end()) {
+    return kNullTexture2DSlot;
+  }
+  Entry& e = *it->second;
+  // Uploaded, and no write since: what the guest's draws would read too. A replacement (a texture mod) is bound by its own path only.
+  if (!e.texture || e.uploaded_version == 0 || e.replacement != nullptr || (e.mode == Mode::kWatched && e.uploaded_version != e.version)) {
+    return kNullTexture2DSlot;
+  }
+  e.last_frame = frame_;
+  const uint32_t slot = e.views.Slot(*device_, *heap_, *e.texture, e.host_format, key.levels(), host_swizzle, "guest texture view");
+  return slot == kInvalidBindlessSlot ? kNullTexture2DSlot : (slot | gamma_bit);
+}
+
 TextureCache::Entry* TextureCache::Create(const TextureKey& key, const TextureFetch& fetch,
                                           std::string* why, const uint32_t (*known_ranges)[2]) {
   (void)fetch;
   const FormatInfo* info = FormatInfo::Get(key.format);
-  if (!info || info->bytes_per_block() == 0) {
+  if (!info || info->GetBytesPerBlock() == 0) {
     *why = "the SDK has no block size for the format";
     return nullptr;
   }
@@ -1070,7 +1053,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   }
   // Mods look at the guest's bytes first (a replacement needs no decode) and a texture dump
   // wants them as they are at the upload: left to the draw.
-  if (!mods_.empty() || REXCVAR_GET(mcla_gpu_texture_dump)) {
+  if (!mods_.empty() || larecomp::settings::mcla_gpu_texture_dump.Get()) {
     return;
   }
   if (entries_.find(key) != entries_.end() || failed_.find(key) != failed_.end()) {
@@ -1078,7 +1061,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   }
   // The key's layout is worked out once: the ranges, the entry's own and the plan below all come
   // from it.
-  const tu::TextureGuestLayout layout = LayoutOf(key);
+  const xe::GuestTextureLayout layout = LayoutOf(key);
   uint32_t ranges[2][2];
   RangesOfLayout(key, layout, ranges);
   if (uint64_t(ranges[0][1]) + ranges[1][1] < kPrefetchMinBytes) {
@@ -1147,7 +1130,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
   job->version = e->version;
   job->frame = frame_;
   job->sequence = sequence;
-  job->verify = REXCVAR_GET(mcla_gpu_texture_decode_verify);
+  job->verify = larecomp::settings::mcla_gpu_texture_decode_verify.Get();
   job->Hold(pool_, total);
   e->prefetch = job;
   pool_.Submit(job);
@@ -1241,7 +1224,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
     }
   } else {
     const FormatInfo* info = FormatInfo::Get(key.format);
-    const tu::TextureGuestLayout layout = LayoutOf(key);
+    const xe::GuestTextureLayout layout = LayoutOf(key);
     for (uint32_t level = 0; level <= key.mip_max_level; ++level) {
       TextureLevelPlan plan;
       const PlanResult planned =
@@ -1258,7 +1241,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
       const uint64_t size = plan.size;
       scratch_.resize(size_t(size));
       bool decode_ok;
-      if (REXCVAR_GET(mcla_gpu_texture_decode_verify)) {
+      if (larecomp::settings::mcla_gpu_texture_decode_verify.Get()) {
         bool mismatch = false;
         decode_ok = texture_decode::DecodeVerified(r, scratch_.data(), uint32_t(pitch), &mismatch);
         ++stats_.verified;
@@ -1294,7 +1277,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
 }
 
 bool TextureCache::SelectReplacement(Entry& e, plume::RenderCommandList* list) {
-  const bool dumping = REXCVAR_GET(mcla_gpu_texture_dump);
+  const bool dumping = larecomp::settings::mcla_gpu_texture_dump.Get();
   e.base_hash = 0;
   if ((!mods_.empty() || dumping) && e.ranges[0][1]) {
     // The key every dump and replacement agrees on (SDK HashGuestData):
@@ -1387,6 +1370,26 @@ TextureCache::Replacement* TextureCache::ReplacementFor(uint64_t hash,
   Replacement* raw = r.get();
   replacements_.emplace(hash, std::move(r));
   return raw;
+}
+
+uint64_t TextureCache::ContentHashOf(const TextureKey& key) {
+  const auto it = entries_.find(key);
+  if (it == entries_.end()) {
+    return 0;
+  }
+  Entry& e = *it->second;
+  if (e.mode != Mode::kWatched || !e.ranges[0][1]) {
+    return 0;
+  }
+  if (e.content_version != e.version) {
+    // The guest wrote the texture (or it was never hashed): the number is taken again.
+    e.content_hash = 0;
+    if (const uint8_t* src = memory_->Read(e.ranges[0][0], e.ranges[0][1])) {
+      e.content_hash = XXH3_64bits(src, e.ranges[0][1]);
+    }
+    e.content_version = e.version;
+  }
+  return e.content_hash;
 }
 
 void TextureCache::ReloadMods() {

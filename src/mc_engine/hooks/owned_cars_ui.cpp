@@ -30,8 +30,10 @@
 // Nothing here acts while the owned cars are not moved (owned_cars_limit 30).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
 
 #include <algorithm>
 #include <atomic>
@@ -87,9 +89,8 @@ std::atomic<bool> g_names_seen{false};
 
 void EnsureNames(uint8_t* b, uint32_t rows) {
     if (g_names.load() || rows <= kPoolEntries) return;
-    auto* rt = rex::Runtime::instance();
-    const uint32_t block =
-        rt && rt->memory() ? rt->memory()->SystemHeapAlloc(rows * kNameEntry, 0x1000) : 0;
+    auto* memory = larecomp::guest::AddressSpace();
+    const uint32_t block = memory ? memory->SystemHeapAlloc(rows * kNameEntry, 0x1000) : 0;
     if (!block) {
         LARECOMP_APP_ERROR("[owned-cars-ui] no guest memory for {} vehicle names", rows);
         return;

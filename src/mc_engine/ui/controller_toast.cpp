@@ -1,11 +1,12 @@
 #include "controller_toast.h"
 #include "imgui_theme.h"
 #include "overlay_input_core.h"
+#include "overlay_support.h"
 #include "mc_engine/input/input_state.h"
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/ui/imgui_dialog.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
+#include <rex/ui/ui_system.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -16,11 +17,6 @@
 #include <deque>
 #include <memory>
 #include <string>
-
-REXCVAR_DEFINE_BOOL(mcla_controller_toast, true, "MCLA",
-    "Show the MCLA-styled toast when a controller connects or disconnects. Its corner follows "
-    "controller_toast_position.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::ui {
 
@@ -41,10 +37,7 @@ std::atomic<bool> g_list_changed{true};
 
 void OnControllersChanged(void*) { g_list_changed.store(true, std::memory_order_release); }
 
-class ControllerToastDialog final : public rex::ui::ImGuiDialog {
- public:
-  explicit ControllerToastDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
-
+class ControllerToastDialog final : public PanelDialog {
  protected:
   void OnDraw(ImGuiIO& io) override {
     const Clock::time_point now = Clock::now();
@@ -60,7 +53,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
       return;
     }
 
-    const std::string corner = rex::cvar::GetFlagByName("controller_toast_position");
+    const std::string corner = larecomp::cvar::GetFlagByName("controller_toast_position");
     const bool right = corner.empty() || corner == "Top Right" || corner == "Bottom Right";
     const bool bottom = corner == "Bottom Left" || corner == "Bottom Right";
 
@@ -116,7 +109,7 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
   // The SDK's controller list changed: what came and what went since the last look. Pads already there at the first look
   // toast as connected, as the SDK's toast did at startup.
   void Refresh(Clock::time_point now) {
-    const bool shown = REXCVAR_GET(mcla_controller_toast);
+    const bool shown = larecomp::settings::mcla_controller_toast.Get();
     for (ControllerEvent& event : roster_.Update(larecomp::input::Controllers())) {
       REXLOG_INFO("[toast] controller {}: {}{}", event.connected ? "connected" : "disconnected", event.name,
                   shown ? "" : " (toast off)");
@@ -136,18 +129,19 @@ class ControllerToastDialog final : public rex::ui::ImGuiDialog {
   ControllerRoster roster_;
 };
 
-std::unique_ptr<ControllerToastDialog> g_toasts;
+bool g_started = false;
 
 }  // namespace
 
-void StartControllerToasts(rex::ui::ImGuiDrawer* drawer) {
-  if (!drawer || g_toasts) return;
+void StartControllerToasts(rex::ui::IUISystem& ui) {
+  if (g_started) return;
+  g_started = true;
   // The pads come from the SDK's own device list, by the input state's events: it reads the list when the SDK's
-  // device counter moves and calls us then. The flag starts set, so the first drawn frame takes the list as it is.
+  // device generation moves and calls us then. The flag starts set, so the first drawn frame takes the list as it is.
   if (!larecomp::input::AddControllerListener(&OnControllersChanged, nullptr)) {
     REXLOG_WARN("[toast] the input state's listener table is full: the controller toast will not see pads come and go");
   }
-  g_toasts = std::make_unique<ControllerToastDialog>(drawer);
+  ui.AddDialog(std::make_unique<ControllerToastDialog>());
   REXLOG_INFO("[toast] controller toast ready: it follows the SDK's device list by events (no polling)");
 }
 

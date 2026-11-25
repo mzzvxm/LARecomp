@@ -6,11 +6,11 @@
 // Vulkan from the same code, one backend per build. Design, references and
 // milestones:.
 //
-// The mode is mcla_gpu. It owns the window's presentation, so it excludes the
-// SDK's D3D12Presenter and the legacy D3D12 runtime (mcla_native_gfx), and it
-// needs the no-command-processor mode (mcla_native_gfx_nocp) for a process
-// with no emulated GPU in it. Enabled() checks all of that once and says what
-// is missing.
+// The mode is the SDK's gpu.driver = larecomp (rexglue 0.11; before it, mcla_gpu with
+// mcla_native_gfx_nocp, which are not settings any more). It owns the window's presentation, so it
+// excludes the SDK's own Xenia GPU (the XENIA renderer: gpu.driver any / d3d12 / vulkan) and the
+// legacy D3D12 runtime (mcla_native_gfx), and it runs with no emulated GPU in the process.
+// Enabled() is the one test of which renderer runs; every caller asks it, none reads the settings.
 //
 // Milestone M3 (this code): on top of M2's presentation (bindless heap, upload
 // memory, host shaders, SDK overlays, idle presents, GPU timestamps, RenderDoc)
@@ -28,10 +28,9 @@
 // memory read in another shape than it was resolved in, are M5.
 //
 // Call order (all on the UI thread except where noted):
-//   CreateOverlayDrawer   from LarecompApp::OnCreateImmediateDrawer
-//   SetShaderPackFolder   from LarecompApp::OnConfigurePaths, before Startup (optional)
-//   SetShaderPackGate     from LarecompApp::SetupPresentation, before Startup (optional)
-//   Startup               from LarecompApp::SetupPresentation, after the base
+//   SetShaderPackFolder   from LarecompApp::OnInit, before Startup (optional)
+//   SetShaderPackGate     from LarecompApp::OnInit, before Startup (optional)
+//   Startup               from LarecompApp::OnInit, before LaunchTitle (the first-launch dialogs are drawn by it)
 //   AttachShaderPacks     once the shader packs are built, when ShaderPacksAttached() is false
 //   BeforeGuest*/AfterGuest*, OnGuestFrameEnd, OnGuestSwap
 //                         guest threads, from src/native_gfx/hooks.cpp
@@ -40,7 +39,7 @@
 //   PreviewRenderScale, GetRenderScaleStatus
 //                         the pause menu's RENDER RES and FSR1 rows (any thread)
 //   HdrOutputActive, HdrAuto*   the pause menu's HDR rows (any thread)
-//   Shutdown              LarecompApp::FinishWindowClose (the window's close) and OnShutdown
+//   Shutdown              LarecompApp::OnStop: before the title is unloaded, with the UI loop still served
 // ===========================================================================
 
 #include <cstdint>
@@ -50,32 +49,38 @@
 #include <string>
 #include <vector>
 
+#include "city_pack_state.h"
 #include "render_scale.h"
 
+namespace rex {
+struct NativeWindow;
+}  // namespace rex
 namespace rex::ui {
-class ImGuiDrawer;
-class ImmediateDrawer;
-class Window;
-class WindowedAppContext;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace mcla::gpu {
 
-// mcla_gpu is set and every prerequisite holds. Decided on the first call and
-// fixed for the process (the cvars it reads all require a restart).
+// gpu.driver names LARecomp's renderer and every prerequisite holds; false under the XENIA renderer.
+// Valid from LarecompApp::OnInit on (before the settings exist it answers false without deciding).
+// Decided on the first call and fixed for the process (gpu.driver is startup-only).
 bool Enabled();
 
-// The ImmediateDrawer the SDK draws its overlays through in this mode, or null
-// when the mode is off. Needs no device: it records CPU-side frames for the
-// renderer, which may not exist yet when the SDK asks for it.
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer();
+// Creates the device, the swap chain on `window` (IUISystem::GetNativeWindow), the renderer's
+// components and the render thread, and connects the UI system: the renderer asks it for an overlay
+// frame (IUISystem::DrawOverlays, overlay.h) once per presented frame. False when any of it fails;
+// the reason is logged and the app should not start.
+bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window);
 
-// Creates the device, the swap chain on `window`, the renderer's components
-// and the render thread, and connects the SDK's ImGui drawer (which must be
-// using the drawer from CreateOverlayDrawer). False when any of it fails; the
-// reason is logged and the app should not start.
-bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
-             rex::ui::ImGuiDrawer* imgui_drawer);
+// After Startup returned false: whether the player took the failure box's offer to start with the compatibility renderer (the XENIA renderer,
+// the hidden fallback: renderer_fallback.h). The box has told the player already; the app writes gpu.driver and starts the game again.
+bool StartupChoseCompatibilityRenderer();
+
+// The hotkeys the renderer answers (LarecompApp::StartOverlays binds them: ui.bind.gpu_*). Any thread;
+// no-ops while the renderer is not running.
+void RequestRenderDocCapture();  // the next frame, with RenderDoc (F11)
+void RequestFrameTrace();        // a raw trace of the next guest frame (F10)
+void RequestTextureDump();       // every texture of the next frame to the dump folder (F2)
 
 // --- the shader packs (shaders.h) ---------------------------------------------
 // The renderer starts without the shader packs when there are none yet: on a first run they are
@@ -209,6 +214,8 @@ void SetNextPresentTag(uint64_t tag);
 // succeeded) without mcla_gpu_vsync and without frame generation, on Windows.
 // Any thread.
 bool SchedulesPresents();
+// Apply the Windows NVIDIA Vulkan present ceiling to an existing rendered-frame limit. Any thread.
+int32_t LimitFrameRateForComposedPresents(int32_t limit);
 // What scheduled frames came to, oldest first, since the last call: per frame,
 // its target and how its readiness compared with it (ready minus target, QPC
 // ticks; negative when it was held), and -- with `on_screen`, D3D12 frame
@@ -255,8 +262,24 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
 // draw), AFTER the original: the scene's image is composed, nothing has copied
 // it yet, and what the frame draws after it is screen-space. `bucket`: the
 // bucket's bit. Becomes a composite record when the capture is on. Guest
-// render thread.
-void OnGuestSceneComposited(uint32_t bucket);
+// render thread. `tag` is the record's second word: 0 except for the rear view mirror's begin marker, which carries the phase's field (mirror_view_link.h PhaseField).
+void OnGuestSceneComposited(uint32_t bucket, uint32_t tag = 0);
+
+// --- the shared rear view (mirror_view.h, perf/MIRROR-VIEW.md) -----------------
+
+// The guest's two hooks around the rear view mirror's render phase (0x1000000): `begin` at the phase's
+// begin (the entry of sub_82308178, Patch_RearViewDiag), `!begin` after its end callback (0x822E6908,
+// Patch_RearViewPhaseEnd, r30 = 0x1000000). Becomes a marker on the composite record's side channel
+// (mirror_view_link.h IsMarker), in order with the draws. The begin bucket carries HUD stamp eligibility.
+// An end is sent only for a begin that was. On a frame whose phase is held (the cadence) send
+// the two back to back: the host then stamps the held picture. The begin carries the field the phase's camera was built with (mirror_view_link.h PhaseField, from the latest CameraFacts: the camera step runs
+// just before the begin, on this thread). Publish the rectangle first
+// (mirror_draws::Publish), also for a phase no HUD mirror asked for. Guest render thread.
+void NoteMirrorPhase(bool begin, bool hud_stamp);
+
+// What mcla_gpu_mirror_view alone used to say, now with the SIDE MIRRORS row under it (mirror_setting.h Resolve): 0 the game's own visible HUD mirror, 1 to 4 the shared view is
+// on (1 at the card's class size, 2 to 4 at the Low, Mid or High size; the row gives 3 for HIGH and 4 for ULTRA). The guest half is on exactly while this is not 0 (rear_view.cpp SharedViewOn). Any thread, cheap.
+int MirrorViewMode();
 
 // --- occlusion queries (occlusion.h) --------------------------------------
 
@@ -316,10 +339,24 @@ void ArmUiLayer(bool armed);
 float UiAlpha();
 
 // UI thread, at app shutdown: stops the capture, disconnects the overlay passes,
-// stops the render thread (with a deadline), drains the GPU and releases every
-// GPU object, device last, then hands the retired fence back to the vblank
-// thread. Safe to call more than once.
-void Shutdown();
+// stops the render thread (with a deadline), drains the GPU and releases its objects,
+// then hands the retired fence back to the vblank thread. With fast_exit and the
+// opt-in setting, the process-lifetime renderer keeps its final GPU objects for OS cleanup.
+// Safe to call more than once.
+void Shutdown(bool fast_exit = false);
+
+// Where the renderer's Shutdown() is, for the close watchdog (larecomp_app.cpp, close_watchdog.h): any thread, no lock, never blocks.
+// A close whose renderer is moving, or is inside the driver's own teardown call, is slow, not hung. `quiet_ms` counts from the
+// last change of stage (or from the end of the shutdown); `stage` is static text naming the stage that is running now, null before
+// the shutdown starts and after it ends.
+struct ShutdownProgress {
+  bool started = false;      // Renderer::Shutdown has begun (also true once it has ended)
+  bool finished = false;     // ... and returned
+  const char* stage = nullptr;
+  bool driver_call = false;  // the stage is one call into the graphics driver, which returns by itself
+  int64_t quiet_ms = 0;
+};
+ShutdownProgress ReadShutdownProgress();
 
 // graphics_backend = "auto" as the Plume renderer decides it (ChooseAutoBackend in backend.h):
 // true when that is Vulkan. For the emulated GPU's backend (larecomp_app.h), which follows the same
@@ -336,6 +373,10 @@ bool AutoBackendIsVulkan(const std::string& preferred_adapter, std::string* adap
 // graphics setting for this exe names, else the high-performance GPU; else on Vulkan a discrete GPU
 // before an integrated one. -1: no opinion, the SDK chooses (also on Linux for D3D12, which has none).
 int XeniaAdapterIndex(bool vulkan, const std::string& preferred_adapter);
+
+// MF: UI thread, between renderer Startup and Shutdown. Null without the native renderer.
+class Device;
+const Device* MachineFactsDevice();
 
 // --- the temporal upscalers (temporal_backend.h) ---------------------------------------------------
 // What the player's Upscaling rows need, in plain types (the rest of the app sees no Plume header).
@@ -394,6 +435,12 @@ struct UpscalerAvailability {
   // The settings ask for another upscaler or mode than the one running and its context is being made
   // (a live change, temporal.h): the old one goes on until it is ready.
   bool switching = false;
+  // The upscaler the settings choose has no room in video memory: its context was not made because the use
+  // plus what it needs would pass the line the caches start releasing at (vram_room.h), so the renderer runs
+  // the next one down (FSR 4 -> FSR 3.1) or none, and asks again after a few seconds, less often each time.
+  // Set from the first refusal until the choice is running or changes. The pause menu's UPSCALING row says
+  // "(NO ROOM)", as frame generation's does (FrameGenerationAvailability::no_room).
+  bool no_room = false;
 };
 UpscalerAvailability GetUpscalerAvailability();
 
@@ -418,6 +465,45 @@ bool UpscalerInterestNoted();
 bool MsaaSwitching();
 // mcla_gpu_msaa_with_upscaler: the player's MSAA level stands while an upscaler runs (msaa_level.h).
 bool MsaaKeptUnderUpscaler();
+
+// --- the ray traced car self-reflection ----------------------------------------------------------
+// True when this device can run it: Direct3D 12 with DXR 1.1 and shader model 6.5, or Vulkan with VK_KHR_ray_query
+// (CarRtSupported in car_rt_scene.h), the car's structures set up and the pass's layout and shader made (car_rt_refl.h), and the ray
+// tracing tier (rt_tier.h) above none (a card with no ray tracing units, and the Low class, trace nothing). False
+// before the renderer has started and on a card or driver that cannot ray trace. The pause menu's
+// CAR SELF-REFLECTIONS row lists RAY TRACED only where this is true. Any thread.
+bool CarRtReflAvailable();
+
+// --- the city pack and the ray traced city shadows (CITY-RT M1) -------------------------------------
+// The ray traced sun shadows read the city pack (the city's geometry, built from the player's own game files: city_pack_state.h says how it comes to be there). The app tells the
+// renderer how the pack stands; the renderer never reads the game files or the stamp. UI thread, before Startup (LarecompApp::SetupPresentation, with the shader pack gate); the
+// hooks are called on the render thread.
+struct CityPackHooks {
+  // Which state the pack in CityPackFolder() is in for the player's game files (a few file stats, nothing hashed or decoded). `why` (may be null) gets the reason it is not current.
+  std::function<city_rt::PackState(std::string* why)> state;
+  // The renderer wants the pack and it is missing or stale: called once per session; the app builds it on a thread of its own and `state` answers "being built" from then on.
+  std::function<void()> request_build;
+  // The same two for the HIT DATA (CITY-HIT-ACTION: the hit file and the texture file beside the pack, built over it): `hit_state` says which state they are in for the player's game files
+  // (stat only), `request_hit_build` is called once per session when they are missing or stale and the renderer wants them (a consumer of the hit data is on, the pack is open). The app builds
+  // them on a thread of its own, in the background, and `hit_state` answers "being built" until it ends. Null: the files are opened as they are.
+  std::function<city_rt::PackState(std::string* why)> hit_state;
+  std::function<void()> request_hit_build;
+};
+void SetCityPackHooks(CityPackHooks hooks);
+// Where the city pack and its stamp are: <ShaderPackFolder()>/city. Any thread; needs no renderer (the launcher's setup, --build_city_pack, builds there).
+std::filesystem::path CityPackFolder();
+// True when this device can ray trace the city's sun shadows: the same device test as the car's ray traced effects (CarRtSupported: Direct3D 12 with DXR 1.1 and shader model 6.5, or
+// Vulkan with VK_KHR_ray_query) and the pass's layout and shader made. False before the renderer has started and on a card or driver that cannot. The pause menu's RT SHADOWS
+// row is grey with "(NO RT)" where this is false, and its AUTO says OFF there. Any thread.
+bool CityRtShadowsAvailable();
+
+// --- the ray traced bounce light (gi_setting.h, CITY-RT M3 G4) ---------------------------------------
+// True once the probe field's update (package G2) is built into this renderer: until then the RT BOUNCE LIGHT row is grey with "(NOT READY)", its AUTO says OFF and the field is never made.
+// Any thread.
+bool RtGiUpdateBuilt();
+// True while the probe field stands in the picture and the screen-space bounce light is not built (the field's fade is 1): the pause menu's BOUNCE LIGHT row says "(REPLACED)". Set once a frame
+// by the render thread, false before the renderer has started and while no field runs. Any thread.
+bool RtGiReplacesBounceLight();
 
 // --- the upscaler as the start found it (the size of the 3D scene) -------------------------------
 // The scene is drawn smaller than the output only while an upscaler can make it whole again. The

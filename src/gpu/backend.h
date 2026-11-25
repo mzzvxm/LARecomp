@@ -32,6 +32,8 @@
 
 namespace mcla::gpu {
 
+enum class PresentResult : uint8_t;
+
 enum class Backend : uint8_t { kD3D12, kVulkan };
 
 // Whether this build carries `backend`.
@@ -176,6 +178,15 @@ bool TimestampsSupported(plume::RenderDevice* device);
 // "D3D12 12_2" / "Vulkan 1.3.290": the version a driver bug report needs.
 std::string DescribeDevice(plume::RenderDevice* device);
 
+// The adapter's PCI ids, which Plume's device description does not carry: the ray tracing tier's table reads the device id (rt_tier.h). D3D12: DXGI's
+// VendorId, DeviceId and Revision; Vulkan: the physical device's vendorID and deviceID (revision 0). All 0 when the backend cannot say.
+struct AdapterIds {
+  uint32_t vendor_id = 0;
+  uint32_t device_id = 0;
+  uint32_t revision = 0;
+};
+AdapterIds QueryAdapterIds(plume::RenderDevice* device);
+
 // What the renderer needs of the device that Plume does not check when it opens one, and that
 // would otherwise fail later (a root signature or every pipeline refused, a black window), in
 // plain words; empty when the device has it all or when this cannot tell. D3D12: shader model
@@ -186,6 +197,14 @@ std::string DescribeDevice(plume::RenderDevice* device);
 // Device::Open.) Device::Open calls it once the device exists; a problem there makes the backend
 // count as not startable, so the other one is tried.
 std::string RequirementProblem(plume::RenderDevice* device);
+
+// One plain line for the log, written once when the device opens: the numbers a compatibility report
+// needs and nothing else logs (D3D12: the highest shader model, the resource binding tier, wave
+// operations, 16-bit shader operations, rasterizer ordered views, typed UAV loads of more formats;
+// Vulkan: shaderInt64, buffer device address, the descriptor indexing features the bindless sets use,
+// the bound set limit, BC textures). The questions of perf/COMPAT-AUDIT.md section 9 are answered by it
+// from a player's log. Empty when the device cannot say.
+std::string DescribeCapabilities(plume::RenderDevice* device);
 
 // The adapter to ask Plume for when the user named none (mcla_gpu_adapter empty). D3D12: the
 // one Windows' graphics setting for this exe names (Settings > System > Display > Graphics:
@@ -251,6 +270,9 @@ struct PresentStatistics {
   int64_t sync_qpc = 0;
 };
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
+
+// The D3D12 test present. The normal path uses RenderSwapChain::present.
+PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain);
 
 // The PCI vendor id (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel) of the GPU the renderer will use, as
 // DXGI lists it, for the adapter named `preferred_adapter` (mcla_gpu_adapter; empty: Windows' choice
@@ -351,6 +373,20 @@ struct UpscalerSupport {
   std::string detail;
 };
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
+
+// The wave (subgroup) operations a compute shader can use on this device, which Plume's capabilities do not carry. The ray traced car effects' shaders
+// use three kinds (car_rt_scene_rules.h WaveProblem): WaveIsFirstLane (`basic`), WaveActiveCountBits (`ballot`) and WaveActiveSum (`arithmetic`), all in compute.
+// Vulkan: VkPhysicalDeviceSubgroupProperties (core in 1.1; the instance asks for 1.2), supportedOperations BASIC / BALLOT / ARITHMETIC and supportedStages COMPUTE.
+// D3D12: D3D12_FEATURE_DATA_D3D12_OPTIONS1::WaveOps, which covers the three and every shader stage. `known` is false when the backend could not ask
+// (no device, a failed query): the decision then does not turn the device away, as RequirementProblem does not.
+struct WaveOps {
+  bool known = false;
+  bool basic = false;
+  bool ballot = false;
+  bool arithmetic = false;
+  bool in_compute = false;
+};
+WaveOps QueryWaveOps(plume::RenderDevice* device);
 
 }  // namespace backend
 

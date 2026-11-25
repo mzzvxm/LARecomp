@@ -30,6 +30,31 @@
 //   cut <T>                                       a cut: nothing is interpolated across T, and the frame at T starts the
 //                                                 renderer's histories again (the upscaler, the occlusion, the motion blur)
 //
+// RIGS (feature-parity/DIRECTOR-DESIGN.md 4.3): `cam <T> rig <kind> ...` is a shot in one line, written in terms of a car or a place, that
+// stands for the keys above (a chase camera is an `attach ... heading follow` plus a `look` with the same lag). The words after the kind are in
+// any order; every rig also takes fov, roll, near, far and ease with the meaning they have above. Places are world coordinates, or `spot:<name>`
+// (spots.h), which the scene parser has turned into numbers by the time this file reads them.
+//
+//   rig chase car:<id> [dist <m>] [height <m>] [side <m>] [lag <s>] [aim <m>] [ahead <m>]
+//        behind the car: `dist` metres back (6), `height` up (1.8), `side` to the right (0), the position and the aim lagging the car by `lag`
+//        seconds (0.3); the aim is the point `aim` metres above the car (1) and `ahead` metres in front of it (0: look-ahead on a fast car).
+//        It follows the car's heading only, so it does not pitch and roll with the body.
+//   rig orbit car:<id> [r <m>] [az <a>[..<b>]] [el <e>[..<f>]] [over <s>] [at <dx> <dy> <dz>] [lag <s>]
+//        round the car on a sphere (the `orbit` key: r 8, az 0 behind, el 10). An az or el range a..b needs `over <s>`: the camera sweeps from a
+//        to b over those seconds (two orbit keys, an arc round the car) and holds at b.
+//   rig tripod at <x> <y> <z> track car:<id> [<dx> <dy> <dz>] [aimlag <s>]
+//        a camera standing on a place that follows a car with its aim (the point <dx dy dz> in the car's heading frame, default 0 0.8 0), the aim
+//        lagging by `aimlag` seconds. `track <x> <y> <z>` aims at a place instead; yaw <deg> pitch <deg> aim it by hand.
+//   rig flyby path <route> [speed <x>] [up <m>] [y <m>] track car:<id> [<dx> <dy> <dz>] [aimlag <s>]
+//        the camera flies along a route file (the car routes of path_follow.h: beside the scene or in its routes folder) from this key's time, at
+//        the route's own speeds or `speed 12` (metres a second) or `speed x1.5` (a factor); it holds at the last point. Its height is the route's
+//        own height (x,z,speed,y files) plus `up` (2), or `y <m>` in the world; a route with no heights needs `y`. The position is a function of
+//        the scene time, so a scrub and a take agree. Aimed like a tripod.
+//   rig hood|bumper|roof car:<id> [ahead <m>] [lag <s>] [shift <dx> <dy> <dz>]
+//        a mount on the car, rigid to its body (it pitches and rolls with it), looking `ahead` metres in front (30). The mount offsets are the
+//        same for every car (kMounts in camera.cpp, CHECK: a per-model table needs the car's bounds); `shift` moves the mount in the car's frame.
+//        Near defaults to 0.1 m so the bodywork does not clip.
+//
 // A key names the channels it moves: position (pos, attach, orbit), aim (yaw/pitch, look), roll, fov, near, far. Each channel
 // has its own keys; it runs from key to key with the ease of the key it leaves, and holds its last key's value. The first key
 // names a position and an aim. Positions run along a centripetal Catmull-Rom spline through the keys (an attach or orbit key is a
@@ -48,6 +73,7 @@
 #include <string_view>
 #include <vector>
 
+#include "path_follow.h"
 #include "scene.h"
 
 namespace mc::cinematic::camera {
@@ -167,7 +193,7 @@ struct DampedAngle {
 
 // ---------------------------------------------------------------------------------------------------------------- the track
 
-enum class PosKind : uint8_t { kWorld, kAttach, kOrbit };
+enum class PosKind : uint8_t { kWorld, kAttach, kOrbit, kPath };  // kPath: `rig flyby`, a place that moves along a route
 enum class AimKind : uint8_t { kAngles, kLookPoint, kLookCar };
 
 struct PosKey {
@@ -183,6 +209,13 @@ struct PosKey {
     double radius = 8.0;       // kOrbit
     double azimuth = 0.0;
     double elevation = 10.0;
+    // kPath: the route (an index into CameraTrack::routes), the scene time it starts at (a copy of the key that carries on after a cut keeps it:
+    // the route does not start again), the height above the route's own (up) or in the world (y, when has_y)
+    int route = -1;
+    double path_t0 = 0.0;
+    double up = 0.0;
+    bool has_y = false;
+    double y = 0.0;
 };
 struct AimKey {
     double t = 0.0;
@@ -208,7 +241,16 @@ struct Gate {
     bool on = true;
 };
 
+// A route a `rig flyby` flies, ready to be asked where it is at a time since the key.
+struct FlyRoute {
+    std::string name;
+    SpeedSpec speed;
+    PathSampler sampler;
+    bool has_y = false;  // the route has heights
+};
+
 struct CameraTrack {
+    std::vector<FlyRoute> routes;  // the routes of the flyby keys, once each
     std::vector<PosKey> pos;
     std::vector<AimKey> aim;
     std::vector<ScalarKey> roll, fov, near_plane, far_plane;
@@ -233,9 +275,18 @@ struct BuildResult {
     bool Ok() const { return ErrorCount() == 0; }
 };
 
+// Where the routes of a `rig flyby` come from. The default (null `routes` of BuildTrack) reads route files beside the scene (Scene::source_dir:
+// ParseOptions::path) and in its `routes` folder, the way a car's `path` does (a name with no extension also tries .route); a test hands in its own.
+class RouteSource {
+  public:
+    virtual ~RouteSource() = default;
+    // The route named in the scene; false with `error` ("no route file 'x' (looked for ...)") when there is none.
+    virtual bool Load(const std::string& name, Route* out, std::string* error) = 0;
+};
+
 // Reads the camera and cut keys of a scene (scene.h keeps their words). A scene without any gives an empty track and no
 // diagnostics. Never throws; with an error the track holds what was understood and must not be run.
-BuildResult BuildTrack(const Scene& scene);
+BuildResult BuildTrack(const Scene& scene, RouteSource* routes = nullptr);
 
 // "camera: 6 position keys (2 attach, 1 orbit), 5 aim keys, fov 3, roll 1; 1 cut; takes over at 0.00 s, cars: player" for the log.
 std::string Summarize(const CameraTrack& track);
@@ -308,6 +359,8 @@ class Rig {
     Vec3 EvalPosition(const std::vector<const PosKey*>& k, double t, CarSource& cars);
     Basis EvalAim(const std::vector<const AimKey*>& k, double t, Vec3 camera, CarSource& cars);
 
+    const CameraTrack* track_ = nullptr;  // the track and the time of the Evaluate call in progress (a flyby key reads its route there)
+    double cur_t_ = 0.0;
     bool have_last_ = false;
     double last_t_ = 0.0;
     bool was_active_ = false;

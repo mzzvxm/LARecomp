@@ -115,6 +115,18 @@ void TestParse() {
     }
     Check(Fails("1,2\n", "at least 2 points"), "one point");
     Check(Fails("", "at least 2 points"), "an empty file");
+    {
+        // a route that is still being made (the Director drops waypoints one at a time): the file has one point before it has two, and reads when asked to
+        Route one;
+        std::string e;
+        Check(ParseRoute("# made\n810.00,-800.00,8.00,17.60\n", &one, &e, 1) && one.points.size() == 1 && one.has_y, "one point reads for a route being made");
+        CheckNum(one.points[0].x, 810.0, "... its x");
+        CheckNum(one.points[0].speed, 8.0, "... its speed");
+        Check(!ParseRoute("1,2\n", &one, &e) && e.find("at least 2 points") != std::string::npos, "the default is still two points");
+        Check(!ParseRoute("# nothing\n", &one, &e, 1) && e.find("at least 1 point ") != std::string::npos, "a file with no point does not read, even for a route being made");
+        Check(ParseRoute("", &one, &e, 0) && one.points.empty(), "min_points 0 reads an empty file");
+        Check(ParseRoute("1,2\n3,4\n", &one, &e, 1) && one.points.size() == 2, "a route being made may have two");
+    }
     Check(Fails("1,2\n3\n", "line 2: a route point is x,z"), "one number on a line");
     Check(Fails("1,2\n3,4,5,6,7\n", "line 2: a route point is x,z"), "five numbers on a line");
     Check(Fails("1,2\n3,x\n", "line 2: 'x' is not a number"), "a word");

@@ -1,0 +1,757 @@
+# Pause menu overlays, keyed by the stable row and value ids.
+# Rules use the settings-ui contract grammar. A row with reads decodes a
+# compound choice. The exporter clears its single-setting binding.
+
+[defs]
+denoiser_vendor.cases = [
+  { when = "features.denoiser.vendor == 'amd' && (gpu.rx9000 ?? true) && (os.name ?? 'windows') == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
+  { when = "features.denoiser.vendor == 'nvidia' && (gpu.rtx ?? true)", value = "nvidia" },
+  { when = "known(features.denoiser.vendor)", value = "none" },
+  { when = "gpu.vendor == 'amd' && gpu.rx9000 && os.name == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
+  { when = "gpu.vendor == 'nvidia' && gpu.rtx", value = "nvidia" },
+  { value = "none" },
+]
+denoiser_fallback.cases = [
+  { when = "d.denoiser_vendor == 'amd' && api.name == 'vulkan'", value = "needs_d3d12" },
+  { when = "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'unsupported'", value = "unsupported" },
+  { when = "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'no' || features.denoiser.dlss_rr == 'unsupported')", value = "unsupported" },
+  { when = "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_upscaler != 'dlss'", value = "needs_dlss" },
+  { when = "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'needs_setup' || features.denoiser.dlss_rr == 'needs_setup')", value = "needs_setup" },
+  { when = "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'needs_setup'", value = "needs_setup" },
+  { when = "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_vendor_denoiser && (features.upscalers.dlss == 'after_restart' || features.denoiser.dlss_rr == 'after_restart')", value = "restart" },
+  { value = "ok" },
+]
+denoiser_state = "live.denoiser_gate ?? d.denoiser_fallback"
+display_mode.cases = [
+  { when = "!s.fullscreen", value = "windowed" },
+  { when = "s.fullscreen_exclusive && os.exclusive_fullscreen", value = "fullscreen" },
+  { value = "borderless" },
+]
+dlss_frame_gen_multiplier = "live.frame_generation_multiplier ?? min(max(s.mcla_gpu_frame_generation_multiplier, 2), features.frame_generation.dlss_multiplier_max)"
+frame_gen_on = "live.frame_generation_running ?? ((s.mcla_gpu_frame_generation == 'fsr31' && features.frame_generation.fsr31) || (s.mcla_gpu_frame_generation == 'dlss' && features.frame_generation.dlss))"
+hdr_on = "live.hdr_active ?? (s.mcla_gpu_hdr == 'on' || (s.mcla_gpu_hdr == 'auto' && features.hdr.windows_hdr_on))"
+ao_on = "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']"
+shadows_on = "!s.perf_no_shadows"
+rt_field_class = "live.rt_field_class ?? gpu.class"
+rt_gi_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && build.rt_gi_update_built"
+rtao_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && (live.rtao_pass_built ?? false)"
+bounce_on = "(d.ao_on && (resolved(s.mcla_gpu_ssgi) in ['high','ultra'])) || (d.rt_gi_open && (resolved(s.mcla_gpu_rt_gi) in ['high','ultra']))"
+shown_upscaler.cases = [
+  { when = "s.mcla_gpu_upscaler == 'fsr31' && features.upscalers.fsr31", value = "fsr31" },
+  { when = "s.mcla_gpu_upscaler == 'fsr4' && features.upscalers.fsr4", value = "fsr4" },
+  { when = "s.mcla_gpu_upscaler == 'dlss' && features.upscalers.dlss != 'no'", value = "dlss" },
+  { when = "s.mcla_gpu_fsr", value = "fsr1" },
+  { value = "off" },
+]
+active_upscaler.cases = [
+  { when = "s.mcla_gpu_upscaler == 'dlss' && (live.dlss_waits_for_restart ?? (features.upscalers.dlss == 'after_restart'))", value = { expr = "live.kept_upscaler ?? 'off'" } },
+  { when = "d.shown_upscaler == 'dlss' && features.upscalers.dlss == 'ready'", value = "dlss" },
+  { when = "d.shown_upscaler in ['fsr31','fsr4']", value = { expr = "d.shown_upscaler" } },
+  { value = "off" },
+]
+car_selfrefl_choice.cases = [
+  { when = "s.mcla_gpu_car_selfrefl == 'off'", value = "off" },
+  { when = "s.mcla_gpu_car_selfrefl == 'on' && (s.mcla_gpu_car_selfrefl_rt == 'off' || !api.car_rt)", value = "on" },
+  { when = "s.mcla_gpu_car_selfrefl == 'on'", value = "ray_traced" },
+  { when = "s.mcla_gpu_car_selfrefl_rt != 'off'", value = "auto" },
+  { when = "auto_of('mcla_gpu_car_selfrefl') == 'on'", value = "on" },
+  { value = "off" },
+]
+car_rt_runs = "api.car_rt && (d.car_selfrefl_choice == 'ray_traced' || (d.car_selfrefl_choice == 'auto' && auto_of('mcla_gpu_car_selfrefl') == 'on'))"
+rt_city_wanted = "resolved(s.mcla_gpu_rt_reflections) in ['high','ultra']"
+renderer_choice = "live.renderer_choice ?? 'larecomp'"
+frame_gen_available = "live.frame_generation_choice_available ?? d.frame_gen_on"
+shown_per_rendered.cases = [
+  { when = "s.mcla_gpu_frame_generation == 'dlss'", value = { expr = "d.dlss_frame_gen_multiplier" } },
+  { value = 2 },
+]
+# The preset this GPU is recommended: the same rule as presets.class_to_preset in the dump (gpu/gfx_preset.h kClassToPreset, rt_tier.h RecommendedPreset; tools/check_gfx_presets.py compares them).
+recommended_preset.cases = [
+  { when = "gpu.rt_rung == 'strong'", value = "enhanced_rt_ultra" },
+  { when = "gpu.rt_rung == 'weak'", value = "enhanced_rt" },
+  { when = "gpu.class == 'high'", value = "enhanced_ultra" },
+  { when = "gpu.class == 'mid'", value = "enhanced" },
+  { value = "vanilla" },
+]
+
+[value_sets.fsr_modes]
+values = [
+  { id = "native_aa", label = "NATIVE AA (100%)" },
+  { id = "quality", label = "QUALITY (67%)" },
+  { id = "balanced", label = "BALANCED (59%)" },
+  { id = "performance", label = "PERFORMANCE (50%)" },
+  { id = "ultra_performance", label = "ULTRA PERF. (33%)" },
+]
+
+[rows.PM_RxDisplayMode]
+reads = ["fullscreen", "fullscreen_exclusive"]
+decode = "d.display_mode"
+values = [
+  { id = "windowed", label = "WINDOWED", writes = [{ setting = "fullscreen", value = "false" }] },
+  { id = "borderless", label = "BORDERLESS", writes = [{ setting = "fullscreen_exclusive", value = "false" }, { setting = "fullscreen", value = "true" }] },
+  { id = "fullscreen", label = "FULLSCREEN", when = "os.exclusive_fullscreen", writes = [{ setting = "fullscreen_exclusive", value = "true" }, { setting = "fullscreen", value = "true" }] },
+]
+
+[rows.PM_RxResolution]
+values_from = { generator = "display.sizes", args = { mode = "d.display_mode" } }
+fallback_values = [
+  { id = "1280x720", label = "1280X720" },
+  { id = "1920x1080", label = "1920X1080" },
+  { id = "2560x1440", label = "2560X1440" },
+  { id = "3840x2160", label = "3840X2160" },
+]
+states = [
+  { when = "d.display_mode == 'borderless' && known(display.primary.size)", enabled = false, suffix = " ({display.primary.size})" },
+  { when = "d.display_mode == 'borderless'", enabled = false, suffix = " (DISPLAY)" },
+  { when = "os.window_size_fixed && d.display_mode == 'windowed' && known(live.output_size ?? null)", enabled = false, suffix = " ({live.output_size})" },
+  { when = "os.window_size_fixed && d.display_mode == 'windowed'", enabled = false, suffix = " (FIXED)" },
+  { when = "os.window_size_fixed", enabled = false, reason = "The window size is fixed." },
+  { when = "d.display_mode == 'windowed' && !os.live_window_resize", enabled = true, suffix = " (RESTART)", needs_restart = true },
+]
+
+[[rows.PM_RxResolution.variants]]
+when = "d.display_mode == 'fullscreen'"
+setting = "fullscreen_resolution"
+
+[rows.PM_RxFpsCap]
+states = [
+  { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)" },
+]
+
+# PRESET (gpu/gfx_preset.h). The two RT presets are listed where the card traces rays, and for the one that is in force (a larecomp.toml carried to a PC without ray tracing keeps showing its
+# own preset, with the reason). The recommended preset says so after its name where it is the one in force.
+[rows.PM_RxGpuPreset]
+values = [
+  { id = "vanilla", label = "VANILLA" },
+  { id = "enhanced", label = "ENHANCED" },
+  { id = "enhanced_ultra", label = "ENHANCED ULTRA" },
+  { id = "enhanced_rt", label = "ENHANCED RT", when = "gpu.rt_tier != 'none' || s.mcla_gpu_preset == 'enhanced_rt'" },
+  { id = "enhanced_rt_ultra", label = "ENHANCED RT ULTRA", when = "gpu.rt_tier != 'none' || s.mcla_gpu_preset == 'enhanced_rt_ultra'" },
+  { id = "custom", label = "CUSTOM" },
+]
+states = [
+  { when = "gpu.rt_tier == 'none' && s.mcla_gpu_preset in ['enhanced_rt', 'enhanced_rt_ultra']", enabled = true, suffix = " (NO RT GPU)", reason = "Needs a graphics card that can ray trace." },
+  { when = "s.mcla_gpu_preset == d.recommended_preset", enabled = true, suffix = " (RECOMMENDED)" },
+]
+
+[rows.PM_RxGpuReflex]
+hidden_unless = "features.latency.kind == 'reflex'"
+states = [
+  { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)", label = "REFLEX" },
+  { when = "(live.latency_health ?? 'ok') == 'paused'", enabled = true, suffix = " (PAUSED)", label = "REFLEX" },
+  { when = "(live.latency_health ?? 'ok') == 'failed'", enabled = true, suffix = " (NOT WORKING)", label = "REFLEX" },
+]
+
+[rows.PM_RxGpuReflex.value."auto"]
+label_rules = [
+  { when = "features.latency.auto_on", label = "AUTO (ON)" },
+  { when = "!features.latency.auto_on", label = "AUTO (OFF)" },
+]
+
+[rows.PM_RxGpuAntiLag]
+hidden_unless = "features.latency.kind == 'antilag2'"
+states = [
+  { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)", label = "ANTI-LAG 2" },
+  { when = "(live.latency_health ?? 'ok') == 'paused'", enabled = true, suffix = " (PAUSED)", label = "ANTI-LAG 2" },
+  { when = "(live.latency_health ?? 'ok') == 'failed'", enabled = true, suffix = " (NOT WORKING)", label = "ANTI-LAG 2" },
+]
+
+[rows.PM_RxGpuAntiLag.value."auto"]
+label_rules = [
+  { when = "features.latency.auto_on", label = "AUTO (ON)" },
+  { when = "!features.latency.auto_on", label = "AUTO (OFF)" },
+]
+
+[rows.PM_RxGpuHdrWhite]
+format = "%.0f NITS"
+states = [
+  { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
+]
+
+[rows.PM_RxGpuHdrPeak]
+format = "%.0f NITS"
+states = [
+  { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
+]
+
+[rows.PM_RxGpuHdrHighlights]
+states = [
+  { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
+]
+
+[rows.PM_RxGpuHdrTest]
+states = [
+  { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
+]
+
+[rows.PM_RxGpuHdrWhite.value."0"]
+label_rules = [
+  { when = "true", label = "AUTO ({features.hdr.auto_paper_white_nits} NITS)" },
+]
+
+[rows.PM_RxGpuHdrPeak.value."0"]
+label_rules = [
+  { when = "true", label = "AUTO ({features.hdr.auto_peak_nits} NITS)" },
+]
+
+[rows.PM_RxGpuHdrHighlights.value."1"]
+label = "NORMAL"
+
+[rows.PM_RxGpuHdrHighlights.value."1.5"]
+label = "BRIGHT"
+
+[rows.PM_RxGpuHdrHighlights.value."2"]
+label = "BRIGHTER"
+
+[rows.PM_RxGpuHdrHighlights.value."3"]
+label = "BRIGHTEST"
+
+[rows.PM_RxGpuAa]
+states = [
+  { when = "d.active_upscaler == 'fsr31'", enabled = false, suffix = " (FSR 3.1 ON)" },
+  { when = "d.active_upscaler == 'fsr4'", enabled = false, suffix = " (FSR 4 ON)" },
+  { when = "d.active_upscaler == 'dlss'", enabled = false, suffix = " (DLSS ON)" },
+]
+
+[rows.PM_RxMsaa]
+states = [
+  { when = "d.active_upscaler == 'fsr31'", enabled = false, suffix = " (FSR 3.1 ON)" },
+  { when = "d.active_upscaler == 'fsr4'", enabled = false, suffix = " (FSR 4 ON)" },
+  { when = "d.active_upscaler == 'dlss'", enabled = false, suffix = " (DLSS ON)" },
+  { when = "live.msaa_switching ?? false", enabled = true, suffix = " (APPLYING)" },
+]
+values = [
+  { id = "off", label = "OFF" },
+  { id = "2", label = "2X" },
+  { id = "4", label = "4X" },
+  { id = "8", label = "8X" },
+]
+
+[[rows.PM_RxMsaa.variants]]
+when = "renderer == 'xenia'"
+setting = "disable_msaa"
+apply = "restart"
+states = [
+  { when = "true", enabled = true, suffix = " (RESTART)", needs_restart = true },
+]
+decode = { cases = [{ when = "s.disable_msaa", value = "off" }, { value = "2" }] }
+values = [
+  { id = "off", label = "OFF", writes = [{ setting = "disable_msaa", value = "true" }] },
+  { id = "2", label = "2X", writes = [{ setting = "disable_msaa", value = "false" }] },
+]
+
+[rows.PM_RxFoliage]
+states = [
+  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+]
+
+[rows.PM_RxGpuShadowDetail]
+states = [
+  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+]
+
+[rows.PM_RxGpuShadowDetail.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuShadowFilter]
+states = [
+  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+]
+
+[rows.PM_RxGpuShadowFilter.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuTrafficShadows]
+states = [
+  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+]
+
+[rows.PM_RxGpuTrafficShadows.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuShadowFilter.value."pcss"]
+label_rules = [
+  { when = "!features.pcss", label = "PCSS (SOFT)" },
+]
+
+[rows.PM_RxGpuAo]
+
+[rows.PM_RxGpuAo.value."auto"]
+auto_label = true
+label_rules = [
+  { when = "gpu.rt_rung == 'strong' && d.rtao_open", label = "AUTO (RT)" },
+]
+
+[rows.PM_RxGpuAo.value."rt"]
+label_rules = [
+  { when = "gpu.rt_tier == 'none'", label = "RT (NO RT GPU)" },
+  { when = "d.rt_field_class == 'low'", label = "RT (TOO SLOW)" },
+  { when = "!(live.rtao_pass_built ?? false)", label = "RT (NOT READY)" },
+]
+
+[rows.PM_RxGpuContact]
+
+[rows.PM_RxGpuContact.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuSunShafts]
+
+[rows.PM_RxGpuSunShafts.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuHeadlights]
+
+[rows.PM_RxGpuHeadlights.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuVolumetrics]
+
+[rows.PM_RxGpuVolumetrics.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuRoadRefl]
+
+[rows.PM_RxGpuRoadRefl.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuSsr]
+
+[rows.PM_RxGpuSsr.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuCarRefl]
+
+[rows.PM_RxGpuCarRefl.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuCarShadowMap]
+
+[rows.PM_RxGpuCarShadowMap.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuNeonLight]
+
+[rows.PM_RxGpuNeonLight.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuAoLevel]
+states = [
+  { when = "!d.ao_on", enabled = false, reason = "Ambient occlusion is off." },
+]
+
+[rows.PM_RxGpuLightShadows]
+states = [
+  { when = "resolved(s.mcla_gpu_headlights) != 'on'", enabled = false, reason = "Headlights are off." },
+]
+
+[rows.PM_RxGpuLightShadows.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuRtShadows]
+states = [
+  { when = "!api.city_rt_shadows", enabled = false, suffix = " (NO RT GPU)" },
+  { when = "gpu.class == 'low'", enabled = false, suffix = " (GPU TOO SLOW)" },
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
+  { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false, reason = "Contact shadows are off." },
+]
+
+[rows.PM_RxGpuRtShadows.value."auto"]
+auto_label = true
+label_rules = [
+  { when = "!api.city_rt_shadows", label = "AUTO (OFF)" },
+]
+
+[rows.PM_RxGpuSsgi]
+states = [
+  { when = "!d.ao_on && (live.rt_gi_replaces_bounce ?? false)", enabled = false, suffix = " (REPLACED)" },
+  { when = "!d.ao_on", enabled = false, reason = "Ambient occlusion is off." },
+  { when = "live.rt_gi_replaces_bounce ?? false", enabled = true, suffix = " (REPLACED)" },
+]
+
+[rows.PM_RxGpuSsgi.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuRtGi]
+states = [
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
+  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)" },
+  { when = "!build.rt_gi_update_built", enabled = false, suffix = " (NOT READY)" },
+]
+
+[rows.PM_RxGpuRtGi.value."auto"]
+auto_label = true
+label_rules = [
+  { when = "!d.rt_gi_open", label = "AUTO (OFF)" },
+]
+
+[rows.PM_RxGpuSsgiLevel]
+states = [
+  { when = "!d.bounce_on", enabled = false, reason = "Bounce Light and RT Bounce Light are off." },
+]
+
+[rows.PM_RxGpuRtCityRefl]
+states = [
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT CITY" },
+  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT CITY" },
+  { when = "!d.car_rt_runs", enabled = false, suffix = " (NEEDS CAR RT)", label = "RT CITY" },
+  { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'unavailable'", enabled = false, suffix = " (NOT READY)", label = "RT CITY" },
+  { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'building'", enabled = true, suffix = " (BUILDING DATA)", label = "RT CITY" },
+]
+
+[rows.PM_RxGpuRtCityRefl.value."auto"]
+auto_label = true
+label_rules = [
+  { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
+]
+
+[rows.PM_RxGpuSideMirrors]
+states = [
+  { when = "live.side_mirrors_replaced ?? false", enabled = true, suffix = " (REPLACED)" },
+]
+
+[rows.PM_RxGpuSideMirrors.value."auto"]
+auto_label = true
+
+[rows.PM_RxGpuRtMirror]
+states = [
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT MIRRORS" },
+  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT MIRRORS" },
+]
+
+[rows.PM_RxGpuRtMirror.value."auto"]
+auto_label = true
+label_rules = [
+  { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
+]
+
+[rows.PM_RxGpuCarSelfRefl]
+reads = ["mcla_gpu_car_selfrefl", "mcla_gpu_car_selfrefl_rt"]
+decode = "d.car_selfrefl_choice"
+values = [
+  { id = "auto", label = "AUTO", auto_label = true, label_rules = [{ when = "auto_of('mcla_gpu_car_selfrefl') == 'off'", label = "AUTO (OFF)" }, { when = "api.car_rt", label = "AUTO (RAY TRACED)" }, { when = "!api.car_rt", label = "AUTO (ON)" }], writes = [{ setting = "mcla_gpu_car_selfrefl_rt", value = "auto" }, { setting = "mcla_gpu_car_selfrefl", value = "auto" }] },
+  { id = "off", label = "OFF", writes = [{ setting = "mcla_gpu_car_selfrefl", value = "off" }] },
+  { id = "on", label = "ON", writes = [{ setting = "mcla_gpu_car_selfrefl_rt", value = "off" }, { setting = "mcla_gpu_car_selfrefl", value = "on" }] },
+  { id = "ray_traced", label = "RAY TRACED", when = "api.car_rt", writes = [{ setting = "mcla_gpu_car_selfrefl_rt", value = "auto" }, { setting = "mcla_gpu_car_selfrefl", value = "on" }] },
+]
+
+[rows.PM_RxLanguage]
+apply = "restart"
+values = [
+  { id = "auto", label = "AUTO" },
+  { id = "en", label = "ENGLISH" },
+  { id = "es", label = "ESPANOL" },
+  { id = "fr", label = "FRANCAIS" },
+  { id = "de", label = "DEUTSCH" },
+  { id = "it", label = "ITALIANO" },
+  { id = "pt", label = "PORTUGUES", when = "install.portuguese_text" },
+]
+
+[rows.PM_RxHudWidth]
+format = "%.0f"
+states = [
+  { when = "!(live.ultrawide_active ?? true)", enabled = false, suffix = " (16X9: NO EFFECT)" },
+]
+
+[rows.PM_RxHudWidth.value."0"]
+label = "CENTERED"
+
+[rows.PM_RxHudWidth.value."50"]
+label = "WIDER"
+
+[rows.PM_RxHudWidth.value."100"]
+label = "FULL"
+
+[rows.PM_RxAiDiff]
+format = "%.0f%%"
+
+[rows.PM_RxAiDiff.value."-1"]
+label = "STOCK"
+
+[rows.PM_RxRbNitroStart]
+format = "%.0fM"
+
+[rows.PM_RxRbNitroStart.value."-1"]
+label = "STOCK"
+
+[rows.PM_RxTrigThrottle]
+
+[rows.PM_RxTrigThrottle.value."1"]
+label = "1 (LIGHT)"
+
+[rows.PM_RxTrigThrottle.value."8"]
+label = "8 (FIRM)"
+
+[rows.PM_RxTrigBrake]
+
+[rows.PM_RxTrigBrake.value."1"]
+label = "1 (LIGHT)"
+
+[rows.PM_RxTrigBrake.value."8"]
+label = "8 (FIRM)"
+
+[rows.PM_RxUnspawn]
+
+[rows.PM_RxUnspawn.value."0"]
+auto_label = true
+
+[rows.PM_RxPedDensity]
+
+[rows.PM_RxPedDensity.value."-1"]
+auto_label = true
+
+[rows.PM_RxParkedCars]
+
+[rows.PM_RxParkedCars.value."-1"]
+auto_label = true
+
+[rows.PM_RxLodTraffic]
+
+[rows.PM_RxLodTraffic.value."0"]
+auto_label = true
+
+[rows.PM_RxLodCity]
+
+[rows.PM_RxLodCity.value."0"]
+auto_label = true
+
+[rows.PM_RxDbgRenderer]
+apply = "restart"
+states = [
+  { when = "live.renderer_forced ?? false", enabled = false, suffix = " (LAUNCH OPTION)", needs_restart = false },
+  { when = "true", enabled = true, suffix = " (RESTART)", needs_restart = true },
+]
+
+decode = "d.renderer_choice"
+values = [
+  { id = "larecomp", label = "NATIVE" },
+  { id = "d3d12", label = "XENIA D3D12" },
+  { id = "vulkan", label = "XENIA VULKAN" },
+]
+
+[rows.PM_RxGpuUpsc]
+reads = ["mcla_gpu_upscaler", "mcla_gpu_fsr", "mcla_gpu_fsr_preset"]
+decode = "d.shown_upscaler"
+states = [
+  { when = "s.mcla_gpu_upscaler == 'dlss' && (live.dlss_waits_for_restart ?? (features.upscalers.dlss == 'after_restart'))", suffix = " (RESTART)", needs_restart = true },
+  { when = "(live.upscaler_state ?? 'ok') == 'no_room'", suffix = " (NO ROOM)" },
+  { when = "(live.upscaler_state ?? 'ok') == 'switching'", suffix = " (APPLYING)" },
+]
+
+values = [
+  { id = "off", label = "OFF", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "off" }] },
+  { id = "fsr1", label = "FSR 1", writes = [{ setting = "mcla_gpu_upscaler", value = "off" }, { setting = "mcla_gpu_fsr", value = "true" }] },
+  { id = "fsr31", label = "FSR 3.1", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "fsr31" }], when = "features.upscalers.fsr31" },
+  { id = "fsr4", label = "FSR 4", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "fsr4" }], when = "features.upscalers.fsr4" },
+  { id = "dlss", label = "DLSS", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "dlss" }], when = "features.upscalers.dlss != 'no'", label_rules = [{ when = "features.upscalers.dlss == 'needs_setup'", label = "DLSS (SETUP)" }] },
+]
+
+[[rows.PM_RxGpuUpsc.variants]]
+when = "live.fsr1_preset_custom ?? (s.mcla_gpu_fsr_preset == 'custom')"
+values = [
+  { id = "off", label = "OFF", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "off" }] },
+  { id = "fsr1", label = "FSR 1", writes = [{ setting = "mcla_gpu_upscaler", value = "off" }, { setting = "mcla_gpu_fsr_preset", value = "quality" }, { setting = "mcla_gpu_fsr", value = "true" }] },
+  { id = "fsr31", label = "FSR 3.1", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "fsr31" }], when = "features.upscalers.fsr31" },
+  { id = "fsr4", label = "FSR 4", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "fsr4" }], when = "features.upscalers.fsr4" },
+  { id = "dlss", label = "DLSS", writes = [{ setting = "mcla_gpu_fsr", value = "false" }, { setting = "mcla_gpu_upscaler", value = "dlss" }], when = "features.upscalers.dlss != 'no'", label_rules = [{ when = "features.upscalers.dlss == 'needs_setup'", label = "DLSS (SETUP)" }] },
+]
+
+[rows.PM_RxGpuUpscMode]
+setting = "mcla_gpu_resolution_scale"
+
+[[rows.PM_RxGpuUpscMode.variants]]
+when = "renderer == 'xenia'"
+label = "RENDER SCALE"
+setting = "resolution_scale"
+apply = "restart"
+states = [
+  { when = "true", enabled = true, suffix = " (RESTART)", needs_restart = true },
+]
+values_from = { generator = "render_scale.shares", args = { renderer = "xenia" } }
+fallback_values = [
+  { id = "1", label = "100%" },
+  { id = "2", label = "200%" },
+  { id = "3", label = "300%" },
+]
+
+[[rows.PM_RxGpuUpscMode.variants]]
+when = "d.shown_upscaler == 'fsr1'"
+label = "FSR 1 MODE"
+setting = "mcla_gpu_fsr_preset"
+# pause_only keeps the live list in the pause menu and publishes its fallback as a v1 list.
+values_from = { generator = "render_scale.fsr1_modes", pause_only = true }
+fallback_values = [
+  { id = "custom", label = "CUSTOM", when = "s.mcla_gpu_fsr_preset == 'custom'" },
+  { id = "ultra_quality", label = "ULTRA QUAL. (77%)" },
+  { id = "quality", label = "QUALITY (67%)" },
+  { id = "balanced", label = "BALANCED (59%)" },
+  { id = "performance", label = "PERFORMANCE (50%)" },
+  { id = "ultra_performance", label = "ULTRA PERF. (33%)", when = "s.mcla_gpu_fsr_preset == 'ultra_performance'" },
+]
+
+[[rows.PM_RxGpuUpscMode.variants]]
+when = "d.shown_upscaler == 'fsr31'"
+label = "FSR 3.1 MODE"
+setting = "mcla_gpu_fsr31_mode"
+values_ref = "fsr_modes"
+
+[[rows.PM_RxGpuUpscMode.variants]]
+when = "d.shown_upscaler == 'fsr4'"
+label = "FSR 4 MODE"
+setting = "mcla_gpu_fsr4_mode"
+values_ref = "fsr_modes"
+
+[[rows.PM_RxGpuUpscMode.variants]]
+when = "d.shown_upscaler == 'dlss'"
+label = "DLSS MODE"
+setting = "mcla_gpu_dlss_mode"
+values = [
+  { id = "dlaa", label = "DLAA (100%)", label_rules = [{ when = "contains(features.upscalers.dlss_modes_refused, 'dlaa')", label = "DLAA (N/A)" }] },
+  { id = "quality", label = "QUALITY (67%)", label_rules = [{ when = "contains(features.upscalers.dlss_modes_refused, 'quality')", label = "QUALITY (N/A)" }] },
+  { id = "balanced", label = "BALANCED (58%)", label_rules = [{ when = "contains(features.upscalers.dlss_modes_refused, 'balanced')", label = "BALANCED (N/A)" }] },
+  { id = "performance", label = "PERFORMANCE (50%)", label_rules = [{ when = "contains(features.upscalers.dlss_modes_refused, 'performance')", label = "PERFORMANCE (N/A)" }] },
+  { id = "ultra_performance", label = "ULTRA PERF. (33%)", label_rules = [{ when = "contains(features.upscalers.dlss_modes_refused, 'ultra_performance')", label = "ULTRA PERF. (N/A)" }] },
+]
+states = [
+  { when = "features.upscalers.dlss == 'needs_setup'", enabled = false, suffix = " (SETUP)" },
+  { when = "features.upscalers.dlss == 'after_restart'", enabled = false, suffix = " (RESTART)", needs_restart = true },
+]
+
+[[rows.PM_RxGpuUpscMode.variants]]
+when = "true"
+label = "RENDER SCALE"
+setting = "mcla_gpu_resolution_scale"
+values_from = { generator = "render_scale.shares", args = { renderer = "native" } }
+fallback_values = [
+  { id = "0", label = "100%" },
+  { id = "1.5", label = "150%" },
+  { id = "2", label = "200%" },
+  { id = "3", label = "300%" },
+]
+
+[rows.PM_RxGpuUpscSharp]
+setting = "mcla_gpu_upscaler_sharpness"
+values_from = { generator = "upscaler.sharpness", pause_only = true, args = { setting = "mcla_gpu_upscaler_sharpness" } }
+fallback_values = [
+  { id = "0", label = "OFF" },
+  { id = "0.2", label = "0.2" },
+  { id = "0.4", label = "0.4" },
+  { id = "0.6", label = "0.6" },
+  { id = "0.8", label = "0.8" },
+  { id = "1", label = "1" },
+]
+states = [
+  { when = "!(d.active_upscaler in ['fsr31','fsr4']) && d.shown_upscaler != 'fsr1'", enabled = false, suffix = " (FSR ONLY)" },
+]
+
+[[rows.PM_RxGpuUpscSharp.variants]]
+when = "d.shown_upscaler == 'fsr1'"
+setting = "mcla_gpu_fsr_sharpness"
+values_from = { generator = "upscaler.sharpness", pause_only = true, args = { setting = "mcla_gpu_fsr_sharpness" } }
+fallback_values = [
+  { id = "1.6", label = "0.2" },
+  { id = "1.2", label = "0.4" },
+  { id = "0.8", label = "0.6" },
+  { id = "0.4", label = "0.8" },
+  { id = "0.2", label = "0.9", when = "s.mcla_gpu_fsr_sharpness == 0.2" },
+  { id = "0", label = "1" },
+]
+
+[rows.PM_RxGpuDenoiser]
+hidden_unless = "renderer == 'native' && d.denoiser_vendor in ['amd','nvidia']"
+states = [
+  { when = "d.denoiser_state == 'hidden'", enabled = false, reason = "This GPU cannot run DLSS Ray Reconstruction." },
+  { when = "d.denoiser_state == 'needs_d3d12'", enabled = false, suffix = " (D3D12 ONLY)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'unsupported'", enabled = false, suffix = " (N/A)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'needs_dlss'", enabled = false, suffix = " (NEEDS DLSS)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'needs_setup'", enabled = false, suffix = " (SETUP)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'failed'", enabled = false, suffix = " (FAILED)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'not_needed'", enabled = false, suffix = " (NOT NEEDED)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'making'", enabled = true, suffix = " (APPLYING)", label = "DLSS RR" },
+  { when = "d.denoiser_state == 'restart'", enabled = true, suffix = " (RESTART)", label = "DLSS RR", needs_restart = true },
+]
+
+[[rows.PM_RxGpuDenoiser.variants]]
+when = "d.denoiser_vendor == 'amd'"
+label = "AMD FSR RAY REGENERATION"
+states = [
+  { when = "d.denoiser_state == 'hidden'", enabled = false, reason = "This GPU cannot run AMD FSR Ray Regeneration." },
+  { when = "d.denoiser_state == 'needs_d3d12'", enabled = false, suffix = " (D3D12 ONLY)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'unsupported'", enabled = false, suffix = " (N/A)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'needs_dlss'", enabled = false, suffix = " (NEEDS DLSS)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'needs_setup'", enabled = false, suffix = " (SETUP)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'failed'", enabled = false, suffix = " (FAILED)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'not_needed'", enabled = false, suffix = " (NOT NEEDED)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'making'", enabled = true, suffix = " (APPLYING)", label = "RAY REGEN" },
+  { when = "d.denoiser_state == 'restart'", enabled = true, suffix = " (RESTART)", label = "RAY REGEN", needs_restart = true },
+]
+
+[rows.PM_RxGpuFrameGen]
+hidden_unless = "(live.fsr_frame_generation_listed ?? features.frame_generation.fsr31) || (live.dlss_frame_generation_listed ?? features.frame_generation.dlss)"
+states = [
+  { when = "s.mcla_gpu_frame_generation == 'dlss' && features.frame_generation.dlss_after_restart", suffix = " (RESTART)", label = "FRAME GEN", needs_restart = true },
+  { when = "live.frame_generation_applying ?? false", suffix = " (APPLYING)", label = "FRAME GEN" },
+]
+values = [
+  { id = "off", label = "OFF" },
+  { id = "fsr31", label = "FSR 3.1", when = "(live.fsr_frame_generation_listed ?? features.frame_generation.fsr31) || s.mcla_gpu_frame_generation == 'fsr31'", label_rules = [{ when = "(live.fsr_frame_generation_state ?? 'ok') == 'failed'", label = "FSR 3.1 (FAILED)" }, { when = "s.mcla_gpu_frame_generation == 'fsr31' && (live.fsr_frame_generation_state ?? 'ok') == 'no_room'", label = "FSR 3.1 (NO ROOM)" }] },
+  { id = "dlss", label = "DLSS", when = "(live.dlss_frame_generation_listed ?? features.frame_generation.dlss) || s.mcla_gpu_frame_generation == 'dlss'", label_rules = [{ when = "(live.dlss_frame_generation_state ?? 'ok') == 'failed'", label = "DLSS (FAILED)" }, { when = "s.mcla_gpu_frame_generation == 'dlss' && (live.dlss_frame_generation_state ?? 'ok') == 'unsupported'", label = "DLSS (N/A)" }] },
+]
+
+[rows.PM_RxGpuFrameGenMult]
+hidden_unless = "live.frame_generation_multiplier_listed ?? (features.frame_generation.dlss_multiplier_max > 2)"
+states = [
+  { when = "s.mcla_gpu_frame_generation != 'dlss'", enabled = false, reason = "Choose DLSS frame generation to change the multiplier." },
+]
+decode = "d.dlss_frame_gen_multiplier"
+values = [
+  { id = "2", label = "2X" },
+  { id = "3", label = "3X", when = "features.frame_generation.dlss_multiplier_max >= 3" },
+  { id = "4", label = "4X", when = "features.frame_generation.dlss_multiplier_max >= 4" },
+]
+
+[rows.PM_RxGpuFrameGenFps]
+format = "%.0f"
+hidden_unless = "(live.fsr_frame_generation_listed ?? features.frame_generation.fsr31) || (live.dlss_frame_generation_listed ?? features.frame_generation.dlss)"
+states = [
+  { when = "!d.frame_gen_available", enabled = false, reason = "Frame generation is off or unavailable." },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."-1"]
+label = "USE FPS LIMIT"
+label_rules = [
+  { when = "(live.frame_generation_half_display ?? 0) > 0 && d.shown_per_rendered == 2", label = "HALF DISPLAY {live.frame_generation_half_display}" },
+  { when = "(live.frame_generation_half_display ?? 0) > 0", label = "1/{d.shown_per_rendered} DISPLAY {live.frame_generation_half_display}" },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."0"]
+label = "UNCAPPED"
+
+[rows.PM_RxGpuFrameGenFps.value."30"]
+label_rules = [
+  { when = "true", label = "{value} ({value*d.shown_per_rendered} SHOWN)" },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."40"]
+label_rules = [
+  { when = "true", label = "{value} ({value*d.shown_per_rendered} SHOWN)" },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."45"]
+label_rules = [
+  { when = "true", label = "{value} ({value*d.shown_per_rendered} SHOWN)" },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."50"]
+label_rules = [
+  { when = "true", label = "{value} ({value*d.shown_per_rendered} SHOWN)" },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."60"]
+label_rules = [
+  { when = "true", label = "{value} ({value*d.shown_per_rendered} SHOWN)" },
+]
+
+[rows.PM_RxGpuFrameGenFps.value."120"]
+label_rules = [
+  { when = "true", label = "{value} ({value*d.shown_per_rendered} SHOWN)" },
+]

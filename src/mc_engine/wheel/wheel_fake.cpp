@@ -40,10 +40,11 @@
 //   sub_8275CAA0  EffectOperation(user, {id, op}, 1, 1, 0)   op 2 PLAY, 1 STOP (see sub_82467A18: set/update an effect, then op 2)
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -63,26 +64,13 @@
 
 #include "../cinematic/freecam_runtime.h"
 #include "mc_engine/input/input_state.h"
+#include "mc_engine/input/synthetic_start.h"
 #include "../keyboard_native.h"
 #include "../hooks/hooks_internal.h"
 #include "larecomp_log.h"
 #include "wheel_ffb.h"
 #include "wheel_input.h"
-
-REXCVAR_DEFINE_STRING(wheel_fake, "off", "MCLA/Wheel",
-    "Present the game with a steering wheel without owning one. off: nothing changes. pad: the "
-    "real pad or keyboard-and-mouse state is shown as a wheel (stick X steers, triggers are the "
-    "pedals, bumpers shift). keys: A/D steer, W throttle, S brake, Q/E shift down/up. Takes "
-    "effect on the next input poll.")
-    .allowed({"off", "pad", "keys"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_log, false, "MCLA/Wheel",
-    "Log every force-feedback command the game sends while wheel_fake is on: effect id, type, "
-    "duration and parameters. Capped so a long race cannot fill the log.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_8275CB70);
 REX_EXTERN(__imp__rex_sub_8275CB78);
@@ -98,7 +86,7 @@ namespace {
 enum class FakeMode { kOff, kPad, kKeys };
 
 FakeMode CurrentMode() {
-    const std::string& v = REXCVAR_GET(wheel_fake);
+    const std::string& v = larecomp::settings::wheel_fake.Get();
     if (v == "pad") return FakeMode::kPad;
     if (v == "keys") return FakeMode::kKeys;
     return FakeMode::kOff;
@@ -219,7 +207,7 @@ const char* EffectTypeName(uint32_t t) {
 std::atomic<int> g_ffb_log_budget{4000};
 
 bool FfbLogOn() {
-    return REXCVAR_GET(wheel_ffb_log) && g_ffb_log_budget.load(std::memory_order_relaxed) > 0;
+    return larecomp::settings::wheel_ffb_log.Get() && g_ffb_log_budget.load(std::memory_order_relaxed) > 0;
 }
 
 void FfbLog(const char* what, uint32_t user, const uint8_t* base, uint32_t effect_ptr,
@@ -274,7 +262,7 @@ extern "C" REX_FUNC(rex_sub_8275CB70) {
                           "flags 0x{:04X}); source: {}",
                           RdU16(base, caps + 2),
                           CurrentMode() == FakeMode::kOff ? "a real wheel (SDL)"
-                                                          : REXCVAR_GET(wheel_fake));
+                                                          : larecomp::settings::wheel_fake.Get());
     }
 }
 
@@ -283,6 +271,9 @@ extern "C" REX_FUNC(rex_sub_8275CB78) {
     const uint32_t state = ctx.r4.u32;
     // When this function ends (the SDK's state, the dead zones and any test pad done) a flying free camera takes the pad and clears the game's copy.
     mc::cinematic::FreecamPadScope freecam_pad(base, user, state, ctx.r3.u64);
+    // A press of Start that --join_server asked for (input/synthetic_start.h) goes into the state when this function ends. Constructed before the activity scope for the same reason as the
+    // steering ramp: a press the program made is not a controller's input, and the device state machine must not count it.
+    larecomp::input::SyntheticStartScope synthetic_start(base, user, state, ctx.r3.u64);
     // The keyboard's steering ramp goes into the left stick when this function ends (keyboard_native.h). Constructed before the activity scope, so that it runs after it: the ramp is the
     // keyboard, and the device state machine must not count it as a controller's stick.
     larecomp::keyboard::KeySteerScope key_steer(base, user, state, ctx.r3.u64);
@@ -459,7 +450,7 @@ extern "C" REX_FUNC(rex_sub_8260C4D0) {
 // gear (-1 reverse, 0 neutral, 1..N), r5 = the vehicle the HUD shows. Speed is the length of the
 // velocity vector at *(vehicle+0x80)+0x110. Read-only.
 void Hook_WheelHudGear(PPCRegister& r4, PPCRegister& r5) {
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (!base) return;
     float speed = 0.0f;
     const uint32_t veh = r5.u32;

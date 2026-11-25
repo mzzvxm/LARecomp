@@ -2,10 +2,9 @@
 // needs outside the Vinyl Editor, and .vgp export / import.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -23,41 +22,7 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
-
-REXCVAR_DEFINE_BOOL(extra_vinyl_layers, false, "MCLA/Garage",
-    "Raise the front/rear BUMPER vinyl caps from 16 to 31 layers each "
-    "(64/64/64/31/31). Top and side caps stay at 64 because MCLA's vinyl "
-    "composite pipeline hard-caps a single surface at 64 layers (fixed-64 "
-    "work-area buffers; >64 overflows and crashes). Bumpers stay <=64 and keep "
-    "their 5-bit save field, so existing garage/online cars are 100% compatible.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(export_vinyl, false, "MCLA/Garage",
-    "Export the current car's vinyl layers to a .vgp file in <exe dir>/vinyls/ "
-    "(auto-named vinyl_<car>_<timestamp>.vgp). Toggle ON while in the garage with "
-    "a car loaded; it fires once and flips back OFF. Share the file; import later.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(import_vinyl, "", "MCLA/Garage",
-    "Import a .vgp vinyl package onto the current car. Type the file name (found "
-    "in <exe dir>/vinyls/, with or without the .vgp extension) and press Enter "
-    "while in the garage with a car loaded. It overwrites the car's current vinyl "
-    "layers and re-composites, then clears the field. Layers past the active "
-    "per-surface cap are dropped (enable extra_vinyl_layers first for 31 bumper "
-    "slots).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vinyl_auto_readback, true, "MCLA/Garage",
-    "Fix: car vinyls only load outside the Vinyl Editor when GPU readback is on "
-    "(the game builds the decal texture on the CPU from a GPU composite). This "
-    "briefly enables the emulated GPU's resolve readback (d3d12_ or "
-    "vulkan_readback_resolve) for ~1.5s around each vinyl (re)composite "
-    "(garage entry / edits) so decals appear everywhere, while keeping readback "
-    "OFF during racing for full performance. Leave ON.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 // Vinyl (decal) layer caps. MCLA stores car decals in a fixed 288-slot layer
 // array (each layer = 20 bytes) partitioned across 5 surfaces by two parallel
@@ -78,11 +43,11 @@ REXCVAR_DEFINE_BOOL(vinyl_auto_readback, true, "MCLA/Garage",
 // garage cars still load. Only the raw "UserVinylData" package blob is stored by
 // absolute slot; saved packages read shifted until re-saved (garage cars are fine).
 void ApplyVinylLayerCaps() {
-    if (!REXCVAR_GET(extra_vinyl_layers)) return;
+    if (!larecomp::settings::extra_vinyl_layers.Get()) return;
 
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // dword_820510B0 (the capacity table) lives in the XEX read-only data
@@ -94,7 +59,7 @@ void ApplyVinylLayerCaps() {
     auto make_writable = [&](uint32_t addr) {
         if (auto* heap = mem->LookupHeap(addr)) {
             heap->Protect(addr, 5 * sizeof(uint32_t),
-                          rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+                          rex::kernel::kMemoryProtectRead | rex::kernel::kMemoryProtectWrite);
         }
     };
 
@@ -162,9 +127,9 @@ static std::atomic<uint32_t> g_vinyl_player{0};
 // surfaces/layers spans many frames, so we hold readback until it's actually
 // idle instead of a fixed guess. Self-contained (direct guest reads).
 static bool VinylCompositeBusy() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return false;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return false;
     auto rd8 = [&](uint32_t a) -> uint8_t { return *mem->TranslateVirtual<const uint8_t*>(a); };
     auto is_ptr = [](uint32_t ea) { return ea >= 0x10000u && ea < 0xFFFF0000u; };
@@ -186,7 +151,7 @@ static bool VinylCompositeBusy() {
 
 // Called from the regen hook: (re)arm the readback window.
 static void ArmVinylReadbackWindow() {
-    if (!REXCVAR_GET(vinyl_auto_readback)) return;
+    if (!larecomp::settings::vinyl_auto_readback.Get()) return;
     // Generous bridge until the state machine spins up; TickVinylReadbackWindow
     // then keeps it alive for as long as the composite actually runs.
     HoldGlobalReadback(ReadbackClient::kVinyl, 2'000'000'000LL);  // +2s
@@ -199,7 +164,7 @@ static void ArmVinylReadbackWindow() {
 // that the sub_8236D850 hook alone can miss, without leaving readback on during
 // racing (flags stay 0 when no vinyl work is queued).
 void TickVinylReadbackWindow() {
-    if (VinylCompositeBusy() && REXCVAR_GET(vinyl_auto_readback)) {
+    if (VinylCompositeBusy() && larecomp::settings::vinyl_auto_readback.Get()) {
         HoldGlobalReadback(ReadbackClient::kVinyl, 1'500'000'000LL);  // +1.5s
     }
 }
@@ -234,7 +199,7 @@ constexpr uint32_t kOffsetsTable = 0x827E9770;
 // Resolves the current garage car's paint object: the hook-cached value first,
 // else the live mcCarModel global (dword_8288DCF8; carModel+20 = paint). Returns
 // 0 if no car is loaded. `src` (optional) is set to which source succeeded.
-uint32_t ResolveCurrentPaint(rex::memory::Memory* mem, const char** src = nullptr) {
+uint32_t ResolveCurrentPaint(rex::kernel::GuestAddressSpace* mem, const char** src = nullptr) {
     uint32_t paint = g_vinyl_paint.load(std::memory_order_relaxed);
     if (IsGuestPtr(paint)) { if (src) *src = "hook"; return paint; }
     uint32_t car_model = GuestRead32(mem, 0x8288DCF8);
@@ -246,7 +211,7 @@ uint32_t ResolveCurrentPaint(rex::memory::Memory* mem, const char** src = nullpt
 }
 
 // Reads the car name C-string at *(paint+76)+8; sanitizes to a filename token.
-std::string ReadCarName(rex::memory::Memory* mem, uint32_t paint) {
+std::string ReadCarName(rex::kernel::GuestAddressSpace* mem, uint32_t paint) {
     std::string name;
     uint32_t p76 = GuestRead32(mem, paint + 76);
     if (IsGuestPtr(p76)) {
@@ -276,9 +241,9 @@ std::string TimestampToken() {
 }  // namespace
 
 void ExportVinyl() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // Prefer the paint cached by the regen hook; fall back to the current
@@ -368,9 +333,9 @@ void ExportVinyl() {
 // memory writes (the block is a writable heap object) — no guest calls, so this
 // is safe to run from the F4/cvar-callback thread.
 void ImportVinyl(const std::string& name_in) {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     // Trim surrounding whitespace/quotes from the typed name.
@@ -521,6 +486,7 @@ void ImportVinyl(const std::string& name_in) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 void Hook_CacheVinylPaint(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {}
 void ExportVinyl() {}

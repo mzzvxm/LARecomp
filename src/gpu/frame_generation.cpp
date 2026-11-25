@@ -8,6 +8,7 @@
 // Vulkan frame generation, written by the same author (patches/rexglue-frame-generation.patch).
 
 #include "frame_generation.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -18,8 +19,8 @@
 #include <mutex>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -51,47 +52,8 @@
 #include "vram_budget.h"
 
 #include "os/thread_priority.h"
+#include "os/thread_qos.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_frame_generation, "off", "MCLA/GPU",
-    "Frame generation: off, fsr31 (AMD FSR 3.1 frame generation, on any graphics card, with or "
-    "without an upscaler) or dlss (NVIDIA DLSS frame generation through Streamline, on an RTX 40 or "
-    "50 series card: 2x, and 3x or 4x on an RTX 50 with mcla_gpu_frame_generation_multiplier; "
-    "Streamline presents the frames, and on Vulkan it applies from the next start). An interpolated "
-    "frame is made between every two the game renders and "
-    "shown half a frame before the real one, so a game that renders 60 frames a second shows 120. "
-    "It does not make the game react faster: the real frames are shown one frame later and the "
-    "latency reducer (NVIDIA Reflex, AMD Anti-Lag 2) is switched on while it runs, where the card "
-    "has one. Only the 3D scene is generated; the menus, the pause menu, the map and the loading "
-    "screens are shown as the game draws them, and the interface is drawn over each generated "
-    "frame. The frame rate limit counts rendered frames while it runs "
-    "(mcla_gpu_frame_generation_fps_limit). Wants a display of 100 Hz or more or a variable refresh "
-    "display. Live: it is taken at a frame boundary and the picture may flicker once while the "
-    "window's swap chain is made again. Only offered where the graphics card and the AMD files next "
-    "to the game can run it.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_frame_generation_fps_limit, -1, "MCLA/GPU",
-    "The frame rate cap while frame generation runs, in frames the game RENDERS a second (twice as "
-    "many are shown): -1 is HALF DISPLAY, the default, the floor of 97% of half of the display's "
-    "refresh rate (116 at 240 Hz, 58 at 120 Hz), which fills the display; it is only offered on a "
-    "display of 100 Hz or more, and where it is not the cap you chose (fps_limit) applies. 0 is no "
-    "cap, and a number from 1 to 360 caps the rendered frames at it (60 shows 120). A cap above half "
-    "the display's rate adds latency: the frames queue in front of the display. Live.")
-    .range(-1, 360)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_frame_generation_tearing, false, "MCLA/GPU",
-    "Frame generation presents with vertical sync (FIFO), so a frame is never torn and a variable "
-    "refresh display follows the frames. On presents immediately instead, which tears. Read when "
-    "frame generation is switched on.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(int32_t, mcla_gpu_hdr_layers_view);  // hdr_scene.cpp
-REXCVAR_DECLARE(bool, mcla_gpu_hdr_test_pattern);     // hdr.cpp
 
 namespace mcla::gpu {
 
@@ -108,7 +70,7 @@ constexpr uint32_t kBitNoRoom = 1u << 4;
 std::atomic<uint32_t> g_bits{0};
 std::atomic<uint32_t> g_refresh_hz{0};
 std::mutex g_why_mutex;
-std::string g_why;
+std::string& g_why = larecomp::Leak<std::string>();
 
 // HALF DISPLAY: the floor of 97% of half the refresh rate, on a display of 100 Hz or more.
 uint32_t HalfDisplayCap(uint32_t hz) {
@@ -183,7 +145,7 @@ int32_t FrameGenerationFpsLimit(int32_t player_limit) {
   if (!FrameGenerationRunning()) {
     return player_limit;
   }
-  const int32_t cap = REXCVAR_GET(mcla_gpu_frame_generation_fps_limit);
+  const int32_t cap = larecomp::settings::mcla_gpu_frame_generation_fps_limit.Get();
   if (cap >= 0) {
     return cap;
   }
@@ -306,11 +268,11 @@ void FrameGeneration::ReleaseQueue() {
 // ---------------------------------------------------------------------------
 
 bool FrameGeneration::WantedBySetting() const {
-  return REXCVAR_GET(mcla_gpu_frame_generation) == "fsr31";
+  return larecomp::settings::mcla_gpu_frame_generation.Get() == "fsr31";
 }
 
 bool FrameGeneration::WantsVsync() const {
-  return !REXCVAR_GET(mcla_gpu_frame_generation_tearing);
+  return !larecomp::settings::mcla_gpu_frame_generation_tearing.Get();
 }
 
 void FrameGeneration::UpdateDisplayRefresh() {
@@ -669,14 +631,14 @@ void FrameGeneration::CompleteSwitch(Change change, bool ok) {
     Publish(true);
     REXLOG_INFO("[gpu] frame generation: on (FSR 3.1; the swap chain is on the present queue, {}, "
                 "the display runs at {} Hz, the frame limit counts rendered frames: {})",
-                REXCVAR_GET(mcla_gpu_frame_generation_tearing) ? "presents are immediate (they may tear)"
+                larecomp::settings::mcla_gpu_frame_generation_tearing.Get() ? "presents are immediate (they may tear)"
                                                                 : "presents are FIFO",
                 refresh_hz_,
-                REXCVAR_GET(mcla_gpu_frame_generation_fps_limit) < 0
+                larecomp::settings::mcla_gpu_frame_generation_fps_limit.Get() < 0
                     ? std::format("HALF DISPLAY, {}", HalfDisplayCap(refresh_hz_) != 0
                                                           ? std::to_string(HalfDisplayCap(refresh_hz_))
                                                           : std::string("not offered here, fps_limit"))
-                    : std::to_string(REXCVAR_GET(mcla_gpu_frame_generation_fps_limit)));
+                    : std::to_string(larecomp::settings::mcla_gpu_frame_generation_fps_limit.Get()));
     return;
   }
   // Off: the swap chain is back on the render queue (or could not be made at all).
@@ -828,7 +790,7 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
     return skip(stats_.not_generated_memory);
   }
   // The HDR debug views and the test pattern show something else than the frame.
-  if (REXCVAR_GET(mcla_gpu_hdr_layers_view) != 0 || REXCVAR_GET(mcla_gpu_hdr_test_pattern)) {
+  if (larecomp::settings::mcla_gpu_hdr_layers_view.Get() != 0 || larecomp::settings::mcla_gpu_hdr_test_pattern.Get()) {
     return skip(stats_.not_generated_frame);
   }
   const TemporalSystem::FrameState& fr = temporal_->frame();
@@ -1147,6 +1109,10 @@ void FrameGeneration::PacerMain() {
   // Linux this is a raise, which needs RLIMIT_NICE or CAP_SYS_NICE and is skipped without
   // (os/thread_priority.h); frame generation is not offered there yet.
   larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kHigh);
+  // thread_qos 2: HighQoS too (os/thread_qos.h; nothing when the setting is lower).
+  if (const std::string qos_line = larecomp::os::TagCurrentThreadHighQos("frame generation pacer"); !qos_line.empty()) {
+    REXLOG_INFO("{}", qos_line);
+  }
 #if defined(_WIN32)
   timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                   TIMER_ALL_ACCESS);
@@ -1346,7 +1312,7 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
   if (latency_frame != 0) {
     latency::OnPresentBegin(latency_frame);
   }
-  const bool presented = swap_chain_->Present(back);
+  const bool presented = swap_chain_->Present(back) == PresentResult::kPresented;
   if (latency_frame != 0) {
     latency::OnPresentEnd(latency_frame);
   }

@@ -135,6 +135,7 @@ inline uint32_t SurfaceFormat(plume::RenderFormat format) {
     case plume::RenderFormat::R32_FLOAT: return FFX_API_SURFACE_FORMAT_R32_FLOAT;
     case plume::RenderFormat::R16G16_FLOAT: return FFX_API_SURFACE_FORMAT_R16G16_FLOAT;
     case plume::RenderFormat::R8_UNORM: return FFX_API_SURFACE_FORMAT_R8_UNORM;  // the reactive mask
+    case plume::RenderFormat::R16_FLOAT: return FFX_API_SURFACE_FORMAT_R16_FLOAT;  // the masks on Vulkan (upscaler_mask_plan.h Storage)
     default: return FFX_API_SURFACE_FORMAT_UNKNOWN;
   }
 }

@@ -14,9 +14,9 @@
 #include <cstring>
 #include <format>
 
-#include <rex/cvar.h>
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/texture.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"
@@ -29,40 +29,10 @@
 #include "upload.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_lock_ahead_verify, false, "MCLA/GPU",
-    "Diagnostic: a lock whose pages an earlier lock read ahead still reads them from the pool (it "
-    "waits for the GPU as before), and the bytes are compared with the ones kept. Reported in the "
-    "log with the prefix 'lock read-ahead check:' (an error line for every page that differs, the "
-    "first 8). The vinyl editor is where it counts. Off: nothing is done.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_resolve_memory_encode_delay, 2, "MCLA/GPU",
-    "Frames a colour resolve's encode into the resolve memory (and that of a depth resolve into "
-    "k_8_8_8_8) may wait. 0: every "
-    "encode of a frame is recorded at its end. N: recorded once a reader or writer "
-    "of its pages needs it, or after N frames; a resolve that rewrites the same rectangle "
-    "replaces it before it runs, so most are never recorded (75% on a drive). 2 by default: on a "
-    "Radeon iGPU 57 FPS against 52 at 0. At most 120. Hot reload.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_resolve_memory_check, false, "MCLA/GPU",
-    "Diagnostic, slow: every encode also runs at once into a second, reference pool (what "
-    "mcla_gpu_resolve_memory_encode_delay 0 gives), and at each reader of the real pool (decode, "
-    "vertex copy, lock write-back) and for the whole pool every 600 frames the bytes are compared "
-    "with it. Reported in the log with the prefix 'resolve memory check:' every 600 frames and "
-    "at shutdown (RESULT PASS or FAIL). For wrong or flickering textures that the delayed encode "
-    "may cause: the answer is in the log. Off: nothing is done.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
-namespace tu = rex::graphics::texture_util;
+namespace xe = rex::xenos;
 
 namespace {
 
@@ -400,7 +370,7 @@ bool ResolveMemory::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
     return false;
   }
   pool_chunks_ = kInitialPoolChunks;
-  check_ = REXCVAR_GET(mcla_gpu_resolve_memory_check);
+  check_ = larecomp::settings::mcla_gpu_resolve_memory_check.Get();
   if (check_) {
     ref_pool_ = device.CreateBuffer(
         plume::RenderBufferDesc::DefaultBuffer(
@@ -543,8 +513,8 @@ void ResolveMemory::BeginFrame(uint32_t slot) {
   ++frame_;
   // mcla_gpu_work_17oct off: as before 17/10 -- every encode at the end of its frame,
   // no batch counters.
-  counters_ = REXCVAR_GET(mcla_gpu_work_17oct);
-  delay_ = counters_ ? std::min<uint32_t>(REXCVAR_GET(mcla_gpu_resolve_memory_encode_delay),
+  counters_ = larecomp::settings::mcla_gpu_work_17oct.Get();
+  delay_ = counters_ ? std::min<uint32_t>(larecomp::settings::mcla_gpu_resolve_memory_encode_delay.Get(),
                                           kMaxEncodeDelay)
                      : 0;
   // The slot's last frame has completed (FrameRing::Advance waited for it):
@@ -898,7 +868,7 @@ bool ResolveMemory::TouchPages(const TextureLevelStorage& storage, uint32_t bpb_
                            ty * 32 + 32 <= sy1;
         const uint64_t origin =
             uint64_t(storage.address) +
-            uint32_t(tu::GetTiledOffset2D(tx * 32, ty * 32, pitch, bpb_log2));
+            uint32_t(xe::GetTiledOffset2D(tx * 32, ty * 32, pitch, bpb_log2));
         if (tile_bytes > kPageBytes) {
           inside &= touch(origin, whole ? kPageBytes : 0u);
           inside &= touch(origin + kPageBytes, whole ? kPageBytes : 0u);
@@ -2137,7 +2107,7 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   }
   // Pages an earlier lock read ahead need no GPU. When they are all of this lock,
   // nothing is sent to the queue and nothing waited for.
-  const bool verify = REXCVAR_GET(mcla_gpu_lock_ahead_verify);
+  const bool verify = larecomp::settings::mcla_gpu_lock_ahead_verify.Get();
   const int64_t taken = verify ? 0 : TakeAhead();
   if (pages_.empty()) {
     ++stats_.lock_write_backs;

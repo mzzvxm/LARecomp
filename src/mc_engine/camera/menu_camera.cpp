@@ -54,16 +54,18 @@
 //   0x822C0868  Hook_MenuCameraFinal  (r1, r24)
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/context.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 
 #if defined(_WIN32)
 #include <windows.h>
 #endif
 
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -74,6 +76,7 @@
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <utility>
 
 #include "mc_engine/cinematic/camera_runtime.h"
 #include "mc_engine/cinematic/freecam_runtime.h"
@@ -81,90 +84,28 @@
 #include "larecomp_log.h"
 #include "menu_camera.h"
 #include "mc_engine/gameplay/time_of_day.h"
+#include "larecomp_guest.h"
 
 // ---------------------------------------------------------------- cvars
-
-REXCVAR_DEFINE_BOOL(menu_cam_lock, false, "MCLA/Menu Camera",
-    "Always show the same shot instead of letting the game rotate. Off = the "
-    "game picks (setMenuCam plus its own visibility probes) and menu_cam_slot is "
-    "ignored; on = menu_cam_slot every time. This is the on/off switch — the "
-    "slot number by itself never locks anything.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_exposure_log, 0, "MCLA/NativeGfx",
-    "TEMP DIAG: log the guest auto-exposure value this many times, one sample every "
-    "120 front-end camera updates. Runs on a GUEST hook, so it works with the native "
-    "runtime on OR off -- which is the point: the native path renders menu camera 53 "
-    "a uniform 1.8x brighter than the emulated one, and the emulated exposure has "
-    "never been read.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_exposure_log_addr, 0x02D6C000, "MCLA/NativeGfx",
-    "TEMP DIAG: physical guest address mcla_exposure_log reads (the 1x1 luminance "
-    "target).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(menu_cam_slot, 0, "MCLA/Menu Camera",
-    "Which shot menu_cam_lock pins (0-63). Ignored while menu_cam_lock is off, "
-    "so parking a number here is harmless.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(menu_cam_custom, false, "MCLA/Menu Camera",
-    "Place the menu camera at the shot from <exe dir>/menu_cameras.txt matching "
-    "the current slot. Slots with no line keep the stock camera. The file is "
-    "re-read when it changes, so you can tune it with the menu on screen.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(menu_cam_only_custom, false, "MCLA/Menu Camera",
-    "Show only your own shots. Whatever slot the game picks is remapped onto the "
-    "lines present in menu_cameras.txt, so the stock cameras never appear. The "
-    "game's rotation still decides which of your shots comes up; turn on "
-    "menu_cam_lock to pin one. Needs menu_cam_custom.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(menu_cam_cycle, 0.0, "MCLA/Menu Camera",
-    "Seconds between shots, rotating through every line in menu_cameras.txt. "
-    "0 = no rotation. The game does not rotate the front-end camera itself — it "
-    "only calls setMenuCam for the network and garage menus, so without this the "
-    "boot screen sits on one shot forever. Ignored while menu_cam_lock is on.")
-    .range(0.0, 600.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(menu_cam_record, false, "MCLA/Menu Camera",
-    "Capture the game's own menu shots into menu_cameras.txt as 'cam' lines. "
-    "There is no table of stock camera spots in the XEX — they only exist as "
-    "runtime state — so this samples the real camera whenever it moves somewhere "
-    "new (25+ units) and appends it with the next free slot number. Leave it on "
-    "while the menus cycle, then turn it off: every shot, stock and custom, is "
-    "now a line you own. Works with menu_cam_custom on; it always records what "
-    "the game produced, never what this placed.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(menu_cam_diag, false, "MCLA/Menu Camera",
-    "Log the camera the game hands to the renderer (mode id, position, matrix "
-    "rows) once per mode change, and every shot this places. Turn on if a shot "
-    "does not show up or points the wrong way.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // Forward decl so the command cvar below can name it.
 static void MenuCamDump();
 
-REXCVAR_DEFINE_COMMAND(menu_cam_dump, MenuCamDump, "MCLA/Menu Camera",
-    "Append the current spot to <exe dir>/menu_cameras.txt as a ready-to-use "
+// Console command `menu_cam_dump` (was REXCVAR_DEFINE_COMMAND in category "MCLA/Menu Camera"; its .debug_only() has no equivalent).
+class LarecompCommand_menu_cam_dump final : public rex::SettingOwner {
+ public:
+  LarecompCommand_menu_cam_dump() : SettingOwner("larecomp") { larecomp::settings::RegisterExtraOwner(*this); }
+  REX_COMMAND(menu_cam_dump, "Append the current spot to <exe dir>/menu_cameras.txt as a ready-to-use "
     "'cam' line. Fly there with debug_cam = free first (the free-fly pose gives "
     "both the position and the look direction); without it the player car's "
-    "position is used. Also records the menu camera currently on screen.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+    "position is used. Also records the menu camera currently on screen.",
+              [](std::string_view args) -> rex::Result<void> {
+                (void)args;
+                (MenuCamDump)();
+                return rex::Ok();
+              });
+};
+inline LarecompCommand_menu_cam_dump& g_larecomp_command_menu_cam_dump = larecomp::Leak<LarecompCommand_menu_cam_dump>();
 
 // ---------------------------------------------------------------- guest memory
 
@@ -361,6 +302,13 @@ static uint32_t g_last_mode = 0;
 static float g_last_menu_pos[3] = {0.0f, 0.0f, 0.0f};
 static float g_last_menu_fov = 0.0f;
 
+static thread_local bool g_camera_manager_view = false;
+static std::atomic<int32_t> g_rendered_camera_rig{-1};
+
+void MenuCam_NoteManagerView() { g_camera_manager_view = true; }
+
+int32_t CurrentRenderedCameraRig() { return g_rendered_camera_rig.load(std::memory_order_relaxed); }
+
 void MenuCam_NoteFreecam(float x, float y, float z, float yaw, float pitch) {
     std::lock_guard<std::mutex> lock(g_sample_mutex);
     g_freecam_ms = NowMs();
@@ -391,7 +339,7 @@ static void MenuCamDump() {
         mfov = g_last_menu_fov;
     }
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     float ppos[3] = {0.0f, 0.0f, 0.0f};
     bool have_player = false;
     if (base) {
@@ -546,10 +494,10 @@ static void RecordStockShot(const float pos[3], const float fwd[3], float fov,
 // Which shot to place this frame, if any. Returns false to leave the camera
 // alone (custom off, no line for the slot, or free-fly camera in charge).
 static bool ResolveEntry(CamEntry* out, int* out_slot) {
-    if (!REXCVAR_GET(menu_cam_custom)) return false;
+    if (!larecomp::settings::menu_cam_custom.Get()) return false;
 
-    bool locked = REXCVAR_GET(menu_cam_lock);
-    int32_t forced = REXCVAR_GET(menu_cam_slot);
+    bool locked = larecomp::settings::menu_cam_lock.Get();
+    int32_t forced = larecomp::settings::menu_cam_slot.Get();
     int pick;
     {
         std::lock_guard<std::mutex> lock(g_sample_mutex);
@@ -572,7 +520,7 @@ static bool ResolveEntry(CamEntry* out, int* out_slot) {
     // calls setMenuCam for the network and garage menus — so g_last_pick sits at
     // whatever it was and the boot screen would stay on one shot. Drive it off a
     // free-running clock instead.
-    double cycle = locked ? 0.0 : REXCVAR_GET(menu_cam_cycle);
+    double cycle = locked ? 0.0 : larecomp::settings::menu_cam_cycle.Get();
     if (cycle > 0.0) {
         int64_t step = static_cast<int64_t>(cycle * 1000.0);
         if (step < 1) step = 1;
@@ -592,7 +540,7 @@ static bool ResolveEntry(CamEntry* out, int* out_slot) {
         return true;
     }
 
-    if (!REXCVAR_GET(menu_cam_only_custom)) return false;
+    if (!larecomp::settings::menu_cam_only_custom.Get()) return false;
 
     // Only-custom: fold whatever the game asked for onto the lines that exist,
     // so a slot without a line still shows one of your shots instead of the
@@ -612,13 +560,13 @@ static bool ResolveEntry(CamEntry* out, int* out_slot) {
 // fallback and the cutscene reset to 0 are all bypassed and the requested slot
 // always wins.
 bool Hook_MenuCameraPick(PPCRegister& r3) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return false;
     uint32_t p = static_cast<uint32_t>(r3.u64);
     if (!IsGuestAddr(p)) return false;
 
-    int32_t slot = REXCVAR_GET(menu_cam_slot);
-    if (!REXCVAR_GET(menu_cam_lock) || slot < 0 || slot >= kMaxSlots) {
+    int32_t slot = larecomp::settings::menu_cam_slot.Get();
+    if (!larecomp::settings::menu_cam_lock.Get() || slot < 0 || slot >= kMaxSlots) {
         // Not locking: just remember what the game asked for, for the dump and
         // for picking which custom line to place.
         std::lock_guard<std::mutex> lock(g_sample_mutex);
@@ -631,7 +579,7 @@ bool Hook_MenuCameraPick(PPCRegister& r3) {
     // menu_cam_slot directly while locked and never looks at the guest value,
     // and Hook_MenuCameraFinal overwrites the camera the game produced anyway.
     bool placed_here = false;
-    if (REXCVAR_GET(menu_cam_custom)) {
+    if (larecomp::settings::menu_cam_custom.Get()) {
         std::lock_guard<std::mutex> lock(g_table_mutex);
         RefreshTableLocked();
         const CamEntry& e = g_table[static_cast<size_t>(slot)];
@@ -702,16 +650,16 @@ static bool HostRangeCommitted(const void* p, size_t n) {
 }
 
 static void LogExposureSample() {
-    const uint32_t want = REXCVAR_GET(mcla_exposure_log);
+    const uint32_t want = larecomp::settings::mcla_exposure_log.Get();
     if (!want) return;
     static uint32_t taken = 0;
     static uint32_t tick = 0;
     if (taken >= want || (++tick % 120u) != 0u) return;
-    auto* runtime = rex::Runtime::instance();
+    auto* runtime = REX_RUNTIME();
     if (!runtime) return;
-    auto* base = runtime->virtual_membase();
+    auto* base = runtime->GetMembase().GetBase();
     if (!base) return;
-    const uint32_t phys = static_cast<uint32_t>(REXCVAR_GET(mcla_exposure_log_addr)) & 0x1FFFFFFFu;
+    const uint32_t phys = static_cast<uint32_t>(larecomp::settings::mcla_exposure_log_addr.Get()) & 0x1FFFFFFFu;
     static constexpr uint32_t kAliases[] = {0xE0000000u, 0xC0000000u, 0xA0000000u};
     for (uint32_t alias : kAliases) {
         const uint8_t* p = base + (alias | phys);
@@ -742,11 +690,15 @@ static void LogExposureSample() {
 }
 
 void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
+    // The manager and final hooks run in the same camera tick on the same guest thread.
+    const bool manager_view = std::exchange(g_camera_manager_view, false);
     LogExposureSample();
-    auto* base = rex::Runtime::instance()->virtual_membase();
-    if (!base) return;
-    uint32_t sp = static_cast<uint32_t>(r1.u64);
-    if (!IsGuestAddr(sp)) return;
+    auto* base = larecomp::guest::Membase();
+    const uint32_t sp = static_cast<uint32_t>(r1.u64);
+    if (!base || !IsGuestAddr(sp)) {
+        g_rendered_camera_rig.store(-1, std::memory_order_relaxed);
+        return;
+    }
 
     uint32_t mode = static_cast<uint32_t>(r24.u64);
 
@@ -763,7 +715,7 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
         g_last_menu_valid = true;
     }
 
-    if (REXCVAR_GET(menu_cam_diag)) {
+    if (larecomp::settings::menu_cam_diag.Get()) {
         static uint32_t s_logged_mode = 0xFFFFFFFFu;
         if (mode != s_logged_mode) {
             s_logged_mode = mode;
@@ -785,7 +737,7 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
     // forward vector, which is what turns a position into a lookat. This runs
     // ahead of the menu-mode gate so the log can say why nothing is being
     // captured when the camera is not a menu one.
-    if (REXCVAR_GET(menu_cam_record)) {
+    if (larecomp::settings::menu_cam_record.Get()) {
         static uint32_t s_seen_mode = 0xFFFFFFFFu;
         if (mode != s_seen_mode) {
             s_seen_mode = mode;
@@ -802,13 +754,13 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
         }
     }
 
-    // The free camera (trailer toolkit, cinematic/freecam_runtime.cpp): the pad flies the final camera while it is armed. It comes before the
-    // scene's camera, which a pilot who armed it does not want. One flag test when it is not armed.
-    if (mc::cinematic::FreecamApply(base, sp, mode)) return;
-
-    // The scene's camera (trailer toolkit, cinematic/camera_runtime.cpp), in every camera mode: it replaces whatever the game made
-    // and the menu code below must not run on top of it. One flag test and nothing else unless a scene with a camera track runs.
-    if (mc::cinematic::CinematicCameraApply(base, sp, mode)) return;
+    // The trailer toolkit's free camera takes precedence over the scene camera. Either can replace the game's final view.
+    if (mc::cinematic::FreecamApply(base, sp, mode) || mc::cinematic::CinematicCameraApply(base, sp, mode)) {
+        g_rendered_camera_rig.store(-1, std::memory_order_relaxed);
+        return;
+    }
+    // CHECK: Compare the early and final rig logs when entering and leaving stock photo mode from the cockpit.
+    g_rendered_camera_rig.store(manager_view ? -1 : r24.s32, std::memory_order_relaxed);
 
     // Only menu shots. The gameplay camera keeps its own mode id, so it is never
     // touched even with the cvars on.
@@ -889,7 +841,7 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
 
     if (e.fovy > 0.0f) WriteF32(base, sp + kSlotFov, e.fovy);
 
-    if (REXCVAR_GET(menu_cam_diag)) {
+    if (larecomp::settings::menu_cam_diag.Get()) {
         static int s_last_slot = -1;
         if (slot != s_last_slot) {
             s_last_slot = slot;
@@ -907,6 +859,8 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
 #include "menu_camera.h"
 
 void MenuCam_NoteFreecam(float x, float y, float z, float yaw, float pitch) {}
+void MenuCam_NoteManagerView() {}
+int32_t CurrentRenderedCameraRig() { return -1; }
 bool Hook_MenuCameraPick(PPCRegister& r3) { return false; }
 void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {}
 

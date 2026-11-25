@@ -11,7 +11,7 @@
 //                                                                 says how far it is from the raw track (exit 1 over a bound): the replay follows the flight
 //
 // The compile by hand (the msvc-target clang of labuild, include path src/mc_engine/cinematic):
-//   clang++ -std=c++23 freecam_test.cpp freecam.cpp camera.cpp scene.cpp -o freecam_test.exe
+//   clang++ -std=c++23 freecam_test.cpp freecam.cpp camera.cpp scene.cpp path_follow.cpp -o freecam_test.exe
 
 #include <algorithm>
 #include <cmath>
@@ -499,6 +499,110 @@ void TestChords() {
     fly.ly = 1.0;
     Fly(g, fly, 1.0, 60, p);
     CheckNum(g.pose().position.z, 12.0, "the sticks still fly with Back held", 1e-9);
+}
+
+// ---------------------------------------------------------------------------------------------------------------- the Director panel's chords and the mouse
+
+void TestPanelChords() {
+    const Params p = Crisp();
+    Flyer f;
+    f.Seed(Pose{});
+    Pad chord;
+    chord.buttons = kBtnBack | kBtnB;
+    Events ev = f.Step(chord, 1.0 / 60, p);
+    Check(ev.add_key && !ev.next_key && !ev.prev_key && !ev.play_pause, "Back + B adds a key");
+    ev = f.Step(chord, 1.0 / 60, p);
+    Check(!ev.add_key && !ev.Any(), "held, it does not add another");
+    f.Step(Pad{}, 1.0 / 60, p);
+    chord.buttons = kBtnBack | kBtnRb;
+    ev = f.Step(chord, 1.0 / 60, p);
+    Check(ev.next_key && !ev.prev_key, "Back + RB is the next key");
+    f.Step(Pad{}, 1.0 / 60, p);
+    chord.buttons = kBtnBack | kBtnLb;
+    ev = f.Step(chord, 1.0 / 60, p);
+    Check(ev.prev_key && !ev.next_key, "Back + LB is the previous key");
+    f.Step(Pad{}, 1.0 / 60, p);
+    chord.buttons = kBtnBack | kBtnStart;
+    ev = f.Step(chord, 1.0 / 60, p);
+    Check(ev.play_pause, "Back + Start plays and pauses");
+    f.Step(Pad{}, 1.0 / 60, p);
+    chord.buttons = kBtnBack | kBtnDpadRight;
+    ev = f.Step(chord, 1.0 / 60, p);
+    Check(ev.step_frame && !ev.render_take, "Back + D-pad right is one frame on");
+    f.Step(Pad{}, 1.0 / 60, p);
+    chord.buttons = kBtnBack | kBtnDpadUp;
+    ev = f.Step(chord, 1.0 / 60, p);
+    Check(ev.render_take && !ev.step_frame, "Back + D-pad up renders the take");
+    // without Back none of them
+    f.Step(Pad{}, 1.0 / 60, p);
+    Pad plain;
+    plain.buttons = kBtnB | kBtnStart | kBtnRb;
+    ev = f.Step(plain, 1.0 / 60, p);
+    Check(!ev.Any(), "B, Start and RB without Back are not chords");
+    // with Back held LB / RB do not tilt the horizon
+    Flyer g;
+    g.Seed(Pose{});
+    Pad tilt;
+    tilt.buttons = kBtnBack | kBtnRb;
+    for (int i = 0; i < 60; ++i) g.Step(tilt, 1.0 / 60, p);
+    CheckNum(g.pose().roll, 0.0, "Back + RB does not tilt");
+    Pad rb;
+    rb.buttons = kBtnRb;
+    for (int i = 0; i < 60; ++i) g.Step(rb, 1.0 / 60, p);
+    Check(g.pose().roll < -1.0, "RB alone still tilts");
+    // Back + Start never reaches the game; Start alone does
+    uint8_t s[kGuestPadBytes] = {};
+    s[4] = 0x00; s[5] = static_cast<uint8_t>(kBtnBack | kBtnStart);
+    ClearGuestPad(s);
+    Check(((s[4] << 8) | s[5]) == 0, "with Back held the game loses Start too");
+    uint8_t t[kGuestPadBytes] = {};
+    t[4] = 0x00; t[5] = static_cast<uint8_t>(kBtnStart);
+    ClearGuestPad(t);
+    Check(((t[4] << 8) | t[5]) == kBtnStart, "Start alone is still the game's (the pause menu)");
+}
+
+void TestMouseLook() {
+    const Params p = Crisp();
+    Flyer f;
+    Pose at;
+    at.yaw = 10.0;
+    at.pitch = 5.0;
+    f.Seed(at);
+    Pad look;
+    look.look_right = 3.0;  // to the right: the yaw goes down (the scene's yaw turns left as it grows)
+    look.look_up = 2.0;
+    f.Step(look, 1.0 / 60, p);
+    CheckNum(f.pose().yaw, 7.0, "the mouse's look turns right by its degrees, exactly", 1e-9);
+    CheckNum(f.pose().pitch, 7.0, "and up", 1e-9);
+    f.Step(Pad{}, 1.0 / 60, p);
+    CheckNum(f.pose().yaw, 7.0, "a look is applied once: no pad, no more turning");
+    // the same mouse travel at 30 and 240 updates a second turns the camera the same
+    Flyer a, b;
+    a.Seed(Pose{});
+    b.Seed(Pose{});
+    Pad one;
+    one.look_right = 1.0;
+    for (int i = 0; i < 30; ++i) a.Step(one, 1.0 / 30, p);
+    for (int i = 0; i < 240; ++i) b.Step(Pad{}, 1.0 / 240, p);
+    CheckNum(a.pose().yaw, -30.0, "30 degrees to the right in 30 updates of 1 degree", 1e-9);
+    // pitch is held at the poles
+    Pad up;
+    up.look_up = 200.0;
+    f.Step(up, 1.0 / 60, p);
+    CheckNum(f.pose().pitch, kMaxPitch, "the look cannot pass the pole");
+    // the wheel steps the speed like the D-pad
+    Flyer w;
+    w.Seed(Pose{});
+    Pad wheel;
+    wheel.speed_steps = 2;
+    w.Step(wheel, 1.0 / 60, p);
+    CheckNum(w.speed_multiplier(), kSpeedStep * kSpeedStep, "two notches up are two D-pad right presses", 1e-9);
+    wheel.speed_steps = -3;
+    w.Step(wheel, 1.0 / 60, p);
+    CheckNum(w.speed_multiplier(), 1.0 / kSpeedStep, "three notches down", 1e-9);
+    wheel.speed_steps = 1000;
+    for (int i = 0; i < 5; ++i) w.Step(wheel, 1.0 / 60, p);
+    CheckNum(w.speed_multiplier(), kMaxSpeedMult, "the speed stops at its ceiling");
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the raw track
@@ -1143,6 +1247,8 @@ int main(int argc, char** argv) {
     TestLookRollZoom();
     TestInertia();
     TestChords();
+    TestPanelChords();
+    TestMouseLook();
     TestRaw();
     TestSceneMeaning();
     TestScript();

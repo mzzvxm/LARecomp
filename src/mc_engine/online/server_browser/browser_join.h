@@ -15,6 +15,7 @@
 #include <rex/ppc/context.h>
 
 #include "../protocol/browser_protocol.h"
+#include "join_server_core.h"  // SearchFacts
 
 namespace larecomp::browser {
 
@@ -47,12 +48,27 @@ struct JoinStatus {
 // Any thread. Replaces a join still under way.
 void RequestJoin(const JoinRequest& request);
 void CancelJoin();
+// Shows `text` on the join strip as a failure (the strip clears itself a few seconds later), for a join that failed before
+// it could be requested (--join_server: the server or the room is not there).
+void ShowJoinFailure(const std::string& text);
 JoinStatus GetJoinStatus();
 
-// The local player is in the city: the online menus can open. Their fill
-// reads the player's car (sub_822A5680) and crashes on the boot screens.
+// The local player is in the city with a car: the online menus can open. Their fill
+// reads the player's car (sub_822A5680) and crashes on the boot screens, and the net
+// menu's own camera probe (setMenuCam) reads the car entity, which the city behind the
+// title screen does not have yet: a join from there crashed the game (browser_join_core.h).
 // Updated by the guest tick; any thread.
 bool WorldReady();
+
+// A modal message box is on screen: FlashNavigator's FIFO of them is not empty (the same read as the keyboard prompts' "layer"). The game's
+// first one after Start stays up for about 9 s while the state machine is already in free roam; a join that goes into the net menu under
+// it does not get its search going (join_server_core.h, QuietGate). --join_server's tick and the F6 join's start both wait on it. Guest thread.
+bool ModalMessageUp();
+
+// The words the game's own search start asks about (join_server_core.h, SearchFacts / SearchGate): the search manager's busy word, the
+// search object's state and handle, the local player's sign-in bits, the net mode. Read only; a word that cannot be read says so in
+// failed_at. Guest thread.
+joinserver::SearchFacts ReadSearchFacts();
 
 // Guest thread, once per frame (Patch_DeltaTimePre).
 void TickServerBrowserJoin();

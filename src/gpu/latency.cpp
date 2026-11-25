@@ -9,6 +9,7 @@
 // frame generation, which has no counterpart in this renderer, is left out.
 
 #include "latency.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -20,26 +21,14 @@
 #include <mutex>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "device.h"
 #include "gpu.h"
 #include "latency_backend.h"
 #include "swap_chain.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_low_latency, "auto", "MCLA/GPU",
-    "The GPU vendor's latency reducer: NVIDIA Reflex on an NVIDIA GPU, AMD Anti-Lag 2 on an AMD "
-    "one. It holds the game back at the start of a frame just long enough that the frame meets a "
-    "free GPU: less input lag when the GPU is the limit, at the price of some frame rate when "
-    "it is. auto (Reflex on; Anti-Lag 2 off until it has been tried on a Radeon), off, on, or "
-    "boost (Reflex's On + Boost: the GPU clocks stay high; Anti-Lag 2 has no boost and takes it "
-    "as on). Where the GPU, the driver or the graphics API has no reducer the pause menu has no "
-    "row for it and it stays off whatever this says (the log says why at start). While frame "
-    "generation runs (mcla_gpu_frame_generation) it is on whatever this says. Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu::latency {
 
@@ -99,7 +88,7 @@ struct Want {
 std::atomic<bool> g_streamline_on{false};
 
 Want ReadWant(const Reducer& reducer) {
-  const std::string mode = REXCVAR_GET(mcla_gpu_low_latency);
+  const std::string mode = larecomp::settings::mcla_gpu_low_latency.Get();
   if (FrameGenerationRunning() || g_streamline_on.load(std::memory_order_relaxed)) {
     // Forced on while frame generation runs; Reflex's boost where it is asked for.
     return {true, mode == "boost" && reducer.SupportsBoost()};
@@ -190,7 +179,7 @@ struct Module {
 };
 
 Module& M() {
-  static Module module;
+  static Module& module = larecomp::Leak<Module>();
   return module;
 }
 
@@ -491,7 +480,7 @@ void Initialize(Device& device, SwapChain& swap_chain) {
   m.counting.store(true, std::memory_order_release);
   REXLOG_INFO("[gpu] low latency: {} is available on {} ({}); mcla_gpu_low_latency = {} ({})",
               reducer->Name(), device.backend_info(), device.description().name,
-              REXCVAR_GET(mcla_gpu_low_latency),
+              larecomp::settings::mcla_gpu_low_latency.Get(),
               ReadWant(*reducer).on ? "on" : "off");
 }
 

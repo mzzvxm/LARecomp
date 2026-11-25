@@ -87,6 +87,44 @@ void TestKeys() {
     CHECK(IsActivityKey(0x7C));                                                    // F13 is the first one that counts
     CHECK(!IsActivityKey(0));
     CHECK(!IsActivityKey(0x01) && !IsActivityKey(0x06));  // mouse buttons arrive as mouse events
+
+    // KBM-RULES (a): a kb_* binding that names a function key makes it count; the rest of the exclusions stay.
+    for (uint16_t vk = 0x70; vk <= 0x7B; ++vk) {
+        CHECK(IsFunctionKey(vk));
+        CHECK(IsActivityKey(vk, KeyRole::Bound));   // F1 .. F12 named by a binding
+        CHECK(!IsActivityKey(vk, KeyRole::Plain));  // and not otherwise
+    }
+    CHECK(!IsFunctionKey(0x6F) && !IsFunctionKey(0x7C));  // Divide and F13 are not in the range
+    CHECK(IsActivityKey(0x7C, KeyRole::Plain) && IsActivityKey(0x7C, KeyRole::Bound));
+    for (uint16_t vk : {0x10, 0x11, 0x12, 0xA0, 0xA2, 0xA4, 0x5B, 0x5C, 0x14, 0x90, 0x91, 0x13, 0x2C}) {
+        CHECK(!IsActivityKey(vk, KeyRole::Bound));  // a binding does not make a modifier, a lock key, Pause or Print Screen count
+    }
+    CHECK(IsActivityKey(0x41, KeyRole::Bound) && IsActivityKey(0x41, KeyRole::Plain));
+    // KBM-RULES (b): a key of an extra_button_* setting is a pad button, never keyboard activity.
+    for (uint16_t vk : {0x41, 0x7C, 0x64, 0x74, 0x20}) CHECK(!IsActivityKey(vk, KeyRole::ExtraButton));
+}
+
+void TestKeyRoleTable() {
+    KeyRoleTable t;
+    CHECK(t.Of(0x41) == KeyRole::Plain && t.Of(0x74) == KeyRole::Plain && t.Of(0) == KeyRole::Plain);
+    t.Mark(0x74, KeyRole::Bound);  // F5
+    t.Mark(0x41, KeyRole::Bound);
+    t.Mark(0x64, KeyRole::ExtraButton);  // Numpad 4
+    CHECK(t.Of(0x74) == KeyRole::Bound && t.Of(0x41) == KeyRole::Bound && t.Of(0x64) == KeyRole::ExtraButton);
+    CHECK(t.Of(0x75) == KeyRole::Plain);
+    // A key that an extra button sends stays an extra button whatever else names it, in whichever order the lists are read.
+    t.Mark(0x64, KeyRole::Bound);
+    CHECK(t.Of(0x64) == KeyRole::ExtraButton);
+    KeyRoleTable u;
+    u.Mark(0x7C, KeyRole::Bound);
+    u.Mark(0x7C, KeyRole::ExtraButton);
+    CHECK(u.Of(0x7C) == KeyRole::ExtraButton);
+    // Marking nothing, key 0 and keys beyond the table is harmless.
+    u.Mark(0x30, KeyRole::Plain);
+    u.Mark(0, KeyRole::Bound);
+    u.Mark(300, KeyRole::Bound);
+    u.Mark(0xFFFF, KeyRole::ExtraButton);
+    CHECK(u.Of(0x30) == KeyRole::Plain && u.Of(0) == KeyRole::Plain && u.Of(300) == KeyRole::Plain && u.Of(0xFFFF) == KeyRole::Plain);
 }
 
 // ---- the pad filter --------------------------------------------------------------------------------------
@@ -522,6 +560,104 @@ void TestNoisyKeys() {
     CHECK(c.Get().device == InputDevice::Pad && c.Get().generation == gen);
     ch = c.OnKeyDown(0x7C, false, 1180);  // F13 counts
     CHECK(ch.changed && c.Get().device == InputDevice::KeyboardMouse);
+}
+
+// KBM-RULES (a): F1-F12 are window and overlay hotkeys and do not flip the prompts to the keyboard, unless a kb_* binding names the key.
+void TestFunctionKeys() {
+    ActiveInputCore c;
+    OneXboxPad(c);
+    c.OnPadFrame(Buttons(kA), kUnknown, 1000);
+    const uint32_t gen = c.Get().generation;
+    for (uint16_t vk = 0x70; vk <= 0x7B; ++vk) {
+        const Change ch = c.OnKeyDown(vk, false, 1100 + vk, KeyRole::Plain);  // F1 .. F12 that no binding names
+        CHECK(!ch.changed && ch.looked == Cause::Key);
+    }
+    CHECK(c.Get().device == InputDevice::Pad && c.Get().generation == gen);
+    // The compare keys of a developer build (F1 flips, F12 selects) are among them: they do not switch the prompts.
+    CHECK(!c.OnKeyDown(0x70, false, 1300).changed);  // the default role is Plain
+    CHECK(!c.OnKeyDown(0x7B, false, 1310).changed);
+    CHECK(c.Get().device == InputDevice::Pad);
+    // A binding names F5 (the handbrake on F5): pressing it is keyboard play.
+    Change ch = c.OnKeyDown(0x74, false, 1400, KeyRole::Bound);
+    CHECK(ch.changed && ch.cause == Cause::Key && c.Get().device == InputDevice::KeyboardMouse);
+    // A repeat of a bound function key is still a repeat.
+    c.OnPadFrame(Buttons(0), kUnknown, 1500);
+    c.OnPadFrame(Buttons(kA), kUnknown, 1600);
+    CHECK(c.Get().device == InputDevice::Pad);
+    ch = c.OnKeyDown(0x74, true, 1700, KeyRole::Bound);
+    CHECK(!ch.changed && ch.looked == Cause::Key && c.Get().device == InputDevice::Pad);
+    // F13 counts with no binding (it is not a hotkey).
+    ch = c.OnKeyDown(0x7C, false, 1800, KeyRole::Plain);
+    CHECK(ch.changed && c.Get().device == InputDevice::KeyboardMouse);
+    // No focus: nothing counts, bound or not.
+    ActiveInputCore d;
+    OneXboxPad(d);
+    d.OnFocus(false, 10);
+    CHECK(!d.OnKeyDown(0x74, false, 2000, KeyRole::Bound).changed);
+}
+
+// KBM-RULES (b): the host key of an extra_button_* setting is a pad button going down.
+void TestExtraButtonKeys() {
+    ActiveInputCore c;
+    const GlyphFamily ps[] = {GlyphFamily::PlayStation};
+    c.OnDevices(ps, 1, 0);
+    c.OnFocus(true, 0, /*initial=*/true);
+    CHECK(c.Get().device == InputDevice::Pad && c.Get().Family() == GlyphFamily::PlayStation);
+
+    // The keyboard has it; a paddle (its host key, Numpad4) hands it back to the pad, and the pad family that was in use stays.
+    c.OnKeyDown(0x41, false, 1000);
+    CHECK(c.Get().device == InputDevice::KeyboardMouse && c.Get().PromptStrip() == GlyphFamily::PlayStation);
+    uint32_t gen = c.Get().generation;
+    Change ch = c.OnKeyDown(0x64, false, 1100, KeyRole::ExtraButton);
+    CHECK(ch.changed && ch.cause == Cause::ExtraButton && ch.looked == Cause::ExtraButton);
+    CHECK(std::string(CauseText(ch.cause)) == "extra pad button");
+    CHECK(c.Get().device == InputDevice::Pad && c.Get().Family() == GlyphFamily::PlayStation && c.Get().generation == ++gen);
+
+    // Held: the OS's auto-repeat does not count again; the keyboard takes over with any real key and the paddle takes it back.
+    ch = c.OnKeyDown(0x64, true, 1130, KeyRole::ExtraButton);
+    CHECK(!ch.changed && ch.looked == Cause::Key && c.Get().device == InputDevice::Pad);
+    c.OnKeyDown(0x57, false, 1200);
+    CHECK(c.Get().device == InputDevice::KeyboardMouse);
+    c.OnKeyDown(0x64, false, 1300, KeyRole::ExtraButton);
+    CHECK(c.Get().device == InputDevice::Pad);
+
+    // It is a pad input like any: the same device again changes nothing, and the cross rule holds mouse motion off for a second.
+    gen = c.Get().generation;
+    ch = c.OnKeyDown(0x65, false, 1400, KeyRole::ExtraButton);  // another paddle
+    CHECK(!ch.changed && ch.looked == Cause::ExtraButton && c.Get().generation == gen);
+    c.OnMouseMove(5, 5, 1500);
+    c.OnMouseMove(5, 5, 1520);
+    CHECK(c.Get().device == InputDevice::Pad);  // motion within 1 s of the paddle: ignored
+    c.OnMouseMove(5, 5, 2600);
+    c.OnMouseMove(5, 5, 2620);
+    CHECK(c.Get().device == InputDevice::KeyboardMouse);  // a second later it takes over
+    // A click and a key are still immediate.
+    c.OnKeyDown(0x64, false, 2700, KeyRole::ExtraButton);
+    CHECK(c.Get().device == InputDevice::Pad);
+    CHECK(c.OnMouseButtonDown(2710).changed && c.Get().device == InputDevice::KeyboardMouse);
+
+    // The host key is a pad button even when it is a key that would be ignored as keyboard activity (a modifier, a function key).
+    c.OnKeyDown(0x41, false, 3000);
+    CHECK(c.Get().device == InputDevice::KeyboardMouse);
+    CHECK(c.OnKeyDown(0x11, false, 3100, KeyRole::ExtraButton).changed && c.Get().device == InputDevice::Pad);  // Ctrl
+    c.OnKeyDown(0x41, false, 3200);
+    CHECK(c.OnKeyDown(0x74, false, 3300, KeyRole::ExtraButton).changed && c.Get().device == InputDevice::Pad);  // F5
+
+    // No focus: nothing counts.
+    ActiveInputCore d;
+    OneXboxPad(d);
+    d.OnKeyDown(0x41, false, 100);
+    d.OnFocus(false, 200);
+    CHECK(!d.OnKeyDown(0x64, false, 300, KeyRole::ExtraButton).changed && d.Get().device == InputDevice::KeyboardMouse);
+    d.OnFocus(true, 400);
+    CHECK(d.OnKeyDown(0x64, false, 500, KeyRole::ExtraButton).changed && d.Get().device == InputDevice::Pad);
+
+    // No pad listed at all (the paddles belong to a pad whose software sends keys): the device is still the pad's and the family stays.
+    ActiveInputCore e;
+    e.OnDevices(nullptr, 0, 0);
+    e.OnFocus(true, 0, /*initial=*/true);
+    CHECK(e.Get().device == InputDevice::KeyboardMouse);
+    CHECK(e.OnKeyDown(0x64, false, 100, KeyRole::ExtraButton).changed && e.Get().device == InputDevice::Pad && e.Get().Family() == GlyphFamily::Xbox);
 }
 
 void TestMouseJitter() {
@@ -1093,6 +1229,7 @@ void TestControllerRoster() {
 
 int main() {
     TestKeys();
+    TestKeyRoleTable();
     TestPadFilterButtons();
     TestPadFilterTriggers();
     TestPadFilterSticks();
@@ -1102,6 +1239,8 @@ int main() {
     TestLastInputWins();
     TestHeldStickThenKey();
     TestNoisyKeys();
+    TestFunctionKeys();
+    TestExtraButtonKeys();
     TestMouseJitter();
     TestPadRecentBlocksMotion();
     TestClicksAndWheelAreImmediate();

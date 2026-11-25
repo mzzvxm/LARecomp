@@ -4,6 +4,9 @@
 // of the wrong answers it gives: Windows lists by the mode the display is in, so a look made while the
 // game has the display switched to 1280x720 lacks the sizes above it, the display's own among them
 // (the owner's 4K display and Mz's 1080p one, 2026-11-13: no 3840x2160 and no 1920x1080 in FULLSCREEN).
+// The second half checks which size FULLSCREEN is asked to switch to and the sequences around it (Mz,
+// 2026-11-16: DISPLAY MODE to FULLSCREEN put the 1080p display in 1280x720), with a fake display that lists
+// by the mode it is in, and NVIDIA DSR / AMD VSR style lists with sizes above the monitor's own.
 //
 //   cmake --build <build dir> --target larecomp_display_sizes_test     (CMakeLists.txt)
 //   <build dir>/larecomp_display_sizes_test
@@ -467,6 +470,412 @@ void CheckRefreshRates() {
   CheckEq(std::to_string(unnamed.RefreshFor({1280, 720})), "75", "refresh: a listed size has its highest rate");
 }
 
+
+// ── The choice FULLSCREEN makes, and the sequences around it (fix/fullscreen-native-res-2) ─────
+
+// Mz, 2026-11-16, a 1080p monitor: BORDERLESS showed "RESOLUTION (1920X1080)"; DISPLAY MODE to FULLSCREEN
+// then showed 1280X720 (and the picture was 1280x720): the display was switched to the size of
+// `resolution`, which he had only ever used for the window. FULLSCREEN has a setting of its own now
+// (fullscreen_resolution, empty by default: the display's own size), and these are the rules it runs on.
+
+void CheckNearest() {
+  const std::vector<Size> list = {{1280, 720}, {1600, 900}, {1920, 1080}, {2560, 1440}};
+  CheckEq(Text(Nearest(list, {1920, 1080})), "1920x1080", "nearest: a listed size is itself");
+  CheckEq(Text(Nearest(list, {1900, 1070})), "1920x1080", "nearest: an unlisted size goes to the closest");
+  CheckEq(Text(Nearest(list, {5000, 3000})), "2560x1440", "nearest: above the list, the largest");
+  CheckEq(Text(Nearest(list, {100, 100})), "1280x720", "nearest: below the list, the smallest");
+  CheckEq(Text(Nearest(list, {})), "1280x720", "nearest: no size asked, the first");
+  CheckEq(Text(Nearest({}, {1234, 567})), "1234x567", "nearest: no list, the size asked");
+}
+
+void CheckChooseExclusive() {
+  const std::vector<Size> list = Book().Sizes();  // empty
+  Book book;
+  book.Add(OwnLook1080p(), false, kMin);
+  const std::vector<Size> sizes = book.Sizes();
+  const Size own = book.desktop();
+  // Nothing saved for FULLSCREEN: the display's own size, whatever the list's first entry is.
+  CheckEq(Text(ChooseExclusive(sizes, own, {})), "1920x1080", "choose: nothing saved is the display's own size");
+  // Saved: the listed mode, or the nearest one.
+  CheckEq(Text(ChooseExclusive(sizes, own, {1280, 720})), "1280x720", "choose: a saved listed size");
+  CheckEq(Text(ChooseExclusive(sizes, own, {1920, 1080})), "1920x1080", "choose: the display's own size, saved");
+  CheckEq(Text(ChooseExclusive(sizes, own, {1900, 1070})), "1920x1080", "choose: a saved size the display does not list");
+  // The display's own mode is not known and nothing is saved: nothing is chosen. It used to come out as
+  // the first (smallest) listed size, 1280x720, which is a switch.
+  Check(ChooseExclusive(sizes, {}, {}).empty(), "choose: no own mode and nothing saved is no choice (not 1280x720)");
+  Check(ChooseExclusive(list, {}, {}).empty(), "choose: no list, no own mode, nothing saved");
+  CheckEq(Text(ChooseExclusive(list, own, {1600, 900})), "1600x900", "choose: no list, the saved size");
+}
+
+void CheckPlanExclusive() {
+  const Size own = {1920, 1080};
+  const Size low = {1280, 720};
+  Check(PlanExclusive(own, own, false, {}) == Plan::kOwn, "plan: the display's own size is no switch");
+  Check(PlanExclusive({}, own, false, {}) == Plan::kOwn, "plan: no size is the display's own");
+  Check(PlanExclusive(own, own, true, low) == Plan::kOwn, "plan: back to the own size from a switched mode");
+  Check(PlanExclusive(low, own, false, {}) == Plan::kSwitch, "plan: another size is a switch");
+  Check(PlanExclusive(low, own, true, {1600, 900}) == Plan::kSwitch, "plan: from one switched mode to another");
+  Check(PlanExclusive(low, own, true, low) == Plan::kKeep, "plan: the mode the display is in already");
+  Check(PlanExclusive(low, own, false, low) == Plan::kSwitch, "plan: a stale 'switched to' with no switch is not kept");
+  Check(PlanExclusive({}, {}, false, {}) == Plan::kOwn, "plan: nothing known, nothing asked: no switch");
+  Check(PlanExclusive(low, {}, false, {}) == Plan::kSwitch, "plan: a size asked of a display of unknown mode");
+}
+
+// A display as Windows has it, for the sequences below: the mode it is in decides what the driver lists
+// (the real behaviour the Book exists for), the registry settings are its own mode and are not changed by
+// a switch (CDS_FULLSCREEN), and the monitor's preferred size is what the monitor is.
+struct FakeDisplay {
+  Size own = {1920, 1080};
+  uint32_t own_hz = 60;
+  Size monitor = {1920, 1080};
+  Size current = {1920, 1080};
+  uint32_t current_hz = 60;
+  std::vector<RawMode> all;       // what the driver lists with the display in its own mode
+  std::vector<RawMode> from_low;  // what it lists with the display in 1280x720, when that is known
+
+  Look Ask() const {
+    Look look;
+    if (current == own) {
+      look.modes = all;
+    } else if (current == Size{1280, 720} && !from_low.empty()) {
+      look.modes = from_low;
+    } else {
+      for (const RawMode& m : all) {
+        if (m.size.width <= current.width && m.size.height <= current.height) look.modes.push_back(m);
+      }
+    }
+    look.desktop = own;
+    look.desktop_hz = own_hz;
+    look.desktop_is_registry = true;
+    look.current = current;
+    look.current_hz = current_hz;
+    look.preferred = monitor;
+    return look;
+  }
+};
+
+// The glue of display_mode.cpp, in the same order, over the same classes (Displays, Book, ChooseExclusive,
+// PlanExclusive): ListedModes, EnterDesktopMode and RestoreDesktopMode with the Windows calls replaced by
+// the fake display. `menu_looks` is the menu asking while the display changes its mode (it asks every
+// frame it is open).
+struct Session {
+  FakeDisplay* display;
+  Displays displays;
+  bool changed = false;  // g_mode_changed
+  Size changed_to;
+  uint64_t now = 0;
+  int driver_looks = 0;
+  const std::string device = "\\\\.\\DISPLAY1";
+
+  Info Ask() {
+    return displays.Listed(device, now, [&](Info* info, bool switched) {
+      ++driver_looks;
+      info->book.Add(display->Ask(), switched, kMin);
+    });
+  }
+  void Restore() {
+    if (!changed) return;
+    changed = false;
+    display->current = display->own;
+    display->current_hz = display->own_hz;
+    displays.SetSwitched({});
+  }
+  // EnterDesktopMode. `late_mark`: the old order, the display marked as switched after the switch.
+  void Enter(Size saved, bool menu_looks = false, bool late_mark = false) {
+    const Info info = Ask();
+    const Size own = info.book.desktop();
+    Size want = ChooseExclusive(info.book.Sizes(), own, saved);
+    if (want.empty()) want = own;
+    switch (PlanExclusive(want, own, changed, changed_to)) {
+      case Plan::kOwn:
+        Restore();
+        return;
+      case Plan::kKeep:
+        return;
+      case Plan::kSwitch:
+        break;
+    }
+    if (!late_mark) displays.SetSwitched(device);
+    display->current = want;
+    display->current_hz = info.book.RefreshFor(want);
+    if (menu_looks) {
+      now += 2 * Displays::kLifetimeMs;  // the book is old enough to be looked at again, if it may be
+      Ask();
+    }
+    if (late_mark) displays.SetSwitched(device);
+    changed = true;
+    changed_to = want;
+  }
+};
+
+// What the RESOLUTION row shows in FULLSCREEN (display_menu.cpp ResolutionList): the list and the entry
+// the setting comes to.
+struct Row {
+  std::vector<Size> sizes;
+  Size current;
+};
+Row FullscreenRow(const Info& info, Size saved) {
+  Row row;
+  row.sizes = info.book.Sizes();
+  Size want = ChooseExclusive(row.sizes, info.book.desktop(), saved);
+  if (want.empty()) want = {1280, 720};
+  if (!Has(row.sizes, want)) row.sizes.push_back(want);
+  row.current = want;
+  return row;
+}
+
+void CheckBorderlessToFullscreenOn1080p() {
+  // The owner's sequence: the game runs BORDERLESS on a 1920x1080 monitor, DISPLAY MODE goes to FULLSCREEN, and
+  // the setting for FULLSCREEN is the default (empty) - the window's `resolution` is 1280x720 and is not
+  // used.
+  FakeDisplay display;
+  display.all = List1080p();
+  display.from_low = List1080pFrom720();
+  Session game;
+  game.display = &display;
+  const Info borderless = game.Ask();
+  CheckEq(Text(borderless.book.desktop()), "1920x1080", "borderless: the row's size is the display's own");
+
+  game.now += 100;
+  game.Enter({}, true);
+  const Info fullscreen = game.Ask();
+  const Row row = FullscreenRow(fullscreen, {});
+  CheckEq(Text(display.current), "1920x1080", "FULLSCREEN, nothing saved: the display stays at 1920x1080");
+  Check(!game.changed, "FULLSCREEN, nothing saved: no mode switch");
+  CheckEq(Text(row.current), "1920x1080", "FULLSCREEN, nothing saved: the row is on 1920x1080");
+  Check(Has(row.sizes, {1920, 1080}), "FULLSCREEN, nothing saved: 1920x1080 is on the list");
+  CheckShape(row.sizes, "FULLSCREEN, nothing saved");
+  Check(row.sizes == borderless.book.Sizes(), "FULLSCREEN: the list is BORDERLESS's list");
+
+  // The player steps down to 1280x720: the display is switched, the menu keeps asking during and after it.
+  game.now += 100;
+  game.Enter({1280, 720}, true);
+  CheckEq(Text(display.current), "1280x720", "stepped to 1280x720: the display is in 1280x720");
+  Check(game.changed, "stepped to 1280x720: this game has switched the display");
+  game.now += 60000;  // a minute with the menu open: no look at the driver at all
+  const int looks = game.driver_looks;
+  const Info low = game.Ask();
+  Check(game.driver_looks == looks, "in 1280x720: the driver is not asked while the display is switched");
+  const Row low_row = FullscreenRow(low, {1280, 720});
+  Check(Has(low_row.sizes, {1920, 1080}), "in 1280x720: 1920x1080 is still on the list");
+  Check(low_row.sizes == borderless.book.Sizes(), "in 1280x720: the list is what it was");
+  CheckEq(Text(low_row.current), "1280x720", "in 1280x720: the row is on 1280x720");
+  CheckEq(Text(low.book.desktop()), "1920x1080", "in 1280x720: the display's own mode is still 1920x1080");
+
+  // And back up to 1920x1080 from the row: the display's own mode returns.
+  game.Enter({1920, 1080}, true);
+  CheckEq(Text(display.current), "1920x1080", "stepped to 1920x1080: the display is back in its own mode");
+  Check(!game.changed, "stepped to 1920x1080: the switch is over");
+  const Row back = FullscreenRow(game.Ask(), {1920, 1080});
+  CheckEq(Text(back.current), "1920x1080", "stepped to 1920x1080: the row is on 1920x1080");
+  Check(back.sizes == borderless.book.Sizes(), "stepped to 1920x1080: the list is what it was");
+  Check(game.driver_looks > looks, "the driver is asked again once the display's own mode is back");
+}
+
+void CheckSwitchWithTheMenuLooking() {
+  // The look the menu makes while the display is switching, on a display whose own mode is 1920x1080.
+  // With the mark before the switch the look is not made; with the mark after it (the old order) the look
+  // sees 1280x720's list, and the book keeps the display's own size all the same.
+  for (const bool late_mark : {false, true}) {
+    FakeDisplay display;
+    display.all = List1080p();
+    display.from_low = List1080pFrom720();
+    Session game;
+    game.display = &display;
+    game.Ask();
+    const int looks = game.driver_looks;
+    game.Enter({1280, 720}, true, late_mark);
+    const std::string how = late_mark ? "mark after the switch" : "mark before the switch";
+    const Info info = game.Ask();
+    Check(Has(info.book.Sizes(), {1920, 1080}), how + ": 1920x1080 is on the list");
+    CheckEq(Text(info.book.desktop()), "1920x1080", how + ": the display's own mode");
+    Check(late_mark ? game.driver_looks == looks + 1 : game.driver_looks == looks,
+          how + ": the driver was " + (late_mark ? "asked during the switch" : "not asked during the switch"));
+  }
+}
+
+void CheckEmptyOwnModeSwitchesNothing() {
+  // The registry call answered a size of nothing, and the display is in its own mode: the mode it is in is
+  // taken for the own one (before, the book had no own mode at all and FULLSCREEN with nothing saved chose
+  // the first listed size, 1280x720).
+  Look look = OwnLook1080p();
+  look.desktop = {};
+  look.desktop_hz = 0;
+  look.desktop_is_registry = true;  // the call succeeded
+  Book book;
+  book.Add(look, false, kMin);
+  CheckEq(Text(book.desktop()), "1920x1080", "an empty registry answer: the mode the display is in is its own");
+  Check(ChooseExclusive(book.Sizes(), book.desktop(), {}) == Size{1920, 1080},
+        "an empty registry answer: FULLSCREEN with nothing saved is 1920x1080");
+  // While this game has the display switched the mode it is in is not guessed to be the own one, and
+  // FULLSCREEN chooses nothing (no switch) rather than the first listed size.
+  Look switched = SwitchedLook1080p();
+  switched.desktop = {};
+  switched.desktop_hz = 0;
+  Book blind;
+  blind.Add(switched, true, kMin);
+  Check(blind.desktop().empty(), "an empty registry answer while switched: the own mode is not guessed");
+  Check(ChooseExclusive(blind.Sizes(), blind.desktop(), {}).empty(),
+        "an empty registry answer while switched: nothing is chosen");
+  Check(PlanExclusive({}, blind.desktop(), true, {1280, 720}) == Plan::kOwn,
+        "an empty registry answer while switched: the plan is no switch");
+}
+
+// NVIDIA DSR / AMD VSR: while the feature is on, the driver lists sizes above the monitor's own (for a
+// 1080p monitor 2560x1440, 2880x1620 and 3840x2160, and others at the factors in between), usually at
+// 60 Hz only, and a game switches the display to one of them to have its picture scaled down by the GPU.
+std::vector<RawMode> ListDsr1080p() {
+  std::vector<RawMode> modes = List1080p();
+  Append(&modes, Modes({{2103, 1183}, {2560, 1440}, {2880, 1620}, {3840, 2160}}, {60}));
+  return modes;
+}
+
+void CheckDsrModes() {
+  FakeDisplay display;
+  display.own_hz = 144;
+  display.current_hz = 144;
+  display.all = ListDsr1080p();
+  // The monitor's own modes at 144 Hz as well.
+  Append(&display.all, Modes({{1920, 1080}}, {144}));
+
+  Session game;
+  game.display = &display;
+  const Info info = game.Ask();
+  const std::vector<Size> list = info.book.Sizes();
+  CheckShape(list, "DSR");
+  for (const Size s : {Size{1920, 1080}, Size{2103, 1183}, Size{2560, 1440}, Size{2880, 1620}, Size{3840, 2160}}) {
+    Check(Has(list, s), "DSR: " + Text(s) + " is on the list");
+  }
+  CheckEq(Text(list.back()), "3840x2160", "DSR: the largest is the last");
+  CheckEq(Text(info.book.desktop()), "1920x1080", "DSR: the display's own mode is not a DSR mode");
+  CheckEq(Text(info.book.preferred()), "1920x1080", "DSR: the monitor's own size is not a DSR mode");
+  Check(info.book.Added().empty(), "DSR: nothing had to be put in");
+  // The native size is where it belongs by area, between the 16:9 sizes below it and the DSR ones above.
+  size_t at = 0;
+  while (at < list.size() && !(list[at] == Size{1920, 1080})) ++at;
+  Check(at + 1 < list.size() && Area(list[at - 1]) < Area(list[at]) && Area(list[at + 1]) > Area(list[at]),
+        "DSR: 1920x1080 is ranked by its own area, with DSR modes above it only");
+  // Selectable: it is what nothing-saved is, and what saving it is.
+  CheckEq(Text(ChooseExclusive(list, info.book.desktop(), {})), "1920x1080", "DSR: FULLSCREEN with nothing saved");
+  CheckEq(Text(ChooseExclusive(list, info.book.desktop(), {1920, 1080})), "1920x1080",
+          "DSR: FULLSCREEN with 1920x1080 saved");
+  CheckEq(std::to_string(info.book.RefreshFor({1920, 1080})), "144", "DSR: native keeps the display's own rate");
+  CheckEq(std::to_string(info.book.RefreshFor({3840, 2160})), "60", "DSR: a DSR mode has the one rate it lists");
+  const Row row = FullscreenRow(info, {});
+  CheckEq(Text(row.current), "1920x1080", "DSR: the row opens on the native size");
+  Check(row.sizes == list, "DSR: the row lists the book");
+
+  // Into a DSR mode and back to the native one from the row (the sequence a player who wants supersampling
+  // from the driver goes through): every step is a switch or the own mode, never a refusal of native.
+  game.now += 100;
+  game.Enter({3840, 2160}, true);
+  CheckEq(Text(display.current), "3840x2160", "DSR: the display is in the 3840x2160 mode");
+  Check(game.changed, "DSR: this game switched the display");
+  Check(PlanExclusive({3840, 2160}, info.book.desktop(), true, {3840, 2160}) == Plan::kKeep, "DSR: asking for it again keeps it");
+  const Info in_dsr = game.Ask();
+  Check(in_dsr.book.Sizes() == list, "DSR: the list in 3840x2160 is the list from before");
+  Check(Has(in_dsr.book.Sizes(), {1920, 1080}), "DSR: 1920x1080 is on the list while in 3840x2160");
+  game.Enter({2560, 1440}, true);
+  CheckEq(Text(display.current), "2560x1440", "DSR: from 3840x2160 to 2560x1440");
+  game.Enter({1920, 1080}, true);
+  CheckEq(Text(display.current), "1920x1080", "DSR: back to the native size");
+  Check(!game.changed, "DSR: the native size is the display's own mode again");
+  Check(game.Ask().book.Sizes() == list, "DSR: the list at the end is the list at the start");
+}
+
+void CheckDsrAsTheDesktopMode() {
+  // DSR is how the player has Windows: the desktop is 3840x2160 on the 1080p monitor. The display's own
+  // mode (registry) is then 3840x2160, the monitor's own size is still 1920x1080 and is listed, listed or
+  // not by the driver, and is a choice like any other.
+  for (const bool driver_lists_native : {true, false}) {
+    FakeDisplay display;
+    display.own = {3840, 2160};
+    display.current = {3840, 2160};
+    display.all = ListDsr1080p();
+    if (!driver_lists_native) {
+      std::vector<RawMode> kept;
+      for (const RawMode& m : display.all) {
+        if (!(m.size == Size{1920, 1080})) kept.push_back(m);
+      }
+      display.all = kept;
+    }
+    Session game;
+    game.display = &display;
+    const Info info = game.Ask();
+    const std::string how = driver_lists_native ? "DSR desktop" : "DSR desktop, native not listed";
+    const std::vector<Size> list = info.book.Sizes();
+    CheckShape(list, how);
+    CheckEq(Text(info.book.desktop()), "3840x2160", how + ": the display's own mode is the one Windows has");
+    CheckEq(Text(info.book.preferred()), "1920x1080", how + ": the monitor's own size");
+    Check(Has(list, {1920, 1080}), how + ": the monitor's own 1920x1080 is on the list");
+    Check(Has(list, {3840, 2160}) && Has(list, {2560, 1440}), how + ": the DSR sizes are too");
+    Check(ChooseExclusive(list, info.book.desktop(), {1920, 1080}) == Size{1920, 1080}, how + ": 1920x1080 is selectable");
+    Check(ChooseExclusive(list, info.book.desktop(), {}) == Size{3840, 2160}, how + ": nothing saved is the mode Windows has");
+    Check(PlanExclusive({1920, 1080}, info.book.desktop(), false, {}) == Plan::kSwitch, how + ": 1920x1080 is a switch");
+    CheckEq(std::to_string(info.book.RefreshFor({1920, 1080})), "60",
+            how + ": its rate is the one listed, or the display's own when the driver does not list it");
+    game.now += 100;
+    game.Enter({1920, 1080}, true);
+    CheckEq(Text(display.current), "1920x1080", how + ": the display is switched to 1920x1080");
+    Check(Has(game.Ask().book.Sizes(), {3840, 2160}), how + ": the desktop's own 3840x2160 stays on the list");
+  }
+}
+
+void CheckDisplaysBooks() {
+  int looks = 0;
+  const auto read = [&](Info* info, bool) {
+    ++looks;
+    info->book.Add(OwnLook1080p(), false, kMin);
+  };
+  Displays d;
+  Info kept;
+  Check(!d.Peek("A", &kept) && d.latest().empty(), "books: nothing kept before the first ask");
+  d.Listed("A", 1000, read);
+  CheckEq(std::to_string(looks), "1", "books: the first ask looks at the driver");
+  d.Listed("A", 1000 + Displays::kLifetimeMs, read);
+  CheckEq(std::to_string(looks), "1", "books: a fresh book is kept");
+  d.Listed("A", 1001 + Displays::kLifetimeMs, read);
+  CheckEq(std::to_string(looks), "2", "books: an old one is looked at again");
+  d.Listed("B", 9000, read);
+  CheckEq(std::to_string(looks), "3", "books: every display has its own");
+  CheckEq(d.latest(), "B", "books: the display asked last");
+  Check(d.Peek("A", &kept) && Has(kept.book.Sizes(), {1920, 1080}), "books: a book can be had with no look");
+  d.SetSwitched("A");
+  Check(d.IsSwitched("A") && !d.IsSwitched("B"), "books: the switched display");
+  d.Listed("A", 9000000, read);
+  d.Listed("A", 99000000, read);
+  CheckEq(std::to_string(looks), "3", "books: a switched display is never looked at, however old the book");
+  d.Listed("B", 9001 + Displays::kLifetimeMs, read);
+  CheckEq(std::to_string(looks), "4", "books: another display is still looked at");
+  d.SetSwitched({});
+  Check(!d.IsSwitched("A"), "books: the mark is gone");
+  d.Listed("A", 99000001, read);
+  CheckEq(std::to_string(looks), "5", "books: once the display's own mode is back it is looked at again");
+  // A switched display that has no book yet (the first look is made during a switch): looked at once, as
+  // switched, and the display's own size is still in the book.
+  Displays first;
+  first.SetSwitched("C");
+  const Info c = first.Listed("C", 5, [&](Info* info, bool switched) {
+    Check(switched, "books: the first look of a switched display is told so");
+    info->book.Add(SwitchedLook1080p(), switched, kMin);
+  });
+  Check(Has(c.book.Sizes(), {1920, 1080}), "books: the first look in 1280x720 still has 1920x1080");
+}
+
+void CheckResolutionIsNotFullscreensSize() {
+  // The rule the menu and display_mode.cpp keep (they cannot be run here): FULLSCREEN reads
+  // fullscreen_resolution, never `resolution`. What the old reading did, on the 1080p monitor of the report
+  // with `resolution` = 1280x720 from a window: asked for 1280x720, a switch.
+  Book book;
+  book.Add(OwnLook1080p(), false, kMin);
+  const Size window_resolution = {1280, 720};
+  const Size old_reading = ChooseExclusive(book.Sizes(), book.desktop(), window_resolution);
+  const Size new_reading = ChooseExclusive(book.Sizes(), book.desktop(), {});
+  CheckEq(Text(old_reading), "1280x720", "the old reading: `resolution` 1280x720 made FULLSCREEN 1280x720");
+  CheckEq(Text(new_reading), "1920x1080", "the new reading: a window's size is not FULLSCREEN's");
+  Check(PlanExclusive(new_reading, book.desktop(), false, {}) == Plan::kOwn, "the new reading: no switch");
+}
+
 }  // namespace
 
 int main() {
@@ -481,6 +890,16 @@ int main() {
   CheckLooksOnlyAdd();
   CheckDisplayChangedByThePlayer();
   CheckRefreshRates();
+  CheckNearest();
+  CheckChooseExclusive();
+  CheckPlanExclusive();
+  CheckBorderlessToFullscreenOn1080p();
+  CheckSwitchWithTheMenuLooking();
+  CheckEmptyOwnModeSwitchesNothing();
+  CheckDsrModes();
+  CheckDsrAsTheDesktopMode();
+  CheckDisplaysBooks();
+  CheckResolutionIsNotFullscreensSize();
   std::printf("display_sizes_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;
 }

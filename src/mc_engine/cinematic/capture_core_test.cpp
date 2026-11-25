@@ -13,11 +13,16 @@
 // hand-over's stamp. The first fails exactly as the E7 take did (a repeated first frame, the last frame cut off); the second
 // is exact whatever the render thread's lead was when the take began.
 
+#include <atomic>
+#include <chrono>
 #include <cmath>
+#include <condition_variable>
 #include <cstdint>
 #include <cstdio>
 #include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "capture_core.h"
@@ -89,6 +94,33 @@ void TestStep() {
         const double back = FpsForStepTicks(StepTicksForFps(fps));
         CheckNum(back, fps, "fps -> ticks -> fps at " + std::to_string(fps), fps * 1e-6);
     }
+}
+
+void TestTakeSceneClock() {
+    const auto on_key = PlanTakeSceneClock(12.0, 60.0);
+    const auto earlier = PlanTakeSceneClock(12.0001, 60.0);
+    const auto later = PlanTakeSceneClock(12.000604, 60.0);
+    CheckNum(on_key.t0, 721.0 / 60.0, "an on-grid key starts at the next grid point", 0.0);
+    Check(earlier.t0 == later.t0 && earlier.t0 == on_key.t0, "key arrivals within the same step pin the same time");
+    CheckNum(PlanTakeSceneClock(0.0, 60.0).t0, 1.0 / 60.0, "a key at zero starts one step later", 0.0);
+    CheckNum(PlanTakeSceneClock(0.3, 10.0).t0, 0.4, "a decimal grid key rounds to its grid point before choosing the next", 0.0);
+    CheckNum(PlanTakeSceneClock(0.29999, 10.0).t0, 3.0 / 10.0, "an off-grid key starts at the next grid point", 1e-16);
+
+    const auto explicit_start = PlanTakeSceneClock(12.005, 59.94, 3.123456789123456);
+    CheckNum(explicit_start.Time(0), 3.123456789123456, "an explicit start is used exactly", 0.0);
+    CheckNum(PlanTakeSceneClock(0.02, 60.0, 0.0).Time(0), 0.0, "zero is a valid explicit start", 0.0);
+    CheckNum(explicit_start.step, 1.0 / 59.94, "take time uses the video and audio rate", 0.0);
+    CheckNum(explicit_start.Time(50'000), 3.123456789123456 + 50'000 * (1.0 / 59.94), "long takes use direct frame indexing", 0.0);
+
+    const auto range = PlanTakeSceneClock(5.0, 32.0, 5.0);
+    Check(!range.PastEnd(31, 6.0, -1.0) && range.PastEnd(32, 6.0, -1.0), "the Director range contains 32 frames with an exclusive end");
+    Check(!range.PastEnd(32, -1.0, 6.0) && range.PastEnd(33, -1.0, 6.0), "the scene end is included only if it is on the take grid");
+    Check(!range.PastEnd(100'000, -1.0, -1.0), "a take without an end can continue");
+
+    CheckNum(StepToTakeKey(11.99, 0.033, 12.0, false), 0.01, "a late update reaches the authored key without going past it");
+    CheckNum(StepToTakeKey(11.0, 0.033, 12.0, false), 0.033, "ordinary updates before the key keep their step");
+    CheckNum(StepToTakeKey(0.0, 0.033, 0.0, true), 0.0, "a capture at zero waits on the key when readiness opens");
+    CheckNum(StepToTakeKey(12.0, 0.033, 12.0, false), 0.033, "regular playback can leave a key when no take started");
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the tag
@@ -163,6 +195,106 @@ void TestGate() {
     GateBook late;
     late.captured = 5;
     CheckU(static_cast<uint64_t>(late.TimedOut(4)), 0, "a timeout that finds the books ahead gives up on nothing");
+}
+
+// The game thread's wait at the gate, against threads (the VERIFY-EXIT V02 case: a close during a take left the game thread here for the gate's whole
+// timeout, in a host wait that the SDK's stop request cannot end, so the title's termination found its main thread running).
+struct GateRig {
+    std::mutex mutex;
+    std::condition_variable cv;
+    GateBook book;                       // mutex
+    std::atomic<uint64_t> progress{0};
+    std::atomic<bool> closing{false};
+
+    // What the capture's glue does: the render thread reads a frame back (CaptureFrameDone) ...
+    void FrameDone() {
+        progress.fetch_add(1);
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+            ++book.captured;
+        }
+        cv.notify_all();
+    }
+    // ... and the close (CaptureCloseNow).
+    void CloseNow() {
+        closing.store(true);
+        {
+            std::lock_guard<std::mutex> lock(mutex);
+        }
+        cv.notify_all();
+    }
+    GateEnd Wait(uint64_t needed, int timeout_ms, int slice_ms, double* took_ms) {
+        const auto t0 = std::chrono::steady_clock::now();
+        std::unique_lock<std::mutex> lock(mutex);
+        const GateEnd end = WaitAtGate(lock, cv, [&] { return book.Met(needed); }, [&] { return progress.load(); }, [&] { return closing.load(); }, timeout_ms,
+                                       slice_ms);
+        if (took_ms) *took_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+        return end;
+    }
+};
+
+void TestWaitAtGate() {
+    double ms = 0;
+    {  // met at once: no wait, and a gate that is met is met whatever the close says
+        GateRig r;
+        r.book.captured = 3;
+        Check(r.Wait(3, 3000, 200, &ms) == GateEnd::kMet && ms < 500, "gate: frames already read back: met at once");
+        r.CloseNow();
+        Check(r.Wait(3, 3000, 200, &ms) == GateEnd::kMet && ms < 500, "gate: met and closing: met");
+        Check(r.Wait(4, 3000, 200, &ms) == GateEnd::kClosing && ms < 500, "gate: a frame short and closing: closing, at once");
+    }
+    {  // the close comes while the game thread waits (the render thread is gone: the frame never arrives)
+        GateRig r;
+        std::thread closer([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            r.CloseNow();
+        });
+        const GateEnd end = r.Wait(1, 3000, 200, &ms);
+        closer.join();
+        Check(end == GateEnd::kClosing, "gate: closed during the wait: it ends as closing, not as a timeout");
+        Check(ms >= 60 && ms < 1500, "gate: and at once (" + std::to_string(ms) + " ms for a 3000 ms timeout)");
+    }
+    {  // a close whose notify is lost is found by the next slice
+        GateRig r;
+        std::thread closer([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            r.closing.store(true);  // no notify
+        });
+        const GateEnd end = r.Wait(1, 3000, 40, &ms);
+        closer.join();
+        Check(end == GateEnd::kClosing && ms < 1500, "gate: a close with no wake-up is seen at the next slice");
+    }
+    {  // the frame arrives
+        GateRig r;
+        std::thread renderer([&] {
+            std::this_thread::sleep_for(std::chrono::milliseconds(60));
+            r.FrameDone();
+        });
+        const GateEnd end = r.Wait(1, 3000, 200, &ms);
+        renderer.join();
+        Check(end == GateEnd::kMet && ms < 1500, "gate: the frame read back ends the wait");
+    }
+    {  // nothing moves: the timeout, after the timeout
+        GateRig r;
+        const GateEnd end = r.Wait(1, 150, 200, &ms);
+        Check(end == GateEnd::kTimedOut, "gate: nothing moved: timed out");
+        Check(ms >= 140 && ms < 2000, "gate: after the timeout, not before (" + std::to_string(ms) + " ms for 150)");
+    }
+    {  // something moves (a slow writer that keeps finishing frames): not a timeout while it does
+        GateRig r;
+        std::atomic<bool> stop{false};
+        std::thread writer([&] {
+            for (int i = 0; i < 8 && !stop.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(40));
+                r.progress.fetch_add(1);  // written, not a frame the gate needs
+            }
+        });
+        const GateEnd end = r.Wait(1, 150, 200, &ms);
+        stop.store(true);
+        writer.join();
+        Check(end == GateEnd::kTimedOut, "gate: a writer that moves and then stops: timed out in the end");
+        Check(ms >= 400, "gate: the timeout counts from the last thing that moved (" + std::to_string(ms) + " ms: 8 x 40 ms of progress + 150)");
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the take
@@ -450,9 +582,11 @@ void TestSink() {
 
 int main() {
     TestStep();
+    TestTakeSceneClock();
     TestTag();
     TestHandOver();
     TestGate();
+    TestWaitAtGate();
     TestTake();
     TestPipeline();
     TestClock();

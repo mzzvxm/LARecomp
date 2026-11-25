@@ -62,6 +62,39 @@ inline const MouseKey* FindMouseKeyByScancode(uint8_t scancode) {
     return nullptr;
 }
 
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+// The menu's buttons as keys of their own, for the mouse in the menus (menu_mouse.cpp, KBM-DESIGN.md phase P6): a click is ACCEPT, the right button BACK, the wheel and the hover's
+// walk the arrows. The game's menu mapper (keyboard_native.cpp EnsureNavKeys) gets one entry per button pointing at the SAME output the pad's button writes, so what the pointer
+// does is exactly what the button does (its sound, its transition, the form's own handler), and the keys of kb_ui_* are not involved: a click on empty space is no key. No keyboard
+// produces these ids: 0x97..0x9C are Windows virtual-key numbers that nothing uses (0x88..0x8F are the gamepad navigation keys, 0x96 and 0xA0 the neighbours); the scancodes
+// 0x87..0x8C follow the mouse keys' and are free in the game's table too (KBM-P0 P0d).
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------
+enum class MenuKey : uint8_t { Accept = 0, Back, Up, Down, Left, Right };
+constexpr int kMenuKeyCount = 6;
+
+struct MenuKeyDef {
+    const char* name;
+    MenuKey key;
+    int id;             // the id in KeyLatch
+    uint8_t scancode;   // the scancode the game's key table gets for it
+};
+constexpr MenuKeyDef kMenuKeys[kMenuKeyCount] = {
+    {"MenuAccept", MenuKey::Accept, 0x97, 0x87},
+    {"MenuBack", MenuKey::Back, 0x98, 0x88},
+    {"MenuUp", MenuKey::Up, 0x99, 0x89},
+    {"MenuDown", MenuKey::Down, 0x9A, 0x8A},
+    {"MenuLeft", MenuKey::Left, 0x9B, 0x8B},
+    {"MenuRight", MenuKey::Right, 0x9C, 0x8C},
+};
+
+inline const MenuKeyDef* FindMenuKeyById(int id) {
+    for (const MenuKeyDef& k : kMenuKeys)
+        if (k.id == id) return &k;
+    return nullptr;
+}
+
+inline int MenuKeyId(MenuKey key) { return kMenuKeys[int(key)].id; }
+
 namespace detail {
 inline char Low(char c) { return (c >= 'A' && c <= 'Z') ? char(c - 'A' + 'a') : c; }
 inline bool SameName(std::string_view a, std::string_view b) {
@@ -168,5 +201,15 @@ private:
     std::array<std::atomic<uint64_t>, 4> held_{};
     std::array<std::atomic<uint64_t>, 4> tapped_{};
 };
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// WHO GETS A MOUSE BUTTON OR A WHEEL TURN. An ImGui window under the pointer owns it (the F4 panel, the browsers, the Director panel's dock), and so does a panel that works with the pointer
+// anywhere in the picture while it shows (imgui_theme.h PointerHeldByPanel: the Director panel, where a click on the ground picks a car, a drag moves it and the right button looks round
+// the free camera). None of that is the game's: a click on a panel button must not fire the nitro (LMB) and a look round must not set the look back (RMB). The mouse run of 2026-11-20 logged
+// `mouse key LMB down` for a car drag and `RMB down` for the free camera's look. A button's release always lets go (keyboard_native.cpp), so nothing stays held.
+// ---------------------------------------------------------------------------------------------------------------------------
+inline constexpr bool MouseGoesToGame(bool overlay_wants_mouse, bool pointer_held_by_panel) {
+    return !overlay_wants_mouse && !pointer_held_by_panel;
+}
 
 }  // namespace larecomp::kbm

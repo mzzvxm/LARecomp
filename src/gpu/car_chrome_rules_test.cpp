@@ -178,6 +178,23 @@ float AgreementAt(const Scene& scene, const float p[3], float nv) {
   return cc::Agreement(stored, z, cc::SurfaceSlack(z, float(scene.cam.rows), focal, nv));
 }
 
+// The self-test with the history's texel read `dx`, `dy` pixels from the point's own pixel (what the guest's sample 0 does at a rim: the texel under the
+// pixel is another's), and the same with the rim's search of the neighbours (the variant's CarChrSilhouetteAgreement, car_chrome_rules.h).
+float AgreementShifted(const Scene& scene, const float p[3], float nv, int dx, int dy, bool search) {
+  float px, py, z;
+  scene.Project(p, &px, &py, &z);
+  const int ix = int(std::floor(px)) + dx, iy = int(std::floor(py)) + dy;
+  const float focal = 2.0f * scene.cam.focal_px / float(scene.cam.rows);
+  const float slack = cc::SurfaceSlack(z, float(scene.cam.rows), focal, nv);
+  const float own = cc::TexelAgreement(scene.Depth(ix, iy), z, slack);
+  if (!search) return own;
+  float stored[cc::kSilhouetteTaps];
+  for (int k = 0; k < cc::kSilhouetteTaps; ++k) {
+    stored[k] = scene.Depth(ix + cc::kSilhouetteOffsets[k][0], iy + cc::kSilhouetteOffsets[k][1]);
+  }
+  return cc::SilhouetteAgreement(own, stored, z, slack);
+}
+
 void Normalize(float v[3]) {
   const float l = std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
   for (int k = 0; k < 3; ++k) v[k] /= l;
@@ -243,6 +260,96 @@ int main() {
   Check(cc::Agreement(6.7f + 0.02f, 6.7f, 0.0f) == 1.0f, "2 cm is inside the tolerance's inner half");
   Check(cc::Agreement(6.7f + 0.0364f, 6.7f, 0.0f) > 0.3f && cc::Agreement(6.7f + 0.0364f, 6.7f, 0.0f) < 0.7f, "3.6 cm is half in, half out");
   Check(cc::Agreement(6.7f + 0.004f, 6.7f, 0.0f) == 1.0f, "4 mm (the history's half float step at 6.7 m) is no disagreement");
+
+  // The rim of a part (the thin bright line round a tip's top edge, version 3): the history's texel under a pixel at the silhouette is what is behind the tip,
+  // the self-test says 0 and the game's bright chrome stays; the texels round it hold the tip.
+  {
+    // The offsets: twelve, all different, none the texel itself, the eight round it first, the others two steps away along an axis.
+    bool distinct = true, ring = true, near = true;
+    for (int a = 0; a < cc::kSilhouetteTaps; ++a) {
+      const int ax = cc::kSilhouetteOffsets[a][0], ay = cc::kSilhouetteOffsets[a][1];
+      near = near && (ax != 0 || ay != 0) && std::abs(ax) <= 2 && std::abs(ay) <= 2;
+      ring = ring && (a < 8 ? (std::abs(ax) <= 1 && std::abs(ay) <= 1) : (std::abs(ax) + std::abs(ay) == 2 && (ax == 0 || ay == 0)));
+      for (int b = a + 1; b < cc::kSilhouetteTaps; ++b) {
+        distinct = distinct && (ax != cc::kSilhouetteOffsets[b][0] || ay != cc::kSilhouetteOffsets[b][1]);
+      }
+    }
+    Check(cc::kSilhouetteTaps == 12 && distinct && near && ring,
+          "the rim's twelve offsets are different, are not the texel itself, and are within two steps (eight round it, four two steps along an axis)");
+
+    // The rule alone: never lower than the own agreement, the own agreement where it is 1, 0 where no texel agrees, a texel that holds no vehicle never agrees.
+    float none[cc::kSilhouetteTaps] = {};
+    float behind[cc::kSilhouetteTaps], right[cc::kSilhouetteTaps], mixed[cc::kSilhouetteTaps];
+    for (int k = 0; k < cc::kSilhouetteTaps; ++k) {
+      behind[k] = 6.7f + 0.06f;  // the bumper's cavity 6 cm further
+      right[k] = 6.7f;
+      mixed[k] = k == 5 ? 6.7f + 0.01f : 0.0f;
+    }
+    Check(cc::SilhouetteAgreement(1.0f, behind, 6.7f, 0.0f) == 1.0f && cc::SilhouetteAgreement(1.0f, none, 6.7f, 0.0f) == 1.0f, "a pixel that agrees fully keeps it");
+    Check(cc::SilhouetteAgreement(0.4f, behind, 6.7f, 0.0f) == 0.4f && cc::SilhouetteAgreement(0.4f, right, 6.7f, 0.0f) == 1.0f,
+          "never lower than the own agreement; a neighbour that holds the point's surface lifts it");
+    Check(cc::SilhouetteAgreement(0.0f, none, 6.7f, 0.0f) == 0.0f && cc::SilhouetteAgreement(0.0f, behind, 6.7f, 0.0f) == 0.0f,
+          "no texel round it holds a vehicle, or all hold the cavity behind: 0 stays 0");
+    Check(cc::SilhouetteAgreement(0.0f, mixed, 6.7f, 0.0f) == 1.0f, "a single neighbour (the diagonal one) that agrees is enough");
+    Check(cc::TexelAgreement(0.0f, 0.1f, 0.0f) == 0.0f && cc::TexelAgreement(6.7f, 6.7f, 0.0f) == 1.0f && cc::TexelAgreement(6.7f + 0.2f, 6.7f, 0.0f) == 0.0f,
+          "a texel with no vehicle never agrees, one at the right distance does, one 20 cm off does not");
+
+    // A tip's top (a 14 cm by 10 cm face, 6.7 m from the camera) in front of the bumper's cavity 15 cm behind it; the shaded pixel at the tip's left edge, its
+    // history texel read one to two pixels to the left (the sample that falls outside the tip).
+    Scene scene;
+    scene.boxes.push_back({{-0.07f, -0.06f, 6.70f}, {0.07f, 0.0f, 6.80f}});    // the tube's top
+    scene.boxes.push_back({{-0.50f, -0.30f, 6.85f}, {0.50f, 0.30f, 7.00f}});   // the bumper's cavity behind it
+    const float rim[3] = {-0.0693f, 0.0f, 6.72f};
+    const float centre[3] = {0.0f, 0.0f, 6.72f};
+    const float nv = 0.9f;
+    const float inside = AgreementShifted(scene, centre, nv, 0, 0, false);
+    Check(inside > 0.99f, "the tip's middle finds itself in the history at its own pixel: " + std::to_string(inside));
+    const float own_ok = AgreementShifted(scene, rim, nv, 0, 0, false);
+    Check(own_ok > 0.99f, "the rim's own texel is the tip's when the sample is inside it: " + std::to_string(own_ok));
+    for (const int dx : {-1, -2}) {
+      const float before = AgreementShifted(scene, rim, nv, dx, 0, false);
+      const float after = AgreementShifted(scene, rim, nv, dx, 0, true);
+      Check(before == 0.0f, "the rim's texel " + std::to_string(-dx) + " pixel(s) to the left is the cavity 15 cm behind: the old self-test says " + std::to_string(before));
+      Check(after > 0.99f, "the rim's search finds the tip " + std::to_string(-dx) + " step(s) away: " + std::to_string(after));
+    }
+    // The cavity right up to the tip (10 cm behind it) and the sample that falls on the diagonal.
+    scene.boxes[1] = {{-0.50f, -0.30f, 6.80f}, {0.50f, 0.30f, 7.00f}};
+    {
+      const float before = AgreementShifted(scene, rim, nv, -1, -1, false);
+      const float after = AgreementShifted(scene, rim, nv, -1, -1, true);
+      Check(before < 0.05f && after > 0.99f, "the diagonal: " + std::to_string(before) + " before, " + std::to_string(after) + " with the search");
+    }
+    // Where there is no vehicle behind the tip at all (the open street): the texel holds nothing, the old self-test said 0, the search finds the tip.
+    Scene open;
+    open.boxes.push_back({{-0.07f, -0.06f, 6.70f}, {0.07f, 0.0f, 6.80f}});
+    {
+      const float before = AgreementShifted(open, rim, nv, -1, 0, false);
+      const float after = AgreementShifted(open, rim, nv, -1, 0, true);
+      Check(before == 0.0f && after > 0.99f, "no vehicle behind the tip: " + std::to_string(before) + " before, " + std::to_string(after) + " with the search");
+    }
+    // What must stay left to the game: a point whose history is somewhere else (a wrong guess of the car's motion: 10 pixels off), a point that is 22 cm
+    // nearer than anything in the history. And the cavity's own point finds itself.
+    {
+      const float off = AgreementShifted(scene, rim, nv, -10, 0, true);
+      Check(off == 0.0f, "a history 10 pixels off is no better for the search: " + std::to_string(off));
+      const float cavity_point[3] = {-0.0715f, 0.0f, 6.80f};  // on the cavity's face just left of the tip's edge
+      const float cavity = AgreementShifted(scene, cavity_point, nv, 0, 0, true);
+      Check(cavity > 0.99f, "a point on the cavity finds the cavity (its own texel): " + std::to_string(cavity));
+      const float wrong[3] = {-0.0693f, 0.0f, 6.50f};  // 22 cm nearer than the tip: nothing in the history is at its distance
+      const float lip = AgreementShifted(scene, wrong, nv, -1, 0, true);
+      Check(lip == 0.0f, "a point 22 cm nearer than anything in the history stays at 0: " + std::to_string(lip));
+    }
+    // At 1080p (a 2.8 mm pixel).
+    Scene lo = scene;
+    lo.cam.width = 1920;
+    lo.cam.rows = 1080;
+    lo.cam.focal_px = 2356.0f;
+    {
+      const float before = AgreementShifted(lo, rim, nv, -1, 0, false);
+      const float after = AgreementShifted(lo, rim, nv, -1, 0, true);
+      Check(after >= before && after > 0.99f, "at 1080p: " + std::to_string(before) + " before, " + std::to_string(after) + " with the search");
+    }
+  }
 
   // The sky probe's direction.
   {

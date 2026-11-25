@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- host viewport, NDC transform and scissor of a draw
 // ===========================================================================
 // The arithmetic is Xenia's
-// draw_util::GetHostViewportInfo (src/graphics/util/draw.cpp in the SDK,
+// draw_util::GetHostViewportInfo (src/graphics/util/draw.cpp in rexglue 0.10,
 // BSD-3-Clause), ported to the cases this renderer has: resolution scale 1,
 // Direct3D NDC orientation on both backends -- Xenia's origin_bottom_left
 // case, Y negated (the SPIR-V vertex shaders flip Y themselves,

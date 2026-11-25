@@ -50,4 +50,35 @@ float SsgiSourceShare(float luma, float start) {
   return saturate((luma / max(start, 1e-3f) - 1.0f) / (kSsgiSourceSpan - 1.0f));
 }
 
+// THE LIGHTS' SHARE of the radiance (GI-BOUNCE-SS, ssgi_lights.h; ao_color_ps.hlsl LightsHistory / SsgiCarryLights): what the deferred light pass (neon, headlights, street lamps) added to the colour in the last frame,
+// found at the place a texel was, taken into the chain under the same cap. The tests that find it are the occlusion's accumulation pass's (ao_temporal_ps.hlsl), the same numbers.
+static const float kSsgiLightsPlaneShare = 0.012f;
+static const float kSsgiLightsPlaneFloor = 0.02f;
+static const float kSsgiLightsDepthShare = 0.08f;
+static const float kSsgiLightsDepthFloor = 0.05f;
+static const float kSsgiLightsConfidenceLow = 0.15f;
+static const float kSsgiLightsConfidenceHigh = 0.75f;
+static const float kSsgiLightsNearest = 0.05f;
+static const float3 kSsgiLuma = float3(0.2126f, 0.7152f, 0.0722f);
+
+// The cap the lights' share is held under (ssgi_lights.h LightsCap; GI-BOUNCE-SS-2): the chain's cap, or the lights' own floor (push shape.w, mcla_gpu_ssgi_lights_floor) where that is higher: the same as `cap` to the bit
+// wherever the cap is at or over the floor (the day), the floor at night, where the cap is its own floor of 0.5.
+float SsgiLightsCap(float cap, float floor_luma) {
+  return max(cap, floor_luma);
+}
+
+// The chain's colour for a texel whose cleaned and capped colour is `pre` (luma under `cap`) and whose last frame's light is `delta`: the part of the lights' luma (times `gain`, times what is not a source of light)
+// that fits under the cap, soft-clipped to the room the capped colour leaves, hue kept. No light or a gain of 0 is `pre` to the bit.
+float3 SsgiCarryLights(float3 pre, float3 delta, float gain, float cap, float source_share) {
+  const float keep = gain * (1.0f - saturate(source_share));
+  const float3 d = delta * keep;
+  const float luma_d = dot(d, kSsgiLuma);
+  if (!(luma_d > 1e-6f)) {
+    return pre;
+  }
+  const float room = max(cap - dot(pre, kSsgiLuma), 0.0f);
+  const float scale = SsgiSoftClip(luma_d, room) / luma_d;
+  return pre + d * scale;
+}
+
 #endif  // MCLA_GPU_SSGI_COMMON_HLSLI

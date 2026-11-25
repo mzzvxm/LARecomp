@@ -1,6 +1,7 @@
 #pragma once
 
 void InitHooks();
+void StopFreezeWatchdog();
 
 #include <rex/ppc/context.h>
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0, PPCRegister& f30);
@@ -140,6 +141,10 @@ void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegist
 // opened. Covers the tunes, cameras and garage files the streamer never sees.
 void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3);
 
+// First instruction of sub_82130678, the disc error handler: with `return` in the manifest hook the
+// function body is skipped (there is no disc to be removed).
+void MCLA_DiscErrorBypass();
+
 // Driver animations of a car the game does not ship. Each hook sits one
 // instruction after the sprintf that names them and hands the buffer to
 // mc::modloader::AliasDriverAnimName, which swaps the new car's name for the
@@ -198,6 +203,10 @@ void MCLAGameClockCarry(PPCRegister& f0);
 // A running scene's time scale (cinematic/scene_runtime.cpp): after the instruction at 0x821BDAB4 in sub_821BDA90, f13 is the scale
 // `lfs f13,84(r3)` loaded; the hook replaces it while a scene's time scale is on and leaves it alone otherwise.
 void MCLATimeScaleOverride(PPCRegister& f13);
+
+// A scene ambient car's paint (cinematic/cars.cpp, scene_seed.h): before the instruction at 0x826DF2DC in sub_826DF260, r3 is the number the game drew for the car's own generator and
+// r31 the spawn queue's entry; the hook replaces r3 with the paint's seed for the entry of one of the scene's layout items and leaves it alone otherwise.
+void MCLAAmbientCarSeed(PPCRegister& r3, PPCRegister& r31);
 
 // Logs the audio dropout counter's closing line, once (hooks/audio_mixer.cpp). Safe from any
 // thread; logs nothing if the game closed before the counter started.

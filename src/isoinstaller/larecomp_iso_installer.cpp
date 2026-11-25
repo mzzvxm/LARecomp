@@ -17,9 +17,11 @@
 #include <thread>
 #include <vector>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
+#include <rex/ui/ui_system.h>
 
 #include "install_wizard_dialog.h"
+#include "os/file_pick.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -34,9 +36,6 @@
 #include <windows.h>
 #include <commdlg.h>
 
-#elif defined(__APPLE__)
-#else
-#include <gtk/gtk.h>
 #endif
 
 namespace larecomp {
@@ -118,40 +117,30 @@ std::filesystem::path PickIsoFile() {
 std::filesystem::path PickIsoFile() {
   return larecomp::PickIsoFileMacOS();
 }
+#endif
+
+// The wizard's file chooser. Windows and macOS keep the system's own dialog above. Linux asks the SDK's file dialog (SDL3's: the xdg desktop portal
+// over D-Bus, then zenity), not GTK 3, which the game linked until 2026-11 (os/file_pick.h). Where neither answers it returns an error, which comes back
+// as `unavailable`: the wizard logs one line and shows a box to type the ISO's path in (install_wizard_dialog.cpp), so the game still starts and the
+// install can still go on.
+#if defined(_WIN32) || defined(__APPLE__)
+os::FilePick PickIsoSource(rex::ui::IUISystem&) {
+  os::FilePick pick;
+  pick.path = PickIsoFile();
+  pick.cancelled = pick.path.empty();
+  return pick;
+}
 #else
-std::filesystem::path PickIsoFile() {
-  GtkWidget* dialog = gtk_file_chooser_dialog_new(
-      "Select Midnight Club: Los Angeles Complete Edition Xbox 360 ISO", nullptr, GTK_FILE_CHOOSER_ACTION_OPEN, "_Cancel",
-      GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, nullptr);
-  if (!dialog) {
-    return {};
+os::FilePick PickIsoSource(rex::ui::IUISystem& ui) {
+  rex::ui::FileDialogConfig config;
+  config.mode = rex::ui::FileDialogConfig::Mode::kOpenFile;
+  config.title = "Select Midnight Club: Los Angeles Complete Edition Xbox 360 ISO";
+  config.filters = {{"Xbox 360 ISO (*.iso)", "iso;ISO"}, {"All files", "*"}};
+  const auto chosen = ui.ShowFileDialog(config);
+  if (!chosen) {
+    return os::FromDialogAnswer(false, {}, chosen.error().message);
   }
-
-  GtkFileFilter* iso_filter = gtk_file_filter_new();
-  gtk_file_filter_set_name(iso_filter, "Xbox 360 ISO (*.iso)");
-  gtk_file_filter_add_pattern(iso_filter, "*.iso");
-  gtk_file_filter_add_pattern(iso_filter, "*.ISO");
-  gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), iso_filter);
-
-  GtkFileFilter* all_filter = gtk_file_filter_new();
-  gtk_file_filter_set_name(all_filter, "All files");
-  gtk_file_filter_add_pattern(all_filter, "*");
-  gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), all_filter);
-
-  std::filesystem::path result;
-  if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-    char* filename = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-    if (filename) {
-      result = filename;
-      g_free(filename);
-    }
-  }
-
-  gtk_widget_destroy(dialog);
-  while (gtk_events_pending()) {
-    gtk_main_iteration_do(FALSE);
-  }
-  return result;
+  return os::FromDialogAnswer(true, *chosen, "");
 }
 #endif
 
@@ -501,25 +490,24 @@ InstallWizardDialog::InstallCallback MakeIsoInstall(std::filesystem::path user_d
 
 }  // namespace
 
-void ShowRexglueIsoInstallWizard(rex::ui::ImGuiDrawer* drawer, rex::PathConfig runtime_paths,
-                                 std::function<void(rex::PathConfig)> complete) {
-  const std::u8string install_dir = runtime_paths.game_data_root.u8string();
-  auto install = MakeIsoInstall(runtime_paths.user_data_root);
-  new InstallWizardDialog(
-      drawer, "MCLA: CE Setup",
+void ShowRexglueIsoInstallWizard(rex::ui::IUISystem& ui, const Paths& paths,
+                                 std::function<void(Paths)> complete) {
+  const std::u8string install_dir = paths.game_root.u8string();
+  auto install = MakeIsoInstall(paths.user_root);
+  ui::ShowDialog<InstallWizardDialog>(
+      ui, "MCLA: CE Setup",
       "MCLA: CE game files were not found. Select your Xbox 360 ISO to install them.",
-      std::string(install_dir.begin(), install_dir.end()), []() { return PickIsoFile(); },
+      std::string(install_dir.begin(), install_dir.end()), [&ui]() { return PickIsoSource(ui); },
       std::move(install),
-      [runtime_paths = std::move(runtime_paths), complete = std::move(complete)](
-          std::filesystem::path installed_dir) mutable {
+      [result = paths, complete = std::move(complete)](std::filesystem::path installed_dir) mutable {
         if (complete) {
-          runtime_paths.game_data_root = std::move(installed_dir);
-          complete(std::move(runtime_paths));
+          result.game_root = installed_dir;
+          complete(std::move(result));
         }
       });
 }
 
-bool TryAutomatedIsoInstall(const rex::PathConfig& runtime_paths, bool& attempted) {
+bool TryAutomatedIsoInstall(const Paths& paths, bool& attempted) {
   attempted = false;
   const char* automated_iso = std::getenv("LARECOMP_INSTALL_ISO");
   if (automated_iso == nullptr || *automated_iso == '\0') {
@@ -530,8 +518,8 @@ bool TryAutomatedIsoInstall(const rex::PathConfig& runtime_paths, bool& attempte
   std::atomic<uint64_t> total_bytes{0};
   std::string error;
   REXLOG_INFO("Installing MCLA: CE game files from LARECOMP_INSTALL_ISO={}", automated_iso);
-  if (!MakeIsoInstall(runtime_paths.user_data_root)(runtime_paths.game_data_root, std::filesystem::path(automated_iso),
-                                                    copied_bytes, total_bytes, nullptr, error)) {
+  if (!MakeIsoInstall(paths.user_root)(paths.game_root, std::filesystem::path(automated_iso),
+                                       copied_bytes, total_bytes, nullptr, error)) {
     REXLOG_ERROR("Automated ISO installation failed: {}", error);
     return false;
   }

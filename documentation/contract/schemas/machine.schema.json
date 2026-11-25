@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://larecomp.invalid/contract/machine.schema.json",
+  "title": "machine.json (LAUNCHER-FOLLOWS-GAME section 2)",
+  "description": "This PC as the game sees it: GPU, class, RT tier, API caps, which upscalers / frame generation / latency reducer / denoiser run, display, OS, resolved paths. Written by the game at every start and by larecomp.exe --probe_machine. A fact the writer does not know yet is null (or left out): rules read a missing fact as null and show the row plain. Types are checked here; the words an enum may take are in fact-dictionary.json, which validate_contract.py checks every leaf against.",
+  "type": "object",
+  "required": ["schema", "schema_version", "min_reader", "source"],
+  "properties": {
+    "schema": { "const": "larecomp.machine" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "min_reader": { "type": "integer", "minimum": 1 },
+    "source": { "enum": ["probe", "game"], "description": "probe: written by --probe_machine (slow facts null); game: written by a start" },
+    "final": { "type": "boolean", "description": "true once the last asynchronous probe of a start has landed" },
+    "written_by": {
+      "type": "object",
+      "properties": { "game_version": { "type": "string" }, "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" } }
+    },
+    "written_utc": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$" },
+    "hardware_id": { "type": "string", "pattern": "^[0-9a-f]{64}$", "description": "SHA-256 of (adapter name, vendor id, device id, driver version, OS build)" },
+    "gpu": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "vendor": { "type": "string" },
+        "vendor_id": { "type": "integer" },
+        "device_id": { "type": "integer" },
+        "driver_version": { "type": "string" },
+        "vram_mb": { "type": "integer", "minimum": 0 },
+        "shared_memory": { "type": ["boolean", "null"] },
+        "software": { "type": ["boolean", "null"] },
+        "rtx": { "type": ["boolean", "null"] },
+        "rx9000": { "type": ["boolean", "null"] },
+        "class": { "type": ["string", "null"] },
+        "class_why": { "type": ["string", "null"] },
+        "handheld": { "type": ["boolean", "null"] },
+        "class_forced": { "type": ["string", "null"] },
+        "rt_tier": { "type": ["string", "null"] },
+        "rt_rung": { "type": ["string", "null"] },
+        "rt_tier_why": { "type": ["string", "null"] },
+        "rt_benchmarked": { "type": ["boolean", "null"] },
+        "adapters": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "vendor"],
+            "properties": {
+              "name": { "type": "string" },
+              "vendor": { "type": "string" },
+              "vram_mb": { "type": "integer", "minimum": 0 },
+              "class": { "type": ["string", "null"] },
+              "selected": { "type": "boolean" },
+              "software": { "type": ["boolean", "null"] }
+            }
+          }
+        }
+      }
+    },
+    "api": {
+      "type": "object",
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "dxr_1_1": { "type": ["boolean", "null"] },
+        "ray_query": { "type": ["boolean", "null"] },
+        "shader_model": { "type": ["string", "null"] },
+        "car_rt": { "type": ["boolean", "null"] },
+        "city_rt_shadows": { "type": ["boolean", "null"] },
+        "by_api": {
+          "type": "object",
+          "required": ["d3d12", "vulkan"],
+          "properties": {
+            "d3d12": { "$ref": "#/$defs/api_facts" },
+            "vulkan": { "$ref": "#/$defs/api_facts" }
+          }
+        }
+      }
+    },
+    "features": {
+      "type": "object",
+      "properties": {
+        "upscalers": {
+          "type": "object",
+          "properties": {
+            "fsr1": { "type": ["boolean", "null"] },
+            "fsr31": { "type": ["boolean", "null"] },
+            "fsr4": { "type": ["boolean", "null"] },
+            "dlss": { "type": ["string", "null"] },
+            "dlss_modes_refused": { "type": ["array", "null"], "items": { "type": "string" } }
+          }
+        },
+        "frame_generation": {
+          "type": "object",
+          "properties": {
+            "fsr31": { "type": ["boolean", "null"] },
+            "dlss": { "type": ["boolean", "null"] },
+            "dlss_card": { "type": ["boolean", "null"] },
+            "dlss_multiplier_max": { "type": ["integer", "null"] },
+            "dlss_after_restart": { "type": ["boolean", "null"] }
+          }
+        },
+        "latency": {
+          "type": "object",
+          "properties": { "kind": { "type": ["string", "null"] }, "auto_on": { "type": ["boolean", "null"] } }
+        },
+        "denoiser": {
+          "type": "object",
+          "properties": { "vendor": { "type": ["string", "null"] }, "dlss_rr": { "type": ["string", "null"] }, "ray_regen": { "type": ["string", "null"] } }
+        },
+        "hdr": {
+          "type": "object",
+          "properties": {
+            "display_capable": { "type": ["boolean", "null"] },
+            "windows_hdr_on": { "type": ["boolean", "null"] },
+            "auto_paper_white_nits": { "type": ["integer", "null"] },
+            "auto_peak_nits": { "type": ["integer", "null"] }
+          }
+        },
+        "pcss": { "type": ["boolean", "null"] }
+      }
+    },
+    "display": {
+      "type": "object",
+      "properties": {
+        "primary": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "width": { "type": "integer", "minimum": 0 },
+            "height": { "type": "integer", "minimum": 0 },
+            "refresh_hz": { "type": "number", "minimum": 0 },
+            "hdr": { "type": ["boolean", "null"] },
+            "size": { "type": "string", "pattern": "^[0-9]+X[0-9]+$" }
+          }
+        },
+        "list": { "type": "array" },
+        "windowed_sizes": { "type": "array", "items": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 } },
+        "exclusive_sizes": { "type": "array", "items": { "type": "array", "items": { "type": "integer" }, "minItems": 3, "maxItems": 3 } }
+      }
+    },
+    "os": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "build": { "type": "integer", "minimum": 0 },
+        "exclusive_fullscreen": { "type": ["boolean", "null"] },
+        "live_window_resize": { "type": ["boolean", "null"] },
+        "window_size_fixed": { "type": ["boolean", "null"] },
+        "hdr_output": { "type": ["boolean", "null"] },
+        "real_weather": { "type": ["boolean", "null"] },
+        "mouse_look": { "type": ["boolean", "null"] },
+        "wheel_ffb": { "type": ["boolean", "null"] },
+        "frame_pacing_wake": { "type": ["boolean", "null"] }
+      }
+    },
+    "cpu": {
+      "type": "object",
+      "properties": { "threads": { "type": "integer", "minimum": 1 }, "level": { "type": "string" } }
+    },
+    "build": {
+      "type": "object",
+      "properties": { "rt_gi_update_built": { "type": ["boolean", "null"] } }
+    },
+    "install": {
+      "type": "object",
+      "description": "file probes the install manifest declares (facts): the names are the manifest's, so any property is allowed",
+      "additionalProperties": { "type": ["boolean", "string", "null"] }
+    },
+    "paths": {
+      "type": "object",
+      "properties": {
+        "game_folder": { "type": "string" },
+        "config_file": { "type": "string" },
+        "user_root": { "type": "string" },
+        "saves_root": { "type": "string" },
+        "cache_root": { "type": "string" },
+        "logs": { "type": "string" },
+        "game_data_root": { "type": "string" },
+        "mod_root": { "type": "string" },
+        "mod_roots_ignored": { "type": "array", "items": { "type": "string" } },
+        "music": { "type": "array", "items": { "type": "string" } },
+        "strings_replace": { "type": "string" },
+        "title_id": { "type": "string" },
+        "profile_id": { "type": "string" }
+      }
+    }
+  },
+  "$defs": {
+    "api_facts": {
+      "type": "object",
+      "required": ["car_rt", "rt_tier", "ray_regen"],
+      "properties": {
+        "car_rt": { "type": ["boolean", "null"] },
+        "rt_tier": { "enum": ["none", "weak", "strong", null] },
+        "ray_regen": { "enum": ["no", "unsupported", "needs_setup", "after_restart", "ready", null] }
+      }
+    }
+  }
+}

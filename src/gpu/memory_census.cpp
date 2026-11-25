@@ -3,20 +3,12 @@
 
 #include "memory_census.h"
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "draw_decode.h"
 #include "guest_device.h"
 #include "native_gfx/vertex_declaration.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_memory_census, false, "MCLA/GPU",
-    "Watch every vertex and index range the executed draws read, the way the buffer cache will, "
-    "and log every 600 frames what that cache would upload ("
-    "24.21). Diagnostic: it write-protects guest pages.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 

@@ -1,4 +1,6 @@
 #include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include "settings/immortal.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "discord_rpc/discord_rpc.h"
@@ -8,7 +10,7 @@
 #include <cstring>
 #include <string>
 
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include "mc_engine/hooks/hooks.h"
 #include "mc_engine/hooks/owned_cars.h"
@@ -18,7 +20,7 @@
 namespace {
 
 uint8_t* GetMembase() {
-  return rex::Runtime::instance()->virtual_membase();
+  return larecomp::guest::Membase();
 }
 
 uint32_t ReadGuestBE32(uint32_t guest_addr) {
@@ -320,13 +322,13 @@ struct RaceInfo {
   int tour_points = 0;
 };
 
-RaceInfo g_race;
+RaceInfo& g_race = larecomp::Leak<RaceInfo>();
 
 // Read the live race object. Everything is best-effort: a field we cannot reach
 // simply stays empty and the presence falls back to the old generic wording.
 RaceInfo ReadRaceInfo() {
   RaceInfo info;
-  if (!rex::Runtime::instance() || !GetMembase()) return info;
+  if (!REX_RUNTIME() || !GetMembase()) return info;
 
   const uint32_t race = ReadGuestBE32(kCurrentRace);
   if (!IsGuestPtr(race) || race == kRacePoison) return info;
@@ -527,6 +529,7 @@ void RpcOnDistrictChanged(int district_idx) {
 // drops an update whose text has not changed, so Discord only sees real moves.
 void RpcOnRaceTick() {
 #ifndef REXGLUE_HAS_XEO3_TARGET
+  LARECOMP_Discord_Poll();  // larecomp_discord_rpc is live: a change made since the last frame
   if (g_activity != LarecompDiscordState::Race) return;
 
   static int countdown = 0;
@@ -554,5 +557,23 @@ void RpcOnRaceTick() {
 
   g_race = info;
   ApplyAreaPresence();
+#endif
+}
+
+// True while the game's state machine is in "Cruising" (free roam): the last of the "Cruising" / "Racing" / "Garage" / "Loading" / "Intro"
+// activations RpcHook_StateActivate saw. Read by the traffic probe's spawn test (traffic_probe.cpp), which makes its one call in free roam only.
+bool RpcInFreeRoam() {
+#ifndef REXGLUE_HAS_XEO3_TARGET
+  return g_activity == LarecompDiscordState::FreeRoam;
+#else
+  return false;
+#endif
+}
+
+LarecompDiscordState RpcActivity() {
+#ifndef REXGLUE_HAS_XEO3_TARGET
+  return g_activity;
+#else
+  return LarecompDiscordState::Unknown;
 #endif
 }

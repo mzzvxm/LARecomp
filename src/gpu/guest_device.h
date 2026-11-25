@@ -201,7 +201,7 @@ static_assert(kRegisterWindowBegin == kRegisterBlocks[0].device_offset);
 static_assert(kRegisterWindowEnd == 10832 + 4 * 8, "window R ends with the 0x2380 block");
 static_assert(kDevSamplerTextures + 4 * kSamplerCount == kDevViewport);
 
-// Registers decoded from window R (xenos register numbers, rex/graphics/register_table.inc).
+// Registers decoded from window R (xenos register numbers, rex/xenos/register_table.inc).
 namespace reg {
 inline constexpr uint32_t kRbSurfaceInfo = 0x2000;
 inline constexpr uint32_t kRbColorInfo = 0x2001;

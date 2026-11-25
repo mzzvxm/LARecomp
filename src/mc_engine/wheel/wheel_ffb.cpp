@@ -40,7 +40,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "wheel_ffb.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -64,80 +64,11 @@
 #include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(wheel_ffb, true, "MCLA/Wheel",
-    "Force feedback on the steering wheel. Off: the wheel is never given a force.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(wheel_ffb_strength, 70, "MCLA/Wheel",
-    "Force feedback strength, 0-100: the share of the wheel's full force that the game's strongest effect "
-    "reaches. The game's own forces are mostly 10-40% of its scale (it was written for a light 360 wheel), so a "
-    "direct-drive wheel needs this high to feel them; a belt or gear wheel may want it lower. Check "
-    "wheel_ffb_trace for the peak force the game actually asks for.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(wheel_ffb_boost, 200, "MCLA/Wheel",
-    "Multiplies the forces the GAME asks for (constant, vibration, its spring and damper), 100-500 %, before "
-    "wheel_ffb_strength. The game's forces are mostly 10-40% of its scale, written for a light 360 wheel, so on a "
-    "strong base they feel weak: 200 doubles them, with the result capped at the wheel's full force. Centring "
-    "added by this program (wheel_ffb_centering) is not multiplied.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(wheel_ffb_sign, "auto", "MCLA/Wheel",
-    "Which way a positive constant force turns the wheel (centring does not use it). auto: measured once per "
-    "device with a gentle push (keep your hands off the wheel); normal / inverted: skip the test. If the game's "
-    "constant forces push into the turn instead of against it, set the other one.")
-    .allowed({"auto", "normal", "inverted"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(wheel_ffb_centering, 40, "MCLA/Wheel",
-    "Centring added by this program while the game is not running its own spring (it does not while "
-    "free-roaming), 0-100: the most force the centring spring can reach, before wheel_ffb_strength. It is "
-    "about a third of that when parked and grows with the car's speed, like the self-aligning force of a real "
-    "car, so the wheel returns to centre when let go. It is a native DirectInput spring (the wheel's firmware "
-    "does the work) when the wheel allows one. 0 leaves the wheel slack between the game's effects.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_autocenter, true, "MCLA/Wheel",
-    "Only used when wheel_ffb_centering is 0: leave the wheel driver's own centring spring on. With centring "
-    "above 0 the driver's spring is switched off (two springs would fight). Takes effect when the wheel is "
-    "opened.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_panic, false, "MCLA/Wheel",
-    "Emergency stop for the wheel's force feedback: switching it on stops every force and "
-    "disarms until wheel_ffb_rearm is switched on.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_rearm, false, "MCLA/Wheel",
-    "Switch on to arm force feedback again after an emergency stop (it re-checks the wheel first). "
-    "Switch it off again before the next time.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(wheel_ffb_watchdog_ms, 500, "MCLA/Wheel",
-    "Force goes to zero when the game has not run an input frame for this long (a loading screen, "
-    "a hang) and comes back by itself when it does.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_selftest, false, "MCLA/Wheel",
-    "When force feedback arms, play a staged test and log it: 0.5 s push one way, 0.5 s the other, 2 s of "
-    "centring spring (turn the wheel a little and let go), 1 s of damper. Every device call's result and the "
-    "wheel's position (every 50 ms) go to the log, so a dead force path shows in the log whatever you feel. "
-    "Needs the wheel to be free.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(wheel_ffb_trace, false, "MCLA/Wheel",
-    "Log the force sent to the wheel about four times a second, every device call's result, and every state "
-    "change.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace larecomp::wheel::ffb {
 
@@ -173,6 +104,14 @@ void Push(const Cmd& c) {
     // A guest that keeps posting while nothing drains (no wheel thread tick) must not grow without bound.
     if (q.items.size() < 4096) q.items.push_back(c);
 }
+
+// ---------------------------------------------------------------------------
+// The end of the process (any thread -> wheel thread; StopForExit, EXIT-SMALL M6)
+// ---------------------------------------------------------------------------
+
+std::atomic<bool> g_exit_asked{false};     // the process is ending: no force may start again, and the device is released
+std::atomic<bool> g_exit_stopped{false};   // the wheel thread did it
+std::atomic<bool> g_device_open{false};    // a real force-feedback device is open (not log only), set by the wheel thread
 
 // ---------------------------------------------------------------------------
 // The mirror of the game's effects (wheel thread only)
@@ -274,7 +213,7 @@ const char* TypeName(int t) {
     }
 }
 
-bool Trace() { return REXCVAR_GET(wheel_ffb_trace); }
+bool Trace() { return larecomp::settings::wheel_ffb_trace.Get(); }
 bool Selftesting(const Engine& e) { return e.selftest_start.time_since_epoch().count() != 0; }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +388,7 @@ bool DiOpen(Engine& e, Di& d, uint16_t vid, uint16_t pid) {
     // The driver's own centring spring: off whenever this program centres the wheel (two springs fight),
     // on only when centring is switched off and wheel_ffb_autocenter asks for it. Has to be set before the
     // device is acquired.
-    const bool driver_spring = REXCVAR_GET(wheel_ffb_centering) <= 0 && REXCVAR_GET(wheel_ffb_autocenter);
+    const bool driver_spring = larecomp::settings::wheel_ffb_centering.Get() <= 0 && larecomp::settings::wheel_ffb_autocenter.Get();
     DIPROPDWORD ac = {};
     ac.diph.dwSize = sizeof(ac);
     ac.diph.dwHeaderSize = sizeof(DIPROPHEADER);
@@ -694,7 +633,7 @@ void EmergencyStop(Engine& e, const char* why) {
     e.mirror.clear();
     e.selftest_start = {};
     BumpGeneration(e);
-    e.rearm_seen = REXCVAR_GET(wheel_ffb_rearm);
+    e.rearm_seen = larecomp::settings::wheel_ffb_rearm.Get();
 }
 
 void CloseDevice(Engine& e) {
@@ -702,6 +641,7 @@ void CloseDevice(Engine& e) {
     DiRelease(g_di);
     g_di = Di{};
 #endif
+    g_device_open.store(false, std::memory_order_release);
     e.fx_running = false;
     e.nat_running = false;
     e.native = false;
@@ -720,6 +660,7 @@ void OpenDevice(Engine& e, bool virtual_device, uint16_t vid, uint16_t pid) {
     g_di = Di{};
     if (DiOpen(e, g_di, vid, pid)) {
         e.log_only = false;
+        g_device_open.store(true, std::memory_order_release);
     } else {
         DiRelease(g_di);
         g_di = Di{};
@@ -793,7 +734,7 @@ float Wave(int type, float ph) {
 Mix Gather(Engine& e, Clock::time_point now, float speed_ms) {
     Mix m;
     float total = 0.0f;
-    const float boost = std::clamp(REXCVAR_GET(wheel_ffb_boost), 100, 500) / 100.0f;
+    const float boost = std::clamp(larecomp::settings::wheel_ffb_boost.Get(), 100, 500) / 100.0f;
     for (auto& kv : e.mirror) {
         Fx& fx = kv.second;
         if (!fx.started) continue;
@@ -848,7 +789,7 @@ Mix Gather(Engine& e, Clock::time_point now, float speed_ms) {
     // Centring: the game only runs its own spring in some situations (not while free-roaming), and a wheel
     // that nothing centres stays wherever it is let go. Light when parked, full from about 20 m/s, like a car's
     // self-aligning force, with a light damper so the stiffness does not ring.
-    const int centering = std::clamp(REXCVAR_GET(wheel_ffb_centering), 0, 100);
+    const int centering = std::clamp(larecomp::settings::wheel_ffb_centering.Get(), 0, 100);
     if (centering > 0) {
         const float c = centering / 100.0f;
         const float sf = std::clamp(0.35f + 0.65f * speed_ms / 20.0f, 0.35f, 1.0f);
@@ -883,8 +824,8 @@ void Arm(Engine& e, Clock::time_point now) {
     e.level = 0.0f;
     e.last_frame_change = now;
     LARECOMP_APP_INFO("[wheel] ffb armed (constant sign {}, strength {}%, centring {}%{})", e.sign > 0 ? "normal" : "inverted",
-                      REXCVAR_GET(wheel_ffb_strength), REXCVAR_GET(wheel_ffb_centering), e.log_only ? ", log only" : "");
-    if (REXCVAR_GET(wheel_ffb_selftest) && !e.selftest_done) {
+                      larecomp::settings::wheel_ffb_strength.Get(), larecomp::settings::wheel_ffb_centering.Get(), e.log_only ? ", log only" : "");
+    if (larecomp::settings::wheel_ffb_selftest.Get() && !e.selftest_done) {
         e.selftest_start = now;
         e.selftest_pos_log = {};
         LARECOMP_APP_INFO("[wheel] ffb SELF-TEST starts: a push one way (0.5 s), the other way (0.5 s), then 2 s of "
@@ -894,7 +835,7 @@ void Arm(Engine& e, Clock::time_point now) {
 }
 
 void StartCalibration(Engine& e, Clock::time_point now) {
-    const std::string mode = REXCVAR_GET(wheel_ffb_sign);
+    const std::string mode = larecomp::settings::wheel_ffb_sign.Get();
     if (mode == "normal" || mode == "inverted" || e.log_only) {
         e.sign = mode == "inverted" ? -1 : 1;
         Arm(e, now);
@@ -941,7 +882,7 @@ void CalibrationTick(Engine& e, const TickIn& in) {
             "turns it is unknown. Force feedback stays off. Free the wheel and switch wheel_ffb_rearm on, or set "
             "wheel_ffb_sign to normal or inverted.");
         e.state = State::kEmergency;
-        e.rearm_seen = REXCVAR_GET(wheel_ffb_rearm);
+        e.rearm_seen = larecomp::settings::wheel_ffb_rearm.Get();
         return;
     }
     e.sign = moved > 0 ? 1 : -1;
@@ -986,6 +927,7 @@ void PostReset() {
 
 void DeviceOpened(bool virtual_device, uint16_t vid, uint16_t pid) {
     Engine& e = E();
+    if (g_exit_asked.load(std::memory_order_acquire)) return;  // the process is ending: no device is opened for the last moments of it
     e.mirror.clear();
     BumpGeneration(e);
     e.last_tick = {};
@@ -994,8 +936,8 @@ void DeviceOpened(bool virtual_device, uint16_t vid, uint16_t pid) {
     e.consecutive_failures = 0;
     e.warned_unsupported = false;
     e.reported.clear();
-    e.rearm_seen = REXCVAR_GET(wheel_ffb_rearm);
-    if (!REXCVAR_GET(wheel_ffb)) {
+    e.rearm_seen = larecomp::settings::wheel_ffb_rearm.Get();
+    if (!larecomp::settings::wheel_ffb.Get()) {
         e.state = State::kNoDevice;
         LARECOMP_APP_INFO("[wheel] ffb: off (wheel_ffb)");
         return;
@@ -1019,15 +961,32 @@ void DeviceClosing() {
     e.level = 0.0f;
 }
 
+bool StopForExit(int max_ms) {
+    g_exit_asked.store(true, std::memory_order_release);  // first, so that a device that opens from now on is refused (DeviceOpened)
+    if (!g_device_open.load(std::memory_order_acquire)) return true;  // no real device: there is no force to stop
+    const auto until = Clock::now() + std::chrono::milliseconds(max_ms > 0 ? max_ms : 0);
+    while (!g_exit_stopped.load(std::memory_order_acquire)) {
+        if (Clock::now() >= until) return false;  // the wheel thread does not answer (stuck in a device call): the exit does not wait for it
+        std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+}
+
 void Tick(const TickIn& in) {
     Engine& e = E();
+    if (g_exit_asked.load(std::memory_order_acquire)) {
+        // StopForExit: every force off and the device released, here on the thread that owns it; nothing the game queued can start one again.
+        if (e.state != State::kNoDevice || g_device_open.load(std::memory_order_acquire)) DeviceClosing();
+        g_exit_stopped.store(true, std::memory_order_release);
+        return;
+    }
     if (e.state == State::kNoDevice) return;
 
     // Panic first, before anything in the queue.
-    if (REXCVAR_GET(wheel_ffb_panic) && e.state != State::kEmergency) {
+    if (larecomp::settings::wheel_ffb_panic.Get() && e.state != State::kEmergency) {
         EmergencyStop(e, "wheel_ffb_panic");
     }
-    if (!REXCVAR_GET(wheel_ffb) && e.state != State::kEmergency) {
+    if (!larecomp::settings::wheel_ffb.Get() && e.state != State::kEmergency) {
         NormalStop(e);
         e.mirror.clear();
     }
@@ -1054,8 +1013,8 @@ void Tick(const TickIn& in) {
     }
 
     if (e.state == State::kEmergency) {
-        const bool rearm = REXCVAR_GET(wheel_ffb_rearm);
-        if (rearm && !e.rearm_seen && !REXCVAR_GET(wheel_ffb_panic) && REXCVAR_GET(wheel_ffb)) {
+        const bool rearm = larecomp::settings::wheel_ffb_rearm.Get();
+        if (rearm && !e.rearm_seen && !larecomp::settings::wheel_ffb_panic.Get() && larecomp::settings::wheel_ffb.Get()) {
             LARECOMP_APP_INFO("[wheel] ffb: re-arming");
             CloseDevice(e);
             e.reported.clear();
@@ -1079,7 +1038,7 @@ void Tick(const TickIn& in) {
         e.last_frame_change = in.now;
     }
     const auto stale = std::chrono::duration_cast<std::chrono::milliseconds>(in.now - e.last_frame_change).count();
-    const bool alive = stale < std::max(100, REXCVAR_GET(wheel_ffb_watchdog_ms));
+    const bool alive = stale < std::max(100, larecomp::settings::wheel_ffb_watchdog_ms.Get());
     // The self-test runs whatever the game is doing (its window may not be up yet), but never without the wheel
     // being the driver's.
     const bool allowed = Selftesting(e) ? in.driving : (alive && in.focused && in.driving);
@@ -1113,7 +1072,7 @@ void Tick(const TickIn& in) {
     Mix mix = Gather(e, in.now, in.speed_ms);
 
     // The staged self-test replaces what the game asks for.
-    float strength_scale = std::clamp(REXCVAR_GET(wheel_ffb_strength), 0, 100) / 100.0f;
+    float strength_scale = std::clamp(larecomp::settings::wheel_ffb_strength.Get(), 0, 100) / 100.0f;
     if (Selftesting(e)) {
         const long long t = std::chrono::duration_cast<std::chrono::milliseconds>(in.now - e.selftest_start).count();
         mix = Mix{};
@@ -1150,7 +1109,7 @@ void Tick(const TickIn& in) {
     const float max_step = 12.5f * dt;
     e.level += std::clamp(target - e.level, -max_step, max_step);
 
-    const int strength = std::clamp(REXCVAR_GET(wheel_ffb_strength), 0, 100);
+    const int strength = std::clamp(larecomp::settings::wheel_ffb_strength.Get(), 0, 100);
     const int out = static_cast<int>(std::lround(e.level * (strength / 100.0f) * e.sign * kFull));
     float peak = std::fabs(e.level * (strength / 100.0f));
     if (e.native) {
@@ -1179,7 +1138,7 @@ void Tick(const TickIn& in) {
                               "{:.0f}% of the wheel's full force (strength {}%, centring {}%), speed {:.1f} m/s, "
                               "device: {}",
                               e.cmds_seen, e.mirror.size(), running, 100.0f * e.peak_out, strength,
-                              std::clamp(REXCVAR_GET(wheel_ffb_centering), 0, 100), in.speed_ms, playing);
+                              std::clamp(larecomp::settings::wheel_ffb_centering.Get(), 0, 100), in.speed_ms, playing);
         }
         e.last_summary = in.now;
         e.peak_out = 0.0f;

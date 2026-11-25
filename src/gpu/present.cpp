@@ -17,8 +17,8 @@
 #include <cstring>
 #include <format>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "constants.h"
 #include "descriptors.h"
@@ -33,31 +33,6 @@
 #include "textures.h"
 #include "upload.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_fsr, false, "MCLA/GPU",
-    "FSR1 on the present (M6c.1): when the window's letterbox is larger than the "
-    "front buffer on both axes, EASU passes (at most 2x per axis each) up to it, then RCAS. "
-    "Otherwise the bilinear present. Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_fsr_sharpness, 0.2, "MCLA/GPU",
-    "FSR1 RCAS sharpness reduction in stops: 0 sharpest, 2 softest (the SDK presenter's "
-    "present_fsr_sharpness_reduction and its default). Live.")
-    .range(0.0, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_fsr_max_passes, 4, "MCLA/GPU",
-    "Most FSR1 EASU passes (each at most 2x per axis); a bilinear stretch finishes what they "
-    "leave. The SDK presenter's present_fsr_max_upsampling_passes. Live.")
-    .debug_only()
-    .range(1, 4)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_dither, true, "MCLA/GPU",
-    "Adds a faint noise, at most half of one colour step of the screen, to the finished picture "
-    "just before it is shown, so that smooth gradients (the sky at dusk) show fewer bands. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -154,7 +129,7 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   // Their pipelines are made now only when FSR1 is on now, so that its first frame is as it was
   // when they were always made here; otherwise the first frame that would use FSR1 has them made
   // on a worker thread (FsrPipelinesReady).
-  fsr_wanted_ = REXCVAR_GET(mcla_gpu_fsr);
+  fsr_wanted_ = larecomp::settings::mcla_gpu_fsr.Get();
   if (fsr_wanted_) {
     ramp_pipeline_ = passes.CreatePipeline(*shader_, kIntermediateFormat, "fsr1 gamma table");
     easu_pipeline_ = passes.CreatePipeline(*easu_shader_, kIntermediateFormat, "fsr1 easu");
@@ -174,12 +149,12 @@ bool PresentPass::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   ramped_pipeline_ = passes.CreatePipeline(*shader_, kRampedFormat, "present gamma table");
   // The SDK presenter's output effects belong to that presenter, which this
   // mode replaces; the renderer has its own FSR1 (mcla_gpu_fsr).
-  const std::string effect = rex::cvar::GetFlagByName("present_effect");
+  const std::string effect = larecomp::cvar::GetFlagByName("present_effect");
   if (!effect.empty() && effect != "bilinear") {
     REXLOG_WARN("[gpu] present: present_effect = \"{}\" belongs to the SDK presenter, which this "
                 "mode replaces; it does nothing here. This renderer's FSR1 is mcla_gpu_fsr "
                 "(now {})",
-                effect, REXCVAR_GET(mcla_gpu_fsr) ? "on" : "off");
+                effect, larecomp::settings::mcla_gpu_fsr.Get() ? "on" : "off");
   }
   return true;
 }
@@ -496,7 +471,7 @@ void PresentPass::PrepareImage(plume::RenderCommandList* list, uint32_t width, u
 
 void PresentPass::PrepareRoute(plume::RenderCommandList* list, uint32_t width, uint32_t height) {
   fit_ = FitOf(source_width_, source_height_, width, height, display_aspect_, frame_aspect_);
-  if (REXCVAR_GET(mcla_gpu_fsr)) {
+  if (larecomp::settings::mcla_gpu_fsr.Get()) {
     PrepareFsr(list, fit_);
   } else if (!quiet_route_ && !reported_route_.empty()) {
     reported_route_.clear();
@@ -612,7 +587,7 @@ void PresentPass::DrawUnscaled(plume::RenderCommandList* list) {
 }
 
 float PresentPass::DitherLsb() const {
-  if (!REXCVAR_GET(mcla_gpu_present_dither)) {
+  if (!larecomp::settings::mcla_gpu_present_dither.Get()) {
     return 0.0f;
   }
   // The format of the back buffer the set in use writes (BuildOutput made it for that swap chain).
@@ -713,7 +688,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
   }
   // The sizes: the source, then each EASU pass at most 2x per axis.
   const uint32_t max_passes =
-      std::clamp<uint32_t>(uint32_t(REXCVAR_GET(mcla_gpu_fsr_max_passes)), 1u, kMaxFsrPasses);
+      std::clamp<uint32_t>(uint32_t(larecomp::settings::mcla_gpu_fsr_max_passes.Get()), 1u, kMaxFsrPasses);
   uint32_t passes = 0;
   uint32_t w = source_width_;
   uint32_t h = source_height_;
@@ -735,7 +710,7 @@ void PresentPass::PrepareFsr(plume::RenderCommandList* list, const Fit& fit) {
     ++stats_.fsr_failed;
     return;
   }
-  sharpness_ = float(std::exp2(-REXCVAR_GET(mcla_gpu_fsr_sharpness)));
+  sharpness_ = float(std::exp2(-larecomp::settings::mcla_gpu_fsr_sharpness.Get()));
   const std::string route =
       std::format("fsr1 {}x{} -> {}x{}, {} EASU pass{}{}", source_width_, source_height_, fit.w,
                   fit.h, passes, passes == 1 ? "" : "es",

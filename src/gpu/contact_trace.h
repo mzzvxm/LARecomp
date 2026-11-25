@@ -141,6 +141,23 @@ inline float EdgeRangeWeight(float difference) {
   const float x = difference / kEdgeRangeSigma;
   return std::exp(-0.5f * x * x);
 }
+// THE MARK. A vehicle pixel that marched its short ray (March's `marked`) stores its visibility v as v - kVehicleMarkOffset, a value in -2 to -1
+// that no other pixel stores (they hold 0 to 1; the image is R16_FLOAT, so the mark costs half a unit of 2^-10 in the value). The filter reads
+// it as the one fact it needs about a neighbour, "this value came from the noisy march" ("the vehicle march's stipple" below), and takes the
+// value back out before it weighs or sums it, so the filter's output is a plain visibility. Only the march writes the mark and only the two
+// filters (ao_common.hlsli AoBilateralEdge and AoBilateralEdgeFolded) read the image.
+inline constexpr float kVehicleMarkOffset = 2.0f;
+inline float MarkedVisibility(float v) { return v - kVehicleMarkOffset; }
+inline bool IsMarked(float stored) { return stored < -0.5f; }
+inline float UnmarkedVisibility(float stored) { return IsMarked(stored) ? stored + kVehicleMarkOffset : stored; }
+// THE MARK AND THE RAY TRACED TERM (hlsl/ao_contact_ps.hlsl, car_rt_ao.h; the two lines of work met in play build 11). Where the device traces rays against the
+// player's car (and the cars beside it) the march takes the darker of its shadow and the traced sun ray's (March's `traced_shadow`, 0 lit to 1 the car's own parts in
+// the way), a term that is exact and crisp: no noise, no resolution. A vehicle pixel the ray holds in a shadow (traced_shadow at or above this) therefore stores its
+// visibility plain, not marked, as a pixel the car's map covers does: the filter's visibility weight keeps the shadow's edge from the lit pixels beside it, and the
+// ray's edge keeps the width it was traced with (VehicleStippleIsFiltered, the section on the ray traced term: marking those pixels too makes the edge about as wide
+// again as the map's was in the control of section 3). The vehicle pixels the ray leaves lit still march and are marked, so a false hit of the march there is still
+// averaged. Without the term (traced_shadow 0, every build without the ray tracing line) nothing changes.
+inline constexpr float kRtUnmarkedShadow = 0.5f;
 // The apply pass does the filter itself with mcla_gpu_contact_shadows_fast and leaves out a pixel the contact shadows
 // change the picture's factor by less than this (hlsl/ao_apply_ps.hlsl kFoldedFilterSkip): the factor is
 // 1 - weight (1 - cs) with cs in 0 to 1, so it moves by at most the weight.
@@ -345,13 +362,16 @@ Vec3 NormalFromDepth(const Camera& c, DepthAt&& depth_at, int x, int y, float tc
 
 // The filter's twin: the denoise pass's AoBilateralEdge, and, with `cross` (the four neighbours' depths left, right,
 // top, bottom, each at the position clamped into the image, as the apply pass reads them for its normal), the apply's
-// AoBilateralEdgeFolded, which reads only the diagonal neighbours' depths itself. Both give the same value.
+// AoBilateralEdgeFolded, which reads only the diagonal neighbours' depths itself. Both give the same value. `vis_at` gives the image's stored
+// value, marked or not (THE MARK above); the result is a plain visibility. Between two marked pixels the visibility's weight is 1.
 template <class DepthAt, class VisAt>
 float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int y, float tc, Vec3 pc, Vec3 normal,
                  const float* cross = nullptr) {
   const float footprint = FootprintUnit(c.tan_y, float(c.height)) * tc;
   const float plane_sigma = kEdgePlaneFloor + kEdgePlanePixels * footprint;
-  const float centre = vis_at(x, y);
+  const float centre_stored = vis_at(x, y);
+  const bool centre_marked = IsMarked(centre_stored);
+  const float centre = UnmarkedVisibility(centre_stored);
   float sum = centre;
   float weights = 1.0f;
   for (int dy = -1; dy <= 1; ++dy) {
@@ -372,8 +392,10 @@ float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int
       const float off_plane = Dot(normal, pq - pc) / plane_sigma;
       const float w_depth = std::exp(-0.5f * off_plane * off_plane);
       const float w_space = std::exp(-0.5f * float(dx * dx + dy * dy) / (kEdgeSpatialSigma * kEdgeSpatialSigma));
-      const float value = vis_at(qx, qy);
-      const float w = w_depth * w_space * EdgeRangeWeight(value - centre);
+      const float stored = vis_at(qx, qy);
+      const bool marked = IsMarked(stored);
+      const float value = UnmarkedVisibility(stored);
+      const float w = w_depth * w_space * ((centre_marked && marked) ? 1.0f : EdgeRangeWeight(value - centre));
       sum += value * w;
       weights += w;
     }
@@ -417,6 +439,45 @@ float EdgeFilter(const Camera& c, DepthAt&& depth_at, VisAt&& vis_at, int x, int
 //   - a car's tyres and sills on the road, 8 suns: every road pixel is as it was, and 98% of the pixels shadowed within 15 cm are dark.
 // COST. A vehicle's pixel is a fixed share of the picture (5 to 15% in a chase view) and gets 12 steps instead of 16: 4 x 79 DXIL instructions
 // fewer on 1490 (-20%); the others pay the vehicle test and two minimums (about 9 instructions). The adaptive step count sees the short ray too.
+
+// ---------------------------------------------------------------------------
+// the vehicle march's stipple
+// ---------------------------------------------------------------------------
+//
+// Owner's pictures, 2026-11-19 (the run ports\run\wroot1-wing-stripes-2, tour_07 pause-map-off, and tour_12 pause-map-march, which keeps the march on the pixels the
+// map covers): with CAR SHADOWS = OFF and CONTACT SHADOWS on, the R34's trunk lid under the wing shows a fine stipple, every other pixel dark over a band. The
+// car's map is not at fault (with it the lid's pixels take no steps and the lid is flat: tour_05, tour_13): the vehicle rule above is.
+// WHERE THE NOISE COMES FROM. A vehicle pixel's 12 steps start at (i + noise) / 12 of the 0.3 m ray, the noise being the pixel's interleaved gradient noise
+// (ao_common.hlsli AoNoise; ao.cpp passes frame 0, so it is the same pattern every frame, unless a temporal upscaler runs). The plate that shades the lid is 4 cm
+// thick and 18 to 30 cm above it; a step counts as hidden only where the depth image shows a surface about 1 to 12 cm in front of it along the view ray, and from a
+// camera 10 to 25 degrees above the lid that is a band a few centimetres high under the plate, as wide as the steps are apart at the ray's end (2 t L / n = 4.5 cm). Whether a pixel's
+// ray puts a step in the band depends on its noise: the pixel is hit or missed (0 or 1) where the mean over the noise is a fraction (0.1 to 0.9), and the pixel
+// next to it has another noise. THERE IS NO HISTORY to average it, in the pause view or in play: the contact term keeps none of its own (the occlusion's history
+// is not read for it); the noise turns every frame only while a temporal upscaler runs (ao.cpp RecordContact) and the upscaler averages it; without one
+// (the player's choice, or a view it does not run in) the stipple is a fixed pattern of the picture, which is what the pause view shows. The 3 x 3 filter kept it:
+// its visibility weight is 0.2 wide, so a hit (0) and the miss next to it (1) are not averaged (the filter keeps a shadow's edge, and cannot tell a stipple from one).
+// WHAT WAS MEASURED, on the twin of this march (VehicleStippleIsFiltered: the wing rig, 3 cameras, the plate 28 and 18 cm above the lid, the sun at 55 and 70 degrees
+// from 3 sides, 1080 lines, the 2 million pixels of the lid; "stipple energy" is the mean of |pixel - mean of its 4 neighbours|; the reference is the mean of 16
+// noises, the picture a history of frames would show):
+//   - the reference: 0.0027; the march filtered as it was: 0.0317 (12 times), 0.149 in the worst scenario;
+//   (an earlier sweep of 96 scenarios of the same rig, the noise's energy 0.0187 and the reference's 0.0028:)
+//   - a fixed start (no noise, 0.5): 0.0029 on the rig, but on the real R34's mesh (a car dump, local only, a pause-like camera, 64 scenarios) 0.013 against the
+//     reference's 0.0046 and the noise's 0.046: the 12 steps sample a 4 cm band, and with no noise the pixels that miss it form bands and rings along the plate's
+//     shadow instead of dots, and its darkness is short of the reference's (26% in the rig's worst case, plate 18 cm, sun 65 degrees; 1.6% over the R34's scenarios);
+//   - more steps (16, the setting's: 0.037 on the R34) and an ordered 2 x 2 or 4 x 4 start (0.0190 and 0.0175 on the rig): no better than the noise;
+//   - the filter without the visibility's weight, on every vehicle pixel: 0.0046 on the R34, the reference's own roughness, and the lowest distance from the
+//     reference (0.009 against 0.037), at no cost in the march; but the car map's shadow has crisp edges that the same filter widens to 2.4 times their
+//     width (the check's control: 34005 soft pixels against 14272), and softness of the contact shadows is a complaint the owner has made.
+// THE CHANGE (THE MARK above): the march marks a vehicle pixel that took steps (the pixels the map covers took none, so the map's shadow is not marked) and the
+// two filters weigh two marked pixels by position and depth alone. The noise stays (it is what makes the mean right), the 3 x 3 of marked pixels is the average of nine
+// noises, and everything else is filtered exactly as before. Measured on the same rig (the check): the stipple energy 0.0033 (1.2 times the reference's, 0.10 of
+// the old filter's, 0.010 against 0.149 in the worst scenario), the distance from the reference 0.0053 against 0.0225, the total darkness unchanged (0.0566
+// against 0.0559, the reference's 0.0567); with the map in the frame nothing of the lid is marked but the grazing pixels (769 of 588,732, whose weight is 0), the
+// filtered lid is the old one to the half's last unit and the map's edges keep their width; the road beside a car differs from the old filter by 0.00017 at most
+// (the marked neighbours' decode); the mirror on a door keeps its darkness (14315 against 14314). The march's own values are the old ones to the bit.
+// COST (DXIL 6.0 static instructions, dxc 1.9.2609): the march +4 (2004 to 2008: a vehicle test it had, a compare and a subtract); the apply's folded filter +51 on
+// every variant (1044 to 1095 for the plain one: about 6 a tap and 3 for the pixel's own; they run for every pixel the contact term can darken, vehicle or not,
+// as the filter did); the denoise pass's filter +9 (334 to 343, a loop). A vehicle pixel pays the same filter as any other and +4 in the march.
 
 // ---------------------------------------------------------------------------
 // the ground under a vehicle
@@ -608,7 +669,8 @@ inline uint32_t AdaptiveSteps(float length_pixels, uint32_t max_steps, float end
 // of detail in cascades whose texels are 1 to 25 cm. car_shadow_map.h draws the car again, depth only, from the sun, at full detail, into a small
 // square map fitted to the car: the exact shadow of the wing, the mirrors, the sills and the wheels on the car and on the road near it. The march
 // reads it (CarMapShadow below, mirrored in the shader) and the pixel takes the DARKER of the two. The apply pass still puts contact shadows only on
-// the sun's share where the game's own mask says lit, so a map shadow never darkens what the game's mask already shadows twice.
+// the sun's share where the game's own mask says lit (a vehicle's pixel takes the car sun image's visibility, "the game's sun shadow mask is not a car's" above), so a map
+// shadow never darkens what the game's mask already shadows twice on the world.
 //
 // THE LOOKUP (car_shadow_map.h CarShadowMapView). The view position of the pixel goes through the three rows of the map's matrix: u, v (0 to 1, v
 // down) and the depth (0 nearest the sun) as stored, `depth_m` metres over the whole range, `texel_m` the side of a texel in metres, `size` texels a
@@ -686,6 +748,36 @@ inline constexpr float kCarMapMaxTan = 8.0f;               // the plane's gradie
 inline constexpr float kCarMapEdgeTexels = 4.0f;
 inline constexpr float kCarMapEmpty = 0.9999f;             // a stored depth at or above this is "no part of the car here"
 
+// THE FILTER FOLLOWS THE WORLD'S (mcla_gpu_shadow_filter; owner, 2026-11-19: the car's shadow and the world's must match). The sun's cascades are
+// filtered by the setting (shadow_filter.h: game, soft, pcss) and the car's own map had a filter of its own, a ring of four taps turned by the pixel's
+// noise at the real sun's penumbra, which is crisp (a roof a metre up has an edge 4 mm wide) beside a world shadow that is soft. The map's
+// matrix texture carries the world's mode and sun size in its last component (kCarMapFilterCode: mode * 256 + the sun in sixteenths), and
+//   game  the filter above, to the bit
+//   soft  the soft filter's disk: kCarMapFilterTaps taps on a Vogel disk (golden angle, sqrt radius, the weight 1 - r^2 / 2: the same as
+//         src/shaderpack/variants/shadow_filter.cpp) of kCarMapSoftRadiusMetres, every tap a bilinear gather (a true PCF tap, smooth over a texel)
+//   pcss  the same disk at the penumbra's width: the mean blocker distance times the sun's tangent times the sun's size (4 times the real sun by default:
+//         mcla_gpu_shadow_filter_sun), at least kCarMapMinFilterTexels and at most kCarMapFilterMaxRadii soft radii (the world's cap)
+// both with a blocker search first (the centre and 8 taps over the disk's reach, which says "no shadow here" without the 16 taps), and the disk
+// turned by the pixel's noise only while a temporal upscaler runs (the push's frame number is not 0); otherwise it keeps its angle, as the world's does
+// (the noise is a grain that nothing averages: shadow_filter.h kModeNoise).
+inline constexpr uint32_t kCarMapFilterGame = 0;
+inline constexpr uint32_t kCarMapFilterSoft = 1;
+inline constexpr uint32_t kCarMapFilterPcss = 2;
+inline constexpr float kCarMapSoftRadiusMetres = 0.03f;    // the soft disk's radius: the nearest cascade's 4 texels at the high shadow detail, about 2.5 to 3.5 cm
+inline constexpr float kCarMapSunTan = 0.0047123890f;      // tan of the sun's angular radius, 0.27 degrees (the world's: shadow_filter.cpp kShadowFilterSunTan)
+inline constexpr float kCarMapFilterMaxRadii = 2.0f;
+inline constexpr int kCarMapFilterTaps = 16;
+inline constexpr int kCarMapSearchTaps = 8;
+inline constexpr float kCarMapFixedAngle = 2.399963f;      // the disk's angle without noise
+inline constexpr float kCarMapGoldenCos = -0.7373688780783197f;
+inline constexpr float kCarMapGoldenSin = 0.6754902942615238f;
+// The matrix texture's last component: an exact integer in a float.
+constexpr float CarMapFilterCode(uint32_t mode, uint32_t sun_sixteenths) {
+  return float(mode * 256u + (mode == kCarMapFilterPcss ? (sun_sixteenths > 255u ? 255u : sun_sixteenths) : 0u));
+}
+constexpr uint32_t CarMapFilterModeOf(float code) { return uint32_t(code + 0.5f) >> 8; }
+constexpr float CarMapFilterSunOf(float code) { return float(uint32_t(code + 0.5f) & 255u) * (1.0f / 16.0f); }
+
 // The map's blocker test at one texel: the receiver's depth at the texel (metres along the sun's ray, on the receiver's plane) is deeper than the
 // stored depth by more than the bias, and the texel holds a part of the car.
 inline float CarMapBiasMetres(float texel_m, float footprint) {
@@ -704,6 +796,9 @@ struct CarMapView {
   float to_map[3][4] = {};
   float texel_m = 0.0f;
   float depth_m = 0.0f;
+  uint32_t filter_mode = kCarMapFilterGame;  // kCarMapFilter*: the world's filter (the matrix texture's last component)
+  float sun_times = 4.0f;                    // pcss: the sun's size in times the real sun's
+  bool noise_turns = false;                  // the disk turns by the pixel's noise (a temporal upscaler runs)
   int size = 0;
   const float* texels = nullptr;  // size * size stored depths, rows downward (v down)
   float At(int tx, int ty) const {
@@ -803,6 +898,58 @@ inline CarMapResult CarMapShadow(const CarMapView& m, Vec3 pc, Vec3 normal, floa
       }
     }
   }
+  if (m.filter_mode != kCarMapFilterGame) {
+    // The world's filter (kCarMapFilterSoft / kCarMapFilterPcss): the centre above, then the search over the disk's reach and the disk itself.
+    const float soft = kCarMapSoftRadiusMetres / m.texel_m;  // texels
+    const float reach = m.filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;
+    float dx = std::cos(m.noise_turns ? noise * 6.28318530718f : kCarMapFixedAngle);
+    float dy = std::sin(m.noise_turns ? noise * 6.28318530718f : kCarMapFixedAngle);
+    const auto turn = [&] {
+      const float nx = dx * kCarMapGoldenCos - dy * kCarMapGoldenSin;
+      const float ny = dx * kCarMapGoldenSin + dy * kCarMapGoldenCos;
+      dx = nx;
+      dy = ny;
+    };
+    for (int j = 0; j < kCarMapSearchTaps; ++j) {
+      const float at = (float(j) + 0.5f) / float(kCarMapSearchTaps);
+      const float r = std::sqrt(at) * reach;
+      const CarMapQuad q = CarMapGather(m, cx + dx * r, cy + dy * r, cx, cy, receiver_m, grad_u, grad_v);
+      ++out.gathers;
+      for (int k = 0; k < 4; ++k) {
+        if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+          blocker_sum += q.over[k];
+          blocker_count += 1.0f;
+        }
+      }
+      turn();
+    }
+    if (blocker_count < 0.5f) {
+      return out;
+    }
+    float radius = soft;
+    if (m.filter_mode == kCarMapFilterPcss) {
+      radius = std::clamp(blocker_sum / blocker_count * kCarMapSunTan * m.sun_times / m.texel_m, kCarMapMinFilterTexels, reach);
+    }
+    float sum = 0.0f, weights = 0.0f;
+    for (int i = 0; i < kCarMapFilterTaps; ++i) {
+      const float at = (float(i) + 0.5f) / float(kCarMapFilterTaps);
+      const float weight = 1.0f - 0.5f * at;
+      const float r = std::sqrt(at) * radius;
+      const CarMapQuad q = CarMapGather(m, cx + dx * r, cy + dy * r, cx, cy, receiver_m, grad_u, grad_v);
+      ++out.gathers;
+      float tap = 0.0f;
+      for (int k = 0; k < 4; ++k) {
+        if (q.s[k] < kCarMapEmpty && q.over[k] > bias) {
+          tap += q.weight[k];
+        }
+      }
+      sum += weight * tap;
+      weights += weight;
+      turn();
+    }
+    out.shadow = Saturate(sum / weights) * Saturate(edge / kCarMapEdgeTexels);
+    return out;
+  }
   for (int t = 0; t < 4; ++t) {
     const CarMapQuad q = CarMapGather(m, cx + r0 * ox[t], cy + r0 * oy[t], cx, cy, receiver_m, grad_u, grad_v);
     ++out.gathers;
@@ -847,6 +994,7 @@ struct Trace {
   float adapt_pixels = 0.0f;   // the adaptive step count's end gap in pixels (AdaptiveSteps); 0: every step, as before
   uint32_t adapt_min_steps = kAdaptMinSteps;
   mutable uint32_t steps_used = 0;  // out: the number of steps the last March took (0: it returned before the loop)
+  mutable bool marked = false;      // out: the last March was a vehicle pixel's short march (it stores MarkedVisibility of its result: THE MARK)
   float noise = 0.5f;     // the pixel's start offset, 0 to 1
   float sky = 60000.0f;   // depth values at or above sky * 0.5 are the sky
   float max_distance = 80.0f;
@@ -857,6 +1005,7 @@ struct Trace {
   bool vehicle_rule = true;    // a vehicle's own pixels march a short, thin ray (kVehicleReceiver*); false: the march as it was (the check's control)
   bool sun_column = true;      // the ground under a vehicle also needs the column along the sun's ray; false: the vertical column alone, as it was
   mutable int under_loads = 0;  // out: the depth reads of the under term, summed over the calls (for the check)
+  float traced_shadow = 0.0f;           // the ray traced sun term at the pixel (car_rt_ao.h; THE MARK AND THE RAY TRACED TERM): 0 lit or no term, 1 the car's own parts in the sun's way
   const CarMapView* car_map = nullptr;  // the player's car's sun shadow map (CarMapShadow); null: no map, the march as it was
   bool car_map_keep_march = false;      // kCarMapKeepMarchFlag: the vehicle march also runs on the pixels the map covers
   bool car_map_only = false;            // kCarMapViewFlag: the debug view, March returns 1 minus the map's term alone
@@ -931,6 +1080,7 @@ template <class DepthAt>
 float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
   const Camera& cam = t.camera;
   t.steps_used = 0;
+  t.marked = false;
   t.car_result = CarMapResult{};
   const float tc = depth_at(x, y);
   if (tc >= t.sky * 0.5f || tc >= t.max_distance) {
@@ -981,6 +1131,8 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
                           t.adapt_min_steps);
   }
   t.steps_used = steps;
+  // A vehicle pixel that marches (the map did not take its steps) writes the marked value: the noise of its ray's start is in it.
+  t.marked = !t.classic && t.vehicle_rule && DepthIsVehicle(tc) && steps > 0 && t.traced_shadow < kRtUnmarkedShadow;
   for (uint32_t i = 0; i < steps; ++i) {
     if (shadow >= 0.99f) {
       break;
@@ -1018,9 +1170,19 @@ float March(const Trace& t, DepthAt&& depth_at, int x, int y) {
     shadow = std::max(shadow, t.car_result.shadow);  // the darker of the march and the map
   }
   if (!t.classic) {
+    shadow = std::max(shadow, t.traced_shadow);  // ... and of the ray traced sun ray (0 without the term)
+  }
+  if (!t.classic) {
     shadow *= Smoothstep(kSunFacingLow, kSunFacingHigh, facing);
   }
   return 1.0f - shadow;
+}
+
+// What the march's pass stores for the pixel (x, y): March's visibility, marked when it was a vehicle pixel's short march (THE MARK).
+template <class DepthAt>
+float MarchStored(const Trace& t, DepthAt&& depth_at, int x, int y) {
+  const float v = March(t, depth_at, x, y);
+  return t.marked ? MarkedVisibility(v) : v;
 }
 
 // ---------------------------------------------------------------------------
@@ -1120,6 +1282,143 @@ inline bool SkipScaleOk(int mask_w, int mask_h, int image_w, int image_h) {
 // provable), `scale_ok` SkipScaleOk of the mask's and the picture's sizes.
 inline bool MaskSkipOn(bool fast, bool filter_in_apply, bool has_mask, bool debug_picture, float limit, bool scale_ok) {
   return fast && filter_in_apply && has_mask && !debug_picture && limit >= 0.0f && scale_ok;
+}
+
+// ---------------------------------------------------------------------------
+// the game's sun shadow mask is not a car's (the comb under the R34's wing, owner, 2026-11-19)
+// ---------------------------------------------------------------------------
+//
+// THE CASE. The pause menu's picture of the player's R34 at noon: "a comb of vertical dark lines on the trunk lid under the rear wing". The lid
+// between the wing's posts is the wing's real shadow (the car's sun shadow map: the contact visibility, view 2, is 0 over all of it), a flat
+// factor of 0.19, cut by columns 3 pixels wide about every 25 pixels where the factor is 1: bright lid in a black rectangle.
+// MEASURED (ports\run\cwing1-wing-stripes-2, 2880 x 1620, lid rows 880 to 900): the columns of the bright lid are the columns where the game's
+// sun shadow mask (contact view 3) is 0, run for run (x 2228..2231, 2252..2254, 2280..2282, 2306..2308, 2332..2334, 2405..2407, 2430..2432,
+// 2454..2457: the same place and width in both), and the mask's columns are the iron fence BEHIND the car: the same bars, at the same x, run
+// unbroken from the rows where the fence is seen through the rear window (850, 860) down over the lid (890). The car is not in the mask: the game
+// collects it at phase 0x1000 and resolves it at 0x4000, "before vehicles and the world" (AO-DESIGN.md), so a car's pixel holds the mask of what
+// is behind the car, and the car's own shadow on the road is in it as a black blob. The pitch is the fence's, 25.5 pixels (6.4 cm on the lid at
+// about 2.5 mm a pixel), not the car's map's: its texel is 3.9 mm, 1.5 pixels, and a bias or acne error would run at that scale.
+//
+// THE APPLY. Its weight is strength * sun_share * fade, sun_share = Ls N.L v / (La + Ls N.L v), v the mask at the pixel: where the mask is 0
+// the pixel is under the game's own shadow and the contact term leaves it alone (nothing is shadowed twice). On a car that is the fence's shadow.
+// The map, the vehicle march and the vehicle bit are not at fault: with the mask lit everywhere the lid is one flat darkness (the check), the bit
+// is set over the whole lid (view 8), the map was off live in the map-off picture (the log's "car shadow map off (set)") and that picture shows
+// the same bright columns through the old march's stipple.
+//
+// THE GAME DOES NOT USE THE MASK ON A CAR EITHER. In the same pause picture, the game's own colours (contact shadows off) have a mean horizontal
+// step of 1.27 at the mask's edges against 1.39 elsewhere on the pixels the depth pass takes for vehicles (no relation), and 17.29 against 1.58 on
+// the world's pixels beside the car (the world's lit shaders multiply their sun by the mask). A car's shader takes the sun's visibility from its own
+// shadow lookup (FastShadowCollector). So the sun's share of a car's colour that the apply works out from the mask is the share of the world
+// behind the car. A car's pixel takes a visibility of 1 (the game's colour is not masked: the sun's share of it is Ls N.L / (La + Ls N.L)); what
+// shadows the car's own parts is the map and the vehicle march. What the cascades do to a car (a building's shade on it) is in the car's colour
+// and is not known here: a car in a building's shade gets the term of a lit one (CHECK: how that looks; the term is a small shadow of its own parts).
+// (That last sentence is CarSunFromImage's below: a frame that has the game's car sun image uses it; this is the rule of a frame without.)
+inline float CarSunVisibility(bool vehicle, float mask_visibility) { return vehicle ? 1.0f : mask_visibility; }
+
+// ---------------------------------------------------------------------------
+// a car's own sun visibility: the game's car sun image (CAR-SUNVIS, 2026-11-19)
+// ---------------------------------------------------------------------------
+//
+// THE QUESTION. A car in a building's shade got the contact term of a lit car (the line above). The game's own colour knows better: every car shader
+// takes the sun's visibility at the pixel from a lookup of its own, so the host can take it from the same place.
+//
+// WHAT THE CAR SHADERS READ (the game's translated HLSL, native\work\hlsl-head\cars: 33 pixel shaders fetch FastShadowCollectorSampler, which is slot 13,
+// and 29 of them build the coordinate with `trunc(gViewInverse(3).xz)`, e.g. xCarPaintCustomizable__PS_CarPaint.hlsl:759-774, xCarPaint, xBumpSpec,
+// xRimMain, xCarGlass, xChrome, xUnderbody, xLicensePlate, xGrill, xInteriorTrim, xWheelRubber ...). It is NOT the screen sized mask (that one is for the
+// world: the lit road shaders read it at the screen position, and it is made before the cars are drawn) but a 256 m wide TOP-DOWN image of the ground's
+// sun visibility around the camera, one texel a metre:
+//     u = (world.x - trunc(camera.x)) / 256 + 0.5      v = (world.z - trunc(camera.z)) / 256 + 0.5      (c249.x = 0x3B800000 = 1/256, c253.x = 0.5;
+//     the world's y is up, gViewInverse(3) the camera's position; trunc is toward 0, so the image's centre moves a whole metre at a time)
+//     the car's sun term = saturate(s - 0.25) * 1.3333325                                                  (c250.z = 0xBE800000 = -0.25, c249.y = 0x3FAAAA8F)
+// s the image's .x, bilinear (the guest's sampler: min and mag linear, GFX-UPGRADES-DESIGN.md 6B.2 item 3). The image by day is the 256x256
+// k_8_8_8_8 product at guest page 0x0329E000, resolved once a frame before the main scene (census: 22 collector draws of PS 2cdea0e25045ad9e into a
+// 256x256 target, then two draws and the resolve into 0329e: after the screen mask's resolve, before the first car is drawn); at night that page holds a
+// 512x512 k_8 shadow, in rain the cars read an 8x8 stand-in at 0329d (a constant 0.5), and at 6 h, 18 h and in rain the cascades are not drawn: a frame
+// without a 256x256 k_8_8_8_8 resolve into that page has no image and the visibility is 1, as before. The image has no height (G8A-CAR-SELFREFL.md 1.3:
+// "world-space, no height: the car's own parts are not in it"), so a car's roof and its flank and its wheels read the same place of it, which is the
+// ground under them: a car standing half in a building's shade is lit on the half that is over lit ground. That is the game's own colour; the apply
+// now agrees with it. The cascades themselves (the 1280x1280 k_24_8 atlas at 06E65000 and the matrices c64-c79 of the collector) are reachable the same
+// way (a resolve product by page, the constants of the collector's draws are frame constants), but no car shader reads them: the collector's car draws
+// all come before the cars, so the cascades would only give the host a second guess at what this image already says, with a cascade's choice and a PCF
+// of its own to copy.
+//
+// THE HOST gives the apply the image (its bindless slot) and the lookup: world x and z of a view-space point (x right, y up, z forward, the AO's)
+// are  ax . p + ox  and  az . p + oz  with ax = (right.x, up.x, forward.x), az = (right.z, up.z, forward.z) (the rows of the camera's view inverse, the
+// game's convention: forward is minus row 2) and (ox, oz) = the camera's position minus its truncation: the game's own world coordinate relative to
+// trunc(camera). The pose is the frame's own when the main view's vertex constants are trusted for it (ao.cpp vs_pose_trusted_), else the last frame's.
+// The 8 numbers go to the apply in a 4x1 RGBA32F image of their own (the push block has no room left: the apply reads every field) drawn with the
+// vehicle table's pass: texel 0 (ax, ox), texel 1 (az, oz).
+//
+// CHECKS the first run settles (the scene car-shade.scene): (1) the stored value of a lit car's ground is 1 (visibility 1 on a lit car, a flat
+// view 13 on the car), a shaded one 0.25 or below; (2) the image's .x is the red channel of the host's RGBA view (the mask's is); (3) the player's own
+// cast shadow is not in the image under him (the sun's side of a lit car reads 1), else a lit car reads dark over its own footprint.
+inline constexpr float kCarSunWindow = 256.0f;  // metres a side of the image
+inline constexpr float kCarSunFloor = 0.25f;    // saturate(s - 0.25)
+inline constexpr float kCarSunGain = 1.3333325f;  // c249.y = 0x3FAAAA8F: a hair under 4/3, so a lit car (stored 1) reads 0.9999994
+
+// The sun's visibility a car shader makes of the image's stored value.
+inline float CarSunFromImage(float stored) { return std::min(Saturate(stored - kCarSunFloor) * kCarSunGain, 1.0f); }
+
+// The lookup's 8 numbers: world x and z (relative to the truncated camera) of the view-space point p are Dot(ax, p) + ox and Dot(az, p) + oz.
+struct CarSunLookup {
+  Vec3 ax;
+  Vec3 az;
+  float ox = 0.0f;
+  float oz = 0.0f;
+};
+
+// From the camera's view inverse rows (right = row 0, up = row 1, forward = minus row 2, position = row 3), the game's world with y up.
+inline CarSunLookup MakeCarSunLookup(const double right[3], const double up[3], const double forward[3], const double position[3]) {
+  CarSunLookup l;
+  l.ax = {float(right[0]), float(up[0]), float(forward[0])};
+  l.az = {float(right[2]), float(up[2]), float(forward[2])};
+  l.ox = float(position[0] - std::trunc(position[0]));
+  l.oz = float(position[2] - std::trunc(position[2]));
+  return l;
+}
+
+// The image's coordinates of the view-space point `pc` (the shader's CarSunVisibility).
+inline void CarSunUv(const CarSunLookup& l, Vec3 pc, float* u, float* v) {
+  *u = (Dot(l.ax, pc) + l.ox) * (1.0f / kCarSunWindow) + 0.5f;
+  *v = (Dot(l.az, pc) + l.oz) * (1.0f / kCarSunWindow) + 0.5f;
+}
+
+// What the game computes for the same point: the world position `world` (x, y, z) and the camera's `position`.
+inline void CarSunUvOfWorld(const double world[3], const double position[3], float* u, float* v) {
+  *u = float((world[0] - std::trunc(position[0])) / double(kCarSunWindow) + 0.5);
+  *v = float((world[2] - std::trunc(position[2])) / double(kCarSunWindow) + 0.5);
+}
+
+// The apply's visibility at a pixel (hlsl/ao_apply_ps.hlsl CarAwareSunVisibility): the world's pixel takes the mask's, a vehicle's pixel the car sun
+// image's value at its place when the frame has one, else 1 (CarSunVisibility). `image_at(u, v)` is the bilinear .x of the image.
+template <class ImageAt>
+inline float CarAwareSunVisibility(bool vehicle, float mask_visibility, bool have_image, const CarSunLookup& l, Vec3 pc, ImageAt&& image_at) {
+  if (!vehicle) {
+    return mask_visibility;
+  }
+  if (!have_image) {
+    return 1.0f;
+  }
+  float u = 0.0f, v = 0.0f;
+  CarSunUv(l, pc, &u, &v);
+  return CarSunFromImage(image_at(u, v));
+}
+
+// THE SKIP FOLLOWS. The skip returns 1 where the apply's weight is at most kSkipWeight, which is proven from the mask alone (above). A vehicle's
+// pixel has a weight that is not (its visibility is 1) and the apply's filter reads the 8 neighbours' values, so a pixel is not skipped when it or
+// any of its 8 neighbours is a vehicle's: every pixel that runs the filter then still has all of its neighbours marched, and the proof stands.
+// `depth_at(x, y)` is the level-0 depth with its vehicle bit (the image the apply reads the bit from), the coordinates clamped like the shader's.
+// The shader asks only for a pixel the mask test would skip (hlsl/ao_contact_ps.hlsl VehicleInReach).
+template <class DepthAt>
+bool VehicleInReach(DepthAt&& depth_at, int width, int height, int x, int y) {
+  for (int dy = -1; dy <= 1; ++dy) {
+    for (int dx = -1; dx <= 1; ++dx) {
+      if (DepthIsVehicle(depth_at(std::clamp(x + dx, 0, width - 1), std::clamp(y + dy, 0, height - 1)))) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // The mask texels (first and last, one axis) that the pixels `pixel - 1` to `pixel + 1` can sample: the bilinear taps of
@@ -1245,15 +1544,90 @@ inline bool MaskCannotLightBlocks(const SkipBlockImage& blocks, int mask_w, int 
 }
 
 // What one invocation of the shader writes with the skip: the sky/distance return first, then the skip, then the march proper.
-// can_skip(x, y) is the test over the frame's mask. steps_used is 0 for a skipped pixel, as for any return before the loop.
+// can_skip(x, y) is the test over the frame's mask; a pixel with a vehicle's pixel in its 3 x 3 is not skipped (VehicleInReach; the shader
+// asks only for a pixel the mask test would skip). steps_used is 0 for a skipped pixel, as for any return before the loop.
 template <class DepthAt, class CanSkip>
 float MarchWithSkip(const Trace& t, DepthAt&& depth_at, CanSkip&& can_skip, int x, int y) {
   const float tc = depth_at(x, y);
-  if (tc >= t.sky * 0.5f || tc >= t.max_distance || can_skip(x, y)) {
+  if (tc >= t.sky * 0.5f || tc >= t.max_distance ||
+      (can_skip(x, y) && !VehicleInReach(depth_at, t.camera.width, t.camera.height, x, y))) {
     t.steps_used = 0;
     return 1.0f;
   }
   return March(t, depth_at, x, y);
 }
+
+// ---------------------------------------------------------------------------
+// the contact factor per colour channel: a shadow takes the SUN's light away, in the sun's colour
+// ---------------------------------------------------------------------------
+// The scene colour is albedo * (ambient + sun * N.L * visibility) and a contact shadow (or the car's shadow map through the contact pass) takes the sun's
+// share of it away. The first version took the share of the LUMAS (ambient 0.114, sun 0.903 at noon) and multiplied all three channels by it: the
+// luma is right, the colour is not. The sunlit road is warm (a warm sun on a cool sky's ambient) and a grey multiplier keeps its hue: under the car at noon,
+// where the car's map owns the shadow and the game's cascade no longer shades it, the shadow came out darker and WARMER than the game's own shadow beside it
+// (measured on shdith1-shd-noon-x1, rear camera: the game's own shadow, the cascade holding the car, is (20.5, 24.8, 23.3) against a lit (105.5, 101.4, 79.6),
+// the factor 0.19, 0.25, 0.29 for red, green, blue; the car map's, (21.6, 20.4, 14.8), the same 0.20 for all three). A shadow removes the sun's share of EACH
+// channel: S_c * N.L * v / (A_c + S_c * N.L * v), and what stays is albedo * A_c, the sky's colour. The share of a grey light is the old number, bit for
+// bit (the check below), so a night, a cloudy hour or a grey frame is as before.
+//
+// The apply pass takes the two lights' colours as chroma = channel / luma, red and blue of each (green follows from the luma), 7 bits each in 1/32 (0 to
+// 3.97: a dusk sky is bluer than twice its luma): one dword in shape.w of the apply's push block (the apply took 0.5 * the fade's end there: the shader makes it itself now). The dword is read as a
+// float by the GPU, so its top three bits are fixed (0, 0, 1: the exponent is never 0 or 255, never a denormal, an infinity or a NaN a copy might change).
+inline constexpr float kChromaScale = 32.0f;
+inline constexpr uint32_t kChromaMaxByte = 127;
+inline constexpr uint32_t kChromaMarker = 0x20000000u;
+inline constexpr uint32_t kNeutralChroma = kChromaMarker | 32u | (32u << 7) | (32u << 14) | (32u << 21);  // chroma 1 in red and blue, both lights: grey
+inline constexpr float kLumaRed = 0.2126f;
+inline constexpr float kLumaGreen = 0.7152f;
+inline constexpr float kLumaBlue = 0.0722f;
+
+struct Rgb {
+  float r = 0.0f, g = 0.0f, b = 0.0f;
+};
+
+inline float LumaOf(const float c[3]) {
+  const auto usable = [](float x) { return std::isfinite(x) && x > 0.0f ? x : 0.0f; };
+  return kLumaRed * usable(c[0]) + kLumaGreen * usable(c[1]) + kLumaBlue * usable(c[2]);
+}
+
+// One chroma value: channel / luma in 1/32, clamped to 0..127; a light with no luma is grey (chroma 1).
+inline uint32_t ChromaByte(float channel, float luma) {
+  if (!(luma > 1e-6f) || !std::isfinite(channel)) {
+    return uint32_t(kChromaScale);
+  }
+  return uint32_t(std::clamp(std::lround(std::max(channel, 0.0f) / luma * kChromaScale), 0L, long(kChromaMaxByte)));
+}
+
+// The code: bits 0-6 the ambient's red chroma, 7-13 its blue, 14-20 the sun's red, 21-27 its blue; bits 28-31 are the marker (kChromaMarker).
+inline uint32_t PackChroma(const float ambient[3], const float sun[3]) {
+  const float la = LumaOf(ambient), ls = LumaOf(sun);
+  return kChromaMarker | ChromaByte(ambient[0], la) | (ChromaByte(ambient[2], la) << 7) | (ChromaByte(sun[0], ls) << 14) | (ChromaByte(sun[2], ls) << 21);
+}
+
+// A light's chroma (channel / luma for the three channels) from its red and blue bytes; the green follows from the luma weights.
+inline Rgb ChromaRgb(uint32_t red_byte, uint32_t blue_byte) {
+  const float r = float(red_byte) * (1.0f / kChromaScale);
+  const float b = float(blue_byte) * (1.0f / kChromaScale);
+  return {r, std::max((1.0f - kLumaRed * r - kLumaBlue * b) / kLumaGreen, 0.0f), b};
+}
+
+// The sun's share of the light in each channel: S_c * lit / (A_c + S_c * lit), lit = N.L times the sun's visibility. The lumas are the apply's
+// light.w (ambient) and extra.x (sun); a pixel with no light at all has no share.
+inline Rgb SunShareRgb(float ambient_luma, float sun_luma, uint32_t chroma_code, float lit) {
+  const Rgb a = ChromaRgb(chroma_code & 0x7Fu, (chroma_code >> 7) & 0x7Fu);
+  const Rgb s = ChromaRgb((chroma_code >> 14) & 0x7Fu, (chroma_code >> 21) & 0x7Fu);
+  const auto share = [&](float ac, float sc) {
+    const float amb = ambient_luma * ac, sunlit = sun_luma * sc * lit;
+    return (amb + sunlit) > 1e-6f ? sunlit / (amb + sunlit) : 0.0f;
+  };
+  return {share(a.r, s.r), share(a.g, s.g), share(a.b, s.b)};
+}
+
+// The apply pass's contact factor: 1 - weight * share * (1 - cs), per channel; weight = the setting's strength times the distance fade, cs the
+// contact visibility (1 open, 0 shadowed). With cs 0 and weight 1 what is left of the lit colour is albedo * ambient, in the ambient's colour.
+inline Rgb ContactFactorRgb(const Rgb& share, float weight, float cs) {
+  const float k = Saturate(weight) * (1.0f - Saturate(cs));
+  return {1.0f - Saturate(k * share.r), 1.0f - Saturate(k * share.g), 1.0f - Saturate(k * share.b)};
+}
+
 
 }  // namespace mcla::gpu::contact_trace

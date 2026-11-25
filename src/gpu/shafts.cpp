@@ -11,10 +11,12 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "device.h"
+#include "noise_resolve.h"
+#include "scene_noise.h"
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "gpu_class.h"
@@ -24,87 +26,6 @@
 #include "pass_timing.h"
 #include "texture_bytes.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_sun_shafts, "auto", "MCLA/GPU",
-    "Sun shafts: a low sun behind trees and buildings streams light across the scene, as light "
-    "through a haze. They show at dawn and dusk (strongest between 2.5 and 27 degrees of sun "
-    "height, none by day above 45 degrees, none at night or in rain) and only while the sun is on "
-    "the screen or not far beyond its edge. The value is how strong they are: off is the game's own "
-    "picture, then light, default, strong, stronger and strongest (1x to 5x the built-in strength; default is 2x). "
-    "auto (the default) is default on a discrete graphics card and off on an integrated one (a "
-    "handheld, or the iGPU of a desktop CPU). The ray quality follows the card by itself. low and high "
-    "are values of an older version and mean default. Costs graphics card time only while they show. Live.")
-    .allowed({"auto", "off", "light", "default", "strong", "stronger", "strongest", "low", "high"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_intensity, 1.0, "MCLA/GPU",
-    "Diagnostic: a fine multiplier on the strength mcla_gpu_sun_shafts gives the sun shafts (1 is "
-    "the level as it is). Live.")
-    .debug_only()
-    .range(0.0, 8.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_sun_shafts_steps, 0, "MCLA/GPU",
-    "Diagnostic: how many steps each ray of the sun shafts marches (8 to 128). 0: by the graphics "
-    "card (32 on a mid-range one, 64 on a fast one). More steps make smoother rays and cost more; "
-    "the light the rays gather stays the same. Live.")
-    .debug_only()
-    .range(0, 128)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_density, 0.9, "MCLA/GPU",
-    "Diagnostic: how much of the way to the sun each ray of the sun shafts covers, 0.3 to 1 "
-    "(1: all of it). Longer rays are longer streaks; shorter ones stay near the sun. Live.")
-    .debug_only()
-    .range(0.3, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_threshold, 0.5, "MCLA/GPU",
-    "Diagnostic: the brightness (the scene's linear light, 1 is white) the sky must pass to light "
-    "the sun shafts; what is under it does not shine. Lower lets more of the sky shine. Live.")
-    .debug_only()
-    .range(0.0, 4.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_sun_shafts_sky_depth, 1e-5, "MCLA/GPU",
-    "Diagnostic: the stored depth (1 near, 0 far) at or under which a pixel is sky for the sun "
-    "shafts. The sky is drawn at the far end, 0; raise it if the shafts find no sky. Live.")
-    .debug_only()
-    .range(0.0, 0.01)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_sun_shafts_view, 0, "MCLA/GPU",
-    "Diagnostic: shows a stage of the sun shafts instead of adding them (only while they are on "
-    "and the sun gives shafts): 1 the sky image the rays march over, 2 the blurred image, 3 the "
-    "added light alone. 0: off. Live.")
-    .debug_only()
-    .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_sun_shafts_early, false, "MCLA/GPU",
-    "Diagnostic: adds the sun shafts at the game's mid-scene depth copy, before the fog and the "
-    "particles, instead of at the game's copy of the main colour after them (the fog then covers "
-    "them), to compare the two. Without it the shafts go in at that copy and fall back to the "
-    "mid-scene point by themselves when no such copy comes. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_sun_shafts_cap, true, "MCLA/GPU",
-    "Diagnostic: caps the sun shafts' two working images at 960x540 (the size they are at 1080p, a quarter "
-    "of their old size at 4K, the same shape as the picture; a picture whose half size is under that is "
-    "untouched). The shafts are a smooth, blurred light, so the picture is the same to within the ray "
-    "noise being coarser; it saves a good part of the passes' time at 1440p and 4K while the shafts "
-    "show. False: the images are half the picture's size, as they were. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_sun_shafts_census, 0, "MCLA/GPU",
-    "Diagnostic: every Nth guest frame (and the first three frames with the main view), one log "
-    "line of what the sun shafts did: the sun's height and where it is in the picture, the "
-    "fades, what became of the frame's two points. 0: off. Live.")
-    .debug_only()
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -213,7 +134,7 @@ SunShafts::Level ReadLevel() {
 
 // The ray steps in force: the class's, or the debug cvar's (shafts_level.h).
 uint32_t ReadSteps() {
-  return shafts_level::Steps(gpu_class::Current(), REXCVAR_GET(mcla_gpu_sun_shafts_steps));
+  return shafts_level::Steps(gpu_class::Current(), larecomp::settings::mcla_gpu_sun_shafts_steps.Get());
 }
 
 }  // namespace
@@ -236,6 +157,7 @@ std::string SunShafts::VariantName(uint32_t variant) {
     case kVSky: return "shafts sky";
     case kVSkyMs: return "shafts sky (multisampled)";
     case kVBlur: return "shafts blur";
+    case kVTemporal: return "shafts temporal";
     default: break;
   }
   const uint32_t index = variant - kVAddBase;
@@ -294,6 +216,9 @@ void SunShafts::Shutdown() {
   // The GPU is idle and the heap goes later: the slots are not handed back (PostAa::Shutdown).
   sky_ = HostImage{};
   shaft_ = HostImage{};
+  hist_[0] = HostImage{};
+  hist_[1] = HostImage{};
+  hist_valid_ = false;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
   }
@@ -309,7 +234,7 @@ void SunShafts::Shutdown() {
 std::vector<uint32_t> SunShafts::Variants() const {
   // The add pass for the play view's colour target at 1x, 2x and 4x (the host's MSAA level), 8x
   // when the device has it, so that a switch of the level or the first dusk waits for no pipeline.
-  std::vector<uint32_t> variants = {kVSky, kVSkyMs, kVBlur, AddVariant(false, 1), AddVariant(false, 2),
+  std::vector<uint32_t> variants = {kVSky, kVSkyMs, kVBlur, kVTemporal, AddVariant(false, 1), AddVariant(false, 2),
                                     AddVariant(false, 4)};
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     variants.push_back(AddVariant(false, 8));
@@ -370,6 +295,8 @@ std::unique_ptr<plume::RenderPipeline> SunShafts::MakePipeline(uint32_t variant)
       return passes_->CreatePipeline(*shaders_[kPassSkyMs], kImageFormat, name.c_str());
     case kVBlur:
       return passes_->CreatePipeline(*shaders_[kPassBlur], kImageFormat, name.c_str());
+    case kVTemporal:
+      return passes_->CreatePipeline(*shaders_[kPassTemporal], kImageFormat, name.c_str());
     default: break;
   }
   // The add pass: into the scene colour (float16 RGBA) with the target's sample count. The light is
@@ -414,7 +341,7 @@ plume::RenderPipeline* SunShafts::Pipeline(uint32_t variant) {
 }
 
 void SunShafts::BeginFrame() {
-  census_every_ = uint32_t(std::max(0, REXCVAR_GET(mcla_gpu_sun_shafts_census)));
+  census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_sun_shafts_census.Get()));
   Level level = ReadLevel();
   if (!ready_ && level != Level::kOff && !shaders_failed_ && MakeShaders()) {
     // Off at the start, on now (a live change): the shaders were not made; they are made here (a short
@@ -439,7 +366,7 @@ void SunShafts::BeginFrame() {
 
 uint64_t SunShafts::HeldBytes() const {
   uint64_t bytes = 0;
-  for (const HostImage* image : {&sky_, &shaft_}) {
+  for (const HostImage* image : {&sky_, &shaft_, &hist_[0], &hist_[1]}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -453,13 +380,38 @@ void SunShafts::ReleaseImages() {
   }
   passes_->ReleaseImage(sky_);
   passes_->ReleaseImage(shaft_);
+  passes_->ReleaseImage(hist_[0]);
+  passes_->ReleaseImage(hist_[1]);
+  hist_valid_ = false;
   images_made_for_[0] = images_made_for_[1] = 0;
 }
 
 bool SunShafts::EnsureImages(const Pending& plan) {
-  const bool ok =
+  bool ok =
       passes_->EnsureImage(sky_, plan.image[0], plan.image[1], kImageFormat, "shafts sky") &&
       passes_->EnsureImage(shaft_, plan.image[0], plan.image[1], kImageFormat, "shafts blurred");
+  // NOISE-RESOLVE: the history's two images while the frames are averaged here (no temporal upscaler); given back when the setting goes off, or after an upscaler has run for kHistoryKeepFrames frames in a row
+  // (NOISE-FOLLOW: until then they stay, so the plain frames of an upscaler session do not make them again; RecordTemporal's gap rule treats what they hold as stale).
+  const bool hist_held = hist_[0].texture || hist_[1].texture;
+  const bool hist_size_ok = hist_[0].width == plan.image[0] && hist_[0].height == plan.image[1] && hist_[1].width == plan.image[0] && hist_[1].height == plan.image[1];
+  const noise_resolve::HistoryImages hist_keep = hist_life_.Frame(plan.history, plan.history_gap, hist_held, hist_size_ok);
+  // (review F1: the texture pointers before the images are made, to see a remake below)
+  const plume::RenderTexture* hist_before[2] = {hist_[0].texture.get(), hist_[1].texture.get()};
+  if (ok && plan.history) {
+    ok = passes_->EnsureImage(hist_[0], plan.image[0], plan.image[1], kImageFormat, "shafts history 0") &&
+         passes_->EnsureImage(hist_[1], plan.image[0], plan.image[1], kImageFormat, "shafts history 1");
+  } else if (hist_held && hist_keep != noise_resolve::HistoryImages::kKeep) {
+    passes_->ReleaseImage(hist_[0]);
+    passes_->ReleaseImage(hist_[1]);
+    hist_valid_ = false;
+  }
+  // A history image that was made again (a new size: the render scale, the window, an upscaler switch; or one that could not be made) holds nothing, and the counters below still describe the old
+  // images: RecordTemporal's size test cannot see it (the images already have the new size), so the next frame would read a never-written image with up to kShaftsHistoryWeight (review F1). The texture
+  // pointer compare is what ssr.cpp's EnsureImages does.
+  if (hist_[0].texture.get() != hist_before[0] || hist_[1].texture.get() != hist_before[1]) {
+    hist_valid_ = false;
+    hist_frames_ = 0;
+  }
   if (ok && (images_made_for_[0] != plan.image[0] || images_made_for_[1] != plan.image[1])) {
     images_made_for_[0] = plan.image[0];
     images_made_for_[1] = plan.image[1];
@@ -927,7 +879,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   sun_ = sun;
   LogSkySun(sun);
   const Level level = level_;
-  const float intensity = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_intensity), 0.0, 8.0));
+  const float intensity = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_intensity.Get(), 0.0, 8.0));
   const float strength = sun.strength * shafts_level::Multiplier(level) * intensity;
   if (!(strength * kGain > kMinStrength)) {
     // The sun gives no shafts now (noon, night, rain, behind the camera): nothing is recorded.
@@ -950,7 +902,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   // The working images: half the picture, capped at a 960x540 box (shafts_image.h; the cvar is read every frame, so
   // a switch re-makes the images at the next sun frame). The sky pass spreads its four taps over a texel's footprint.
   const shafts_image::Size image =
-      shafts_image::ImageSize(plan.render[0], plan.render[1], REXCVAR_GET(mcla_gpu_sun_shafts_cap));
+      shafts_image::ImageSize(plan.render[0], plan.render[1], larecomp::settings::mcla_gpu_sun_shafts_cap.Get());
   plan.image[0] = image.width;
   plan.image[1] = image.height;
   plan.footprint[0] = shafts_image::Footprint(plan.render[0], plan.image[0]);
@@ -970,11 +922,13 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   }
   plan.level = level;
   plan.steps = ReadSteps();
-  plan.density = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_density), 0.3, 1.0));
+  plan.density = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_density.Get(), 0.3, 1.0));
   plan.decay = std::pow(kDecayAt64, 64.0f / float(plan.steps));
-  // The noise is a fixed pattern, shifted every frame only while a temporal upscaler averages it.
-  plan.noise_shift = upscaler_running ? float(frame_ & 1023u) : 0.0f;
-  plan.view = uint32_t(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_view), 0, 3));
+  plan.view = uint32_t(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_view.Get(), 0, 3));
+  // The noise moves every frame while something averages it: a temporal upscaler, or (NOISE-RESOLVE) the history of the blurred image (RecordTemporal) while none runs; else a fixed pattern.
+  plan.history = !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;
+  plan.noise_shift = float(noise_resolve::FrameTerm(upscaler_running, plan.history, scene_noise::NoiseIndex(frame_), 1023u));
+  plan.history_gap = upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;   // NOISE-FOLLOW: the images the history would use stay over an upscaler's frames
 
   if (!RecordSky(summary, list, plan)) {
     outcome_ = Outcome::kNotRecorded;
@@ -989,7 +943,7 @@ bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summa
   // never looked at, and what they teach must not reach the play view's policy (EndSkyFrame).
   anchor_ = trigger_world_ != menu_world::World::kPlay
                 ? shafts_anchor::Anchor::kMidScene
-                : policy_.Choose(REXCVAR_GET(mcla_gpu_sun_shafts_early));
+                : policy_.Choose(larecomp::settings::mcla_gpu_sun_shafts_early.Get());
   if (anchor_ == shafts_anchor::Anchor::kMidScene) {
     // Here, before the fog and the particles: the debug switch, or the fall-back of a build or a scene
     // that gives no copy of the main colour at the second point. The copy is still watched there.
@@ -1050,11 +1004,11 @@ bool SunShafts::RecordSky(const ResolveCache::Summary& summary, plume::RenderCom
   push.sizes[1] = float(plan.image[1]);
   push.sizes[2] = float(plan.render[0]);
   push.sizes[3] = float(plan.render[1]);
-  push.sun[0] = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_sky_depth), 0.0, 0.01));
+  push.sun[0] = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_sky_depth.Get(), 0.0, 0.01));
   push.sun[1] = kShineLimit;
   push.tint[0] = plan.footprint[0];
   push.tint[1] = plan.footprint[1];
-  push.tint[3] = float(std::clamp(REXCVAR_GET(mcla_gpu_sun_shafts_threshold), 0.0, 4.0));
+  push.tint[3] = float(std::clamp(larecomp::settings::mcla_gpu_sun_shafts_threshold.Get(), 0.0, 4.0));
   pass_timing_->Mark(list, "shafts sky");
   passes_->DrawInto(list, sky_, sky, &push, sizeof(push));
   return true;
@@ -1186,6 +1140,7 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   // The radial blur of the sky image toward the sun.
   Push push = {};
   push.slots[1] = sky_.slot;
+  push.slots[2] = larecomp::settings::mcla_gpu_noise_blue.Get() ? 1u : 0u;  // the ray starts take the blue noise tile (hlsl/shafts_noise.hlsli), else the first version's gradient noise
   push.slots[3] = plan.steps;
   push.sizes[0] = float(plan.image[0]);
   push.sizes[1] = float(plan.image[1]);
@@ -1198,8 +1153,10 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   push.tint[3] = plan.noise_shift;
   pass_timing_->Mark(list, "shafts blur");
   passes_->DrawInto(list, shaft_, blur, &push, sizeof(push));
+  // NOISE-RESOLVE: the blurred image averaged over frames (the add pass reads the result); without the pass or the images the blurred image itself.
+  const HostImage* resolved = plan.history ? RecordTemporal(list, plan) : nullptr;
   pass_timing_->Mark(list, "shafts add");
-  if (!RecordAdd(list, *colour, plan)) {
+  if (!RecordAdd(list, *colour, plan, resolved ? *resolved : shaft_)) {
     return false;
   }
   if (!first_run_logged_) {
@@ -1237,8 +1194,59 @@ bool SunShafts::RecordShafts(plume::RenderCommandList* list, const Pending& plan
   return true;
 }
 
+const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const Pending& plan) {
+  plume::RenderPipeline* temporal = Pipeline(kVTemporal);
+  if (!temporal || !hist_[0].texture || !hist_[1].texture || hist_[0].width != plan.image[0] || hist_[0].height != plan.image[1]) {
+    hist_valid_ = false;
+    return nullptr;
+  }
+  // The history is the frame before's (the same kind of view, the same size) and the sun has not moved too far for the picture to be the same one. The image the pass would read must also have been
+  // drawn into since it was made (its layout is no longer unknown): the belt to EnsureImages' braces (review F1).
+  const bool pause = pause_view_;
+  const float shift_u = hist_sun_[0] - plan.sun_uv[0];
+  const float shift_v = hist_sun_[1] - plan.sun_uv[1];
+  const float aspect = float(plan.image[0]) / float(std::max(plan.image[1], 1u));
+  const uint32_t out_index = 1 - hist_index_;
+  HostImage& history_in = hist_[hist_index_];
+  HostImage& history_out = hist_[out_index];
+  const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&
+                    noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect) && history_in.layout != plume::RenderTextureLayout::UNKNOWN;
+  Push push = {};
+  push.slots[0] = keep ? history_in.slot : shaft_.slot;  // without a history any readable image: the shader does not read it
+  push.slots[1] = shaft_.slot;
+  push.slots[2] = keep ? 1u : 0u;
+  push.sizes[0] = float(plan.image[0]);
+  push.sizes[1] = float(plan.image[1]);
+  push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;
+  push.sun[3] = noise_resolve::kShaftsClampMargin;
+  push.tint[0] = shift_u;
+  push.tint[1] = shift_v;
+  push.tint[2] = noise_resolve::kShaftsStaleFrom;
+  push.tint[3] = noise_resolve::kShaftsStaleTo;
+  pass_timing_->Mark(list, "shafts temporal");
+  passes_->DrawInto(list, history_out, temporal, &push, sizeof(push));
+  hist_index_ = out_index;
+  hist_valid_ = true;
+  hist_frame_ = frame_;
+  hist_pause_ = pause;
+  hist_sun_[0] = plan.sun_uv[0];
+  hist_sun_[1] = plan.sun_uv[1];
+  // A frame that does not keep the history still writes one frame into it: the next frame has 1 frame of history (weight 1/2), not 0.
+  hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 1u;
+  if (keep) {
+    ++hist_used_;
+    if (!hist_logged_) {
+      hist_logged_ = true;
+      REXLOG_INFO("[gpu] shafts: the first frame that averages the blurred image over a history (no temporal upscaler: the ray starts' noise changes every frame, mcla_gpu_noise_resolve_no_upscaler): "
+                  "weight {:.2f} at most, the history read shifted by the sun's own move, clamped to the 3x3 neighbourhood +- {:.2f} and dropped where it differs from the frame by more than the noise does, images {}x{} R16_FLOAT x2 (reported once)",
+                  noise_resolve::kShaftsHistoryWeight, noise_resolve::kShaftsClampMargin, plan.image[0], plan.image[1]);
+    }
+  }
+  return &history_out;
+}
+
 bool SunShafts::RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& colour,
-                          const Pending& plan) {
+                          const Pending& plan, const HostImage& shine) {
   plume::RenderPipeline* pipeline = Pipeline(AddVariant(plan.view != 0, colour.host_samples));
   if (!pipeline) {
     return false;
@@ -1253,7 +1261,7 @@ bool SunShafts::RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& 
     return false;
   }
   Push push = {};
-  push.slots[1] = plan.view == 1 ? sky_.slot : shaft_.slot;
+  push.slots[1] = plan.view == 1 ? sky_.slot : shine.slot;
   push.slots[3] = plan.view;
   push.sizes[0] = float(plan.render[0]);
   push.sizes[1] = float(plan.render[1]);
@@ -1358,8 +1366,8 @@ void SunShafts::LogInterval() {
               shafts_anchor::AnchorName(shafts_anchor::Anchor::kMidScene), interval_.lost,
               interval_.sun_by_sky, interval_.sun_by_light,
               interval_.copies_missing, shafts_anchor::AnchorName(policy_.Choose(
-                  REXCVAR_GET(mcla_gpu_sun_shafts_early))),
-              REXCVAR_GET(mcla_gpu_sun_shafts_early)
+                  larecomp::settings::mcla_gpu_sun_shafts_early.Get())),
+              larecomp::settings::mcla_gpu_sun_shafts_early.Get()
                   ? " (forced by mcla_gpu_sun_shafts_early)"
                   : (policy_.fallen_back() ? " (the fall-back)" : ""),
               policy_.fallbacks(), policy_.returns(), runs_ + lost_, runs_end_, runs_mid_, lost_);

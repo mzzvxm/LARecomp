@@ -18,8 +18,9 @@
 //   alpha 1                 the player's car, traced, and none of the cone's rays hits a part of it: the environment stays.
 //   alpha 1 + w, w in (0,1] the cone hits parts of the car the camera sees; w is the share of the cone (the rays' weights over their number),
 //                           rgb the mean of the parts' colours in the history.
-//   alpha -(1 + w)          the hits are mostly on parts the camera does not see (the back of a part, or one that another part hides), or
-//                           off the picture; rgb is the stand-in colour (the fallback rule below).
+//   alpha -(1 + w)          the hits are mostly on ANOTHER CAR (RT-HIT-SHADING-4: the sign was "the parts the camera does not see" before; the paint never used that for a
+//                           colour, only for a debug view, so the sign now carries what the paint needs to know: whether to add the clear coat's layer, below);
+//                           rgb is the colour (the history's where the camera sees the part, the pass's shading where it does not: the fallback rule below).
 // A value rounds to half precision (steps of 1/1024 up to 2), which the weight does not mind.
 //
 // THE CONE: the paint's own reflection of the world is soft (the environment map is 512x256 for a hemisphere and the paint adds its gloss),
@@ -60,6 +61,7 @@
 #include <cstdint>
 #include <string_view>
 
+#include "blue_noise.h"
 #include "car_selfrefl_rules.h"
 
 namespace mcla::gpu::car_rt_refl {
@@ -82,19 +84,31 @@ inline constexpr uint32_t kPartBody = 0x01;
 inline constexpr uint32_t kPartGlass = 0x02;
 inline constexpr uint32_t kPartTyres = 0x04;
 inline constexpr uint32_t kPartDriver = 0x08;
-inline constexpr uint32_t kPartAll = 0x0F;
+// Another car (an opponent, traffic, a parked car: car_rt_instances_rules.h): the player's paint reflects a car driving alongside. Never in the primary
+// ray's parts (the paint of the player's car is what the primary ray finds), only in the reflection ray's.
+inline constexpr uint32_t kPartOthers = 0x10;
+inline constexpr uint32_t kPartAll = 0x1F;
 // The primary ray finds the car's pixel: only the opaque rigid parts, which are the paint's (and the rims', lights' and so on: the
 // paint's own pixels are among them, and no pixel of glass, of the driver or of a tyre is read by the paint).
 inline constexpr uint32_t kPrimaryParts = kPartBody;
+// Another car's CHROME (car_rt_scene_rules.h kMaskOtherChrome: the instance of a draw of xChrome::PS_Chrome of another car has this bit and kPartOthers):
+// the primary ray also finds it, with the window around the image's distance as for the player's body, because the chrome's occlusion is traced for its pixels
+// (car_chrome_rt_rules.h). The mask is outside kPartAll: it is not a part a reflection ray can be asked for, and no other car's paint has it.
+inline constexpr uint32_t kPartOtherChrome = 0x20;
+inline constexpr uint32_t kPrimaryTraceParts = kPrimaryParts | kPartOtherChrome;
 // The reflection ray: the body, the glass (a window reflects as dark as the history shows it, or by the fallback colour where the
-// glass writes no depth), the tyres. Not the driver (skinned, seen through the glass only). The debug cvar mcla_gpu_car_selfrefl_rt_parts
-// replaces it.
-inline constexpr uint32_t kDefaultReflectionParts = kPartBody | kPartGlass | kPartTyres;
+// glass writes no depth), the tyres, and the other cars. Not the driver (skinned, seen through the glass only). The debug cvar
+// mcla_gpu_car_selfrefl_rt_parts replaces it.
+inline constexpr uint32_t kDefaultReflectionParts = kPartBody | kPartGlass | kPartTyres | kPartOthers;
+static_assert((kPrimaryParts & kPartOthers) == 0, "the primary ray never finds another car");
+static_assert((kPrimaryTraceParts & kPartOthers) == 0 && (kPartOtherChrome & kPartAll) == 0,
+              "the primary ray never finds another car's paint either: only its chrome, by a bit of its own");
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The image's codes
 // ---------------------------------------------------------------------------------------------------------------------
-enum class Kind : uint8_t { kNoData, kMiss, kHit, kHidden };
+// kOtherCar: the hits are mostly on another car (the alpha's sign, see the header: the paint adds the clear coat's layer for them). Before RT-HIT-SHADING-4 this kind (kHidden) said "mostly on parts the camera does not see".
+enum class Kind : uint8_t { kNoData, kMiss, kHit, kOtherCar };
 
 struct Texel {
   Kind kind = Kind::kNoData;
@@ -107,7 +121,7 @@ inline float EncodeAlpha(Kind kind, float weight) {
     case Kind::kNoData: return 0.0f;
     case Kind::kMiss: return 1.0f;
     case Kind::kHit: return 1.0f + w;
-    case Kind::kHidden: return -(1.0f + w);
+    case Kind::kOtherCar: return -(1.0f + w);
   }
   return 0.0f;
 }
@@ -121,7 +135,7 @@ inline Texel DecodeAlpha(float alpha) {
   if (w <= 0.0f) {
     return {Kind::kMiss, 0.0f};
   }
-  return {alpha < 0.0f ? Kind::kHidden : Kind::kHit, w};
+  return {alpha < 0.0f ? Kind::kOtherCar : Kind::kHit, w};
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -264,6 +278,12 @@ inline float MatchWeight(float texel_distance, float t, float tolerance) {
   return 1.0f - car_selfrefl::SmoothStep(0.5f * tolerance, tolerance, std::fabs(texel_distance - t));
 }
 
+// RT-PARKED-PAINT: the view distance a ray traced pass reads from a history texel's alpha. The alpha of a vehicle's pixel is its distance (> 0); the history pass marks a PARKED car's texels (a car that
+// writes no vehicle stencil ID: car_rt_parked_paint_rules.h) with the NEGATED distance, which every reader that asks `alpha > 0` (the paint variant's march, the chrome variant, the player's pass) leaves
+// alone. The passes of this file's shader (hit colours of the history, the surface's mean, another car's seen colour, the denoise's taps, the opponents' primary pixel) read the distance of either
+// kind, so a parked car's own colour is what the camera sees of it. hlsl/car_rt_refl_common.hlsli HistoryDistance is the same arithmetic.
+inline float HistoryDistance(float alpha) { return std::fabs(alpha); }
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The cone (the pass's rays of a texel)
 // ---------------------------------------------------------------------------------------------------------------------
@@ -283,13 +303,22 @@ inline Disc ConeDisc(int ray, float turns) {
   const float angle = 6.283185307179586f * (turns + 0.25f * float(ray));
   return {ConeRadius(ray) * std::cos(angle), ConeRadius(ray) * std::sin(angle)};
 }
-// The angle the texel's pattern is turned by, in turns: an interleaved gradient noise of the texel's coordinates (Jimenez 2014), which has
-// no structure the eye picks out, plus a golden step per phase (0 where no temporal upscaler runs: the pattern then stands still on the screen, which
-// the eye takes for the paint's grain; 0 .. 7 by the frame where one does, which averages the pattern out).
-inline float ConeRotation(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
+// slots.w bit 17 of the pass's push: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue), else the first version's gradient noise (hlsl/car_rt_refl_cs.hlsl kConeBlueFlag).
+inline constexpr uint32_t kConeBlueFlag = 1u << 17;
+// The first version's turn: an interleaved gradient noise of the texel's coordinates (Jimenez 2014) plus the golden step per phase. It is a lattice (a linear phase of the position: a few sharp spatial
+// frequencies), which the denoise's 3x3 passes leave as thin diagonal lines on a panel; kept for mcla_gpu_noise_blue false.
+inline float ConeRotationLegacy(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
   const float inner = 0.06711056f * float(texel_x) + 0.00583715f * float(texel_y);
   const float noise = 52.9829189f * (inner - std::floor(inner));
   const float sum = (noise - std::floor(noise)) + 0.6180339887f * float(phase);
+  return sum - std::floor(sum);
+}
+// The angle the texel's pattern is turned by, in turns: the blue noise tile at the texel's coordinates (blue_noise.h: no spatial frequency stands out) plus a golden step per phase, the same for every
+// texel (0 where nothing averages it: the pattern then stands still on the screen, a fixed blue grain the denoise takes the rest out of; 0 .. 1023 by the frame where a temporal upscaler runs, or the denoise's own history does (NOISE-RESOLVE), which averages the
+// pattern out; the golden step per frame leaves no gap over 0.15 of the circle in any 8 frames, and the phase counts to 1023 so the pattern repeats only every 1024 frames: a period of 8 left a third of the noise as a 7.5 Hz shimmer under the history).
+inline float ConeRotation(uint32_t texel_x, uint32_t texel_y, uint32_t phase) {
+  static const blue_noise::Tile tile = blue_noise::MakeTile();
+  const float sum = blue_noise::Sample(tile, 0, int(texel_x), int(texel_y)) + 0.6180339887f * float(phase);
   return sum - std::floor(sum);
 }
 // The direction of ray `ray` of the cone around the mirror direction `mirror` (a unit vector), for the point's normal `normal` (a unit vector)
@@ -359,6 +388,97 @@ inline void SurfaceMean(const SurfaceTap taps[9], float t, float tolerance, floa
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// Another car's colour (hlsl/car_rt_refl_cs.hlsl OtherCarColour)
+// ---------------------------------------------------------------------------------------------------------------------
+// A hit on another car's part the history does not show (the car's far side, a part another part hides) has no colour of its own: the surface's mean
+// colour of the PLAYER's pixel (SurfaceMean), which a hit on the player's own car takes, would paint the other car in the player's paint. The history
+// image holds every vehicle's pixels, though, so the car's colour is the one the camera sees of IT: the mean of the history's vehicle texels around the
+// car's body centre, where they are at about the centre's distance (the car's roof, bonnet or the side the camera sees), made dark by the same shade
+// (kShade) as any hidden hit. The centre is the mean of the origins of the car's draws, raised (car_rt_instances_rules.h OtherCar::Centre) and
+// reaches the shader as the car's record in the instances' table; its radius (kCarRadius, 1.6 m) sets the sample: nine taps kOtherCarSpread radii
+// apart in the picture, those within kOtherCarDepth radii of the centre's distance counting (tent weighted, as SurfaceMean's). A car whose
+// taps hold too little (its centre is off the picture, or another car hides it) has no colour: kOtherCarMinShare of the weights; its hidden
+// hits are then a miss, so the paint shows the environment there as it did before the other cars were in the scene. A centre outside the picture is
+// moved in to kOtherCarEdge of it, so that a car at the edge is sampled where its visible part is.
+// WHERE THE HISTORY SHOWS NOTHING OF A CAR THE GAME DRAWS (RT-MODEL-CARS-3): the game draws a car beside the player whenever the sphere round it reaches the view's
+// frustum, so a neighbour 2 to 4 m from the player's door is drawn (its draws are in the scene, its +116 flag says visible) while the camera, standing in the gap beside the
+// door and looking at it, sees none of that car: its centre is behind the camera. The history has nothing of it and, with no colour, its hidden hits were a miss: the door
+// showed no neighbour (the first model-data check's flank pictures). Such a car takes its PAINT where its record has one (the model walk read it from the game's customisation
+// record, car_model_rt_rules.h PaintForDrawn), exactly as a car placed from memory does; where the history does show it, the history's colour stays.
+// WHY THIS AND NOT A PAINT CONSTANT: the pixel constants of the car paint shader (native/work/hlsl-head/cars/xCarPaintCustomizable__PS_CarPaint.hlsl:
+// the lights DL0 to DL6, the ambient, the exposure) hold no base colour, it comes from textures; and the traffic's materials are other shaders with
+// other constants. What the camera sees of a car is the one thing every car has, it needs nothing from the guest, and it costs nine loads for a hit
+// that is not fully visible.
+// CHECK: the choice is the first guess: the picture with a car alongside shows whether the colour is the car's (view 5 orange = a hidden hit; the
+// reflection in the paint should be the car's own colour darkened) and whether the depth window takes the road or the player's own car.
+inline constexpr float kOtherCarSpread = 0.5f;      // radii of the car between the taps
+inline constexpr float kOtherCarDepth = 1.2f;       // radii: the depth window around the centre's distance (full weight within half of it)
+inline constexpr float kOtherCarMaxStep = 24.0f;    // texels between the taps, at most (a car near the camera is wide in the picture)
+inline constexpr float kOtherCarEdge = 0.97f;       // the centre's place in the picture is moved in to this share of the half width and height
+inline constexpr float kOtherCarMinShare = 0.15f;   // the share of the nine taps' weights (out of 4) under which the car has no colour
+// A car placed from memory (car_rt_memory_rules.h: drawn earlier, not seen by the camera now) has a NEGATIVE radius in its record: the history holds nothing of it,
+// so its hidden hits take this grey (each channel; the shade of the pass makes it darker like any hidden part) and count as fully known. CHECK: the grey is a
+// guess; the car's own colour is not known on this side (a remembered colour needs a persistent GPU buffer written by this pass while the car is in view).
+inline constexpr float kRememberedCarColour = 0.45f;
+
+// Texels between the taps: kOtherCarSpread radii at the centre's distance, in texels of `texel_m` metres, from one texel to kOtherCarMaxStep.
+inline float OtherCarStep(float radius, float texel_m) {
+  return texel_m > 0.0f ? std::clamp(kOtherCarSpread * radius / texel_m, 1.0f, kOtherCarMaxStep) : 1.0f;
+}
+
+struct OtherCarColour {
+  float share = 0.0f;  // 0..1: the taps' weights over their sum when all match (4)
+  float rgb[3] = {};   // their mean colour (0 where none matches), in the history's units
+  bool known() const { return share >= kOtherCarMinShare; }
+};
+// The colour of a car placed from memory (a record with a negative radius): known in full, a fixed grey. UNITS (RT-MODEL-CARS-4): the paint (the record's second row) and the
+// grey are colours of the paint's units (a shader's output: a lit surface of albedo 1 is about kPaintLit of it), the image the pass writes is in the HISTORY's (the target's
+// own: the shader's output times 2^exp_bias, 16 at the game's bias of 4; the paint reads the image times 2^-bias), so both are multiplied by `units`
+// (car_selfrefl_rules.h ExpBiasUnits). Without it every such colour was 16 times too dark: the neighbour beside the door was a dark silhouette, not in its paint.
+inline OtherCarColour RememberedOtherCarColour(const float* paint, float units) {
+  OtherCarColour out;
+  out.share = 1.0f;
+  for (int c = 0; c < 3; ++c) {
+    out.rgb[c] = (paint ? paint[c] : kRememberedCarColour) * units;  // the car's paint where the record has one (CarPaintRow), else the grey
+  }
+  return out;
+}
+// `units`: the history's units over the paint's (RememberedOtherCarColour says why); the taps' colours are the history's already and keep theirs.
+// `taps` as SurfaceMean's (tap k at the offset (k % 3 - 1, k / 3 - 1) times the step; the middle tap is the centre's own place), `centre_z` the
+// centre's view distance and `radius` the car's (a car the camera does not draw has a negative one: RememberedOtherCarColour, the taps are not looked at;
+// `paint`: its paint colour from the record's second row, null where the flag is clear). A car the camera draws takes the history's colour where the taps hold
+// enough (known()), and its paint, in full, where they do not and it has one. `centre_z` at or under kOtherCarMinDepth (the centre is behind the camera) or a
+// radius of 0 (no centre in the record) has no taps to look at: the paint or nothing.
+inline constexpr float kOtherCarMinDepth = 0.05f;  // the shader's kMinDepth
+inline OtherCarColour FindOtherCarColour(const SurfaceTap taps[9], float centre_z, float radius, const float* paint, float units) {
+  if (radius < 0.0f) {
+    return RememberedOtherCarColour(paint, units);
+  }
+  OtherCarColour out;
+  float sum[3] = {};
+  float total = 0.0f;
+  const float tolerance = kOtherCarDepth * radius;
+  for (int k = 0; k < 9 && radius > 0.0f && centre_z > kOtherCarMinDepth; ++k) {
+    const float tent = ((k % 3) == 1 ? 1.0f : 0.5f) * ((k / 3) == 1 ? 1.0f : 0.5f);
+    const float w = tent * MatchWeight(taps[k].distance, centre_z, tolerance);
+    total += w;
+    for (int c = 0; c < 3; ++c) {
+      sum[c] += w * taps[k].rgb[c];
+    }
+  }
+  out.share = total / 4.0f;
+  if (total > 1e-6f) {
+    for (int c = 0; c < 3; ++c) {
+      out.rgb[c] = sum[c] / total;
+    }
+  }
+  if (!out.known() && paint) {
+    return RememberedOtherCarColour(paint, units);  // the history shows nothing of the car: its paint stands in
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // What a reflection ray's hit shows (the pass)
 // ---------------------------------------------------------------------------------------------------------------------
 struct VisibleColour {
@@ -388,12 +508,14 @@ inline VisibleColour FindVisible(const Taps& taps, const float distance[4], cons
 struct RayShare {
   float weight = 0.0f;   // fade with the distance x (kHiddenWeight .. 1 by the visible share); 0: nothing (past the reach)
   float visible = 0.0f;  // 0..1: how much of the hit the history shows
+  bool car = false;      // the hit is on another car (the shader's `car`: TraceRay's out parameter); it decides the code's sign
   float rgb[3] = {};     // the colour: the visible colour where the history shows it, the shade (kShade x the surface's mean colour) where not
 };
 // `ray_distance` along the ray of length `ray_length`, `visible` FindVisible's result at the hit, `surface` the mean colour of the
 // pixel's own surface (SurfaceMean).
-inline RayShare MakeShare(float ray_distance, float ray_length, const VisibleColour& visible, const float surface[3]) {
+inline RayShare MakeShare(float ray_distance, float ray_length, const VisibleColour& visible, const float surface[3], bool car = false) {
   RayShare out;
+  out.car = car;
   const float fade = 1.0f - car_selfrefl::SmoothStep(kFadeFrom * ray_length, ray_length, ray_distance);
   out.visible = std::clamp(visible.coverage / kVisibleFullShare, 0.0f, 1.0f);
   out.weight = fade * (kHiddenWeight + (1.0f - kHiddenWeight) * out.visible);
@@ -414,15 +536,15 @@ struct Reflection {
 };
 // The image's value of a texel: the rays' shares added up. `rays` is how many rays the texel counts (kConeRays; 1 for a gloss of 0): a ray that was not
 // cast (the early out) or that found nothing counts as a miss. The weight is the sum of the shares over `rays`, the colour their
-// weighted mean, the kind the majority of the weight's visibility.
+// weighted mean, the kind the majority of the weight's being on another car (RT-HIT-SHADING-4: it was the visibility; the shader's `car` sums).
 inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
   Reflection out;
   float weight = 0.0f;
-  float visible = 0.0f;
+  float car = 0.0f;
   float colour[3] = {};
   for (int k = 0; k < count; ++k) {
     weight += shares[k].weight;
-    visible += shares[k].weight * shares[k].visible;
+    car += shares[k].car ? shares[k].weight : 0.0f;
     for (int c = 0; c < 3; ++c) {
       colour[c] += shares[k].weight * shares[k].rgb[c];
     }
@@ -434,7 +556,7 @@ inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
   for (int c = 0; c < 3; ++c) {
     out.rgb[c] = colour[c] / weight;
   }
-  out.kind = visible >= 0.5f * weight ? Kind::kHit : Kind::kHidden;
+  out.kind = car >= 0.5f * weight ? Kind::kOtherCar : Kind::kHit;
   return out;
 }
 
@@ -475,6 +597,10 @@ inline Reflection CombineRays(const RayShare shares[], int count, float rays) {
 // cannot see that, and a cut, a pause view, a garage orbit and the vehicle's own motion having no valid matrix some frames would each need
 // its own. With an upscaler the upscaler is the temporal filter (the pattern turns by the frame). A ghost is worse than grain; this does not
 // ghost, and holds nothing from the frame before.
+// NOISE-RESOLVE (2026-11-22) REVISITED THIS for the frames without an upscaler (AGENT-RULE-NOISE: the pattern must change every frame and something must resolve it): the pattern now turns by the frame there too, and
+// a third pass of the denoise (noise_resolve.h "the car reflection cone's history") averages the finished image with the last frame's, texel for texel, with the history clamped to the 3 x 3 neighbourhood of the
+// finished image: a clamp does see a penumbra that moved (it compares values, not depths), and it bounds the ghost to the neighbourhood's own range, about a texel of the ramp. mcla_gpu_noise_resolve_no_upscaler off
+// gives the pattern that stands still back.
 inline constexpr int kDenoisePasses = 2;               // the passes (a-trous steps 1, 2); mcla_gpu_car_selfrefl_rt_denoise 0 .. 2 (0: the raw image)
 inline constexpr float kDenoiseFootprintFrom = 0.4f;   // texels: a cone this wide or less at its hit leaves the texel as it is
 inline constexpr float kDenoiseFootprintTo = 2.5f;     // texels: from this width the first pass is applied in full
@@ -503,6 +629,22 @@ inline float EncodeHitDistance(float distance, float reach) {
 inline float DecodeHitDistance(float code, float reach) { return code * code * reach; }
 inline float EncodeInstance(uint32_t instance) { return float(std::min<uint32_t>(instance, 255u)) / 255.0f; }
 inline int InstanceOfCode(float code) { return int(std::floor(code * 255.0f + 0.5f)); }
+
+// RR-4b, THE RAW MODE (dlss_rr_rules.h RawModes; mcla_gpu_dlss_rr_car_refl is the A/B): in a frame DLSS Ray Reconstruction takes it is the denoiser, so the filter above does not run (the paint
+// reads the trace's raw image: the cone's grain goes to Ray Reconstruction with the rest of the picture's noise) and a pass (hlsl/car_rt_refl_hit_cs.hlsl) writes how far each reflection went into
+// an R16_FLOAT image of the picture's size, which the guide pass reads as the hit distance (rr_guides.h Inputs::hit[1]).
+inline int DenoisePassesFor(bool raw, int setting, float tan_half) { return raw ? 0 : DenoisePassCount(setting, tan_half); }
+// What the pass writes for a texel of the aux image: 0 where the texel holds no car (the trace found none: nothing was traced), the cone's mean hit distance in metres where some ray hit, and `miss`
+// where the car's cone found no part (the paint shows the environment: far). The same number as the screen-space reflections' miss (ssr_rules.h, 4096).
+inline constexpr float kRawMissDistance = 4096.0f;
+// The hit distance image goes back after this many frames of the pass running without the raw mode.
+inline constexpr uint32_t kRawReleaseAfter = 120;
+inline float RawHitDistance(float aux_x, float aux_w, float reach, float miss = kRawMissDistance) {
+  if (!(aux_w > 0.5f)) {
+    return 0.0f;
+  }
+  return aux_x > 0.0f ? DecodeHitDistance(aux_x, reach) : miss;
+}
 
 // The width of the cone at its hit, in texels of the surface at the texel's distance (`texel_m` metres): the penumbra of a part's edge.
 inline float ConeFootprint(float hit_distance, float tan_half, float texel_m) {
@@ -546,7 +688,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
   const float texel_m = PixelMeters(centre_distance, setup.tan_y, setup.image_height);
   float n = 0.0f;
   float weight = 0.0f;
-  float hidden = 0.0f;
+  float car = 0.0f;  // the weight that is on another car (the sign)
   float colour[3] = {};
   float footprint = 0.0f;
   for (int k = 0; k < 9; ++k) {
@@ -565,7 +707,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
     }
     n += k_weight;
     weight += k_weight * code.weight;
-    hidden += code.kind == Kind::kHidden ? k_weight * code.weight : 0.0f;
+    car += code.kind == Kind::kOtherCar ? k_weight * code.weight : 0.0f;
     for (int c = 0; c < 3; ++c) {
       colour[c] += k_weight * code.weight * tap.rgb[c];
     }
@@ -585,10 +727,10 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
     return out;
   }
   const Texel mine = DecodeAlpha(own.alpha);
-  const float own_hidden = own.alpha < 0.0f ? mine.weight : 0.0f;
+  const float own_car = own.alpha < 0.0f ? mine.weight : 0.0f;
   const float inverse = n > 0.0f ? 1.0f / n : 0.0f;
   const float mixed_weight = mine.weight + (weight * inverse - mine.weight) * strength;
-  const float mixed_hidden = own_hidden + (hidden * inverse - own_hidden) * strength;
+  const float mixed_car = own_car + (car * inverse - own_car) * strength;
   if (mixed_weight < 1.0f / 512.0f) {
     out.alpha = EncodeAlpha(Kind::kMiss, 0.0f);
     return out;
@@ -597,7 +739,7 @@ inline DenoiseOut DenoiseTexel(const DenoiseTap taps[9], float centre_distance, 
     const float own_colour = mine.weight * own.rgb[c];
     out.rgb[c] = (own_colour + (colour[c] * inverse - own_colour) * strength) / mixed_weight;
   }
-  out.alpha = EncodeAlpha(mixed_hidden > 0.5f * mixed_weight ? Kind::kHidden : Kind::kHit, mixed_weight);
+  out.alpha = EncodeAlpha(mixed_car > 0.5f * mixed_weight ? Kind::kOtherCar : Kind::kHit, mixed_weight);
   return out;
 }
 
@@ -629,21 +771,24 @@ struct PaintRead {
   bool use = false;       // the image answers: weight and colour are valid; false: the march
   Kind kind = Kind::kNoData;
   float weight = 0.0f;
+  float car = 0.0f;       // 0..1: the share of the weight that is on another car (the code's sign over the footprint): the clear coat's layer follows it (CoatLayerAmount)
   float rgb[3] = {};
 };
 // `wx` and `wy` are BSplineWeights of the place. A texel counts where it is the surface the paint's pixel is on (its history distance within
 // `tolerance` of `depth`) and has data; the footprint's data must cover kUseShare of the texels that are that surface, else the march answers.
 // The colour is the mean of the weighted hits (a miss next to a hit does not darken the hit's colour); the weight is the share of the footprint the
 // hits cover.
-inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintTap tap[9], float depth, float tolerance) {
+// RT-PARKED-PAINT (variant version 10): `flags` are the constants' flags (car_selfrefl_rules.h); with kParkedFlag the history's distance of a tap is read as abs(a) (a parked car's texels hold the negated
+// distance), else as it is: a negative one is no vehicle.
+inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintTap tap[9], float depth, float tolerance, uint32_t flags = 0) {
   PaintRead out;
   float geometry = 0.0f;
   float known = 0.0f;
   float weight = 0.0f;
-  float hidden = 0.0f;
+  float car = 0.0f;
   float colour[3] = {};
   for (int k = 0; k < 9; ++k) {
-    const float agree = MatchWeight(tap[k].history_distance, depth, tolerance);
+    const float agree = MatchWeight(car_selfrefl::PaintHistoryDistance(tap[k].history_distance, flags), depth, tolerance);
     const float wg = wx[k % 3] * wy[k / 3] * agree;
     geometry += wg;
     const Texel texel = DecodeAlpha(tap[k].alpha);
@@ -652,8 +797,8 @@ inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintT
     }
     known += wg;
     weight += wg * texel.weight;
-    if (texel.kind == Kind::kHidden) {
-      hidden += wg * texel.weight;
+    if (texel.kind == Kind::kOtherCar) {
+      car += wg * texel.weight;
     }
     for (int c = 0; c < 3; ++c) {
       colour[c] += wg * texel.weight * tap[k].rgb[c];
@@ -668,8 +813,9 @@ inline PaintRead ReadForPaint(const float wx[3], const float wy[3], const PaintT
     for (int c = 0; c < 3; ++c) {
       out.rgb[c] = colour[c] / weight;
     }
+    out.car = std::clamp(car / weight, 0.0f, 1.0f);
   }
-  out.kind = out.weight <= 0.02f ? Kind::kMiss : (hidden > 0.5f * weight ? Kind::kHidden : Kind::kHit);
+  out.kind = out.weight <= 0.02f ? Kind::kMiss : (car > 0.5f * weight ? Kind::kOtherCar : Kind::kHit);
   return out;
 }
 

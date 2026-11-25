@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://larecomp.invalid/contract/describe.schema.json",
+  "title": "larecomp.exe --describe (LAUNCHER-FOLLOWS-GAME section 5.1)",
+  "description": "What larecomp.exe prints on stdout for --describe (exit 0, no window, no game data): the contracts this exe speaks and the batch actions it has, so a launcher can tell an old game from a new one without opening a file. The install manifest carries the same contracts object.",
+  "type": "object",
+  "required": ["schema", "schema_version", "contracts", "actions"],
+  "properties": {
+    "schema": { "const": "larecomp.describe" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "game_version": { "type": "string" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "contracts": {
+      "type": "object",
+      "description": "the version of each contract this exe speaks: settings_ui, machine, install_manifest, ...",
+      "additionalProperties": { "type": "integer", "minimum": 1 },
+      "minProperties": 1
+    },
+    "actions": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "uniqueItems": true }
+  }
+}

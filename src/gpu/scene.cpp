@@ -15,24 +15,39 @@
 #include <x86intrin.h>
 #endif
 
-#include <rex/cvar.h>
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/texture.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "ab.h"
 #include "ao.h"
 #include "car_dump.h"
 #include "car_frame.h"
+#include "headlight_rig.h"
+#include "light_manager.h"
+#include "gi_apply.h"
+#include "gi_bounce_settings.h"
+#include "gi_integration.h"
+#include "local_lights.h"
+#include "rt_world_frame.h"
+#include "local_shadow.h"
+#include "car_mirror_rt.h"
+#include "mirror_glass.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
+#include "mirror_overlay.h"
+#include "mirror_view.h"
 #include "cut_request.h"
 #include "cycles.h"
 #include "descriptors.h"
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "format.h"
+#include "gbuffer.h"
+#include "screen_shared.h"
+#include "ssr.h"
 #include "gpu.h"
 #include "layout.h"
 #include "mc_engine/display/ultrawide.h"
@@ -43,76 +58,21 @@
 #include "resolve.h"
 #include "resolve_memory.h"
 #include "samplers.h"
+#include "scene_noise.h"
 #include "shafts.h"
+#include "shaderpack/variant_chain.h"
+#include "volumetrics.h"
 #include "sync_builds.h"
 #include "temporal.h"
+#include "texture_names.h"
 #include "textures.h"
 #include "thread_load.h"
 #include "upscaler_math.h"
+#include "variant_wait.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scene_profile, false, "MCLA/GPU",
-    "Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, "
-    "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
-    "draw), one line per window of 600 frames. Off: nothing is timed.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-// The switch over the renderer work of 17/10/2026, asked for by
-// the user, live: on, every part of it runs as its own cvar says; off, the
-// renderer does what it did before that day.
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_work_17oct, true, "MCLA/GPU",
-    "On/off for all of the renderer work of 17/10/2026: the half-pixel fill of "
-    "scaled resolves (mcla_gpu_resolve_fill_half_pixel), the depth bias times the scale "
-    "(mcla_gpu_scale_depth_bias), the delayed colour encodes "
-    "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
-    "that day. Hot reload.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_scale_depth_bias, true, "MCLA/GPU",
-    "With a resolution scale above 1 (M6b.3c): the slope-scaled depth bias times the "
-    "scale of the draw's targets, as Xenia does -- a host pixel is 1/scale of the guest's. Off: "
-    "the guest's factor unchanged (for A/B). Hot reload.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_census_scale, false, "MCLA/GPU",
-    "Diagnostic (M6e.0): logs once per case each resolve product a draw at another resolution "
-    "scale reads (with the fetch's filters) and each copy of an image of the screen that lands "
-    "away from its source. Off: nothing is checked.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
-// The scene's extra texture detail bias under an upscaler (Scene::SceneBias): live, for A/B.
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_scene_extra_bias, -1.0, "MCLA/GPU",
-    "While an upscaler draws the scene smaller than it is shown, its textures are sampled by "
-    "log2(render size / output size) levels of detail lower, as the output's size would pick, plus "
-    "this many levels more. -1 is what AMD's FSR guide asks for (a sharper picture the upscaler "
-    "fills in over its jitter); 0 or -0.5 sample blurrier levels, which shimmer less on fine "
-    "texture detail (grass, road grain, fences) and soften it. For A/B. Live.")
-    .debug_only()
-    .range(-3.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_masks, true, "MCLA/GPU",
-    "Whether the upscalers get the reactive mask (the cars' shadow decals, particles, light "
-    "volumes) and the transparency and composition mask (car glass): on, they are drawn "
-    "(upscaler_masks.h). Off: no mask is made and the upscaler trusts its history everywhere, "
-    "for A/B (a mask that is wrong shows as shimmer where it covers). Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_cam_cut_blur_fix, true, "MCLA/Cinematic",
-    "TRAILER TOOLKIT (for A/B pictures): on a frame where the scene's camera cuts, the game's motion blur "
-    "gets this frame's own matrices as the previous frame's, so it does not smear the frame (E5: the first frame "
-    "after a cut). Off: the game's constants as they are.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
 
 namespace mcla::gpu {
 
@@ -151,43 +111,6 @@ const char* SkipName(uint32_t skip) {
       "framebuffer not made",
   };
   return skip < std::size(kNames) ? kNames[skip] : "?";
-}
-
-// The EDRAM identities a draw names (the same in Record and in the skip rule).
-EdramKey ColorEdramKey(const XenosState& s, uint32_t i) {
-  EdramKey key;
-  key.base_tiles = uint16_t(s.color[i].base_tiles);
-  key.pitch = uint16_t(s.surface_pitch);
-  key.depth = 0;
-  key.format = uint8_t(FoldColorFormat(uint32_t(s.color[i].format)));
-  key.samples = uint8_t(MsaaSampleCount(s.msaa));
-  return key;
-}
-
-EdramKey DepthEdramKey(const XenosState& s) {
-  EdramKey key;
-  key.base_tiles = uint16_t(s.depth_base_tiles);
-  key.pitch = uint16_t(s.surface_pitch);
-  key.depth = 1;
-  key.format = uint8_t(s.depth_format);
-  key.samples = uint8_t(MsaaSampleCount(s.msaa));
-  return key;
-}
-
-// The depth identity of a draw that has `color_count` colour targets, with its layer (the scene's
-// or the UI's, or another pass's use of a side view's depth: EdramTargets::DepthLayer).
-// `size_bits`: the declared size of the surface the draw's targets are bound through
-// (DrawRecord::target_size_bits, PreparedDraw::target_size_bits).
-EdramKey DrawDepthKey(EdramTargets& edram, const XenosState& s, uint32_t color_count,
-                      uint32_t size_bits) {
-  EdramKey key = DepthEdramKey(s);
-  if (color_count != 0) {
-    const EdramKey color0 = ColorEdramKey(s, 0);
-    key.reserved = edram.DepthLayer(key, &color0, size_bits);
-  } else {
-    key.reserved = edram.DepthLayer(key, nullptr, size_bits);
-  }
-  return key;
 }
 
 const char* DrawKindName(DrawKind kind) {
@@ -333,44 +256,6 @@ const char* ConversionName(uint32_t conversion) {
   return conversion < std::size(kNames) ? kNames[conversion] : "?";
 }
 
-// The resolution scale of a draw's targets: its first identity's -- RT0, or
-// the depth target when it writes no colour -- or, before that target exists,
-// the one the declared size of the surface binding it gives (EdramTargets::
-// ScaleOf); Scene::Record makes the targets at it and checks that every other
-// target agrees. `*host_samples`: that identity's samples on the host
-// (EdramTargets::HostSamplesOf), which the pipeline and g_AlphaToMask take. `*scene`: that
-// identity is the scene's and the scene is drawn at a scale of its own (EdramTargets::SceneApart):
-// its textures are sampled with the scene's mip bias (Scene::SceneBias). `*msaa_guest`: that
-// identity takes the host's MSAA level (EdramTargets::HostSamplesFollowLevel), and the guest's
-// samples then; else 0.
-Scale DrawScale(EdramTargets& edram, const XenosState& s, const PipelineKey& key,
-                uint32_t size_bits, uint32_t* host_samples, bool* scene, uint32_t* msaa_guest) {
-  *scene = false;
-  *msaa_guest = 0;
-  EdramKey first;
-  first.pitch = uint16_t(s.surface_pitch);
-  first.samples = uint8_t(MsaaSampleCount(s.msaa));
-  if (key.color_count) {
-    first.base_tiles = uint16_t(s.color[0].base_tiles);
-    first.depth = 0;
-    first.format = uint8_t(FoldColorFormat(uint32_t(s.color[0].format)));
-  } else if (key.depth_format != 0) {
-    first.base_tiles = uint16_t(s.depth_base_tiles);
-    first.depth = 1;
-    first.format = uint8_t(s.depth_format);
-    first.reserved = edram.DepthLayer(first, nullptr, size_bits);
-  } else {
-    *host_samples = first.samples;
-    return Scale{};
-  }
-  *host_samples = edram.HostSamplesOf(first, size_bits);
-  if (edram.HostSamplesFollowLevel(first, size_bits)) {
-    *msaa_guest = first.samples;
-  }
-  *scene = EdramTargets::IsSceneKey(first) && edram.SceneApart();
-  return edram.ScaleOf(first, size_bits);
-}
-
 // The pass a draw opens, for PassTiming: the targets' pitch and
 // samples, then each colour target and the depth one as format@base.
 std::string PassLabel(EdramTargets::Target* const* colors, uint32_t count,
@@ -404,7 +289,7 @@ uint64_t CompositeTarget(const EdramTargets::Target* target) {
 // first 64): how the reads across scales sample.
 void NoteScaleRead(std::unordered_set<uint64_t>& logged, const TextureFetch& fetch,
                    const uint32_t dwords[6], const TextureCache::Binding& bound, Scale scale) {
-  xe::xe_gpu_texture_fetch_t f;
+  xe::TextureFetch f;
   std::memcpy(&f, dwords, sizeof(f));
   const auto filter = [](xe::TextureFilter v) {
     switch (v) {
@@ -771,6 +656,7 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   samplers_ = &samplers;
   geometry_ = &geometry;
   edram_ = &edram;
+  draw_target_memo_ = {};
   msaa_.Initialize(edram, pipelines);
   textures_ = &textures;
   resolve_ = &resolve;
@@ -791,11 +677,24 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   VerifySwapBankToHost();
   cycles::Measure();  // the base of the first window's TSC rate
   ab::Initialize();
-  profile_ = REXCVAR_GET(mcla_gpu_scene_profile);
-  census_scale_ = REXCVAR_GET(mcla_gpu_census_scale);
+  profile_ = larecomp::settings::mcla_gpu_scene_profile.Get();
+  census_scale_ = larecomp::settings::mcla_gpu_census_scale.Get();
   geometry_->SetProfile(profile_);
+  render_cpu_mask_ = larecomp::settings::render_cpu_mask.Get();
+  ApplyRenderCpu();
   draw_census_.Configure();
   target_census_.Configure();
+}
+
+void Scene::ApplyRenderCpu() {
+  // Each saving also follows ab::B() (ab.h): with mcla_gpu_ab_interleave on, the statistics windows alternate it, so one run
+  // measures both; off, B() is always true and the mask alone decides.
+  const bool candidate = ab::B();
+  const bool sampled = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kSampledDrawTimers);
+  draw_sampler_.Configure(sampled);
+  geometry_->SetSampledTiming(sampled);
+  device_cache_ = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kDeviceCache);
+  banks_.SetDeviceCache(device_cache_);
 }
 
 void Scene::LapStart() {
@@ -828,7 +727,7 @@ void Scene::ReportProfile(const char* why, double frames, const ThreadLoad::Samp
     sum += ms;
     text += std::format("{}{} {:.3f}", text.empty() ? "" : ", ", kNames[i], ms);
   }
-  static const char* const kMemoNames[] = {"targets", "pipeline", "vs", "ps", "state"};
+  static const char* const kMemoNames[] = {"targets", "pipeline", "vs", "ps", "state", "target sig"};
   static_assert(std::size(kMemoNames) == size_t(Memo::kCount));
   std::string memos;
   for (size_t i = 0; i < memo_hits_.size(); ++i) {
@@ -837,7 +736,17 @@ void Scene::ReportProfile(const char* why, double frames, const ThreadLoad::Samp
   }
   const InputLayouts::MemoStats layouts = input_layouts_.TakeMemoStats();
   memos += std::format(", layout {:.1f}%",
-                       layouts.tries ? 100.0 * double(layouts.hits) / double(layouts.tries) : 0.0);
+                       layouts.first.tries ? 100.0 * double(layouts.first.hits) / double(layouts.first.tries) : 0.0);
+  const auto append_memo = [&](const char* name, DrawMemoStats stats) {
+    memos += std::format(", {} {}/{}", name, stats.hits, stats.tries);
+  };
+  append_memo("layout 2way", layouts.second);
+  if (pipelines_) {
+    const auto stats = pipelines_->TakeDrawMemoProfile();
+    append_memo("pipeline key 2way", stats.build_key);
+    append_memo("pipeline get 2way", stats.get);
+  }
+  // CHECK: compare memo hits and render-thread CPU on the three race affinities.
   REXLOG_INFO("[gpu] scene ({}): profile ms/frame: {} | sum {:.3f} | memo hits: {}", why, text,
               sum, memos);
   // The render thread's CPU by record type, and its loop (the rest).
@@ -869,9 +778,27 @@ void Scene::ResetListState() {
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   list_ = list;
   slot_ = slot;
-  scale_depth_bias_ = REXCVAR_GET(mcla_gpu_scale_depth_bias) && REXCVAR_GET(mcla_gpu_work_17oct);
+  const bool target_sig = larecomp::settings::mcla_gpu_target_sig.Get();
+  if (target_sig != target_sig_) {
+    state_memo_.draw_scale_valid = false;
+    target_sig_ = target_sig;
+  }
+  layout_two_way_ = larecomp::settings::mcla_gpu_layout_two_way.Get();
+  if (pipelines_) {
+    pipelines_->SetDrawMemo(layout_two_way_);
+  }
+  scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
+  mirror_rect_ = mirror_draws::Current();
+  mirror_class_ = larecomp::settings::mcla_gpu_mirror_class.Get();
   geometry_->BeginFrame(slot);
+  draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
+  if (mirror_view_) {
+    mirror_view_->BeginFrame(car_mirror_ && car_mirror_->active());  // reads mcla_gpu_mirror_view, publishes the request (where the ray traced side mirrors win: no side-only phase), closes a phase the last frame left open, gives the view's images back after their idle time (mirror_view.h)
+  }
+  if (mirror_overlay_) {
+    mirror_overlay_->BeginFrame();  // reads mcla_gpu_mirror_overlay and the assumed distance; the census line (mirror_overlay.h)
+  }
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
   if (samplers_->FrameSettingChanged()) {
@@ -880,7 +807,32 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (rt_world_) {
+    rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
+  }
+  headlight_rig::SampleRoute();  // the headlight route's setting, read once for this frame (LiveText): the light pass just below and the rig further down both take it from headlight_rig::CurrentRoute() (review F3)
+  if (local_lights_) {
+    local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
+  }
+  if (ssr_) {
+    // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
+    // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
+    ssr_->BeginFrame();
+  }
+  if (gi_integration_) {
+    gi_integration_->BeginFrame(frame_serial_);  // the probe field's frame starts (its setting, its Inputs): BEFORE the apply below, which reads whether the field runs to make its wants (gi_integration.h)
+  }
+  if (gi_apply_) {
+    gi_apply_->BeginFrame();  // the probe field's apply: its wants (RT1 and RT2, the depth chain) only while the field runs, and the frame's latch of the screen-space bounce light's share
+  }
+  if (gbuffer_) {
+    gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
+  }
   watch::BeginFrame(frame_serial_);
+  scene_noise::SetCountHeld(larecomp::settings::mcla_gpu_noise_held.Get());  // a held scene's noise keeps counting (scene_noise.h NoiseIndex)
+  if (scene_noise::BeginFrame()) {
+    REXLOG_INFO("[gpu] scene noise: the first guest frame of a scene carries update {} (renderer frame {}): the noise follows the scene's updates from here", scene_noise::CurrentUpdate(), frame_serial_);
+  }
   const uint64_t targets_before = edram_->change_serial();
   if (temporal_) {
     // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
@@ -894,20 +846,44 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
                    !temporal_ || temporal_->PathSettled(),
                    edram_->change_serial() != targets_before);
+  if (screen_) {
+    screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
+  }
   if (ao_) {
     ao_->BeginFrame();
   }
   if (shafts_) {
     shafts_->BeginFrame();
   }
+  if (vol_) {
+    vol_->BeginFrame();
+  }
   if (car_refl_) {
     car_refl_->BeginFrame();
+  }
+  if (car_mirror_) {
+    car_mirror_->BeginFrame();  // the side mirrors' setting; asks for the car's structures where the pass is wanted (car_mirror_rt.h)
+  }
+  if (mirror_glass_) {
+    mirror_glass_->BeginFrame();  // the side mirrors' glass finder (mirror_glass.h): reads its setting and asks CarFrame for the next frame's draws; BEFORE CarFrame::BeginFrame, which starts a requested frame
   }
   if (car_frame_) {
     car_frame_->BeginFrame();
   }
+  if (headlights_) {
+    headlights_->BeginFrame();
+  }
   if (car_shadow_) {
     car_shadow_->BeginFrame();
+  }
+  if (light_manager_) {
+    light_manager_->BeginLights(frame_serial_, slot);  // the frame's lights (light_manager.h): before the replay, which picks its cars from them when mcla_gpu_light_frame says so (LU-4c)
+  }
+  if (local_shadow_) {
+    local_shadow_->BeginFrame();
+  }
+  if (light_manager_) {
+    light_manager_->BeginFrame(frame_serial_, slot);  // the last trigger's maps (passive unless mcla_gpu_lights_census or mcla_gpu_light_frame is set); after the rig's and the replay's own
   }
   ResetListState();
   marked_framebuffer_ = nullptr;
@@ -918,9 +894,11 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     hdr_tone_->BeginFrame();
   }
   // Uploads of the previous frame live in another slot's memory.
-  device_uploads_.clear();
+  ForgetDeviceUploads();
   last_shared_span_ = UploadSpan{};
-  last_shadow_span_ = UploadSpan{};
+  for (VariantUpload& upload : variant_uploads_) {
+    upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
+  }
   draws_since_flush_ = 0;
 }
 
@@ -941,9 +919,11 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
   geometry_->EndFrame(list);
   ResetListState();
   list_ = nullptr;
-  device_uploads_.clear();
+  ForgetDeviceUploads();
   last_shared_span_ = UploadSpan{};
-  last_shadow_span_ = UploadSpan{};
+  for (VariantUpload& upload : variant_uploads_) {
+    upload.span = UploadSpan{};  // a span of the previous frame's slot must not be handed out again
+  }
   draws_since_flush_ = 0;
 }
 
@@ -1082,6 +1062,7 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
   if (pipelines_->dynamic_depth_bias()) {
     list->setDepthBias(0.0f, 0.0f, 0.0f);  // no depth target: the guest's bias does not apply
   }
+  list->setStencilReference(d.state.stencil.stencilref);  // the pipeline's stencil test is off (HdrToneMap::VariantKey): any value does, the dynamic state must be set
   const DrawGeometry& g = d.geometry;
   if (g.slot_count) {
     list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
@@ -1117,7 +1098,7 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
     return;
   }
   const EdramKey color = ColorEdramKey(d.state, 0);
-  const EdramKey depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+  const EdramKey depth = DepthKey(d);
   const temporal::MainMatch match = temporal::MatchMainView(&color, &depth);
   if (!match || !temporal::IsPlaySamples(match.samples)) {
     return;  // another view's draw: not counted
@@ -1179,8 +1160,7 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
   const uint32_t height = uint32_t(std::lround(d.viewport.viewport.height));
   // The game's depth, as the draw just used it (Record moved it to DEPTH_WRITE): the second draw tests
   // against it and writes none (the pipeline's key), so what the game's draw left in it stays.
-  const EdramTargets::Target* depth =
-      edram_->Find(DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits));
+  const EdramTargets::Target* depth = edram_->Find(DepthKey(d));
   if (!depth || !depth->texture || depth->layout != plume::RenderTextureLayout::DEPTH_WRITE) {
     masks.Skipped(UpscalerMasks::Skip::kNoDepth);
     return;
@@ -1240,6 +1220,7 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
   if (pipelines_->dynamic_depth_bias()) {
     list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);  // the game's, as Record sets it
   }
+  list->setStencilReference(d.state.stencil.stencilref);  // the game's, as Record sets it: the mask pipeline keeps the game's stencil test
   const DrawGeometry& g = d.geometry;
   if (g.slot_count) {
     list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
@@ -1292,7 +1273,10 @@ void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
 }
 
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
-  const uint64_t c0 = cycles::Now();
+  // The prepare statistic sums the time of every draw: one draw in seven is timed and counted seven times (render_cpu.h), not
+  // every draw (two TSC reads, 7 ns each, on ~3800 draws a frame).
+  const bool timed = draw_sampler_.Take();
+  const uint64_t c0 = timed ? cycles::Now() : 0;
   LapStart();
   const DrawView view(payload);
   const DrawRecord& r = view.record();
@@ -1321,31 +1305,55 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     }
   }
 
+  // Consume the bank deltas even when the view is unavailable and the HUD mirror is hidden.
+  // CHECK: exercise a buffered hidden phase while switching the raster view off or while its images are blocked.
+  if (mirror_view_ && mirror_view_->suppressing()) {
+    ++window_.no_effect[size_t(NoEffect::kCulled)];
+    return;
+  }
+
   // The scene phase of the frame ends at the game's motion blur draw (the anchor), which comes
   // after the main view's last draw (EdramTargets::DepthLayer).
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     edram_->SetScenePhase(false);
     NoteAnchorCut(banks);  // a cut the scene camera asked for: before the histories look at the frame
+    if (screen_ && screen_->tracking()) {
+      screen_->OnAnchor(banks);  // this frame's camera into the shared camera history (screen_shared.h), before the effects that ask it for the cameras (the car self-reflection's)
+    }
     if (ao_ && ao_->wants_draws()) {
       ao_->OnAnchor(banks, anchor_cut_);  // this frame's camera: the next frame's occlusion uses its lens
     }
     if (shafts_ && shafts_->wants_draws()) {
       shafts_->OnAnchor(banks);  // ... and the next frame's sun shafts place the sun by it
     }
+    if (vol_ && vol_->wants_draws()) {
+      vol_->OnAnchor(banks);  // ... and the next frame's volumetric light has its lens and its pose by it
+    }
     if (car_refl_ && car_refl_->wants_draws()) {
       car_refl_->OnAnchor(banks);  // ... and the next frame's car paint reprojects into this frame's history by it
     }
     if (car_dump_ && car_dump_->frame_open()) {
-      car_dump_->OnAnchor(banks);  // ... and the car dump projects the frame's triangles by it
+      const bool lens_agrees = !anchor_cut_ && screen_ && screen_->Cameras().LensAgrees(screen_->frame_count());
+      car_dump_->OnAnchor(banks, lens_agrees);  // ... and the car dump projects the frame's triangles by it
     }
     if (car_shadow_) {
       car_shadow_->OnAnchor();  // ... and a depth copy after it is not the car shadow map's trigger
     }
+    if (local_shadow_) {
+      local_shadow_->OnAnchor();  // ... nor the headlight shadow maps'
+    }
     if (car_rt_) {
-      car_rt_->OnAnchor();  // ... and the car ray tracing's trigger is behind us
+      car_rt_->OnAnchor(banks, anchor_cut_);  // ... and the car ray tracing's trigger is behind us; the camera goes to the scene service (a frame without the car is placed by it)
+    }
+    if (gi_integration_ && anchor_cut_) {
+      gi_integration_->NoteRequestedCut();  // ... and the probe field and the bounce light's pixel history start again at the next frame's start (a cut under the field's own 200 m step)
+    }
+    if (gbuffer_ && gbuffer_->tracking()) {
+      gbuffer_->OnAnchor(banks.ps.data());  // ... and the next frame's G-buffer writers have the camera for the derivative normal (with or without an upscaler)
     }
   }
 
+  bool mirror_draw = false;  // a prepared draw into the rear view mirror's rectangle (mirror_draws.h)
   if (!list) {
     CountSkip(Skip::kDeviceLost, r, "");
   } else {
@@ -1358,12 +1366,36 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.no_effect[size_t(no_effect_reason)];
     } else if (skip != Skip::kCount) {
       CountSkip(skip, r, detail);
+    } else if (vol_ && vol_->SkipsLightCones() &&
+               UpscalerMasks::KindOf(r.vs_identity, r.ps_identity) == UpscalerMasks::Kind::kLightVolume) {
+      // The game's cone mesh under a lamp (xrage_spotlightfog): the volumetric light of this frame holds the same lamps, with depth and a medium
+      // (mcla_gpu_vol_keep_cones draws both). Not recorded; counted with the culled draws.
+      ++window_.no_effect[size_t(NoEffect::kCulled)];
     } else {
       ++window_.prepared;
-      if ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) ||
-          (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
-          (car_frame_ && car_frame_->wants_draws())) {
+      // The rear view mirror's draws (mirror_draws.h) are told by their viewport. They are counted always; with mcla_gpu_mirror_class they also stay out of
+      // the per-draw consumers of the main view, which would take a second camera's draw for the main view's.
+      // Between the guest's two markers of a redirected phase (mirror_view.h) every draw is the mirror's, whatever its viewport.
+      const bool mirror_redirected = mirror_view_ && mirror_view_->redirecting();
+      mirror_draw = mirror_redirected ||
+                    (mirror_rect_.valid() &&
+                     mirror_draws::MatchesViewport(mirror_rect_, d.viewport.viewport.x, d.viewport.viewport.y, d.viewport.viewport.width,
+                                                   d.viewport.viewport.height, d.scale.n));
+      if (mirror_draw) {
+        ++window_.mirror_prepared;
+        mirror_frame_seen_ = true;
+      }
+      const bool consumers = !(mirror_draw && mirror_class_) && !mirror_redirected;  // a draw into the view is a second camera's: never the main view's effects' (whatever mcla_gpu_mirror_class says)
+      if (!consumers) {
+        ++window_.mirror_class_skips;
+      }
+      if (consumers && ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) || (vol_ && vol_->wants_draws()) ||
+                        (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
+                        (car_frame_ && car_frame_->wants_draws()) || (headlights_ && headlights_->wants_draws()))) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
+      }
+      if (consumers && local_shadow_ && local_shadow_->wants_draws()) {
+        NoteLocalShadow(banks, last_shared_, d);
       }
       if (d.ui_layer != FrameLayers::DrawAction::kNone) {
         UiLayersBeforeDraw(d.ui_layer, list);
@@ -1376,6 +1408,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
         CountSkip(recorded, r, detail);
       } else {
         ++window_.recorded;
+        if (mirror_draw) {
+          ++window_.mirror_recorded;
+        }
         ++draws_since_flush_;
         if (d.hdr_action != HdrToneMap::Action::kNone) {
           RecordHdrDuplicate(d, list);
@@ -1386,12 +1421,21 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       }
     }
   }
-  window_.prepare_cycles += cycles::Now() - c0;
+  if (timed) {
+    const uint64_t spent = draw_sampler_.Scale(cycles::Now() - c0);
+    window_.prepare_cycles += spent;
+    if (mirror_draw) {
+      window_.mirror_cycles += spent;
+    }
+  }
 }
 
 Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& banks,
                            PreparedDraw& d, bool* no_effect, NoEffect* no_effect_reason,
                            std::string* detail) {
+  if (!edram_ || !pipelines_) {
+    return Skip::kDeviceLost;
+  }
   const DrawRecord& r = view.record();
   d.target_size_bits = r.target_size_bits;
   if (r.flags & kDrawVsUnreadable) return Skip::kVsUnreadable;
@@ -1435,7 +1479,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
 
   // Targets. Depth only: no colour target and no pixel shader (pipelines.h).
-  const bool depth_only = s.mode.edram_mode == xe::EdramMode::kDepthOnly;
+  const bool depth_only = s.mode.edram_mode == xe::EDRAMMode::kDepthOnly;
   bool any_color = false;
   if (!depth_only) {
     for (const ColorTargetState& t : s.color) {
@@ -1539,7 +1583,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       }
     }
   }
-  d.input_layout = input_layouts_.Get(*d.vs, view.decl_records(), r.decl_count, strides);
+  d.input_layout = input_layouts_.Get(*d.vs, view.decl_records(), r.decl_count, strides,
+                                     layout_two_way_);
+  if (!d.input_layout) {
+    return Skip::kInputLayout;
+  }
   if (d.input_layout->problems != 0) {
     *detail = std::format("VS {:016X}, {} problem(s)", r.vs_identity, d.input_layout->problems);
     return Skip::kInputLayout;
@@ -1613,32 +1661,44 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // bias in its host pixels (M6b.3c): a host pixel is 1/scale of the guest's,
   // so is the depth slope across it -- Xenia multiplies the slope factor by
   // the scale. The constant part is in depth units and stays.
-  Scale scale;
-  uint32_t host_samples;
-  bool scene_draw;
-  uint32_t msaa_guest;
-  if (state_same && memo.draw_scale_valid && memo.draw_scale_serial == edram_->change_serial() &&
-      memo.draw_scale_colors == d.key.color_count &&
-      memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
-    scale = memo.draw_scale;
-    host_samples = memo.draw_samples;
-    scene_draw = memo.draw_scene;
-    msaa_guest = memo.draw_msaa_guest;
+  const bool has_depth = d.key.depth_format != 0;
+  DrawTargetScale target_scale;
+  if (target_sig_) {
+    if (r.target_size_bits != 0 && edram_->DrawTargetMemoReady()) {
+      // CHECK: compare the two arms when a tiled draw changes its declared extent.
+      const uint64_t target_serial = edram_->change_serial();
+      bool hit;
+      const auto& target = draw_target_memo_.Get(*edram_, s, d.key.color_count, has_depth,
+                                                r.target_size_bits, hit);
+      ++memo_tries_[size_t(Memo::kTargetSig)];
+      memo_hits_[size_t(Memo::kTargetSig)] += hit;
+      target_scale = target.scale;
+      if (has_depth) {
+        d.memo_depth_serial = target_serial;
+        d.memo_depth_key = target.depth;
+      }
+    } else {
+      // Let startup discovery and the missing-size diagnostics run normally.
+      target_scale = DrawScale(*edram_, s, d.key.color_count, has_depth, r.target_size_bits);
+    }
+  } else if (state_same && memo.draw_scale_valid &&
+             memo.draw_scale_serial == edram_->change_serial() &&
+             memo.draw_scale_colors == d.key.color_count &&
+             memo.draw_scale_depth_format == uint32_t(d.key.depth_format)) {
+    target_scale = memo.draw_scale;
   } else {
-    scale = DrawScale(*edram_, s, d.key, r.target_size_bits, &host_samples, &scene_draw,
-                      &msaa_guest);
+    target_scale = DrawScale(*edram_, s, d.key.color_count, has_depth, r.target_size_bits);
     memo.draw_scale_valid = true;
     memo.draw_scale_serial = edram_->change_serial();
     memo.draw_scale_colors = d.key.color_count;
     memo.draw_scale_depth_format = uint32_t(d.key.depth_format);
-    memo.draw_scale = scale;
-    memo.draw_samples = host_samples;
-    memo.draw_scene = scene_draw;
-    memo.draw_msaa_guest = msaa_guest;
+    memo.draw_scale = target_scale;
   }
-  inputs.msaa_guest_samples = msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
+  const Scale scale = target_scale.scale;
+  const uint32_t host_samples = target_scale.host_samples;
+  inputs.msaa_guest_samples = target_scale.msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
   d.scale = scale;
-  d.scene = scene_draw;
+  d.scene = target_scale.scene;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
   // The UI layer split (frame_layers.h): a draw into the UI target after the composite marker
@@ -1646,16 +1706,46 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
     d.ui_layer = layers_->ClassifyDraw(ColorEdramKey(s, 0), host_samples, r.ps_identity, d.key);
   }
+  // The UI sharpening (ui_sharp.h): a UI draw (after the composite marker, into one of the menus' render-to-texture views, or an inline
+  // draw of a frame that has no scene) that magnifies the console's bitmaps through a bilinear fetch takes the variant of its pixel
+  // shader that reconstructs them sharper (and the census, when asked for, notes what it reads). In the key only: the memo keeps the
+  // game's, as for the layer split above.
+  if ((ui_phase_ || r.kind == DrawKind::kInline) && d.key.color_count != 0 && d.ps) {
+    if (const uint32_t variant = UiSharpDraw(view, s, d, scale)) {
+      d.key.ps_variant = variant;
+    }
+  }
   if (!scale.unit() && d.bias.slope != 0.0f && scale_depth_bias_) {
     d.bias.slope *= scale.value();
     if (!pipelines_->dynamic_depth_bias()) {
       d.key.slope_scaled_depth_bias = d.bias.slope;
     }
   }
+  // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
+  // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
+  // A draw of the rear view mirror's phase that redirects (mirror_view.h) goes into a framebuffer of one colour and a depth: no planes, and none of the second draws below.
+  const bool mirror_redirect = mirror_view_ && mirror_view_->redirecting();
+  PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active() && !mirror_redirect) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
+  // The per-texture material row (gbuffer_materials.h) of the texture the draw's pixel shader takes its colour from (the material table's diffuse slot: slot 0 for almost every shader, the
+  // windows', tiles' and metal props' second), looked up once per draw that writes the planes (a cache hit; empty at no cost unless a table file exists or the census is on).
+  // CHECK: not compiled with the rest of Scene (no build in this package).
+  d.gbuffer_texture = {};
+  if (d.gbuffer_attached && d.gbuffer_variant != 0 && d.ps && textures_) {
+    gbuffer_materials_.EnsureLoaded(shaders_.folder());
+    const uint32_t diffuse_slot = gbuffer_materials_.DiffuseSlotOf(d.ps->key);
+    if (diffuse_slot < 32 && (d.ps->texture_fetch_mask & (1u << diffuse_slot)) != 0) {
+      uint32_t diffuse_dwords[6];
+      view.FetchGroup(diffuse_slot, diffuse_dwords);
+      const TextureFetch diffuse = ReadTextureFetch(diffuse_dwords);
+      if (diffuse.is_texture) {
+        d.gbuffer_texture = gbuffer_texmat_.Resolve(*textures_, shaders_.folder(), diffuse.key, frame_serial_);
+      }
+    }
+  }
   // The last draw's pipeline when the key repeats (M6a.3); the key names the
   // shaders, their variants and the input layout.
   ++memo_tries_[size_t(Memo::kPipeline)];
-  if (pipeline_memo_ && d.key == pipeline_memo_key_) {
+  if (pipeline_memo_ && pipeline_key == pipeline_memo_key_) {
     ++memo_hits_[size_t(Memo::kPipeline)];
     d.pipeline = pipeline_memo_;
   } else {
@@ -1663,19 +1753,77 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // runs: sync_builds.h).
     const SkipAsk ask{this, &d};
     const Deferral deferral{&Scene::MaySkipForPipeline, &ask};
+    // The pipelines the stack adds to a draw (the headlight's word, the G-buffer's planes) are the game's own plus an extra, and the game's own pipeline is the fallback: such a draw
+    // waits for its pipeline whatever the game's rule says (the lit world draws all write the stencil, which the rule refuses), and goes on without the extra meanwhile, so the render
+    // thread never makes them (variant_wait.h: the ladder of keys below). Only the game's own key at the end of the ladder keeps the game's rule. A take still waits (sync_builds.h).
+    // A variant whose build FAILS takes the same way down, for good (the failed key is remembered: pipelines.h, Deferral::has_fallback); only the game's own key failing drops the draw.
+    const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};
+    const auto extras_of = [&](const PipelineKey& key) {
+      return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant), variant_wait::HasRoadMirrorBlur(key.ps_variant)};
+    };
+    const auto ask_for = [&](const PipelineKey& key) -> const Deferral* {
+      return variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways ? &waits : &deferral;
+    };
+    // What the lookup just made says to do (variant_wait::NextStep): no pipeline, being made or failed, and a key with a fallback.
     bool pending = false;
-    d.pipeline = pipelines_->Get(d.key, inputs, &deferral, &pending);
+    const auto falls_back = [&]() { return variant_wait::NextStep(extras_of(pipeline_key), d.pipeline != nullptr, pending) == variant_wait::Next::kFallBack; };
+    d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
+    if (falls_back() && d.gbuffer_attached) {
+      // The pipeline with the G-buffer's planes is being made in the background (the first frames with the sidecar on: every pipeline of the main view's window is a new
+      // key when the non writers carry it), or its build failed (not pending: it never will be there): this draw is the game's own, with no planes, instead of being left out
+      // of the frame; while it is being made the key stays asked for and the next frame that has it takes it. The planes keep what the frame wrote there (a hole the
+      // consumers read as no data or an earlier surface) for these few frames, or for good when the build failed.
+      if (!pending) {
+        pipelines_->NoteVariantFailedDraw();
+      }
+      pipeline_key = d.key;
+      d.gbuffer_attached = false;
+      d.gbuffer_variant = 0;
+      d.gbuffer_planes = 0;
+      d.gbuffer_mode = gbuffer::PlaneMode::kNone;
+      pending = false;
+      gbuffer_->NoteFallbackDraw();
+      d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
+    }
+    if (falls_back() && variant_wait::HasRoadMirrorBlur(pipeline_key.ps_variant)) {
+      // Keep drawing the road while its filter pipeline is being built or if the driver rejects it.
+      if (!pending) {
+        pipelines_->NoteVariantFailedDraw();
+      }
+      pipeline_key.ps_variant = variant_wait::WordWithoutFeature(pipeline_key.ps_variant, larecomp::shaderpack::kFeatureRoadMirrorBlur,
+                                                                [&](uint32_t rest) { return d.ps && d.ps->HasWord(rest); });
+      pending = false;
+      d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
+    }
+    if (falls_back() && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {
+      // The headlight variant's pipeline is being made in the background (the first night, or the first time the setting is on), or its build failed (not pending): this
+      // draw is the same shader without the headlight (the other features of a composed word stay when the pack has that word, else the game's own shader), instead of
+      // being left out of the frame; while it is being made the key stays asked for and the next frame that has it takes it, when the build failed the key stays out for
+      // good. It is the pipeline's key that changes. The sidecar's planes are already gone here: the planes' rung above comes first and takes the draw to the guest's own
+      // key (d.key) whenever the draw carries them.
+      const uint32_t word = variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant, [&](uint32_t rest) { return d.ps && d.ps->HasWord(rest); });
+      pipeline_key.ps_variant = word;
+      if (!pending) {
+        pipelines_->NoteVariantFailedDraw();
+      }
+      pending = false;
+      if (headlights_) {
+        headlights_->NoteFallbackDraw();
+      }
+      d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
+    }
     if (d.pipeline) {
-      pipeline_memo_key_ = d.key;
+      pipeline_memo_key_ = pipeline_key;
       pipeline_memo_ = d.pipeline;
     } else if (pending) {
       // Not memoized: the next draw with the key asks again, and takes the
-      // pipeline once it is ready.
+      // pipeline once it is ready. (Only the game's own key is left here: variant_wait::Next::kWait.)
       NoteTargetsDrawn(d);
       return Skip::kPipelinePending;
     }
   }
   if (!d.pipeline) {
+    // The game's own key failed (variant_wait::Next::kDrop: a key with an extra never gets here, it took the rung below): nothing is left to draw this draw with.
     *detail = std::format("VS {:016X} PS {:016X}", d.key.vs, d.key.ps);
     return Skip::kPipeline;
   }
@@ -1739,12 +1887,12 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Lap(Stage::kConstants);
   // HDR stage 3: the tone map, and what the game draws into its target before the marker, are drawn
   // again into the float scene image (hdr_tonemap.h).
-  if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && hdr_tone_->Wants(d.ps)) {
+  if (hdr_tone_ && hdr_tone_->active() && d.key.color_count != 0 && !mirror_redirect && hdr_tone_->Wants(d.ps)) {
     PrepareHdrDraw(d, inputs, banks, host_samples);
   }
   // A car's shadow decal, a particle, a light volume or a piece of glass is drawn again into the
   // coverage image of the mask the upscaler takes (upscaler_masks.h).
-  if (d.key.color_count == 1 && UpscalerRunning() && REXCVAR_GET(mcla_gpu_upscaler_masks)) {
+  if (d.key.color_count == 1 && !mirror_redirect && UpscalerRunning() && larecomp::settings::mcla_gpu_upscaler_masks.Get()) {
     const UpscalerMasks::Kind kind = UpscalerMasks::KindOf(r.vs_identity, r.ps_identity);
     if (kind != UpscalerMasks::Kind::kNone) {
       PrepareUpscalerMask(d, inputs, kind);
@@ -1762,14 +1910,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   if (cut_blur_pending_ && r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     NeutralizeAnchorBlur(banks, d);
   }
-  // The sun shadow collector's soft lookup reads 16 bytes after the shared constants.
-  if (d.key.ps_variant == ShaderStore::kShadowFilterVariant && !UploadShadowFilterConstants(shared, d)) {
-    return Skip::kUpload;
-  }
-  // The car paint's self-reflection variant and the car chrome's (the same history image and numbers) read 112 bytes after the shared
-  // constants.
-  if ((d.key.ps_variant == ShaderStore::kCarSelfReflVariant || d.key.ps_variant == ShaderStore::kCarChromeVariant) &&
-      !UploadCarSelfReflConstants(shared, d)) {
+  // The variant pack's features that read constants after the shared block (the sun shadow collector's soft lookup 16 bytes, the car paint's
+  // self-reflection and the chrome's 112, the UI sharpening 16 ...): one span with the shared constants and the blocks, each where the chain
+  // puts it for this draw's features (the pipeline's word: the G-buffer's stage is in the pipeline's key only, d.key stays the guest's).
+  if (pipeline_key.ps_variant >= ShaderStore::kFirstPackedVariant && !UploadVariantConstants(banks, shared, d, pipeline_key.ps_variant)) {
     return Skip::kUpload;
   }
   if (d.hdr_action == HdrToneMap::Action::kToneMap) {
@@ -1790,7 +1934,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   Lap(Stage::kUpload);
 
   ++window_.conversions[size_t(d.primitive.conversion)];
-  if (d.key.ps_variant == 1) {  // the alpha test / alpha to coverage variant (2 and up are the variant pack's)
+  if (larecomp::shaderpack::chain::SpecOf(d.key.ps_variant) != 0) {  // the alpha test / alpha to coverage variant (the main pack's, or a variant pack twin of it)
     ++window_.alpha_coverage_draws;
     if (ComputeAlphaTest(s).discard) ++window_.alpha_test_draws;
   }
@@ -1816,6 +1960,16 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     }
   }
   return Skip::kCount;
+}
+
+EdramKey Scene::DepthKey(const PreparedDraw& d) const {
+  if (!edram_) {
+    return {};
+  }
+  if (d.memo_depth_serial != 0 && d.memo_depth_serial == edram_->change_serial()) {
+    return d.memo_depth_key;
+  }
+  return DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
 }
 
 bool Scene::MaySkipForPipeline(const void* context) {
@@ -1847,9 +2001,7 @@ bool Scene::MaySkipForPipeline(const void* context) {
     any = true;
   }
   if (d.key.depth_format != 0) {
-    if (!scene.edram_->DrawnEveryFrame(
-            DrawDepthKey(*scene.edram_, s, d.key.color_count, d.target_size_bits),
-            scene.frame_serial_, kPipelineSkipFrames)) {
+    if (!scene.edram_->DrawnEveryFrame(scene.DepthKey(d), scene.frame_serial_, kPipelineSkipFrames)) {
       return false;
     }
     any = true;
@@ -1863,8 +2015,7 @@ void Scene::NoteTargetsDrawn(const PreparedDraw& d) {
     edram_->NoteDrawn(ColorEdramKey(s, i), frame_serial_);
   }
   if (d.key.depth_format != 0) {
-    edram_->NoteDrawn(DrawDepthKey(*edram_, s, d.key.color_count, d.target_size_bits),
-                      frame_serial_);
+    edram_->NoteDrawn(DepthKey(d), frame_serial_);
   }
 }
 
@@ -1936,6 +2087,10 @@ void Scene::NoteMenuWorld() {
 
 void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
                                  uint64_t vs_identity, uint64_t ps_identity, const DrawView& view) {
+  if (vol_ && vol_->wants_draws()) {
+    // The sun shadow collector's draws (not the main view's) tell the volumetric light the cascades and the atlas.
+    vol_->OnPreparedDraw(banks, d.ps ? d.ps->features : 0u, d.shared_constants ? d.shared_constants.cpu : nullptr);
+  }
   EdramKey color;
   EdramKey depth;
   const EdramKey* color0 = nullptr;
@@ -1945,7 +2100,7 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth = DepthKey(d);
     depth0 = &depth;
   }
   AmbientOcclusion::MainDraw draw;
@@ -1955,11 +2110,24 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
   }
   draw.writes_depth = (d.key.depth & 2u) != 0;
   draw.stencil_ids = temporal::StencilIdsWritten(d.state);  // the vehicles' own motion (ao.h)
+  if (screen_ && screen_->tracking()) {
+    // The kind of view of the frame (the camera history keeps the play view's and the pause/map world's apart) and the main colour target's exponent bias (screen_shared.h).
+    screen_->OnMainDraw(draw.match, d.state.color[0].exp_bias);
+  }
   if (ao_ && ao_->wants_draws()) {
     ao_->OnMainDraw(draw, banks);
   }
+  if (local_lights_ && local_lights_->wants_draws()) {
+    local_lights_->OnMainDraw(banks, draw.match.color);  // the units' vote (the night light intensity and the height factor of the lit shaders)
+  }
+  if (ssr_ && ssr_->wants_draws()) {
+    ssr_->OnMainDraw(draw.match, banks);  // the road's wetness (VS c43.x) before the trigger
+  }
   if (shafts_ && shafts_->wants_draws()) {
     shafts_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
+  }
+  if (vol_ && vol_->wants_draws()) {
+    vol_->OnMainDraw(draw.match, banks, vs_identity, ps_identity);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
     car_refl_->OnMainDraw(draw.match, draw.stencil_ids);
@@ -1988,8 +2156,52 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.primitive = d.primitive;
     frame.stencil_ids = draw.stencil_ids;
     frame.cache = geometry_;
+    frame.shared = &last_shared_;  // the draw's texture slots (the environment map's, for the ray traced cars' light): Prepare uploaded them for this draw
+    frame.viewport = &d.viewport;  // where the draw landed (the glass overlay repeats it: mirror_overlay.h)
+    frame.depth_word = d.key.depth;
     car_frame_->OnMainDraw(frame);
   }
+  if (headlights_ && headlights_->wants_draws()) {
+    HeadlightRig::MainDraw lens;
+    lens.view = &view;
+    lens.banks = &banks;
+    lens.state = &d.state;
+    lens.vs = d.vs;
+    lens.geometry = geometry_;
+    lens.primitive = d.primitive;
+    lens.stencil_ids = draw.stencil_ids;
+    headlights_->OnMainDraw(lens);
+  }
+}
+
+void Scene::NoteLocalShadow(const ConstantBanks::Banks& banks, const SharedConstants& shared, const PreparedDraw& d) {
+  EdramKey color;
+  EdramKey depth;
+  const EdramKey* color0 = nullptr;
+  const EdramKey* depth0 = nullptr;
+  if (d.key.color_count != 0) {
+    color = ColorEdramKey(d.state, 0);
+    color0 = &color;
+  }
+  if (d.key.depth_format != 0) {
+    depth = DepthKey(d);
+    depth0 = &depth;
+  }
+  LocalShadow::MainDraw draw;
+  draw.match = temporal::MatchMainView(color0, depth0);
+  if (!draw.match) {
+    return;
+  }
+  draw.key = &d.key;
+  draw.vs = d.vs;
+  draw.ps = d.ps;
+  draw.input_layout = d.input_layout;
+  draw.geometry = &d.geometry;
+  draw.banks = &banks;
+  draw.shared = &shared;  // the block Prepare uploaded for this draw: UploadConstants keeps it in last_shared_
+  draw.ps_constants = d.ps_constants;
+  draw.stencil_ids = temporal::StencilIdsWritten(d.state);
+  local_shadow_->OnMainDraw(draw);
 }
 
 void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks,
@@ -2008,7 +2220,7 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
     f.color0 = &color;
   }
   if (d.key.depth_format != 0) {
-    depth = DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
+    depth = DepthKey(d);
     f.depth = &depth;
   }
   if (temporal_->OnDraw(f, shared)) {
@@ -2055,7 +2267,7 @@ void Scene::NoteAnchorCut(const ConstantBanks::Banks& banks) {
               "history and the occlusion's start again, {} (cut #{})",
               frame_serial_, taken.game_frame, taken.serial, taken.age,
               taken.skipped != 0 ? std::format(", {} older request(s) went with it", taken.skipped) : std::string(),
-              REXCVAR_GET(mcla_cam_cut_blur_fix) ? "the motion blur's previous matrices are made this frame's own"
+              larecomp::settings::mcla_cam_cut_blur_fix.Get() ? "the motion blur's previous matrices are made this frame's own"
                                                  : "the motion blur keeps the game's matrices (mcla_cam_cut_blur_fix is off)",
               cut_frames_);
   if (temporal_ && temporal_->active()) {
@@ -2065,7 +2277,7 @@ void Scene::NoteAnchorCut(const ConstantBanks::Banks& banks) {
 
 void Scene::NeutralizeAnchorBlur(const ConstantBanks::Banks& banks, PreparedDraw& d) {
   cut_blur_pending_ = false;
-  if (!REXCVAR_GET(mcla_cam_cut_blur_fix)) {
+  if (!larecomp::settings::mcla_cam_cut_blur_fix.Get()) {
     return;
   }
   static_assert(sizeof(float) * 256 * 4 == guest::kConstantBankBytes, "the pixel bank is 256 registers of 4 floats");
@@ -2115,7 +2327,7 @@ int32_t Scene::SceneBias() {
       // constant's own bias is added to it by the sampler.
       scene_bias_ = upscaler_math::SceneMipBias(edram_->SceneScale().value(),
                                                 edram_->resolution_scale().value(),
-                                                REXCVAR_GET(mcla_gpu_scene_extra_bias));
+                                                larecomp::settings::mcla_gpu_scene_extra_bias.Get());
     }
     if (scene_bias_ != scene_bias_logged_) {
       scene_bias_logged_ = scene_bias_;
@@ -2125,7 +2337,7 @@ int32_t Scene::SceneBias() {
                   double(scene_bias_) / 32.0, scene_bias_ == 0 ? "no bias" : "log2(render / output) + extra",
                   edram_->SceneApart() ? edram_->SceneScale().value() : 1.0,
                   edram_->SceneApart() ? edram_->resolution_scale().value() : 1.0,
-                  REXCVAR_GET(mcla_gpu_scene_extra_bias));
+                  larecomp::settings::mcla_gpu_scene_extra_bias.Get());
     }
   }
   return scene_bias_;
@@ -2257,7 +2469,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
 
 bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                             const SharedConstants& shared, PreparedDraw& d) {
-  DeviceUpload& u = device_uploads_[device];
+  DeviceUpload& u = last_device_upload_.Find(device_uploads_, device, device_cache_);
   if (u.vs_version != banks.vs_version) {
     UploadSpan span = upload_->Allocate(slot_, guest::kConstantBankBytes, kConstantAlignment);
     if (!span) {
@@ -2297,57 +2509,432 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
   return true;
 }
 
-bool Scene::UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d) {
-  static_assert(kShadowFilterConstantsOffset == sizeof(SharedConstants));
-  // The atlas the lookup reads is as fine as the cascades are made now (the sun shadows side view,
-  // side_view_shadow.cpp: 1x, 2x, 3x): the radius follows it, so the filter keeps its width in atlas texels
-  // and its edge is that much narrower in the world. The class's scale is what the cascade targets and
-  // their products are at (a member that could not be made at the setting's scale lowers the whole class,
-  // EdramTargets::FallBackSideView), and it moves between two frames, before the cascades are drawn.
-  shadow_filter::SetAtlasRadiusScale(
-      shadow_filter::AtlasRadiusScale(edram_->side_scales()[SideView::kShadow]));
-  // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
-  // averages it out); without one the pattern stays where it is.
-  const shadow_filter::ShadowFilterConstants block =
-      shadow_filter::CurrentConstants(UpscalerRunning(), frame_serial_);
-  if (last_shadow_span_ && std::memcmp(&last_shadow_shared_, &shared, sizeof(shared)) == 0 &&
-      std::memcmp(&last_shadow_block_, &block, sizeof(block)) == 0) {
-    d.shared_constants = last_shadow_span_;
-    return true;
+void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size) {
+  namespace sp = larecomp::shaderpack;
+  switch (feature) {
+    case sp::kFeatureShadowFilter: {
+      static_assert(sizeof(shadow_filter::ShadowFilterConstants) == sp::chain::Find(sp::kFeatureShadowFilter)->constants_bytes);
+      // The atlas the lookup reads is as fine as the cascades are made now (the sun shadows side view,
+      // side_view_shadow.cpp: 1x, 2x, 3x): the radius follows it, so the filter keeps its width in atlas texels
+      // and its edge is that much narrower in the world. The class's scale is what the cascade targets and
+      // their products are at (a member that could not be made at the setting's scale lowers the whole class,
+      // EdramTargets::FallBackSideView), and it moves between two frames, before the cascades are drawn.
+      shadow_filter::SetAtlasRadiusScale(
+          shadow_filter::AtlasRadiusScale(edram_->side_scales()[SideView::kShadow]));
+      // The noise moves from frame to frame only while a temporal upscaler works on the frame (its history
+      // averages it out); without one the pattern stays where it is.
+      const shadow_filter::ShadowFilterConstants block =
+          shadow_filter::CurrentConstants(UpscalerRunning(), scene_noise::NoiseIndex(frame_serial_));
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    case sp::kFeatureCarSelfRefl:
+    case sp::kFeatureCarChrome: {
+      // The paint's and the chrome's (the same history image and numbers): the game's paint, with no history to read, until the frame has one.
+      static_assert(sizeof(car_selfrefl::CarSelfReflConstants) == sp::chain::Find(sp::kFeatureCarSelfRefl)->constants_bytes);
+      static_assert(sizeof(car_selfrefl::CarSelfReflConstants) == sp::chain::Find(sp::kFeatureCarChrome)->constants_bytes);
+      car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();
+      if (car_refl_) {
+        car_refl_->FillConstants(d.state, UpscalerRunning(), d.ps ? d.ps->key : 0, &block);
+      }
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    case sp::kFeatureUiSharp: {
+      static_assert(sizeof(ui_sharp::UiSharpConstants) == sp::chain::Find(sp::kFeatureUiSharp)->constants_bytes);
+      const ui_sharp::UiSharpConstants block = ui_sharp::ConstantsFor(ui_sharp::Strength(), d.ui_sharp_slots);
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    case sp::kFeatureHeadlight: {
+      // The frame's lights (headlight_rig.h). Without a rig the block is zeros: no light, count 0.
+      static_assert(sizeof(headlight_rules::HeadlightConstants) == sp::chain::Find(sp::kFeatureHeadlight)->constants_bytes);
+      if (!headlights_) {
+        std::memset(out, 0, size);
+        return;
+      }
+      // The block of the rig, or (mcla_gpu_light_frame bit 1, LU-4a) the same bytes projected from the light manager's frame.
+      const headlight_rules::HeadlightConstants* from_frame = light_manager_ ? light_manager_->HeadlightBlock() : nullptr;
+      headlight_rules::HeadlightConstants block = from_frame ? *from_frame : headlights_->Block();
+      // HSQ-PCSS: the lamp's size and the footprint of the shadow lookup (the settings, live).
+      headlight_rules::SetShadowKernel(&block, larecomp::gpu::shadow_filter::MakeParams(0.01 * larecomp::settings::mcla_gpu_headlight_shadow_lamp_cm.Get(),
+                                                                                        int(larecomp::settings::mcla_gpu_headlight_shadow_kernel.Get())));
+      // The camera as this draw's own pixel constants say: c15 is row 3 of the view inverse (the position). A pass with another camera (a reflection map) is lit
+      // right too; a bank that holds no number keeps the frame's.
+      const uint8_t* ps_bank = banks.ps.data();
+      float camera[3];
+      bool finite = true;
+      for (uint32_t c = 0; c < 3; ++c) {
+        camera[c] = std::bit_cast<float>(LoadBe32(ps_bank + 15 * 16 + c * 4));
+        finite = finite && std::isfinite(camera[c]);
+      }
+      if (finite) {
+        std::memcpy(block.camera, camera, sizeof(camera));
+      }
+      std::memcpy(out, &block, sizeof(block));
+      headlights_->NoteVariantDraw(sp::chain::SpecOf(d.key.ps_variant) != 0);
+      return;
+    }
+    case sp::kFeatureGBuffer: {
+      // The planes the frame writes (gbuffer_types.h kModeWrite*: the host's per-draw switch; a plane whose bit is clear is written as "no data"), the camera rows for the
+      // derivative normal (the permission bit kModeDerivativeNormal is set with them), the back face flip for a two sided draw (cull none), and the draw's material word. The
+      // draws that carry no sidecar never get here (no word).
+      static_assert(sizeof(gbuffer::GBufferConstants) == sp::chain::Find(sp::kFeatureGBuffer)->constants_bytes);
+      gbuffer::GBufferConstants block;
+      const bool camera = FillGBufferCamera(&block, d);
+      if (gbuffer_) {
+        gbuffer_->NoteCameraRows(camera);
+      }
+      const bool two_sided = (d.key.raster & 0xFu) == uint32_t(plume::RenderCullMode::NONE);
+      block.mode = gbuffer::ModeBits(gbuffer_ ? gbuffer_->plan().written : gbuffer::PlaneBit(gbuffer::kPlaneNormal), camera, two_sided);
+      // The draw's material word (gbuffer_material.h): its pixel shader's class and flags, the smoothness from the SpecularExponent in the pixel or the vertex shader's own
+      // constants, the alpha test twin's flag. A shader the table does not have (or no table: the pack was built before it existed) gets the default word.
+      // CHECK: this hunk was not compiled with the rest of Scene (no build in this package); the table's own code, the builder's file and the tests were.
+      gbuffer_materials_.EnsureLoaded(shaders_.folder());
+      block.material = gbuffer_materials_.WordFor(d.ps ? d.ps->key : 0, d.vs ? d.vs->key : 0, banks.ps, banks.vs, sp::chain::SpecOf(d.key.ps_variant) != 0);
+      // The texture's row on top of it (gbuffer_materials.h): a texture that says it is glass, chrome or wet asphalt, or how rough it is; the census counts the draw.
+      block.material = gbuffer_texmat_.Finish(block.material, d.gbuffer_texture, d.ps ? d.ps->key : 0, d.geometry.count);
+      block.frame = uint32_t(frame_serial_);
+      std::memcpy(out, &block, sizeof(block));
+      return;
+    }
+    default:
+      break;
   }
-  const UploadSpan span = upload_->Allocate(
-      slot_, kShadowFilterConstantsOffset + sizeof(shadow_filter::ShadowFilterConstants), kConstantAlignment);
+  // A feature with a block of constants and no case above: the shader would read what was in the upload memory. Zero is "off" for every
+  // block the table has today; say it once.
+  std::memset(out, 0, size);
+  static uint32_t reported = 0;
+  if ((reported & sp::chain::FeatureBit(feature)) == 0) {
+    reported |= sp::chain::FeatureBit(feature);
+    REXLOG_ERROR("[gpu] scene: the feature {} of the variant pack has {} bytes of constants and Scene::FillVariantBlock has no case for it "
+                 "(zeros are uploaded; reported once)", feature, size);
+  }
+}
+
+bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d, uint32_t ps_word) {
+  namespace chain = larecomp::shaderpack::chain;
+  const uint32_t features = chain::FeaturesOf(ps_word);
+  const chain::ConstantsLayout layout = chain::LayoutConstants(features);
+  if (layout.count == 0) {
+    return true;  // none of the draw's features reads constants of its own (the bloom's, the glow's ...): the draw's shared constants as they are
+  }
+  VariantUpload scratch;
+  scratch.features = features;
+  scratch.block_bytes = layout.total_bytes - uint32_t(sizeof(SharedConstants));
+  for (uint32_t i = 0; i < layout.count; ++i) {
+    const chain::ConstantsWindow& window = layout.windows[i];
+    FillVariantBlock(window.feature, banks, d, scratch.block.data() + (window.offset - sizeof(SharedConstants)), window.bytes);
+  }
+  // The draws of one feature set repeat their constants (the shadow collector's, the UI's): the span of the last draw that had the same
+  // shared constants and the same blocks is handed out again.
+  for (VariantUpload& kept : variant_uploads_) {
+    if (kept.span && kept.features == features && std::memcmp(&kept.shared, &shared, sizeof(shared)) == 0 &&
+        std::memcmp(kept.block.data(), scratch.block.data(), scratch.block_bytes) == 0) {
+      d.shared_constants = kept.span;
+      return true;
+    }
+  }
+  const UploadSpan span = upload_->Allocate(slot_, layout.total_bytes, kConstantAlignment);
   if (!span) {
     return false;
   }
   std::memcpy(span.cpu, &shared, sizeof(shared));
-  std::memcpy(span.cpu + kShadowFilterConstantsOffset, &block, sizeof(block));
-  last_shadow_shared_ = shared;
-  last_shadow_block_ = block;
-  last_shadow_span_ = span;
+  std::memcpy(span.cpu + sizeof(shared), scratch.block.data(), scratch.block_bytes);
+  VariantUpload& slot = variant_uploads_[variant_upload_next_++ % variant_uploads_.size()];
+  slot.features = features;
+  slot.block_bytes = scratch.block_bytes;
+  slot.shared = shared;
+  slot.block = scratch.block;
+  slot.span = span;
   ++window_.shared_uploads;
-  window_.upload_bytes += kShadowFilterConstantsOffset + sizeof(block);
+  window_.upload_bytes += layout.total_bytes;
   d.shared_constants = span;
   return true;
 }
 
-bool Scene::UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d) {
-  static_assert(kCarSelfReflConstantsOffset == sizeof(SharedConstants));
-  car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();  // the game's paint, with no history to read
-  if (car_refl_) {
-    car_refl_->FillConstants(d.state, UpscalerRunning(), &block);
+PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d) {
+  PipelineKey key = d.key;
+  d.gbuffer_attached = false;
+  d.gbuffer_variant = 0;
+  d.gbuffer_planes = 0;
+  d.gbuffer_mode = gbuffer::PlaneMode::kNone;
+  const gbuffer::FramePlan& plan = gbuffer_->plan();
+  gbuffer::DrawFacts facts;
+  facts.active = true;
+  facts.window_open = gbuffer_->Gate() != gbuffer::Window::Gate::kClosed;
+  facts.planes = plan.attached;
+  facts.per_target_blend = gbuffer_->caps().per_target_blend;
+  facts.masked_attach = gbuffer_->masked_attach();
+  facts.guest_color_count = d.key.color_count;
+  facts.has_depth = d.key.depth_format != 0;
+  facts.rt0_blended = (d.key.blend[0] & 0xFu) != 0;
+  facts.rt0_write_mask = (d.key.blend[0] >> 28) & 0xFu;
+  facts.rt0_writes = facts.rt0_write_mask != 0;
+  facts.ps_variant_before = d.key.ps_variant;
+  // Which view the draw is in. The main view is the colour identity AND the depth identity of the play view at the same samples: the pause world (4 samples) is told by the samples, the
+  // side views (cascades, environment map, reflections) by their other identities, a main colour with another depth is not the view, and a draw whose viewport is a window of the target
+  // (the rear view mirror's phase: hooks/rear_view.cpp) is not the whole view (gbuffer_rules.h, "The views that never write"). A cutscene's frames have no sidecar at all (active()).
+  if (d.key.color_count >= 1) {
+    const uint32_t color_samples = temporal::MainColorSamples(ColorEdramKey(state, 0));
+    facts.main_samples = color_samples;
+    if (color_samples != 0 && facts.has_depth) {
+      facts.depth_is_main = temporal::MainDepthSamples(DepthEdramKey(state)) == color_samples;
+    }
+    if (color_samples != 0 && !state.clip.clip_disable && state.vte.vport_x_scale_ena) {
+      // The guest viewport's width: twice its x scale (viewport.cpp); with the viewport transform off (screen space rectangles) the draw is the whole target's.
+      facts.sub_view = gbuffer::IsSubViewport(uint32_t(std::abs(state.viewport[0]) * 2.0f), state.surface_pitch);
+    }
   }
-  const UploadSpan span = upload_->Allocate(
-      slot_, kCarSelfReflConstantsOffset + sizeof(car_selfrefl::CarSelfReflConstants), kConstantAlignment);
-  if (!span) {
+  // The word the draw's shader takes with the G-buffer's stage on top of the features the draw has (the headlight's, on the lit shaders that have both): the best word
+  // of the pack for those features, kept only when it has the G-buffer's and every feature the draw already had; the pack decides what composes.
+  namespace chain = larecomp::shaderpack::chain;
+  namespace hp = larecomp::gpu::headlight_pass;
+  struct GBufferWord {
+    uint32_t word = 0;     // the pixel word with the G-buffer's stage, 0: the pack has none that keeps the asked features
+    uint32_t vs_word = 0;  // the vertex word to pair with it
+  };
+  const auto pick_word = [&](uint32_t asked) {
+    GBufferWord out;
+    out.vs_word = d.key.vs_variant;
+    if (!d.ps || (d.ps->features & ShaderStore::FeatureBit(larecomp::shaderpack::kFeatureGBuffer)) == 0) {
+      return out;
+    }
+    const uint32_t word = shaders_.ChooseVariant(*d.ps, chain::FeaturesOf(asked) | chain::FeatureBit(larecomp::shaderpack::kFeatureGBuffer), chain::SpecOf(asked), d.vs,
+                                                 d.key.vs_variant, &out.vs_word);
+    if (chain::HasFeature(word, larecomp::shaderpack::kFeatureGBuffer) && (chain::FeaturesOf(word) & chain::FeaturesOf(asked)) == chain::FeaturesOf(asked)) {
+      out.word = word;
+      // The day stage's vertex word (gbuffer_day.h, feature kFeatureGBufferVs): the road, the tunnel road and the foliage props' vertex shaders also export the vertex normal
+      // (TEXCOORD15, which their pixel shaders' G-buffer words read where it is there and replace by a derivative normal where it is not). No pixel word needs it, so the pack's
+      // `needs` never asks for it: this is the pairing, made when the draw's vertex shader has the word (for its own spec variant: the packed normal twin). A draw that gets no
+      // sidecar keeps its own vertex word (the key below is only used when the draw attaches).
+      // CHECK (not run): that the road / tunnel road / foliage draws take the paired pipelines and the vertex stage's pipelines are made in the background like the pixel stage's
+      // (the report's A2 counts the fallback draws); that a night draw of those vertex shaders (whose pixel word never reads TEXCOORD15) is not slower with the export.
+      if (d.vs && chain::FeaturesOf(out.vs_word) == 0) {
+        const uint32_t gb_vs = chain::Word(chain::FeatureBit(larecomp::shaderpack::kFeatureGBufferVs), chain::SpecOf(out.vs_word));
+        if (d.vs->HasWord(gb_vs)) {
+          out.vs_word = gb_vs;
+        }
+      }
+    }
+    return out;
+  };
+  GBufferWord chosen = pick_word(d.key.ps_variant);
+  facts.variant_word = chosen.word;
+  gbuffer::DrawDecision decision = gbuffer::Decide(facts);
+  // The headlight route `pass` (headlight_pass_rules.h, GB-H2-FOLLOW): the draw asked for the forward headlight (WantedFeatures keeps it in this route), and it keeps it unless the deferred pass lights its
+  // pixels: then the draw is the one the first version of the route made (the word without the headlight, with the G-buffer's stage when it writes), so that every pixel is lit once.
+  bool forward_dropped = false;
+  uint32_t dropped_word = 0;  // the draw's word without the headlight, for a draw that drops it and does not write the planes (a blend that masks them)
+  if (headlight_rig::CurrentRoute() == hp::Route::kPass && chain::HasFeature(d.key.ps_variant, larecomp::shaderpack::kFeatureHeadlight)) {
+    uint32_t without = chain::Word(chain::FeaturesOf(d.key.ps_variant) & ~chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), chain::SpecOf(d.key.ps_variant));
+    if (chain::FeaturesOf(without) != 0 && !(d.ps && d.ps->HasWord(without))) {
+      without = chain::SpecOf(without);  // the pack has no word of the other features alone: the main pack's shader
+    }
+    const GBufferWord pass_word = pick_word(without);
+    gbuffer::DrawFacts pass_facts = facts;
+    pass_facts.ps_variant_before = without;
+    pass_facts.variant_word = pass_word.word;
+    const gbuffer::DrawDecision pass_decision = gbuffer::Decide(pass_facts);
+    hp::DrawCover cover;
+    switch (pass_decision.mode) {
+      case gbuffer::PlaneMode::kWrite: cover.carry = hp::Carry::kWrite; break;
+      case gbuffer::PlaneMode::kMask: cover.carry = hp::Carry::kMask; break;
+      case gbuffer::PlaneMode::kClear: cover.carry = hp::Carry::kClear; break;
+      case gbuffer::PlaneMode::kNone: cover.carry = hp::Carry::kNone; break;
+    }
+    constexpr uint32_t kPassPlanes = gbuffer::PlaneBit(gbuffer::kPlaneNormal) | gbuffer::PlaneBit(gbuffer::kPlaneAlbedo);
+    cover.planes_ready = (plan.attached & kPassPlanes) == kPassPlanes;
+    gbuffer_materials_.EnsureLoaded(shaders_.folder());
+    cover.shader_lit = !d.ps || gbuffer_materials_.PassLights(d.ps->key);
+    if (hp::DropsForwardStage(hp::Route::kPass, cover)) {
+      forward_dropped = true;
+      dropped_word = without;
+      facts = pass_facts;
+      chosen = pass_word;
+      decision = pass_decision;
+      if (headlights_) {
+        headlights_->NoteDroppedDraw();
+      }
+    }
+  }
+  gbuffer_->NoteDraw(decision.why, r.ps_identity);
+  if (!decision.attach()) {
+    return key;
+  }
+  // The planes are the colour slots after the guest's one, each in its format and with the blend state of what the draw does to them: a writer's is no blend and every channel
+  // of the plane, a clear's ZERO / ZERO (the pixels it draws become "no data"), a mask's write mask 0. Where the backend has one blend state for all targets (D3D12 until the Plume fix) only
+  // writers get here and the slots' states are the writer's.
+  static_assert(gbuffer::kMaxColourSlots <= kColorTargetCount, "the guest's colour and the planes fit the pipeline key's slots");
+  // Each plane's write mask is its own channels' (gbuffer_rules.h BlendFor(mode, plane): the normal and the material R and G, the albedo and the lit weight all four).
+  uint32_t slot = d.key.color_count;
+  for (uint32_t p = 0; p < gbuffer::kPlaneCount; ++p) {
+    if ((plan.attached & (1u << p)) == 0) {
+      continue;
+    }
+    const gbuffer::PlaneBlend plane_blend = gbuffer::BlendFor(decision.mode, gbuffer::Plane(p));
+    plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
+    blend.renderTargetWriteMask = plane_blend.write_mask;
+    if (plane_blend.zero) {
+      blend.blendEnabled = true;
+      blend.srcBlend = plume::RenderBlend::ZERO;
+      blend.dstBlend = plume::RenderBlend::ZERO;
+      blend.blendOp = plume::RenderBlendOperation::ADD;
+      blend.srcBlendAlpha = plume::RenderBlend::ZERO;
+      blend.dstBlendAlpha = plume::RenderBlend::ZERO;
+      blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
+    }
+    key.color_format[slot] = uint32_t(GBuffer::FormatOf(gbuffer::Plane(p)));
+    key.blend[slot] = PackBlend(blend);
+    ++slot;
+  }
+  key.color_count = slot;
+  if (decision.variant != 0) {
+    key.ps_variant = decision.variant;
+    if (chain::FeaturesOf(chosen.vs_word) != 0) {
+      key.vs_variant = chosen.vs_word;  // the vertex stage the draw is paired with: the day stage's export (above), or one a pixel word needs (none today)
+    }
+  } else if (forward_dropped) {
+    key.ps_variant = dropped_word;  // a blend that masks the planes: the pass lights the surface under it, so the draw is its shader without the forward headlight
+  }
+  d.gbuffer_attached = true;
+  d.gbuffer_variant = decision.variant;
+  d.gbuffer_planes = gbuffer::PlaneCount(plan.attached);
+  d.gbuffer_mode = decision.mode;
+  return key;
+}
+
+bool Scene::FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDraw& d) const {
+  // The camera of the frame before (the anchor's constants, read by the G-buffer itself: GBuffer::OnAnchor, with or without a temporal upscaler) when this frame follows it
+  // directly: the view ray and the rotation the derivative normal reads (gbuffer_types.h GBufferConstants). One frame late: a fast pan turns the world normal a degree or two at
+  // most, a camera cut shows for one frame.
+  // CHECK: that the anchor's c12-c14 rows are the view inverse's right, up and minus forward as ExtractCamera takes them, and that a frame late is close enough for the derivative normal.
+  const gbuffer::CameraAxes* camera = gbuffer_ ? gbuffer_->camera() : nullptr;
+  if (!camera || camera->width == 0 || camera->height == 0) {
     return false;
   }
-  std::memcpy(span.cpu, &shared, sizeof(shared));
-  std::memcpy(span.cpu + kCarSelfReflConstantsOffset, &block, sizeof(block));
-  ++window_.shared_uploads;
-  window_.upload_bytes += kCarSelfReflConstantsOffset + sizeof(block);
-  d.shared_constants = span;
-  return true;
+  // SV_Position is in the host pixels of the target: the guest's frame at the draw's scale.
+  const float width = float(d.scale.Edge(camera->width));
+  const float height = float(d.scale.Edge(camera->height));
+  // The axes are the rows of the game's view inverse; whether they are a rotation of the view space the shaders assume depends on the world's handedness (MakeCameraRows).
+  return gbuffer::MakeCameraRows(camera->right, camera->up, camera->forward, camera->tan_half_x, camera->tan_half_y, width, height, block->view_ray, block->camera_to_world);
+}
+
+ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& state) const {
+  if (ui_phase_) {
+    return ui_sharp::Context::kPhase;
+  }
+  // Before the marker (or in a frame that has none) only the Flash player's draws can be UI: they are inline, and only into an 8-bit
+  // colour target. The scene's own draws go into float targets, and the 3D pieces of the UI are after the marker.
+  const DrawRecord& r = view.record();
+  const ColorTargetState& color = state.color[0];
+  if (r.kind != DrawKind::kInline || !color.bound ||
+      (color.format != xe::ColorRenderTargetFormat::k_8_8_8_8 && color.format != xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA)) {
+    return ui_sharp::Context::kNone;
+  }
+  // A frame that has no scene (loading, the title, the menus with no 3D view) and the one before it had none either: no marker will come.
+  if (!last_frame_had_scene_) {
+    return ui_sharp::Context::kNoScene;
+  }
+  // One of the menus' render-to-texture views (side_view_ui_map.cpp): drawn before the marker, shown as a bitmap after it.
+  if (side_views::Classify(ColorEdramKey(state, 0), r.target_size_bits) == SideView::kUiMap) {
+    return ui_sharp::Context::kMovie;
+  }
+  return ui_sharp::Context::kNone;
+}
+
+uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale) {
+  const double strength = ui_sharp::Strength();
+  const bool census = ui_sharp::CensusOn();
+  if (strength <= 0.0 && !census) {
+    return 0;
+  }
+  ui_sharp::DrawFacts facts;
+  facts.context = UiSharpContext(view, state);
+  if (facts.context == ui_sharp::Context::kNone) {
+    return 0;
+  }
+  const ColorTargetState& color = state.color[0];
+  facts.eight_bit_colour = color.bound && (color.format == xe::ColorRenderTargetFormat::k_8_8_8_8 ||
+                                           color.format == xe::ColorRenderTargetFormat::k_8_8_8_8_GAMMA);
+  facts.target_scale = float(scale.value());
+  facts.has_variant = d.ps && d.ps->HasWord(ShaderStore::kUiSharpVariant);
+  facts.has_alpha_variant = d.ps && d.ps->HasWord(ShaderStore::kUiSharpAlphaVariant);
+  facts.ps_variant = d.key.ps_variant;
+  // What the draw reads: every fetch the pixel shader makes. The helper sharpens only the slots that are linearly filtered 2D colour bitmaps
+  // (a depth fetch is point filtered, an environment map is 16 bit float: the same draw has them beside its bitmap); the others stay the game's.
+  struct Read {
+    TextureFetch fetch;
+    xe::TextureFetch raw;
+    uint32_t slot = 0;
+    bool bitmap = false;
+  };
+  Read reads[32];
+  uint32_t read_count = 0;
+  const uint32_t fetch_mask = d.ps ? d.ps->texture_fetch_mask : 0u;
+  for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
+    const uint32_t slot = uint32_t(std::countr_zero(mask));
+    uint32_t dwords[6];
+    view.FetchGroup(slot, dwords);
+    Read& read = reads[read_count++];
+    read.fetch = ReadTextureFetch(dwords);
+    std::memcpy(&read.raw, dwords, sizeof(read.raw));
+    read.slot = slot;
+    if (!read.fetch.is_texture) {
+      continue;
+    }
+    read.bitmap = slot < ui_sharp::kMaskSlots &&
+                  ui_sharp::IsBitmapFetch(read.fetch.is_texture,
+                                          read.fetch.key.dimension == uint8_t(xe::DataDimension::k2DOrStacked) && !read.fetch.key.stacked,
+                                          read.raw.mag_filter == xe::TextureFilter::kLinear, read.fetch.key.format);
+    if (read.bitmap) {
+      facts.bitmap_slots |= 1u << slot;
+    }
+  }
+  const ui_sharp::Decision decision = ui_sharp::Decide(facts);
+  const bool take = strength > 0.0 && decision.taken();
+  if (census) {
+    for (uint32_t i = 0; i < read_count; ++i) {
+      const Read& read = reads[i];
+      if (!read.fetch.is_texture) {
+        continue;
+      }
+      ui_sharp::CensusSample sample;
+      sample.ps = view.record().ps_identity;
+      const std::string described = read.fetch.key.Describe();
+      sample.format = described.substr(0, described.find(' '));
+      sample.width = read.fetch.key.width;
+      sample.height = read.fetch.key.height;
+      sample.levels = read.fetch.key.levels();
+      sample.base_page = read.fetch.key.base_page ? read.fetch.key.base_page : read.fetch.key.mip_page;
+      texture_names::Name name;
+      if (texture_names::Lookup(sample.base_page, &name)) {
+        sample.name = name.texture;
+        sample.dictionary = name.dictionary;
+      }
+      sample.mag_filter = uint8_t(read.raw.mag_filter);
+      sample.min_filter = uint8_t(read.raw.min_filter);
+      sample.mip_filter = uint8_t(read.raw.mip_filter);
+      sample.clamp_x = uint8_t(read.raw.clamp_x);
+      sample.clamp_y = uint8_t(read.raw.clamp_y);
+      sample.aniso = uint8_t(read.raw.aniso_filter);
+      sample.lod_bias = int32_t(read.raw.lod_bias);
+      sample.target_scale = facts.target_scale;
+      sample.target_format = uint32_t(color.format);
+      sample.slot = read.slot;
+      sample.bitmap = read.bitmap;
+      sample.ps_variant = d.key.ps_variant;
+      sample.context = facts.context;
+      sample.why = decision.why;
+      sample.took_variant = take;
+      ui_sharp_census_.Note(sample);
+    }
+  }
+  if (!take) {
+    return 0;
+  }
+  d.ui_sharp_slots = facts.bitmap_slots;
+  return decision.alpha_test ? ShaderStore::kUiSharpAlphaVariant : ShaderStore::kUiSharpVariant;
 }
 
 uint32_t Scene::NoteEdramAccess(const PreparedDraw& d, const DrawRecord& r,
@@ -2522,6 +3109,9 @@ void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail)
 Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
                           bool* no_effect, std::string* detail) {
   const XenosState& s = d.state;
+  if (mirror_view_ && mirror_view_->redirecting()) {
+    return RecordMirrorDraw(d, r, list, no_effect, detail);  // the rear view mirror's phase: the view's framebuffer, not the main target (mirror_view.h)
+  }
   // D3D's effective window scissor bounds every pixel the draw can touch.
   const uint32_t scissor_br_x = s.scissor_br & 0x7FFFu;
   const uint32_t scissor_br_y = (s.scissor_br >> 16) & 0x7FFFu;
@@ -2542,13 +3132,14 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   const bool has_depth = d.key.depth_format != 0;
   EdramKey depth_key;
   if (has_depth) {
-    depth_key = DrawDepthKey(*edram_, s, d.key.color_count, r.target_size_bits);
+    depth_key = DepthKey(d);
   }
   // The last draw's targets, while nothing they rest on changed (M6a.3).
   const TargetsMemo& memo = targets_memo_;
   bool memo_hit = memo.serial != 0 && memo.serial == edram_->change_serial() &&
                   memo.color_count == d.key.color_count && memo.has_depth == has_depth &&
-                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key);
+                  scissor_br_y <= memo.height && (!has_depth || memo.depth_key == depth_key) &&
+                  memo.gbuffer_generation == (d.gbuffer_attached ? gbuffer_->generation() : 0u);
   for (uint32_t i = 0; i < d.key.color_count && memo_hit; ++i) {
     memo_hit = memo.color_keys[i] == color_keys[i];
   }
@@ -2618,11 +3209,17 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     scales_agree &= colors[i]->scale == target_scale;
   }
   if (!scales_agree) {
-    const EdramTargets::Target* first = d.key.color_count ? colors[0] : depth;
-    *detail = std::format("targets of different resolution scales (pitch {}): {} at {}x, {} at {}x",
-                          pitch, DescribeEdramKey(first->key), first->scale,
-                          depth ? DescribeEdramKey(depth->key) : std::string("no depth"),
-                          depth ? depth->scale : Scale::None());
+    // Every target of the draw, each with its scale: the disagreeing one is not always the first (the
+    // rthit4 night log named colour 0 and the depth, both at 3x, and the second colour, at 1x, was not
+    // in the line: side_view_ui_map.cpp, "one pass, one class").
+    std::string all;
+    for (uint32_t i = 0; i < d.key.color_count; ++i) {
+      all += std::format("{}{} at {}x", all.empty() ? "" : ", ", DescribeEdramKey(colors[i]->key),
+                         colors[i]->scale);
+    }
+    *detail = std::format("targets of different resolution scales (pitch {}): {}, {}", pitch, all,
+                          depth ? std::format("{} at {}x", DescribeEdramKey(depth->key), depth->scale)
+                                : std::string("no depth"));
     return Skip::kTarget;
   }
   // And one sample count on the host, the one the pipeline was made for: a
@@ -2662,13 +3259,33 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     }
     target_height = std::min(target_height, depth->height);
   }
+  // The G-buffer's planes (gbuffer.h) after the colour target: made, cleared and moved to the attachment layout here, before the framebuffer is bound.
+  GBuffer::Sidecar sidecar;
+  if (d.gbuffer_attached) {
+    if (!gbuffer_->Attach(list, *colors[0], &sidecar)) {
+      *detail = "the G-buffer's sidecar could not be made";
+      return Skip::kTarget;
+    }
+    if (sidecar.count != d.gbuffer_planes) {
+      // The pipeline was made for another number of planes than the images the frame has (the plan changed between the key and this draw): never bound.
+      *detail = std::format("the G-buffer has {} plane images, the draw's pipeline {}", sidecar.count, d.gbuffer_planes);
+      return Skip::kTarget;
+    }
+    if (!memo_hit || memo.gbuffer_generation != sidecar.generation) {
+      framebuffer = nullptr;  // the sidecar was made again by this draw: the memo's framebuffer has the old one
+    }
+    if (gbuffer_->TakeFramebufferDirty()) {
+      bound_.framebuffer = nullptr;  // a clear of the planes left their own framebuffer bound: BindFramebuffer below binds this draw's
+    }
+  }
   if (!framebuffer) {
-    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth);
+    framebuffer = edram_->Framebuffer(colors, d.key.color_count, depth, sidecar.textures, sidecar.count, sidecar.generation);
     if (!framebuffer) {
       return Skip::kFramebuffer;
     }
     TargetsMemo& m = targets_memo_;
     m.serial = edram_->change_serial();
+    m.gbuffer_generation = sidecar.count != 0 ? sidecar.generation : 0u;
     m.color_count = d.key.color_count;
     for (uint32_t i = 0; i < d.key.color_count; ++i) {
       m.color_keys[i] = color_keys[i];
@@ -2777,6 +3394,11 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     bound_.depth_bias = d.bias;
     bound_.depth_bias_bound = true;
   }
+  // The stencil reference is the list's, not the pipeline's: the guest's when the draw uses the stencil, the list's own (or 0 on a new list) when it does not.
+  uint32_t stencil_reference = 0;
+  if (bound_.stencil_reference.Need((d.key.stencil & 1u) != 0, d.state.stencil.stencilref, &stencil_reference)) {
+    list->setStencilReference(stencil_reference);
+  }
   Lap(Stage::kBindState);
   const DrawGeometry& g = d.geometry;
   if (g.slot_count &&
@@ -2839,8 +3461,282 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   return Skip::kCount;
 }
 
+// ---------------------------------------------------------------------------
+// the rear view mirror's phase (mirror_view.h, perf/MIRROR-VIEW.md)
+// ---------------------------------------------------------------------------
+
+void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list) {
+  if (!mirror_view_) {
+    return;
+  }
+  if (mirror_view::IsBeginMarker(bucket)) {
+    // The rectangle is the one the guest published (TickRearView) before the phase ran.
+    if (mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag), bucket == mirror_view::kMarkerBegin) && list) {
+      // The phase's draws leave the main pass: nothing the frame has bound is the view's.
+      if (bound_.framebuffer) {
+        list->setFramebuffer(nullptr);
+        bound_.framebuffer = nullptr;
+      }
+      marked_framebuffer_ = nullptr;
+    }
+  } else if (bucket == mirror_view::kMarkerEnd) {
+    if (mirror_view_->EndPhase(list)) {
+      // The view's resolve bound its own layout, pipeline, viewport and scissor and left no framebuffer: the next draw binds everything again, the main target's pass starts anew.
+      ResetListState();
+      marked_framebuffer_ = nullptr;
+      if (mirror_overlay_ && car_frame_) {
+        // The camera this fresh picture was drawn from and the field of THAT phase's camera (the begin's tag, MirrorView::PictureField): a held picture's lookup needs both (mirror_overlay.h).
+        float field_h = 0.0f;
+        float field_v = 0.0f;
+        const bool field_known = mirror_view_->PictureField(&field_h, &field_v);
+        mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);
+      }
+    }
+  }
+}
+
+Scene::Skip Scene::RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list, bool* no_effect, std::string* detail) {
+  (void)r;
+  const XenosState& s = d.state;
+  // Where the draw goes: only a draw of one colour and a depth, at the formats and samples of the phase's first, fits the view's framebuffer (its pipeline was made for them). Any other is left out and
+  // counted: it is never drawn into the main target, whose rectangle the stamp owns.
+  mirror_view::DrawFacts facts;
+  facts.color_count = d.key.color_count;
+  facts.has_depth = d.key.depth_format != 0;
+  facts.planes_attached = d.gbuffer_attached;
+  facts.color_format = d.key.color_format[0];
+  facts.depth_format = d.key.depth_format;
+  facts.samples = d.key.sample_count;
+  if (mirror_view_->RouteDraw(facts) != mirror_view::Route::kView) {
+    mirror_view_->NoteDrop();
+    *detail = std::format("mirror view: {} colour target{}, {}, format {} / depth {}, {} sample{}: not a draw the view's framebuffer takes", d.key.color_count, d.key.color_count == 1 ? "" : "s",
+                          facts.has_depth ? "with depth" : "no depth", facts.color_format, facts.depth_format, facts.samples, facts.samples == 1 ? "" : "s");
+    return Skip::kTarget;
+  }
+  // CHECK: a pixel shader of the phase that reads the pixel position (SV_Position / VPOS) sees view pixels here, not the main target's (the city and the racers should not read it).
+  // The scissor first: in host pixels of the main target (the draw's scale), mapped into the view. An empty one draws nothing.
+  const plume::RenderRect scissor = mirror_view_->MapScissor(ComputeScissor(s, EdramTargets::kMaxExtent, d.scale), d.scale.n);
+  if (scissor.right <= scissor.left || scissor.bottom <= scissor.top) {
+    *no_effect = true;
+    return Skip::kCount;
+  }
+  const MirrorView::Target target = mirror_view_->Use(list, plume::RenderFormat(d.key.color_format[0]), plume::RenderFormat(d.key.depth_format), d.key.sample_count);
+  if (!target.framebuffer) {
+    mirror_view_->NoteDrop();
+    *detail = "mirror view: its images could not be made";
+    return Skip::kTarget;
+  }
+  if (target.first) {
+    bound_.framebuffer = target.framebuffer;  // Use left the view's framebuffer bound after its clear
+  }
+  marked_framebuffer_ = target.framebuffer;  // Use wrote the pass mark
+  BindFramebuffer(list, target.framebuffer);
+  mirror_view_->NoteDraw();
+  Lap(Stage::kTargets);
+
+  if (!bound_.layout_bound) {
+    list->setGraphicsPipelineLayout(layout_->layout());
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 1);
+    list->setGraphicsDescriptorSet(heap_->texture_set(), 2);
+    list->setGraphicsDescriptorSet(heap_->sampler_set(), 3);
+    bound_.layout_bound = true;
+    bound_.constants_bound = false;
+  }
+  if (bound_.pipeline != d.pipeline) {
+    list->setPipeline(d.pipeline);
+    bound_.pipeline = d.pipeline;
+  }
+  Lap(Stage::kBindPipeline);
+  const plume::RenderBufferReference constants[3] = {d.vs_constants.reference(), d.ps_constants.reference(), d.shared_constants.reference()};
+  bool constants_changed = !bound_.constants_bound;
+  for (uint32_t i = 0; i < 3 && !constants_changed; ++i) {
+    constants_changed = constants[i].ref != bound_.constants[i].ref || constants[i].offset != bound_.constants[i].offset;
+  }
+  if (constants_changed) {
+    if (ActiveBackend() == Backend::kD3D12) {
+      static constexpr uint32_t kRoots[3] = {GuestLayout::kVertexConstants, GuestLayout::kPixelConstants, GuestLayout::kSharedConstants};
+      for (uint32_t i = 0; i < 3; ++i) {
+        if (!bound_.constants_bound || constants[i].ref != bound_.constants[i].ref || constants[i].offset != bound_.constants[i].offset) {
+          list->setGraphicsRootDescriptor(constants[i], kRoots[i]);
+        }
+      }
+    } else {
+      const uint64_t addresses[3] = {d.vs_constants.device_address, d.ps_constants.device_address, d.shared_constants.device_address};
+      list->setGraphicsPushConstants(0, addresses, 0, sizeof(addresses));
+    }
+    for (uint32_t i = 0; i < 3; ++i) {
+      bound_.constants[i] = constants[i];
+    }
+    bound_.constants_bound = true;
+  }
+  Lap(Stage::kBindConstants);
+  // The viewport the draw's vertices are taken against, in the view's pixels: the rectangle is the whole view (the draw's own NDC and depth range are kept); the scissor is what cuts.
+  const plume::RenderViewport viewport = mirror_view_->MapViewport(d.viewport.viewport, d.scale.n);
+  if (!bound_.viewport_bound || !SameViewport(bound_.viewport, viewport)) {
+    list->setViewports(&viewport, 1);
+    bound_.viewport = viewport;
+    bound_.viewport_bound = true;
+  }
+  if (!bound_.scissor_bound || !SameRect(bound_.scissor, scissor)) {
+    list->setScissors(&scissor, 1);
+    bound_.scissor = scissor;
+    bound_.scissor_bound = true;
+  }
+  if (pipelines_->dynamic_depth_bias() && (!bound_.depth_bias_bound || !(bound_.depth_bias == d.bias))) {
+    list->setDepthBias(float(d.bias.constant), 0.0f, d.bias.slope);
+    bound_.depth_bias = d.bias;
+    bound_.depth_bias_bound = true;
+  }
+  // The stencil reference is the list's, not the pipeline's (stencil_ref.h): the view's draws take the guest's as Record does (the game's pipelines are all made with the dynamic reference).
+  uint32_t stencil_reference = 0;
+  if (bound_.stencil_reference.Need((d.key.stencil & 1u) != 0, d.state.stencil.stencilref, &stencil_reference)) {
+    list->setStencilReference(stencil_reference);
+  }
+  Lap(Stage::kBindState);
+  const DrawGeometry& g = d.geometry;
+  if (g.slot_count && !SameVertexBuffers(bound_.vertex_slot_count, bound_.vertex_views.data(), bound_.vertex_slots.data(), g, d.input_layout->slots.data())) {
+    list->setVertexBuffers(0, g.vertex_views.data(), g.slot_count, d.input_layout->slots.data());
+    bound_.vertex_slot_count = g.slot_count;
+    for (uint32_t i = 0; i < g.slot_count; ++i) {
+      bound_.vertex_views[i] = g.vertex_views[i];
+      bound_.vertex_slots[i] = d.input_layout->slots[i];
+    }
+  }
+  // No coverage check, no occlusion query: the draw touches no EDRAM target, and the sun's glare asks about the main view.
+  if (g.indexed) {
+    if (!bound_.index_bound || !SameIndexBuffer(bound_.index_view, g.index_view)) {
+      list->setIndexBuffer(&g.index_view);
+      bound_.index_view = g.index_view;
+      bound_.index_bound = true;
+    }
+    Lap(Stage::kBindStreams);
+    list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
+  } else {
+    Lap(Stage::kBindStreams);
+    list->drawInstanced(g.count, 1, g.first, 0);
+  }
+  Lap(Stage::kDraw);
+  return Skip::kCount;
+}
+
+void Scene::ClearMirrorView(plume::RenderCommandList* list, uint32_t flags, const float color[4], float z, uint32_t stencil, int32_t x0, int32_t y0, int32_t x1, int32_t y1, const EdramKey& color_key,
+                            int32_t color_exp_bias, const EdramKey& depth_key) {
+  // The formats and the host samples are the main targets' (the draws that follow have their pipelines made for them).
+  const EdramTargets::Target* colour = edram_->Find(color_key);
+  const EdramTargets::Target* depth = edram_->Find(depth_key);
+  if (!colour || !colour->texture || !depth || !depth->texture) {
+    ++window_.clears_failed;
+    return;
+  }
+  const MirrorView::Target target = mirror_view_->Use(list, colour->format, depth->format, colour->host_samples);
+  if (!target.framebuffer) {
+    ++window_.clears_failed;
+    return;
+  }
+  float value[4] = {};
+  if ((flags & 1u) != 0) {
+    EncodeColorClear(color_key.format, color_exp_bias, color, value);  // what the hardware stores: the colour times 2^exp_bias, in the format (as the main target's clear)
+  }
+  // The rectangle is the guest's, in pixels of the main target (the clear's viewport and scissor already applied): mapped into the view at a scale of 1.
+  const plume::RenderRect rect = mirror_view_->MapScissor(plume::RenderRect(x0, y0, x1, y1), Scale::kDenominator);
+  mirror_view_->Clear(list, (flags & 1u) != 0 ? value : nullptr, (flags & 0x10u) != 0, (flags & 0x20u) != 0, z, stencil, rect);
+  bound_.framebuffer = target.framebuffer;  // Use and Clear left the view's framebuffer bound
+  marked_framebuffer_ = nullptr;
+  ++window_.clears_color;
+}
+
+EdramTargets::Target* Scene::MirrorCopyColour(const ResolveRecord& record, plume::RenderCommandList* list, bool* other_copy, EdramKey* key_out) {
+  // The first copy of the main colour at the play view's samples (as the volumetric light finds its second point): colour 0, not a clear alone.
+  // CHECK: that this first copy after the end marker is the end-of-scene copy, i.e. that the trigger's host effects (AO, lights, SSR) have run on the main colour already (CHECK 4 of perf/MIRROR-VIEW.md).
+  EdramKey key;
+  *other_copy = true;
+  if (record.flags & (kEventSurfaceUnreadable | kEventStackUnreadable)) {
+    return nullptr;
+  }
+  if ((record.resolve_flags & 7) != 0 || (record.resolve_flags & 0x2000u) != 0) {
+    return nullptr;
+  }
+  const RegisterWindow pre(record.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  const bool bound = pre.DeviceDword(guest::kDevColorSurfaces) != 0;
+  xreg::RB_SURFACE_INFO surface_info;
+  surface_info.value = pre.Register(guest::reg::kRbSurfaceInfo);
+  key.pitch = uint16_t(surface_info.surface_pitch);
+  key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+  xreg::RB_COLOR_INFO color_info;
+  color_info.value = bound ? LoadBe32(record.state.surfaces[0] + 0x1C) : pre.Register(guest::reg::kRbColorInfo);
+  key.base_tiles = uint16_t(color_info.color_base | (color_info.color_base_bit_11 << 11));
+  key.depth = 0;
+  key.format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
+  if (temporal::MainColorSamples(key) == 0 || temporal::ViewOfSamples(key.samples) != temporal::View::kPlay) {
+    return nullptr;  // not a copy of the game view's colour: the readers wait for the one that is
+  }
+  *other_copy = false;
+  const EdramTargets::Target* found = edram_->Find(key);
+  if (!found || !found->texture) {
+    return nullptr;
+  }
+  bool unset = false;
+  EdramTargets::Target* colour = edram_->Get(key, found->height, found->scale, 0, list, &unset);
+  if (key_out) {
+    *key_out = key;
+  }
+  return colour;
+}
+
+bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list) {
+  bool other_copy = false;
+  EdramTargets::Target* colour = MirrorCopyColour(record, list, &other_copy, nullptr);
+  if (!colour) {
+    if (!other_copy) {
+      mirror_view_->DisarmStamp();
+    }
+    return false;
+  }
+  const mirror_view::IRect host = mirror_view::HostRectOf(mirror_draws::Current(), colour->scale.n);
+  return mirror_view_->RecordStamp(list, *colour, host);
+}
+
+bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandList* list) {
+  bool other_copy = false;
+  EdramKey colour_key;
+  EdramTargets::Target* colour = MirrorCopyColour(record, list, &other_copy, &colour_key);
+  if (other_copy) {
+    return false;  // not the game view's copy: the overlay waits for the one that is (it stays armed)
+  }
+  mirror_view_->DisarmOverlay();  // once a frame: the first copy of the game view's colour after the end marker is the overlay's
+  // The main depth at the same samples (the identity of the draws that wrote it: temporal_identities.h), as the copy finds it; the glass's own pixels are in it.
+  EdramTargets::Target* depth = nullptr;
+  if (colour) {
+    EdramKey depth_key;
+    depth_key.base_tiles = temporal::kMainDepthBase;
+    depth_key.pitch = temporal::kMainPitch;
+    depth_key.depth = 1;
+    depth_key.format = uint8_t(xe::DepthRenderTargetFormat::kD24FS8);
+    depth_key.samples = colour_key.samples;
+    const EdramTargets::Target* found = edram_->Find(depth_key);
+    if (found && found->texture) {
+      bool unset = false;
+      depth = edram_->Get(depth_key, found->height, found->scale, 0, list, &unset);
+    }
+  }
+  MirrorOverlay::Inputs in;
+  in.frame = car_frame_ ? &car_frame_->Current() : nullptr;
+  in.glass = mirror_glass_;
+  in.view = mirror_view_;
+  in.rt_mirrors_on = car_mirror_ && car_mirror_->active();  // where the ray traced side mirrors are on they win (mirror_overlay_rules.h Decide)
+  in.play_view = true;
+  if (temporal_) {
+    temporal_->FrameJitter(in.jitter);  // the sub-pixel offset the frame's gated draws were moved by: the overlay lands on the glass the game drew
+  }
+  return mirror_overlay_->Record(list, in, colour, depth);
+}
+
 void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
   ++window_.clears;
+  if (mirror_view_ && mirror_view_->suppressing()) {
+    return;
+  }
   if (!list || (record.flags & kEventSurfaceUnreadable)) {
     ++window_.clears_failed;
     return;
@@ -2982,6 +3878,36 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     first_key.reserved = edram_->DepthLayer(first_key, nullptr, declared_size);
   }
   const Scale clear_scale = edram_->ScaleOf(first_key, declared_size);
+  if (mirror_view_ && mirror_view_->redirecting()) {
+    // CHECK: that the guest's clear of the phase's rectangle (sub_82178C40 in sub_82308178) arrives here between the two markers; the view's census line counts the phases that had none.
+    // THE REAR VIEW MIRROR'S PHASE (mirror_view.h): the game's clear of the phase's rectangle clears the view, never the main target; nothing that follows the main target's clears hears of it (the float
+    // scene, the occlusion's depth clear value, the G-buffer's planes).
+    EdramKey color_key;
+    int32_t exp_bias = 0;
+    if (surfaces[0]) {
+      xreg::RB_COLOR_INFO color_info;
+      color_info.value = header_dword(0, 0x1C);
+      color_key.base_tiles = uint16_t(color_info.color_base | (color_info.color_base_bit_11 << 11));
+      color_key.pitch = uint16_t(surface_info.surface_pitch);
+      color_key.depth = 0;
+      color_key.format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
+      color_key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+      exp_bias = int32_t(color_info.color_exp_bias);
+    }
+    EdramKey depth_key;
+    if (surfaces[4]) {
+      xreg::RB_DEPTH_INFO depth_info;
+      depth_info.value = header_dword(4, 0x1C);
+      depth_key.base_tiles = uint16_t(depth_info.depth_base | (depth_info.depth_base_bit_11 << 11));
+      depth_key.pitch = uint16_t(surface_info.surface_pitch);
+      depth_key.depth = 1;
+      depth_key.format = uint8_t(depth_info.depth_format);
+      depth_key.samples = uint8_t(MsaaSampleCount(surface_info.msaa_samples));
+      depth_key.reserved = edram_->DepthLayer(depth_key, sized_surface == 0 ? &first_key : nullptr, declared_size);
+    }
+    ClearMirrorView(list, flags, color, record.z, record.stencil, x0, y0, x1, y1, color_key, exp_bias, depth_key);
+    return;
+  }
   // Growth copies sit outside a render pass.
   if (bound_.framebuffer) {
     list->setFramebuffer(nullptr);
@@ -3024,7 +3950,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     if (key == first_key) {
       edram_->NoteDeclaredScale(*target, declared_size);
     }
-    const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+    const uint32_t ghost_interval = larecomp::settings::mcla_gpu_ghost_log_interval.Get();
     if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
         key.base_tiles == 1024) {
       REXLOG_INFO("[gpu] ghost clear frame {} {} flags {:02x}/{:04x} explicit {} "
@@ -3046,6 +3972,14 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     }
     ++window_.clears_color;
     note_other_pitch(i, key);
+    if (gbuffer_ && gbuffer_->tracking() && temporal::MainColorSamples(key) != 0 && temporal::ViewOfSamples(key.samples) == temporal::View::kPlay) {
+      // The main view's colour in the play view: the G-buffer's planes are cleared with the same rectangle (gbuffer.h; also while the memory cap holds the sidecar back:
+      // the clear is where the cap is looked at again).
+      gbuffer_->OnColorClear(list, *target, plume::RenderRect(x0, y0, x1, y1));
+      if (gbuffer_->TakeFramebufferDirty()) {
+        bound_.framebuffer = nullptr;
+      }
+    }
   }
   if (flags & 0x30u) {
     xreg::RB_DEPTH_INFO depth_info;
@@ -3076,7 +4010,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     if (key == first_key) {
       edram_->NoteDeclaredScale(*target, declared_size);
     }
-    const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+    const uint32_t ghost_interval = larecomp::settings::mcla_gpu_ghost_log_interval.Get();
     if (ghost_interval != 0 && frame_serial_ % ghost_interval == 0 && key.pitch == 1280 &&
         key.base_tiles == 0) {
       REXLOG_INFO("[gpu] ghost clear frame {} {} flags {:02x}/{:04x} explicit {} "
@@ -3114,41 +4048,239 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
+  if (vol_ && vol_->wants_draws()) {
+    // The same copy (volumetrics.h): the volumetric light is composited into the colour before the copy reads it, and before the sun
+    // shafts' own pass below (the shafts' light is added on top of the haze).
+    const bool vol_composited = vol_->BeforeResolve(record, list);
+    order_.Note(frame_order::Step::kVolumeComposite, vol_composited);
+  }
   if (shafts_ && shafts_->wants_draws()) {
     // The end-of-scene copy of the main colour (shafts.h): the sun shafts' light goes into the colour
     // before the copy reads it.
-    shafts_->BeforeResolve(record, list);
+    const bool shafts_composited = shafts_->BeforeResolve(record, list);
+    order_.Note(frame_order::Step::kShaftsComposite, shafts_composited);
+  }
+  if (mirror_view_ && mirror_view_->StampArmed() && list && RecordMirrorStamp(record, list)) {
+    // The rear view mirror's picture (mirror_view.h) is stamped into the HUD's rectangle of the main colour at the first copy of it after the phase's end: after the volumetric light and the sun shafts
+    // have composited (the haze does not lie over the stamp) and before the copy reads the colour. Its own layout, pipeline, viewport and framebuffer: the list state is gone.
+    ResetListState();
+    marked_framebuffer_ = nullptr;
+  }
+  if (mirror_overlay_ && mirror_overlay_->wanted() && mirror_view_ && mirror_view_->OverlayArmed() && list && RecordMirrorGlass(record, list)) {
+    // The car's side mirror glasses are drawn again into the main colour with the lookup into the view's picture (mirror_overlay.h), right after the stamp: its own layout, pipeline, viewport and framebuffer, the
+    // list state is gone.
+    ResetListState();
+    marked_framebuffer_ = nullptr;
   }
   // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  bool gbuffer_published = false;
+  if (gbuffer_ && gbuffer_->active()) {
+    // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
+    gbuffer_published = gbuffer_->OnResolve(record, summary, list);
+    order_.Note(frame_order::Step::kGBufferPublish, gbuffer_published);
+  }
+  // THE FRAME'S ORDER AT THIS COPY (the game's mid-scene depth copy, 078B0000: the trigger of every pass below) IS THE TABLE IN frame_order.h (LIGHT-UNIFY 5.3, U9): each step, what it makes and
+  // reads, what it must follow and why, what it Wants and the PassTiming label of its time. Every pass below that recorded notes itself right after its call (order_.Note): the notes of a frame are
+  // checked against the table at the present, and frame_order_test.cpp holds this function's calls to the table's order. Move a pass here only together with its row.
   if (car_shadow_) {
     // At the same mid-scene depth copy, BEFORE the ambient occlusion's passes record (they read the map): the player car drawn again
     // from the sun, depth only (car_shadow_map.h; its own pass and target: the reset below forgets them too).
-    car_shadow_->OnResolve(record, summary, list);
+    const bool car_sun_map = car_shadow_->OnResolve(record, summary, list);
+    order_.Note(frame_order::Step::kCarSunMap, car_sun_map);
+  }
+  if (car_rt_) {
+    // The game's sun cascades of this frame (the shadow collector's draws, which the volumetric light reads too): the car reflections' shaded hits read the sun's visibility from them, so
+    // that a car beside the player's stands in the shade of the buildings and the trees as the road does (car_rt_hit_rules.h). None where the volumetric light is off or the frame has none
+    // (night, rain): the cars' own ray alone.
+    car_rt_material::SunCascades cascades;
+    volumetrics::VolSun sun;
+    float fade = 0.0f;
+    if (vol_ && vol_->wants_draws() && vol_->CurrentSun(&sun, &fade)) {
+      cascades.valid = true;
+      cascades.atlas_slot = sun.atlas_slot;
+      cascades.count = std::min<uint32_t>(sun.cascade_count, car_rt_material::kMaxCascades);
+      cascades.fade = fade;
+      cascades.depth_bias = sun.depth_bias;
+      for (int c = 0; c < 3; ++c) {
+        cascades.right[c] = sun.right[c];
+        cascades.top[c] = sun.top[c];
+      }
+      for (uint32_t i = 0; i < car_rt_material::kMaxCascades; ++i) {
+        for (uint32_t j = 0; j < 4; ++j) {
+          for (uint32_t k = 0; k < 4; ++k) {
+            cascades.rows[i][j][k] = sun.cascades[i].rows[j][k];
+          }
+        }
+        for (uint32_t k = 0; k < 4; ++k) {
+          cascades.box[i][k] = sun.cascades[i].box[k];
+        }
+      }
+    }
+    car_rt_->SetSunCascades(cascades);
+    // The WORLD's sun, from the occlusion's pick of the main view's draws (the headlight rig's, the car shadow map's, the world frame's): the cars' own draws' light direction is not the sun
+    // (-5 degrees at noon), so the hour of the reflected cars' shading came out as night by day (RT-NEXT-DAY, car_rt_material_rules.h PickFrameSun).
+    double world_to_sun[3];
+    car_rt_->SetWorldSun(ao_ && ao_->SunDirection(world_to_sun) ? world_to_sun : nullptr);
+    if (rt_world_) {
+      rt_world_->SetSunCascades(cascades);  // the world frame's hit rows hold the same cascades (CITY-RT FRAME)
+    }
+    // The car ray tracing structures (car_rt_scene.h): the new meshes' bottom level structures and this frame's top level, with the other cars. FIRST, before everything that traces: the
+    // occlusion's ray traced term and sun ray (car_rt_ao.h) run inside the occlusion's own passes, and the self-reflection's trace (car_selfrefl.h) after them, both in this top level.
+    const bool car_structures = car_rt_->OnResolve(record, summary, list, slot_);
+    order_.Note(frame_order::Step::kCarStructures, car_structures);
+    if (rt_world_) {
+      // CITY-RT FRAME: the top level's view space is known now (the builder said it, with or without the player's car): the world's light, the clock, the lamps, written into the slot's buffers. No GPU
+      // command and no pass of the frame order: host visible memory the passes below read through the car scene's set (rt_world_frame.h).
+      rt_world_->OnTrigger(slot_);
+    }
+  }
+  bool shadow_recorded = false;
+  if (local_shadow_) {
+    // The same depth copy: the main view's opaque draws drawn again from the cars' headlights, depth only, into the atlas the lit draws of the
+    // next frame read (local_shadow.h; its own pass and target: the reset below forgets them too).
+    shadow_recorded = local_shadow_->OnResolve(record, summary, list, slot_);
+    order_.Note(frame_order::Step::kShadowReplay, shadow_recorded);
+  }
+  if (light_manager_) {
+    light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
+    order_.Note(frame_order::Step::kLightMaps, shadow_recorded);
+  }
+  if (gi_integration_) {
+    // The probe field's maintenance, update and weights (gi_integration.h, CITY-RT M3 G4): outside any render pass, before the occlusion plans (it asks the field's share while it plans); records nothing
+    // while no field runs. Its own layouts and pipelines: the reset below forgets them too.
+    const bool gi_field_ran = gi_integration_->OnResolve(summary, list, slot_);
+    order_.Note(frame_order::Step::kGiField, gi_field_ran);
   }
   if (ao_ && ao_->wants_draws()) {
     // At the game's mid-scene depth copy this records the occlusion's passes and applies it to the
     // main view's colour: they bind their own layout, pipelines and framebuffers, which the reset
-    // below forgets for the next draw.
-    ao_->OnResolve(record, summary, list, UpscalerRunning());
+    // below forgets for the next draw. The AO's frame is one call and several steps of the table (depth chain, normals, colour_pre, ray traced term, visibility, contact march, apply, and
+    // at its end the screen products' publish with the Hi-Z): the order inside it is held by frame_order_test.cpp against ao.cpp.
+    // CHECK: the R1 AO forwards this mode before choosing the frame plan.
+    ao_->SetRtAoRawMode(ao_->rtao_wanted() && temporal_ && temporal_->RawModes().RtAo());
+    const bool ao_ran = ao_->OnResolve(record, summary, list, UpscalerRunning());
+    order_.Note(frame_order::Step::kAo, ao_ran);
+  }
+  if (gi_apply_ && gi_apply_->wants_draws()) {
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
+    // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
+    // framebuffer: the reset below forgets them too. With no field in the frame it records nothing.
+    // CITY-RT G6: while DLSS Ray Reconstruction takes the frame the per-pixel pass (ULTRA on a strong card) runs RAW (no filter of its own; its hit distance goes to the guide pass): TemporalSystem::RawModes,
+    // false with the plan not RR, and asked only while the pass is wanted (the census counts the frames asked).
+    const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();
+    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi);
+    order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
+  }
+  if (local_lights_ && local_lights_->wants_draws()) {
+    // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
+    // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
+    // and framebuffer: the reset below forgets them too. The headlights among the lights read the maps the replay has just recorded, through the one shadow lookup (GB-H2: mcla_gpu_headlight_pass).
+    // RT-LIGHTS-D1 part 2: while DLSS Ray Reconstruction takes the frame the ray traced light visibility runs RAW (no filter; the light pass reads the 1 spp signal): TemporalSystem::RawModes, false with the plan not
+    // RR, and asked only while the effect is wanted (the census counts the frames asked).
+    local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());
+    // GI-BOUNCE-SS (ssgi_lights.h, perf/GI-BOUNCE.md): the bounce light takes the light this pass adds in the NEXT frame's colour chain: the main colour is captured before the lights it carries and right after them (only in a
+    // frame whose AO wanted the lights' pair; screen_shared.h CaptureLightsBefore / After), and the chain adds their difference, reprojected, to its radiance. Nothing here writes the main colour.
+    // GI-BOUNCE-JOIN (gi_bounce_carrier.h): the light pass draws the lights the probe field and the per-pixel pass carry (and the switched-off groups') OUTSIDE the pair and makes the "before" capture itself, between its
+    // two runs of draws (through the hook below); with the field not standing the pair is the whole pass, as it was.
+    gi_bounce::Pair lights_pair;
+    bool lights_before = false;
+    const bool want_pair = screen_ && screen_->lights_wanted();
+    if (want_pair) {
+      lights_pair.frame.groups = gi_bounce::GroupsNow();
+      lights_pair.frame.field_stands = screen_->lights_partition() == ssgi_lights::Partition::kResidual;
+      lights_pair.frame.pixel_pass = gi_apply_ && gi_apply_->pixel_pass_ran();
+      lights_pair.listed = [this](uint64_t id) {
+        switch (rt_world_ ? rt_world_->EmitterMotionOf(id) : RtWorldFrame::EmitterMotion::kNotListed) {
+          case RtWorldFrame::EmitterMotion::kStatic: return gi_bounce::Listed::kStatic;
+          case RtWorldFrame::EmitterMotion::kMoving: return gi_bounce::Listed::kMoving;
+          case RtWorldFrame::EmitterMotion::kNotListed: break;
+        }
+        return gi_bounce::Listed::kNo;
+      };
+      lights_pair.capture_before = [&]() {
+        lights_before = screen_->CaptureLightsBefore(record, summary, list);
+        return lights_before;
+      };
+    }
+    local_lights_->SetLightsPair(want_pair ? &lights_pair : nullptr);
+    const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
+    order_.Note(frame_order::Step::kLightsBefore, lights_before);
+    order_.Note(frame_order::Step::kLocalLights, local_lights_ran);
+    if (lights_before && local_lights_ran) {
+      const bool lights_after = screen_->CaptureLightsAfter(record, summary, list);
+      order_.Note(frame_order::Step::kLightsAfter, lights_after);
+    }
   }
   if (shafts_ && shafts_->wants_draws()) {
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
     // targets: the reset below forgets them too).
-    shafts_->OnResolve(record, summary, list, UpscalerRunning());
+    const bool shafts_ran = shafts_->OnResolve(record, summary, list, UpscalerRunning());
+    order_.Note(frame_order::Step::kShafts, shafts_ran);
+  }
+  if (vol_ && vol_->wants_draws()) {
+    // The same depth copy again: the volumetric light's compute passes (volumetrics.h), after the car shadow map, the headlights' shadow replay, the
+    // ambient occlusion and the sun shafts have recorded, so that the beams see this frame's maps.
+    const bool vol_ran = vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
+    order_.Note(frame_order::Step::kVolume, vol_ran);
   }
   if (car_rt_) {
-    // The same depth copy builds the player's car's ray tracing structures (car_rt_scene.h): new meshes into their bottom level structures,
-    // the frame's top level, and the check pass over the occlusion's linear depth. Before the car self-reflection's own pass, which may
-    // trace in the top level; after the occlusion, whose depth image the check reads.
-    car_rt_->OnResolve(record, summary, list, slot_, ao_);
+    // The check pass of the structures, over the occlusion's linear depth (it exists only after the AO's frame).
+    const bool car_check = car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
+    order_.Note(frame_order::Step::kCarRtCheck, car_check);
+  }
+  bool colour_captured = false;
+  if (screen_ && screen_->capture_wanted()) {
+    // The shared colour capture (screen_shared.h CapturePost): the main colour as it is after the occlusion's apply and the deferred lights, averaged over its host samples into colour_post
+    // (and its history), for the consumers that want it; the car self-reflection's history pass below reads it where it can. Only while a capture is planned.
+    colour_captured = screen_->CapturePost(record, summary, list);
+    order_.Note(frame_order::Step::kColourPost, colour_captured);
+  }
+  if (colour_captured && ssr_) {
+    // The screen-space reflections (ssr.h): the trace, the accumulation and the additive resolve into the main colour, right after the capture they read (a reflection is not a
+    // reflection of a reflection: colour_post is made before the effect adds to the colour) and before the car self-reflection's history pass, which holds a vehicle's pixels only and so does not see
+    // them (GB-I3, frame_order.h kSsr). The last pass of the trigger that adds to the colour; its GPU time is the labels 'ssr trace', 'ssr temporal' and 'ssr apply' (closed by 'after ssr').
+    // RR-4a: while DLSS Ray Reconstruction takes the frame the effect runs RAW (no accumulation of its own, its hit distance written for the guide pass): TemporalSystem::RawModes, false with the plan not RR.
+    const bool raw_ssr = temporal_ && temporal_->RawModes().Ssr();
+    // RG-3: while AMD FSR Ray Regeneration takes the frame (the DENOISER row's AMD value on a Radeon RX 9000: TemporalSystem::RegenModes, false on every other PC) the trace is the signal it denoises and the
+    // resolve reads its output; a regen frame that is refused is the effect's own (ssr.h).
+    RegenAsk regen_ask;
+    if (temporal_ && temporal_->RegenModes().Ssr()) {
+      regen_ask.asked = true;
+      temporal_->FrameJitter(regen_ask.jitter);
+    }
+    const bool ssr_ran = ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask);
+    order_.Note(frame_order::Step::kSsr, ssr_ran);
   }
   if (car_refl_ && car_refl_->wants_draws()) {
-    // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h;
-    // its own pass and target: the reset below forgets them too).
-    car_refl_->OnResolve(record, summary, list);
+    // RR-4b: while DLSS Ray Reconstruction takes the frame the ray traced reflection of the cars runs RAW (no filter, its hit distance written): TemporalSystem::RawModes, false with the plan not RR.
+    car_refl_->SetRawMode(temporal_ && temporal_->RawModes().CarRefl());
+    // The same depth copy is where the next frame's car paint finds the car again: the history image (car_selfrefl.h) and the ray traced reflection of its texels (car_rt_refl.h, in this frame's
+    // top level; its own pass and target: the reset below forgets them too).
+    const bool car_history = car_refl_->OnResolve(record, summary, list);
+    order_.Note(frame_order::Step::kCarHistory, car_history);
+  }
+  if (temporal_) {
+    // RR-4: the reflection effects' hit distance images of this frame (null where an effect did not run raw), for the guide pass at the anchor.
+    temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);
+    // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (only in a frame it ran raw; mcla_gpu_dlss_rr_rt_gi 2 leaves the hit distance out).
+    temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);
+  }
+  if (car_mirror_ && car_rt_ && car_rt_->TriggeredThisResolve()) {
+    // The side mirrors (car_mirror_rt.h): at the same trigger, after the car structures' step built the car's top level and the self-reflection's own pass is recorded; the traced mirror image is
+    // blended over the game's mirror glass in the main colour (its own pass, pipelines and target: the reset below forgets them too).
+    const bool car_mirror = car_mirror_->OnResolve(summary, list, car_refl_ ? car_refl_->exp_bias() : car_selfrefl::kMainTargetExpBias);
+    order_.Note(frame_order::Step::kCarMirror, car_mirror);
+  }
+  if (gbuffer_ && gbuffer_->active()) {
+    // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
+    gbuffer_->DrawView(summary, list);
+  }
+  if (screen_ && screen_->view_active()) {
+    // The shared screen products' debug view (mcla_gpu_screen_view), after the other views.
+    screen_->DrawView(summary, list);
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
@@ -3203,8 +4335,17 @@ void Scene::OnComposite(const CompositeRecord&, plume::RenderCommandList* list) 
   if (shafts_) {
     shafts_->OnComposite();
   }
+  if (vol_) {
+    vol_->OnComposite();
+  }
   if (car_refl_) {
     car_refl_->OnComposite();
+  }
+  if (screen_) {
+    screen_->OnComposite();  // no trigger of the shared screen products after this
+  }
+  if (local_shadow_) {
+    local_shadow_->OnComposite();
   }
   if (car_shadow_) {
     car_shadow_->OnComposite();
@@ -3301,6 +4442,11 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.tiling_begins += from.tiling_begins;
   into.tiling_ends += from.tiling_ends;
   into.prepare_cycles += from.prepare_cycles;
+  into.mirror_prepared += from.mirror_prepared;
+  into.mirror_recorded += from.mirror_recorded;
+  into.mirror_frames += from.mirror_frames;
+  into.mirror_cycles += from.mirror_cycles;
+  into.mirror_class_skips += from.mirror_class_skips;
   into.pipelines_created += from.pipelines_created;
   into.pipelines_failed += from.pipelines_failed;
   into.pipeline_create_ns += from.pipeline_create_ns;
@@ -3314,9 +4460,21 @@ void Scene::OnPresent() {
   }
   last_present_ = now;
   ++window_.frames;
+  if (mirror_frame_seen_) {
+    ++window_.mirror_frames;
+    mirror_frame_seen_ = false;
+  }
   draw_census_.OnPresent();
   target_census_.OnPresent();
   composite_census_.OnPresent();
+  if (ui_sharp::CensusOn()) {
+    ui_sharp_census_.OnFrame();
+    if (ui_sharp_census_.Due()) {
+      for (const std::string& line : ui_sharp_census_.TakeReport()) {
+        REXLOG_INFO("[gpu] {}", line);
+      }
+    }
+  }
   last_frame_had_scene_ = scene_marker_seen_;
   scene_marker_seen_ = false;
   ui_phase_ = false;
@@ -3331,23 +4489,66 @@ void Scene::OnPresent() {
   }
   edram_->SetScenePhase(true);  // the next frame's scene
   NoteMenuWorld();  // before the effects forget the frame
+  if (headlights_) {
+    // The world's sun as this frame's draws carried it (the occlusion's pick, read before its OnPresent forgets the frame): the headlights' night is the world's.
+    double to_sun[3];
+    headlights_->SetWorldSun(ao_ && ao_->SunDirection(to_sun) ? to_sun : nullptr);
+  }
   if (ao_) {
     ao_->OnPresent();
   }
   if (shafts_) {
     shafts_->OnPresent();
   }
+  if (vol_) {
+    vol_->OnPresent();
+  }
   if (car_refl_) {
     car_refl_->OnPresent();
+  }
+  if (ssr_) {
+    ssr_->OnPresent();  // the reflections' history and idle count
+  }
+  if (gi_apply_) {
+    gi_apply_->OnPresent();  // the interval line and the lookup image's idle count
+  }
+  if (screen_) {
+    screen_->OnPresent();  // the frame boundary of the shared screen products: the frame is counted, the capture and its history trade places (after NoteMenuWorld above: it asks the camera history)
   }
   if (car_dump_) {
     car_dump_->OnPresent();  // the dump frame's census and OBJ
   }
+  if (mirror_glass_) {
+    mirror_glass_->OnPresent();  // the glass finder evaluates the complete frame and publishes the need (mirror_glass_need.h); BEFORE CarFrame::OnPresent, which clears the frame
+  }
   if (car_frame_) {
     car_frame_->OnPresent();  // the car draw list's frame boundary
   }
+  if (local_lights_) {
+    local_lights_->OnPresent();  // the interval line
+  }
+  if (light_manager_) {
+    light_manager_->OnPresent();  // passive: this frame's lights are checked and uploaded before the rig makes the next frame's set
+  }
+  if (headlights_) {
+    headlights_->OnPresent(frame_serial_);  // the headlights seen in this frame become the lights of the next (their fades are in seconds of the scene clock at this frame)
+  }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
+  }
+  if (car_mirror_) {
+    car_mirror_->OnPresent();  // the frame boundary: an image of a pass that showed nothing for a while goes back
+  }
+  {
+    // The frame's passes at the trigger and the end-of-scene copy, held to the table in frame_order.h (LIGHT-UNIFY U9): the first frame of each set of passes that ran is logged with the order they
+    // ran in (the census), and so is every inversion or a pass that read what nothing before it had made (a debug build also asserts on an inversion, where it happens).
+    const frame_order::Recorder::Report order = order_.End(frame_serial_);
+    if (!order.census.empty()) {
+      REXLOG_INFO("[gpu] frame order: {}", order.census);
+    }
+    if (!order.problems.empty()) {
+      REXLOG_WARN("[gpu] frame order: the passes ran against the table in frame_order.h (each reported once): {}", order.problems);
+    }
   }
   if (temporal_) {
     temporal_->EndFrame();
@@ -3355,6 +4556,9 @@ void Scene::OnPresent() {
   last_color0_ = nullptr;
   last_color0_width_ = 0;
   last_color0_height_ = 0;
+  // The next list the renderer opens is the frame that the next guest swap closes (scene_noise.h: the tag is found by the present records executed, not by the
+  // lists opened: an idle present has no list and a flush opens a second one).
+  scene_noise::OnPresent();
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }
@@ -3397,6 +4601,9 @@ void Scene::Report(const char* why) {
   const uint64_t busy = load.total_cycles - std::min(load.total_cycles,
                                                     load.idle_cycles + load.gpu_wait_cycles);
   const double thread_cpu_ms = cycles::ToNs(busy) / frames / 1e6;
+  const auto wait_ms = [&](GpuWaitKind kind) {
+    return cycles::ToNs(load.GpuWaitCycles(kind)) / frames / 1e6;
+  };
   // The final report runs on the thread that shuts the renderer down, whose
   // load is not the render thread's.
   const std::string thread_text =
@@ -3405,6 +4612,14 @@ void Scene::Report(const char* why) {
                         cycles::ToNs(load.gpu_wait_cycles) / frames / 1e6,
                         cycles::ToNs(load.idle_cycles) / frames / 1e6)
           : std::string("thread time not on the render thread");
+  // The first interval has wait samples even though Take has no wall-clock baseline yet.
+  const std::string wait_text =
+      (load.total_cycles || load.gpu_wait_cycles)
+          ? std::format(" | present_call_ms={:.3f} frame_fence_ms={:.3f} acquire_ms={:.3f} "
+                        "present_slot_ms={:.3f}",
+                        wait_ms(GpuWaitKind::kPresentCall), wait_ms(GpuWaitKind::kFrameFence),
+                        wait_ms(GpuWaitKind::kAcquire), wait_ms(GpuWaitKind::kPresentSlot))
+          : std::string();
   std::string skips;
   for (size_t i = 0; i < w.skips.size(); ++i) {
     if (w.skips[i]) {
@@ -3445,8 +4660,8 @@ void Scene::Report(const char* why) {
       "{} frames; made here {} new, {} after a failure, {} waited for a running build {:.1f} ms) "
       "| input layouts {} | samplers {} ({} fetches, {} not a texture) | constants {:.2f} "
       "MiB/frame ({} bank, {} shared uploads) | fetch memo {:.0f}% | clears {}, resolves {}, "
-      "tiling {}/{} | prepare "
-      "{:.2f} ms/frame | {}",
+      "tiling {}/{} | variant pipelines failed {} (draws that fell back {}) | prepare "
+      "{:.2f} ms/frame | {}{}",
       why, w.frames, double(w.draws) / frames, w.prepared, w.recorded,
       skips.empty() ? "none" : skips, geometry.empty() ? "ok" : geometry,
       w.no_effect[0] + w.no_effect[1] + w.no_effect[2] + w.no_effect[3], w.no_effect[0],
@@ -3468,8 +4683,17 @@ void Scene::Report(const char* why) {
       (w.fetches + w.fetch_not_texture)
           ? 100.0 * double(w.fetch_memo_hits) / double(w.fetches + w.fetch_not_texture)
           : 0.0,
-      w.clears, w.resolves, w.tiling_begins, w.tiling_ends,
-      cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text);
+      w.clears, w.resolves, w.tiling_begins, w.tiling_ends, ps.variant_failed, ps.variant_fallback_draws,
+      cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text, wait_text);
+  if (w.mirror_prepared != 0 || mirror_rect_.valid()) {
+    // The rear view mirror's draws (mirror_draws.h), per frame of the window (every frame, not only the ones that drew it: a mirror that skips frames shows its
+    // average), with the frames that drew it, what they cost to prepare and record, and whether they stay out of the main view's consumers. The cost chain
+    // (perf/scripts/chain-mirror-cost.ps1) reads this line.
+    REXLOG_INFO("[gpu] scene ({}): mirror: {:.1f} draws/frame ({:.1f} recorded) in {} of {} frames, prepare {:.3f} ms/frame, consumers {} ({} draws kept out of them), rectangle {},{} {}x{}", why,
+                double(w.mirror_prepared) / frames, double(w.mirror_recorded) / frames, w.mirror_frames, w.frames,
+                cycles::ToNs(w.mirror_cycles) / frames / 1e6, mirror_class_ ? "skipped" : "kept", w.mirror_class_skips, mirror_rect_.x, mirror_rect_.y, mirror_rect_.w,
+                mirror_rect_.h);
+  }
   // The waits for pipelines a capture kept from being left out (a line only once the flag was on).
   sync_builds::LogInterval(why);
   if (ab::Enabled() && std::string_view(why) == "interval") {
@@ -3492,6 +4716,7 @@ void Scene::Report(const char* why) {
                 mean(ab_cpu_sum_, 0), ab_count_[0], mean(ab_sum_, 1), mean(ab_cpu_sum_, 1),
                 ab_count_[1]);
     ab::NextWindow();
+    ApplyRenderCpu();
   }
   if (present_intervals_.size() >= 2) {
     // Frame pacing: the median, the 99th percentile, the longest, and how many

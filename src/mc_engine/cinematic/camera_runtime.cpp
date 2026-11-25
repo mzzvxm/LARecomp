@@ -35,12 +35,13 @@
 //
 
 #include "camera_runtime.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include <cmath>
 #include <cstdint>
@@ -48,18 +49,14 @@
 #include <string>
 
 #include "camera.h"
+#include "director/director_game.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
+#include "larecomp_guest.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/cut_request.h"
 #endif
-
-REXCVAR_DEFINE_UINT32(mcla_cam_log, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: while a scene's camera is running, log it every this many frames: scene time, position, direction, field of "
-    "view. 0: only the cuts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -108,14 +105,14 @@ void WF(uint8_t* base, uint32_t ea, float f) {
 }
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 bool GamePaused(const uint8_t* base) {
@@ -130,8 +127,8 @@ uint32_t PlayerRacer(const uint8_t* base) {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -143,9 +140,15 @@ bool CarMatrix(const uint8_t* base, uint32_t racer, float out[16]) {
     const uint32_t mtx = ent ? R32(base, ent + kEntityMatrixAt) : 0;
     if (!mtx) return false;
     for (int i = 0; i < 16; ++i) out[i] = RF(base, mtx + 16 + 4 * static_cast<uint32_t>(i));
+    // Only the rows' first three words are a pose; the w words (3, 7, 11, 15) may hold anything, as cars.cpp's PoseOf says,
+    // so they are not checked but set clean. Checking all 16 refused the player's car on every frame, and a camera
+    // attached to car:player stayed at the world origin.
     for (int i = 0; i < 16; ++i) {
+        if ((i & 3) == 3) continue;
         if (!std::isfinite(out[i])) return false;
     }
+    out[3] = out[7] = out[11] = 0.0f;
+    out[15] = 1.0f;
     return true;
 }
 
@@ -196,7 +199,7 @@ struct State {
     uint32_t skipped_pause = 0;
     std::string missing_logged;
 };
-State g;
+State& g = larecomp::Leak<State>();
 
 // The camera rows of sub_822C0320's frame as they are now: right, up and BACK.
 cam::SlotRows ReadRows(const uint8_t* base, uint32_t sp) {
@@ -376,13 +379,15 @@ bool CinematicCameraApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     }
 
     WriteCamera(base, sp, v);
+    // The Director (when it is on) reads the camera the frame shows from the slots just written: the exact pose of the scene's camera.
+    if (director::Enabled()) director::NoteSceneCameraWritten(base, sp, mode);
     g.was_applied = true;
     ++g.frames;
     if (g.cut_pending) {
         g.cut_pending = false;
         AnnounceCut(base, sp, v.took_over ? "the scene's camera takes over" : "a cut of the scene", g.t);
     }
-    const uint32_t every = REXCVAR_GET(mcla_cam_log);
+    const uint32_t every = larecomp::settings::mcla_cam_log.Get();
     if (every != 0 && g.frames % every == 0) {
         LARECOMP_APP_INFO("[cam] t={:.3f} mode {} shot {}: at {:.3f} {:.3f} {:.3f}, looking along {:.4f} {:.4f} {:.4f}, up {:.4f} {:.4f} {:.4f}, fov {:.3f}", g.t,
                           mode, v.shot, v.position.x, v.position.y, v.position.z, v.basis.forward.x, v.basis.forward.y, v.basis.forward.z,

@@ -2,9 +2,10 @@
 
   python pipeline_list.py info FILE...
   python pipeline_list.py merge -o assets/mcla_pipelines.bin FILE...
-  python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] FILE...
-  python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v2.pack] FILE...
+  python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] [--max-colour-targets N] FILE...
+  python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v3.pack] FILE...
   python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
+  python pipeline_list.py lacks --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py selftest
 
 A list holds no game data: each record is a pipeline key (the pack's shader hashes, spec variants,
@@ -18,6 +19,9 @@ precache makes them in that order. Prefer D3D12 lists from a device with 24-bit 
 a Vulkan list from a device without it holds D32 keys that a D24 device never asks for.
 Rebuild the starter when the shader pack or PipelineKey changes: a record whose shader is not in the
 pack is dropped at load, and a list of another version is ignored.
+The stencil reference is not part of a key any more (it is set on the command list per draw, src/gpu/stencil_ref.h):
+every command reads a list with the references cleared and the records that differed only by one folded into the
+first, as the game does at load, so `merge -o NEW OLD` rewrites an older list as the game wants it.
 
 add puts the lists of runs (a run's cache/mcla_gpu_pipelines_<api>.bin) onto the starter. A run on a device
 with the dynamic depth bias (every D3D12 and Vulkan device of today) zeroes the starter's static biases at
@@ -31,13 +35,21 @@ already had, how many are new, those by sample count, and how many of the new ar
 count of a record the list holds with more than one sample (what the setup precache and a level change make
 by themselves, Pipelines::MakeLevelCopies). --skip-level-copies leaves those out of the output: for a run at
 an MSAA level other than the default 2, or under an upscaler (1 sample), whose records are the same
-pipelines at 4, 8 or 1 samples.
+pipelines at 4, 8 or 1 samples. --max-colour-targets N leaves out the records with more colour targets: 1 takes the main view's own pipelines and not the G-buffer's 4-target twins of them, whose
+draws have a fallback key and are made in the background (src/gpu/variant_wait.h), so the starter needs only those whose draws may not wait (VK-FIRST-FRAME: a D3D12 race of the integrated tree
+made 62 to 80 such pipelines on the render thread that the starter lacked).
 
 check --pack: records whose vertex or pixel shader the pack does not have (the game drops them at load:
 "N dropped: a shader the pack does not have"), a spec variant on a shader with no spec mask, and with
---variant-pack the variants of the variant pack (ps_variant 2 and up: the HDR scene's tone map, the bloom's
-Gaussians, the shadow collector's soft lookup, the glow sprites' soft visibility) whose pixel shader has no entry for that variant in it. The
+--variant-pack the variants of the variant pack (ps_variant and vs_variant 2 and up: words of features, shaderpack/variant_chain.h: the HDR
+scene's tone map, the bloom's Gaussians, the shadow collector's soft lookup, the glow sprites' soft visibility, a composed shader ...) whose shader has no entry for that word in it. The
 exit status is 1 when a record has no shader or a variant has no entry.
+
+lacks --base LIST FILE...: what the runs' pipeline files hold that LIST does not, grouped by the variant words, the colour targets, the sample count and whether the
+pipeline writes the stencil (the pipelines a play made on the render thread, or in the background, because the list had no record of them: a run that started with an empty cache folder
+writes its own file, which is the list plus the pipelines it had to make). The stencil column is the one that matters for the first night and the G-buffer's first frames: the game's rule for
+leaving a draw out while a pipeline is built (Scene::MaySkipForPipeline) refuses a draw that writes the stencil, so such a pipeline is made on the render thread unless the draw has a fallback
+(src/gpu/variant_wait.h: the headlight's word and the G-buffer's planes have). The records come in the order the run first needed them.
 
 reorder keeps the records of --base and moves to the front those that also stand in the FILEs (the
 depth bias is not compared), in the FILEs' order, the rest after them in their old order. Use it
@@ -66,22 +78,48 @@ VS_VARIANT_AT, PS_VARIANT_AT = 16, 20
 SAMPLES_AT = 32
 DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
+COLOR_COUNT_AT = 36
+STENCIL_AT, STENCIL_MASKS_AT = 80, 84  # key.stencil (bit 0 enable; front compare, fail, pass, depth fail at bits 1, 5, 9, 13; back compare, fail, pass at 17, 21, 25), key.stencil_masks (read, write, reference; the back depth fail at 24)
+STENCIL_REF_MASK = 0x00FF0000  # key.stencil_masks bits 16-23: the draw's reference in a list an older build wrote; 0 since the reference is on the command list (src/gpu/stencil_ref.h)
+STENCIL_KEEP = 1  # plume RenderStencilOp: UNKNOWN 0, KEEP 1, ZERO 2, REPLACE 3 ...
 FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
-VARIANT_NAMES = {2: "HDR scene", 3: "bloom Gaussians", 4: "environment map", 5: "shadow filter", 6: "glow visibility", 7: "car self-reflection"}  # ShaderStore::kHdrVariant, kBloomVariant, kEnvVariant, kShadowFilterVariant, kGlowVariant, kCarSelfReflVariant
+# The variant word (ps_variant, vs_variant): bit 0 the main pack's spec variant, bits 1..31 the set of features (shaderpack/variant_chain.h):
+# the names of the features by index (shaderpack/pack_format.h kFeature*, the rows of variant_chain.h kFeatures).
+FEATURE_NAMES = ["HDR scene", "bloom Gaussians", "environment map", "shadow filter", "glow visibility", "car self-reflection",
+                 "luminance scale", "car chrome", "UI sharpening", "headlights", "G-buffer", "lamp shadow", "G-buffer vertex"]
+
+
+def word_name(word):
+    """\"shadow filter\", \"UI sharpening (alpha test)\", \"headlights + G-buffer ...\": the features of a variant word."""
+    names = [FEATURE_NAMES[f] if f < len(FEATURE_NAMES) else f"feature {f}" for f in range(31) if (word >> 1) & (1 << f)]
+    return " + ".join(names) + (" (spec variant 1)" if word & 1 else "")
 
 # The shader pack (src/shaderpack/pack_format.h): "MSPK", version, count, formats, 16 reserved; entries of 88
-# bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 80
-# bytes, the pixel shader's key first, the variant id (u32) at byte 40.
+# bytes (key u64, stage u8, spec_mask u8, ...). The variant pack: "MSHV", version, count, ...; entries of 88
+# bytes (version 3), the shader's key first (a pixel shader's, or a vertex shader's when the flags at byte 44
+# have bit 0), the variant word (u32) at byte 40.
 PACK_MAGIC, PACK_VERSION, PACK_HEADER, PACK_ENTRY = b"MSPK", 8, 32, 88
-VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, VARIANT_PACK_HEADER, VARIANT_PACK_ENTRY = b"MSHV", 2, 32, 80
+VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION, VARIANT_PACK_HEADER, VARIANT_PACK_ENTRY = b"MSHV", 3, 32, 88
 VARIANT_AT = 40
+VARIANT_FLAGS_AT = 44
 
 
 class Bad(Exception):
     pass
 
 
-def read_list(path):
+def without_stencil_ref(key):
+    """The key with the stencil reference cleared: what a build that sets the reference on the command list asks for (the same as Pipelines::LoadFile)."""
+    masks = u32(key, STENCIL_MASKS_AT)
+    if not masks & STENCIL_REF_MASK:
+        return key
+    return key[:STENCIL_MASKS_AT] + struct.pack("<I", masks & ~STENCIL_REF_MASK) + key[STENCIL_MASKS_AT + 4:]
+
+
+def read_list(path, raw=False):
+    """(backend, layouts, records). The records' stencil references are cleared unless raw: a list of an older build holds one record
+    per reference of a state, which are one pipeline now: the first of them stays and the repeats are left out, as the game does when it
+    reads the list."""
     data = open(path, "rb").read()
     if len(data) < 32 or data[:8] != MAGIC:
         raise Bad(f"{path}: not a pipeline list")
@@ -104,14 +142,21 @@ def read_list(path):
             raise Bad(f"{path}: a layout is cut short")
         layouts.append((h, data[start + 8:at]))
     records = []
+    seen = set()
     for _ in range(record_count):
         if at + KEY_SIZE + 4 > len(data):
             raise Bad(f"{path}: a record is cut short")
         key = data[at:at + KEY_SIZE]
+        if not raw:
+            key = without_stencil_ref(key)
         (layout,) = struct.unpack_from("<I", data, at + KEY_SIZE)
         at += KEY_SIZE + 4
         if layout >= len(layouts):
             raise Bad(f"{path}: a record names no layout")
+        if not raw:
+            if key in seen:
+                continue
+            seen.add(key)
         records.append((key, layout))
     return BACKENDS.get(backend, str(backend)), layouts, records
 
@@ -146,19 +191,23 @@ def fmt_counts(counts):
 
 def info(paths):
     for p in paths:
-        backend, layouts, records = read_list(p)
+        backend, layouts, records = read_list(p, raw=True)
         keys = [k for k, _ in records]
+        with_ref = sum(1 for k in keys if u32(k, STENCIL_MASKS_AT) & STENCIL_REF_MASK)
+        folded = len({without_stencil_ref(k) for k in keys})
         biased = sum(1 for k in keys if k[DEPTH_BIAS_AT:DEPTH_BIAS_AT + 8] != b"\0" * 8)
         depth_only = sum(1 for k in keys if k[PS_AT:PS_AT + 8] == b"\0" * 8)
         packed = {}
         for k in keys:
             if u32(k, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT:
                 packed[u32(k, PS_VARIANT_AT)] = packed.get(u32(k, PS_VARIANT_AT), 0) + 1
-        variants = ", ".join(f"{VARIANT_NAMES.get(v, 'variant ' + str(v))} {n}" for v, n in sorted(packed.items())) or "none"
+        variants = ", ".join(f"{word_name(v)} {n}" for v, n in sorted(packed.items())) or "none"
         print(f"{p}: {backend}, {len(records)} records, {len(layouts)} layouts, "
               f"{depth_only} depth only, {biased} with a static depth bias")
-        print(f"    {len({without_bias(k) for k in keys})} distinct without the bias (what a device with the "
-              f"dynamic bias keeps); by sample count {fmt_counts(by_samples(keys))}; shader variants: {variants}")
+        print(f"    {with_ref} with a stencil reference in the key (an older build's: it is on the command list now); "
+              f"{folded} distinct without it ({len(records) - folded} fold into another)")
+        print(f"    {len({without_bias(without_stencil_ref(k)) for k in keys})} distinct without the bias (what a device with the "
+              f"dynamic bias keeps; {len({without_bias(k) for k in keys})} while the reference was in the key); by sample count {fmt_counts(by_samples(keys))}; shader variants: {variants}")
 
 
 class Collector:
@@ -189,9 +238,12 @@ def merge(paths, out):
     write_list(out, c.layouts, c.records)
 
 
-def add(base, files, out, skip_level_copies=False):
+def add(base, files, out, skip_level_copies=False, max_colour_targets=0):
     """BASE as it is, then the records of each FILE that BASE and the earlier FILEs lack (the depth bias
-    is not compared). Writes OUT when it is given. Returns the Collector."""
+    is not compared). Writes OUT when it is given. Returns the Collector.
+    max_colour_targets (0: no limit): records with more colour targets are left out. The G-buffer's planes make
+    4-target twins of the main view's pipelines; their draws have a fallback key (src/gpu/variant_wait.h) and are
+    made in the background, so the starter needs only the pipelines whose draws may not wait (VK-FIRST-FRAME)."""
     _, base_layouts, base_records = read_list(base)
     c = Collector()
     seen = set()  # keys without the bias
@@ -203,11 +255,14 @@ def add(base, files, out, skip_level_copies=False):
     print(f"{base}: {len(base_records)} records, kept as they are")
     for p in files:
         _, file_layouts, file_records = read_list(p)
-        present = skipped = copies = 0
+        present = skipped = copies = many_targets = 0
         new = []
         for key, layout in file_records:
             if without_bias(key) in seen:
                 present += 1
+                continue
+            if max_colour_targets and u32(key, COLOR_COUNT_AT) > max_colour_targets:
+                many_targets += 1
                 continue
             s = samples_of(key)
             copy = any(t > 1 and t != s for t in held.get(canonical(key), ()))
@@ -221,7 +276,8 @@ def add(base, files, out, skip_level_copies=False):
             held.setdefault(canonical(key), set()).add(s)
         print(f"{p}: {len(file_records)} records, {present} already in the list, {len(new)} new "
               f"(by sample count {fmt_counts(by_samples(new))}); {copies} of the new are a copy of a record at "
-              f"another sample count" + (f", {skipped} left out" if skip_level_copies else ""))
+              f"another sample count" + (f", {skipped} left out" if skip_level_copies else "") +
+              (f"; {many_targets} more with over {max_colour_targets} colour target(s) left out" if max_colour_targets else ""))
     if out:
         write_list(out, c.layouts, c.records)
     else:
@@ -262,12 +318,15 @@ def reorder(base, firsts, out):
 
 
 def read_pack(path, magic, version, header, entry):
-    """The shader keys of a pack: key -> the spec mask (main pack), or (variant, key) pairs (variant pack)."""
+    """The shader keys of a pack: key -> the spec mask (main pack), or (vertex shader?, variant word, key) triples (variant pack)."""
     data = open(path, "rb").read()
     if len(data) < header or data[:4] != magic:
         raise Bad(f"{path}: not a shader pack ({magic.decode()})")
     got, count = struct.unpack_from("<2I", data, 4)
     if got != version:
+        if magic == VARIANT_PACK_MAGIC:
+            # another version's entries are another size: nothing of the file can be read (the game refuses such a pack whole, too)
+            raise Bad(f"{path}: variant pack version {got}, this tool reads version {version}: it was built by another version of the shader pack build")
         print(f"{path}: pack version {got}, this tool knows {version}", file=sys.stderr)
     if header + count * entry > len(data):
         raise Bad(f"{path}: the entries are cut short")
@@ -278,7 +337,8 @@ def read_pack(path, magic, version, header, entry):
         if magic == PACK_MAGIC:
             keys[key] = data[at + 9]
         else:
-            keys[(struct.unpack_from("<I", data, at + VARIANT_AT)[0], key)] = None
+            word, flags = struct.unpack_from("<2I", data, at + VARIANT_AT)
+            keys[(bool(flags & 1), word, key)] = None
     return keys
 
 
@@ -303,7 +363,11 @@ def check(pack, variant_pack, paths):
                 no_spec += 1
             if u32(key, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT:
                 variant_total += 1
-                if packed is not None and (u32(key, PS_VARIANT_AT), ps) not in packed:
+                if packed is not None and (False, u32(key, PS_VARIANT_AT), ps) not in packed:
+                    variant_missing += 1
+            if u32(key, VS_VARIANT_AT) >= FIRST_PACKED_VARIANT:  # a vertex stage's word (a pixel word that needs it)
+                variant_total += 1
+                if packed is not None and (True, u32(key, VS_VARIANT_AT), vs) not in packed:
                     variant_missing += 1
         tail = (f", {variant_missing} without an entry in the variant pack" if packed is not None
                 else (" (give --variant-pack to check them)" if variant_total else ""))
@@ -315,9 +379,10 @@ def check(pack, variant_pack, paths):
 
 # --- selftest: made-up lists and packs, no game data -----------------------------------------------------
 
-def _key(vs, ps, samples=2, bias=0, ps_variant=0, vs_variant=0):
+def _key(vs, ps, samples=2, bias=0, ps_variant=0, vs_variant=0, colours=0):
     k = bytearray(KEY_SIZE)
     struct.pack_into("<2Q", k, VS_AT, vs, ps)
+    struct.pack_into("<I", k, COLOR_COUNT_AT, colours)
     struct.pack_into("<I", k, VS_VARIANT_AT, vs_variant)
     struct.pack_into("<I", k, PS_VARIANT_AT, ps_variant)
     struct.pack_into("<I", k, SAMPLES_AT, samples)
@@ -338,7 +403,7 @@ def _pack(path, magic, version, entries, entry_size):
         if magic == PACK_MAGIC:
             e[8], e[9] = ord("p"), spec
         else:
-            struct.pack_into("<I", e, VARIANT_AT, spec)
+            struct.pack_into("<I", e, VARIANT_AT, spec)  # (the word; a vertex entry's flag is not made here)
         blob += e
     with open(path, "wb") as f:
         f.write(blob)
@@ -348,6 +413,41 @@ def _quiet(fn, *a):
     with contextlib.redirect_stdout(io.StringIO()) as s:
         r = fn(*a)
     return r, s.getvalue()
+
+
+def stencil_writes(key):
+    """The pipeline writes the stencil: it is on, the write mask is not 0 and an operation is not KEEP (the test of Scene's StencilWrites on the key's packing)."""
+    stencil, masks = u32(key, STENCIL_AT), u32(key, STENCIL_MASKS_AT)
+    if not stencil & 1 or not (masks >> 8) & 0xFF:
+        return False
+    ops = [(stencil >> shift) & 0xF for shift in (5, 9, 13, 21, 25)] + [(masks >> 24) & 0xF]
+    return any(op not in (0, STENCIL_KEEP) for op in ops)
+
+
+def lacks(base, files):
+    """The records of FILEs that BASE lacks (the depth bias is not compared), grouped by the vertex word, the pixel word, the colour targets, the sample count and
+    the stencil: one table a file, biggest groups first, then the totals; returns the number of new records."""
+    _, _, base_records = read_list(base)
+    seen = {without_bias(k) for k, _ in base_records}
+    total = 0
+    for p in files:
+        _, _, records = read_list(p)
+        new = []
+        for key, _ in records:
+            if without_bias(key) not in seen:
+                new.append(key)
+        groups = {}
+        for key in new:
+            group = (word_name(u32(key, VS_VARIANT_AT)) if u32(key, VS_VARIANT_AT) >= FIRST_PACKED_VARIANT else "the game's",
+                     word_name(u32(key, PS_VARIANT_AT)) if u32(key, PS_VARIANT_AT) >= FIRST_PACKED_VARIANT else "the game's",
+                     u32(key, COLOR_COUNT_AT), samples_of(key), stencil_writes(key))
+            groups[group] = groups.get(group, 0) + 1
+        writers = sum(1 for k in new if stencil_writes(k))
+        print(f"{p}: {len(records)} records, {len(new)} that {base} lacks; {writers} of them write the stencil (the game's rule keeps those out of the background builds)")
+        for (vs, ps, colours, samples, stencil), n in sorted(groups.items(), key=lambda kv: (-kv[1], str(kv[0]))):
+            print(f"  {n:4d}  vertex: {vs}; pixel: {ps}; {colours} colour target(s), {samples} sample(s); {'writes the stencil' if stencil else 'no stencil write'}")
+        total += len(new)
+    return total
 
 
 def selftest():
@@ -405,6 +505,17 @@ def selftest():
         _quiet(reorder, path("base.bin"), [path("run1.bin")], path("re.bin"))
         expect([k for k, _ in read_list(path("re.bin"))[2]] == [a, b, c4], "reorder keeps the records")
 
+        # --max-colour-targets: the main view's own pipelines are added, the G-buffer's 4-target twins are left out
+        one, four, zero = _key(21, 22, 2, colours=1), _key(21, 22, 2, ps_variant=2048, colours=4), _key(23, 24, 2, colours=0)
+        write("gb.bin", [(one, 0), (four, 0), (zero, 0)], [_layout(10)])
+        _quiet(add, path("base.bin"), [path("gb.bin")], path("onetarget.bin"), False, 1)
+        keys = [k for k, _ in read_list(path("onetarget.bin"))[2]]
+        expect(keys[3:] == [one, zero] and four not in keys, "--max-colour-targets 1 leaves the 4-target twin out")
+        _, text = _quiet(add, path("base.bin"), [path("gb.bin")], "", False, 1)
+        expect("1 more with over 1 colour target(s) left out" in text, f"the count of the left out is said ({text.splitlines()[-2]})")
+        _quiet(add, path("base.bin"), [path("gb.bin")], path("alltargets.bin"))
+        expect(four in [k for k, _ in read_list(path("alltargets.bin"))[2]], "without the limit the 4-target record is added")
+
         # info
         _, text = _quiet(info, [path("base.bin")])
         expect("3 records" in text and "2:2 4:1" in text, f"info says the sample counts ({text.strip()})")
@@ -421,6 +532,46 @@ def selftest():
                "2 without" in text, f"check counts ({text.splitlines()[-1]})")
         write("ok.bin", [(_key(1, 2), 0), (_key(3, 4), 0)], [_layout(10)])
         expect(_quiet(check, path("pack"), "", [path("ok.bin")])[0] == 0, "check passes a list whose shaders are all there")
+
+        # lacks: the runs' records the base lacks, by word and stencil (a headlight key (word 1024) that writes the stencil, a G-buffer one (2048) with three more colour targets that does not)
+        def with_stencil(key, front_pass, write_mask):
+            b = bytearray(key)
+            struct.pack_into("<I", b, STENCIL_AT, 1 | (8 << 1) | (STENCIL_KEEP << 5) | (front_pass << 9) | (STENCIL_KEEP << 13) | (8 << 17) | (STENCIL_KEEP << 21) | (front_pass << 25))
+            struct.pack_into("<I", b, STENCIL_MASKS_AT, 0xFF | (write_mask << 8) | (STENCIL_KEEP << 24))
+            return bytes(b)
+        hl = with_stencil(_key(21, 22, 2, ps_variant=1024), 3, 0xFF)
+        gb = with_stencil(_key(23, 24, 2, ps_variant=2048), STENCIL_KEEP, 0xFF)
+        keep = with_stencil(_key(25, 26, 2), STENCIL_KEEP, 0x00)
+        expect(stencil_writes(hl) and not stencil_writes(gb) and not stencil_writes(keep) and not stencil_writes(_key(27, 28, 2)),
+               "stencil_writes: a REPLACE with a write mask is one, all KEEP or a zero write mask or no stencil is not")
+        write("lacks.bin", [(a0, 0), (b, 0), (hl, 0), (gb, 0), (keep, 0)], [_layout(10)])
+        got = io.StringIO()
+        with contextlib.redirect_stdout(got):
+            count = lacks(path("base.bin"), [path("lacks.bin")])
+        text = got.getvalue()
+        expect(count == 3 and "1 of them write the stencil" in text and "pixel: headlights;" in text and "pixel: G-buffer;" in text and "writes the stencil" in text,
+               f"lacks counts the 3 new records, the stencil writer and names the words ({text.strip()})")
+        expect(word_name(3072) == "headlights + G-buffer" and word_name(8192) == "G-buffer vertex" and word_name(2048) == "G-buffer", "word names cover the G-buffer features")
+
+        # the stencil reference is on the command list since STENCIL-DYN: records that differ only by it are one pipeline
+        def with_ref(key, ref):
+            b = bytearray(key)
+            struct.pack_into("<I", b, STENCIL_AT, 1 | (8 << 1) | (STENCIL_KEEP << 5) | (STENCIL_KEEP << 9) | (STENCIL_KEEP << 13) | (8 << 17) | (STENCIL_KEEP << 21) | (STENCIL_KEEP << 25))
+            struct.pack_into("<I", b, STENCIL_MASKS_AT, 0xFF | (0xFF << 8) | (ref << 16) | (STENCIL_KEEP << 24))
+            return bytes(b)
+        r5, r9, r0 = with_ref(_key(31, 32, 2), 5), with_ref(_key(31, 32, 2), 9), with_ref(_key(31, 32, 2), 0)
+        other = with_ref(_key(33, 34, 2), 7)
+        write("refs.bin", [(r5, 0), (other, 0), (r9, 0), (r0, 0), (_key(35, 36, 2), 0)], [_layout(10)])
+        keys = [k for k, _ in read_list(path("refs.bin"))[2]]
+        expect(keys == [r0, with_ref(_key(33, 34, 2), 0), _key(35, 36, 2)] and all(not u32(k, STENCIL_MASKS_AT) & STENCIL_REF_MASK for k in keys),
+               "read_list clears the stencil reference and keeps the first of the records that differed only by it (in the first one's place)")
+        expect(len(read_list(path("refs.bin"), raw=True)[2]) == 5, "raw keeps every record as written")
+        _quiet(merge, [path("refs.bin")], path("refs-merged.bin"))
+        expect([k for k, _ in read_list(path("refs-merged.bin"), raw=True)[2]] == keys, "merge writes the list with the references cleared and the repeats gone")
+        _quiet(add, path("refs.bin"), [path("refs.bin")], path("refs-added.bin"))
+        expect(len(read_list(path("refs-added.bin"), raw=True)[2]) == 3, "add does not take a record that differs from the base's only by the reference")
+        _, text = _quiet(info, [path("refs.bin")])
+        expect("3 with a stencil reference in the key" in text and "3 distinct without it (2 fold into another)" in text, f"info counts the references ({text.strip()})")
 
         # junk is refused
         with open(path("junk.bin"), "wb") as f:
@@ -445,7 +596,12 @@ def main():
     ad.add_argument("--base", required=True)
     ad.add_argument("-o", "--out", default="")
     ad.add_argument("--skip-level-copies", action="store_true")
+    ad.add_argument("--max-colour-targets", type=int, default=0,
+                    help="leave out records with more colour targets than this (1: the main view's own pipelines, not the G-buffer's 4-target twins)")
     ad.add_argument("files", nargs="+")
+    lk = sub.add_parser("lacks")
+    lk.add_argument("--base", required=True)
+    lk.add_argument("files", nargs="+")
     ck = sub.add_parser("check")
     ck.add_argument("--pack", required=True)
     ck.add_argument("--variant-pack", "--hdr-pack", dest="variant_pack", default="")
@@ -462,7 +618,9 @@ def main():
         elif a.cmd == "merge":
             merge(a.files, a.out)
         elif a.cmd == "add":
-            add(a.base, a.files, a.out, a.skip_level_copies)
+            add(a.base, a.files, a.out, a.skip_level_copies, a.max_colour_targets)
+        elif a.cmd == "lacks":
+            lacks(a.base, a.files)
         elif a.cmd == "check":
             sys.exit(check(a.pack, a.variant_pack, a.files))
         elif a.cmd == "selftest":

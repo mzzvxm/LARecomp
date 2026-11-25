@@ -15,6 +15,7 @@
 //   - a range allocator with coalescing (the shared position, normal, index and acceleration structure buffers)
 //   - the eviction policy of the meshes (not seen for a few hundred frames, or the memory cap) and the per-frame build budget
 //   - the check pass's statistics (the words the shader counts into, as numbers)
+//   - whether a device can trace the car at all (UnsupportedReason: Direct3D 12 with DXR 1.1, Vulkan with ray queries)
 //
 // This header includes nothing of the renderer.
 // ===========================================================================
@@ -24,9 +25,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <format>
 #include <iterator>
 #include <limits>
 #include <map>
+#include <string>
 #include <vector>
 
 #include "car_dump_rules.h"
@@ -66,8 +70,22 @@ inline constexpr uint32_t kMaskBody = 0x01;    // the opaque rigid parts
 inline constexpr uint32_t kMaskGlass = 0x02;   // drawn after the world: glass, lights and other translucent parts
 inline constexpr uint32_t kMaskTyres = 0x04;
 inline constexpr uint32_t kMaskDriver = 0x08;  // skinned: not in the first version
+// Another car (an opponent, traffic, a parked car; car_rt_instances_rules.h): hit by the effects' rays against the scene, never by the
+// primary ray that finds the player's car at a pixel.
+inline constexpr uint32_t kMaskOthers = 0x10;
+// Another car's CHROME (the tailpipes, the badges and the trim, drawn by xChrome::PS_Chrome: car_rt_instances_rules.h OtherMask). An instance of such a draw
+// carries this bit AND kMaskOthers, so every ray that hits another car still hits it; a ray whose mask is this bit alone finds another car's chrome and
+// nothing else. The reflection pass's primary ray takes it (with the player's body) to find another car's chrome at a pixel (car_chrome_rt_rules.h).
+inline constexpr uint32_t kMaskOtherChrome = 0x20;
+// Another car's PAINT (the instance of a draw of xCarPaintCustomizable::PS_CarPaint of another car: car_rt_instances_rules.h OtherMask). It also carries kMaskOthers. The
+// opponents' reflection pass (car_rt_opp_refl.h) gives its primary ray this bit alone, to find the pixels of another car that the paint variant reads.
+inline constexpr uint32_t kMaskOtherPaint = 0x40;
 // The table's flags word (z): the mask in the low 8 bits, then these (CAR_RT_FLAG_*).
 inline constexpr uint32_t kFlagAfterWorld = 0x100;
+// The side mirrors (car_mirror_patch_rules.h, car_mirror_rt_rules.h): the instance is one of the two mirror glasses of the player's car, or a pane of glass a camera looks through (a window). They are
+// flags of the table's row and not mask bits: all eight bits of the mask are the cars' and the city's.
+inline constexpr uint32_t kFlagMirror = 0x200;
+inline constexpr uint32_t kFlagSeeThrough = 0x400;
 
 // The tyres' vertex shader (xWheelRubber VS_ParallaxRubber2: no palette, gWorld alone; car_dump_rules.h kKnownWorldOnlyVs).
 inline constexpr uint64_t kTyreVs = car_dump::kKnownWorldOnlyVs[0];
@@ -355,6 +373,15 @@ class RangeAllocator {
   uint64_t used_ = 0;
 };
 
+// A growth copies the old buffer's first `copied` bytes (the allocator's high water) into the new one in one copy: the ranges that are free at that
+// moment included, the holes that given-back meshes left below the high water. The first-fit allocator hands those holes to the next meshes, whose
+// copies then write bytes the growth's copy wrote in the same recording, and nothing orders the two copies (Vulkan sync validation reports
+// SYNC-HAZARD-WRITE-AFTER-WRITE: the old, stale bytes could land after the new mesh). A copy of `size` bytes at `offset` needs a barrier before it
+// when it reaches into those bytes. (A range past them was never written in the recording, and one barrier orders every copy after it.)
+inline bool CopyNeedsBarrier(uint64_t copied, uint64_t offset, uint64_t size) {
+  return size != 0 && offset < copied;
+}
+
 // The capacity a buffer grows to when `needed` does not fit: double, at least `needed` rounded up to `step`, never over `limit`.
 inline uint64_t GrownCapacity(uint64_t capacity, uint64_t needed, uint64_t step, uint64_t limit) {
   const uint64_t wanted = std::max(capacity * 2, (needed + step - 1) / step * step);
@@ -424,6 +451,20 @@ inline EvictionPlan PlanEviction(const std::vector<MeshUse>& meshes, const Evict
   return plan;
 }
 
+// The mesh a frame's bottom level build is recorded for, found again by its key when the builds are recorded: a mesh placed earlier in the frame can have been given back
+// by then (PlaceWalkedCars drops the cars that left the walk's set, GiveBack -> Evict hands the structure to the frame ring and erases the entry), so the pointer kept from
+// placing it points into an erased node. ppr1, 2026-11-21 (the RT grid scene on D3D12, right after the number of other cars changed): the erased node still read as a null
+// structure, buildBottomLevelAS got a null destination and the render thread read address 0x10. `resident` is the map of key -> mesh (a mesh has a `structure`, a smart pointer).
+// Null when the key is not there, or its mesh has no structure: nothing is built for it.
+template <class Resident>
+inline auto BuildableMesh(Resident& resident, uint64_t key) -> decltype(&resident.find(key)->second) {
+  const auto it = resident.find(key);
+  if (it == resident.end() || !it->second.structure) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
 // How many of the pending meshes (their triangle counts, in order) are taken in one frame: until the budget is reached, at least one.
 inline size_t TakeWithinBudget(const std::vector<uint32_t>& triangles, uint64_t budget) {
   uint64_t sum = 0;
@@ -451,11 +492,14 @@ inline bool TotalsChangedMuch(uint64_t last_logged, uint64_t now) {
 // ---------------------------------------------------------------------------
 // the check pass's statistics (hlsl/car_rt_check_cs.hlsl)
 // ---------------------------------------------------------------------------
-// The shader counts into 16 words: for each vehicle pixel of the AO's linear depth image a ray from the view-space origin through the
-// pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction has z = 1) is compared with the
-// pixel's own distance.
-inline constexpr uint32_t kStatsWords = 16;
-inline constexpr uint32_t kStatVehicle = 0;    // vehicle pixels of the image
+// The shader counts into 20 words (and then holds the PROBE's, below): for each vehicle pixel of the AO's linear depth image that the scene is meant to hold (see the scope
+// below) a ray from the view-space origin through the pixel is traced and its committed hit distance (the view-space z of the hit, as the ray's direction
+// has z = 1) is compared with the pixel's own distance. A vehicle pixel the scene is not meant to hold is only counted (kStatOutside).
+inline constexpr uint32_t kStatProbe = 20;     // the first word of the probe's
+inline constexpr uint32_t kProbeCars = 4;      // the first cars' records the probe reads back
+inline constexpr uint32_t kProbeWordsPerCar = 8;  // a car's two rows (CarRow, CarPaintRow) as the shader reads them: centre xyz, radius, paint rgb, flags, as bits
+inline constexpr uint32_t kStatsWords = kStatProbe + kProbeCars * kProbeWordsPerCar;  // 52: a multiple of four: the counter buffer is a multiple of 16 bytes
+inline constexpr uint32_t kStatVehicle = 0;    // vehicle pixels of the image the scene is meant to hold (the scope below)
 inline constexpr uint32_t kStatCovered = 1;    // ... whose ray hit a part of the car
 inline constexpr uint32_t kStatErrorSum = 2;   // the sum of |hit - image| / image over the covered, in units of kErrorUnit
 inline constexpr uint32_t kStatNearer = 3;     // covered pixels whose hit is nearer than the image's by more than kNearFarTolerance
@@ -465,15 +509,65 @@ inline constexpr uint32_t kBuckets = 8;
 inline constexpr uint32_t kStatGlass = 13;     // hits on an instance of kMaskGlass
 inline constexpr uint32_t kStatTyres = 14;     // ... of kMaskTyres
 inline constexpr uint32_t kStatBody = 15;      // ... of kMaskBody
+inline constexpr uint32_t kStatOutside = 16;   // vehicle pixels the scene is NOT meant to hold: cars outside the frame's selection (not in the scene by design)
+inline constexpr uint32_t kStatOthers = 17;    // of kStatVehicle's: the pixels in another kept car's box (the rest are in the player's box)
+// words 18 and 19 are not used
 static_assert(kStatHistogram + kBuckets == kStatGlass);
+static_assert(kStatOthers < kStatProbe);
+static_assert(kStatsWords % 4 == 0);
 inline constexpr double kBucketEdges[kBuckets] = {0.0025, 0.005, 0.01, 0.02, 0.05, 0.10, 0.25, 1e30};
 inline constexpr double kErrorUnit = 1000.0;
 inline constexpr double kNearFarTolerance = 0.02;
 
+// THE SCOPE: which vehicle pixels the scene is meant to hold. The scene keeps the player's car and the nearest few other cars of the frame (by the
+// class: High up to 4 within 20 m, Mid up to 2 within 14 m; none with the cars 0 switch), and leaves the driver out; a vehicle pixel of any other car
+// is not a miss but not in the scene by design. The depth image says only "vehicle" (one bit), not which car, so the shader places the pixel's
+// view-space position (the ray's direction times the image's distance) in the boxes of the kept cars: the player's car's box (the transformed mesh
+// boxes of its listed instances, grown on the host) and each kept other car's box (the same, from the top level's table, grown in the shader), both
+// by kScopeBoxMargin. A pixel outside every box is of a car outside the selection. A box is an axis aligned box in view space, so a pixel of an
+// unkept car right beside a kept one can fall in the kept car's box (it is then counted, and may show as a miss: the check errs on the strict side).
+inline constexpr float kScopeBoxMargin = 0.15f;  // what every car's box is grown by (the player's on the host, the other cars' in the shader)
+inline constexpr uint32_t kScopeMaxOtherBoxes = 8;  // car_rt_instances_rules.h kMaxCars
+inline constexpr uint32_t kScopeOutside = 0;
+inline constexpr uint32_t kScopePlayer = 1;
+inline constexpr uint32_t kScopeOther = 2;
+// bits of the check's scope flags (the push block's)
+inline constexpr uint32_t kScopeFlagPlayerBox = 1u << 0;  // the player's car's box is known
+
+struct ScopeBox {
+  float lo[3] = {0, 0, 0};
+  float hi[3] = {0, 0, 0};
+};
+
+// The host's mirror of the shader's ScopeOf: `p` is the pixel's view-space position; `player` is the player's box as the host pushes it (grown by the
+// margin already), null when no mesh of the car had a box, so that a pixel in no other car's box counts as the player's; the other cars' boxes are as the
+// scene has them (the margin is added here, as the shader adds it).
+inline uint32_t ScopeOf(const float p[3], const ScopeBox* player, const ScopeBox* others, uint32_t other_count) {
+  const auto inside = [&](const ScopeBox& b, float margin) {
+    for (int c = 0; c < 3; ++c) {
+      if (!(p[c] >= b.lo[c] - margin && p[c] <= b.hi[c] + margin)) {
+        return false;
+      }
+    }
+    return true;
+  };
+  if (player && inside(*player, 0.0f)) {
+    return kScopePlayer;
+  }
+  for (uint32_t i = 0; i < other_count && i < kScopeMaxOtherBoxes; ++i) {
+    if (inside(others[i], kScopeBoxMargin)) {
+      return kScopeOther;
+    }
+  }
+  return player ? kScopeOutside : kScopePlayer;
+}
+
 struct CheckSummary {
-  uint64_t vehicle = 0;
+  uint64_t vehicle = 0;    // the vehicle pixels the scene is meant to hold: the player's car and the other cars the frame kept
+  uint64_t outside = 0;    // more vehicle pixels of cars outside the selection (the class's radius and count, the cars 0 switch): not in the scene by design
+  uint64_t others = 0;     // of `vehicle`: in another kept car's box
   uint64_t covered = 0;
-  uint64_t missed = 0;     // vehicle pixels no part of the player's car covers: the other cars, the driver, anything not built yet
+  uint64_t missed = 0;     // vehicle pixels no part of a car in the scene covers: the driver, anything not built yet
   double coverage = 0.0;   // covered / vehicle
   double mean_error = 0.0;  // mean |hit - image| / image over the covered
   double p50 = 0.0;        // the upper edge of the histogram's bucket holding the median and the 95th percentile (1e30: the last)
@@ -482,17 +576,22 @@ struct CheckSummary {
   double nearer = 0.0;       // ... with a hit nearer than the image by more than 2%
   double farther = 0.0;
   uint64_t glass = 0, tyres = 0, body = 0;
+  uint64_t other = 0;      // covered pixels none of the three classes counts: the other cars' parts (and the driver, where it is built)
 };
 
 inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
   CheckSummary s;
   s.vehicle = words[kStatVehicle];
+  s.outside = words[kStatOutside];
+  s.others = std::min(words[kStatOthers], words[kStatVehicle]);
   s.covered = std::min(words[kStatCovered], words[kStatVehicle]);
   s.missed = s.vehicle - s.covered;
   s.coverage = s.vehicle ? double(s.covered) / double(s.vehicle) : 0.0;
   s.glass = words[kStatGlass];
   s.tyres = words[kStatTyres];
   s.body = words[kStatBody];
+  const uint64_t classed = s.glass + s.tyres + s.body;
+  s.other = s.covered > classed ? s.covered - classed : 0;
   if (s.covered == 0) {
     return s;
   }
@@ -515,6 +614,121 @@ inline CheckSummary DecodeCheckStats(const uint32_t words[kStatsWords]) {
   s.nearer = double(words[kStatNearer]) / covered;
   s.farther = double(words[kStatFarther]) / covered;
   return s;
+}
+
+
+// ---------------------------------------------------------------------------
+// the probe: the paint as the shader reads it (RT-MODEL-CARS-4)
+// ---------------------------------------------------------------------------
+// The first check showed the neighbour beside the door as a dark silhouette in no colour. The CPU wrote the paint into the table (car_rt_instances_rules.h CarPaintRow), the shader
+// reads it with CarRtLoadCar (hlsl/car_rt_common.hlsli): this proves the second half. The check pass's thread (0, 0) copies the first kProbeCars cars' two rows, as the shader's
+// own loads see them, into the words from kStatProbe (the push block says where the records start and how many there are), and the host's readback decodes them and compares each
+// with the record it wrote for that frame (car_rt_instances_rules.h CarRecordLog): the same bits or not.
+struct ProbeCar {
+  bool read = false;     // the slot is one of the frame's records
+  float centre[3] = {};  // CarRow as the shader read it
+  float radius = 0.0f;
+  float paint[3] = {};   // CarPaintRow
+  uint32_t flags = 0;    // bit 0 the colour is known (car_rt_instances_rules.h kPaintKnown)
+};
+
+inline ProbeCar DecodeProbe(const uint32_t words[kStatsWords], uint32_t slot, uint32_t car_count) {
+  ProbeCar p;
+  if (slot >= kProbeCars || slot >= car_count) {
+    return p;
+  }
+  const uint32_t* w = words + kStatProbe + slot * kProbeWordsPerCar;
+  float f[kProbeWordsPerCar];
+  static_assert(sizeof(f) == sizeof(uint32_t) * kProbeWordsPerCar);
+  std::memcpy(f, w, sizeof(f));
+  p.read = true;
+  for (int c = 0; c < 3; ++c) {
+    p.centre[c] = f[c];
+    p.paint[c] = f[4 + c];
+  }
+  p.radius = f[3];
+  p.flags = w[7];
+  return p;
+}
+
+// Whether the shader read exactly the bits the host wrote for the car (the row the host sent: its radius, centre and paint; a car with no paint writes zeros and flags 0).
+inline bool ProbeMatches(const ProbeCar& read, const float centre[3], float radius, bool has_paint, const float paint[3]) {
+  if (!read.read) {
+    return false;
+  }
+  const auto same = [](float a, float b) { return std::memcmp(&a, &b, sizeof(float)) == 0; };
+  for (int c = 0; c < 3; ++c) {
+    if (!same(read.centre[c], centre[c]) || !same(read.paint[c], has_paint ? paint[c] : 0.0f)) {
+      return false;
+    }
+  }
+  return same(read.radius, radius) && read.flags == (has_paint ? 1u : 0u);
+}
+
+// ---------------------------------------------------------------------------
+// can this device trace the car
+// ---------------------------------------------------------------------------
+
+// D3D_SHADER_MODEL_6_5 as RenderDeviceCapabilities::shaderModel gives it: where the inline ray queries (RayQuery in a compute shader) start.
+inline constexpr uint32_t kShaderModel65 = 0x65;
+
+// What the ray tracing shaders use of the wave (subgroup) operations, which Plume's capabilities do not carry (backend.h WaveOps, asked of the device by
+// backend::QueryWaveOps). hlsl/car_rt_check_cs.hlsl: WaveIsFirstLane (SPIR-V OpGroupNonUniformElect, Vulkan's BASIC), WaveActiveCountBits (Ballot and
+// BallotBitCount: BALLOT) and WaveActiveSum (IAdd: ARITHMETIC); hlsl/rt_bench_cs.hlsl: WaveIsFirstLane and WaveActiveSum. All in compute shaders: no other
+// ray tracing shader (the reflection, its opponents' variant and the occlusion pass, the ray traced car's pixel shader) uses a wave operation, so no
+// other stage is asked for. Why the whole ray tracing and not only the passes with the operations: the check pass and the benchmark fail soft without
+// them, which would leave the effects running unchecked and unmeasured, and every ray query driver has the operations, so nothing real is given up.
+// `Waves` is backend::WaveOps (and a stand-in in the test). Empty when the operations are there or the
+// backend could not ask (a driver that cannot answer is not turned away).
+template <typename Waves>
+std::string WaveProblem(const Waves& waves) {
+  if (!waves.known) {
+    return std::string();
+  }
+  if (!waves.in_compute) {
+    return "the graphics card's driver offers no wave (subgroup) operations in compute shaders, which the ray tracing checks use";
+  }
+  std::string lacks;
+  const auto add = [&lacks](bool present, const char* what) {
+    if (!present) {
+      lacks += std::format("{}{}", lacks.empty() ? "" : ", ", what);
+    }
+  };
+  add(waves.basic, "basic (WaveIsFirstLane)");
+  add(waves.ballot, "ballot (WaveActiveCountBits)");
+  add(waves.arithmetic, "arithmetic (WaveActiveSum)");
+  if (lacks.empty()) {
+    return std::string();
+  }
+  return std::format("the graphics card's driver lacks wave (subgroup) operations the ray tracing checks use: {}", lacks);
+}
+
+// Why a device cannot run the ray traced car effects, or an empty text where it can: the ONE decision (CarRtUnsupportedReason in car_rt_scene.cpp
+// hands it Plume's capabilities and the wave operations; `Caps` is plume::RenderDeviceCapabilities there and a stand-in in the test, `Waves` WaveProblem's).
+//   Direct3D 12: DXR tier 1.1 (raytracing and raytracingStateUpdate) and shader model 6.5, and the wave operations (WaveProblem).
+//   Vulkan:      Plume's rayQuery (mzzvxm/plume pull request 13): VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses,
+//                deferred host operations and a Vulkan 1.2 device, all of it checked by Plume before it says yes. The ray tracing PIPELINES
+//                (caps.raytracing on Vulkan) are not needed: the shaders trace inline. The structures' buffer addresses and the bindless
+//                sets the shaders read through need the two features the renderer refuses a device without anyway (device.cpp), asked again here.
+//                And the wave operations (WaveProblem), which no extension or Plume capability covers.
+template <typename Caps, typename Waves>
+std::string UnsupportedReason(const Caps& caps, bool vulkan, const Waves& waves) {
+  if (vulkan) {
+    if (!caps.rayQuery) {
+      return "the Vulkan driver does not offer ray queries (VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and Vulkan 1.2)";
+    }
+    if (!caps.bufferDeviceAddress || !caps.descriptorIndexing) {
+      return "the Vulkan driver lacks buffer device addresses or descriptor indexing, which the car's ray tracing structures need";
+    }
+    return WaveProblem(waves);
+  }
+  if (!caps.raytracing || !caps.raytracingStateUpdate) {
+    return "the graphics card does not offer DirectX Raytracing tier 1.1 (inline ray queries)";
+  }
+  if (caps.shaderModel < kShaderModel65) {
+    return std::format("the Direct3D 12 runtime offers shader model {}.{} and the ray queries need 6.5", caps.shaderModel >> 4, caps.shaderModel & 0xF);
+  }
+  return WaveProblem(waves);
 }
 
 }  // namespace mcla::gpu::car_rt_rules

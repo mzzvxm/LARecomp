@@ -14,8 +14,8 @@
 #include <d3d12.h>
 #include <dxgiformat.h>
 
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d12/context.h"
 #include "d3d12/resource_cache.h"
@@ -23,9 +23,8 @@
 #include "guest/guest_resources.h"
 #include "shader_identity.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
 
@@ -238,7 +237,7 @@ GeometrySnapshot BuildGeometrySnapshot(const uint8_t* base, uint32_t dev, uint32
                                        const InlineGeometry* inline_geometry) {
   // The phase timers and the probes below are diagnostics: five clock reads
   // per call, twice per draw, plus the index scan. mcla_native_gfx_diag.
-  const bool diag = REXCVAR_GET(mcla_native_gfx_diag);
+  const bool diag = larecomp::settings::mcla_native_gfx_diag.Get();
   auto phase_prev = diag ? std::chrono::steady_clock::now()
                          : std::chrono::steady_clock::time_point{};
   const auto phase_mark = [&phase_prev, diag](int slot) {
@@ -652,7 +651,7 @@ bool ResolveGeometryBuffers(GeometrySnapshot& s, uint32_t element_count,
                             const InlineGeometry* inline_geometry) {
   BufferCache* buffers = &buffers_ref;
   D3D12Context* context = &context_ref;
-  const bool diag = REXCVAR_GET(mcla_native_gfx_diag);
+  const bool diag = larecomp::settings::mcla_native_gfx_diag.Get();
   {
     for (VertexStream& stream : s.streams) {
       if (stream.zero_fill) {

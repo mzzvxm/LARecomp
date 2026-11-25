@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "scene.h"
+#include "spots.h"
 
 using namespace mc::cinematic;
 
@@ -233,6 +234,24 @@ void TestStatementsErrors() {
     CheckError("at 1 car p1", "car <id>");
     CheckError("at 1 car player spawn x", "'player' is the player's own car");
     CheckError("at 1 car 9x spawn x", "car <id>");
+    {   // the player's place and a car near another (SCENE-PLAYER-POSE)
+        const ParseResult pose = ParseScene(
+            "scene c\n"
+            "at 0 car player at 832.19,16.9,-787.53 heading 62\n"
+            "at 0.5 car n1 spawn vp_lam_murcielago_06 near player -3.35,0.3,0\n"
+            "at 0.5 car n2 spawn vp_aud_r8_08 near player 3.35 0.3 0 heading 180\n"
+            "at 0.5 car a1 ambient va_gmc_yukon_05 near n1 0,0,-6\n"
+            "end 9\n");
+        Check(pose.Ok() && pose.WarningCount() == 0, "car player at and spawn / ambient near parse");
+        int n = 0;
+        for (const Event& e : pose.scene.events) n += e.track == Track::kCar ? 1 : 0;
+        Check(n == 4, "four car keys");
+    }
+    CheckError("at 1 car player at", "at needs x,y,z");
+    CheckError("at 1 car p1 at 1,2,3", "only the player's car is put with `at`");
+    CheckError("at 1 car p1 spawn vp_x near player", "near needs right,up,forward");
+    CheckError("at 1 car p1 spawn vp_x near player 1,2,3 at 1,2,3", "do not go together");
+    CheckError("at 1 car p1 spawn vp_x near p1 1,2,3", "cannot be near itself");
     // the car verbs of the cars package are read at parse time (car_verbs.h; cars_test.cpp has their own checks)
     CheckError("at 1 car p1 spawn vp_x", "needs a place");
     CheckError("at 1 car p1 spawn vp_x at 1,2", "bad position");
@@ -790,8 +809,8 @@ void TestCvarRefusal() {
         "mcla_capture_dir", "mcla_capture_name", "mcla_capture_statelog", "mcla_capture_audio", "mcla_capture_memory_mb",
         // the state log's file (M3a) and the flight recorder's (M1d)
         "mcla_state_log", "mcla_freecam_record", "mcla_freecam_out", "MCLA_STATE_LOG",
-        // the scene's own settings
-        "mcla_scene", "mcla_scene_restart", "mcla_scene_t",
+        // the scene's own settings, and the Director's (its command channel and the folder its commands write to)
+        "mcla_scene", "mcla_scene_restart", "mcla_scene_t", "mcla_director", "mcla_director_info", "mcla_director_root", "MCLA_DIRECTOR",
         // paths, folders, programs, arguments, servers
         "log_file", "dump_path", "dump_shaders", "dump_source", "cache_root", "game_data_root", "user_data_root", "update_data_root",
         "metadata_root", "hid_mappings_file", "keycaps_dir", "larecomp_texture_folder", "string_folder", "shader_pack_dir", "perf_log_csv",
@@ -819,6 +838,7 @@ void TestCvarRefusal() {
         "mcla_fixed_step_fps", "aspect_ratio", "display_gamma", "speed_units", "weather", "time_of_day", "ui_interpolate", "x", "some_text",
         "mcla_capture", "capture_fps",  // not the mcla_capture_ prefix
         "mcla_gpu_sync_builds", "mcla_freecam_speed", "mcla_freecam_log",
+        "mcla_dire", "direct_mode",  // only look like mcla_director
     };
     for (const char* name : allowed) {
         Check(CvarRefusal(name).empty(), std::string("a scene may set ") + name + ": " + CvarRefusal(name));
@@ -832,6 +852,8 @@ void TestCvarRefusal() {
     CheckError("at 1 set mcla_capture_out C:/Users/x/Startup/a", "a scene does not set mcla_capture_out");
     CheckError("at 1 set MCLA_CAPTURE_SINK ffmpeg", "a scene does not set MCLA_CAPTURE_SINK");
     CheckError("at 1 set mcla_scene other", "a scene does not set mcla_scene");
+    CheckError("at 1 set mcla_director true", "a scene does not set mcla_director");
+    CheckError("at 1 set mcla_director_info C:/x/info.json", "a scene does not set mcla_director_info");
     CheckError("at 1 set log_file x.log", "makes the game write a file of its own");
     CheckError("at 1 set dump_shaders C:/x", "it names a program, a path, a server or arguments");
     const ParseResult bad = ParseScene("scene a\nat 0 set mcla_gpu_ao off\nat 1 set mcla_capture_ffmpeg x\nat 2 set mcla_gpu_ao high\nend 5\n");
@@ -883,6 +905,127 @@ void TestCaptureOptions() {
     CheckError("at 1 capture fps 60 speed 2", "(fps, step, name, sink, statelog)");
 }
 
+
+// The ambient world keys of ambient-scenes: peds and parked take a density scale as well as on and off; an ambient car needs the parked spawner.
+void TestAmbientWorld() {
+    {
+        const ParseResult r = ParseScene("scene a\nworld hour 17 hold weather nice traffic off police off peds 0 parked 0.25\nend 5\n");
+        Check(r.Ok(), "world ... peds 0 parked 0.25 parses");
+        const Event* peds = First(r.scene, Track::kPeds);
+        const Event* parked = First(r.scene, Track::kParked);
+        Check(peds && peds->state == kStateScale && peds->to == 0.0, "peds 0 is a scale of 0, not off");
+        Check(parked && parked->state == kStateScale && parked->to == 0.25, "parked 0.25 is a scale");
+        const WorldState w = EvaluateWorld(r.scene, 0.0);
+        Check(w.traffic == 0 && w.police == 0, "traffic and police off in the bundle");
+        Check(w.peds == -1 && w.peds_scale == 0.0, "peds 0: the density setting held at 0, the switch untouched");
+        Check(w.parked == -1 && w.parked_scale == 0.25, "parked 0.25: the setting at 0.25");
+    }
+    {  // the words are still the switches, and the bare 0 and 1 of the other tracks
+        const ParseResult r = ParseScene("at 1 peds off\nat 2 parked on\nat 3 peds true\nat 4 parked false\nat 5 traffic 1\nat 6 police 0\nend 7\n");
+        Check(r.Ok(), "on, off, true and false still parse for peds and parked");
+        const Event* p = First(r.scene, Track::kPeds);
+        Check(p && p->state == 0, "peds off is the switch");
+        Check(EvaluateWorld(r.scene, 1.5).peds == 0 && EvaluateWorld(r.scene, 1.5).peds_scale < 0.0, "the switch key leaves the scale alone");
+        Check(EvaluateWorld(r.scene, 3.5).peds == 1, "peds true is on");
+        Check(EvaluateWorld(r.scene, 4.5).parked == 0, "parked false is off");
+        Check(EvaluateWorld(r.scene, 5.5).traffic == 1 && EvaluateWorld(r.scene, 6.5).police == 0, "traffic and police keep 1 and 0 as on and off");
+    }
+    {  // a switch and a scale of one track replace each other
+        const ParseResult r = ParseScene("at 1 peds off\nat 2 peds 0.5\nat 3 peds on\nat 4 peds 1.5\nat 5 peds off\nend 6\n");
+        Check(r.Ok(), "mixed peds keys parse");
+        WorldState w = EvaluateWorld(r.scene, 1.5);
+        Check(w.peds == 0 && w.peds_scale < 0.0, "off: the switch");
+        w = EvaluateWorld(r.scene, 2.5);
+        Check(w.peds == -1 && w.peds_scale == 0.5, "then a scale: the switch is let go (the game's own again), the setting held");
+        w = EvaluateWorld(r.scene, 3.5);
+        Check(w.peds == 1 && w.peds_scale < 0.0, "then on: the switch, the setting let go");
+        w = EvaluateWorld(r.scene, 4.5);
+        Check(w.peds == -1 && w.peds_scale == 1.5, "then 1.5");
+        w = EvaluateWorld(r.scene, 5.5);
+        Check(w.peds == 0 && w.peds_scale < 0.0, "then off again");
+    }
+    {  // a scale at its limits
+        Check(ParseScene("at 1 peds 0\nat 2 parked 2\nat 3 peds 2.0\nat 4 parked 0.0\nend 5\n").Ok(), "0 and 2 are the ends");
+    }
+    CheckError("at 1 peds 2.5", "bad peds '2.5'");
+    CheckError("at 1 parked -0.1", "bad parked '-0.1'");
+    CheckError("at 1 peds lots", "bad peds 'lots'");
+    CheckError("at 1 peds", "peds on|off, or a density scale");
+    CheckError("at 1 parked 1 2", "parked on|off, or a density scale");
+    CheckError("at 1 parked nan", "bad parked 'nan'");
+    CheckError("world peds", "world: 'peds' needs a value");
+    CheckError("at 1 peds maybe", "ped_density_scale");
+    CheckError("at 1 parked maybe", "parked_car_scale");
+    CheckError("at 1 traffic 0.5", "traffic on|off");  // traffic has no scale key: set traffic_density_scale for that
+
+    // an ambient car and the parked spawner
+    {
+        const ParseResult ok = ParseScene("scene a\nworld traffic off peds 0\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(ok.Ok() && ok.WarningCount() == 0, "traffic off, peds 0 and an ambient car: nothing to say");
+        const ParseResult off = ParseScene("scene a\nworld parked off\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        const Diagnostic* d = Find(off, "parked spawner is closed");
+        Check(off.Ok() && d && d->severity == Severity::kWarning && d->line == 3, "parked off before an ambient car: a warning on the car's line");
+        Check(d && d->message.find("line 2") != std::string::npos, "...naming the line that closed it");
+        const ParseResult zero = ParseScene("scene a\nworld parked 0\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(Find(zero, "parked spawner is closed") != nullptr, "a parked scale of 0 closes it too");
+        const ParseResult later = ParseScene("scene a\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nat 3 parked off\nend 9\n");
+        Check(Find(later, "parked spawner is closed") == nullptr, "closing it after the car was asked for is not the warning's business");
+        const ParseResult reopen = ParseScene("scene a\nworld parked off\nat 1 parked 0.5\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(Find(reopen, "parked spawner is closed") == nullptr, "a scale above 0 opens it again");
+        const ParseResult reopen2 = ParseScene("scene a\nworld parked 0\nat 1 parked on\nat 2 car a1 ambient va_gmc_yukon_05 at 1,2,3\nend 9\n");
+        Check(Find(reopen2, "parked spawner is closed") == nullptr, "on opens it again");
+        const ParseResult spawn = ParseScene("scene a\nworld parked off\nat 2 car a1 spawn vp_lam_murcielago_06 at 1,2,3\nend 9\n");
+        Check(Find(spawn, "parked spawner is closed") == nullptr, "a spawned (racer) car has nothing to do with the parked spawner");
+    }
+    // the car verb through the scene parser: a bad ambient line is an error with its line number
+    CheckError("at 1 car a1 ambient va_gmc_yukon_05", "ambient needs a place");
+    CheckError("at 1 car a1 ambient profile 3 at 1,2,3", "not an ambient type");
+    Check(ParseScene("at 1 car a1 ambient va_gmc_yukon_05 at 1,2,3 heading 45\nend 5\n").Ok(), "a good ambient line parses and its words are kept");
+    {
+        const ParseResult r = ParseScene("at 1 car a1 ambient va_gmc_yukon_05 at 1,2,3 heading 45\nend 5\n");
+        const Event* c = First(r.scene, Track::kCar);
+        Check(c && c->words.size() == 7 && c->words[1] == "ambient", "the car key keeps the words for the cars package");
+    }
+}
+
+// Spot words (spots.h): scene.cpp turns them into numbers when the statement is read. The table and the words' own rules are spots_test.cpp's; this checks
+// the parser's side: which statements take them, that the other packages see numbers, that a scene with none is read as before.
+void TestSpotWords() {
+    SpotTable table;
+    Spot street;
+    street.name = "street";
+    street.x = 832.19;
+    street.y = 16.5;
+    street.z = -787.53;
+    street.heading = 62.0;
+    street.has_heading = true;
+    table.Add(street);
+    ParseOptions with;
+    with.spots = &table;
+    with.path = "scenes\\recipes\\x.scene";
+    const ParseResult r = ParseScene(
+        "scene s\n"
+        "at 1 car p1 spawn vp_x at spot:street heading spot:street\n"
+        "cam 2 pos spot:street@0,2,0 look spot:street\n"
+        "cut 3\n"
+        "end 9\n",
+        with);
+    Check(r.Ok(), "spot words in a car and a camera statement parse");
+    const Event* car = First(r.scene, Track::kCar);
+    Check(car && car->words.size() == 9 && car->words[4] == "832.19" && car->words[5] == "16.5" && car->words[6] == "-787.53" && car->words[8] == "62",
+          "the car's words are numbers");
+    const Event* cam = First(r.scene, Track::kCamera);
+    Check(cam && cam->words.size() == 8 && cam->words[0] == "pos" && cam->words[2] == "18.5" && cam->words[4] == "look", "the camera's words are numbers");
+    CheckEq(r.scene.source_dir, "scenes\\recipes", "the scene knows its folder");
+    CheckError("at 1 car p1 spawn vp_x at spot:street", "no spot table is loaded");
+    const ParseResult none = ParseScene("scene s\nat 1 car p1 spawn vp_x at spot:street\nend 3\n", with);
+    Check(none.Ok(), "(the same line with a table)");
+    const ParseResult unknown = ParseScene("scene s\ncam 1 pos spot:strret look 0 0 0\nend 3\n", with);
+    const Diagnostic* d = Find(unknown, "did you mean street?");
+    Check(!unknown.Ok() && d && d->line == 2, "an unknown spot names the likely one, on its line");
+    Check(ParseScene("scene s\nat 1 label \"spot:street\"\nat 2 mark spot-x\nend 3\n").Ok(), "a label's text is not a spot word");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -904,6 +1047,8 @@ int main(int argc, char** argv) {
     TestCapture();
     TestCvarRefusal();
     TestCaptureOptions();
+    TestAmbientWorld();
+    TestSpotWords();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

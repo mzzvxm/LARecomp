@@ -2,6 +2,8 @@
 
 Setup and build instructions are in the [README](../README.md). This file covers running the game and reading what it writes.
 
+On Linux and the Steam Deck a game installed with the launcher needs no particular C++ library: the launcher's build kit brings its own (libc++). A build made with the system's compiler (by hand, or by the launcher where its kit cannot start) needs libstdc++ 13 or newer (SteamOS 3.5+, Ubuntu 24.04+, Fedora 39+, Arch); without it that build does not start and the terminal shows `version 'GLIBCXX_3.4.xx' not found`. Details in the README's [Linux and the Steam Deck](../README.md#linux-and-the-steam-deck).
+
 ---
 
 ## Quick start
@@ -33,7 +35,7 @@ This works around an unsigned underflow in the SDK's vblank timer that dispatche
 
 Defaults out of the box are `real_frame_delta = true`, `fps_limit = 60`, `vsync = false`.
 
-Set anything from the pause menu, on the command line as `--name=value`, or in `larecomp.toml` next to the executable. Menu changes apply immediately and save when you leave the submenu.
+Set anything from the pause menu, on the command line as `--name=value`, or in `larecomp.toml` next to the executable. Menu changes apply immediately and save when you leave the submenu. A flag the game cannot use (a typo, an old name, a setting of a graphics or input driver this run does not load, a value the setting refuses) does not stop it: the game starts and the log says `[cli] --name=value ignored: ` and why.
 
 The pause menu holds the settings a player is meant to change. The troubleshooting and developer switches are not in it: they are launch arguments, rows of the launcher's Advanced tab and Troubleshooting section, and, for the ones that work while the game runs, pages of the hidden DEBUG menu (below).
 
@@ -53,22 +55,24 @@ Press Start or Escape and open the **SETTINGS** tab. Buttons, and what each hold
 | Button | Contents |
 |---|---|
 | RECOMP SETTINGS | Hide mouse pointer, original intro speed, skip intro videos (both intro rows take hold at the next start) |
-| GRAPHICS | **DISPLAY**: display mode, vsync, resolution, aspect ratio (NATIVE only: AUTO fills the window; 16X9, 16X10, 21X9 or 32X9 keep that shape with black bars), HDR (page), display gamma, FPS limit, smooth UI, then the picture rows (NATIVE renderer: upscaling, render scale, sharpness, MSAA, post AA, anisotropic, ambient occlusion (AUTO, OFF, HIGH or ULTRA; AUTO is OFF on integrated graphics, HIGH on a graphics card with under about 6 GB and ULTRA on the rest), AO intensity, frame generation; XENIA renderer: render scale, MSAA, anisotropic). **GRAPHICS QUALITY** (NATIVE only): shadow detail (how finely the sun's shadows are drawn: AUTO, GAME, HIGH or ULTRA), shadow filter (AUTO, GAME, SOFT or PCSS: PCSS sharpens a shadow where it touches what casts it), contact shadows (AUTO, OFF, HIGH or ULTRA; AUTO is OFF on integrated graphics, HIGH on a graphics card with under about 6 GB and ULTRA on the rest), traffic shadows (the other cars cast shadows like yours, so the ground under them is dark: AUTO, OFF, NEAR or ALL), road reflections, car reflections (how sharp the world the cars reflect is: AUTO, GAME, HIGH or ULTRA), car self-reflections (your car's paint reflects its own body, the wing in the trunk lid and the mirror in the door: AUTO, OFF or ON; AUTO is OFF on integrated graphics and ON on a graphics card; works in the game, behind the pause menu and in the garage), sun shafts (how strong the light shafts of a low sun are, at dawn and dusk: OFF is the game's own picture, then LIGHT, DEFAULT, STRONG, STRONGER or STRONGEST; AUTO is DEFAULT on a discrete graphics card and OFF on integrated graphics), bounce light (the colour a lit wall or the ground sends back onto the road and the cars beside it: AUTO, OFF, HIGH or ULTRA; AUTO is HIGH on a fast graphics card and OFF on the rest; needs ambient occlusion), bounce light strength (how strong it looks: LIGHT, DEFAULT, STRONG, STRONGER or STRONGEST; grey while the bounce light is off); AUTO picks by graphics card; compare key (which of bounce light, contact shadows, sun shafts, ambient occlusion, shadow filter or self-reflections the F1 key flicks off and on). **PERFORMANCE**: RENDERING (shadows, depth of field, NVIDIA Reflex or AMD Anti-Lag 2), WORLD DENSITY (traffic range, pedestrians, parked cars, prop draw distance), LOD AND FOLIAGE (foliage shadows, traffic LOD, city LOD: AUTO, 0.5X, 1X, 1.5X or 2X; AUTO is 2X on a mid-range or fast graphics card and 1X on integrated graphics). **TEXTURE MODS** (NATIVE only): texture mods on or off |
-| GAMEPLAY | **CAMERA**: motion blur, CHASE CAMERA (smoothing factor, camera shake), FOV, REAR VIEW (mirror, position, frame, cars in the mirror), LOOK AROUND (free look). **TIME OF DAY**: real clock, hold time, time, day speed, weather. **CARBON FIBER**: per-car carbon part toggles. **DIFFICULTY**: AI difficulty and the rubberband scales. **MAP MOUSE**: mouse on the full map, scroll-wheel zoom, hide the pointer, cursor magnet |
+| GRAPHICS | **DISPLAY**: display mode, vsync, resolution, aspect ratio (NATIVE only: AUTO fills the window; 16X9, 16X10, 21X9 or 32X9 keep that shape with black bars), HDR (page), display gamma, FPS limit, NVIDIA Reflex or AMD Anti-Lag 2 where the graphics card has one, then upscaling, its mode (render scale with no upscaler), sharpness, DLSS Ray Reconstruction (a GeForce RTX card) or AMD FSR Ray Regeneration (a Radeon RX 9000 series card on Windows 11) on or off (no such row on any other card), and frame generation (NATIVE renderer; XENIA renderer: render scale only). **IMAGE QUALITY**: MSAA, post AA (NATIVE only), anisotropic, depth of field, motion blur. **LIGHTING AND SHADOWS**: shadows, foliage shadows (the shadows far trees cast, drawn as flat cards, into the sun's shadows; daylight only), then (NATIVE only) shadow detail (how finely the sun's shadows are drawn: AUTO, GAME, HIGH or ULTRA), shadow filter (AUTO, GAME, SOFT or PCSS: PCSS sharpens a shadow where it touches what casts it), contact shadows (AUTO, OFF, HIGH or ULTRA; AUTO is OFF on integrated graphics, HIGH on a graphics card with under about 6 GB and ULTRA on the rest), traffic shadows (the other cars cast shadows like yours, so the ground under them is dark: AUTO, OFF, NEAR or ALL; foliage shadows, shadow detail, shadow filter and traffic shadows are grey while shadows is off), car shadows (your car casts a shadow of its real shape on itself and on the road: AUTO, OFF, HIGH or ULTRA; AUTO is ULTRA on a graphics card and HIGH on integrated graphics), ambient occlusion (AUTO, OFF, HIGH or ULTRA; AUTO is OFF on integrated graphics, HIGH on a graphics card with under about 6 GB and ULTRA on the rest), AO intensity, bounce light (the colour a lit wall or the ground sends back onto the road and the cars beside it: AUTO, OFF, HIGH or ULTRA; AUTO is HIGH on a fast graphics card and OFF on the rest; needs ambient occlusion), bounce light strength (how strong it looks: LIGHT, DEFAULT, STRONG, STRONGER or STRONGEST; grey while the bounce light is off), sun shafts (how strong the light shafts of a low sun are, at dawn and dusk: OFF is the game's own picture, then LIGHT, DEFAULT, STRONG, STRONGER or STRONGEST; AUTO is DEFAULT on a discrete graphics card and OFF on integrated graphics); AUTO picks by graphics card. **REFLECTIONS** (NATIVE only): road reflections, car reflections (how sharp the world the cars reflect is: AUTO, GAME, HIGH or ULTRA), car self-reflections (your car's paint reflects its own body, the wing in the trunk lid and the mirror in the door: AUTO, OFF, ON or RAY TRACED; RAY TRACED traces the reflection from the car's own shape and is listed only where the graphics card can ray trace (Direct3D 12 with DXR 1.1, or Vulkan with ray queries); AUTO is OFF on integrated graphics and ON on a graphics card, ray traced where it can; works in the game, behind the pause menu and in the garage). **WORLD DETAIL**: traffic range, pedestrians, parked cars, prop draw distance, traffic LOD, city LOD. Traffic range, pedestrians, parked cars, traffic LOD and city LOD start on AUTO, which follows the graphics card: the most on a fast one (traffic range 400 m, the game's own amounts of pedestrians and parked cars, traffic LOD 3X, city LOD 2X), a little less on a mid-range one and the least on integrated graphics (250 m, half the pedestrians and parked cars, traffic LOD 1.5X, city LOD 1X); the row says what AUTO comes to |
+| GAMEPLAY | **CAMERA**: CHASE CAMERA (smoothing factor, camera shake), FOV, REAR VIEW (mirror, position, frame, cars in the mirror), LOOK AROUND (free look). **TIME OF DAY**: real clock, hold time, time, day speed, weather. **CARBON FIBER**: per-car carbon part toggles. **DIFFICULTY**: AI difficulty and the rubberband scales. **MAP MOUSE**: mouse on the full map, scroll-wheel zoom, hide the pointer, cursor magnet |
 | CONTROLLER | Vibration, DualSense and Xbox trigger effects (DualSense throttle and brake strength included), stick dead zones, button layout |
 | INTERFACE | **UI**: menu colors, speed units, HUD width. **LANGUAGES** |
-| EXTRAS | Cutscenes, extra vinyl layers, no 8 player limits, start garage |
+| EXTRAS | Cutscenes, texture mods (NATIVE only), extra vinyl layers, no 8 player limits, start garage |
 | QUIT | Quit or restart |
 
-Not in these menus: RENDERER and GRAPHICS API (the launcher's Troubleshooting section sets them; `--graphics_backend=auto|d3d12|vulkan` works on the command line, and the renderer is four cvars the launcher writes together), and the developer switches (below).
+Not in these menus: GRAPHICS API (the launcher's Graphics API row sets it; `--graphics_backend=auto|d3d12|vulkan` works on the command line), the renderer, and the developer switches (below).
+
+**Ray denoising.** The vendor switch in GRAPHICS > DISPLAY defaults to OFF, which uses LARecomp's denoisers. ON uses DLSS Ray Reconstruction on RTX with DLSS upscaling, or AMD FSR Ray Regeneration on RX 9000 with Windows 11 and Direct3D 12. The game reads an older DLSS RR or FSR RAY REGEN choice as ON and an older AUTO or OURS choice as OFF. A saved value of the new toggle takes precedence.
+
+**The compatibility renderer.** The game runs on its own (NATIVE) renderer, and the launcher and these menus offer no other. For a PC where it will not start, the program keeps a second one (the XENIA renderer, the old Xenia GPU emulation), which runs on more graphics cards (Direct3D 12 with shader model 5.1 or binding tier 1, where the native renderer asks for 6.0 and tier 2) and has fewer options: no ambient occlusion, HDR, upscalers or frame generation, and a lower frame rate. It is hidden on purpose. The box that says the game could not start on this PC's graphics card has a button, **Use the compatibility renderer**, which saves the choice and starts the game again; the shader build's failure dialog has the same button, and after two starts in a row that never got going the next start offers it. By hand: put `gpu.driver = "d3d12"` (`"vulkan"` on Linux) in `larecomp.toml`, or start with `--gpu.driver=d3d12`; `gpu.driver = "larecomp"` is the native renderer again. With the debug menu unlocked, RENDERING > RENDERER does the same from inside the game (NATIVE, XENIA D3D12, XENIA VULKAN; it applies at the next start, and leaving the menu offers RESTART NOW). A `--gpu.driver` on the command line or `REX_GPU_DRIVER` in the environment beats the file, and then the row is grey.
 
 **DEBUG menu.** Start with `--debug_menu` (or `REX_DEBUG_MENU=1`, or `debug_menu = true` in `larecomp.toml`) and the SETTINGS tab gets a DEBUG button before QUIT. Its pages: FIXES, PERFORMANCE, RENDERING, CAMERA, TOOLS, LOGGING, INFO. Changes made there last for the session and are never written to `larecomp.toml`. Switches that are only read at start (tree impostors, screen blur, the diagnostics) are launch arguments, for example `larecomp.exe --perf_no_impostors=true`.
 
 **Function keys.** They work for everyone, with or without the debug menu: **F2** dumps the textures of the next frame (Plume renderer), **F3** shows the telemetry card, **F4** opens the settings panel, **F9** warps the car to a mod's warp point and back, **F10** writes a raw trace of the next frame (Plume renderer), **F11** captures the next frame with RenderDoc. Only the pause menu is cleaned up; these keys are as they always were.
 
-**F4** lists every setting, key bindings included. Settings that apply after a restart are yellow. A setting tagged debug (the ones the debug menu holds) can be changed there and applies for the session, but it is never written to `larecomp.toml`: Ctrl+S says how many it left out. To keep one, use a launch argument or a line in `larecomp.toml`.
-
-**F1** is the compare key (NATIVE renderer): it shows the effect chosen in GRAPHICS QUALITY > COMPARE KEY the other way than your setting has it, so the difference is easy to see, and a label at the top of the screen says how ("BOUNCE LIGHT: OFF"). Press again for your setting back. Nothing is saved: the flip ends when you change that setting or the COMPARE KEY row. The pause menu's, the map's and the garage's world does not draw the bounce light yet, so flicking it there shows nothing. Change the key in F4's key bindings (`bind_mcla_compare`).
+**F4** lists every setting, key bindings included. Settings that apply after a restart are yellow. A setting tagged debug (the ones the debug menu holds) can be changed there and applies for the session, but it is never written to `larecomp.toml`: Ctrl+S says how many it left out. To keep one, use a launch argument or a line in `larecomp.toml`. The denoiser A/B chooser uses launch arguments or the environment for persistent overrides because the old config key is reserved for migration.
 
 ### Environment variables
 
@@ -85,8 +89,8 @@ Only these are read. Everything else is a cvar.
 | `MCLA_VSYNC` | `false` | On costs about 30% throughput. |
 | `MCLA_REFRESH_RATE` | `60` | Guest video mode refresh rate. |
 | `MCLA_ALLOW_INVALID_FETCH` | `true` | Set `false` if HUD or minimap glitches appear. |
-| `MCLA_NO_STUB_SWEEP` | `0` | `1` skips the startup stub sweep, saving about 400 ms. Only safe while `stubs.txt` stays empty. |
 | `LARECOMP_LOG_FILE` | auto | Log file path. |
+| `LARECOMP_NO_CRASH_DIALOG` | unset | `1` skips the "crashed" message box: a crash writes its report to the log and the game ends at once (exit status `0xC4A50001` for an access violation), for test runs nobody watches. |
 
 `REX_LOG_LEVEL` has to be an environment variable. Setting the level from `OnPostInitLogging()` does not work, because the runtime has already printed its startup banner.
 
@@ -96,13 +100,51 @@ Only these are read. Everything else is a cvar.
 
 | File | Contents |
 |---|---|
-| `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. |
-| `logs/effective_config.txt` | Written every launch: active cvar values, an `ok` or `FAIL` line per GPU flag, the env vars this build reads, and the cvar-only settings listed separately. **Check this first when a setting appears to do nothing.** |
+| `logs/larecomp_NNN.log` | Main log, rolling, up to 10 files of 20 MB. A flag the game cannot use is logged as `[cli] --name=value ignored: ` and why, and the debug settings that are not at their default are listed as `[settings] name = value (command line)`. **Check it first when a setting appears to do nothing.** |
 | `logs/timing_<date>_<time>_cap<N>.log` | Frame timing, when `MCLA_TIMING_LOG=1`. |
-| `stubs.txt` | Unregistered guest addresses hit at runtime. Empty means nothing was missed. |
+| `logs/online_tables.json` | The game's own online tables, written once per run a few seconds in (and again after 90 s only if more of the table filled in; a file with the same text is not touched): the stats view ids with their columns (from the title's XDBF resource) and the session property names and values (what a room's GameMode and the like mean). A launcher (or a bug report) reads it to show names without the game running; it holds no player data and nothing is shipped with LARecomp (the game writes it from its own memory). `src/mc_engine/online/online_tables_core.h` documents the format. |
 | `larecomp.toml` | Saved settings, written when you leave a pause submenu with a changed value. |
+| `logs/join_server.txt` | Only in a run started with `--join_server`: `state=` (waiting, connecting, searching, joining, done, failed), `reason=` and `message=` for a failure, `updated=`. Rewritten on every change; `done` and `failed` are final. |
+
+**Joining a server from the command line.** `larecomp.exe --join_server=host:port` puts the game online on that relay for this run (the same as `--mcla_online_enable=true --mcla_online_server=host:port`, nothing is written to `larecomp.toml`) and, once the city is up and the pause menu is closed, joins by itself: Cruise on that server (a session on it, or one it hosts for the next player). `,race` does the same for a Race session, `,room:<gamertag>` joins the room that player hosts. There is no offer to accept and no time limit but the city loading (20 minutes). The log has `[join_server]` lines for every step, and `logs/join_server.txt` holds the state for the launcher; a failure (server down, room not found or full, a required mod missing) opens the server browser with the sentence in it.
 
 Crash diagnostics go into the main log, not a separate file. The SEH and SIGABRT handler in `crash_handler.cpp` resolves and writes the call stack there.
+
+---
+
+## Launcher contract
+
+The [schemas and examples](contract/) describe the JSON files the game exports for the launcher.
+
+- `machine.json` is written on startup and by `--probe_machine[=<file>]`. `features.frame_generation.dlss_card` applies the game's NVIDIA adapter name rule. It is independent of the graphics API, driver support, installed files, and runtime failures. It is `null` when the adapter cannot be identified. The headless probe can still identify a card by enumeration after a device open fails.
+- `api.by_api.d3d12` and `api.by_api.vulkan` each contain `car_rt`, `rt_tier`, and `ray_regen`. The current API repeats `api.car_rt`, `gpu.rt_tier`, and `features.denoiser.ray_regen`. An unopened API leaves device-dependent values `null`. A backend absent from the build reports `false` and `"none"` for its RT facts. Ray Regeneration reports `"unsupported"` for an unopened Vulkan backend or a build without the D3D12 provider.
+- `install-manifest.json` provides `launch.game_root` and `launch.debug_menu` as individual arguments. Substitute the game data directory for `{game_root}` and pass the debug argument when the user enables it. `game.size` gives the byte length of the supported `default.xex` identified by `game.xex_sha256`.
+- `settings-ui.json` from `--dump_settings_ui` provides `presets.legacy_file_preset` for a `larecomp.toml` that contains any key in `presets.covers` and omits `presets.setting`. The current value is `"custom"`, which preserves the saved values. Use `presets.first_start` if the file omits both the preset key and all covered keys.
+
+## City data actions (for the launcher's setup)
+
+The ray tracing effects read files built on the player's PC from their own game files, in `<shader pack folder>\city`: the city pack (`mcla_city.v1.pack`), and the hit data beside it, the hit file (`mcla_city_hit.v1.pack`) and the texture file (`mcla_city_tex.v1.pack`) with one stamp (`mcla_city_hit.stamp`). The release ships `larecomp.exe` only, so it builds and checks all of them. Each action runs without a window and ends the process; the game builds the same files itself in the background when they are missing and an effect wants them, so none of this is required.
+
+| Action | Does | Exit code |
+|---|---|---|
+| `--build_city_pack` | the city pack (and its lamps) | 0 built / up to date / not needed, 1 otherwise |
+| `--build_city_hit` | the textures, then the hit file, over the pack in place; "no pack" when there is none | the same |
+| `--check_city_hit` | stat only: is the hit data in place and current? | 0 up to date, 1 not current |
+| `--check_city_hit --check_city_hit_deep=true` | reads the city pack, the hit file and every picture of the texture file back (seconds) | 0 whole, 1 problems |
+
+`--build_city_hit_force=true` builds even when the stamp is current. Several actions on one command line run in this order and stop at the first failure: `--build_city_pack`, `--build_city_hit`, `--check_city_hit`. The launcher runs one process a step.
+
+Output is `@citypack|` lines on stdout, the same grammar as `--build_shader_packs`' `@shaderpack|` lines (fields separated by `|`, the free text last):
+
+```
+@citypack|folder|<where the files go>
+@citypack|phase|<steps, 0 = unknown>|<name>
+@citypack|step|<done>|<steps>|<item>          at most five a second
+@citypack|log|<info|warn|error>|<text>
+@citypack|result|<status>|<text>              once, last (once per action when several run)
+```
+
+Statuses: `ok` (built), `up to date`, `not needed`, `cancelled`, `failed`, `no archive`, plus `no pack` (the hit data needs the city pack) and `not current` (`--check_city_hit`: missing or built from other files). Phases of the build: `far level of detail`, `lamps`, `city sectors` (the pack); `city textures`, `city texture files`, `far level of detail`, `city hit sectors` (the hit data). Phases of the deep check: `checking the city pack`, `checking the city hit file`, `checking the city textures` (one step each). Ending the process cancels and is safe at any moment: files are written under temporary names and the stamp last. Logs: `logs/city_pack_build.txt`, `logs/city_hit_build.txt`, `logs/city_hit_check.txt`. The line format and the order rules are in `src/bootprogress/city_pack_rules.h`; `tools/citypack_tool` (`build-hit`, `check-hit`, `check-tex`) runs the same code.
 
 ---
 
@@ -152,7 +194,7 @@ The GPU counters are accumulated per frame and reported per second. The sampling
 ## Regenerating code
 
 ```powershell
-E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
+E:\MCLA\rexglue-sdk-0.11.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
 cmake --build out/build/win-amd64-relwithdebinfo
 ```
 

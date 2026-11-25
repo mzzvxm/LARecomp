@@ -1,0 +1,8 @@
+Microsoft DirectX 12 Agility SDK runtime, D3D12Core.dll 1.619.6 (FileVersion 1.619.6.0.20260914.1)
+https://www.nuget.org/packages/Microsoft.Direct3D.D3D12/1.619.6
+Taken unchanged from the package Microsoft.Direct3D.D3D12 1.619.6 (published 2026-09-14), build/native/bin/x64/D3D12Core.dll;
+Authenticode-signed by Microsoft Corporation. The package's sha512 equals the one NuGet's catalog lists for it.
+sha256 D3D12Core.dll 37FA14281A58CC834076971873006FEB8A8D25CDDC908D1A345BDA1B149FFC7D
+src/main.cpp exports D3D12SDKVersion = 619 (D3D12_SDK_VERSION of the package's d3d12.h): every 1.619.x release uses it.
+Licence: LICENSE-MS-D3D12.txt (the package's LICENSE.txt; D3D12Core.dll is on its list of distributable files).
+Previous pin: 1.619.3 (sha256 4BFB82F456269E3EF45CCA0F612DDBD3650C99160D285DAE1FEBF7883468C64C).

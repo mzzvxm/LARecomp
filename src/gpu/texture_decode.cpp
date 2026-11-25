@@ -26,13 +26,12 @@
 #define MCLA_TEXTURE_DECODE_SSSE3 0
 #endif
 
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/texture.h>
+#include <rex/xenos/format.h>
 
 namespace mcla::gpu::texture_decode {
 
-namespace xe = rex::graphics::xenos;
-namespace tu = rex::graphics::texture_util;
+namespace xe = rex::xenos;
 
 namespace {
 
@@ -277,14 +276,14 @@ TileTables BuildTileTables() {
     const uint32_t bpb = 1u << b;
     const uint32_t run = RunBlocks(b);
     for (uint32_t i = 0; i < 32; ++i) {
-      t.x[b][i] = uint32_t(tu::GetTiledOffset2D(int32_t(i), 0, 32, b));
-      t.y[b][i] = uint32_t(tu::GetTiledOffset2D(0, int32_t(i), 32, b));
+      t.x[b][i] = uint32_t(xe::GetTiledOffset2D(int32_t(i), 0, 32, b));
+      t.y[b][i] = uint32_t(xe::GetTiledOffset2D(0, int32_t(i), 32, b));
     }
     uint32_t max_inner = 0;
     for (uint32_t yl = 0; yl < 32; ++yl) {
       for (uint32_t xl = 0; xl < 32; ++xl) {
         const uint32_t inner = t.x[b][xl] ^ t.y[b][yl];
-        if (inner != uint32_t(tu::GetTiledOffset2D(int32_t(xl), int32_t(yl), 32, b))) {
+        if (inner != uint32_t(xe::GetTiledOffset2D(int32_t(xl), int32_t(yl), 32, b))) {
           t.ok = false;
         }
         // Inside a run each block follows the one before it.
@@ -299,8 +298,8 @@ TileTables BuildTileTables() {
     for (uint32_t y = 0; y < 64; ++y) {
       for (uint32_t x = 0; x < 64; ++x) {
         const uint32_t origin =
-            uint32_t(tu::GetTiledOffset2D(int32_t(x & ~31u), int32_t(y & ~31u), 96, b));
-        if (uint32_t(tu::GetTiledOffset2D(int32_t(x), int32_t(y), 96, b)) !=
+            uint32_t(xe::GetTiledOffset2D(int32_t(x & ~31u), int32_t(y & ~31u), 96, b));
+        if (uint32_t(xe::GetTiledOffset2D(int32_t(x), int32_t(y), 96, b)) !=
             origin + (t.x[b][x & 31] ^ t.y[b][y & 31])) {
           t.ok = false;
         }
@@ -442,7 +441,7 @@ void UntileKernel(const UntileArgs& a) {
       const uint32_t x_lo = std::max(a.offset_x, tx << 5);
       const uint32_t x_hi = std::min(x_end, (tx + 1) << 5);
       const uint8_t* tile =
-          a.data + uint32_t(tu::GetTiledOffset2D(int32_t(tx << 5), int32_t(ty << 5), a.pitch_blocks,
+          a.data + uint32_t(xe::GetTiledOffset2D(int32_t(tx << 5), int32_t(ty << 5), a.pitch_blocks,
                                                  kB));
       for (uint32_t y = y_lo; y < y_hi; ++y) {
         const uint32_t row_inner = yin[y & 31];
@@ -597,7 +596,7 @@ bool CopyBlocks(const Source& s, uint32_t width_blocks, uint32_t height_blocks, 
     const uint32_t last_tx = (s.offset_x + width_blocks - 1) >> 5;
     const uint32_t last_ty = (s.offset_y + height_blocks - 1) >> 5;
     const uint64_t last_origin = uint32_t(
-        tu::GetTiledOffset2D(int32_t(last_tx << 5), int32_t(last_ty << 5), pitch_blocks, log2));
+        xe::GetTiledOffset2D(int32_t(last_tx << 5), int32_t(last_ty << 5), pitch_blocks, log2));
     if (last_origin + t.max_inner[log2] + std::max(bpb, unit) > s.readable) {
       return false;
     }
@@ -658,7 +657,7 @@ void ConvertLoad(const Request& r, uint8_t* out, uint32_t out_pitch) {
 uint32_t BlockOffset(const Source& s, uint32_t x, uint32_t y) {
   if (s.tiled) {
     const uint32_t pitch_blocks = s.row_pitch_bytes / s.bytes_per_block;
-    return uint32_t(tu::GetTiledOffset2D(int32_t(x), int32_t(y), pitch_blocks,
+    return uint32_t(xe::GetTiledOffset2D(int32_t(x), int32_t(y), pitch_blocks,
                                          Log2(s.bytes_per_block)));
   }
   return y * s.row_pitch_bytes + x * s.bytes_per_block;

@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "lb_client.h"
+#include "settings/immortal.h"
 
 #include <chrono>
 #include <condition_variable>
@@ -9,23 +10,12 @@
 #include <mutex>
 #include <thread>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "larecomp_log.h"
 #include "lb_store.h"
 #include "../rate_my_ride/rmr_client.h"
 #include "../rate_my_ride/rmr_net.h"
-
-REXCVAR_DEFINE_BOOL(leaderboards_enabled, true, "MCLA/Multiplayer",
-                    "Leaderboards: serve the Xbox LIVE stats boards (race wins, battle modes, "
-                    "race times) from our own backend, shared through the Rate My Ride "
-                    "server. Off = stock behaviour (empty boards).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(leaderboards_diag, false, "MCLA/Multiplayer",
-                    "Log every leaderboard read and write in detail.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace lb::client {
 
@@ -33,8 +23,6 @@ namespace fs = std::filesystem;
 
 namespace {
 
-constexpr int kConnectTimeoutMs = 3000;
-constexpr int kIoTimeoutMs = 15000;
 constexpr int kWriteAttempts = 3;
 
 struct Target {
@@ -53,10 +41,10 @@ std::string Key(const Target& t) { return t.host + ":" + std::to_string(t.port);
 
 // Servers seen answering 404 on /lb/v1 (a Rate My Ride server from before the
 // leaderboards). Guarded by the worker: only it touches this.
-std::string g_no_service;
+std::string& g_no_service = larecomp::Leak<std::string>();
 
 std::mutex g_local_mutex;
-std::unique_ptr<Store> g_local;
+std::unique_ptr<Store>& g_local = larecomp::Leak<std::unique_ptr<Store>>();
 
 Store* LocalStore() {
   std::lock_guard<std::mutex> lock(g_local_mutex);
@@ -99,7 +87,7 @@ Response Execute(const Target& target, const Request& req) {
   Response resp;
   for (int attempt = 1; attempt <= attempts; ++attempt) {
     rmr::net::PostResult r = rmr::net::Post(target.host, target.port, kHttpPath, body,
-                                            kConnectTimeoutMs, kIoTimeoutMs);
+                                            rmr::net::kConnectTimeoutMs, rmr::net::kIoTimeoutMs);
     if (r.transport_ok && r.status == 404) {
       g_no_service = Key(target);
       LARECOMP_APP_WARN(
@@ -134,7 +122,7 @@ struct Job {
 
 std::mutex g_queue_mutex;
 std::condition_variable g_queue_cv;
-std::deque<Job> g_queue;
+std::deque<Job>& g_queue = larecomp::Leak<std::deque<Job>>();
 bool g_worker_started = false;
 
 void WorkerMain() {
@@ -155,8 +143,8 @@ void WorkerMain() {
 
 Store* LocalStoreForAwards() { return LocalStore(); }
 
-bool Enabled() { return REXCVAR_GET(leaderboards_enabled); }
-bool Diag() { return REXCVAR_GET(leaderboards_diag); }
+bool Enabled() { return larecomp::settings::leaderboards_enabled.Get(); }
+bool Diag() { return larecomp::settings::leaderboards_diag.Get(); }
 
 uint64_t PlayerOwnerKey() { return rmr::client::PlayerOwnerKey(); }
 

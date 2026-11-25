@@ -107,6 +107,7 @@ enum class CarGate : size_t {
   kDistance,     // the distance is not a number
   kDecided,      // reached Selector::Decide
   kCast,         // Decide said cast (r11 raised to 1)
+  kPlayerLeftOut,  // r11 != 0 in a cascade phase and the car shadow map casts the player's car's shadow: r11 lowered to 0
   kCount,
 };
 
@@ -230,6 +231,7 @@ class Gates {
     s += "; car-model hook (player's and racers' cars, 0x8236066C): calls " + n(Get(C::kCalls));
     s += ", r11 set (the game's own caster) " + n(Get(C::kGameCaster));
     s += ", phase rejected " + n(Get(C::kOtherPhase)) + " r28 " + car_phases_.Text();
+    s += ", player's car left to the car shadow map " + n(Get(C::kPlayerLeftOut));
     s += ", mode off " + n(Get(C::kModeOff));
     s += ", no memory " + n(Get(C::kNoMemory));
     s += ", vehicle ptr " + n(Get(C::kVehiclePtr));

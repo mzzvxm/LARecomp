@@ -57,9 +57,9 @@
 // there and read back at that frame's swap (Patch_60FPS_Byte, frame_timing.cpp).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/chrono/clock.h>
-#include <rex/cvar.h>
-#include <rex/ppc.h>
+#include <rex/chrono.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
 
 #include <algorithm>
 #include <atomic>
@@ -84,20 +84,9 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/scene_noise.h"
 #endif
 
-REXCVAR_DEFINE_INT32(frame_pacing, 1, "MCLA/Performance",
-    "1: every frame stays on screen for exactly the time step the game simulated it with -- the "
-    "renderer holds a frame that is ready early until its planned time, and the game steps by the "
-    "planned interval. Stops the camera's back-and-forth jumps when the game does not hold the FPS "
-    "LIMIT, for a few milliseconds of latency. 0: the step is the measured frame time and frames are "
-    "shown when ready, as before. Needs the Plume renderer, and is idle with mcla_gpu_vsync.")
-    .range(0, 1)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(bool, real_frame_delta);
-REXCVAR_DECLARE(int32_t, fps_limit);
 
 REX_EXTERN(__imp__rex_sub_821BDA90);  // clock update (vtable slot 2 of the clock objects)
 REX_EXTERN(__imp__rex_sub_82305B38);  // the hand-over's frame-buffer swap
@@ -163,14 +152,14 @@ int32_t FpsLimit() {
         if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
         return -1;
     }();
-    return env_limit >= 0 ? env_limit : REXCVAR_GET(fps_limit);
+    return env_limit >= 0 ? env_limit : larecomp::settings::fps_limit.Get();
 }
 
 bool Wanted() {
 #if defined(LARECOMP_HAS_GPU)
     // Capture mode: a fixed step sets the time step itself; nothing waits for a planned time.
     if (mc::cinematic::FixedStepActive()) return false;
-    return REXCVAR_GET(frame_pacing) != 0 && REXCVAR_GET(real_frame_delta) &&
+    return larecomp::settings::frame_pacing.Get() != 0 && larecomp::settings::real_frame_delta.Get() &&
            mcla::gpu::SchedulesPresents();
 #else
     return false;
@@ -287,7 +276,10 @@ int64_t PlanFrame(int64_t now) {
     Learn();
     LogPlan(now);
 
-    const int32_t limit = FpsLimit();
+    int32_t limit = FpsLimit();
+#if defined(LARECOMP_HAS_GPU)
+    limit = mcla::gpu::LimitFrameRateForComposedPresents(limit);
+#endif
     // No limit: at least a millisecond apart.
     const int64_t period = static_cast<int64_t>(limit > 0 ? 1000.0 * ms / limit : ms);
     int64_t target = now + static_cast<int64_t>(g_plan.latency);
@@ -305,7 +297,7 @@ int64_t PlanFrame(int64_t now) {
         }
         const double step_ms = step / ms;
         // Into guest timebase ticks; MCLAFrameDelta's hitch clamp still applies.
-        const double hz = static_cast<double>(rex::chrono::Clock::guest_tick_frequency());
+        const double hz = static_cast<double>(rex::Clock::GetGuestTickFrequency());
         g_step_ticks = static_cast<uint64_t>(step_ms * 0.001 * hz + 0.5);
         g_have_step = g_step_ticks > 0;
     }
@@ -370,6 +362,11 @@ extern "C" REX_FUNC(rex_sub_82305B38) {
     // Capture mode: the frame is stamped with the update that just ran, and whether it belongs to the take, here, where the render thread is
     // idle: the swap that follows takes the stamp, so a frame's identity cannot be late or early whatever the threads do.
     mc::cinematic::CaptureOnHandOver();
+#if defined(LARECOMP_HAS_GPU)
+    // A running scene's repeatable noise (gpu/scene_noise.h): the frame is tagged with the scene update that just ran, here, for the same reason: the swap that
+    // follows is too late (the renderer opens the frame's list at its first draw) and counting the renderer's lists drifts (idle presents, flushes).
+    mcla::gpu::scene_noise::OnHandOver();
+#endif
     __imp__rex_sub_82305B38(ctx, base);
 }
 

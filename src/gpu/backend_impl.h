@@ -42,6 +42,8 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
                             uint32_t sampler_count);
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
+AdapterIds QueryAdapterIds(plume::RenderDevice* device);
+std::string DescribeCapabilities(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
 std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
@@ -51,6 +53,7 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
 std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
 std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
+PresentResult PresentNowait(plume::RenderSwapChain* swap_chain);
 std::string DefaultAdapterName();
 RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
@@ -60,6 +63,7 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 void ForgetImageContents(plume::RenderTexture* texture);
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
+WaveOps QueryWaveOps(plume::RenderDevice* device);
 // SwapChainFactoryScope: the factory replaced by its wrapper (`original`, `wrapper` filled), and put
 // back and the wrapper released.
 bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
@@ -91,6 +95,8 @@ bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view
                             uint32_t sampler_count);
 bool TimestampsSupported(plume::RenderDevice* device);
 std::string DescribeDevice(plume::RenderDevice* device);
+AdapterIds QueryAdapterIds(plume::RenderDevice* device);
+std::string DescribeCapabilities(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
 std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
@@ -108,6 +114,7 @@ NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
 void ForgetImageContents(plume::RenderTexture* texture);
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device);
+WaveOps QueryWaveOps(plume::RenderDevice* device);
 bool BeginSwapChainFactory(plume::RenderDevice* device, bool (*wrap)(void** factory), void** original,
                            void** wrapper);
 void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrapper);

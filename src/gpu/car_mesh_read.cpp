@@ -8,10 +8,11 @@
 #include <format>
 #include <utility>
 
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "car_frame_rules.h"
+#include "car_rt_material_rules.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
@@ -23,8 +24,8 @@ namespace nfx = mcla::native_gfx;
 namespace {
 
 const uint8_t* GuestBase() {
-  auto* runtime = rex::Runtime::instance();
-  return runtime ? runtime->virtual_membase() : nullptr;
+  auto* runtime = REX_RUNTIME();
+  return runtime ? runtime->GetMembase().GetBase() : nullptr;
 }
 
 }  // namespace
@@ -108,6 +109,160 @@ void ReadPlayerVehicle(PlayerVehicle* out, bool with_note) {
                            : std::format("vehicle {:#010x}, entity {:#010x}: its matrix has no finite translation", out->vehicle,
                                          out->entity);
   }
+}
+
+// ---------------------------------------------------------------------------
+// the game's other vehicles
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// The 16 matrix floats at `address` (big-endian) as rows; false when they are not readable or the rows are not a car's pose (car_rt_memory::UsableRows).
+// The fourth column is not looked at (the game leaves NaN there). `*readable` says which of the two it was.
+bool ReadRows(const uint8_t* base, uint32_t address, double rows[4][3], bool* readable) {
+  *readable = false;
+  if (address < 0x1000u || (address & 3u) != 0 || !nfx::IsGuestRangeReadable(address, 64)) {
+    return false;
+  }
+  *readable = true;
+  const uint8_t* matrix = rex::memory::GuestPtr<const uint8_t*>(const_cast<uint8_t*>(base), address);
+  for (uint32_t r = 0; r < 4; ++r) {
+    for (uint32_t c = 0; c < 3; ++c) {
+      const uint32_t bits = car_dump::LoadBe32(matrix + 16 * r + 4 * c);
+      float value;
+      std::memcpy(&value, &bits, 4);
+      rows[r][c] = double(value);
+    }
+  }
+  return car_rt_memory::UsableRows(rows);
+}
+
+}  // namespace
+
+void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::vector<car_rt_memory::VehicleRead>* out, VehicleScan* scan,
+                       bool with_note) {
+  out->clear();
+  *scan = VehicleScan{};
+  const uint8_t* base = GuestBase();
+  if (!base || !player.valid) {
+    if (with_note) {
+      scan->note = base ? "no player's vehicle" : "no guest memory";
+    }
+    return;
+  }
+  const auto bytes = [&](uint32_t address, uint32_t size) -> const uint8_t* {
+    if (address < 0x10000u || (address & 3u) != 0 || !nfx::IsGuestRangeReadable(address, size)) {
+      return nullptr;
+    }
+    return rex::memory::GuestPtr<const uint8_t*>(const_cast<uint8_t*>(base), address);
+  };
+  const auto word = [&](uint32_t address, uint32_t* value) {
+    const uint8_t* p = bytes(address, 4);
+    if (!p) {
+      return false;
+    }
+    *value = car_dump::LoadBe32(p);
+    return true;
+  };
+  // A 16-bit field at `address` (2-aligned): the aligned word that holds it, big-endian.
+  const auto half = [&](uint32_t address, uint32_t* value) {
+    const uint8_t* p = bytes(address & ~3u, 4);
+    if (!p) {
+      return false;
+    }
+    *value = (uint32_t(p[address & 3u]) << 8) | p[(address & 3u) + 1];
+    return true;
+  };
+  const auto take = [&](car_rt_memory::VehicleRead&& v) {
+    double position[3];
+    v.Position(position);
+    const double d = car_rt_memory::Distance(position, player.position);
+    if (d < car_rt_memory::kOwnMetres) {
+      ++scan->own;
+      return;
+    }
+    if (!(d <= max_distance)) {
+      return;
+    }
+    out->push_back(std::move(v));
+  };
+
+  // The opponent manager's active racers.
+  uint32_t manager = 0;
+  if (word(kOpponentManagerGlobal, &manager) && manager >= 0x10000u) {
+    uint32_t count = 0, array = 0;
+    if (half(manager + kManagerActiveCountOffset, &count) && word(manager + kManagerActiveArrayOffset, &array)) {
+      scan->valid = true;
+      scan->opponents_active = count;
+      count = std::min<uint32_t>(count, 256u);
+      for (uint32_t i = 0; i < count; ++i) {
+        uint32_t racer = 0, entity = 0, matrix = 0;
+        if (!word(array + 4 * i, &racer) || racer < 0x10000u || !word(racer + kRacerEntityOffset, &entity) || entity < 0x10000u ||
+            !word(entity + kRacerEntityMatrixOffset, &matrix)) {
+          continue;
+        }
+        car_rt_memory::VehicleRead v;
+        v.address = racer;
+        v.kind = car_rt_memory::VehicleKind::kOpponent;
+        bool readable = false;
+        if (!ReadRows(base, matrix + kRacerMatrixRowsOffset, v.rows, &readable)) {
+          scan->rejected += readable ? 1u : 0u;
+          continue;
+        }
+        ++scan->opponents_read;
+        take(std::move(v));
+      }
+    }
+  } else if (with_note) {
+    scan->note += "the opponent manager's global is empty; ";
+  }
+
+  // The ambient manager's live cars of the moving and the parked class.
+  uint32_t ambient = 0, pool = 0;
+  if (word(kAmbientManagerGlobal, &ambient) && ambient >= 0x10000u && word(ambient + kAmbientPoolOffset, &pool) && pool >= 0x10000u) {
+    scan->valid = true;
+    for (const uint32_t cls : {kAmbientClassMoving, kAmbientClassParked}) {
+      uint32_t node = 0;
+      if (!word(pool + cls * kAmbientDescriptorBytes + kAmbientLiveHeadOffset, &node)) {
+        continue;
+      }
+      for (uint32_t n = 0; node >= 0x10000u && n < kAmbientListCap; ++n) {
+        uint32_t item = 0, next = 0;
+        if (!word(node, &item) || !word(node + 4, &next)) {
+          break;
+        }
+        node = next;
+        if (item < 0x10000u) {
+          continue;
+        }
+        (cls == kAmbientClassMoving ? scan->traffic_seen : scan->parked_seen) += 1;
+        car_rt_memory::VehicleRead v;
+        v.address = item;
+        v.kind = cls == kAmbientClassMoving ? car_rt_memory::VehicleKind::kTraffic : car_rt_memory::VehicleKind::kParked;
+        bool readable = false;
+        if (!ReadRows(base, item + kAmbientCarMatrixOffset, v.rows, &readable)) {
+          scan->rejected += readable ? 1u : 0u;
+          continue;
+        }
+        word(item + kAmbientCarTypeOffset, &v.tag);
+        take(std::move(v));
+      }
+    }
+  } else if (with_note) {
+    scan->note += "the ambient manager's pool is not readable; ";
+  }
+
+  // The nearest of them, if more than the cap were found.
+  if (out->size() > kOtherVehicleCap) {
+    std::sort(out->begin(), out->end(), [&](const car_rt_memory::VehicleRead& a, const car_rt_memory::VehicleRead& b) {
+      double pa[3], pb[3];
+      a.Position(pa);
+      b.Position(pb);
+      return car_rt_memory::Distance(pa, player.position) < car_rt_memory::Distance(pb, player.position);
+    });
+    out->resize(kOtherVehicleCap);
+  }
+  scan->kept = uint32_t(out->size());
 }
 
 // ---------------------------------------------------------------------------
@@ -383,6 +538,37 @@ bool SkinPositions(const GuestMemory& memory, const DrawView& view, const uint8_
     car_dump::SkinBlend(palette, influence, &local[size_t(v) * 3], &(*blended)[size_t(v) * 3], stats);
     if (directions) {
       car_frame_rules::SkinBlendDirection(palette, influence, &(*directions_in)[size_t(v) * 3], &(*directions_out)[size_t(v) * 3]);
+    }
+  }
+  return true;
+}
+
+bool ReadTexcoords(const GuestMemory& memory, const DrawView& view, uint32_t first, uint32_t span, std::vector<float>* out) {
+  out->clear();
+  const DrawRecord& r = view.record();
+  nfx::DeclarationElement element;
+  if (!FindElement(view, r, kUsageTexcoord, &element)) {
+    return false;
+  }
+  car_dump::PositionFormat format;
+  if (!car_rt_material::UvFormat(element.type, &format)) {
+    return false;
+  }
+  const uint32_t bytes = car_rt_material::UvBytes(format);
+  const StreamRef stream = ResolveStream(view, r, element.stream);
+  if (bytes == 0 || !stream.ok || stream.stride == 0 || element.offset + bytes > stream.stride || uint64_t(first + span) * stream.stride > stream.size) {
+    return false;
+  }
+  const uint8_t* base = stream.inline_data ? stream.inline_base + size_t(first) * stream.stride
+                                           : memory.Read(stream.address + first * stream.stride, span * stream.stride);
+  if (!base) {
+    return false;
+  }
+  out->resize(size_t(span) * 2);
+  for (uint32_t v = 0; v < span; ++v) {
+    if (!car_rt_material::DecodeUv(base + size_t(v) * stream.stride + element.offset, format, &(*out)[size_t(v) * 2], &(*out)[size_t(v) * 2 + 1])) {
+      out->clear();
+      return false;
     }
   }
   return true;

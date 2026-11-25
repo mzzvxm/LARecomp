@@ -11,7 +11,6 @@
 #include <rex/cvar.h>
 #include <rex/ui/d3d12/d3d12_api.h>
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_gpu_untile);
 
 namespace mcla::native_gfx {
 

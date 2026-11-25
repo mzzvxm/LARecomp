@@ -5,7 +5,7 @@
 
 #include <cstdio>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/ui/d3d12/d3d12_api.h>
@@ -18,7 +18,6 @@
 #include "resource_cache.h"
 #include "texture_cache.h"
 
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_census);
 
 namespace mcla::native_gfx {
 
@@ -166,7 +165,7 @@ IDXGIAdapter3* AdapterFor(ID3D12Device* device) {
 void MemoryCensusTick(D3D12Context& context, const BufferCache& buffers,
                       const TextureCache& textures, const PipelineCache& pipelines,
                       const RenderTargetPool& render_targets) {
-  const uint32_t interval = REXCVAR_GET(mcla_native_gfx_census);
+  const uint32_t interval = larecomp::settings::mcla_native_gfx_census.Get();
   if (interval == 0) {
     return;
   }

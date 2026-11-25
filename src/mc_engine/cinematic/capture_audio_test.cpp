@@ -17,10 +17,13 @@
 #include <cstdio>
 #include <cstring>
 #include <deque>
+#include <atomic>
 #include <filesystem>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include <chrono>
 #include "capture_audio_core.h"
 
 using namespace mc::cinematic::capture_audio;
@@ -52,48 +55,6 @@ void CheckNum(double got, double want, const std::string& what, double tol) {
         ++g_failed;
         std::printf("FAILED: %s: got %.9g, want %.9g\n", what.c_str(), got, want);
     }
-}
-
-// ---------------------------------------------------------------------------------------------------------------- the driver's install
-
-// The off path. The capture driver is put in front of the game's audio output only when a take that records sound starts: a game with no
-// take, and a take with the sound off, leave the output exactly as it is (PlanDriver says kNone, so Begin installs and arms nothing).
-void TestInstallPlan() {
-    Check(PlanDriver(false, false) == DriverPlan::kNone, "no sound asked, no driver: nothing to do");
-    Check(PlanDriver(false, true) == DriverPlan::kNone, "no sound asked, a driver from an earlier take: still nothing is touched");
-    Check(PlanDriver(true, false) == DriverPlan::kInstallThenArm, "sound asked, no driver: install it, then arm it");
-    Check(PlanDriver(true, true) == DriverPlan::kArm, "sound asked, driver there: arm it, install nothing");
-
-    // A session in the order the game runs it, with Begin's rule applied to a model of the audio output: `wrapped` is whether the capture
-    // driver is in the path, `installs` how many times it was put there.
-    struct Output {
-        bool wrapped = false;
-        int installs = 0;
-        int armed = 0;
-        // capture_audio.cpp Begin's switch on the plan
-        bool Begin(bool records_sound) {
-            switch (PlanDriver(records_sound, wrapped)) {
-                case DriverPlan::kNone:
-                    return false;
-                case DriverPlan::kInstallThenArm:
-                    wrapped = true;
-                    ++installs;
-                    [[fallthrough]];
-                case DriverPlan::kArm:
-                    ++armed;
-                    return true;
-            }
-            return false;
-        }
-    };
-    Output o;
-    // (a game that runs no take never calls Begin, so it stays here)
-    Check(!o.wrapped && o.installs == 0, "at the start of the game the output is the real one, with no wrapper");
-    Check(!o.Begin(false) && !o.wrapped && o.installs == 0 && o.armed == 0, "a take with the sound off leaves the output alone");
-    Check(!o.Begin(false) && !o.wrapped, "and so does the next one");
-    Check(o.Begin(true) && o.wrapped && o.installs == 1 && o.armed == 1, "the first take with sound puts the driver in front of the output and arms it");
-    Check(o.Begin(true) && o.installs == 1 && o.armed == 2, "the second one arms the same driver (no second install)");
-    Check(!o.Begin(false) && o.wrapped && o.installs == 1 && o.armed == 2, "a take with the sound off after that arms nothing and installs nothing");
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the timeline
@@ -451,15 +412,63 @@ void TestFile() {
     std::filesystem::remove(path, ec);
 }
 
+// The game ends during a take (EXIT-SMALL M2): the file is closed from another thread while the game thread is still appending to it. The sizes in
+// the header are those of the samples that really are in the file (a Close that raced an append would leave them short), and an append after the
+// close returns false and writes nothing (no write to a closed FILE*).
+void TestCloseDuringAppends() {
+    const std::filesystem::path path = std::filesystem::temp_directory_path() / "larecomp_capture_audio_close_race.wav";
+    for (int round = 0; round < 20; ++round) {
+        WavFile w;
+        Check(w.Open(path.string(), 2, 48000), "race: the file opens");
+        std::atomic<bool> go{false};
+        std::atomic<uint64_t> refused_after_close{0};
+        std::thread game([&] {
+            std::vector<float> a(256 * 2, 0.5f);
+            while (!go.load(std::memory_order_acquire)) std::this_thread::yield();
+            for (int i = 0; i < 4000; ++i) {
+                if (!w.Append(a.data(), 256)) {
+                    refused_after_close.fetch_add(1);
+                    // once closed, every later append is refused too
+                    if (w.Append(a.data(), 256)) refused_after_close.store(1u << 30);
+                    break;
+                }
+            }
+        });
+        go.store(true, std::memory_order_release);
+        std::this_thread::sleep_for(std::chrono::microseconds(200 + 150 * round));
+        const bool closed = w.Close();  // the exit hook's call, from the exiting thread
+        game.join();
+        Check(closed, "race: it closes");
+        Check(!w.IsOpen(), "race: closed");
+        std::vector<uint8_t> bytes;
+        if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
+            uint8_t buf[8192];
+            size_t n;
+            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+            std::fclose(f);
+        }
+        Check(bytes.size() >= 56, "race: the header is there");
+        if (bytes.size() >= 56) {
+            CheckU(bytes.size() - 56, w.Frames() * 8, "race: the file holds exactly the frames the writer counted");
+            CheckU(Get32(bytes, 52), w.Frames() * 8, "race: the data size is that");
+            CheckU(Get32(bytes, 4), bytes.size() - 8, "race: the RIFF size is the file's size minus 8");
+            CheckU(Get32(bytes, 44), w.Frames(), "race: fact holds the count");
+        }
+        Check(refused_after_close.load() < (1u << 30), "race: an append after the close is refused, not written");
+    }
+    std::error_code ec;
+    std::filesystem::remove(path, ec);
+}
+
 }  // namespace
 
 int main() {
-    TestInstallPlan();
     TestSamples();
     TestTake();
     TestLate();
     TestHeader();
     TestFile();
+    TestCloseDuringAppends();
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

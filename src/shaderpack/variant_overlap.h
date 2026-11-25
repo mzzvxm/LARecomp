@@ -2,14 +2,14 @@
 // ===========================================================================
 // LARecomp shader pack builder -- a pixel shader that two variants made an entry for
 // ===========================================================================
-// The renderer draws a pixel shader with ONE variant at most: Pipelines::ChoosePackedVariant (src/gpu/pipelines.cpp) takes the first
-// of the variants the pack has for the shader that the settings ask for, in the order bloom, environment map, shadow filter, glow,
-// car self-reflection ..., and the others are never drawn. Each variant is made from the game's own text on its own, so a shader
-// two variants edit would come out with two entries, each without the other's edit, and one of them silently unused. Nothing in
-// the built-in variants does that today (the paint of the car is in the car self-reflection's alone: the shadow filter's transform
-// leaves it out, it reads no shadow atlas; variants/variant_overlap_test.cpp checks that on the retail text), and combining two
-// edits in one shader would also need two windows of extra constants (the shadow filter's and the car self-reflection's both start
-// at byte 608 of the shared block), so the step tells it when it happens instead of building one half.
+// Without the chain a pixel shader could have ONE variant at most; with it (variant_chain.h) a shader can have the edits of several
+// stages in one text, but only for the pairs the chain's table lists as composable. A pixel shader that two variants that are NOT
+// composable made an entry for would come out with two entries, each without the other's edit, and the renderer takes one of them per
+// draw (ShaderStore::ChooseVariant: the most wanted features that the pack has a word for, the lowest feature among equals), the
+// other never. Nothing in the built-in variants does that (the paint of the car is in the car self-reflection's alone: the shadow filter's
+// transform leaves it out, it reads no shadow atlas; variants/variant_overlap_test.cpp checks that on the retail text), so the step tells
+// it when it happens instead of building half of what was meant. Two stages the table composes are not an overlap: the step builds
+// their composition (variant_pack.cpp ComposePass) and the renderer can take both.
 //
 // Pure: the variant step (variant_pack.cpp) collects (variant name, pixel shader identity) of every entry it made and asks here.
 // ===========================================================================

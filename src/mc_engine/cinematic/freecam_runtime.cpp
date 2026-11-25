@@ -43,10 +43,13 @@
 //
 
 #include "freecam_runtime.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -60,6 +63,7 @@
 #include <vector>
 
 #include "camera.h"
+#include "director/director_game.h"
 #include "freecam.h"
 #include "larecomp_log.h"
 #include "scene_runtime.h"
@@ -67,49 +71,6 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/cut_request.h"
 #endif
-
-REXCVAR_DEFINE_BOOL(mcla_freecam, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: the free camera. The pad flies the camera (left stick moves, right stick looks, triggers up and down, LB and RB tilt, "
-    "D-pad zooms and sets the speed, a stick click is fast or slow) and the game gets no pad input but Start, so the car does not drive. "
-    "Back + A records the flight, Back + X is home. Off: the game's own camera.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(mcla_freecam_record, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: record the free camera's flight into a raw track file (one sample a game update; ports\\scripts\\scene_cam.py turns it "
-    "into a scene's camera track). On starts a file, off ends it. Back + A on the pad flips it. Only records while the free camera flies.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(mcla_freecam_out, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT: the file the next free camera recording is written to (replaced when it exists). Empty: freecam\\flight-<date>-<time>.cam.csv "
-    "next to the game.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_freecam_speed, 12.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: how fast the free camera flies at a full stick, in metres a second (L3 four times as fast, R3 a quarter, D-pad left and right "
-    "step it).")
-    .range(0.5, 500.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_freecam_look, 70.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: how fast the free camera turns at a full right stick, in degrees a second.")
-    .range(5.0, 360.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_freecam_inertia, 0.25, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: how long the free camera takes to settle after the sticks move, in seconds (the turn and the tilt take half). 0: none.")
-    .range(0.0, 2.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_UINT32(mcla_freecam_log, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: while the free camera flies, log its pose every this many frames ([fly] lines). 0: only the events.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -170,6 +131,24 @@ std::atomic<uint32_t> g_pad_frame{0};   // the game frame the shared pad was tak
 std::mutex g_pad_mutex;
 fc::Pad g_pad;
 
+// What the Director asks of the flight (freecam_runtime.h): a pose to start from, the game's own camera forced, a pad that is not the real one.
+// The pad the panel feeds comes from the UI thread once a drawn frame and the flight reads it once an update: the two rates differ and either may be the faster (a game at 240
+// updates a second under a UI at 60, or the other way round in a fixed step), so it holds for kExtPadHoldMs of WALL time after the last feed and not for a number of updates; the
+// mouse's look and the wheel are amounts to apply once, so they ADD UP between two updates and are taken (zeroed) by the one that reads them.
+constexpr int64_t kExtPadHoldMs = 150;
+std::atomic<uint8_t> g_override{static_cast<uint8_t>(CameraOverride::kNone)};
+std::atomic<uint32_t> g_hook_serial{0};  // hook runs so far
+fc::Pad g_ext_pad;                       // g_pad_mutex
+int64_t g_ext_fed_ms = 0;                // g_pad_mutex: steady-clock milliseconds of the last feed (0 = never)
+double g_ext_look_right = 0.0, g_ext_look_up = 0.0;  // g_pad_mutex: what the feeds added since the flight last took them
+int g_ext_speed_steps = 0;               // g_pad_mutex
+int64_t SteadyMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+bool g_pending_pose = false;             // g_pad_mutex
+fc::Pose g_pending;                      // g_pad_mutex
+FreecamEventHook g_event_hook = nullptr;  // the panel's chords (SetFreecamEventHook)
+
 struct State {
     bool armed = false;      // the cvar was on at the last hook
     bool seeded = false;     // the flight has a pose of its own (a pause does not lose it; switching the camera off does)
@@ -189,7 +168,7 @@ struct State {
     double t = 0.0;
     fc::RawTrack record;
 };
-State g;
+State& g = larecomp::Leak<State>();
 
 // A vector of the slots' frame (a row or the position).
 cam::Vec3 SlotVec(const uint8_t* base, uint32_t sp, uint32_t off) {
@@ -258,9 +237,9 @@ void WriteCamera(uint8_t* base, uint32_t sp, const fc::Pose& pose) {
 
 fc::Params ParamsFromCvars() {
     fc::Params p;
-    p.speed = REXCVAR_GET(mcla_freecam_speed);
-    p.look = REXCVAR_GET(mcla_freecam_look);
-    p.inertia = REXCVAR_GET(mcla_freecam_inertia);
+    p.speed = larecomp::settings::mcla_freecam_speed.Get();
+    p.look = larecomp::settings::mcla_freecam_look.Get();
+    p.inertia = larecomp::settings::mcla_freecam_inertia.Get();
     return p;
 }
 
@@ -297,11 +276,11 @@ void StopRecording(const char* why) {
     LARECOMP_APP_INFO("[fly] to make a scene's camera track of it: python -I ports\\scripts\\scene_cam.py convert {} -o flight.scene", g.path);
     g.record.samples.clear();
     g.pending.clear();
-    if (REXCVAR_GET(mcla_freecam_record)) rex::cvar::SetFlagByName("mcla_freecam_record", "false");
+    if (larecomp::settings::mcla_freecam_record.Get()) larecomp::cvar::SetFlagByName("mcla_freecam_record", "false");
 }
 
 void StartRecording(const uint8_t* base) {
-    std::string path = REXCVAR_GET(mcla_freecam_out);
+    std::string path = larecomp::settings::mcla_freecam_out.Get();
     if (path.empty()) path = "freecam/flight-" + TimeStamp("%Y%m%d-%H%M%S") + ".cam.csv";
     std::error_code ec;
     const std::filesystem::path fs_path = PathFromUtf8(path);
@@ -309,7 +288,7 @@ void StartRecording(const uint8_t* base) {
     g.file.open(fs_path, std::ios::binary | std::ios::trunc);
     if (!g.file) {
         LARECOMP_APP_ERROR("[fly] cannot write {}: no recording", path);
-        rex::cvar::SetFlagByName("mcla_freecam_record", "false");
+        larecomp::cvar::SetFlagByName("mcla_freecam_record", "false");
         return;
     }
     g.path = path;
@@ -362,8 +341,18 @@ void Disengage(uint8_t* base, uint32_t sp, const char* why, bool forget_pose) {
 
 }  // namespace
 
-bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
-    const bool armed = REXCVAR_GET(mcla_freecam);
+// The free camera's hook, as before the Director: the wrapper below tells the Director what the final camera is.
+static bool FreecamApplyImpl(uint8_t* base, uint32_t sp, uint32_t mode, bool* game_forced) {
+    *game_forced = false;
+    g_hook_serial.fetch_add(1, std::memory_order_relaxed);
+    if (static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed)) == CameraOverride::kGame && base && mode != kModeMenu && !GamePaused(base)) {
+        // The Director wants the game's own camera: the flight and the scene's camera stand aside. Returning true leaves the slots as the game made them and
+        // keeps the scene's camera from running after this (the caller returns).
+        if (g.flying) Disengage(base, sp, "the game's own camera is forced", false);
+        *game_forced = true;
+        return true;
+    }
+    const bool armed = larecomp::settings::mcla_freecam.Get();
     if (!armed && !g.armed && !g.flying) return false;  // the one flag test
     if (!base) return false;
 
@@ -400,6 +389,16 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     } else if (!g.flying) {
         announce_back = true;  // out of a pause or the front end: the flight's camera comes back
     }
+    {
+        std::lock_guard<std::mutex> lock(g_pad_mutex);
+        if (g_pending_pose) {  // the Director placed the camera (camera.set, camera.look_at)
+            g_pending_pose = false;
+            g.flyer.Seed(g_pending);
+            g.seeded = true;
+            g.cut_flag = true;
+            announce_back = true;
+        }
+    }
     g.flying = true;
     g_hook_frame.store(frame, std::memory_order_relaxed);
     g_flying.store(true, std::memory_order_relaxed);
@@ -412,12 +411,22 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
         {
             std::lock_guard<std::mutex> lock(g_pad_mutex);
             if (frame - g_pad_frame.load(std::memory_order_relaxed) <= kPadStaleFrames) pad = g_pad;  // else at rest: no stick stuck on a stale read
+            // A pad the Director's panel feeds (the mouse and the keys flying the camera) replaces the real one while it keeps coming
+            if (g_ext_fed_ms != 0 && SteadyMs() - g_ext_fed_ms <= kExtPadHoldMs) {
+                pad = g_ext_pad;
+                pad.look_right = g_ext_look_right;
+                pad.look_up = g_ext_look_up;
+                pad.speed_steps = g_ext_speed_steps;
+            }
+            g_ext_look_right = g_ext_look_up = 0.0;  // taken once (or dropped: a feed that is gone leaves no turn waiting)
+            g_ext_speed_steps = 0;
         }
         const fc::Events ev = g.flyer.Step(pad, dt, params);
+        if (g_event_hook) g_event_hook(ev);
         g.have_frame = true;
         g.last_frame = frame;
         ++g.frames;
-        if (ev.toggle_record) rex::cvar::SetFlagByName("mcla_freecam_record", REXCVAR_GET(mcla_freecam_record) ? "false" : "true");
+        if (ev.toggle_record) larecomp::cvar::SetFlagByName("mcla_freecam_record", larecomp::settings::mcla_freecam_record.Get() ? "false" : "true");
         if (ev.home) {
             g.flyer.Seed(GameCamera(base, sp, g.flyer.pose().yaw));
             g.cut_flag = true;
@@ -429,11 +438,11 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
             LARECOMP_APP_INFO("[fly] a cut is marked here");
         }
         if (ev.reset_view) LARECOMP_APP_INFO("[fly] the horizon is level and the field of view is back to {:.1f}", g.flyer.pose().fov);
-        const bool want = REXCVAR_GET(mcla_freecam_record);
+        const bool want = larecomp::settings::mcla_freecam_record.Get();
         if (want && !g.recording) StartRecording(base);
         else if (!want && g.recording) StopRecording("stopped");
         if (g.recording) AddSample(base, dt);
-        const uint32_t every = REXCVAR_GET(mcla_freecam_log);
+        const uint32_t every = larecomp::settings::mcla_freecam_log.Get();
         if (every != 0 && g.frames % every == 0) {
             const fc::Pose& p = g.flyer.pose();
             LARECOMP_APP_INFO("[fly] frame {}: at {:.2f} {:.2f} {:.2f}, yaw {:.2f} pitch {:.2f} roll {:.2f} fov {:.2f}, speed x{:.2f}{}", frame, p.position.x,
@@ -444,6 +453,53 @@ bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
     WriteCamera(base, sp, g.flyer.pose());
     if (announce_back) AnnounceCut(base, sp, "the flight's camera");
     return true;
+}
+
+bool FreecamApply(uint8_t* base, uint32_t sp, uint32_t mode) {
+    bool game_forced = false;
+    const bool wrote = FreecamApplyImpl(base, sp, mode, &game_forced);
+    if (base && director::Enabled()) {
+        director::NoteCameraHook(base, sp, mode, wrote ? (game_forced ? director::CameraSource::kGameForced : director::CameraSource::kFreecam) : director::CameraSource::kNone);
+    }
+    return wrote;
+}
+
+void FreecamSetPose(const freecam::Pose& pose) {
+    {
+        std::lock_guard<std::mutex> lock(g_pad_mutex);
+        g_pending = pose;
+        g_pending.pitch = std::clamp(g_pending.pitch, -fc::kMaxPitch, fc::kMaxPitch);
+        g_pending_pose = true;
+    }
+    if (static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed)) == CameraOverride::kGame) g_override.store(static_cast<uint8_t>(CameraOverride::kNone));
+    if (!larecomp::settings::mcla_freecam.Get()) larecomp::cvar::SetFlagByName("mcla_freecam", "true");
+}
+
+bool FreecamGetPose(freecam::Pose* out) {
+    if (!g.seeded) return false;
+    *out = g.flyer.pose();
+    return true;
+}
+
+void FreecamSetOverride(CameraOverride mode) {
+    g_override.store(static_cast<uint8_t>(mode), std::memory_order_relaxed);
+}
+
+CameraOverride FreecamOverride() {
+    return static_cast<CameraOverride>(g_override.load(std::memory_order_relaxed));
+}
+
+void SetFreecamEventHook(FreecamEventHook hook) {
+    g_event_hook = hook;
+}
+
+void FreecamFeedPad(const freecam::Pad& pad) {
+    std::lock_guard<std::mutex> lock(g_pad_mutex);
+    g_ext_pad = pad;
+    g_ext_look_right += pad.look_right;
+    g_ext_look_up += pad.look_up;
+    g_ext_speed_steps = std::clamp(g_ext_speed_steps + pad.speed_steps, -40, 40);
+    g_ext_fed_ms = SteadyMs();
 }
 
 void FreecamObservePad(uint8_t* base, uint32_t user, uint32_t state) {
@@ -469,6 +525,10 @@ bool FreecamActive() {
     return g_flying.load(std::memory_order_relaxed);
 }
 
+void FreecamStopForExit() {
+    StopRecording("the game is ending");
+}
+
 }  // namespace mc::cinematic
 
 #else  // REXGLUE_HAS_XEO3_TARGET
@@ -479,6 +539,13 @@ namespace mc::cinematic {
 bool FreecamApply(uint8_t*, uint32_t, uint32_t) { return false; }
 void FreecamObservePad(uint8_t*, uint32_t, uint32_t) {}
 bool FreecamActive() { return false; }
+void FreecamStopForExit() {}
+void FreecamSetPose(const freecam::Pose&) {}
+bool FreecamGetPose(freecam::Pose*) { return false; }
+void FreecamSetOverride(CameraOverride) {}
+CameraOverride FreecamOverride() { return CameraOverride::kNone; }
+void FreecamFeedPad(const freecam::Pad&) {}
+void SetFreecamEventHook(FreecamEventHook) {}
 }  // namespace mc::cinematic
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

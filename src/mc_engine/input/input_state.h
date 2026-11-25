@@ -36,10 +36,11 @@
 //
 // The rules (thresholds in input_state_core.h, KBM-DESIGN.md 2.2): a pad button going down, a trigger
 // rising past 30, a stick crossing its dead zone or moving by more than 2000 counts; a key going down
-// (not a repeat, not key-up, not a lone Shift / Ctrl / Alt / Win, a lock key, Pause, Print Screen or
-// F1-F12), a mouse button going down and a wheel notch count at once; mouse motion counts only after at
-// least 8 px of travel within 200 ms in two events, not within 1 s of a controller's last input, not
-// within 250 ms of a switch, not in the first 300 ms after the window got focus.
+// (not a repeat, not key-up, not a lone Shift / Ctrl / Alt / Win, a lock key, Pause, Print Screen, or one
+// of F1-F12 that no kb_* binding names), a mouse button going down and a wheel notch count at once; the
+// host key of an extra_button_* setting (a back paddle) counts as a pad button; mouse motion counts only
+// after at least 8 px of travel within 200 ms in two events, not within 1 s of a controller's last input,
+// not within 250 ms of a switch, not in the first 300 ms after the window got focus.
 //
 
 #include <cstdint>
@@ -51,6 +52,13 @@ namespace larecomp::input {
 enum class InputDevice : uint8_t { Pad = 0, KeyboardMouse = 1 };
 
 enum class GlyphFamily : uint8_t { Xbox = 0, PlayStation = 1, Keyboard = 2 };
+
+// What the host's settings say about a key (KBM-DESIGN.md 2.2), asked when a key goes down (keyboard_native.h RoleOfKey):
+//   Plain        no setting names it;
+//   Bound        one of the kb_ui_* / kb_drive_* bindings names it: F1-F12 count as keyboard activity only then;
+//   ExtraButton  a host key of an extra_button_* setting: the pad software of a pad with back paddles sends it and the game takes it from the keyboard feed as the pad
+//                button L4 / L5 / R4 / R5, so pressing it is PAD activity, not keyboard activity.
+enum class KeyRole : uint8_t { Plain = 0, Bound = 1, ExtraButton = 2 };
 
 InputDevice ActiveInput();
 GlyphFamily ActiveGlyphFamily();

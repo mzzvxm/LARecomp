@@ -10,6 +10,7 @@
 #include <system_error>
 
 #include "native_gfx/shader_identity.h"
+#include "os/file_replace.h"
 #include "shaderpack/hash.h"
 
 namespace larecomp::shaderpack {
@@ -191,16 +192,11 @@ PackWriteResult WritePackFile(const std::filesystem::path& path, std::span<const
 
 bool CommitFile(const std::filesystem::path& temporary, const std::filesystem::path& final_path,
                 std::string* error) {
-  std::error_code ec;
-  std::filesystem::rename(temporary, final_path, ec);
-  if (!ec) return true;
-  // A rename that will not replace (another platform's rule, or a reader that has the old file open
-  // without sharing delete): take the old file away first.
-  std::error_code remove_ec;
-  std::filesystem::remove(final_path, remove_ec);
-  std::filesystem::rename(temporary, final_path, ec);
-  if (!ec) return true;
-  *error = std::format("cannot move {} to {}: {}", PathText(temporary), PathText(final_path), ec.message());
+  // One step over the old file, tried again while another process has it open; the same bytes already there (another process built the same pack first) count as done
+  // (os/file_replace.h). The temporary file is gone afterwards either way.
+  std::string why;
+  if (larecomp::os::Succeeded(larecomp::os::MoveIntoPlace(temporary, final_path, &why))) return true;
+  *error = std::format("cannot move {} to {}: {}", PathText(temporary), PathText(final_path), why);
   return false;
 }
 

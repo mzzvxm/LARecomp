@@ -6,6 +6,7 @@
 // fork's notes on rexglue-occlusion-queries.patch.
 
 #include "occlusion.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -13,8 +14,8 @@
 #include <cstring>
 #include <mutex>
 
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "device.h"
 #include "native_gfx/guest/guest_resources.h"
@@ -64,7 +65,7 @@ struct Entry {
   uint32_t samples = 0;  // the count of that use, when ready
 };
 std::mutex g_mutex;
-std::unordered_map<uint32_t, Entry> g_entries;
+std::unordered_map<uint32_t, Entry>& g_entries = larecomp::Leak<std::unordered_map<uint32_t, Entry>>();
 uint32_t g_next_use = 0;
 
 uint32_t BeginUse(uint32_t query) {

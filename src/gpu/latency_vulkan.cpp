@@ -34,7 +34,7 @@
 #include <shared_mutex>
 #include <string>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include <plume_vulkan.h>
 

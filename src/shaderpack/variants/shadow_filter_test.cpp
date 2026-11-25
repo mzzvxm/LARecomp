@@ -198,9 +198,19 @@ void CheckEdited(const Shape& shape, const std::string& hlsl) {
         what + "g_ShadowFilter in the DXIL constants");
   Check(out.find("float ShadowFilterSoft(") < out.find("void main("), what + "the helper is before main");
   // Contact hardening's pieces: the penumbra from the light matrix's rows, the mode bit, the search's constants.
-  Check(Count(out, "float2 ShadowFilterPenumbra(") == 1 && Count(out, "gLightMatrixArr(0 + base)") == 1 &&
-            Count(out, "gLightMatrixArr(3 + base)") == 1,
-        what + "the penumbra helper reads the four rows of the cascade by its base");
+  Check(Count(out, "float2 ShadowFilterPenumbra(") == 1 && Count(out, "gLightMatrixArr(0 + base)") == 2 &&
+            Count(out, "gLightMatrixArr(3 + base)") == 2,
+        what + "the penumbra and the receiver plane's helpers read the four rows of the cascade by its base");
+  // The noise: only with mode bit 4 (a temporal upscaler); the plane: only with bit 1 (true PCF taps), derivatives of the
+  // pixel's own centre and depth, held to a slope limit; the search and the PCF taps both compare at the plane.
+  Check(Contains(out, "(mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z, (mode & 32u) != 0u) : kShadowFilterFixedAngle"),
+        what + "the disk is turned by noise only with mode bit 4");
+  Check(Count(out, "float2 ShadowFilterPlane(") == 1 && Count(out, "ShadowFilterPlane(centre, depth, cascadeBase)") == 1 &&
+            Contains(out, "ddx(centre)") && Contains(out, "ddy(depth)") && Contains(out, "kShadowFilterMaxSlope"),
+        what + "the receiver plane is worked out once, from the derivatives, behind the Gather bit");
+  Check(Contains(out, "if (stored < depth + dot(slope, offset))") &&
+            Contains(out, "depth + dot(slope, offset), gather, slope);"),
+        what + "the blocker search and the taps compare at the receiver's plane");
   Check(Contains(out, "(mode & 2u) != 0u") && Contains(out, "kShadowFilterSearchTaps = 8") &&
             Contains(out, "kShadowFilterSunTan = 0.0047123890"),
         what + "the blocker search is behind mode bit 2, 8 taps, the sun's 0.27 degrees");
@@ -296,9 +306,9 @@ void CheckFixtures() {
 
   // The variant's definition.
   const sp::VariantDef def = sp::MakeShadowFilterVariant();
-  Check(def.id == larecomp::shaderpack::kVariantShadowFilter && def.name == "shadow_filter" && def.needs_rpf &&
+  Check(def.feature == larecomp::shaderpack::kFeatureShadowFilter && def.name == "shadow_filter" && def.needs_rpf &&
             def.pixel_shaders.empty() && def.pixel_name_suffixes.size() == 2 && def.transform,
-        "the definition: id, name, the RPF, two name suffixes, a transform");
+        "the definition: feature, name, the RPF, two name suffixes, a transform");
   Check(def.version == sp::kShadowFilterVariantVersion && def.version >= 1, "the definition carries the version");
 }
 

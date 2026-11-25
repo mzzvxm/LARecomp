@@ -14,6 +14,8 @@
 
 #include <cstdint>
 
+#include "freecam.h"
+
 namespace mc::cinematic {
 
 // Called by Hook_MenuCameraFinal before anything else. `base` is the guest memory, `sp` the guest stack pointer of sub_822C0320, `mode` the
@@ -25,6 +27,31 @@ void FreecamObservePad(uint8_t* base, uint32_t user, uint32_t state);
 
 // True while the camera is the flight's.
 bool FreecamActive();
+
+// The game is ending: a recording that is still running writes its last rows and closes its file. The fast exit (exit_fast.h) runs no destructor,
+// and the file's destructor was what flushed them.
+void FreecamStopForExit();
+
+// ---------------------------------------------------------------------------------------------------------------- the Director (src/mc_engine/cinematic/director)
+// Game thread, except FreecamFeedPad (any thread).
+
+// Whose camera is final when the Director says so: kNone = as before (the flight when mcla_freecam is on, else the scene's, else the game's), kFree = the flight,
+// kGame = the game's own camera whatever else runs (the flight and the scene's camera stand aside; a front-end shot and a paused game keep their own anyway).
+enum class CameraOverride : uint8_t { kNone, kFree, kGame };
+
+// The flight starts at this pose (at the next hook run), and mcla_freecam is turned on; a forced game camera is released. The renderer is told of the cut.
+void FreecamSetPose(const freecam::Pose& pose);
+// The flight's pose; false before it has one (it is seeded from the game's camera when it first flies).
+bool FreecamGetPose(freecam::Pose* out);
+void FreecamSetOverride(CameraOverride mode);
+CameraOverride FreecamOverride();
+// A pad that is not the real one flies the camera while it is fed (every drawn frame of the panel; 150 ms of wall time without a feed and the real pad is back): the panel's
+// mouse and keys. Pad::look_right / look_up / speed_steps are amounts to apply once: they add up between two updates and the next one takes them. Any thread.
+void FreecamFeedPad(const freecam::Pad& pad);
+// A function called once for every update of the flight with the events its pad produced (freecam.h Events: the recorder's chords, and the panel's chords
+// Back + B add key, Back + RB / LB next / previous key, Back + Start play / pause that package E adds there). The Director's panel turns them into commands.
+using FreecamEventHook = void (*)(const freecam::Events& events);
+void SetFreecamEventHook(FreecamEventHook hook);
 
 // An object on the stack of the XamInputGetState wrapper: runs FreecamObservePad when the wrapper returns, whatever path it took, unless the
 // call failed (`result` is the wrapper's r3, which holds the call's result by then: 0 = a pad answered).

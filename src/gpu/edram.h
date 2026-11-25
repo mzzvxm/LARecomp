@@ -75,6 +75,7 @@
 
 #include <plume_render_interface.h>
 
+#include "key_guard.h"
 #include "scale.h"
 #include "side_views.h"
 #include "texture_bytes.h"
@@ -105,10 +106,20 @@ struct EdramKey {
            format == o.format && samples == o.samples && reserved == o.reserved;
   }
 };
+// Compared and hashed field by field (KeyHash), so padding would not matter here; the guard keeps it so if a day a byte hash is
+// used on it (the key is one 8-byte word: key_guard.h).
+static_assert(key_guard::kNoPadding<EdramKey>, "EdramKey must have no padding (key_guard.h)");
+static_assert(key_guard::AllMembersSet<EdramKey>(), "every EdramKey member needs a default initializer (key_guard.h)");
 
 // The colour format a target is stored as: the _AS_ variants share the
 // storage of their base format (24.12).
-uint32_t FoldColorFormat(uint32_t color_format);
+inline uint32_t FoldColorFormat(uint32_t color_format) {
+  switch (color_format) {
+    case 10: return 2;  // k_2_10_10_10_AS_10_10_10_10
+    case 12: return 3;  // k_2_10_10_10_FLOAT_AS_16_16_16_16
+    default: return color_format;
+  }
+}
 
 // "colour k_8_8_8_8@224 pitch 160 4x", for logs.
 std::string DescribeEdramKey(const EdramKey& key);
@@ -443,6 +454,10 @@ class EdramTargets {
   // side_views::kForeignUseLayer, a host target of its own, so that its colour and depth are one
   // scale. Every place that makes the depth key of a use passes the size it classifies by.
   uint8_t DepthLayer(const EdramKey& depth, const EdramKey* color0, uint32_t size_bits = 0);
+  bool scene_phase() const { return scene_phase_; }
+  // Before these are known, DrawScale can discover the screen or choose the
+  // startup scene scale and MSAA level. Let those reads run on every draw.
+  bool DrawTargetMemoReady() const { return scene_decided_ && screen_width_ != 0; }
   // The frame's scene phase: open from a guest frame's start, closed by the anchor draw and by the
   // composite marker (Scene), reopened by the guest's present. Moving it changes what a depth-only
   // use means, so what was memoized from the targets is dropped.
@@ -550,8 +565,29 @@ class EdramTargets {
 
   // The framebuffer of `color_count` colour targets (slots 0..n-1) and an
   // optional depth target, created on first use. Null on failure (logged).
+  // `extras`: host images that are no EDRAM identity (the G-buffer's planes, gbuffer.h), attached as the colour slots after the last
+  // EDRAM one (slot `color_count` for extras[0], and so on; together with the colours at most kMaxExtraColors, the pipeline key's four
+  // slots); `extras_generation` changes whenever one of their textures is replaced (the key holds the textures and it). The renderer
+  // asks RetireFramebuffersWithExtra before it releases one. With `color_count` 0 and no depth the framebuffer is the extras' alone (the
+  // G-buffer clears its planes through it).
+  static constexpr uint32_t kMaxExtraColors = 4;
+  plume::RenderFramebuffer* Framebuffer(Target* const* colors, uint32_t color_count, Target* depth,
+                                        const plume::RenderTexture* const* extras, uint32_t extra_count,
+                                        uint32_t extras_generation);
+  // The same with at most one extra image.
   plume::RenderFramebuffer* Framebuffer(Target* const* colors, uint32_t color_count,
-                                        Target* depth);
+                                        Target* depth, const plume::RenderTexture* extra = nullptr,
+                                        uint32_t extra_generation = 0) {
+    return Framebuffer(colors, color_count, depth, extra ? &extra : nullptr, extra ? 1u : 0u,
+                       extra ? extra_generation : 0u);
+  }
+  // The framebuffers that name `extra` as one of their extra colour images go (after the lists that still use them), and
+  // change_serial moves, so that the Scene's memo of the last draw's framebuffer is dropped.
+  void RetireFramebuffersWithExtra(const plume::RenderTexture* extra);
+  // Shutdown only (the GPU idle, the FrameRing drained): the same framebuffers die at once, before `extra` and before the targets' textures do.
+  // Retired there instead, they wait in the FrameRing until its last drain, which comes after Shutdown() freed the depth texture that each one's
+  // depth view still names (Plume's Vulkan view reads its texture when it dies).
+  void DestroyFramebuffersWithExtra(const plume::RenderTexture* extra);
 
   // True when `access` of `target` to the tiles of `pixels` is known to
   // change and report nothing at this map epoch, aspect by aspect (cheap: the
@@ -677,9 +713,19 @@ class EdramTargets {
   };
   struct FramebufferKey {
     const Target* targets[5] = {};  // colour 0..3, depth
+    const plume::RenderTexture* extras[3] = {};  // the G-buffer's planes after the colours (extra_count of them), or none
     uint32_t generations[5] = {};
     uint32_t color_count = 0;
+    uint32_t extra_count = 0;
+    uint32_t extra_generation = 0;
+    uint32_t reserved[2] = {};  // no padding: the key is hashed as bytes
     bool operator==(const FramebufferKey& o) const;
+    bool HasExtra(const plume::RenderTexture* extra) const {
+      for (uint32_t i = 0; i < extra_count && i < 3; ++i) {
+        if (extras[i] == extra) return true;
+      }
+      return false;
+    }
   };
   struct FramebufferKeyHash {
     size_t operator()(const FramebufferKey& k) const;

@@ -4,11 +4,17 @@
 
 #include "device_fault_format.h"
 #include "format.h"
+#include "car_rt_scene.h"
 #include "gpu_class.h"
+#include "rt_tier.h"
 #include "temporal_dlss.h"
+#include "vulkan_pipeline_cache.h"
+#include "windows_floor.h"
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include <mutex>
+
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -20,32 +26,57 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_object_names, false, "MCLA/GPU",
-    "Give the GPU's textures, buffers, shaders and pipelines their debug names, which "
-    "RenderDoc, PIX, Nsight Graphics and the D3D12 debug layer show. A name costs a few "
-    "microseconds, and a world loads hundreds of textures in one frame, so they are set only "
-    "when something can read them: on their own when RenderDoc, PIX or Nsight Graphics started "
-    "the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for "
-    "a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the "
-    "device opens.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-REXCVAR_DECLARE(bool, mcla_gpu_perf_markers);  // perf_markers.cpp
 
 namespace mcla::gpu {
 
 namespace {
 
+// The Windows version and the update revision of its build (windows_floor.h); zeros where they cannot
+// be read (not Windows, or a failed call).
+windows_floor::WindowsBuild ReadWindowsBuild() {
+  windows_floor::WindowsBuild out;
+#if defined(_WIN32)
+  struct VersionInfo {
+    ULONG size, major, minor, build, platform;
+    WCHAR service_pack[128];
+  } info{};
+  info.size = sizeof(info);
+  using RtlGetVersionFn = LONG(WINAPI*)(VersionInfo*);
+  if (HMODULE ntdll = GetModuleHandleW(L"ntdll.dll")) {
+    if (auto get_version = reinterpret_cast<RtlGetVersionFn>(
+            reinterpret_cast<void*>(GetProcAddress(ntdll, "RtlGetVersion")))) {
+      if (get_version(&info) == 0) {
+        out.major = info.major;
+        out.minor = info.minor;
+        out.build = info.build;
+      }
+    }
+  }
+  DWORD revision = 0;
+  DWORD size = sizeof(revision);
+  if (RegGetValueW(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion", L"UBR",
+                   RRF_RT_REG_DWORD, nullptr, &revision, &size) == ERROR_SUCCESS) {
+    out.revision = revision;
+  }
+#endif
+  return out;
+}
+
+// What a refused Direct3D 12 start says about this Windows, "" when the Windows is not the cause
+// (windows_floor.h: the game's own Direct3D 12 runtime needs Windows 10 1909 with its update).
+std::string D3D12WindowsHint() {
+  return windows_floor::Explain(ReadWindowsBuild());
+}
+
 // Why debug names are wanted (Device::object_names), or null when nothing is known to read them.
 const char* ObjectNamesReason(bool debug_layer) {
-  if (REXCVAR_GET(mcla_gpu_object_names)) {
+  if (larecomp::settings::mcla_gpu_object_names.Get()) {
     return "mcla_gpu_object_names";
   }
   if (debug_layer) {
     return "the debug layer";
   }
-  if (REXCVAR_GET(mcla_gpu_perf_markers)) {
+  if (larecomp::settings::mcla_gpu_perf_markers.Get()) {
     return "mcla_gpu_perf_markers";
   }
 #ifndef NDEBUG
@@ -77,6 +108,10 @@ const char* ObjectNamesReason(bool debug_layer) {
 }
 
 }  // namespace
+
+uint32_t WindowsBuildNumber() { return ReadWindowsBuild().build; }
+
+Device::Device() = default;
 
 Device::~Device() {
   Shutdown();
@@ -131,6 +166,12 @@ bool Device::Initialize(const Options& options) {
 }
 
 bool Device::Open(const Options& options) {
+  if (options.force_refusal) {
+    // The test of the compatibility renderer offer: the failure path as a PC that cannot run the renderer takes it, nothing created.
+    REXLOG_WARN("[gpu] mcla_gpu_force_refusal: {} is refused on purpose (a test of the compatibility renderer offer)", BackendName());
+    Refuse(": refused on purpose (mcla_gpu_force_refusal, a test)");
+    return false;
+  }
   // After nothing, before the interface: the debug layer has to be enabled
   // before the first D3D12 device of the process exists.
   const bool debug_layer = options.debug_layer && backend::EnableDebugLayer();
@@ -145,7 +186,13 @@ bool Device::Open(const Options& options) {
   interface_ = backend::CreateInterface();
   if (!interface_) {
     REXLOG_ERROR("[gpu] Plume could not create the {} interface", BackendName());
-    Refuse(": the graphics driver could not be started (is it installed and up to date?)");
+    const std::string windows = ActiveBackend() == Backend::kD3D12 ? D3D12WindowsHint() : std::string();
+    if (!windows.empty()) {
+      REXLOG_ERROR("[gpu] Direct3D 12 could not be started, and {}", windows);
+    }
+    Refuse(windows.empty()
+               ? std::string(": the graphics driver could not be started (is it installed and up to date?)")
+               : ": the driver could not be started, and " + windows);
     return false;
   }
 
@@ -157,7 +204,16 @@ bool Device::Open(const Options& options) {
   if (!device_) {
     REXLOG_ERROR("[gpu] Plume could not create a {} device{}", BackendName(),
                  adapter.empty() ? std::string() : " on adapter '" + adapter + "'");
-    Refuse(": no graphics card here has a driver for it");
+    // On Windows 10 before 1909 or its update the game's own Direct3D 12 runtime (the D3D12 folder next to
+    // the exe) is not accepted and the device cannot be made: say that and not "no card has a driver".
+    // CHECK: on a Windows 10 2004 before 19041.804 (or 1909 before 18363.1377) the box and the log name
+    // the update; on a current Windows 10 or 11 this branch says what it always did.
+    const std::string windows = ActiveBackend() == Backend::kD3D12 ? D3D12WindowsHint() : std::string();
+    if (!windows.empty()) {
+      REXLOG_ERROR("[gpu] Direct3D 12 could not be started, and {}", windows);
+    }
+    Refuse(windows.empty() ? std::string(": no graphics card here has a driver for it")
+                           : ": the device could not be made, and " + windows);
     interface_.reset();
     return false;
   }
@@ -167,6 +223,16 @@ bool Device::Open(const Options& options) {
                 device_->getDescription().name);
   }
   backend_info_ = backend::DescribeDevice(device_.get());
+  {
+    // Once: which Windows this log is from (the Direct3D 12 runtime's floor, windows_floor.h).
+    static std::once_flag windows_logged;
+    std::call_once(windows_logged, [] {
+      const windows_floor::WindowsBuild windows = ReadWindowsBuild();
+      if (windows.build != 0) {
+        REXLOG_INFO("[gpu] {}", windows_floor::Describe(windows));
+      }
+    });
+  }
   debug_layer_ = debug_layer;
   if (debug_layer_) {
     backend::InstallDebugMessageSink(device_.get());
@@ -223,6 +289,14 @@ bool Device::Open(const Options& options) {
     return false;
   }
 
+  if (ActiveBackend() == Backend::kVulkan &&
+      larecomp::settings::mcla_gpu_vulkan_pipeline_cache.Get()) {
+    auto cache = std::make_unique<VulkanPipelineCache>();
+    if (cache->Initialize(*device_)) {
+      vulkan_pipeline_cache_ = std::move(cache);
+    }
+  }
+
   loss_probe_ = backend::CreateLossProbe(device_.get());
   REXLOG_INFO("[gpu] device loss: {}", backend::DescribeLossReporting(device_.get(), loss_probe_));
 
@@ -239,9 +313,26 @@ bool Device::Open(const Options& options) {
   // How that budget was made (which heaps or segments, the RAM cap and the floor of a shared-memory
   // GPU), once: the answer to "is the budget the caches trim against the memory the GPU can use".
   REXLOG_INFO("[gpu] {}", backend::DescribeVideoMemory(device_.get()));
+  // What a compatibility report asks of a player's log (perf/COMPAT-AUDIT.md section 9): one line.
+  if (const std::string capabilities = backend::DescribeCapabilities(device_.get());
+      !capabilities.empty()) {
+    REXLOG_INFO("[gpu] capabilities: {}", capabilities);
+  }
   // The class (low, mid, high) the graphics upgrades' `auto` values follow, from the facts above
   // (gpu_class.h): its own "[gpu] class: ..." line says which and why.
   gpu_class::Initialize(device_->getDescription(), caps);
+  // The ray tracing tier beside it (rt_tier.h): whether this renderer can trace rays on the device (the same answer the car's ray tracing asks for:
+  // CarRtSupported), the PCI device id Plume's description does not carry, and the tables; its own "[gpu] ray tracing tier: ..." line says which and
+  // why. The benchmark, if it runs, comes later (the renderer's start, rt_bench.h).
+  {
+    gpu_class::RtProbe probe;
+    probe.vulkan = ActiveBackend() == Backend::kVulkan;
+    probe.api_reason = CarRtUnsupportedReason(caps, probe.vulkan, wave_ops());
+    probe.api_rt = probe.api_reason.empty();
+    probe.device_id = backend::QueryAdapterIds(device_.get()).device_id;
+    probe.driver_version = device_->getDescription().driverVersion;
+    gpu_class::InitializeRt(device_->getDescription(), caps, probe);
+  }
 
   // A kD24S8 surface (the shadow atlas) is a D24_UNORM_S8_UINT target on the host. AMD's
   // Vulkan driver lists no 24-bit depth format, yet creates the image when asked; nothing
@@ -257,22 +348,42 @@ bool Device::Open(const Options& options) {
   return true;
 }
 
-void Device::Shutdown() {
+void Device::Shutdown(const std::function<void(const char*)>& part) {
+  if (vulkan_pipeline_cache_) {
+    if (part) part("the Vulkan pipeline cache");
+    SaveVulkanPipelineCache();
+    vulkan_pipeline_cache_->LogSummary();
+    vulkan_pipeline_cache_.reset();
+  }
   // With the debug layer on, what is still alive once every wrapper is gone is
   // a leak; the report lists it by name.
   backend::LiveObjectReport report;
   if (debug_layer_) {
     report.Capture(device_.get());
   }
+  // Each part is one call into the driver. The caller times them (renderer.cpp ShutdownClock): on Vulkan the
+  // device's release is vmaDestroyAllocator and vkDestroyDevice, the interface's is vkDestroyInstance; which of
+  // them took the seconds of the slow closes of 2026-11-20 to 11-22 is not known yet.
+  if (part) part("the queue and the loss probe");
   queue_.reset();
   if (device_) {
     backend::DestroyLossProbe(device_.get(), loss_probe_);
   }
   loss_probe_ = nullptr;
+  if (part) part("the device (the driver's own teardown)");
   device_.reset();
+  if (part) part("the graphics interface (the instance)");
   interface_.reset();
   report.ReportAndRelease();
   debug_layer_ = false;
+}
+
+bool Device::LoadedVulkanPipelineCache() const {
+  return vulkan_pipeline_cache_ && vulkan_pipeline_cache_->loaded();
+}
+
+bool Device::SaveVulkanPipelineCache() {
+  return !vulkan_pipeline_cache_ || vulkan_pipeline_cache_->Save(*device_, IsLost());
 }
 
 std::unique_ptr<plume::RenderTexture> Device::CreateTexture(const plume::RenderTextureDesc& desc,
@@ -469,6 +580,9 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateGraphicsPipeline(
     ReportCreationFailure("graphics pipeline", name);
     return nullptr;
   }
+  if (vulkan_pipeline_cache_) {
+    vulkan_pipeline_cache_->NotePipelineCreated();
+  }
   Name(*pipeline, name);
   return pipeline;
 }
@@ -485,6 +599,9 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateComputePipeline(
     }
     ReportCreationFailure("compute pipeline", name);
     return nullptr;
+  }
+  if (vulkan_pipeline_cache_) {
+    vulkan_pipeline_cache_->NotePipelineCreated();
   }
   Name(*pipeline, name);
   return pipeline;
@@ -550,7 +667,14 @@ void Device::ReportCreationFailure(const char* what, const char* name) {
 }
 
 backend::VideoMemory Device::QueryVideoMemory() const {
-  return device_ ? backend::QueryVideoMemory(device_.get()) : backend::VideoMemory{};
+  backend::VideoMemory memory =
+      device_ ? backend::QueryVideoMemory(device_.get()) : backend::VideoMemory{};
+  // mcla_gpu_vram_budget_mb (debug): a smaller budget than the adapter's, for the tests of a small card.
+  const uint64_t pretend = uint64_t(larecomp::settings::mcla_gpu_vram_budget_mb.Get()) << 20;
+  if (pretend != 0 && memory.budget > pretend) {
+    memory.budget = pretend;
+  }
+  return memory;
 }
 
 namespace {

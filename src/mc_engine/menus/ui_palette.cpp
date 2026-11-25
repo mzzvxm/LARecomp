@@ -6,13 +6,14 @@
 #include <cstring>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
 
 #include "mc_engine/hooks/hooks_internal.h"
 #include "mc_engine/core/logging.h"
 #include "pause_menu.h"
 #include "swf_dom.h"
+#include "larecomp_guest.h"
 
 namespace larecomp {
 namespace {
@@ -86,7 +87,7 @@ void FillHex() {
 
 void UiPaletteInit() {
     if (g_ready) return;
-    const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* base = larecomp::guest::Membase();
     if (base && ReadGameTable(base, g_rgb)) {
         MC_INFO("[ui-palette] using the garage's paint table (first swatch {:02X}{:02X}{:02X})",
                 g_rgb[0][0], g_rgb[0][1], g_rgb[0][2]);
@@ -107,19 +108,13 @@ const char* UiPaletteHex(int k) {
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
-#include <rex/ppc.h>
-#include <rex/ppc/function.h>
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
 
 #include "swf_import.h"
 
 REX_EXTERN(__imp__rex_sub_825EE1C8);  // swfCONTEXT: a number from _global
-
-REXCVAR_DEFINE_BOOL(ui_color_buttons, true, "MCLA/UI",
-    "Show the pause menu's color buttons (UI OPTIONS) as the garage's own "
-    "PickColor: garage.xsf's color button, placed in the pause movie and "
-    "driven the way the garage's Fillmenu drives it.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace larecomp {
 namespace {
@@ -290,7 +285,7 @@ void BeforeButtonUpdate(PPCContext& ctx, uint8_t* base, uint32_t root) {
 const swf::ImportedSprite* GarageButton() {
     if (g_import_tried) return g_button;
     g_import_tried = true;
-    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* base = larecomp::guest::Membase();
     const swf::ImportedSprite* imp = swf::ImportSprite(kGarageMovie, kButtonChar);
     if (!imp) {
         MC_ERROR("[ui-palette] the garage's color button could not be imported; the color rows "
@@ -443,7 +438,7 @@ int ReadGlobals(uint8_t* base, uint32_t ctx, float out[kNumGlobals]) {
         out[i] = 0.0f;
         if (!g_global_keys[i]) return -1;
         WriteGuestF32(base, g_global_out, 0.0f);
-        if (rex::ppc::GuestToHostFunction<uint32_t>(__imp__rex_sub_825EE1C8, ctx,
+        if (larecomp::guest::Call<uint32_t>(__imp__rex_sub_825EE1C8, ctx,
                                                     g_global_keys[i], g_global_out))
             out[i] = ReadGuestF32(base, g_global_out);
         else
@@ -560,7 +555,7 @@ void UiPaletteTick(uint8_t* base) {
     }
 
     PauseMenuColorRows rows;
-    const bool open = REXCVAR_GET(ui_color_buttons) && PauseMenuColorButtons(&rows);
+    const bool open = larecomp::settings::ui_color_buttons.Get() && PauseMenuColorButtons(&rows);
     if (!open || (g_btn.menu && rows.count != g_btn.count)) {
         if (g_btn.menu) Destroy(base);
         if (!open) {

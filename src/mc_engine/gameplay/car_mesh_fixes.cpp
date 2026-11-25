@@ -29,15 +29,13 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
 
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(car_mesh_fixes, true, "MCLA/Patches",
-    "Fix car part models the game ships broken: the Impala 64's second rear "
-    "bumper, which sits lower than the others.");
 
 REX_EXTERN(__imp__rex_sub_823252B8);  // draw a drawable's LOD
 REX_EXTERN(__imp__rex_sub_82324258);  // draw a drawable's LOD, skinned path
@@ -49,7 +47,7 @@ constexpr uint32_t kMaxModels = 32;
 constexpr uint32_t kMaxGeometries = 64;
 
 uint8_t* Host(uint32_t ea) {
-    return rex::Runtime::instance()->memory()->TranslateVirtual<uint8_t*>(ea);
+    return larecomp::guest::AddressSpace()->TranslateVirtual<uint8_t*>(ea);
 }
 
 bool Plausible(uint32_t ea) { return ea >= 0x10000u && (ea & 3u) == 0; }
@@ -188,12 +186,12 @@ void FixIfBroken(uint32_t drawable) {
 }  // namespace
 
 extern "C" REX_FUNC(rex_sub_823252B8) {
-    if (REXCVAR_GET(car_mesh_fixes)) FixIfBroken(ctx.r3.u32);
+    if (larecomp::settings::car_mesh_fixes.Get()) FixIfBroken(ctx.r3.u32);
     __imp__rex_sub_823252B8(ctx, base);
 }
 
 extern "C" REX_FUNC(rex_sub_82324258) {
-    if (REXCVAR_GET(car_mesh_fixes)) FixIfBroken(ctx.r3.u32);
+    if (larecomp::settings::car_mesh_fixes.Get()) FixIfBroken(ctx.r3.u32);
     __imp__rex_sub_82324258(ctx, base);
 }
 

@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 namespace larecomp::shaderpack {
@@ -59,6 +60,9 @@ static const float kCarChrFadeTo = 0.9;           // ...to nothing at this one
 static const float kCarChrApproachSpan = 0.04;    // m: the length of ray a rise of a tenth of the thickness is measured over
 static const float kCarChrNormalMin = 0.03;       // N.V under which the reflection probe is not made
 static const int kCarChrOutlineSteps = 3;         // the halvings that find a part's outline in a segment: 1/8 of it
+static const int kCarChrSilhouetteTaps = 12;      // the texels round the shaded point's own that the self-test also tries (a part's rim)
+static const int2 kCarChrSilhouetteOffsets[12] = {int2(-1, 0), int2(0, -1), int2(1, 0), int2(0, 1), int2(-1, -1), int2(1, -1),
+                                                  int2(-1, 1), int2(1, 1), int2(-2, 0), int2(0, -2), int2(2, 0), int2(0, 2)};
 
 // What the probes need of the shaded point: the matrix to the history frame's clip space, where it is, the image's size, its place in the
 // history, the slack of a slanted surface, the thickness of "just behind a vehicle pixel" and the window made with them.
@@ -109,7 +113,9 @@ struct CarChrState
     CarChrRay ray;
     float reflectHit;  // 0..1: the reflection probe's weight
     float skyHit;      // 0..1: the sky probe's weight
-    float state;       // debug: 0 off, 1 not in the history, 3 marched and no hit, 4 marched and hit, 5 the ray traced image answered
+    float skyKnown;    // 1: skyHit came from the ray traced image (another car's chrome): the sky probe is not marched
+    float state;       // debug: 0 off, 1 not in the history, 3 marched and no hit, 4 marched and hit, 5 the ray traced image answered (the player's car),
+                       // 6 it answered both probes (another car's chrome)
 };
 
 float4 CarChrProject(float4 m0, float4 m1, float4 m2, float4 m3, float3 p)
@@ -358,8 +364,12 @@ float CarChrProbe(Texture2D<float4> history, CarChrState s, float3 direction, in
 // alpha 0 no data, 1 the car and no ray of the cone hits it, 1 + w a hit of weight w (the share of the cone), -(1 + w) a hit on a part the
 // camera does not see. Read at the shaded point's place in the history with a 3x3 quadratic B-spline; only the texels the history shows at
 // the shaded point's own distance (the same surface) count; the image answers where the texels with data are at least half of those.
-// x = 1: it answers; y = the weight of a hit (the share of the cone, a miss's zero included).
-float2 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
+// TWO KINDS OF TEXEL (src/gpu/car_chrome_rt_rules.h): the player's (the colour's red is not negative: the alpha above) and another car's chrome (the colour's
+// red is -(1 + the sky probe's weight), the alpha 1 + the reflection probe's weight: the host traced both probes for it). The image answers with the first
+// kind where its texels are at least half of the matching ones, else with the second where they are (the first kind's arithmetic is exactly the older one's).
+// x = 1: it answers; y = the weight of a hit (the share of the cone, a miss's zero included, or the reflection probe's); z = 1: another car's chrome, and
+// w = the sky probe's weight (else 0).
+float4 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
 {
     Texture2D<float4> image = g_Texture2DDescriptorHeap[TFETCH_INDEX(slot)];
     const float2 f = uv * size - 0.5;
@@ -371,6 +381,9 @@ float2 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float dep
     float geometry = 0.0;
     float known = 0.0;
     float weight = 0.0;
+    float knownOther = 0.0;
+    float weightOther = 0.0;
+    float skyOther = 0.0;
     [unroll]
     for (int k = 0; k < 9; ++k)
     {
@@ -381,17 +394,65 @@ float2 CarChrRtRead(Texture2D<float4> history, float2 size, float2 uv, float dep
         const float agree = (h.a > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth)) : 0.0;
         const float wg = wb * agree;
         geometry += wg;
-        const float code = abs(image.Load(int3(texel, 0)).a);
+        const float4 t = image.Load(int3(texel, 0));
+        const float code = abs(t.a);
         if (code >= 0.5)
         {
-            known += wg;
-            weight += wg * saturate(code - 1.0);
+            if (t.r < -0.5)
+            {
+                knownOther += wg;
+                weightOther += wg * saturate(code - 1.0);
+                skyOther += wg * saturate(-t.r - 1.0);
+            }
+            else
+            {
+                known += wg;
+                weight += wg * saturate(code - 1.0);
+            }
         }
     }
-    return (geometry > 1e-4 && known >= 0.5 * geometry) ? float2(1.0, weight / known) : float2(0.0, 0.0);
+    if (geometry > 1e-4 && known >= 0.5 * geometry)
+    {
+        return float4(1.0, weight / known, 0.0, 0.0);
+    }
+    if (geometry > 1e-4 && knownOther >= 0.5 * geometry)
+    {
+        return float4(1.0, weightOther / knownOther, 1.0, skyOther / knownOther);
+    }
+    return float4(0.0, 0.0, 0.0, 0.0);
 }
 
-)HLSL" R"HLSL(// The setup, at the environment read: is the shaded point in the history at its own view distance, and the reflection probe (the view ray
+)HLSL" R"HLSL(// The self-test's agreement of one texel's stored distance with the shaded point's: 1 within half the tolerance, 0 beyond it, 0 where the texel holds no vehicle.
+float CarChrTexelAgreement(float stored, float depth, float tolerance)
+{
+    return (stored > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(stored - depth)) : 0.0;
+}
+
+// The rim of a part: the history holds one sample of a pixel (the guest's sample 0; at 2560 pixels across and more one texel stands for a 2x2 block), the
+// shaded pixel is made at its centre, so at the silhouette of a tip the texel under the pixel can be what is behind the tip (the bumper's cavity, 3 to 7 cm
+// further; or no vehicle) and the self-test would fail on the pixel's whole 1 pixel rim: the game's chrome with its bright sky ambient, a thin bright line.
+// The texels round it (one or two steps; the offsets are car_chrome_rules.h's kSilhouetteOffsets) are tried as well: the best agreement is the pixel's. Only a
+// pixel whose own texel does not agree fully makes the 12 reads (a few percent of the chrome's pixels), and one whose neighbours do not agree either stays at
+// the 0 it had.
+float CarChrSilhouetteAgreement(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, float own)
+{
+    float best = own;
+    [branch]
+    if (own < 1.0)
+    {
+        const int2 centre = int2(clamp(uv * size, float2(0.0, 0.0), size - 1.0));
+        const int2 last = int2(size) - 1;
+        [unroll]
+        for (int k = 0; k < kCarChrSilhouetteTaps; ++k)
+        {
+            const float stored = history.Load(int3(clamp(centre + kCarChrSilhouetteOffsets[k], int2(0, 0), last), 0)).a;
+            best = max(best, CarChrTexelAgreement(stored, depth, tolerance));
+        }
+    }
+    return best;
+}
+
+// The setup, at the environment read: is the shaded point in the history at its own view distance, and the reflection probe (the view ray
 // reflected, 2 (N.V) N - V: where the chrome looks), made here because `env` is occluded at once. A point the history does not hold (the
 // first frames, a cut, a pause view the host sends mode 0 for, a disocclusion, a part that is not a vehicle pixel there) is left to the game.
 CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
@@ -421,7 +482,8 @@ CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
     s.ray.size = float2(getTexture2DDimensions(history));
 
     // 1. Is the shaded point in the history, at the distance it has now? A disocclusion, a wrong guess of the car's motion or a cut puts it
-    // elsewhere: the whole effect fades with the disagreement (the tolerance is a few centimetres: the lip beside a tube is not the tube).
+    // elsewhere: the whole effect fades with the disagreement (the tolerance is a few centimetres: the lip beside a tube is not the tube). The texels
+    // round the own one count too (CarChrSilhouetteAgreement): the rim of a tip, whose own texel is what is behind it.
     const float4 start = CarChrProject(s.ray.m0, s.ray.m1, s.ray.m2, s.ray.m3, world);
     s.state = 1.0;
     if (start.w < 0.1)
@@ -439,27 +501,40 @@ CarChrState CarChrSetup(float3 world, float3 normal, float3 viewVector)
     s.ray.thickness = CarChrThickness(start.w);
     s.ray.shape = CarChrWindowShape(start.w, s.ray.thickness, s.ray.slack);
     const float tolerance = 0.015 + 0.005 * start.w + s.ray.slack;
-    s.agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(own.a - start.w));
-    if (!(own.a > 0.0) || s.agreement <= 0.0)
+    s.agreement = CarChrSilhouetteAgreement(history, s.ray.size, s.ray.startUv, start.w, tolerance, CarChrTexelAgreement(own.a, start.w, tolerance));
+    if (s.agreement <= 0.0)
     {
         return s;
     }
     s.valid = 1.0;
     s.state = 3.0;
 
-    // 2. The reflection probe. Where the host ray traced this frame's history (g_CarReflC.w bit 0: the image at g_CarReflC.z), its answer at
-    // the shaded point's place IS the weight and the march is not made; where it has no data there the march runs.
+    // 2. The ray traced image, where the host made one for this frame's history (g_CarReflC.w bit 0: the image at g_CarReflC.z).
+    float4 rt = float4(0.0, 0.0, 0.0, 0.0);
+    if ((slots.w & 1u) != 0u)
+    {
+        rt = CarChrRtRead(history, s.ray.size, s.ray.startUv, start.w, 2.0 * (0.004 + 0.0015 * start.w + s.ray.slack), slots.z);
+    }
+    // Another car's chrome: the image has both probes' weights at the shaded point's place, and nothing is marched (the reflection probe is not made at a grazing
+    // view, as the march's is not).
+    if (rt.z > 0.5)
+    {
+        s.reflectHit = (s.nv >= kCarChrNormalMin) ? rt.y * s.agreement : 0.0;
+        s.skyHit = rt.w * s.agreement;
+        s.skyKnown = 1.0;
+        s.state = 6.0;
+        return s;
+    }
+
+    // 3. The reflection probe. Where the image has the player's texels there, its answer IS the weight and the march is not made (the sky probe is
+    // marched); where it has no data there, or no image was made, the march runs.
     if (s.nv >= kCarChrNormalMin)
     {
-        if ((slots.w & 1u) != 0u)
+        if (rt.x > 0.5)
         {
-            const float2 rt = CarChrRtRead(history, s.ray.size, s.ray.startUv, start.w, 2.0 * (0.004 + 0.0015 * start.w + s.ray.slack), slots.z);
-            if (rt.x > 0.5)
-            {
-                s.reflectHit = rt.y * s.agreement;
-                s.state = 5.0;
-                return s;
-            }
+            s.reflectHit = rt.y * s.agreement;
+            s.state = 5.0;
+            return s;
         }
         s.reflectHit = CarChrProbe(history, s, 2.0 * s.nv * s.n - v, kCarChrReflectSteps, kCarChrReflectLength);
         s.state = (s.reflectHit > 0.02) ? 4.0 : 3.0;
@@ -487,6 +562,11 @@ float3 CarChromeAmbient(float3 ambient, inout CarChrState s, float blend)
     {
         return ambient;
     }
+    if (s.skyKnown > 0.5)
+    {
+        // another car's chrome: the ray traced image has the sky probe's weight (CarChrRtRead), nothing to march
+        return ambient * (1.0 - kCarChrDark * saturate(s.skyHit * g_CarReflA.w));
+    }
     const uint4 slots = g_CarReflC;
     Texture2D<float4> history = g_Texture2DDescriptorHeap[TFETCH_INDEX(slots.x)];
     float3 sky = s.n + float3(0.0, 1.0, 0.0);
@@ -497,7 +577,8 @@ float3 CarChromeAmbient(float3 ambient, inout CarChrState s, float blend)
 }
 
 // The debug views of g_CarReflB.y: 1 the reflection probe's weight, 2 the sky probe's, 3 the baked vertex AO, 4 the state (red: the point is
-// not in the history, green: marched and no hit, yellow: a hit, blue: the ray traced image answered; brighter the heavier). The write of
+// not in the history, green: marched and no hit, yellow: a hit, blue: the ray traced image answered, cyan: it answered for another car's chrome (both probes);
+// brighter the heavier). The write of
 // the colour is scaled by the exponent bias of the target, so they are in its units.
 float3 CarChromeDebug(CarChrState s, float bakedAo)
 {
@@ -516,7 +597,11 @@ float3 CarChromeDebug(CarChrState s, float bakedAo)
         return float3(bakedAo, bakedAo, bakedAo) * unit;
     }
     float3 colour = float3(0.0, 0.0, 0.0);
-    if (s.state > 4.5)
+    if (s.state > 5.5)
+    {
+        colour = float3(0.0, 0.9, 0.9) * (0.25 + 0.75 * saturate(max(s.reflectHit, s.skyHit)));
+    }
+    else if (s.state > 4.5)
     {
         colour = float3(0.0, 0.3, 1.0) * (0.25 + 0.75 * saturate(s.reflectHit));
     }
@@ -538,7 +623,7 @@ float3 CarChromeDebug(CarChrState s, float bakedAo)
 
 }  // namespace
 
-VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::string_view hlsl) {
+VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
   VariantTransformResult result;
   if (shader.name != kChrome.name) {
     result.error = std::format("{} is not the chrome this variant was written for", shader.name);
@@ -559,10 +644,6 @@ VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::
   // 2. The anchored edits: the local state, the constants of both backends and the helper. The constants are the car paint variant's
   // (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608, the same declarations.
   static constexpr Piece kCubeMap[] = {Lit("CubeMapData cubeMapData = (CubeMapData)0;")};
-  static constexpr Piece kSpirvDeclaration[] = {
-      Lit("#define g_InvResolutionScale"), Ws(1),
-      Lit("vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)")};
-  static constexpr Piece kDxilDeclaration[] = {Lit("float2 g_InvResolutionScale : packoffset(c37.x);")};
   static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
                                     Lit("#endif"),            Ws(0), Lit("void main(")};
   if (!ReplaceOnce(text, kCubeMap, 0, 0, "the start of main's registers",
@@ -573,34 +654,10 @@ VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::
     result.error = std::string(shader.name) + ": " + error;
     return result;
   }
-  if (!ReplaceOnce(text, kSpirvDeclaration, 0, 2, "SPIR-V g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n// Car self-reflection variants (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608.\n"
-                            "#define g_CarReflM0 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)\n"
-                            "#define g_CarReflM1 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)\n"
-                            "#define g_CarReflM2 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)\n"
-                            "#define g_CarReflM3 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 656, 0x10)\n"
-                            "#define g_CarReflA vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 672, 0x10)\n"
-                            "#define g_CarReflB vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 688, 0x10)\n"
-                            "#define g_CarReflC vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 704, 0x10)";
-                   },
-                   &error)) {
-    result.error = std::string(shader.name) + ": " + error;
-    return result;
-  }
-  if (!ReplaceOnce(text, kDxilDeclaration, 0, 0, "DXIL g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group.substr(0, group.size() - 1)) +
-                            "; \\\n    float4 g_CarReflM0 : packoffset(c38); \\\n"
-                            "    float4 g_CarReflM1 : packoffset(c39); \\\n"
-                            "    float4 g_CarReflM2 : packoffset(c40); \\\n"
-                            "    float4 g_CarReflM3 : packoffset(c41); \\\n"
-                            "    float4 g_CarReflA : packoffset(c42); \\\n"
-                            "    float4 g_CarReflB : packoffset(c43); \\\n"
-                            "    uint4 g_CarReflC : packoffset(c44);";
-                   },
-                   &error)) {
+  static constexpr ConstantMember kMembers[] = {{"float4", "g_CarReflM0"}, {"float4", "g_CarReflM1"}, {"float4", "g_CarReflM2"},
+                                                {"float4", "g_CarReflM3"}, {"float4", "g_CarReflA"},  {"float4", "g_CarReflB"},
+                                                {"uint4", "g_CarReflC"}};
+  if (!DeclareConstants(text, ctx, "Car self-reflection variants (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608.", kMembers, &error)) {
     result.error = std::string(shader.name) + ": " + error;
     return result;
   }
@@ -623,11 +680,11 @@ VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::
       {"float3 CarChromeAmbient(", 1},       {"CarChromeAmbient(ambYPos.xyz, carChrome, saturate(r2.y + r2.z))", 1},
       {"float3 CarChromeDebug(", 1},         {"CarChromeDebug(carChrome, iColor0.w)", 1},
       {"CarChrState carChrome = (CarChrState)0;", 1},
-      {"SharedConstants + 608", 1},          {"SharedConstants + 704", 1},
       {"history.SampleLevel(", 0},           {"history.Sample(", 0},
       {"CarChrLoad(history, ray.size, uv)", 1}, {"CarChrLoad(history, s.ray.size, s.ray.startUv)", 1},
-      {"g_CarReflM0 : packoffset(c38)", 1},  {"g_CarReflC : packoffset(c44)", 1},
       {"-r1.xyz + ambYPos.xyz", 0},
+      {"float4 CarChrRtRead(", 1},           {"= CarChrRtRead(", 1},
+      {"if (t.r < -0.5)", 1},                {"if (s.skyKnown > 0.5)", 1},
   };
   for (const auto& check : kChecks) {
     const size_t count = CountOccurrences(text, check.needle);
@@ -644,12 +701,14 @@ VariantTransformResult TransformCarChromeHlsl(const VariantShader& shader, std::
 
 VariantDef MakeCarChromeVariant() {
   VariantDef def;
-  def.id = kVariantCarChrome;
+  def.feature = kFeatureCarChrome;
   def.name = "car_chrome";
   def.version = kCarChromeVariantVersion;
   def.needs_rpf = true;  // xChrome lives in xarchive_cache.rpf (cars), as xCarPaintCustomizable does
   def.pixel_shaders = {kChrome};
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) { return TransformCarChromeHlsl(shader, hlsl); };
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
+    return TransformCarChromeHlsl(shader, hlsl, ctx);
+  };
   return def;
 }
 

@@ -2,12 +2,14 @@
 // already resident or by force-loading every one a few at a time.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/xenos.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/xenos/texture.h>
+#include <rex/xenos/fetch.h>
+#include <rex/xenos/format.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -24,23 +26,7 @@
 #include "larecomp_log.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (IsGuestPtr, ...)
 #include "mc_engine/core/texture_dump.h"
-
-REXCVAR_DEFINE_BOOL(dump_vinyl_shapes, false, "MCLA/Garage",
-    "Dump the vinyl shape catalog (every ShapeIdx -> source bitmap filename + "
-    "texture header) to <exe dir>/vinyls/vinyl_shapes.json. Enter the Vinyl editor "
-    "once so the shape library loads, then toggle ON; it fires once and flips back "
-    "OFF. Used to build the image->vinyl decomposer's brush set.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(capture_vinyl_shapes, false, "MCLA/Garage",
-    "Hands-free: force-load every vinyl shape a few at a time, hash each, and "
-    "build the full ShapeIdx->hash map in vinyls/vinyl_shape_hashes.txt (+ .json) "
-    "— no manual browsing. Enter the Vinyl editor (main menu, not a picker grid), "
-    "then toggle ON; it sweeps all ~894 shapes over a few seconds and logs when "
-    "done. Join the hashes to the DDS the texture dumper already wrote.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -80,12 +66,12 @@ struct ShapeProbe {
     uint32_t w = 0, h = 0, base = 0, size = 0, pitch = 0;
     bool tiled = false;
     std::string fmt;
-    rex::graphics::xenos::TextureFormat format{};
-    rex::graphics::xenos::Endian endian{};
+    rex::xenos::TextureFormat format{};
+    rex::xenos::Endian endian{};
     uint64_t hash = 0;
 };
 
-static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t cat, uint32_t local) {
+static ShapeProbe ProbeShape(rex::kernel::GuestAddressSpace* mem, uint32_t lib, uint32_t cat, uint32_t local) {
     ShapeProbe p;
     uint32_t desc_table = GuestRead32(mem, lib + 4 * (26 + cat));
     if (!IsGuestPtr(desc_table)) return p;
@@ -102,21 +88,22 @@ static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t ca
     uint32_t dims = GuestRead32(mem, tex + 0x20);
     uint32_t d3dtex = GuestRead32(mem, tex + 0x1C);
     if (!IsGuestPtr(d3dtex)) return p;
-    rex::graphics::xenos::xe_gpu_texture_fetch_t fetch{};
+    rex::xenos::TextureFetch fetch{};
     fetch.dword_0 = GuestRead32(mem, d3dtex + 0x1C);
     fetch.dword_1 = GuestRead32(mem, d3dtex + 0x20);
     fetch.dword_2 = GuestRead32(mem, d3dtex + 0x24);
     fetch.dword_3 = GuestRead32(mem, d3dtex + 0x28);
     fetch.dword_4 = GuestRead32(mem, d3dtex + 0x2C);
     fetch.dword_5 = GuestRead32(mem, d3dtex + 0x30);
-    rex::graphics::TextureInfo ti{};
-    if (rex::graphics::TextureInfo::Prepare(fetch, &ti) && ti.width >= 1 && ti.width <= 4096 &&
-        ti.height >= 1 && ti.height <= 4096) {
+    rex::xenos::TextureInfo ti{};
+    // 0.11: TextureInfo::Prepare is FromFetchConstant, and the size is kept as width/height minus 1.
+    if (rex::xenos::TextureInfo::FromFetchConstant(fetch, &ti) && ti.width_minus_1 + 1 >= 1 &&
+        ti.width_minus_1 + 1 <= 4096 && ti.height_minus_1 + 1 >= 1 && ti.height_minus_1 + 1 <= 4096) {
         p.w = dims >> 16;
         p.h = dims & 0xFFFF;
         if (p.w < 1 || p.w > 4096 || p.h < 1 || p.h > 4096) {
-            p.w = ti.width;
-            p.h = ti.height;
+            p.w = ti.width_minus_1 + 1;
+            p.h = ti.height_minus_1 + 1;
         }
         p.base = ti.memory.base_address;
         p.size = ti.memory.base_size;
@@ -124,7 +111,7 @@ static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t ca
         p.tiled = ti.is_tiled;
         p.format = ti.format;
         p.endian = ti.endianness;
-        const auto* finfo = ti.format_info();
+        const auto* finfo = ti.GetFormatInfo();
         if (finfo && finfo->name) p.fmt = finfo->name;
         const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
         if (bytes && p.size)
@@ -133,7 +120,7 @@ static ShapeProbe ProbeShape(rex::memory::Memory* mem, uint32_t lib, uint32_t ca
     return p;
 }
 
-static std::string ShapeName(rex::memory::Memory* mem, uint32_t db, uint32_t cat, uint32_t local) {
+static std::string ShapeName(rex::kernel::GuestAddressSpace* mem, uint32_t db, uint32_t cat, uint32_t local) {
     uint32_t names = GuestRead32(mem, db + 96 + 8 * cat);
     if (!IsGuestPtr(names)) return {};
     return GuestCStr(mem, GuestRead32(mem, names + 4 * local), 128);
@@ -160,7 +147,7 @@ static std::map<uint32_t, ShapeRec> LoadShapeRecs(const std::filesystem::path& d
 
 // Writes vinyl_shape_hashes.txt (accumulated ShapeIdx->hash map) and
 // vinyl_shapes.json (the full catalog joined to whatever hashes exist so far).
-static void SaveShapeManifest(rex::memory::Memory* mem, uint32_t lib, uint32_t db,
+static void SaveShapeManifest(rex::kernel::GuestAddressSpace* mem, uint32_t lib, uint32_t db,
                               const std::map<uint32_t, ShapeRec>& recs,
                               const std::filesystem::path& dir) {
     auto esc = [](const std::string& s) {
@@ -214,9 +201,9 @@ static void SaveShapeManifest(rex::memory::Memory* mem, uint32_t lib, uint32_t d
 // Single-pass dump: hash every currently-resident shape, merge into the
 // persistent map, rewrite the manifest. Use after browsing categories.
 void DumpVinylShapes() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
     uint32_t lib = GuestRead32(mem, kShapeLib);
     uint32_t db = GuestRead32(mem, kShapeDb);
@@ -253,8 +240,8 @@ void DumpVinylShapes() {
 // ---------------------------------------------------------------------------
 static std::atomic_bool g_scap_request{false};  // set by cvar callback (any thread)
 static bool g_scap_active = false;               // tick-thread only below
-static std::vector<std::pair<uint32_t, uint32_t>> g_scap_list;
-static std::map<uint32_t, ShapeRec> g_scap_recs;
+static std::vector<std::pair<uint32_t, uint32_t>>& g_scap_list = larecomp::Leak<std::vector<std::pair<uint32_t, uint32_t>>>();
+static std::map<uint32_t, ShapeRec>& g_scap_recs = larecomp::Leak<std::map<uint32_t, ShapeRec>>();
 static size_t g_scap_cursor = 0;
 static size_t g_scap_requested = 0;
 static int g_scap_wait = 0;
@@ -267,7 +254,7 @@ void RequestVinylShapeCapture() { g_scap_request.store(true, std::memory_order_r
 // Adjust a shape's request-refcount by delta (big-endian RMW). +1 asks the
 // per-frame loader to load it; -1 lets it be released. Increment (not set) so we
 // never clobber the game's own reference for shapes it currently wants.
-static void ShapeRefAdjust(rex::memory::Memory* mem, uint32_t lib, uint32_t cat, uint32_t local,
+static void ShapeRefAdjust(rex::kernel::GuestAddressSpace* mem, uint32_t lib, uint32_t cat, uint32_t local,
                            int delta) {
     uint32_t arr = GuestRead32(mem, lib + 4 * (49 + cat));
     if (!IsGuestPtr(arr)) return;
@@ -279,9 +266,9 @@ static void ShapeRefAdjust(rex::memory::Memory* mem, uint32_t lib, uint32_t cat,
 }
 
 void TickVinylShapeCapture() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
     uint32_t lib = GuestRead32(mem, kShapeLib);
     uint32_t db = GuestRead32(mem, kShapeDb);
@@ -327,7 +314,7 @@ void TickVinylShapeCapture() {
             // misses them. Write the DDS ourselves — same
             // dump/<hash>_<w>x<h>_<fmt>.dds naming, and it skips any file that
             // already exists (already dumped while browsing).
-            static const std::filesystem::path s_dump_dir = mcla::TextureDumpDir();
+            static const std::filesystem::path& s_dump_dir = larecomp::Leak<const std::filesystem::path>(mcla::TextureDumpDir());
             const uint8_t* bytes = mem->TranslatePhysical<const uint8_t*>(p.base);
             if (bytes && p.size)
                 mcla::DumpGuestTexture(s_dump_dir, p.hash, p.w, p.h, p.pitch, p.tiled, p.format,
@@ -355,6 +342,7 @@ void TickVinylShapeCapture() {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 void DumpVinylShapes() {}
 void RequestVinylShapeCapture() {}

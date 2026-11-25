@@ -18,6 +18,7 @@
 #include <vector>
 
 #include "ao_halo.h"
+#include "setting_source.h"
 
 using namespace mcla::gpu::ao_halo;
 
@@ -429,8 +430,9 @@ void CheckShaders(const std::string& gpu_dir) {
   Check(has(common, "asuint(level0_depth) & 1u") && has(common, "(asuint(depth) & ~1u) | (vehicle ? 1u : 0u)"), "ao_common.hlsli: the vehicle bit is the lowest bit of the float");
   // The falloff of a vehicle's samples: the world's ramp over the share of the radius.
   Check(has(main_ps, "-1.0f / (falloff_ratio * car_radius), 1.0f / falloff_ratio"), "ao_main_ps.hlsl: a car's falloff is the world's ramp over the car radius");
-  // The default share is ao.cpp's.
-  Check(has(cpp, Num("mcla_gpu_ao_car_reach, %.1f", double(kDefaultCarReach))), "ao.cpp: the cvar's default is kDefaultCarReach");
+  // The default share is the setting's (a REX_SETTING row of src/settings/generated; the REXCVAR_DEFINE of ao.cpp before the conversion).
+  const setting_source::Info reach = setting_source::Find(gpu_dir, cpp, "mcla_gpu_ao_car_reach");
+  Check(setting_source::DefaultIs(reach, double(kDefaultCarReach)), "mcla_gpu_ao_car_reach: the setting's default is kDefaultCarReach");
 }
 
 }  // namespace

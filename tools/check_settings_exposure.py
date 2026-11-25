@@ -3,7 +3,11 @@ r"""check_settings_exposure.py: is every cvar of the game either a row, on the e
   python tools\check_settings_exposure.py [--src <src dir>] [--config <toml>] [--dirs <dir> ...] [--ignore-pending] [--strict] [--rows] [-v]
 
 Reads, under <src dir> (default: the src folder next to tools\):
-  * every REXCVAR_DEFINE_* (BOOL, INT32, ..., COMMAND) with its chained calls, and whether the chain has `.debug_only()`;
+  * every setting definition, in either form: the old REXCVAR_DEFINE_* (BOOL, INT32, ..., COMMAND) with its chained calls and whether the chain has
+    `.debug_only()` (rexglue 0.10 and main), or the rexglue 0.11 REX_SETTING(type, name, default, "description", traits...) inside a SettingOwner
+    (src/settings/generated/*.h, src/settings/larecomp_app_settings.h; also the Validated* members there) with the trait `kDebugOnly`. For both
+    forms "restart-only" is Lifecycle::kRequiresRestart / kInitOnly, or the traits kRequiresRestart / kInitOnly / kLockedInGame (rexglue 0.11 after the SettingMode rename; the old names kRestart / kStartupOnly / kUntilLaunch of rexglue 0.11.0 still count; no trait = live).
+    A console command (REX_COMMAND) is not a setting and is not checked;
   * the rows of the pause menu (pause_menu.cpp and the menu files named in settings_exposure.toml): the cvar each Bool / Str / Dbl / Color row
     writes, and the cvars a row writes that its constructor does not name (the upscaling mode row, VSYNC's native cvar);
   * tools\settings_exposure.toml: the exception list (SETTINGS-REVIEW.md B.1), the cvars that only the launcher has a row for, the virtual rows,
@@ -20,6 +24,8 @@ Warnings (exit 0, 1 with --strict): list entries that name a cvar the sources do
 
 --dirs <path> ...  checks only the definitions in these folders / files of <src dir> (relative to it, for example gpu native_gfx), so that each part of a
                    split job can be checked alone. Rows, the exception list and the pending list are still read for the whole tree.
+                   (On rexglue 0.11 every definition sits in settings/generated/settings_<owner>.h or settings/larecomp_app_settings.h, so --dirs picks
+                   an owner header there, for example settings/generated/settings_gpu.h.)
 --ignore-pending   treat the pending list as empty (the check to run after SX-G5 has removed the debug rows from the normal tables).
 --rows             print every row cvar found (file:line, kind) and exit.
 -v                 print the names of each group, not only the counts.
@@ -37,7 +43,13 @@ except ImportError:   # Python before 3.11
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFINE = re.compile(r"\bREXCVAR_DEFINE_(\w+)\s*\(")
+SETTING = re.compile(r"\bREX_SETTING\s*\(")                          # rexglue 0.11: REX_SETTING(type, name, default, help, traits...)
+VALIDATED = re.compile(r"\bValidated\w+\s+(\w+)\s*\{\s*this\s*,")    # larecomp_app_settings.h: ValidatedString name{this, "name", default, help, ...}
+COMMAND = re.compile(r"\bREX_COMMAND\w*\s*\(")
+DEBUG_TRAIT = re.compile(r"\bkDebugOnly\b")
+RESTART_TRAIT = re.compile(r"\b(?:kRequiresRestart|kInitOnly|kLockedInGame|kRestart|kStartupOnly|kUntilLaunch)\b")
 ROW = re.compile(r'\b(Bool|Str|Dbl|Color)\s*\(\s*"PM_\w+"\s*,\s*(?:"(\w+)"|(\w+))')
+ROW_ID = re.compile(r'\b(?:Bool|Str|Dbl|Color)\s*\(\s*"(PM_\w+)"')
 TABLE = re.compile(r"\bItemDef\s+(\w+)\s*\[\s*\]\s*=\s*\{")
 CONST = re.compile(r'\bconstexpr\s+const\s+char\s*\*\s*(\w+)\s*=\s*"(\w+)"\s*;')
 CVAR_HELPER = re.compile(r"^[ \t]*(?:constexpr\s+)?const\s+char\s*\*\s*\w*Cvar\w*\s*(?:\(\s*\)\s*\{|=)(.*)$", re.M)
@@ -100,36 +112,87 @@ def strip_comments(text):
 
 def close_paren(text, i):
     """The index just after the ')' that matches the '(' before <i> (comments are already blanked; strings are skipped)."""
+    return close_group(text, i, "(", ")")
+
+
+def skip_literal(text, i):
+    """The index after the string or character literal that starts at <i>; <i> itself when none does (a digit separator is not a literal)."""
+    n, c = len(text), text[i]
+    if c == '"':
+        raw = re.match(r'R"([^()\\\s]{0,16})\(', text[i - 1:i + 20]) if i > 0 and text[i - 1] == "R" else None
+        if raw:
+            end = text.find(")" + raw.group(1) + '"', i)
+            return n if end < 0 else end + len(raw.group(1)) + 2
+        i += 1
+        while i < n and text[i] != '"' and text[i] != "\n":
+            i += 2 if text[i] == "\\" else 1
+        return i + 1
+    if c == "'":
+        k = i
+        while k > 0 and (text[k - 1].isalnum() or text[k - 1] in "_'"):
+            k -= 1
+        if not (k < i and text[k].isdigit()):
+            i += 1
+            while i < n and text[i] != "'" and text[i] != "\n":
+                i += 2 if text[i] == "\\" else 1
+            return i + 1
+    return i
+
+
+def close_group(text, i, opener, closer):
+    """The index just after the <closer> that matches the <opener> before <i> (comments are already blanked; literals are skipped)."""
     depth, n = 1, len(text)
     while i < n and depth:
-        c = text[i]
-        if c == '"':
-            raw = re.match(r'R"([^()\\\s]{0,16})\(', text[i - 1:i + 20]) if i > 0 and text[i - 1] == "R" else None
-            if raw:
-                end = text.find(")" + raw.group(1) + '"', i)
-                i = n if end < 0 else end + len(raw.group(1)) + 2
-            else:
-                i += 1
-                while i < n and text[i] != '"' and text[i] != "\n":
-                    i += 2 if text[i] == "\\" else 1
-                i += 1
+        j = skip_literal(text, i)
+        if j != i:
+            i = j
             continue
-        if c == "'":
-            k = i
-            while k > 0 and (text[k - 1].isalnum() or text[k - 1] in "_'"):
-                k -= 1
-            if not (k < i and text[k].isdigit()):
-                i += 1
-                while i < n and text[i] != "'" and text[i] != "\n":
-                    i += 2 if text[i] == "\\" else 1
-                i += 1
-                continue
-        elif c == "(":
+        if text[i] == opener:
             depth += 1
-        elif c == ")":
+        elif text[i] == closer:
             depth -= 1
         i += 1
     return i
+
+
+def split_args(text):
+    """The top-level, comma separated pieces of <text> (the inside of a macro call or a brace list); (), {} and [] and literals keep their commas."""
+    parts, depth, start, i, n = [], 0, 0, 0, len(text)
+    while i < n:
+        j = skip_literal(text, i)
+        if j != i:
+            i = j
+            continue
+        c = text[i]
+        if c in "({[":
+            depth += 1
+        elif c in ")}]":
+            depth -= 1
+        elif c == "," and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+        i += 1
+    parts.append(text[start:])
+    return parts
+
+
+def blank_strings(text):
+    """<text> with the inside of every string literal replaced by spaces (a trait scan must not read the description)."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        j = skip_literal(text, i) if text[i] == '"' else i
+        if j != i:
+            out.append('"' + " " * max(0, j - i - 2) + '"')
+            i = j
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
+
+
+def literal_text(text):
+    """The text of the adjacent plain string literals in <text> ("a" "b" gives ab), escapes left as written; empty when there is none."""
+    return "".join(m.group(1) for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"', text))
 
 
 def statement_end(text, i):
@@ -159,11 +222,13 @@ def rel(src, path):
 
 
 def definitions(src):
-    """name -> list of {file, line, type, tagged, restart} over every definition under <src>."""
+    """name -> list of {file, line, type, tagged, restart, life, form, help} over every definition under <src>.
+    form is 'define' (REXCVAR_DEFINE_*, the chain's `.debug_only()` tags it) or 'setting' (rexglue 0.11 REX_SETTING / Validated* member, the trait
+    kDebugOnly tags it); help is the description of a 0.11 setting ('define' ones leave it None). life is 'restart' or 'live'."""
     found = {}
     for path in source_files(src):
         text = strip_comments(read(path))
-        if "REXCVAR_DEFINE_" not in text:
+        if "REXCVAR_DEFINE_" not in text and "REX_SETTING" not in text and "Validated" not in text:
             continue
         for m in DEFINE.finditer(text):
             name = re.match(r"\s*(\w+)", text[m.end():])
@@ -171,19 +236,62 @@ def definitions(src):
                 continue
             end = statement_end(text, m.end())
             chain = text[m.end():end]
+            restart = RESTART.search(chain) is not None
             found.setdefault(name.group(1), []).append({
                 "file": rel(src, path),
                 "line": line_of(text, m.start()),
                 "type": m.group(1),
                 "tagged": re.search(r"\.\s*debug_only\s*\(", chain) is not None,
-                "restart": RESTART.search(chain) is not None,
+                "restart": restart,
+                "life": "restart" if restart else "live",
+                "form": "define",
+                "help": None,
             })
+        for m in SETTING.finditer(text):
+            line_start = text.rfind("\n", 0, m.start()) + 1
+            if text[line_start:m.start()].lstrip().startswith("#"):
+                continue   # the macro's own definition
+            end = close_group(text, m.end(), "(", ")")
+            args = split_args(text[m.end():end - 1])   # type, name, default, help, traits...
+            if len(args) < 3 or not re.fullmatch(r"\w+", args[1].strip()):
+                continue
+            add_setting(found, src, path, text, m.start(), args[1].strip(), args[0].strip(), args[3] if len(args) > 3 else "", args[4:])
+        for m in VALIDATED.finditer(text):
+            end = close_group(text, m.end(), "{", "}")
+            args = split_args(text[m.end():end - 1])   # "name", default, help, validator, message, traits...
+            add_setting(found, src, path, text, m.start(), m.group(1), "Validated", args[2] if len(args) > 2 else "", args[3:])
     return found
+
+
+def add_setting(found, src, path, text, pos, name, type_name, help_arg, trait_args):
+    traits = blank_strings(",".join(trait_args))   # a trait word inside a description or an Allowed(...) text is no trait
+    restart = RESTART_TRAIT.search(traits) is not None
+    found.setdefault(name, []).append({
+        "file": rel(src, path),
+        "line": line_of(text, pos),
+        "type": type_name,
+        "tagged": DEBUG_TRAIT.search(traits) is not None,
+        "restart": restart,
+        "life": "restart" if restart else "live",
+        "form": "setting",
+        "help": literal_text(help_arg).strip(),
+    })
+
+
+def console_commands(src):
+    """How many REX_COMMAND* declarations there are under <src> (console commands are not settings, so nothing checks them)."""
+    count = 0
+    for path in source_files(src):
+        text = strip_comments(read(path))
+        if "REX_COMMAND" in text:
+            count += sum(1 for m in COMMAND.finditer(text) if not text[text.rfind("\n", 0, m.start()) + 1:m.start()].lstrip().startswith("#"))
+    return count
 
 
 def rows_of(src, cfg, defined):
     """name -> list of (file, line, kind, debug) for every row. kind: 'row' (a constructor names it), 'dynamic' (a row writes it), 'virtual'."""
     rows = {}
+    row_debug = {}
     menus = cfg.get("menus", {})
     normal = menus.get("normal_files", [])
     dynamic = set(menus.get("dynamic_files", []))
@@ -215,6 +323,10 @@ def rows_of(src, cfg, defined):
                     current = tname
             return current
 
+        for m in ROW_ID.finditer(text):
+            tname = table_at(m.start())
+            row_debug[m.group(1)] = f in debug_files or bool(table_rx and tname and table_rx.search(tname))
+
         for m in ROW.finditer(text):
             key = m.group(2) or consts.get(m.group(3)) or None
             if key is None:
@@ -233,6 +345,29 @@ def rows_of(src, cfg, defined):
                 for nm in virtual.get(s.group(1), [s.group(1)]):
                     if nm in defined or s.group(1) in virtual:
                         add(nm, name_in_tree, line_of(text, m.start()), "dynamic", f in debug_files)
+    rules_path = os.path.join(src, "settings", "ui_rules.toml")
+    if os.path.isfile(rules_path):
+        def settings_written(rule):
+            if "setting" in rule:
+                yield rule["setting"]
+            for write in rule.get("writes", []):
+                yield write["setting"]
+            for item in rule.get("values", []):
+                yield from settings_written(item)
+            for item in rule.get("value", {}).values():
+                yield from settings_written(item)
+            for item in rule.get("variants", []):
+                yield from settings_written(item)
+
+        rule_rows = load_config(rules_path).get("rows", {})
+        rule_text = read(rules_path)
+        for row_id, rule in rule_rows.items():
+            if row_id not in row_debug:
+                continue
+            section = re.search(rf'^\[rows\.(?:"{row_id}"|{row_id})(?:\]|\.)', rule_text, re.M)
+            line = line_of(rule_text, section.start()) if section else 1
+            for name in sorted(set(settings_written(rule))):
+                add(name, rel(src, rules_path), line, "dynamic", row_debug[row_id])
     return rows
 
 
@@ -287,6 +422,8 @@ def main():
     cfg = load_config(args.config)
 
     defs = definitions(src)
+    forms = {d["form"] for ds in defs.values() for d in ds}
+    DBG = "`kDebugOnly`" if forms == {"setting"} else "`.debug_only()` / `kDebugOnly`" if "setting" in forms else "`.debug_only()`"
     rows = rows_of(src, cfg, set(defs))
     if args.rows:
         for name in sorted(rows):
@@ -311,7 +448,7 @@ def main():
         is_tagged = True in {d["tagged"] for d in ds}
         if len(tags) > 1:
             also = ", ".join(f"{d['file']}:{d['line']}" for d in all_ds)
-            text = f"{name}: defined more than once ({also}) with `.debug_only()` on only some of the definitions"
+            text = f"{name}: defined more than once ({also}) with {DBG} on only some of the definitions"
             if len(ds) == len(all_ds):
                 problems.append(text)
             else:
@@ -320,7 +457,7 @@ def main():
         debug_rows = [r for r in rows.get(name, []) if r[3]]
         for f, line, kind, debug in debug_rows:
             if not is_tagged:
-                problems.append(f"{name}: a debug table row ({f}:{line}) names it, and it is not `.debug_only()`")
+                problems.append(f"{name}: a debug table row ({f}:{line}) names it, and it is not {DBG}")
             elif any(d["restart"] for d in ds):
                 problems.append(f"{name}: a debug table row ({f}:{line}) names it, and its lifecycle is restart-only ({where})")
         if is_tagged:
@@ -332,9 +469,9 @@ def main():
                 if name in pending:
                     still_pending.append(name)
                 else:
-                    problems.append(f"{name}: `.debug_only()` ({where}) but a normal row uses it: {', '.join(uses)}")
+                    problems.append(f"{name}: {DBG} ({where}) but a normal row uses it: {', '.join(uses)}")
             if name in exceptions:
-                problems.append(f"{name}: `.debug_only()` ({where}) but it is on the exception list, which is for settings that are not debug-only and have no row")
+                problems.append(f"{name}: {DBG} ({where}) but it is on the exception list, which is for settings that are not debug-only and have no row")
         else:
             if normal_rows:
                 row_pause.append(name)
@@ -343,7 +480,7 @@ def main():
             elif name in exceptions:
                 exception.append(name)
             else:
-                problems.append(f"{name}: no `.debug_only()`, no row and not on the exception list ({where})")
+                problems.append(f"{name}: no {DBG}, no row and not on the exception list ({where})")
 
     if not dirs:
         for key, label in (("exception", "exception list"), ("launcher_row", "launcher row list"), ("pending", "pending list")):
@@ -355,14 +492,23 @@ def main():
         for name in pending:
             if name in defs and not (any(d["tagged"] for d in defs[name]) and any(not r[3] for r in rows.get(name, []))):
                 if not any(d["tagged"] for d in defs[name]):
-                    warnings.append(f"the pending list names {name}, which is not tagged: add `.debug_only()` to it, or remove the entry from settings_exposure.toml")
+                    warnings.append(f"the pending list names {name}, which is not tagged: add {DBG} to it, or remove the entry from settings_exposure.toml")
                 else:
                     warnings.append(f"the pending list names {name}, but no normal row uses it any more: remove the entry from settings_exposure.toml")
+
+    for name in checked:   # a 0.11 setting's description is what the settings panel and the console show
+        for d in defs[name]:
+            if d["help"] == "" and in_dirs(d["file"], dirs):
+                warnings.append(f"{name}: no description text ({d['file']}:{d['line']})")
 
     n_defs = sum(1 for n in checked for d in defs[n] if in_dirs(d["file"], dirs))
     print(f"check_settings_exposure: {src}" + (f"  (--dirs {' '.join(dirs)})" if dirs else ""))
     print(f"  {n_defs} definitions, {len(checked)} cvars checked")
-    print(f"  {len(tagged)} are `.debug_only()`" + (f", {len(still_pending)} of them still have a normal pause-menu row (pending SX-G4/G5)" if still_pending else ""))
+    if "setting" in forms:
+        restart_only = sorted(n for n in checked if any(d["restart"] for d in defs[n] if in_dirs(d["file"], dirs)))
+        print(f"  {len(restart_only)} are restart-only (kRequiresRestart / kInitOnly / kLockedInGame), the rest are live; {console_commands(src)} console commands (REX_COMMAND) are not settings and are not checked")
+        show("restart-only", restart_only, args.verbose)
+    print(f"  {len(tagged)} are {DBG}" + (f", {len(still_pending)} of them still have a normal pause-menu row (pending SX-G4/G5)" if still_pending else ""))
     show("pending", still_pending, args.verbose)
     kept = len(row_pause) + len(row_launcher) + len(exception)
     print(f"  {kept} are not tagged: {len(row_pause)} with a pause-menu row (KEEP), {len(row_launcher)} with a launcher row only (KEEP), {len(exception)} on the exception list")
@@ -374,8 +520,9 @@ def main():
     if problems or (warnings and args.strict):
         print(f"{len(problems)} problem(s)" + (f", {len(warnings)} warning(s)" if warnings else ""))
         return 1
-    print("every cvar is a row, on the exception list or `.debug_only()`; no tagged cvar has a normal row" + (" (apart from the pending ones)" if still_pending else ""))
+    print(f"every cvar is a row, on the exception list or {DBG}; no tagged cvar has a normal row" + (" (apart from the pending ones)" if still_pending else ""))
     return 0
 
 
-sys.exit(main())
+if __name__ == "__main__":   # tools\check_row_tags.py imports this file for its parsers
+    sys.exit(main())

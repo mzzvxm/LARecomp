@@ -23,6 +23,18 @@
 // THE PLAYER'S CAR (E4, e4-changecar): LocalOptions_GetVehicleProfile(slot) and Racer_ChangeCarByConfig(player, config) dress it
 // live; the profile it wore before comes back through the same calls when the scene ends.
 //
+// AN AMBIENT CAR (`car <id> ambient`, ambient_car.h has what the game does): AmbientMgr_AddAmbientToLayout(model, position, layout angle) -> the layout item's id,
+// the game's parked spawner makes the car within a second; AmbientMgr_RemoveAmbientFromLayout(id) takes it back (the clean-up of every placement, also at the end of
+// the scene). One call each, through the same Director as the racers' steps, only while the guards of ambient_car.h hold (free roam, slots, 120 updates up).
+//
+// THE PLAYER'S PLACE (`car player at <x,y,z> [heading <deg>]`, car_verbs.h): one Racer_Teleport on the player's racer (speed 0; the matrix is set, there is no ground snap), made through
+// the same Director as every other call, when the player's car is on the road and the garage dressing is done. His pose before the FIRST place is kept; when the scene ends he is
+// put back there (one more Racer_Teleport) only if that is safe: the same racer, within kRestoreMaxDriftM of where the scene left him, calls allowed, and kRestoreGiveUpMs not run out.
+//
+// A CAR NEAR ANOTHER (`... near <car> <right>,<up>,<forward> [heading <deg>]`): the Director keeps the line until the other car has a pose that is worth taking (the player's car once
+// his own placement has been made and his matrix read again; a spawned car once it is ready; an ambient car once it is placed), then works the place out in that car's frame
+// (ResolveRelative) and starts the spawn or the placement as if the scene had given the world position. No call is made for the waiting; kNearGiveUpMs bounds it.
+//
 // A PATH (package M4c): `car <id> path <route> [speed <x>] [mode brain|kinematic]` on a car that is ready, and `car <id> stop`.
 //   kinematic   the car is put on the route at every update with Racer_Teleport(racer, position, heading, speed): the place is a function
 //               of the path clock (the scene's time as the game's time scale makes it), the heading is the route's and the speed is the
@@ -41,9 +53,11 @@
 #include <string>
 #include <vector>
 
+#include "ambient_car.h"
 #include "car_registry.h"
 #include "car_verbs.h"
 #include "path_follow.h"
+#include "scene_seed.h"
 
 namespace mc::cinematic {
 
@@ -76,6 +90,9 @@ enum class Native : uint8_t {
     kBrainReached,         // BrainCruising_HasReachedGoal(brain) -> bool
     kBrainStop,            // BrainCruising_RemoveFromTraffic(brain): back to idle, brake held
     kDeleteBrain,          // BrainFactory_DeleteBrain(racer)
+    // an ambient car (the layout, ambient_car.h)
+    kAddAmbient,           // AmbientMgr_AddAmbientToLayout(model name*, position*, angle in degrees) -> the layout item's id, -1 = refused
+    kRemoveAmbient,        // AmbientMgr_RemoveAmbientFromLayout(id)
 };
 const char* NativeName(Native native);
 
@@ -90,6 +107,12 @@ struct Call {
     double heading_native = 0.0;  // the angle Racer_Teleport and the loader take (NativeHeadingDeg)
     double speed = 0.0;           // kTeleport: the car's speed along its nose after it is put there (m/s); the brain's speed natives: the value
     uint32_t brain = 0;           // the brain natives: the brain (racer is the car it drives)
+    bool on_player = false;       // kTeleport: the racer is the PLAYER's (`car player at` and its put-back): it is not in the opponent manager's list, so that check is not made
+    // kAddAmbient: text = the model, position = the place, heading_native = the layout's angle (LayoutHeadingDeg); kRemoveAmbient: index = the layout item's id.
+    // The paint (scene_seed.h): kAddAmbient: the number and the seed the game side puts in the car's spawn request; kCreateOpponent / kLoadOpponent / kLoadOpponentByConfig /
+    // kAddOpponent: the number whose seed the game's generators are held at for the native's duration. -1: none.
+    int32_t paint = -1;
+    uint32_t paint_seed = 0;
 };
 
 struct Outcome {
@@ -123,6 +146,22 @@ struct CarTiming {
 // updates, every pose counts as fresh (the unit tests that feed one pose and step the clock).
 constexpr uint64_t kNoFrame = ~0ull;
 constexpr uint64_t kPoseFreshUpdates = 3;
+
+// `near`: how long (the director's clock, ms) a car waits for the car it is near before it is dropped with a warning.
+constexpr int64_t kNearGiveUpMs = 60000;
+// The put-back of the player's car at the scene's end: only when he is still within this (metres on the ground) of where the scene left him, and the conditions hold within this time.
+constexpr double kRestoreMaxDriftM = 5.0;
+constexpr int64_t kRestoreGiveUpMs = 20000;
+constexpr int kPlaceCheckPolls = 600;  // updates the first pose after a put of the player is waited for
+
+// The world place and the heading of a car put at `cmd.offset` (right, up, ahead, metres) in the frame of a car whose pose is `anchor`, `cmd.heading` degrees from the anchor's heading
+// (0 when the command gives none). The frame is the car's own: its right, up and forward axes from the matrix. Pure.
+inline void ResolveRelative(const CarPose& anchor, const CarCommand& cmd, double position[3], double* heading) {
+    for (int k = 0; k < 3; ++k) {
+        position[k] = anchor.position[k] + anchor.right[k] * cmd.offset[0] + anchor.up[k] * cmd.offset[1] + anchor.forward[k] * cmd.offset[2];
+    }
+    *heading = NormalizeDegrees(anchor.heading + (cmd.has_heading ? cmd.heading : 0.0));
+}
 
 // ---------------------------------------------------------------------------------------------------------------- a spawn
 
@@ -163,6 +202,12 @@ class Spawner {
 
   private:
     void Fail(const std::string& why);
+    // A model car's paint goes on the natives that may draw its look: the game side holds the generators at the paint's seed for the call.
+    void SetPaint(Call* c) const {
+        if (!cmd_.has_paint || cmd_.source != CarSource::kModel) return;
+        c->paint = cmd_.paint;
+        c->paint_seed = seed::PaintSeed(cmd_.paint);
+    }
 
     CarTiming timing_;
     CarCommand cmd_;
@@ -179,6 +224,57 @@ class Spawner {
     uint32_t opp_ = 0;
     int32_t index_ = -1;
     std::string failure_;
+};
+
+// ---------------------------------------------------------------------------------------------------------------- an ambient car
+
+class AmbientCar {
+  public:
+    enum class Stage : uint8_t {
+        kAdd,     // not placed yet: waits for the guards, then the add
+        kPlaced,  // the layout item exists; the game's spawner makes the car and keeps it
+        kRemove,  // the remove is to be called
+        kGone,    // finished: ok() says whether the car was ever placed without a fault
+    };
+
+    explicit AmbientCar(const CarTiming& timing = {}) : timing_(timing) {}
+
+    void Start(const CarCommand& cmd);
+    void RequestDelete();  // at once when nothing was placed; after the add's report when its call is in flight
+    void MarkLost();       // the game no longer has the placement: finished, nothing more is called
+
+    // `gate`: what the game side saw this update.
+    Call Poll(int64_t now_ms, const AmbientGate& gate);
+    void Report(const Outcome& outcome);
+
+    Stage stage() const { return stage_; }
+    bool Finished() const { return stage_ == Stage::kGone; }
+    bool Placed() const { return stage_ == Stage::kPlaced; }
+    bool EverPlaced() const { return placed_ever_; }
+    bool ok() const { return failure_.empty(); }
+    const std::string& failure() const { return failure_; }
+    int32_t layout_id() const { return layout_id_; }
+    const CarCommand& command() const { return cmd_; }
+    bool delete_requested() const { return want_delete_; }
+    std::vector<CarEvent> TakeEvents();
+
+  private:
+    void Fail(const std::string& why);
+    void Event(bool warning, std::string text);
+
+    CarTiming timing_;
+    CarCommand cmd_;
+    Stage stage_ = Stage::kGone;
+    bool waiting_ = false;       // a call was handed out and not reported yet
+    bool want_delete_ = false;
+    bool placed_ever_ = false;
+    int64_t first_poll_ms_ = -1;
+    AmbientRefusal last_wait_ = AmbientRefusal::kNone;
+    int32_t layout_id_ = -1;
+    uint32_t manager_ = 0;       // the ambient manager the item was made in
+    uint32_t manager_at_add_ = 0;
+    std::string failure_;
+    std::vector<CarEvent> events_;
 };
 
 // ---------------------------------------------------------------------------------------------------------------- the player's car
@@ -350,7 +446,10 @@ class Director {
     void EndScene();
 
     // Anything to do or to keep track of.
-    bool Active() const { return scene_on_ || !cars_.empty() || dresser_.Busy(); }
+    bool Active() const {
+        return scene_on_ || !cars_.empty() || !ambient_.empty() || !deferred_.empty() || dresser_.Busy() || restore_ || !place_.empty() || place_pending_ != PlaceKind::kNone ||
+               place_check_;
+    }
 
     struct Next {
         std::string car;  // the id, or "player"
@@ -393,11 +492,29 @@ class Director {
     // The racers that should be in the opponent manager's list (added, not gone): the game side checks them.
     std::vector<Reader> InWorld() const;
 
+    // ---- ambient cars. The game side sets the gate every update before Poll (all false until it does: nothing is placed).
+    void SetAmbientGate(const AmbientGate& gate) { gate_ = gate; }
+    bool HasAmbientCars() const { return !ambient_.empty(); }
+    struct AmbientReader {
+        std::string id;
+        int32_t layout_id = -1;
+    };
+    // The cars that are placed and not ended: the game side finds each one's car through its layout item and reads its matrix.
+    std::vector<AmbientReader> AmbientReaders() const;
+    // The matrix of an ambient car as read (rows right, up, back, position); the first one is logged with what the scene asked for.
+    void NoteAmbientPose(const std::string& id, const float matrix[16], uint64_t frame);
+    // The ambient manager changed under the scene (a rebuilt world): every placement was lost with it, nothing is called on them.
+    void MarkAmbientLost();
+
     CarRegistry& registry() { return registry_; }
     const CarRegistry& registry() const { return registry_; }
     std::vector<CarEvent> TakeEvents();
 
-    size_t SceneCarCount() const { return cars_.size(); }
+    // Cars of `near` lines that wait for the car they are near.
+    size_t WaitingCount() const { return deferred_.size(); }
+    // The player's car has been put by the scene and is to be put back (or the put-back is under way).
+    bool PlayerPutBackPending() const { return restore_ || place_pending_ != PlaceKind::kNone; }
+    size_t SceneCarCount() const { return cars_.size() + ambient_.size(); }
     int spawned() const { return spawned_; }
     int deleted() const { return deleted_; }
     int failed() const { return failed_; }
@@ -412,14 +529,64 @@ class Director {
         bool was_ready = false;
         explicit SceneCar(const CarTiming& t) : spawner(t), path(t) {}
     };
+    struct AmbientEntry {
+        std::string id;
+        AmbientCar car;
+        bool ended = false;  // its scene is over (or it was deleted): it is no longer reachable by id
+        bool was_placed = false;
+        explicit AmbientEntry(const CarTiming& t) : car(t) {}
+    };
+    // A spawn or ambient line whose place is in another car's frame, waiting for that car.
+    struct Deferred {
+        CarCommand cmd;
+        int64_t first_ms = -1;     // the first allowed poll that found it waiting
+        std::string waiting_for;   // what it last waited for (logged once for each reason)
+    };
+    enum class Anchor : uint8_t { kReady, kWait, kGone };
+    enum class PlaceKind : uint8_t { kNone, kPlace, kRestore };
+
     SceneCar* FindLive(const std::string& id);
+    AmbientEntry* FindLiveAmbient(const std::string& id);
+    bool IsDeferred(const std::string& id) const;
     void Collect(SceneCar& car);
+    // A spawn or ambient car with a world place: the machine is made and started (the registry entry is added when it is not there yet).
+    Applied StartCar(const CarCommand& cmd);
+    // The pose of the car `id` for a `near` car, when it is worth taking; else why not (kWait) or that there is no such car (kGone).
+    Anchor ResolveAnchor(const std::string& id, CarPose* pose, std::string* why);
+    void ResolveDeferred(int64_t now_ms);
+    // The player's car: the next Racer_Teleport (a `car player at` line, or the put-back at the scene's end), or nothing.
+    Call PollPlayer(int64_t now_ms, uint32_t player_racer);
+    void ReportPlayer(const Outcome& outcome);
+    // The first pose read after a placement: a log line with what the scene asked for next to what the matrix says.
+    void NotePlacedPose();
 
     CarTiming timing_;
     CarRegistry registry_;
     std::vector<std::unique_ptr<SceneCar>> cars_;
+    std::vector<std::unique_ptr<AmbientEntry>> ambient_;
+    AmbientGate gate_;
+    uint32_t ambient_calls_ = 0;  // adds handed out in this scene (the cap)
+    int paint_ordinal_ = 0;       // the scene's cars that take a paint, counted: the default paint of the next one (scene_seed.h, DefaultPaint)
+    AmbientEntry* pending_ambient_ = nullptr;
     Dresser dresser_;
     bool scene_on_ = false;
+    std::vector<Deferred> deferred_;
+    // The player's car (`car player at`)
+    std::deque<CarCommand> place_;                  // the lines waiting for their call
+    PlaceKind place_pending_ = PlaceKind::kNone;    // the call in flight
+    CarCommand place_asked_;                        // what the call in flight (or the last one) asked for: position, heading (the scene's) and has_heading
+    bool have_origin_ = false;                      // the pose before the scene's first place was read
+    double origin_position_[3] = {};
+    double origin_heading_ = 0.0;                   // the scene heading
+    bool placed_ = false;                           // the scene has put him somewhere ...
+    double placed_position_[3] = {};                // ... here (the last place)
+    uint32_t placed_racer_ = 0;                     // ... and this racer was his
+    bool place_check_ = false;                      // a place was made: the first pose read after it is logged
+    int place_check_polls_ = 0;                     // polls that waited for it (at most kPlaceCheckPolls: a pose that is never read again is no reason to stay active)
+    bool drop_player_after_check_ = false;          // the put-back was made after the scene: his registry entry goes when its check is done
+    uint64_t place_reads_ = 0;                      // the player's good pose reads when the place was reported
+    bool restore_ = false;                          // the scene is over and he is to be put back
+    int64_t restore_since_ms_ = -1;
     // Which machine the call handed out last came from.
     SceneCar* pending_car_ = nullptr;
     SceneCar* pending_path_car_ = nullptr;

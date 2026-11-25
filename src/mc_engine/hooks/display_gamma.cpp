@@ -21,21 +21,17 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "display_gamma.h"
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/hook.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <cstdint>
 #include <string>
 
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_STRING(display_gamma, "tv", "MCLA/Video",
-    "Display gamma ramp. tv: the console's for an HDTV (BT.709), as the game ships. pc: sRGB, "
-    "for PC monitors, with brighter shadows. Live.")
-    .allowed({"tv", "pc"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 // Generated guest code: the identity ramps (a 256-entry table and a PWL ramp), then
 // D3DDevice_SetGammaRamp and D3DDevice_SetPWLGamma.
@@ -86,7 +82,7 @@ void WriteU32(uint8_t* base, uint32_t ea, uint32_t value) {
 // The pause menu sets the option on another thread than the one that renders, so it is read
 // through the registry, which hands out a copy.
 int WantedMode() {
-    return rex::cvar::GetFlagByName("display_gamma") == "pc" ? kModePc : kModeTv;
+    return larecomp::cvar::GetFlagByName("display_gamma") == "pc" ? kModePc : kModeTv;
 }
 
 const char* ModeName(int mode) {
@@ -111,13 +107,17 @@ void LogRamp(const uint8_t* base, uint32_t device, int mode) {
 
 // Sets the game's ramp again, as the device creation did: the identity, through SetGammaRamp (or
 // SetPWLGamma), which converts it for the display type the helper now gets. The ramp is built on
-// the guest stack below the caller's frame.
+// the guest stack below the caller's frame. The helpers run on the thread's own register file (the
+// hook's ctx is that file; it comes back as it was), as rexglue 0.11 requires.
 void SetRampAgain(PPCContext& ctx, uint8_t* base, uint32_t device) {
     const bool pwl = UsesPwlRamp(base, device);
-    rex::CallFrame frame(ctx);
-    PPCContext& call = frame;
     const uint32_t sp = (ctx.r1.u32 - kRampBytes - 256) & ~UINT32_C(15);
     WriteU32(base, sp, ctx.r1.u32);  // back chain
+    larecomp::guest::ThreadFile file;
+    if (!file) {
+        return;
+    }
+    PPCContext& call = file.ctx();
     const uint32_t ramp = sp + 128;
     call.r1.u64 = sp;
     call.r3.u64 = ramp;
@@ -145,8 +145,8 @@ void SetRampAgain(PPCContext& ctx, uint8_t* base, uint32_t device) {
 void Hook_DisplayGammaType(PPCRegister& r1) {
     const int mode = WantedMode();
     if (mode == kModePc) {
-        auto* runtime = rex::Runtime::instance();
-        uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+        auto* runtime = REX_RUNTIME();
+        uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
         if (!base) {
             return;
         }

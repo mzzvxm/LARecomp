@@ -7,7 +7,7 @@
 #include <format>
 #include <string>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"
@@ -136,6 +136,53 @@ std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
   return device_->CreateGraphicsPipeline(desc, name);
 }
 
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreatePipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    const plume::RenderFormat* formats, uint32_t count, const char* name) {
+  // CITY-RT R4's overload (2 to 8 targets): the one implementation is CreateMrtPipeline below (SS-3), which also takes one.
+  if (!formats || count < 2) {
+    return nullptr;
+  }
+  return CreateMrtPipeline(layout, pixel_shader, formats, count, name);
+}
+
+std::unique_ptr<plume::RenderPipeline> HostPasses::CreateMrtPipeline(
+    const plume::RenderPipelineLayout& layout, const plume::RenderShader& pixel_shader,
+    const plume::RenderFormat* formats, uint32_t count, const char* name) {
+  if (!formats || count == 0 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+    return nullptr;
+  }
+  plume::RenderGraphicsPipelineDesc desc;
+  desc.pipelineLayout = &layout;
+  desc.vertexShader = vertex_shader_.get();
+  desc.pixelShader = &pixel_shader;
+  desc.depthClipEnabled = false;
+  desc.depthEnabled = false;
+  desc.depthWriteEnabled = false;
+  desc.cullMode = plume::RenderCullMode::NONE;
+  desc.fillMode = plume::RenderFillMode::SOLID;
+  desc.primitiveTopology = plume::RenderPrimitiveTopology::TRIANGLE_LIST;
+  desc.multisampling.sampleCount = plume::RenderSampleCount::COUNT_1;
+  for (uint32_t i = 0; i < count; ++i) {
+    desc.renderTargetFormat[i] = formats[i];
+    desc.renderTargetBlend[i] = plume::RenderBlendDesc::Copy();
+  }
+  desc.renderTargetCount = count;
+  return device_->CreateGraphicsPipeline(desc, name);
+}
+
+std::unique_ptr<plume::RenderFramebuffer> HostPasses::CreateMrtFramebuffer(
+    const plume::RenderTexture* const* colors, uint32_t count, const char* name) {
+  const plume::RenderTexture* attachments[plume::RenderGraphicsPipelineDesc::MaxRenderTargets] = {};
+  if (!colors || count == 0 || count > plume::RenderGraphicsPipelineDesc::MaxRenderTargets) {
+    return nullptr;
+  }
+  for (uint32_t i = 0; i < count; ++i) {
+    attachments[i] = colors[i];
+  }
+  return device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, count), name);
+}
+
 void HostPasses::Bind(plume::RenderCommandList* list) const {
   list->setGraphicsPipelineLayout(layout_.get());
   for (uint32_t set = 0; set < 4; ++set) {
@@ -187,6 +234,7 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
   image.format = format;
   image.flags = flags;
   image.samples = samples;
+  image.serial = ++image_serial_;
   image.layout = plume::RenderTextureLayout::UNKNOWN;
   return true;
 }
@@ -247,6 +295,36 @@ void HostPasses::DrawInto(plume::RenderCommandList* list, HostImage& image,
   list->setPipeline(pipeline);
   list->setGraphicsPushConstants(0, push, 0, push_size);
   list->drawInstanced(3, 1, 0, 0);
+  list->setFramebuffer(nullptr);
+  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                 plume::RenderTextureBarrier(image.texture.get(),
+                                             plume::RenderTextureLayout::SHADER_READ));
+  image.layout = plume::RenderTextureLayout::SHADER_READ;
+}
+
+void HostPasses::DrawRectsInto(plume::RenderCommandList* list, HostImage& image,
+                               const plume::RenderPipeline* pipeline, const plume::RenderRect* rects,
+                               const void* pushes, uint32_t push_size, uint32_t count) const {
+  if (count == 0 || !rects || !pushes) {
+    return;
+  }
+  if (image.layout != plume::RenderTextureLayout::COLOR_WRITE) {
+    list->barriers(plume::RenderBarrierStage::GRAPHICS,
+                   plume::RenderTextureBarrier(image.texture.get(),
+                                               plume::RenderTextureLayout::COLOR_WRITE));
+    image.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  }
+  list->setFramebuffer(image.framebuffer.get());
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(image.width), float(image.height)};
+  list->setViewports(&viewport, 1);
+  Bind(list);
+  list->setPipeline(pipeline);
+  const uint8_t* block = static_cast<const uint8_t*>(pushes);
+  for (uint32_t i = 0; i < count; ++i) {
+    list->setScissors(&rects[i], 1);
+    list->setGraphicsPushConstants(0, block + size_t(i) * push_size, 0, push_size);
+    list->drawInstanced(3, 1, 0, 0);
+  }
   list->setFramebuffer(nullptr);
   list->barriers(plume::RenderBarrierStage::GRAPHICS,
                  plume::RenderTextureBarrier(image.texture.get(),

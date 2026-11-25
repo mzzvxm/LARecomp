@@ -1,0 +1,177 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "game",
+  "final": true,
+  "written_by": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff"
+  },
+  "written_utc": "2026-11-24T12:00:00Z",
+  "hardware_id": "1a9246f1d79db524d46ab2f26461148dddc37369f5f7b7138b62a510c6775dde",
+  "gpu": {
+    "name": "AMD Custom GPU 0405 (RADV VANGOGH)",
+    "vendor": "amd",
+    "vendor_id": 4098,
+    "device_id": 5695,
+    "vram_mb": 1024,
+    "software": false,
+    "driver_version": "25.2.0",
+    "shared_memory": true,
+    "class": "low",
+    "class_why": "by adapter type: UMA, the GPU shares memory with the CPU (an integrated GPU or an APU); by name: Steam Deck (RADV VANGOGH) is a handheld, so the sun shadow's filter and detail and the reflections' detail take the Mid values (kHandheldCells)",
+    "handheld": true,
+    "rtx": false,
+    "rx9000": false,
+    "class_forced": null,
+    "rt_tier": "weak",
+    "rt_rung": "none",
+    "rt_tier_why": "by adapter type: shares memory with the CPU (an integrated GPU or an APU): ray tracing units, few of them",
+    "rt_benchmarked": false,
+    "adapters": [
+      {
+        "name": "AMD Custom GPU 0405 (RADV VANGOGH)",
+        "vendor": "amd",
+        "vram_mb": 1024,
+        "software": false,
+        "selected": true,
+        "class": "low"
+      }
+    ]
+  },
+  "api": {
+    "name": "vulkan",
+    "version": "1.3",
+    "shader_model": null,
+    "dxr_1_1": false,
+    "ray_query": true,
+    "car_rt": true,
+    "city_rt_shadows": true,
+    "by_api": {
+      "d3d12": {
+        "car_rt": false,
+        "rt_tier": "none",
+        "ray_regen": "unsupported"
+      },
+      "vulkan": {
+        "car_rt": true,
+        "rt_tier": "weak",
+        "ray_regen": "no"
+      }
+    }
+  },
+  "features": {
+    "upscalers": {
+      "fsr1": true,
+      "fsr31": true,
+      "fsr4": false,
+      "dlss": "no",
+      "dlss_modes_refused": []
+    },
+    "frame_generation": {
+      "fsr31": true,
+      "dlss": false,
+      "dlss_card": false,
+      "dlss_multiplier_max": 0,
+      "dlss_after_restart": false
+    },
+    "latency": {
+      "kind": "none",
+      "auto_on": false
+    },
+    "denoiser": {
+      "vendor": "none",
+      "dlss_rr": "no",
+      "ray_regen": "no"
+    },
+    "hdr": {
+      "display_capable": false,
+      "windows_hdr_on": null,
+      "auto_paper_white_nits": 203,
+      "auto_peak_nits": 400
+    },
+    "pcss": true
+  },
+  "display": {
+    "primary": {
+      "name": "Embedded display",
+      "width": 1280,
+      "height": 800,
+      "size": "1280X800",
+      "refresh_hz": 60,
+      "hdr": false
+    },
+    "list": [
+      {
+        "name": "Embedded display",
+        "width": 1280,
+        "height": 800,
+        "size": "1280X800",
+        "refresh_hz": 60,
+        "hdr": false
+      }
+    ],
+    "windowed_sizes": [
+      [
+        1280,
+        720
+      ],
+      [
+        1920,
+        1080
+      ]
+    ],
+    "exclusive_sizes": [
+      [
+        1280,
+        800,
+        60
+      ]
+    ]
+  },
+  "os": {
+    "name": "linux",
+    "build": 0,
+    "exclusive_fullscreen": false,
+    "live_window_resize": true,
+    "window_size_fixed": false,
+    "hdr_output": false,
+    "real_weather": true,
+    "mouse_look": true,
+    "wheel_ffb": false,
+    "frame_pacing_wake": false
+  },
+  "cpu": {
+    "threads": 8,
+    "level": "x86-64-v3"
+  },
+  "build": {
+    "rt_gi_update_built": true
+  },
+  "install": {
+    "portuguese_text": false,
+    "fidelityfx_files": true,
+    "streamline_files": false,
+    "city_pack": "current",
+    "city_hit": "current",
+    "shader_pack": "current"
+  },
+  "paths": {
+    "game_folder": "/home/player/LARecomp",
+    "config_file": "/home/player/LARecomp/larecomp.toml",
+    "user_root": "/home/player/Documents/LARecomp",
+    "saves_root": "/home/player/Documents/LARecomp\\content",
+    "cache_root": "/home/player/Documents/LARecomp\\cache",
+    "logs": "/home/player/LARecomp/logs",
+    "game_data_root": "/home/player/MCLA_Game_Files",
+    "mod_root": "/home/player/LARecomp/modloader",
+    "strings_replace": "/home/player/LARecomp/strings/replace",
+    "mod_roots_ignored": [],
+    "music": [
+      "/home/player/LARecomp/music"
+    ],
+    "title_id": "545407F8",
+    "profile_id": "B13EBABEBABEBABE"
+  }
+}

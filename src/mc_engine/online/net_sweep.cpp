@@ -22,7 +22,9 @@
 #include "max_players.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
 
 #include <cstdint>
 

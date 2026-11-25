@@ -1,6 +1,7 @@
 // The pages of the hidden DEBUG menu. See debug_menu_pages.h.
 
 #include "debug_menu_pages.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,12 +11,12 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/ui/keybinds.h>
-#include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/ui/ui_system.h>
+
+#include "mc_engine/sdk_access.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -46,6 +47,16 @@ constexpr int Len(const T (&)[N]) {
 // An INT32 cvar of 0 and 1 (frame_pacing): a Bool row would write "true" and "false".
 constexpr const char* kOffOnVals[]  = {"0", "1"};
 constexpr const char* kOffOnNames[] = {"OFF", "ON"};
+constexpr const char* kOffOnTextVals[] = {"off", "on"};
+// How often an AI racer's driving line is improved (race_line_max_hz): the cvar is the number of jobs a second, 0 = every frame.
+constexpr const char* kRaceLineVals[]  = {"0", "30", "60"};
+constexpr const char* kRaceLineNames[] = {"EVERY FRAME", "30 A SECOND", "60 A SECOND"};
+
+constexpr const char* kCabinSunVals[] = {"0", "1", "2", "3", "4"};
+constexpr const char* kCabinSunNames[] = {"OFF", "CONTACT", "CAR MAP", "CAR RT", "FILL"};
+
+constexpr const char* kRenderWaitVals[] = {"auto", "wait", "spin"};
+constexpr const char* kRenderWaitNames[] = {"AUTO", "WAIT", "SPIN"};
 
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
@@ -75,11 +86,23 @@ constexpr SlotTable kMenuCamSlots = MakeSlotTable();
 // frame and is only useful for narrowing a phase down. (These lists were rows of the normal
 // PERFORMANCE pages until SX-G5.)
 constexpr const char* kShadowBitVals[]  = {"0x61E0", "0x400", "0x65E0", "0x7DF0"};
+constexpr double kGiDaylightRecovery[] = {-1.0, 0.0, 0.03125, 0.0625, 0.125};
 constexpr const char* kShadowBitNames[] = {"STOCK", "BLEND ONLY", "STOCK+BLEND", "ALL (BREAKS)"};
 constexpr double kBreakFpsVals[]        = {0.0, 5.0, 10.0, 15.0, 20.0, 30.0, 60.0};
 // Capture mode (the trailer toolkit): frames a second of the fixed step and of a take; 0 is off.
 constexpr double kFixedStepVals[]       = {0.0, 24.0, 30.0, 60.0, 120.0, 240.0};
 constexpr double kCaptureFpsVals[]      = {0.0, 24.0, 30.0, 60.0, 120.0};
+
+// The cheap rear view mirror (perf/MIRRORS-SURVEY.md B to E; hooks/rear_view_cheap.h): all off by default. The distances are metres, 0 is off.
+constexpr double kRearFarVals[]            = {0.0, 100.0, 150.0, 250.0, 400.0};
+constexpr double kRearFovVals[]            = {1.0, 0.8, 0.6, 0.5, 0.4, 0.3};
+constexpr double kRearCityVals[]           = {0.0, 40.0, 60.0, 100.0, 150.0, 250.0};
+constexpr const char* kRearCarsMaxVals[]   = {"0", "1", "2", "3", "4", "6"};
+constexpr const char* kRearCarsMaxNames[]  = {"ALL", "1", "2", "3", "4", "6"};
+constexpr const char* kRearCarsLevelVals[]  = {"0", "1", "2"};
+constexpr const char* kRearCarsLevelNames[] = {"AS CHOSEN", "MID+", "COARSEST"};
+constexpr const char* kRearEveryVals[]     = {"1", "2", "3", "4"};
+constexpr const char* kRearEveryNames[]    = {"EVERY FRAME", "1 IN 2", "1 IN 3", "1 IN 4"};
 
 #if defined(LARECOMP_HAS_GPU)
 constexpr const char* kAoViewVals[]  = {"0", "1", "2", "3", "4", "5", "6"};
@@ -90,6 +113,19 @@ constexpr double kAoFadeEndVals[]    = {20.0, 40.0, 80.0, 160.0, 320.0, 640.0, 1
 constexpr const char* kHdrViewVals[]  = {"0", "1", "2", "3", "4", "5"};
 constexpr const char* kHdrViewNames[] = {"OFF", "UI ONLY", "SCENE ONLY", "UI COVERAGE",
                                          "OVER WHITE", "DIFFERENCE"};
+// What the deferred local light pass lights (mcla_gpu_local_lights_sources, a sum of bits: gpu/local_lights_rules.h): none, the frame's surface lights, the police light bars, the
+// head lamps of the cars the headlight stage does not light, the cars' rear lamps, the lamps of mods outside their grid, and the police bars + the cars' lamps + the mods' (4 + 8 + 16 + 32).
+// The test lamp (2) and the lamp A/B (mcla_gpu_local_lights_ab, read at start) stay cvars of the lamp tests.
+constexpr const char* kLocalLightSourceVals[]  = {"0", "1", "4", "8", "16", "32", "60"};
+constexpr const char* kLocalLightSourceNames[] = {"NONE", "FRAME LIGHTS", "POLICE BARS", "HEAD LAMPS", "REAR LAMPS", "MOD LAMPS", "CARS + MODS"};
+// Which of the two lights the cars' headlights (mcla_gpu_headlight_pass, gpu/headlight_pass_rules.h, GB-H2): the lit shaders' own variant (FORWARD), the deferred local light pass with the
+// atlas shadows (PASS), or both added together (BOTH: the difference pictures).
+constexpr const char* kHeadlightRouteVals[]  = {"forward", "pass", "both"};
+constexpr const char* kHeadlightRouteNames[] = {"FORWARD", "PASS", "BOTH"};
+// The neon light's multiplier (mcla_gpu_neon_light_gain, gpu/local_lights_sources.h): 1 is the tuned underglow (GB-NEON-TUNE), 0 puts the neon's light out, 0.5 / 2 / 4 are the softer and stronger
+// arms of the tuning pictures. Its reach's scale (mcla_gpu_neon_light_reach): 1 is the tier's reach (5 / 5.5 / 6 m), 0.8 and 1.3 are the pictures' softer and stronger arms.
+constexpr double kNeonGainVals[]          = {0.0, 0.5, 1.0, 2.0, 4.0};
+constexpr double kNeonReachVals[]         = {0.5, 0.8, 1.0, 1.3, 1.6, 2.0};
 constexpr const char* kMarkerLevelVals[]  = {"0", "1", "2"};
 constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
@@ -97,6 +133,8 @@ constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
 constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
+// The UI sharpening's strength (ui_sharp.h, mcla_ui_sharp_strength): 1 is the default, 0.5 half of it, 2 a harder edge; 0 does nothing (the Dbl row shows it as NONE).
+constexpr double kUiSharpVals[]           = {0.0, 0.5, 1.0, 1.5, 2.0};
 // The share of the game's own UI the picture shows (the trailer toolkit's HUD fade); 1 is the game's frame.
 constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 #endif
@@ -111,6 +149,9 @@ constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 // The hub, in the order of SETTINGS-REVIEW.md 5.3. The rows are Submenu rows: each opens its page.
 const ItemDef kDebugHubItems[] = {
     Submenu("PM_RxDbgSubFixes", "FIXES",       "RxDbgFixesMenu"),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Submenu("PM_RxDbgSubFixes2", "PICTURE FIXES", "RxDbgFixes2Menu")),
+#endif
     Submenu("PM_RxDbgSubPerf",  "PERFORMANCE", "RxDbgPerfMenu"),
     Submenu("PM_RxDbgSubRend",  "RENDERING",   "RxDbgRendMenu"),
     Submenu("PM_RxDbgSubCam",   "CAMERA",      "RxDbgCamMenu"),
@@ -119,11 +160,16 @@ const ItemDef kDebugHubItems[] = {
     Submenu("PM_RxDbgSubInfo",  "INFO",        "RxDbgInfoMenu"),
 };
 
-// FIXES: each fix of the recomp with the switch that turns it off, to see whether it caused a bug
-// (owner's answer 2026-11-13: kept as triage switches). The rows are the cvars as they are: the page makes
-// no new switch.
+// FIXES: each fix of the recomp's game code (timing, camera, menus, input) with the switch that turns it off, to see
+// whether it caused a bug (owner's answer 2026-11-13: kept as triage switches). The rows are the cvars as they are: the
+// page makes no new switch. A page holds at most 24 rows (pause_menu.cpp kMaxRowsPerMenu: a page over it is refused whole
+// and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
+// page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
 const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
+    // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
+    Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",
+        kRaceLineVals, kRaceLineNames, Len(kRaceLineVals)),
     // The Plume renderer's frame pacing (frame_pacing.cpp); the cvar is 0 or 1.
     NativeOnly(Str("PM_RxDbgFramePacing", "frame_pacing",   "FRAME PACING: ",
                    kOffOnVals, kOffOnNames, Len(kOffOnVals))),
@@ -136,8 +182,16 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgKeyRepeat",  "ui_input_repeat_30hz",      "MENU KEY REPEAT: "),
     Bool("PM_RxDbgMenuInput",  "ui_advance_on_input",       "MENU INPUT: "),
     Bool("PM_RxDbgMenu3d",     "ui_interpolate_camera",     "SMOOTH MENU 3D: "),
+    // Smooth UI: every menu, pop-up, map panel and the HUD steps at the console's 30 a second and is drawn between
+    // its last two steps (hooks/ui_smooth.cpp). It was a row of DISPLAY; it is a switch to look for a UI bug with now.
+    Bool("PM_RxDbgSmoothUi",   "ui_interpolate",            "SMOOTH UI: "),
     // The neon underglow's pulse held on the console's 30 Hz clock (hooks/neon_pulse.cpp).
     Bool("PM_RxDbgNeonPulse",  "mcla_fix_neon_30hz",        "NEON PULSE 30 HZ: "),
+    // The smoke of a closed race checkpoint fades at the console's rate at every frame rate (hooks/checkpoint_effect_fade.cpp).
+    Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
+    // The process ends right after the orderly shutdown, without the destructors of the exit (exit_fast.h); read when the game closes.
+    Bool("PM_RxDbgFastExit",   "mcla_fast_exit",           "FAST EXIT: "),
+    Bool("PM_RxDbgSkipGpuTear", "mcla_skip_gpu_teardown",   "SKIP GPU TEARDOWN: "),
     // The native keyboard (keyboard_native.cpp) is always on; this turns it off to tell whether a bug is its (off = the keyboard does nothing).
     Bool("PM_RxDbgNativeKb",   "keyboard_native",           "NATIVE KEYBOARD: "),
     // Button prompts follow the device in use on every screen (hooks/ui.cpp, keyboard_native.cpp): the glyph bitmaps are painted, the movies' platform flag stays on Xbox. Off = the
@@ -145,7 +199,16 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
+    Action("PM_RxDbgFixReset", kActionDebugReset),
+};
+
 #if defined(LARECOMP_HAS_GPU)
+// PICTURE FIXES: the fixes of the Plume renderer's picture (dither, bloom and exposure at a render scale, the car chrome, the noise of the
+// stochastic effects), each with the switch that turns it off. The rows were the second half of FIXES, which had 30 rows against the 24 a page can
+// hold. Every row is NativeOnly, so the hub lists the page only while the Plume renderer runs.
+const ItemDef kDebugPictureFixesItems[] = {
+    NativeOnly(Str("PM_RxDbgCabinSun", "mcla_gpu_cabin_sun_shadow", "CABIN SUN FIX: ",
+                   kCabinSunVals, kCabinSunNames, Len(kCabinSunVals))),
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
     NativeOnly(Bool("PM_RxDbgA2c",    "mcla_gpu_a2c_dither_all", "ALPHA TO MASK FIX: ")),
     // The glow of lights keeps its size above a render scale of 1x: the bloom's Gaussian taps follow the
@@ -154,9 +217,51 @@ const ItemDef kDebugFixesItems[] = {
     // The auto-exposure measures the same screen area above a render scale of 1x as at 1x (its sample pass's
     // taps follow the scale). Read at each draw, so the row is live; no change at a render scale of 1x.
     NativeOnly(Bool("PM_RxDbgLumScale", "mcla_gpu_luminance_scale_fix", "EXPOSURE SAMPLE FIX: ")),
-#endif
-    Action("PM_RxDbgFixReset", kActionDebugReset),
+    NativeOnly(Bool("PM_RxDbgRoadMirror", "mcla_gpu_road_mirror_blur", "ROAD MIRROR BLUR: ")),
+    NativeOnly(Str("PM_RxDbgRainScatter", "mcla_gpu_vol_rain_scatter", "RAIN HEADLIGHT SCATTER FIX: ",
+                   kOffOnTextVals, kOffOnNames, Len(kOffOnTextVals))),
+    // How hard the UI sharpening works (gpu/ui_sharp.h): the SHARP UI row on GRAPHICS > IMAGE QUALITY turns it on and off (mcla_ui_sharp, on by default,
+    // and SHARP MINIMAP is mcla_ui_minimap_scale); this is the strength for tuning, 1 the default, 2 a harder alpha edge. Read at each UI draw, so live.
+    NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp_strength", "UI SHARP STRENGTH: ",
+                   kUiSharpVals, Len(kUiSharpVals), "%g", "", "NONE")),
+    // The chrome of the cars (the tailpipe tips, badges and trim) is not lit by what the car's own body covers: short rays through the car's picture of the frame
+    // before (the ray traced one where the card can trace) darken it under the bumper. Off = the game's own chrome, which glows there. The variant is chosen at each
+    // draw (pipelines.cpp WantedFeatures), so the row is live; the first draw after turning it on builds the shader (a short stutter).
+    NativeOnly(Bool("PM_RxDbgCarChrome", "mcla_gpu_car_chrome_occlusion", "CAR CHROME FIX: ")),
+    // The sampling noise of the ambient occlusion, the bounce light and the contact shadows is a blue noise tile (gpu/blue_noise.h): the first version's interleaved gradient noise
+    // is a diagonal lattice, and what the blur and the history leave of it shows as thin diagonal lines on roads and kerbs. Off = the first version's noise. Read at each draw, so live.
+    NativeOnly(Bool("PM_RxDbgAoBlue", "mcla_gpu_ao_blue_noise", "BLUE NOISE AO: ")),
+    // The other stochastic passes (the ray traced car occlusion and reflection cones, the sun shafts, the fog, the sun shadow filter, the city reflections) draw their per-pixel noise from the blue noise tile
+    // stepped along the R2 sequence every frame (gpu/hlsl/blue_noise_frame.hlsli); the first versions' interleaved gradient noise is a lattice. Off = the first versions' noise. Read at each draw, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseBlue", "mcla_gpu_noise_blue", "BLUE NOISE EFFECTS: ")),
+    // The reflections' ray noise is a blue noise tile stepped along the R2 sequence every frame (gpu/blue_noise.h, hlsl/ssr_common.hlsli): the first version's interleaved gradient noise slid
+    // across the picture and read as stripes crawling over a puddle. Off = the first version's noise. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgSsrBlue", "mcla_gpu_ssr_blue_noise", "BLUE NOISE REFLECTIONS: ")),
+    // A scene the harness holds still carries one game frame number in every frame: with this on the noise index of every stochastic effect also counts the frames it has been held (gpu/scene_noise.h
+    // NoiseIndex), so the noise keeps varying and the history averages it. Off = the scene's own number alone. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseHeld", "mcla_gpu_noise_held", "NOISE IN HELD SCENES: ")),
+    // Without a temporal upscaler (plain MSAA, the default) the contact shadows, the ray traced sun rays, the sun shafts and the car reflection cone used to hold one noise pattern; with this on their noise changes every
+    // frame like the other effects' and each resolves it with a history of its own (gpu/noise_resolve.h). Off = the fixed pattern. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgNoiseResolve", "mcla_gpu_noise_resolve_no_upscaler", "NOISE RESOLVE, NO UPSCALER: ")),
+    // The reflections' accumulation averages the trace's 3x3 of one surface and keeps a bright reflection through a frame whose rays all missed (hlsl/ssr_temporal_ps.hlsl): a lamp's or a tail light's
+    // reflection flickered with the sparse hits. Off = the first version's resolve (the centre pixel alone, the clip whole). Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgSsrResolve", "mcla_gpu_ssr_resolve", "SPATIAL RESOLVE REFLECTIONS: ")),
+    NativeOnly(Bool("PM_RxDbgSsrSparkleResolve", "mcla_gpu_ssr_sparkle_resolve", "REFLECTION SPARKLE FIX: ")),
+    NativeOnly(Bool("PM_RxDbgRtaoSpatialResolve", "mcla_gpu_rtao_spatial_resolve", "RT AO SPATIAL RESOLVE: ")),
+    // The ray traced bounce light's emitters (GI-BOUNCE-RT, perf/GI-BOUNCE.md, live): one row for each group of lights that bounce besides the world's own (the light pass's classes): ON bounces it, OFF does not: the A/B of
+    // the pictures (a neon car by a wall at night, headlights in a tunnel, tail lamps on the road behind, a police bar).
+    NativeOnly(Bool("PM_RxDbgGiBounceHeadlights", "mcla_gpu_gi_bounce_headlights", "RT BOUNCE HEADLIGHTS: ")),
+    NativeOnly(Bool("PM_RxDbgGiBounceNeon", "mcla_gpu_gi_bounce_neon", "RT BOUNCE NEON: ")),
+    NativeOnly(Bool("PM_RxDbgGiBounceRear", "mcla_gpu_gi_bounce_rear", "RT BOUNCE REAR LAMPS: ")),
+    NativeOnly(Bool("PM_RxDbgGiBounceOther", "mcla_gpu_gi_bounce_other", "RT BOUNCE OTHER: ")),
+    // The ray traced bounce light's probes trace the city only, so a camera inside a roofed car (the cockpit) would light the cabin's own surfaces (the driver, the dash, the wheel, the seats) with the street's
+    // irradiance as if the car had no roof; with this on (the default) their share is cut to 30%, the glass's share, while the camera is in the car (gpu/gi_cabin_rules.h, INTERIOR-CAM-FIX). Off = the field's light as
+    // it was: the A/B of the cockpit pictures. Read at each frame, so live.
+    NativeOnly(Bool("PM_RxDbgGiCabin", "mcla_gpu_gi_cabin", "CABIN BOUNCE SHIELD: ")),
+    NativeOnly(Dbl("PM_RxDbgGiDaylight", "mcla_gpu_rt_gi_daylight_recovery", "RT BOUNCE DAYLIGHT RECOVERY: ",
+                   kGiDaylightRecovery, Len(kGiDaylightRecovery), "%g", "", "UNITS ONLY")),
 };
+#endif
 
 // PERFORMANCE: the switches that trade frame pacing, CPU time and picture for speed, and that have no row
 // in the normal menus (SX-G5; owner's answer 3: debug for now; a switch comes back after it is
@@ -176,6 +281,11 @@ const ItemDef kDebugPerformanceItems[] = {
     // far more than it saves. Leave it ON, turn it OFF if the game stutters.
     Bool("PM_RxDbgFenceSpin",  "fence_spin_throttle",    "FENCE SPIN YIELD: "),
     Bool("PM_RxDbgLimitSpin",  "frame_limit_spin",       "FPS LIMIT SPIN: "),
+    NativeOnly(Str("PM_RxDbgRenderWait", "render_wait_mode", "RENDER THREAD WAIT: ",
+                   kRenderWaitVals, kRenderWaitNames, Len(kRenderWaitVals))),
+#if defined(_WIN32)
+    NativeOnly(Bool("PM_RxDbgVkPresentPacing", "mcla_gpu_vk_present_pacing", "VULKAN PRESENT PACING: ")),
+#endif
     Bool("PM_RxDbgPumpWake",   "pump_wake_on_demand",    "FRAME PACING WAKE: "),
     // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
     // Patch_EdramLimit lets through only while this is on (graphics.cpp)? A live ON may misbehave.
@@ -196,6 +306,13 @@ const ItemDef kDebugPerformanceItems[] = {
 // RENDERING: the Plume renderer's debug views and logs, and the picture's shape.
 const ItemDef kDebugRenderingItems[] = {
 #if defined(LARECOMP_HAS_GPU)
+    // RENDERER: NATIVE (LARecomp's own, Plume), XENIA D3D12 or XENIA VULKAN (the SDK's Xenia GPU, which stays in the program as a hidden
+    // fallback: if the native renderer will not run on a PC, this is how a tester or a player who was told to gets the game going; the
+    // launcher and the normal menus do not offer it). The choice is gpu.driver, which is read at start: the row HOLDS it, the next save
+    // writes it to larecomp.toml (the one debug row that is kept) and leaving the menu offers RESTART NOW. Both renderers list it. Grey
+    // while a command line option or an environment variable sets gpu.driver (it beats the file). Its words are pause_menu.cpp's
+    // (ui_rules.toml); the driver aliases are in gpu/renderer_choice.h.
+    Str("PM_RxDbgRenderer", "gpu.driver", "RENDERER: ", nullptr, nullptr, 0),
     NativeOnly(Str("PM_RxDbgAoView",     "mcla_gpu_ao_view",       "AO VIEW: ",
                    kAoViewVals, kAoViewNames, Len(kAoViewVals))),
     NativeOnly(Dbl("PM_RxDbgAoHistory",  "mcla_gpu_ao_history",    "AO HISTORY: ",
@@ -204,6 +321,33 @@ const ItemDef kDebugRenderingItems[] = {
                    kAoFadeEndVals, Len(kAoFadeEndVals), "%g")),
     NativeOnly(Str("PM_RxDbgHdrView",    "mcla_gpu_hdr_layers_view", "HDR LAYERS VIEW: ",
                    kHdrViewVals, kHdrViewNames, Len(kHdrViewVals))),
+    // The deferred local light pass (gpu/local_lights.h, GB-H1 and GB-H3): one additive draw per light from the G-buffer's planes (the planes are made only while this is on:
+    // gbuffer_rules.h AutoPlanes). OFF by default, and a DEBUG row only: there is no LOCAL LIGHTS row for players (owner, 2026-11-21: the pass is a way to light the game's lamps and the
+    // cars' lights, not a setting). Both are live; with SOURCES at NONE the pass draws nothing (the lamp A/B's lamps apart).
+    // CHECK: the SOURCES row writes its words ("0", "4", ...) into an integer cvar as the other 0/1 rows do (frame_pacing); a value that is not one of the seven (a sum a command line set, 28)
+    // shows as the first word until the row is stepped.
+    NativeOnly(Bool("PM_RxDbgLocalLights", "mcla_gpu_local_lights", "LOCAL LIGHT PASS: ")),
+    NativeOnly(Str("PM_RxDbgLocalSrc",   "mcla_gpu_local_lights_sources", "LIGHT PASS SOURCES: ",
+                   kLocalLightSourceVals, kLocalLightSourceNames, Len(kLocalLightSourceVals))),
+    // The headlights' A/B (GB-H2, live; the forward stage is deleted only after the owner has seen the pictures): FORWARD is the game as it is, PASS takes the lit shaders' headlight variant away and
+    // lights the same cars' headlights in the deferred pass with their shadows (it also reaches what the variant leaves out: the cars' paint, the pedestrians, the interiors; the pass runs for it
+    // whatever LOCAL LIGHT PASS says and needs HEADLIGHTS on), BOTH lights twice. The words are the cvar's, written as the other word rows do.
+    NativeOnly(Str("PM_RxDbgHeadlightVia", "mcla_gpu_headlight_pass", "HEADLIGHTS VIA: ",
+                   kHeadlightRouteVals, kHeadlightRouteNames, Len(kHeadlightRouteVals))),
+    // The headlight route PASS keeps the lit shaders' forward headlight on the draws the deferred pass does not light: the neon, the store sign and the lamp glass (the pass skips them as emissive),
+    // a draw with no planes, a draw that clears them; the draws the pass does light drop it, so a pixel is lit once. Off = the route's first version: those draws get no headlight. Read at each
+    // draw, so live; no effect in the routes FORWARD and BOTH. The A/B of GB-H2-FOLLOW (headlight_pass_rules.h). (Not on the FIXES page: that one is at the 24 row cap of a native page.)
+    NativeOnly(Bool("PM_RxDbgHeadlightKeep", "mcla_gpu_headlight_pass_keep_forward", "PASS FORWARD HEADLIGHT: ")),
+    // The neon underglow's light in the pass (GB-NEON, live): its multiplier, for the pictures that set its strength by eye against the game's own underglow light. The player's row is NEON LIGHT
+    // on GRAPHICS > LIGHTING AND SHADOWS; this one is a debug lever like the cars' gain of the light pass.
+    NativeOnly(Dbl("PM_RxDbgNeonGain",   "mcla_gpu_neon_light_gain", "NEON LIGHT GAIN: ",
+                   kNeonGainVals, Len(kNeonGainVals), "%g")),
+    // GB-NEON-TUNE (live): the neon light's reach scale, and the A/B of the retune itself (OFF is the look before it: the game's HDR colour as the light, the plateau law, a hard cut at 6 / 7 / 8 m).
+    NativeOnly(Dbl("PM_RxDbgNeonReach",  "mcla_gpu_neon_light_reach", "NEON LIGHT REACH: ",
+                   kNeonReachVals, Len(kNeonReachVals), "%g")),
+    NativeOnly(Bool("PM_RxDbgNeonTuned", "mcla_gpu_neon_light_tuned", "NEON LIGHT TUNED: ")),
+    // The neon's contact term (GB-NEON-BLEED, live): ON shuts a neon light out of the car's own panels (the other car's vents, lip and cabin), OFF is the law's N.L alone: the A/B of the pictures.
+    NativeOnly(Bool("PM_RxDbgNeonContact", "mcla_gpu_neon_contact", "NEON CONTACT: ")),
     // The glow of street lamps (halo and star): the game's one depth test at the glow's centre (GAME), or the
     // share of 24 tests on a small disc (SOFT: it fades at an edge instead of popping). The renderer reads the
     // cvar at each draw, so the row is live; the first time SOFT shows, the shaders are built.
@@ -222,18 +366,17 @@ const ItemDef kDebugRenderingItems[] = {
     NativeOnly(Bool("PM_RxDbgFsrView",   "mcla_gpu_fsr_debug_view", "FSR DEBUG VIEW: ")),
     NativeOnly(Bool("PM_RxDbgPostOut",   "mcla_gpu_upscaler_post_reads_output",
                     "POST CHAIN ON UPSCALED: ")),
+    // The rear view mirror's draws (the ones into its rectangle) stay out of the main view's per-draw effects (perf/MIRRORS-SURVEY.md A, gpu/mirror_draws.h). The
+    // scene line of the log counts them either way ("mirror: N draws/frame").
+    NativeOnly(Bool("PM_RxDbgMirClass",  "mcla_gpu_mirror_class",  "MIRROR DRAW CLASS: ")),
     NativeOnly(Bool("PM_RxDbgMarkers",   "mcla_gpu_perf_markers",  "PERF MARKERS: ")),
     NativeOnly(Str("PM_RxDbgMarkerLvl",  "mcla_gpu_perf_markers_level", "PERF MARKERS LEVEL: ",
                    kMarkerLevelVals, kMarkerLevelNames, Len(kMarkerLevelVals))),
-    NativeOnly(Dbl("PM_RxDbgGhostLog",   "mcla_gpu_ghost_log_interval", "GHOST LOG EVERY: ",
-                   kGhostLogVals, Len(kGhostLogVals), "%g", "", "OFF")),
-    NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
-                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
-    NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
-                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
-    // Read when frame generation is switched on, so a change shows the next time it is.
-    NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ",
-                    false, " (ON NEXT USE)")),
+    // Live: Renderer::ExecutePresent asks FrameGeneration::WantsVsync at every present (the same SetVsync that follows mcla_gpu_vsync), so a
+    // change reaches the swap chain at the next frame: Direct3D 12 reads it in the present call, Vulkan changes its present mode with
+    // the chain's next rebuild. It said "(ON NEXT USE)" before: that was the old reading of the setting, which only the log line at start-up still does.
+    // CHECK: with frame generation on, a flip shows in the PRESENT line of the frame log (immediate against FIFO) within a second, no restart of frame generation.
+    NativeOnly(Bool("PM_RxDbgFgTearing", "mcla_gpu_frame_generation_tearing", "FRAME GEN TEARING: ")),
 #endif
     // The SDK's vsync on the Xenia renderer: it sets the guest's vblank interval (the game then paces
     // to it, about 30 % slower) but does not stop tearing, and the start-up flags set it again at every
@@ -256,6 +399,16 @@ const ItemDef kDebugCameraItems[] = {
     Bool("PM_RxDbgMenuCamLock", "menu_cam_lock",        "MENU CAM LOCK: "),
     Dbl ("PM_RxDbgMenuCamSlot", "menu_cam_slot",        "MENU CAM SLOT: ", kMenuCamSlots.v, 64,
          "%g"),
+    // The cheap rear view mirror (gameplay > camera > rear view must be on): each row is one option of perf/MIRRORS-SURVEY.md and changes nothing at its first value.
+    // Camera: the mirror's field of view scaled down and its far plane pulled in; the city's detail radius while the mirror draws; the racers' number and model level
+    // (they need CARS IN REAR VIEW); every Nth frame (a held frame shows the main view in the rectangle until the host keeps the picture). The cost chain's "cheap" tier
+    // has an arm for each. The host side (MIRROR DRAW CLASS) is on the RENDERING page.
+    Dbl ("PM_RxDbgRvFov",     "rearview_fov_scale",     "REAR VIEW FOV X: ", kRearFovVals, Len(kRearFovVals), "%g"),
+    Dbl ("PM_RxDbgRvFar",     "rearview_far",           "REAR VIEW FAR: ", kRearFarVals, Len(kRearFarVals), "%g", " M", "OFF"),
+    Dbl ("PM_RxDbgRvCity",    "rearview_lod_distance",  "REAR VIEW CITY: ", kRearCityVals, Len(kRearCityVals), "%g", " M", "OFF"),
+    Str ("PM_RxDbgRvCarsMax", "rearview_cars_max",      "REAR VIEW CARS: ", kRearCarsMaxVals, kRearCarsMaxNames, Len(kRearCarsMaxVals)),
+    Str ("PM_RxDbgRvCarsLvl", "rearview_cars_lod",      "REAR VIEW MODELS: ", kRearCarsLevelVals, kRearCarsLevelNames, Len(kRearCarsLevelVals)),
+    Str ("PM_RxDbgRvEvery",   "rearview_every",         "REAR VIEW RATE: ", kRearEveryVals, kRearEveryNames, Len(kRearEveryVals)),
 };
 
 // TOOLS: the modder's texture tools, the panels, a leftover test button, the trailer toolkit's HUD fade.
@@ -280,6 +433,9 @@ const ItemDef kDebugToolsItems[] = {
     // but Start, so close this menu to fly; Back + A on the pad records too. The file name is mcla_freecam_out.
     Bool("PM_RxDbgFlyCam",    "mcla_freecam",        "TRAILER FREE CAMERA: "),
     Bool("PM_RxDbgFlyRec",    "mcla_freecam_record", "RECORD FLIGHT: "),
+    // The Director's panel (ui/director_panel.h): the timeline, the camera keys by framing, the rigs, the cars and the routes over the picture, every action a command of
+    // the Director and a line of the scene file. Close this menu to use it; Ctrl+F12 flips it too (ui.bind.mcla_director). It switches the Director on itself.
+    Bool("PM_RxDbgDirPanel",  "mcla_director_panel", "DIRECTOR PANEL: "),
     Action("PM_RxDbgOpenF4",     kActionDebugOpenSettings),
     Action("PM_RxDbgTelemetry",  kActionDebugTelemetry),
     Bool("PM_RxDbgSquash",       "squash_stretch", "SQUASH AND STRETCH: "),
@@ -310,6 +466,17 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgLbDiag",      "leaderboards_diag",     "LEADERBOARDS DIAG: "),
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
     Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
+#if defined(LARECOMP_HAS_GPU)
+    // Every 600 frames, the textures the HUD and menus read (what UI SHARPEN is tuned from).
+    NativeOnly(Bool("PM_RxDbgUiSharpCensus", "mcla_ui_sharp_census", "UI SHARPEN CENSUS: ")),
+    // The renderer's periodic logs (ghost frames, the process's memory, video memory): one block every N frames, OFF by default.
+    NativeOnly(Dbl("PM_RxDbgGhostLog",   "mcla_gpu_ghost_log_interval", "GHOST LOG EVERY: ",
+                   kGhostLogVals, Len(kGhostLogVals), "%g", "", "OFF")),
+    NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
+                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
+    NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
+                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
+#endif
 };
 
 // INFO: what differs from the defaults, and the way back.
@@ -338,7 +505,7 @@ struct RowAnswer {
     std::string text;
     Clock::time_point until{};
 };
-RowAnswer g_answer;
+RowAnswer& g_answer = larecomp::Leak<RowAnswer>();
 
 void Answer(ActionId id, std::string text) {
     g_answer.id = id;
@@ -368,7 +535,7 @@ void ForgetChangedCount() { g_changed_valid = false; }
 
 // The key a bind is on, for the label: "F4" unless it was rebound. Only A-Z, 0-9, space and '+'.
 std::string BindKeyLabel(const char* bind_cvar, const char* fallback) {
-    const std::string key = rex::cvar::GetFlagByName(bind_cvar);
+    const std::string key = larecomp::cvar::GetFlagByName(bind_cvar);
     std::string out;
     for (const char c : key) {
         const unsigned char u = static_cast<unsigned char>(c);
@@ -490,9 +657,9 @@ void ResetDebugSettings() {
     int skipped = 0;
     for (const larecomp::DebugCvarChange& change : larecomp::NonDefaultDebugCvars()) {
         if (change.name == "debug_menu") continue;
-        const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(change.name);
+        const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(change.name);
         if (!info) continue;
-        if (info->lifecycle != rex::cvar::Lifecycle::kHotReload) {
+        if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
             ++skipped;
             REXLOG_INFO("[settings] {} is only read at start: left at {} ({})", change.name,
                         change.value, larecomp::CvarSourceName(change.source));
@@ -500,8 +667,8 @@ void ResetDebugSettings() {
         }
         const std::string default_value = info->default_value;  // the entry may move once we write
         REXLOG_INFO("[settings] {} = {} -> {} (reset)", change.name, change.value, default_value);
-        rex::cvar::SetFlagByName(change.name, default_value);
-        rex::cvar::ResetToDefault(change.name);
+        larecomp::cvar::SetFlagByName(change.name, default_value);
+        larecomp::cvar::ResetToDefault(change.name);
         ++reset;
     }
     REXLOG_INFO("[debug] {} debug setting(s) reset to their default, {} left (read at start only)",
@@ -510,35 +677,26 @@ void ResetDebugSettings() {
     Answer(kActionDebugReset, "RESET (" + std::to_string(reset) + ")");
 }
 
-// Presses the key a bind is on, on the UI thread, which is where the keys of the window arrive: the
-// panels are ImGui dialogs and are made there. The bind's own callback does the rest, so a key the
-// player rebound is followed.
+// Shows or hides an overlay (LarecompApp::StartOverlays added it as `overlay`: "mcla_settings", "mcla_telemetry"), on the UI thread: the panels are
+// ImGui dialogs and are made and drawn there. 0.10 pressed the key the bind was on, so a key the player rebound was followed; the overlay's own
+// toggle (IUISystem::ToggleOverlay) is the same thing without the key.
 // CHECK: the dialog opens over the pause menu (the menu keeps the pad until it is closed).
-void PressBind(const char* bind_cvar, const char* fallback_key) {
-    std::string key = rex::cvar::GetFlagByName(bind_cvar);
-    if (key.empty()) key = fallback_key;
-    const rex::ui::VirtualKey virtual_key = rex::ui::ParseVirtualKey(key);
-    if (virtual_key == rex::ui::VirtualKey::kNone) {
-        REXLOG_WARN("[debug] {} is on '{}', which is no key the game knows", bind_cvar, key);
+void ToggleOverlay(const char* overlay) {
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    if (!ui || !ui->HasWindow()) {
+        REXLOG_WARN("[debug] {} cannot be opened: the game has no window yet", overlay);
         return;
     }
-    auto* runtime = rex::Runtime::instance();
-    rex::ui::Window* window = runtime ? runtime->display_window() : nullptr;
-    if (!window) {
-        REXLOG_WARN("[debug] {} cannot be pressed: the game has no window yet", bind_cvar);
-        return;
-    }
-    window->app_context().CallInUIThread([virtual_key] {
-        rex::ui::KeyEvent event(nullptr, virtual_key, /*repeat_count=*/1, /*prev_state=*/false,
-                                /*shift=*/false, /*ctrl=*/false, /*alt=*/false, /*super=*/false);
-        rex::ui::ProcessKeyEvent(event);
-    });
+    ui->PostTask([ui, name = std::string(overlay)] { ui->ToggleOverlay(name); });
 }
 
 }  // namespace
 
 const ItemDef* DebugHubRows(int& count)         { return Rows(kDebugHubItems, count); }
 const ItemDef* DebugFixesRows(int& count)       { return Rows(kDebugFixesItems, count); }
+#if defined(LARECOMP_HAS_GPU)
+const ItemDef* DebugPictureFixesRows(int& count) { return Rows(kDebugPictureFixesItems, count); }
+#endif
 const ItemDef* DebugPerformanceRows(int& count) { return Rows(kDebugPerformanceItems, count); }
 const ItemDef* DebugRenderingRows(int& count)   { return Rows(kDebugRenderingItems, count); }
 const ItemDef* DebugCameraRows(int& count)      { return Rows(kDebugCameraItems, count); }
@@ -570,8 +728,8 @@ void DebugActionRun(ActionId id) {
     case kActionDebugShowChanged:    ShowChanged(); break;
     case kActionDebugCopyArgs:       CopyArguments(); break;
     case kActionDebugReset:          ResetDebugSettings(); break;
-    case kActionDebugOpenSettings:   PressBind("bind_mcla_settings", "F4"); break;
-    case kActionDebugTelemetry:      PressBind("bind_mcla_telemetry", "F3"); break;
+    case kActionDebugOpenSettings:   ToggleOverlay("mcla_settings"); break;
+    case kActionDebugTelemetry:      ToggleOverlay("mcla_telemetry"); break;
     default:                         break;
     }
 }

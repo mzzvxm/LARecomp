@@ -269,8 +269,8 @@ void CheckText() {
   const sp::VariantTransformResult other = sp::TransformBloomGaussHlsl(sp::VariantShader{"xrage_postfx__PSBlur", 1}, Fixture(true));
   Check(!other.ok, "another shader is refused");
   const sp::VariantDef def = sp::MakeBloomGaussVariant();
-  Check(def.id == sp::kVariantBloomGauss && def.name == "bloom_gauss" && def.pixel_shaders.size() == 2 && def.transform,
-        "the definition: id, name, two shaders, a transform");
+  Check(def.feature == sp::kFeatureBloomGauss && def.name == "bloom_gauss" && def.pixel_shaders.size() == 2 && def.transform,
+        "the definition: feature, name, two shaders, a transform");
   // The version is bumped with the helper (the stamp line variants_bloom_gauss_version): 1 was the sub-taps, 2 the two fetches.
   Check(def.version == sp::kBloomGaussVariantVersion && def.version == 2, "the definition carries version 2");
 }

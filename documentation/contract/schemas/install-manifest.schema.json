@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://larecomp.invalid/contract/install-manifest.schema.json",
+  "title": "install-manifest.json (LAUNCHER-FOLLOWS-GAME section 5.1)",
+  "description": "What a built game says about itself to the setup: the files to stage, the file probes behind the install.* facts, the build features, the batch actions with their flags, outputs and stdout grammar, and the stable names and codes the launcher used to hard-code. Written by CMake at configure time (file(GENERATE)) next to larecomp.exe, so it exists even when the exe cannot start. Paths in it are relative; {name} placeholders are filled by the launcher (game_root, shader_pack_dir, ...).",
+  "type": "object",
+  "required": ["schema", "schema_version", "min_reader", "stage"],
+  "properties": {
+    "schema": { "const": "larecomp.install-manifest" },
+    "schema_version": { "type": "integer", "minimum": 1 },
+    "min_reader": { "type": "integer", "minimum": 1 },
+    "game_version": { "type": "string" },
+    "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "contracts": {
+      "type": "object",
+      "description": "the version of each contract this build speaks (the same object larecomp.exe --describe prints)",
+      "additionalProperties": { "type": "integer", "minimum": 1 }
+    },
+    "sdk": { "type": "object", "properties": { "generation": { "type": "string" } } },
+    "features": { "type": "array", "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }, "uniqueItems": true },
+    "stage": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["from", "to", "kind"],
+        "properties": {
+          "from": { "type": "string", "minLength": 1, "description": "relative to the build output; a trailing /** means a folder" },
+          "to": { "type": "string", "minLength": 1, "description": "relative to the game folder; a trailing / means a folder" },
+          "kind": { "enum": ["program", "module", "dll", "licence", "data", "other"] },
+          "required": { "type": "boolean" },
+          "os": { "type": "array", "items": { "enum": ["windows", "linux", "macos"] }, "minItems": 1, "uniqueItems": true },
+          "licence_for": { "type": "string" },
+          "group": { "type": "string", "description": "a kit group (core, frame_generation, ray_reconstruction): the same word as in cmake/deps.json" }
+        }
+      }
+    },
+    "facts": {
+      "type": "object",
+      "description": "install.* facts: a name and the files whose presence makes it true",
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "any_of": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+          "all_of": { "type": "array", "items": { "type": "string" }, "minItems": 1 }
+        },
+        "minProperties": 1
+      }
+    },
+    "actions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "flag"],
+        "properties": {
+          "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+          "flag": { "type": "string", "pattern": "^--[a-z][a-z0-9_]*$" },
+          "force_flag": { "type": "string", "pattern": "^--[a-z][a-z0-9_]*$" },
+          "args": { "type": "array", "items": { "type": "string" } },
+          "after": { "type": "array", "items": { "type": "string" }, "description": "ids of actions that run first" },
+          "when": { "type": "string", "description": "an expression over the machine facts the launcher has at that point" },
+          "stdout": {
+            "type": "object",
+            "properties": { "prefix": { "type": "string", "pattern": "^@[a-z]+\\|$" }, "grammar": { "type": "integer", "minimum": 1 } }
+          },
+          "exit": {
+            "type": "object",
+            "properties": { "ok": { "type": "array", "items": { "type": "integer" } }, "fail": { "type": "array", "items": { "type": "integer" } } }
+          },
+          "outputs": { "type": "array", "items": { "type": "string" } },
+          "never_fails_setup": { "type": "boolean" },
+          "timeout_min": { "type": "integer", "minimum": 1 },
+          "produces": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "launch": {
+      "type": "object",
+      "required": ["game_root", "debug_menu"],
+      "properties": {
+        "game_root": { "type": "string", "minLength": 1, "description": "One argument with the {game_root} placeholder for the game data directory" },
+        "debug_menu": { "type": "string", "minLength": 1, "description": "One argument to enable the debug menu when requested" }
+      }
+    },
+    "game": {
+      "type": "object",
+      "properties": {
+        "title_id": { "type": "string", "pattern": "^[0-9A-F]{8}$" },
+        "xex_sha256": { "type": "array", "items": { "type": "string", "pattern": "^[0-9a-f]{64}$" }, "minItems": 1 },
+        "size": { "type": "integer", "minimum": 0, "description": "Byte length of the supported default.xex identified by xex_sha256" },
+        "required_files": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "properties": {
+        "game_files_folder": { "type": "string" },
+        "mod_roots": { "type": "array", "items": { "type": "string" } },
+        "textures": { "type": "string" },
+        "disabled": { "type": "string" },
+        "saved_game": { "type": "string" }
+      }
+    },
+    "files": { "type": "object", "additionalProperties": { "type": "string" } },
+    "exit_codes": { "type": "object", "additionalProperties": { "type": "integer" } },
+    "markers": {
+      "type": "object",
+      "properties": { "algo": { "type": "string" }, "version": { "type": "integer", "minimum": 1 } }
+    }
+  }
+}

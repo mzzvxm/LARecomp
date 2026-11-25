@@ -34,10 +34,19 @@
 //   no history at all (a cut, the first frame, the pause view switching, a new size) had its two
 //   denoise passes already and passes through.
 //
+// THE CONTACT SHADOWS' HISTORY (NOISE-RESOLVE, mcla_gpu_noise_resolve_no_upscaler). With no temporal upscaler the contact march's start noise and the ray traced sun rays' sample change every frame and
+// nothing averaged them; ao.cpp runs this same pass over the contact filter's result (plain visibilities: the filter has taken the vehicle march's marks out) with a history of its own, flag bit 22
+// (AoContactHistory): the wide blur is not taken where the history does not hold. Everything else, the reprojection, the plane and depth tests, the vehicles' rows, the clamp and the weight, is
+// the occlusion's: a moving shadow's ghost is bounded by the same clamp.
+//
 // Output: RG16_FLOAT, (the result, the linear depth of this frame as the sky-capped distance), the
 // next frame's history. Debug view 6 is a second run of the pass, into an image of its own, that
 // writes the confidence in place of the visibility (the apply pass then shows it); the frame's
 // own run, which makes the history, is made with the view cleared.
+//
+// THE NORMAL. The pass's normal (the plane test of the history and of the wide blur, the vehicle rows' rotation) is the normal image's where the frame has one: its bindless slot is
+// in the high 16 bits of slots.y (the low bits are the host sample the stencil plane is read at, so those reads mask it; 0 in the high half is none: the depth's normal,
+// ao_common.hlsli AoNormalAt).
 //
 // Both the camera's motion and the lens are the previous frame's, and the depth is rendered with a
 // sub-pixel jitter while an upscaler runs: a pixel finds its history within a pixel or so, not
@@ -71,6 +80,7 @@
 // debug view 6 run writes the confidence in x).
 
 #include "ao_common.hlsli"
+#include "nan_guard.hlsli"
 
 // The plane test's width as a share of the distance (the denoise's), the depth agreement, the
 // margin of the neighbourhood clamp, and the confidences at which a history counts for nothing and
@@ -87,6 +97,9 @@ static const uint kLastVehicleId = 23u;
 static const uint kNoSlot = 0xFFFFFFFFu;
 
 bool AoHistoryOn() { return (g_push.slots2.z & (1u << 20)) != 0u; }
+// NOISE-RESOLVE (ao.cpp RecordContactHistory): the pass runs over the contact shadows' filtered image. A thin contact shadow is lost in the wide blur the occlusion's pixels without a history take, so
+// where the history does not hold this frame's own (already filtered) value stands. Bit 22 of slots2.z, which the apply's flags use but this pass does not.
+bool AoContactHistory() { return (g_push.slots2.z & (1u << 22)) != 0u; }
 // The pause and map view: a vehicle pixel moves with the camera like the world (nothing moves by
 // itself there), so it takes no row of the vehicle table.
 bool AoVehiclesAsWorld() { return (g_push.slots2.z & (1u << 21)) != 0u; }
@@ -121,7 +134,7 @@ uint AoVehicleId(int2 pixel, float depth) {
   }
   if (!AoLow()) {
 #if AO_DEPTH_MS
-    const uint id = StencilOf(g_utextures_ms[slot].Load(pixel, g_push.slots.y)) >> 2;
+    const uint id = StencilOf(g_utextures_ms[slot].Load(pixel, g_push.slots.y & 0xFFu)) >> 2;
 #else
     const uint id = StencilOf(g_utextures[slot].Load(int3(pixel, 0))) >> 2;
 #endif
@@ -133,7 +146,7 @@ uint AoVehicleId(int2 pixel, float depth) {
   for (int k = 0; k < 4; ++k) {
     const int2 p = pixel * 2 + int2(k & 1, k >> 1);
 #if AO_DEPTH_MS
-    const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y)) >> 2;
+    const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y & 0xFFu)) >> 2;
 #else
     const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
 #endif
@@ -170,7 +183,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
 
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   float3 pe = AoToHistory(pc);
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion, as in the plain pass.
@@ -267,8 +280,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float4 result;
   result.x = lerp(fresh.x, history.x, confidence * g_push.extra.w);
   result.yzw = lerp(fresh.yzw, history.yzw, confidence * g_push.lens.z);
-  // A half float keeps 65504; the chain's colours are capped well under that.
-  return float4(saturate(result.x), clamp(result.yzw, 0.0f, 60000.0f));
+  // A half float keeps 65504; the chain's colours are capped well under that. This image is the next frame's history, so it is always numbers (decided by the bits, nan_guard.hlsli: a NaN is no
+  // occlusion and no bounce light; max(NaN, 0) and saturate(NaN) are 0 on D3D12 only).
+  return float4(saturate(NgNumberOr(result.x, 1.0f)), NgHeld3(result.yzw, 60000.0f));
 }
 
 #else  // !AO_GI
@@ -292,7 +306,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
 
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   float3 pe = AoToHistory(pc);
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion (the row of its ID in the vehicle
@@ -366,14 +380,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   history = clamp(history, lo - kClampMargin, hi + kClampMargin);
 
-  // Where the history does not hold, the wide blur of this frame instead of its own value.
+  // Where the history does not hold, the wide blur of this frame instead of its own value (not on the contact shadows' image: AoContactHistory).
   float fresh = current;
-  if (confidence < 1.0f) {
+  if (confidence < 1.0f && !AoContactHistory()) {
     const float wide = AoBilateral(visibility_slot, depth_slot, pixel, isize, tc, pc, normal, AoWideRadius());
     fresh = lerp(wide, current, confidence);
   }
   const float result = lerp(fresh, history, confidence * g_push.extra.w);
-  return float4(saturate(result), depth_out, 0.0f, 0.0f);
+  return float4(saturate(NgNumberOr(result, 1.0f)), depth_out, 0.0f, 0.0f);   // the next frame's history: a number (nan_guard.hlsli), a NaN is no occlusion
 }
 
 #endif  // AO_GI

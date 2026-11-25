@@ -38,14 +38,18 @@
 // Threading: render thread only.
 // ===========================================================================
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <cstring>
 #include <memory>
+#include <span>
 #include <unordered_map>
 #include <vector>
 
 #include <plume_render_interface_types.h>
 
+#include "draw_memo.h"
 #include "guest_device.h"
 #include "shaders.h"
 
@@ -79,22 +83,46 @@ struct InputLayout {
   uint32_t problems = 0;       // inputs that cannot be supplied correctly (logged)
 };
 
+struct InputLayoutMemoView {
+  uint64_t vs;
+  std::span<const uint8_t> declaration;
+  std::span<const uint8_t, guest::kStreamCount> strides;
+};
+
+// Own the bytes: draw records in the command stream are recycled.
+struct InputLayoutMemoKey {
+  uint64_t vs = 0;
+  std::vector<uint8_t> declaration;
+  std::array<uint8_t, guest::kStreamCount> strides{};
+  bool operator==(const InputLayoutMemoView& view) const {
+    return vs == view.vs && declaration.size() == view.declaration.size() &&
+           (declaration.empty() ||
+            std::memcmp(declaration.data(), view.declaration.data(), declaration.size()) == 0) &&
+           std::memcmp(strides.data(), view.strides.data(), strides.size()) == 0;
+  }
+  InputLayoutMemoKey& operator=(const InputLayoutMemoView& view) {
+    vs = view.vs;
+    declaration.assign(view.declaration.begin(), view.declaration.end());
+    std::copy(view.strides.begin(), view.strides.end(), strides.begin());
+    return *this;
+  }
+};
+
 class InputLayouts {
  public:
   explicit InputLayouts(const ShaderStore& shaders) : shaders_(shaders) {}
 
   // The layout for `vs` reading the declaration `decl` (decl_count raw 12-byte
   // big-endian D3DVERTEXELEMENT9) with the device's stream strides (dwords).
-  // Never null.
   const InputLayout* Get(const ShaderStore::Entry& vs, const uint8_t* decl, uint32_t decl_count,
-                         const uint8_t* stream_strides);
+                         const uint8_t* stream_strides, bool two_way);
 
   size_t size() const { return layouts_.size(); }
 
-  // How often the last Get's answer was reused, since the last call.
+  // The second way is probed only when the first way misses.
   struct MemoStats {
-    uint64_t tries = 0;
-    uint64_t hits = 0;
+    DrawMemoStats first;
+    DrawMemoStats second;
   };
   MemoStats TakeMemoStats() {
     const MemoStats s = memo_stats_;
@@ -124,12 +152,8 @@ class InputLayouts {
   Key scratch_key_;
   uint32_t next_id_ = 1;
   uint32_t reported_ = 0;
-  // The last Get's arguments and answer: a repeat skips the
-  // key build and the hash lookup. The layouts live for the session.
-  const InputLayout* last_layout_ = nullptr;
-  uint64_t last_vs_ = 0;
-  std::vector<uint8_t> last_decl_;
-  std::array<uint8_t, guest::kStreamCount> last_strides_{};
+  // A repeat skips the key build and map lookup. Layouts live for the session.
+  TwoWayDrawMemo<InputLayoutMemoKey, const InputLayout*> memo_;
   MemoStats memo_stats_;
 };
 

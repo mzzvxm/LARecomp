@@ -6,9 +6,9 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -20,15 +20,6 @@
 #include <windows.h>
 #include <psapi.h>
 #endif
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_process_memory_log, 0, "MCLA/GPU",
-    "Diagnostic: every this many frames, log what the process's memory is made of (the commit "
-    "charge and working set, the committed address space by kind, the private regions by size, "
-    "the process heaps, the biggest regions). It walks the whole address space, which takes "
-    "some milliseconds on the render thread each time. 0: off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -136,8 +127,8 @@ void Report(uint64_t frame) {
   GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc),
                        sizeof(pmc));
 
-  const rex::Runtime* runtime = rex::Runtime::instance();
-  const uint8_t* membase = runtime ? runtime->virtual_membase() : nullptr;
+  rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
+  const uint8_t* membase = runtime ? runtime->GetMembase().GetBase() : nullptr;
   const Census c = Walk(reinterpret_cast<uintptr_t>(membase));
 
   // The CRT's malloc and every other heap of the process: what was allocated
@@ -192,7 +183,7 @@ void Report(uint64_t frame) {
 }  // namespace
 
 void ProcessMemoryTick(uint64_t frame) {
-  const uint32_t every = REXCVAR_GET(mcla_gpu_process_memory_log);
+  const uint32_t every = larecomp::settings::mcla_gpu_process_memory_log.Get();
   if (every == 0) {
     return;
   }

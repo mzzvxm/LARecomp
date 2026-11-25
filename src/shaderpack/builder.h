@@ -9,7 +9,7 @@
 //   dxcompiler.dll + dxil.dll       in `dxc_dir`, loaded at run time
 //
 // The result is <out_dir>/mcla_shaders.v8.pack (what src/gpu/shaders.cpp reads) and, when a variant
-// step is given, mcla_shaders_variants.v2.pack, plus the stamp that says what they were built from.
+// step is given, mcla_shaders_variants.v3.pack, plus the stamp that says what they were built from.
 // With the same dxc the bytes are those of native/tools/build_shader_pack_v8.py (the Python chain
 // by mzzvxm that this replaces: v2, v3 and v8 in one pass).
 //
@@ -74,7 +74,7 @@ struct ImageView {
 // ---------------------------------------------------------------------------
 // The variant step (written separately: variant_pack.{h,cpp})
 // ---------------------------------------------------------------------------
-// Builds mcla_shaders_variants.v2.pack after the main pack: the pixel shaders the renderer can draw
+// Builds mcla_shaders_variants.v3.pack after the main pack: the pixel shaders the renderer can draw
 // with another version of the game's own text (the HDR scene's tone map, the bloom's Gaussians at a
 // render scale, ...), each made from the translator's HLSL by an anchored text edit. The builder calls
 // it at one place (the "VARIANT STEP" in builder.cpp), with the containers it has already read, a
@@ -85,7 +85,7 @@ struct VariantStepInput {
   // too (VariantStep::NeedsRpfShaders).
   const ContainerSet* containers = nullptr;
   std::shared_ptr<DxcRuntime> dxc;           // loaded; make a DxcWorker per thread
-  std::filesystem::path out_dir;             // mcla_shaders_variants.v2.pack goes here (kVariantPackFileName)
+  std::filesystem::path out_dir;             // mcla_shaders_variants.v3.pack goes here (kVariantPackFileName)
   uint32_t formats = 0;                      // build these formats (the main pack's)
   unsigned threads = 1;
   ProgressSink* sink = nullptr;              // never null
@@ -108,7 +108,7 @@ class VariantStep {
   // builder reads the RPF's containers for a variant-only rebuild only when this is true: reading them
   // takes seconds, and a build whose main pack stays and whose variants are current does without.
   virtual bool NeedsRpfShaders() const { return false; }
-  // Writes the variant pack to input.out_dir under its final name (a .tmp then a move is its own
+  // Writes the variant pack to input.out_dir under its final name (a temporary file of its own then a move is its own
   // business). A failure here fails the step, not the build: the renderer then draws the game's own
   // shaders (HDR stays at stage 2, the bloom at the guest's taps), which the reader allows.
   virtual VariantStepResult Build(const VariantStepInput& input) = 0;

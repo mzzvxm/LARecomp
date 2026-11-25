@@ -8,9 +8,8 @@ float TimeOfDay_GetHour();
 
 // Ask for a specific hour for as long as the caller keeps asking — used by the
 // menu-camera shots, so a saved shot can carry the lighting it was framed in.
-// Pass a negative hour to stop asking. The request is honoured on the next
-// lighting update and outranks time_of_day_hold; it lapses on its own if the
-// caller stops renewing it, so nothing has to be unwound on the way out.
+// Pass a negative hour to stop asking. The request is honoured before the
+// next fog update and outranks time_of_day_hold.
 void TimeOfDay_RequestHour(float hour);
 
 // The hour of a running scene (trailer toolkit, cinematic/scene_runtime.cpp). Its own channel, so nothing that clears a

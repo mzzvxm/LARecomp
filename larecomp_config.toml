@@ -2,9 +2,20 @@ project_name = "larecomp"
 file_path = "assets/default.xex"
 out_directory_path = "generated"
 
-# Windows: the 0xE0000000 view is mapped at its exact 4 KB offset, so no guest memory access needs the
-# +0x1000 test (LAR-RXSDK perf/exact-e0-view; -26% instructions in the generated code, -10% frame time on 4 cores).
-exact_e0_view = true
+# rexglue 0.11: the 0xE0000000 view is mapped at its exact 4 KB offset by the SDK itself (placeholders
+# at a page aligned offset, Windows 10 1803 or later), so the old exact_e0_view option is gone.
+
+# The dot products of the vector unit (vmsum3fp128, vmsum4fp128): "fast". On LAR-RXSDK (838940ca) fast is DPPS plus one
+# exponent test and gives the console's quiet NaN on overflow (rexglue issue 491), as the fork did. Upstream's fast is a
+# plain DPPS (infinity on overflow), and "exact" (bit-exact, about 60 to 80 instructions a site, 4,365 sites) cost 10 to
+# 13 percent of the frame rate in a race (perf\out\AB011.txt, AB011V.txt, 2026-11-18).
+# vexptefp (2^x, 16 sites): "exact", the console's result for about 0.5 ns more per vector than fast (upstream's
+# measurement: 4.90 to 5.05 ns exact, 4.40 fast, on x86-64-v2).
+# The other six [vector_math] keys stay at their defaults ("fast").
+[vector_math]
+vmsum3fp128 = "fast"
+vmsum4fp128 = "fast"
+vexptefp = "exact"
 
 [functions]
 0x8244FEC0 = { name = "mc_Sleep", size = 0x8 }
@@ -25013,6 +25024,15 @@ address = 0x821BDAB4
 after_instruction = true
 registers = ["f13"]
 
+# A scene ambient car's paint (cinematic/cars.cpp, scene_seed.h). sub_826DF260 gives a spawn request out of the ambient manager's queue (mgr + 8800): at 0x826DF2DC `stw r3,832(r31)`
+# stores the 31-bit number it drew from the game's generator (clrlwi r3,r11,1 at 0x826DF2D0) in the entry; the number is the seed of the new car's own generator (the request's word +288
+# at entry + 544). Before that store r3 is replaced, for the entry of one of the scene's own layout items, with the seed of the car's paint: the car's own random numbers (its look and its
+# driving personality) are the same in every run. One atomic load when no scene car has a paint.
+[[midasm_hook]]
+name = "MCLAAmbientCarSeed"
+address = 0x826DF2DC
+registers = ["r3", "r31"]
+
 # Timer precision (hooks/timer_precision.cpp).
 #
 # The engine timer adds the frame time to two float clocks, [r3+0x14] and [r3+0x18], by
@@ -25410,8 +25430,8 @@ name = "Patch_RearViewCarPhase"
 registers = ["r3", "r4"]
 after_instruction = false
 
-# 0x82308178: entry of the mirror phase's begin (sub_82308178). Diagnostic only
-# (rearview_diag): logs what each render client holds when the phase starts.
+# 0x82308178: entry of the mirror phase's begin (sub_82308178). Sends the shared view's BEGIN marker (mcla_gpu_mirror_view, only for a phase that runs) and, with
+# rearview_diag, logs what each render client holds when the phase starts.
 [[midasm_hook]]
 address = 0x82308178
 name = "Patch_RearViewDiag"
@@ -25426,6 +25446,52 @@ after_instruction = false
 address = 0x8235F9EC
 name = "Patch_RearViewCullBits"
 registers = ["r3"]
+after_instruction = false
+
+# The rear view mirror's cheap options (perf/MIRRORS-SURVEY.md section 4, B to E; hooks/rear_view.cpp, hooks/rear_view_cheap.h). Four hooks; every one is a
+# few compares while its debug setting is off.
+#
+# 0x82308120: the `bl sub_8217D460` in sub_82307F28, the mirror's camera step (run from the phase callback sub_82306500 at phase 0x10000's begin): f1 = the
+# field of view ([pass+20]: the vertical field in degrees), f2 = the aspect (the stamp's w/h), f3 and f4 = the near and far planes (the main camera's), all set by the
+# instructions before it. The hook narrows f1 (rearview_fov_scale) and pulls in f4 (rearview_far); with the shared view's guest half on (mcla_gpu_mirror_view) it sets f1 and
+# f2 to the field the host asks for and tells the host the game's own. The camera's frustum, which the game's culling of the mirror's phase uses, is built from them.
+[[midasm_hook]]
+address = 0x82308120
+name = "Patch_RearViewCamera"
+registers = ["f1", "f2", "f4"]
+after_instruction = false
+
+# 0x82307F8C: the first `bl sub_82178C40` (a D3D Clear of the mirror's rectangle in the MAIN target: colour 0xFFFF0000, depth 0.0, stencil) in sub_82307F28, the mirror's camera step at the
+# colour pass's begin. True jumps to 0x82307F90, past the call: with the shared view's guest half on and the host redirecting the mirror's phase the rectangle is not the phase's any more
+# (the phase's own clear is the second sub_82178C40 call, in sub_82308178). Off, the game's own clear runs. hooks/rear_view.cpp.
+[[midasm_hook]]
+address = 0x82307F8C
+name = "Patch_RearViewCameraClear"
+jump_address_on_true = 0x82307F90
+
+# 0x822D5704: the `bl sub_822D7120` in the city's per-sector walk (sub_822D5618): f1 = the sector's hi detail radius (mcCity+36 x mcCity+24, set by the `fmuls`
+# before it). Inside the mirror's phase the hook cuts it (rearview_lod_distance), so a sector beyond it is the coarse one-model-a-sector city.
+[[midasm_hook]]
+address = 0x822D5704
+name = "Patch_RearViewCityLod"
+registers = ["f1"]
+after_instruction = false
+
+# 0x822E6634: the `cmpwi cr6,r10,0` right after `and r21,r17,r11` in the renderer's phase loop (sub_822E6408), once a frame before the first phase: r17 = [r27+364]
+# (the phases the renderer may run), r21 = r17 & the requested ones, r27 = the renderer. With rearview_every above 1 a held frame takes the mirror's bit out of r17,
+# r21 and renderer+364, so no part of the phase runs (the picture is not held yet: the main view shows in the rectangle). A camera cut draws at once.
+[[midasm_hook]]
+address = 0x822E6634
+name = "Patch_RearViewCadence"
+registers = ["r17", "r21", "r27"]
+after_instruction = false
+
+# 0x822E6908: the phase increment in sub_822E6408, after both end calls. The mirror's callback draws the sky before restoring the main camera.
+# r30 still names the finished phase. For 0x1000000 close the shared view and restore the bit a held frame took out of renderer+364.
+[[midasm_hook]]
+address = 0x822E6908
+name = "Patch_RearViewPhaseEnd"
+registers = ["r30"]
 after_instruction = false
 
 # 0x8236066C: the `cmplwi cr6,r11,0` after `lbz r11,594(r30)` in mcCarModel's draw (sub_82360518),
@@ -25468,6 +25534,44 @@ after_instruction = false
 address = 0x82793360
 name = "Patch_AmbientCascadeDraw"
 registers = ["r3", "r4", "r13"]
+after_instruction = false
+
+# 0x827917C0: the `bl sub_8217D918` in sub_827914B8 (the body draw of mcAmbientCarRenderClass's model, vtbl+28), the call that
+# makes the four rows at r1+144 the current viewport's World matrix. The rows are the unit axes and the item's root translation
+# ([block+16]; r18 = the block, r27 = the item): a pure translation, because the game's cars carry their heading in the bone
+# matrices of the block (block+32, 48 bytes a bone) which the colour pass's vertex shader applies and the shadow technique of every
+# ambient shader group (VS_ShadowDepthLocal: gWorldViewProj only, no bones) does not. So a traffic car raised into the sun cascades
+# by the hooks above was drawn there as its bind-pose model at its position, never turned. In a cascade phase the hook writes bone 0's
+# rotation into the rows (its own stack copy; nothing persistent): gpu/traffic_shadow_pose.h. Off switch (debug only):
+# mcla_gpu_traffic_shadows_rotation. traffic_shadow.cpp.
+[[midasm_hook]]
+address = 0x827917C0
+name = "Patch_AmbientCascadeWorld"
+registers = ["r3", "r18", "r27"]
+after_instruction = false
+
+# 0x82793608: the `bl sub_82795960` of sub_82793360 in phase 0x10000, which makes the car's soft decal from the matrix at r1+160 (the
+# body bone's axes as rows, the position in row 3; r4 = that matrix, r31 = the item). Log only (mcla_gpu_traffic_shadows_log): the
+# decal's heading against the body's. Writes nothing. traffic_shadow.cpp.
+[[midasm_hook]]
+address = 0x82793608
+name = "Patch_AmbientDecalPose"
+registers = ["r4", "r31"]
+after_instruction = false
+
+# 0x8237AFB8 (the instruction after loc_8237AFB4): one light point of a vehicle in the light submit sub_8237AC90, before the guest's intensity and cone tests
+# (both ways in, the point read from its set and its position made by sub_8237A698, arrive at loc_8237AFB4 and run straight on; the instruction at
+# 0x8237AFB4 is `lvlx128 v53,r0,r17`, which writes no general register). r26 the light object ([r26] its owner), r31 the address of the set's pointer
+# (object + 16 + 4 * kind), r29 4 times the point's index, r30 the position's pointer when there is no owner, r17 / r20 the pointers of the two floats whose
+# product is the intensity. Reads only (the night probe, test/night-probe 3d3bb584, read the same registers): only the Headlight points (kind 3) are noted, only
+# while the renderer's headlight rig wants them (mcla_gpu_headlights on), for gpu/headlight_points.h: their world position, a racer's direction (the car's back
+# axis) and the intensity, which is the lights' on state (2.0 at night, 0 by day). headlight_points.cpp.
+# NOT 0x8237AFB4, on purpose: a midasm hook is keyed by its address (the SDK keeps the last of two), and the test branch's MCLANightLightPoint is at 0x8237AFB4.
+# One instruction later the two do not collide and both run, so the probe can be merged over this without taking this one's place.
+[[midasm_hook]]
+address = 0x8237AFB8
+name = "MCLAHeadlightPoint"
+registers = ["r17", "r20", "r26", "r29", "r30", "r31"]
 after_instruction = false
 
 # 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
@@ -26212,11 +26316,17 @@ address = 0x822C0868
 name = "Hook_MenuCameraFinal"
 registers = ["r1", "r24"]
 
-# Live time of day. sub_822F1DB0 is mcLightingManager's per-frame time-of-day
+# Live time of day. Sample and apply a pin before sub_822BF018 evaluates fog.
+# The scene tick and menu camera have supplied their requests by this point.
+[[midasm_hook]]
+address = 0x822C2858
+name = "Hook_TimeOfDayBeforeFog"
+
+# sub_822F1DB0 is mcLightingManager's per-frame time-of-day
 # update (r3 = manager). Fields: +14540 current hour, +14545 auto-advance byte,
 # +14548 rate (hours/sec), +14552 warp-in-progress byte, +14556 warp target.
-# The hook sets them and lets the original body publish the hour, so lighting,
-# sky and shadows all follow the game's own path.
+# Reuse the pin sampled before fog and let the original body publish the hour
+# to the render slot, so lighting, sky and shadows follow the game's own path.
 [[midasm_hook]]
 address = 0x822F1DB0
 name = "Hook_TimeOfDay"
@@ -26704,6 +26814,16 @@ address = 0x823794C8
 registers = ["r31"]
 jump_address_on_true = 0x823794CC
 
+# 0x82574FF8, entry of sub_82574FF8(r3 = query, r4 = a node of the bound pool, r5 = mask): the query's box against the node's matrix and bound. The node's bound
+# pointer (+4) is read first; a node with none (dropped by another thread, or not filled yet) made the title read guest 0xC (vol3-race-vulkan, 2026-11-20, a race
+# load). True answers no (r3 = 0) and returns; the callers (sub_8256CF78, sub_8256CEC8's chain walk) go on to the next node. No setting: it fires only where the
+# title would have died. See hooks/vehicle.cpp and hooks/bound_node_guard.h.
+[[midasm_hook]]
+name = "MCLA_BoundNodeTest_82574FF8"
+address = 0x82574FF8
+registers = ["r3", "r4"]
+return_on_true = true
+
 # sub_824DF200(owner, type, name, &field, ...) -- every tune field registration.
 # Diagnostic, gated on the tune_field_probe cvar (off by default).
 [[midasm_hook]]
@@ -26779,7 +26899,8 @@ name = "MCLA_FileOpenResult"
 address = 0x821CA708
 registers = ["r1", "r3"]
 
-[rexcrt]
+# rexglue 0.11 calls the replaced runtime routines [shim] (the heap group has to be listed whole).
+[shim]
 RtlAllocateHeap = 0x82134860
 RtlFreeHeap = 0x82135150
 RtlSizeHeap = 0x82133B00
@@ -26842,6 +26963,19 @@ after_instruction = false
 [[midasm_hook]]
 address = 0x82282EA8
 name = "Hook_PromptDropped"
+registers = []
+after_instruction = false
+
+# 0x82302814: one instruction into the cone drawer sub_82302810 (its first instruction, `mflr r12`, is where the night probe's MCLANightConeDraw sits on
+# test/night-probe: a midasm hook is keyed by its address and the SDK keeps the last of two, so this one is one instruction later and both run; the
+# instruction between them writes only r12 and nothing else branches here). The per-frame list of spot lamps (guest 0x8288B8D8: AddLight sub_823029D0 appends
+# the lamps within 300 m of the eye, this drawer sorts the list, draws a cone mesh per record in rain only, and empties it) is COMPLETE here: mean 64 lamps,
+# at most 83, in a clear night (perf/out/NIGHT-PROBE.txt C3, C5). The hook copies it, once a frame and only while the volumetric light is on
+# (gpu/vol_lamp_list.h Wanted), into the table the renderer's lamp producer reads (src/gpu/volumetrics_inputs.h). Reads only: nothing is written into the guest.
+# vol_lamps.cpp. No register is read (the list is at a fixed address). A codegen run is needed for the hook to exist.
+[[midasm_hook]]
+address = 0x82302814
+name = "MCLAVolLampList"
 registers = []
 after_instruction = false
 
@@ -27449,6 +27583,25 @@ name = "Hook_ScriptHighbeamsRefused"
 address = 0x82688200
 name = "Hook_TriggerLineSweep"
 registers = ["r1", "r31", "r27"]
+
+# The smoke of a closed race checkpoint (hooks/checkpoint_effect_fade.cpp): the game lets go of the checkpoint's
+# smoke effect after writing dt * 25 into its +468, a multiplier applied at every update, which made the smoke last
+# half a second at the console's 30 updates a second and 90 ms at 60 FPS. Each hook is just before one of the three
+# `stfs f13,468(rX)`; f13 = dt * 25 as the game made it, and the hook gives it (25 / 30) ^ (dt * 30).
+[[midasm_hook]]
+address = 0x82264EE4
+name = "Hook_CheckpointFadeDeactivate"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x8226685C
+name = "Hook_CheckpointFadeFlagged"
+registers = ["f13"]
+
+[[midasm_hook]]
+address = 0x82266D6C
+name = "Hook_CheckpointFadeSlotEnd"
+registers = ["f13"]
 
 # Options > Controller > Customize: the "press a button" capture (sub_82727010) only looks at
 # the raw pad, so with a keyboard it never finishes and swallows every key. After its
@@ -28277,3 +28430,11 @@ address = 0x82390984
 name = "Hook_CarGuardImport"
 registers = ["r30"]
 after_instruction = false
+
+# The disc error handler (sub_82130678, 0x18 bytes) does nothing here: the game files are on the host disk.
+# It used to be replaced at start-up with a no-op through the function table (SetFunction); the hook with
+# `return` skips the body instead, so the app needs no access to the dispatcher.
+[[midasm_hook]]
+address = 0x82130678
+name = "MCLA_DiscErrorBypass"
+return = true

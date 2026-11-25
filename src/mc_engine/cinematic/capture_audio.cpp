@@ -1,112 +1,101 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 //
-// A take's sound (trailer toolkit M2c; feature-parity/CINEMATIC-PLAN.md, CINEMATIC-DESIGN.md section 2.4 item 7). The maths and the books
-// are in capture_audio_core.h (with its test); this file is the driver, the take's calls and the CSV.
+// A take's sound (trailer toolkit M2c; feature-parity/CINEMATIC-PLAN.md, CINEMATIC-DESIGN.md section 2.4 item 7). The maths, the books, the
+// WAV and the order of the calls are in capture_audio_core.h (Session, with its tests); this file is the mixer port on rexglue 0.11's audio
+// system, the take's calls and the CSV. (The 0.10 version, a CaptureOutputDriver in front of the SDK's render client, is
+// `git show 792f2fe6:src/mc_engine/cinematic/capture_audio.cpp`; the SDK seam it used is gone.)
 //
-// HOW THE GAME'S AUDIO RUNS. The SDK's audio worker (rex/audio/audio_system.cpp) waits on a semaphore that holds credits, one for every
-// 256-sample frame (5.33 ms at 48 kHz, six channels, planar, big endian float) the mixer may make. For each credit it runs the game's
-// callback (sub_823F56D0, hooks/audio_mixer.cpp), which has the game's mixer thread mix a frame and ends in XAudioSubmitRenderDriverFrame,
-// which is the driver's SubmitFrame. The real driver (SDL, or the silent one of audio_output.h) gives the credit back when it has played
-// the frame, so the mixer runs at most queue-length frames ahead of the speakers (8 frames = 42.7 ms; audio_maxqframes, 4 to 64) and
-// its output is not tied to the update that asked for a sound.
+// HOW THE GAME'S AUDIO RUNS ON 0.11 (read from the SDK's src/kernel/apu.cpp and src/apu/audio_system.cpp). The game registers one render client
+// (XAudioRegisterRenderDriverClient); the SDK opens a stream for it and gives its semaphore 8 credits (apu.max_queued_frames). The "Audio
+// Worker" thread waits on the semaphore and runs the game's callback (sub_823F56D0, hooks/audio_mixer.cpp) once per credit; the callback has the
+// game's mixer thread mix one 256-sample frame (6 channels, 5.33 ms) and ends in XAudioSubmitRenderDriverFrame, which queues the frame on the
+// stream. The mix (AudioSystem's mix_period) takes one frame off every stream's queue, folds and gains it, and releases the stream's credit.
+// Who runs the mix: the output device, through the AudioFill it was opened with (when no device is open the SDK's timer thread does).
 //
-// WHEN THE DRIVER IS THERE. Not from the start of the game: audio_output.h makes the real output alone (the game's audio is exactly as it
-// is without the toolkit, no wrapper, no log line), and Begin puts CaptureOutputDriver in front of the real output of the first render
-// client only when a take that records sound starts (mcla_capture_audio on; with it off nothing is installed). The swap is one pointer
-// of the SDK's client table written under the SDK's global critical region (the lock AudioSystem::SubmitFrame, UnregisterClient and the
-// worker's client lookup hold; audio_output.h OutputWithFallback::InstallCapture), so the audio worker, which calls SubmitFrame under that
-// lock for every mixer frame, sees the real output or the wrapper, never half, and no frame is lost or doubled. The state the take then
-// starts from (frames queued in the real output, credits out) is the one the drain below already handles at any moment.
+// THE TAP. The device's fill is made by mcla::audio::MixTap (music/audio_tap.h; audio_output.h passes the SDK's fill through it). A take Holds
+// it: the device then gets silence and the SDK's mix runs only when the take pulls (MixTap::Pull), one 256-sample period of 2 or 6 channels at a
+// time, the SDK's own fold and gain included (apu.gain, apu.mute, the surround weights: the WAV is what the speakers would have played).
 //
-// WHAT THE DRIVER DOES. Outside a take it passes every frame to the real output and nothing else changes. In a take (Arm .. Finish):
-//   - Arm: from now on frames go to the take's queue, not to the real output. The credits are taken out of the semaphore (the mixer
-//     cannot run any more) and so are the ones the real output still gives back as it plays out what it had queued, until every credit
-//     of the SDK's queue is in hand (credits drained + frames the mixer made meanwhile = the queue length). What the mixer made ahead of
-//     the take is thrown away. The real device keeps its stream open and plays silence.
-//   - every video frame: the book says how many mixer frames cover the video's samples so far (800 a frame at 60 fps = 3.125 mixer
-//     frames, the fraction carried exactly: capture_audio_core.h). StepBegin releases that many credits at the frame gate, before the wait for
-//     the frame's readback, so the mixer runs while the picture is read back; StepEnd waits for them, folds them to stereo with the SDK's own
-//     fold and gain (or keeps the six channels), and writes exactly the samples the video frame owns to the WAV. The game thread is
-//     held at the gate for all of it, so the sounds an update asked for are the ones the mixer mixes next.
-//   - a mixer frame that does not arrive within mcla_capture_audio_timeout_ms is given up on: a frame of silence takes its place, the
-//     frame that comes late is thrown away, the WAV keeps its length; three such steps in a row stop the waiting for the rest of the take
-//     (the file is padded with silence to the video's length).
-//   - Finish: the WAV's header gets its sizes, the CSV is closed, the credits go back into the semaphore (all of them: the semaphore
-//     is full again as at the start of the game) and the mixer refills the real output's queue by itself, as at start.
+// THE GATE. Holding the tap stops the credits coming back, so the mixer would stop at its queue limit, but it would still run 8 frames ahead of
+// the take's state. So the callback is wrapped (MixerGate, called from hooks/audio_mixer.cpp): while a take runs it waits for a ticket before it
+// mixes a frame. The take hands tickets only for the video frames so far (StepBegin), so every frame in the WAV was mixed after the update that
+// asked for its sound, as the 0.10 take had it with credits.
 //
-// The CSV, `<wav name>.audio.csv`: a row per video frame: frame, update, the mixer frames released, used, thrown away and silent this
-// step, the samples written, the running total, what it should be (SamplesThrough), their difference (always 0: the file is cut to the
-// video's length at every frame), the tail of mixed samples not yet written (under 256), the wait for the mixer, the loudest sample of
-// the frame, the game's audio clock (0x8286CF34 / 0x8286CF38: it advances dt a frame, so it gains 1 s per take second when 48,000 samples
-// are a game second), and the listener position the emitter system was given (below).
+// A TAKE (Session, capture_audio_core.cpp):
+//   - Arm (below, Begin): hold the tap, close the gate, wait for the callbacks already running (they finish into the queue), pull one period at
+//     the OTHER channel count (the SDK's mix keeps the unread rest of a period for the same count: the pull at the other count drops it, so
+//     the take's first pull starts on a period boundary), then pull and throw away every frame queued before the take.
+//   - every video frame: StepBegin hands the tickets the book wants (at most the queue length less one out at once, so the worker never waits on an
+//     empty credit semaphore); StepEnd waits until they are queued, pulling them as they come (so a video frame that needs more mixer frames than the
+//     queue holds, below 23 fps, goes through), and writes exactly the samples the video frame owns.
+//   - a frame that does not arrive within mcla_capture_audio_timeout_ms is given up on: silence in its place, the frame that comes late is thrown
+//     away; three such steps in a row end the waiting (the file is padded with silence to the video's length).
+//   - Finish: the WAV gets its sizes, the gate opens (the parked callback runs, the queue refills with the game's state of then) and the device
+//     gets the mix again.
+// No output device open (no speakers, mcla_audio_output = null, a broken driver): the SDK mixes on its own timer and cannot be held back, so
+// Begin says so and the take has no sound.
+//
+// The CSV, `<wav name>.audio.csv`: a row per video frame: frame, update, the tickets handed, used, thrown away and silent this step, the samples
+// written, the running total, what it should be (SamplesThrough), their difference (always 0: the file is cut to the video's length at every frame),
+// the tail of mixed samples not yet written (under 256), the wait for the mixer, the loudest sample of the frame, the game's audio clock (0x8286CF34 /
+// 0x8286CF38: it advances dt a frame, so it gains 1 s per take second when 48,000 samples are a game second), and the listener position the
+// emitter system was given (below).
 //
 // The listener. The game loop calls sub_8272A130(emitter manager, position) once a frame with a pointer to three floats: the player car's
 // matrix + 48, or the camera ring's current matrix + 240 (E7's reading of the generated code). It is the only place in the loop where
 // a listener position reaches the audio code that was found [I]; whether the mixer's panning uses the same copy is not known (CHECK):
 // the CSV has the pointer and the position per frame so that a run with a camera away from the car decides it.
 //
-// CHECK (the first run; nothing here has run):
-//   1. That the first render client is the mixer (the log says which client index the driver was put in front of, once, as the first take
-//      with sound starts; the host wraps the first client only, any other client is left alone).
-//   2. That the drain at Arm ends with "drained + arrived = queue length" (the [cap] audio: take armed line), not on its time-outs.
-//   3. That a sound the update asked for is in the mixer frames of that very step (a guest thread other than the game's could handle sound
+// CHECK (the first run; nothing here has run on 0.11, the books and the protocol are tested against a fake mixer in
+//        capture_audio_session_test.cpp, the tap in audio_tap_test.cpp):
+//   1. That a callback's frame is in the stream's queue when the callback returns (the game's callback ends in XAudioSubmitRenderDriverFrame,
+//      read from the 0.10 notes, not re-read here). If it is not, StepEnd finds the queue empty and polls every 5 ms: the CSV's wait_ms shows
+//      it, the take is still exact.
+//   2. That the game has ONE stream (the log line "[cap] audio: take armed" says how many the SDK has open). With two the queue counter sums them
+//      and the mix takes a frame off each: a frame of the second stream would count as the first's.
+//   3. That the device's fill is silent and clean while held and the mix comes back without a pop at the end of the take (the real output has
+//      its queue refilled by the callbacks the open gate lets through).
+//   4. That a sound the update asked for is in the mixer frames of that very step (a guest thread other than the game's could handle sound
 //      commands on its own clock): the horn's onset must sit at a constant offset from its press, and equal intervals between presses
 //      must give equal intervals in the WAV to within one mixer frame (ports/scripts/wav_check.py).
-//   4. The SDK's audio worker sleeps 500 ms after a wait that timed out (audio_system.cpp WorkerThreadMain): a take whose frames are more
-//      than 0.5 s apart may wait up to that for the mixer per frame (the render scale 6 case). Not met at scale 1 to 3.
-//   5. The game's audioFrameTimer (sub_82144888) reads the host clock: a sound that times itself with it runs in wall time, not take time.
-//   6. That the mixer's callback never waits for something the game thread holds while it sits at the gate (a guest lock): the first sign
+//   5. The SDK's audio worker sleeps 500 ms after a wait that timed out (apu.cpp WorkerMain): the cap on the tickets keeps it from waiting on
+//      an empty semaphore, so it should not meet this; a take whose frames are more than 0.5 s apart AND need more than 7 mixer frames each
+//      (below 23 fps at a huge render scale) might.
+//   6. The game's audioFrameTimer (sub_82144888) reads the host clock: a sound that times itself with it runs in wall time, not take time.
+//   7. That the mixer's callback never waits for something the game thread holds while it sits at the gate (a guest lock): the first sign
 //      would be a step that gives up (the log's "the mixer gave no frame"), three in a row end the take's sound.
+//   8. The worker parked in the gate when the SDK pauses or stops it: nothing in the SDK or LARecomp calls TitleRuntime::SetAudioPaused (grep),
+//      and the window's close calls Abort() (larecomp_app.cpp FinishWindowCloseWork), which opens the gate; a shutdown that does not come through
+//      that function would see the SDK's 500 ms "Audio worker still running" warning, no more.
+//   9. apu.mute / apu.mute_unfocused / apu.gain apply to the WAV (it is the SDK's mix): a take made with the window out of focus and
+//      apu.mute_unfocused on is silent.
 //
 
 #include "capture_audio.h"
+#include "settings/immortal.h"
 
-#include <rex/audio/conversion.h>
-#include <rex/audio/downmix.h>
-#include <rex/cvar.h>
-#include <rex/ppc.h>
+#include "settings/larecomp_settings.h"
+#include <rex/apu/audio_system.h>
+#include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
-#include <cmath>
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
-#include <deque>
-#include <filesystem>
 #include <mutex>
+#include <span>
 #include <string>
-#include <system_error>
-#include <thread>
 #include <vector>
 
 #include "capture_audio_core.h"
+#include "larecomp_guest.h"
 #include "larecomp_log.h"
+#include "mc_engine/music/audio_output.h"
 
-REXCVAR_DEFINE_BOOL(mcla_capture_audio, true, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: during a take the game's audio output is replaced by one that mixes exactly one video frame of sound "
-    "per frame and writes it to audio.wav in the take's folder; the real device is given back when the take ends. The capture driver is put in "
-    "front of the audio output when such a take starts, not before (a game with no take has the stock output). Off: nothing is installed, the "
-    "real output plays during the take, in real time, and no WAV is made. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_BOOL(mcla_capture_audio_surround, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the take's WAV has the six channels of the game's 5.1 mix (fl fr fc lfe bl br) instead of the stereo "
-    "fold the real output plays. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_audio_timeout_ms, 2000, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: how long the game waits at its frame gate for the mixer's frames of one video frame before it goes on "
-    "with a frame of silence for each that has not come (counted in the audio summary; three in a row stop the waiting for the take).")
-    .range(50, 60000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 // The listener hook (below): the emitter system's per-frame update.
 REX_EXTERN(__imp__rex_sub_8272A130);
@@ -115,21 +104,12 @@ namespace mc::cinematic::capture_audio {
 
 namespace {
 
-using Clock = std::chrono::steady_clock;
-
-constexpr uint32_t kFrameChannels = 6;                              // the mixer's frame: 6 channels planar
-constexpr uint32_t kFrameFloats = kMixerFrame * kFrameChannels;
-constexpr uint32_t kAudioClockF = 0x8286CF34;                       // the audio engine's clock, float seconds (perf/TIMER-NOTES.md)
-constexpr uint32_t kAudioClockMs = 0x8286CF38;                      // ... and whole milliseconds
-constexpr uint32_t kTimeoutsToDead = 3;
+constexpr uint32_t kAudioClockF = 0x8286CF34;   // the audio engine's clock, float seconds (perf/TIMER-NOTES.md)
+constexpr uint32_t kAudioClockMs = 0x8286CF38;  // ... and whole milliseconds
+constexpr uint32_t kMixerFrameChannels = 6;      // the largest frame a pull can be (the 5.1 fold)
 
 uint32_t Swap32(uint32_t v) {
     return (v >> 24) | ((v >> 8) & 0xFF00u) | ((v << 8) & 0xFF0000u) | (v << 24);
-}
-
-uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
 }
 
 float GuestFloat(const uint8_t* base, uint32_t ea) {
@@ -141,453 +121,199 @@ float GuestFloat(const uint8_t* base, uint32_t ea) {
     return f;
 }
 
-// The SDK's queue length: audio_maxqframes clamped as audio_system.cpp does (0: not known).
-uint32_t SdkQueueLength() {
-    const std::string v = rex::cvar::GetFlagByName("audio_maxqframes");
-    if (v.empty()) return 0;
-    char* end = nullptr;
-    const long n = std::strtol(v.c_str(), &end, 10);
-    if (end == v.c_str()) return 0;
-    return static_cast<uint32_t>(std::clamp<long>(n, 4, 64));
-}
-
 // the listener the emitter system was given
 std::atomic<uint32_t> g_lst_calls{0};
 std::atomic<uint32_t> g_lst_ptr{0};
 std::atomic<uint32_t> g_lst_bits[3] = {};  // float bits of x y z
 
-struct Frame {
-    float data[kFrameFloats];
-};
+// ---------------------------------------------------------------------------------------------------------------- the mixer port
 
-class CaptureOutputDriver;
-std::atomic<CaptureOutputDriver*> g_driver{nullptr};
-Summary g_last;
-
-class CaptureOutputDriver final : public rex::audio::AudioDriver {
+// The mixer as the take sees it: the SDK's stream queue (IAudioSystem's counters), the tap in front of the device (pulls) and the gate in the
+// audio worker's callback (tickets).
+class RealMixer final : public MixerPort {
   public:
-    CaptureOutputDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index)
-        : AudioDriver(memory), sem_(frame_semaphore), real_(real), index_(index) {
-        // Made inside the SDK's global critical region (the host's InstallCapture): nothing is logged here, Begin says it once the lock is
-        // given back.
-        CaptureOutputDriver* none = nullptr;
-        if (g_driver.compare_exchange_strong(none, this, std::memory_order_acq_rel)) {
-            primary_ = true;
+    // ---- the take (game thread)
+
+    int64_t Arm(uint32_t channels) override {
+        rex::apu::IAudioSystem* audio = mcla::audio::AudioSystem();
+        if (!audio) {
+            LARECOMP_APP_WARN("[cap] audio: the app has no audio system connected: the take has no sound");
+            return -1;
         }
-        // (a second one is not made by the host, which wraps the first render client only; it would pass its frames through and takes
-        // would use the first)
-    }
-
-    size_t Index() const { return index_; }
-
-    ~CaptureOutputDriver() override {
-        if (primary_) {
-            CaptureOutputDriver* me = this;
-            g_driver.compare_exchange_strong(me, nullptr, std::memory_order_acq_rel);
+        const rex::apu::AudioStats before = audio->GetStats();
+        if (before.open_streams == 0) {
+            LARECOMP_APP_WARN("[cap] audio: the game has no audio stream open: the take has no sound");
+            return -1;
         }
-        Abort();
-    }
-
-    // The audio worker's thread (the game's mixer through XAudioSubmitRenderDriverFrame): a frame of the mixer.
-    void SubmitFrame(uint32_t frame_ptr) override {
-        std::lock_guard<std::mutex> lock(mutex_);
-        if (!capturing_) {
-            if (announce_restore_) {
-                announce_restore_ = false;
-                LARECOMP_APP_INFO("[cap] audio: the mixer is back on the real output (first frame after the take)");
+        if (!mcla::audio::Tap().Hold()) {
+            LARECOMP_APP_WARN("[cap] audio: no output device is open (no speakers, mcla_audio_output = null or a driver that did not start): the SDK "
+                              "mixes on its own clock and cannot be held back, so the take has no sound");
+            return -1;
+        }
+        audio_ = audio;
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            armed_ = true;  // from here a callback that starts waits for a ticket
+            closed_ = false;
+            tickets_ = 0;
+        }
+        {
+            // the callbacks that were running finish into the queue (about 0.7 ms each)
+            std::unique_lock<std::mutex> lock(mutex_);
+            if (!cv_.wait_for(lock, std::chrono::milliseconds(500), [&] { return running_ == 0; })) {
+                LARECOMP_APP_WARN("[cap] audio: a mixer callback was still running 500 ms after the take took over (its frame is thrown away, or counts as the take's)");
             }
-            if (real_) real_->SubmitFrame(frame_ptr);
-            return;
         }
-        const float* in = memory_->TranslateVirtual<float*>(frame_ptr);
-        queue_.emplace_back();
-        std::memcpy(queue_.back().data, in, sizeof(Frame::data));
-        ++arrived_total_;
+        const uint64_t queued = audio->GetStats().queued_frames;
+        std::vector<float> scratch(static_cast<size_t>(kMixerFrame) * kMixerFrameChannels, 0.0f);
+        // The SDK's mix keeps the unread rest of a period (the device pulls in steps that are not a multiple of 256 samples) for the channel
+        // count it was mixed for: a pull at the other count throws it away and mixes a fresh period, so the pulls of the take start on a period.
+        const uint32_t other = channels == 2 ? kMixerFrameChannels : 2;
+        mcla::audio::Tap().Pull(std::span<float>(scratch.data(), static_cast<size_t>(kMixerFrame) * other), other);
+        for (uint64_t guard = 0; guard < 1000; ++guard) {  // the frames mixed before the take
+            if (audio->GetStats().queued_frames == 0) break;
+            if (!Pull(scratch.data(), channels)) break;
+        }
+        LARECOMP_APP_INFO("[cap] audio: take armed: {} stream(s) open, {} frame(s) were queued and thrown away, queue length {}, {} frames may be out at once",
+                          before.open_streams, queued, audio->GetSettings().max_queued_frames.Get(), Cap());
+        if (before.open_streams != 1) {
+            LARECOMP_APP_WARN("[cap] audio: {} streams are open: the take counts the frames of all of them as the game's (see capture_audio.cpp CHECK 2)",
+                              before.open_streams);
+        }
+        return static_cast<int64_t>(queued);
+    }
+
+    void Disarm() override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            armed_ = false;
+            tickets_ = 0;
+        }
+        cv_.notify_all();
+        mcla::audio::Tap().Release();
+    }
+
+    // The game is closing (capture_audio::Abort): the mixer is given back as Disarm does, and the take's steps are told (Closed) so that none of them waits
+    // for the mixer any more.
+    void Abandon() {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            closed_ = true;
+        }
+        Disarm();
+    }
+
+    bool Closed() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return closed_;
+    }
+
+    uint64_t Queued() override { return audio_ ? audio_->GetStats().queued_frames : 0; }
+
+    bool Pull(float* out, uint32_t channels) override {
+        return mcla::audio::Tap().Pull(std::span<float>(out, static_cast<size_t>(kMixerFrame) * channels), channels);
+    }
+
+    void Hand(uint64_t n) override {
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            tickets_ += n;
+        }
         cv_.notify_all();
     }
 
-    rex::audio::AudioDriver* TakeReal() {
-        rex::audio::AudioDriver* r = real_;
-        real_ = nullptr;
-        return r;
+    void Wait(uint32_t ms) override {
+        std::unique_lock<std::mutex> lock(mutex_);
+        cv_.wait_for(lock, std::chrono::milliseconds(ms), [&] { return completed_ != seen_; });
+        seen_ = completed_;
     }
 
-    bool Armed() const { return armed_; }
+    uint64_t Cap() override {
+        const uint64_t length = audio_ ? audio_->GetSettings().max_queued_frames.Get() : 8;
+        return length > 1 ? length - 1 : 1;
+    }
 
-    // ---------------------------------------------------------------------------------------------------------------- the take
+    // ---- the audio worker (the game's callback)
 
-    bool Arm(double fps, const std::string& wav_path, const std::string& csv_path_asked, uint64_t first_update) {
-        if (armed_) {
-            LARECOMP_APP_WARN("[cap] audio: a take's audio was still running: closed as it was");
-            Abort();
-        }
-        if (!(fps > 0.0)) return false;
-        channels_ = REXCVAR_GET(mcla_capture_audio_surround) ? 6 : 2;
-        {
-            std::error_code ec;
-            const std::filesystem::path p(wav_path);
-            if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path(), ec);
-        }
-        if (!wav_.Open(wav_path, channels_, kRate)) {
-            LARECOMP_APP_ERROR("[cap] audio: cannot open {}: the take has no sound", wav_path);
-            return false;
-        }
-        std::string csv_path = csv_path_asked;
-        if (csv_path.empty()) {  // none asked for: next to the WAV, `<wav name>.audio.csv`
-            csv_path = wav_path;
-            if (csv_path.size() > 4 && csv_path.compare(csv_path.size() - 4, 4, ".wav") == 0) csv_path.resize(csv_path.size() - 4);
-            csv_path += ".audio.csv";
-        }
-        csv_ = std::fopen(csv_path.c_str(), "wb");
-        if (csv_) {
-            std::fprintf(csv_,
-                         "#cin_capture_audio v1 fps=%g samples_per_frame=%.6f channels=%u first_update=%llu\n"
-                         "frame,update,released,used,discarded,silent,samples,cum_samples,expected_samples,drift_samples,residual,wait_ms,"
-                         "peak,audio_clock_s,audio_ms,lst_calls,lst_ptr,lst_x,lst_y,lst_z\n",
-                         fps, static_cast<double>(kRate) / fps, channels_, static_cast<unsigned long long>(first_update));
-        } else {
-            LARECOMP_APP_WARN("[cap] audio: cannot open {}: the WAV is made without it", csv_path);
-        }
-        wav_path_ = wav_path;
-        fps_ = fps;
-        first_update_ = first_update;
-        book_.Begin(fps);
-        pcm_.clear();
-        frames_ = 0;
-        timeouts_ = 0;
-        timeouts_in_a_row_ = 0;
-        dead_ = false;
-        wav_failed_logged_ = false;
-        last_row_frames_ = 0;
-        wait_sum_ms_ = 0;
-        wait_max_ms_ = 0;
-        steps_ = 0;
-        late_dropped_ = 0;
-        step_released_ = step_used_ = step_discarded_ = step_silent_ = 0;
+    void Enter() {
+        std::unique_lock<std::mutex> lock(mutex_);
+        while (armed_ && tickets_ == 0) cv_.wait(lock);
+        if (armed_) --tickets_;
+        ++running_;
+    }
 
-        // From here the mixer's frames are the take's.
+    void Leave() {
         {
             std::lock_guard<std::mutex> lock(mutex_);
-            queue_.clear();
-            arrived_total_ = 0;
-            capturing_ = true;
+            --running_;
+            ++completed_;
         }
-        // Take every credit of the SDK's queue: those in the semaphore, and those the real output gives back as it plays out what it had
-        // queued. Frames the mixer makes while we do it are the take's queue too (it took a credit before we did).
-        const uint32_t queue_length = SdkQueueLength();
-        uint64_t drained = 0;
-        const auto begin = Clock::now();
-        auto last_change = begin;
-        uint64_t last_total = 0;
-        for (;;) {
-            while (rex::thread::Wait(sem_, false, std::chrono::milliseconds(0)) == rex::thread::WaitResult::kSuccess) ++drained;
-            uint64_t arrived;
-            {
-                std::lock_guard<std::mutex> lock(mutex_);
-                arrived = arrived_total_;
-            }
-            const uint64_t total = drained + arrived;
-            const auto now = Clock::now();
-            if (total != last_total) {
-                last_total = total;
-                last_change = now;
-            }
-            if (queue_length != 0 && total >= queue_length) break;                                  // every credit is in hand
-            if (now - last_change >= std::chrono::milliseconds(150)) break;                           // nothing came for a while
-            if (now - begin >= std::chrono::milliseconds(1500)) break;                                // give up
-            std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        }
-        uint64_t arrived;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            arrived = arrived_total_;
-            preroll_ = static_cast<uint32_t>(queue_.size());
-            queue_.clear();
-        }
-        held_ = drained + arrived;
-        credits_ = static_cast<uint32_t>(held_);
-        if (queue_length != 0 && held_ < queue_length) {
-            // credits still out there (the real output has not played them yet, or the mixer is busy): the frames that come from them
-            // show up in the take's queue as extra frames; Restore counts them as credits back
-            LARECOMP_APP_WARN("[cap] audio: only {} of the {} credits came back in {:.0f} ms; the others come as extra mixer frames during the take",
-                              held_, queue_length, std::chrono::duration<double, std::milli>(Clock::now() - begin).count());
-        }
-        armed_ = true;
-        LARECOMP_APP_INFO("[cap] audio: take armed at {:g} fps = {:.4f} samples per video frame = {:.5f} mixer frames; {} credits taken from the mixer "
-                          "({} drained, {} frames it had mixed ahead thrown away), {} channels, {}",
-                          fps, static_cast<double>(kRate) / fps, static_cast<double>(kRate) / fps / kMixerFrame, held_, drained, preroll_, channels_,
-                          wav_path);
-        return true;
-    }
-
-    // The gate, before the wait for the readback: `n` video frames exist.
-    void StepBegin(uint64_t n) {
-        if (!armed_) return;
-        frames_ = std::max(frames_, n);
-        step_released_ = step_used_ = step_discarded_ = step_silent_ = 0;
-        if (dead_) return;
-        Absorb(false);  // late frames of an earlier step: thrown away, their credits taken back
-        step_released_ += ReleaseSome();
-    }
-
-    // The gate, after the readback.
-    void StepEnd() {
-        if (!armed_) return;
-        const auto t0 = Clock::now();
-        bool timed_out = false;
-        if (!dead_) {
-            const auto deadline = t0 + std::chrono::milliseconds(REXCVAR_GET(mcla_capture_audio_timeout_ms));
-            for (int guard = 0; guard < 4096; ++guard) {
-                bool met;
-                {
-                    std::unique_lock<std::mutex> lock(mutex_);
-                    met = cv_.wait_until(lock, deadline, [&] { return queue_.size() >= book_.QueueNeeded(); });
-                }
-                Absorb(!met);
-                if (!met) {
-                    timed_out = true;
-                    break;
-                }
-                const uint64_t more = ReleaseSome();  // the rest of the video frame's mixer frames when the credits in hand were fewer
-                step_released_ += more;
-                if (more == 0) break;
-            }
-            if (timed_out) {
-                ++timeouts_;
-                ++timeouts_in_a_row_;
-                LARECOMP_APP_WARN("[cap] audio: video frame {}: the mixer gave no frame in {} ms; silence in its place ({} step(s) in a row)", frames_ - 1,
-                                  REXCVAR_GET(mcla_capture_audio_timeout_ms), timeouts_in_a_row_);
-                if (timeouts_in_a_row_ >= kTimeoutsToDead && !dead_) {
-                    dead_ = true;
-                    LARECOMP_APP_ERROR("[cap] audio: {} steps in a row without the mixer: the rest of the take's WAV is silence", timeouts_in_a_row_);
-                }
-            } else {
-                timeouts_in_a_row_ = 0;
-            }
-        }
-        const double wait_ms = std::chrono::duration<double, std::milli>(Clock::now() - t0).count();
-        wait_sum_ms_ += wait_ms;
-        wait_max_ms_ = std::max(wait_max_ms_, wait_ms);
-        ++steps_;
-
-        // the file: exactly what the video frames so far own
-        const uint64_t shortfall = book_.Shortfall(frames_);
-        if (shortfall > 0) {
-            book_.Pad(shortfall);
-            pcm_.insert(pcm_.end(), static_cast<size_t>(shortfall) * channels_, 0.0f);
-        }
-        const uint64_t w = book_.Writable(frames_);
-        float peak = 0.0f;
-        const size_t floats = static_cast<size_t>(w) * channels_;
-        for (size_t i = 0; i < floats && i < pcm_.size(); ++i) peak = std::max(peak, std::fabs(pcm_[i]));
-        if (w > 0) {
-            if (!wav_.Append(pcm_.data(), w) && !wav_failed_logged_) {
-                wav_failed_logged_ = true;
-                LARECOMP_APP_ERROR("[cap] audio: writing {} failed (disk full, or the WAV is at its size limit): the rest of the take's sound is lost", wav_path_);
-            }
-            pcm_.erase(pcm_.begin(), pcm_.begin() + std::min(floats, pcm_.size()));
-        }
-        book_.Wrote(w);
-        if (frames_ > last_row_frames_) {  // one row for each video frame (a gate that saw no new frame has nothing to say)
-            WriteRow(wait_ms, w, peak);
-            last_row_frames_ = frames_;
-        }
-    }
-
-    Summary Finish(uint64_t video_frames) {
-        Summary s;
-        if (!armed_) return s;
-        if (video_frames > frames_) {  // frames the gate did not cover
-            StepBegin(video_frames);
-            StepEnd();
-        }
-        s.ran = true;
-        s.wav = wav_path_;
-        s.channels = channels_;
-        s.fps = fps_;
-        s.video_frames = video_frames;
-        s.samples = book_.Written();
-        s.expected = SamplesThrough(video_frames, fps_);
-        s.mixer_frames = book_.TotalReleased();
-        s.timeouts = timeouts_;
-        s.silent_frames = book_.Silent();
-        s.late_dropped = late_dropped_;
-        s.padded_samples = book_.Padded();
-        s.preroll_frames = preroll_;
-        s.credits = credits_;
-        s.wait_ms_mean = steps_ ? wait_sum_ms_ / static_cast<double>(steps_) : 0.0;
-        s.wait_ms_max = wait_max_ms_;
-        s.wav_failed = wav_.Failed();
-        CloseFiles();
-        s.wav_failed = s.wav_failed || wav_.Failed();
-        s.ok = s.timeouts == 0 && s.samples == s.expected && !s.wav_failed && s.padded_samples == 0;
-        const uint64_t credits_back = held_;
-        Restore();
-        armed_ = false;
-        LARECOMP_APP_INFO("[cap] audio summary frames={} fps={:g} samples={} expected={} ({}) channels={} mixer_frames={} timeouts={} silent_mixer_frames={} "
-                          "late_dropped={} padded_samples={} preroll_frames={} credits={}/{} wait_ms mean/max={:.2f}/{:.2f} wav={}",
-                          s.video_frames, s.fps, s.samples, s.expected, s.samples == s.expected ? "exact" : "NOT EXACT", s.channels, s.mixer_frames, s.timeouts,
-                          s.silent_frames, s.late_dropped, s.padded_samples, s.preroll_frames, credits_back, s.credits, s.wait_ms_mean, s.wait_ms_max, s.wav);
-        if (!s.ok) LARECOMP_APP_ERROR("[cap] audio: the take's sound is not clean (see the lines above): {}", s.wav);
-        return s;
-    }
-
-    // The take stopped without Finish (the game shut down): the files are closed as they are.
-    void Abort() {
-        if (!armed_) {
-            CloseFiles();
-            return;
-        }
-        CloseFiles();
-        Restore();  // the credits in hand go back, so the mixer is not left without them
-        armed_ = false;
+        cv_.notify_all();
     }
 
   private:
-    // The queue's frames: late ones of a step that gave up are thrown away, this take's are folded onto the timeline. `give_up`: the wait ran
-    // out, whatever is outstanding goes in as silence.
-    void Absorb(bool give_up) {
-        std::vector<Frame> used;
-        Book::Pop p;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            p = book_.Consume(queue_.size());
-            for (uint64_t i = 0; i < p.discard; ++i) queue_.pop_front();
-            for (uint64_t i = 0; i < p.use; ++i) {
-                used.push_back(queue_.front());
-                queue_.pop_front();
-            }
-        }
-        held_ += p.discard + p.use;  // each frame taken off the queue is a credit back
-        late_dropped_ += p.discard;
-        step_used_ += p.use;
-        step_discarded_ += p.discard;
-        for (const Frame& f : used) Convert(f);
-        if (give_up && book_.Outstanding() > 0) {
-            const uint64_t n = book_.GiveUp();
-            step_silent_ += n;
-            pcm_.insert(pcm_.end(), static_cast<size_t>(n) * kMixerFrame * channels_, 0.0f);
-        }
-    }
-
-    // One mixer frame: folded to the WAV's channels as the real output would (the SDK's own fold and gain).
-    void Convert(const Frame& f) {
-        float out[kFrameFloats];
-        if (channels_ == 2) {
-            rex::audio::conversion::sequential_6_BE_to_interleaved_2_LE(out, f.data, kMixerFrame, rex::audio::GetStereoFold(), rex::audio::GetOutputGain());
-        } else {
-            rex::audio::conversion::sequential_6_BE_to_interleaved_6_LE(out, f.data, kMixerFrame, rex::audio::GetSurroundMix(), rex::audio::GetOutputGain());
-        }
-        pcm_.insert(pcm_.end(), out, out + static_cast<size_t>(kMixerFrame) * channels_);
-    }
-
-    // The credits the book wants released for the frames so far, as many as are in hand. Returns how many went.
-    uint64_t ReleaseSome() {
-        const uint64_t give = std::min(book_.Wanted(frames_), held_);
-        const uint64_t done = ReleaseCredits(give);
-        if (done > 0) {
-            book_.Released(done);
-            held_ -= done;
-        }
-        return done;
-    }
-
-    // `n` credits into the semaphore. One call; when that would exceed what the semaphore holds (credits that came from the real output after
-    // the drain), one at a time until it is full. Returns how many went in.
-    uint64_t ReleaseCredits(uint64_t n) {
-        if (n == 0) return 0;
-        if (sem_->Release(static_cast<int>(n), nullptr)) return n;
-        uint64_t done = 0;
-        while (done < n && sem_->Release(1, nullptr)) ++done;
-        return done;
-    }
-
-    void WriteRow(double wait_ms, uint64_t samples, float peak) {
-        if (!csv_) return;
-        float clock_s = 0.0f;
-        uint32_t clock_ms = 0;
-        if (const uint8_t* base = Membase()) {
-            clock_s = GuestFloat(base, kAudioClockF);
-            std::memcpy(&clock_ms, base + kAudioClockMs, 4);
-            clock_ms = Swap32(clock_ms);
-        }
-        float lx, ly, lz;
-        const uint32_t bx = g_lst_bits[0].load(), by = g_lst_bits[1].load(), bz = g_lst_bits[2].load();
-        std::memcpy(&lx, &bx, 4);
-        std::memcpy(&ly, &by, 4);
-        std::memcpy(&lz, &bz, 4);
-        const uint64_t frame = frames_ > 0 ? frames_ - 1 : 0;
-        const uint64_t cum = book_.Written();
-        const uint64_t expected = book_.Target(frames_);
-        std::fprintf(csv_, "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%lld,%llu,%.3f,%.6f,%.6f,%u,%u,0x%08X,%.6f,%.6f,%.6f\n",
-                     static_cast<unsigned long long>(frame), static_cast<unsigned long long>(first_update_ + frame),
-                     static_cast<unsigned long long>(step_released_), static_cast<unsigned long long>(step_used_),
-                     static_cast<unsigned long long>(step_discarded_), static_cast<unsigned long long>(step_silent_),
-                     static_cast<unsigned long long>(samples), static_cast<unsigned long long>(cum), static_cast<unsigned long long>(expected),
-                     static_cast<long long>(cum) - static_cast<long long>(expected), static_cast<unsigned long long>(book_.Available()), wait_ms, peak,
-                     clock_s, clock_ms, g_lst_calls.load(), g_lst_ptr.load(), lx, ly, lz);
-    }
-
-    void CloseFiles() {
-        wav_.Close();
-        if (csv_) {
-            std::fclose(csv_);
-            csv_ = nullptr;
-        }
-    }
-
-    // The take is over: frames go to the real output again and it gets its mixer back (every credit in hand goes into the semaphore).
-    void Restore() {
-        uint64_t extra;
-        {
-            std::lock_guard<std::mutex> lock(mutex_);
-            capturing_ = false;
-            announce_restore_ = true;
-            extra = queue_.size();  // frames nobody asked for (credits from the real output that came after the drain): their credits are ours too
-            queue_.clear();
-        }
-        held_ += extra;
-        const uint64_t back = ReleaseCredits(held_);
-        if (back < held_) {
-            LARECOMP_APP_WARN("[cap] audio: gave {} of {} credits back to the mixer (the semaphore was full: the real output had returned the rest)", back, held_);
-        }
-        held_ = 0;
-    }
-
-    rex::thread::Semaphore* sem_;
-    rex::audio::AudioDriver* real_;
-    size_t index_ = 0;  // the SDK's client
-    bool primary_ = false;
-
-    // the mixer's side (the audio worker's thread writes, the game thread reads)
+    rex::apu::IAudioSystem* audio_ = nullptr;
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::deque<Frame> queue_;
-    bool capturing_ = false;
-    bool announce_restore_ = false;  // log the first frame that goes to the real output again
-    uint64_t arrived_total_ = 0;
-
-    // the take (game thread)
-    bool armed_ = false;
-    bool dead_ = false;
-    bool wav_failed_logged_ = false;
-    Book book_;
-    WavFile wav_;
-    std::FILE* csv_ = nullptr;
-    std::string wav_path_;
-    std::vector<float> pcm_;  // the timeline's samples not yet written, interleaved
-    uint32_t channels_ = 2;
-    double fps_ = 60.0;
-    uint64_t first_update_ = 0;
-    uint64_t frames_ = 0;     // video frames the take has so far
-    uint64_t last_row_frames_ = 0;  // ... and how many the CSV has a row for
-    uint64_t held_ = 0;       // credits in hand
-    uint32_t credits_ = 0, preroll_ = 0;
-    uint64_t late_dropped_ = 0, steps_ = 0;
-    uint32_t timeouts_ = 0, timeouts_in_a_row_ = 0;
-    double wait_sum_ms_ = 0, wait_max_ms_ = 0;
-    uint64_t step_released_ = 0, step_used_ = 0, step_discarded_ = 0, step_silent_ = 0;
+    bool armed_ = false;       // a take runs: callbacks wait for a ticket
+    bool closed_ = false;      // the game is closing (Abandon): the take's steps do not wait; Arm clears it
+    uint64_t tickets_ = 0;     // handed, not yet taken by a callback
+    int running_ = 0;          // callbacks between their gate and their end
+    uint64_t completed_ = 0;   // callbacks finished
+    uint64_t seen_ = 0;        // completed_ as Wait last saw it
 };
+
+RealMixer& Mixer() {
+    static RealMixer mixer;
+    return mixer;
+}
+
+// ---------------------------------------------------------------------------------------------------------------- the take
+
+Session& g_session = larecomp::Leak<Session>();
+Summary& g_last = larecomp::Leak<Summary>();
+std::atomic<bool> g_active{false};
+std::FILE* g_csv = nullptr;
+uint64_t g_first_update = 0;
+
+void CloseCsv() {
+    if (g_csv) {
+        std::fclose(g_csv);
+        g_csv = nullptr;
+    }
+}
+
+void LogLine(int level, const std::string& line) {
+    if (level >= 2) {
+        LARECOMP_APP_ERROR("[cap] audio: {}", line);
+    } else if (level == 1) {
+        LARECOMP_APP_WARN("[cap] audio: {}", line);
+    } else {
+        LARECOMP_APP_INFO("[cap] audio: {}", line);
+    }
+}
+
+void WriteRow(const StepRow& r) {
+    if (!g_csv) return;
+    float clock_s = 0.0f;
+    uint32_t clock_ms = 0;
+    if (const uint8_t* base = larecomp::guest::Membase()) {
+        clock_s = GuestFloat(base, kAudioClockF);
+        std::memcpy(&clock_ms, base + kAudioClockMs, 4);
+        clock_ms = Swap32(clock_ms);
+    }
+    float lx, ly, lz;
+    const uint32_t bx = g_lst_bits[0].load(), by = g_lst_bits[1].load(), bz = g_lst_bits[2].load();
+    std::memcpy(&lx, &bx, 4);
+    std::memcpy(&ly, &by, 4);
+    std::memcpy(&lz, &bz, 4);
+    std::fprintf(g_csv, "%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%llu,%lld,%llu,%.3f,%.6f,%.6f,%u,%u,0x%08X,%.6f,%.6f,%.6f\n",
+                 static_cast<unsigned long long>(r.frame), static_cast<unsigned long long>(g_first_update + r.frame),
+                 static_cast<unsigned long long>(r.released), static_cast<unsigned long long>(r.used), static_cast<unsigned long long>(r.discarded),
+                 static_cast<unsigned long long>(r.silent), static_cast<unsigned long long>(r.samples), static_cast<unsigned long long>(r.cum),
+                 static_cast<unsigned long long>(r.expected), static_cast<long long>(r.drift), static_cast<unsigned long long>(r.residual), r.wait_ms,
+                 r.peak, clock_s, clock_ms, g_lst_calls.load(), g_lst_ptr.load(), lx, ly, lz);
+}
 
 }  // namespace
 
@@ -605,84 +331,88 @@ void NoteListener(uint32_t pos, const uint8_t* base) {
     g_lst_calls.fetch_add(1, std::memory_order_relaxed);
 }
 
+// ---------------------------------------------------------------------------------------------------------------- the gate
+
+MixerGate::MixerGate() { Mixer().Enter(); }
+
+MixerGate::~MixerGate() { Mixer().Leave(); }
+
 // ---------------------------------------------------------------------------------------------------------------- the interface
 
-namespace {
-// The audio system that can install the driver (audio_output.h); the mutex keeps it alive for the length of an InstallCapture call.
-std::mutex g_host_mutex;
-DriverHost* g_host = nullptr;
-}  // namespace
-
-void SetHost(DriverHost* host) {
-    std::lock_guard<std::mutex> lock(g_host_mutex);
-    g_host = host;
-}
-
-rex::audio::AudioDriver* WrapDriver(rex::memory::Memory* memory, rex::thread::Semaphore* frame_semaphore, rex::audio::AudioDriver* real, size_t index) {
-    return new CaptureOutputDriver(memory, frame_semaphore, real, index);
-}
-
-bool IsCaptureDriver(const rex::audio::AudioDriver* driver) {
-    return dynamic_cast<const CaptureOutputDriver*>(driver) != nullptr;
-}
-
-rex::audio::AudioDriver* Unwrap(rex::audio::AudioDriver* driver) {
-    auto* ours = dynamic_cast<CaptureOutputDriver*>(driver);
-    if (!ours) return driver;
-    rex::audio::AudioDriver* real = ours->TakeReal();
-    delete ours;
-    return real;
-}
-
-bool Begin(double fps, const std::string& wav_path, const std::string& csv_path, uint64_t first_update) {
+bool Begin(double fps, const std::string& wav_path, const std::string& csv_path_asked, uint64_t first_update) {
     g_last = Summary{};
-    CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire);
-    switch (PlanDriver(REXCVAR_GET(mcla_capture_audio), d != nullptr)) {
-        case DriverPlan::kNone:
-            LARECOMP_APP_INFO("[cap] audio: mcla_capture_audio is off: the real output plays during the take and no WAV is made");
-            return false;
-        case DriverPlan::kInstallThenArm: {
-            // the first take with sound: the driver goes in front of the real output now (and not before: the game's audio is the stock one until here)
-            bool installed = false;
-            {
-                std::lock_guard<std::mutex> lock(g_host_mutex);
-                installed = g_host && g_host->InstallCapture();
-            }
-            if (installed) d = g_driver.load(std::memory_order_acquire);
-            if (d) {
-                LARECOMP_APP_INFO("[cap] audio: client {} is the capture driver's: installed in front of the real output as the take starts; the take takes its mixer over", d->Index());
-            }
-            break;
-        }
-        case DriverPlan::kArm:
-            break;
-    }
-    if (!d) {
-        LARECOMP_APP_WARN("[cap] audio: no capture driver (the game's audio system is not the one audio_output.h makes, or it has no render client yet): the take has no sound");
+    CloseCsv();
+    if (!larecomp::settings::mcla_capture_audio.Get()) {
+        LARECOMP_APP_INFO("[cap] audio: mcla_capture_audio is off: the real output plays during the take and no WAV is made");
         return false;
     }
-    return d->Arm(fps, wav_path, csv_path, first_update);
+    Session::Config cfg;
+    cfg.fps = fps;
+    cfg.channels = larecomp::settings::mcla_capture_audio_surround.Get() ? 6 : 2;
+    cfg.timeout_ms = larecomp::settings::mcla_capture_audio_timeout_ms.Get();
+    cfg.wav_path = wav_path;
+    cfg.log = &LogLine;
+    cfg.row = &WriteRow;
+    g_first_update = first_update;
+    if (!g_session.Begin(Mixer(), cfg)) {
+        g_active.store(false, std::memory_order_release);
+        return false;
+    }
+    g_active.store(true, std::memory_order_release);
+
+    std::string csv_path = csv_path_asked;
+    if (csv_path.empty()) {  // none asked for: next to the WAV, `<wav name>.audio.csv`
+        csv_path = wav_path;
+        if (csv_path.size() > 4 && csv_path.compare(csv_path.size() - 4, 4, ".wav") == 0) csv_path.resize(csv_path.size() - 4);
+        csv_path += ".audio.csv";
+    }
+    g_csv = std::fopen(csv_path.c_str(), "wb");
+    if (g_csv) {
+        std::fprintf(g_csv,
+                     "#cin_capture_audio v2 fps=%g samples_per_frame=%.6f channels=%u first_update=%llu\n"
+                     "frame,update,released,used,discarded,silent,samples,cum_samples,expected_samples,drift_samples,residual,wait_ms,"
+                     "peak,audio_clock_s,audio_ms,lst_calls,lst_ptr,lst_x,lst_y,lst_z\n",
+                     fps, static_cast<double>(kRate) / fps, cfg.channels, static_cast<unsigned long long>(first_update));
+    } else {
+        LARECOMP_APP_WARN("[cap] audio: cannot open {}: the WAV is made without it", csv_path);
+    }
+    LARECOMP_APP_INFO("[cap] audio: take's sound at {:g} fps = {:.4f} samples per video frame = {:.5f} mixer frames, {} channels, {}", fps,
+                      static_cast<double>(kRate) / fps, static_cast<double>(kRate) / fps / kMixerFrame, cfg.channels, wav_path);
+    return true;
 }
 
-void StepBegin(uint64_t video_frames) {
-    if (CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire)) d->StepBegin(video_frames);
-}
+void StepBegin(uint64_t video_frames) { g_session.StepBegin(video_frames); }
 
-void StepEnd() {
-    if (CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire)) d->StepEnd();
-}
+void StepEnd() { g_session.StepEnd(); }
 
 Summary End(uint64_t video_frames) {
-    CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire);
-    if (!d || !d->Armed()) return Summary{};
-    g_last = d->Finish(video_frames);
+    if (!g_session.Armed()) return Summary{};
+    g_last = g_session.Finish(video_frames);
+    g_active.store(false, std::memory_order_release);
+    CloseCsv();
+    const Summary& s = g_last;
+    LARECOMP_APP_INFO("[cap] audio summary frames={} fps={:g} samples={} expected={} ({}) channels={} mixer_frames={} timeouts={} silent_mixer_frames={} "
+                      "late_dropped={} padded_samples={} preroll_frames={} wait_ms mean/max={:.2f}/{:.2f} wav={}",
+                      s.video_frames, s.fps, s.samples, s.expected, s.samples == s.expected ? "exact" : "NOT EXACT", s.channels, s.mixer_frames, s.timeouts,
+                      s.silent_frames, s.late_dropped, s.padded_samples, s.preroll_frames, s.wait_ms_mean, s.wait_ms_max, s.wav);
+    if (!s.ok) LARECOMP_APP_ERROR("[cap] audio: the take's sound is not clean (see the lines above): {}", s.wav);
     return g_last;
 }
 
-bool Active() {
-    CaptureOutputDriver* d = g_driver.load(std::memory_order_acquire);
-    return d && d->Armed();
+void Abort() {
+    if (g_active.load(std::memory_order_acquire)) {
+        LARECOMP_APP_WARN("[cap] audio: the game is closing during a take: the mixer is given back");
+    }
+    Mixer().Abandon();
 }
+
+void CloseForExit() {
+    uint64_t frames = 0;
+    if (!g_session.CloseWavForExit(&frames)) return;
+    LARECOMP_APP_WARN("[cap] audio: the game ended during a take: its WAV was closed with the {} sample frames written so far (the take is incomplete)", frames);
+}
+
+bool Active() { return g_active.load(std::memory_order_acquire); }
 
 const Summary& LastSummary() {
     return g_last;

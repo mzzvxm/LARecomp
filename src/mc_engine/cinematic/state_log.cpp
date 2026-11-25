@@ -24,12 +24,13 @@
 //
 
 #include "state_log.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include <algorithm>
 #include <chrono>
@@ -64,13 +65,7 @@
 #include "larecomp_log.h"
 #include "scene_runtime.h"
 #include "state_log_core.h"
-
-REXCVAR_DEFINE_STRING(mcla_state_log, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT: write one CSV row per game update (the player's and the scene's cars, the camera, the hour and weather, the "
-    "clocks, the scene clock, the random number state) to this .csv file, or to state.csv in this folder, for take_diff.py. Rows "
-    "are written while the player has a car. A scene's `statelog on` asks for the same. Empty: off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
+#include "larecomp_guest.h"
 
 namespace mc::cinematic::statelog {
 
@@ -103,8 +98,8 @@ constexpr uint32_t kPublishedCamera = 4272;         // + right, up, forward, pos
 
 // ---------------------------------------------------------------- guest memory, fault-proof (a stale pointer costs a row, not the run)
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // No C++ objects with destructors in here: a function that carries __try cannot unwind them.
@@ -172,9 +167,9 @@ bool ReadByte(uint32_t ea, uint8_t* b) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 // The local player's racer (the same two getters scene_runtime.cpp and M4's cars.cpp call), or 0.
@@ -184,8 +179,8 @@ uint32_t PlayerRacer() {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -207,8 +202,8 @@ std::string Stamp() {
 
 double FixedStepFps() {
     // The fixed step is capture mode's (M2a: mcla_fixed_step_fps); this file does not depend on it being in the build.
-    if (!rex::cvar::GetFlagInfo("mcla_fixed_step_fps")) return 0.0;
-    return std::atof(rex::cvar::GetFlagByName("mcla_fixed_step_fps").c_str());
+    if (!larecomp::cvar::GetFlagInfo("mcla_fixed_step_fps")) return 0.0;
+    return std::atof(larecomp::cvar::GetFlagByName("mcla_fixed_step_fps").c_str());
 }
 
 struct State {
@@ -232,7 +227,7 @@ struct State {
     std::string take_dir;
     const CarSource* cars = nullptr;
 };
-State g;
+State& g = larecomp::Leak<State>();
 std::mutex g_path_mutex;  // CurrentLogPath() may be asked from another thread
 
 void CloseLog(const char* why) {
@@ -283,7 +278,7 @@ void OpenLog(const std::string& key, const std::string& cvar_value) {
 
 // Opens, keeps, switches or closes the log so that it is what is asked for now. Cheap when nothing changed.
 void Reconcile() {
-    const std::string& cvar = REXCVAR_GET(mcla_state_log);
+    const std::string& cvar = larecomp::settings::mcla_state_log.Get();
     std::string want_key;
     if (!cvar.empty()) want_key = "cvar:" + cvar;
     else if (g.scene_wants) want_key = "scene:" + std::to_string(g.scene_serial);
@@ -358,7 +353,7 @@ void Gather(Sample& m) {
 
 void Tick() {
     // Cheap exit: nothing asked for and nothing open.
-    if (REXCVAR_GET(mcla_state_log).empty() && !g.scene_wants && g.open_key.empty()) return;
+    if (larecomp::settings::mcla_state_log.Get().empty() && !g.scene_wants && g.open_key.empty()) return;
     Reconcile();
     if (!g.writer || !g.writer->IsOpen()) return;
 
@@ -417,6 +412,10 @@ bool Active() {
     return g.writer && g.writer->IsOpen();
 }
 
+void CloseForExit() {
+    CloseLog("the game is ending");
+}
+
 std::string CurrentLogPath() {
     std::lock_guard<std::mutex> lock(g_path_mutex);
     return g.path;
@@ -436,6 +435,7 @@ void NoteMark(const std::string&) {}
 void SetTakeFolder(const std::string&) {}
 bool RegisterCarSource(const CarSource*) { return false; }
 bool Active() { return false; }
+void CloseForExit() {}
 std::string CurrentLogPath() { return {}; }
 }  // namespace mc::cinematic::statelog
 

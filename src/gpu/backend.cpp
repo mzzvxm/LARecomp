@@ -4,9 +4,10 @@
 #include "backend.h"
 #include "gpu.h"
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "backend_impl.h"
+#include "present_rules.h"
 
 // The active backend's version of `call`. With one backend in the build there
 // is nothing to choose.
@@ -229,6 +230,14 @@ std::string DescribeDevice(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DescribeDevice(device));
 }
 
+AdapterIds QueryAdapterIds(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(QueryAdapterIds(device));
+}
+
+std::string DescribeCapabilities(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(DescribeCapabilities(device));
+}
+
 VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryVideoMemory(device));
 }
@@ -263,6 +272,17 @@ std::string DescribeLossReporting(plume::RenderDevice* device, void* probe) {
 
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {
   return MCLA_GPU_ACTIVE(QueryPresentStatistics(swap_chain, out));
+}
+
+PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    return d3d12::PresentNowait(swap_chain);
+  }
+#else
+  (void)swap_chain;
+#endif
+  return PresentResult::kFailed;
 }
 
 NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
@@ -300,6 +320,10 @@ void ForgetImageContents(plume::RenderTexture* texture) {
 
 UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryUpscalerSupport(device));
+}
+
+WaveOps QueryWaveOps(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(QueryWaveOps(device));
 }
 
 SwapChainFactoryScope::SwapChainFactoryScope(plume::RenderDevice* device,

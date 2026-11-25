@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variants/stage_constants.h"
 #include "shaderpack/variants/text_edit.h"
 
 namespace larecomp::shaderpack {
@@ -33,9 +34,47 @@ constexpr std::string_view kAfterSharpRead =
     "\n\tcarRefl = CarReflTrace(iTexCoord1.xyz, iTexCoord2.xyz, iTexCoord6.xyz);"
     "\n\tr10.xyz = CarReflApply(r10.xyz, carRefl, 1.0);";
 constexpr std::string_view kAfterBlurredRead = "\n\tr13.xyz = CarReflApply(r13.xyz, carRefl, 0.5);";
-// The debug view: replaces the colour; iTexCoord4.w is the baked vertex AO (r4.w of the game's lines).
+// Version 8: the clear coat's layer over the paint's finished colour (CarReflCoat: a reflection of another car at the coat's own fresnel), then the debug view, which replaces the colour;
+// iTexCoord4.w is the baked vertex AO (r4.w of the game's lines).
 constexpr std::string_view kAfterFinalWrite =
+    "\n\toC0.xyz = CarReflCoat(oC0.xyz, carRefl);"
     "\n\t[branch] if (g_CarReflB.y > 0.5) { oC0.xyz = CarReflDebug(carRefl, iTexCoord4.w); }";
+
+// The TRAFFIC paint (xAmbientCarPaint::PSAmbientCarPaint, the parked and moving cars' cheap paint, version 9): the same two environment reads of the same dual paraboloid, as plain tfetch2D
+// (no gradients) at r0.xy: the sharp one into r4.xyz, the pre-blurred one into r0.xyz (the colours the shader goes on to mix by its fresnel-like term); its last write has all four components.
+// The vertex shader's outputs in the order the pixel shader receives them (xAmbientCarPaint__VSAmbientCarPaint.hlsl: oTexCoord0.xyz = the world position (x, y, z), oTexCoord1.xyz = the
+// normal of the car's matrices, oTexCoord4 = (V, N.V) with V towards the camera): there is no baked AO in it, so the debug view's AO is 1.
+constexpr std::string_view kTrafficSharpRead =
+    "r4.xyz = tfetch2D(dpFrontSampler_Texture2DDescriptorIndex, dpFrontSampler_SamplerDescriptorIndex, r0.xy, float2(0, 0)).xyz;";
+constexpr std::string_view kTrafficBlurredRead =
+    "r0.xyz = tfetch2D(dpSpecFrontSampler_Texture2DDescriptorIndex, dpSpecFrontSampler_SamplerDescriptorIndex, r0.xy, float2(0, 0)).xyz;";
+constexpr std::string_view kTrafficFinalWrite = "oC0.xyzw = max(r1.xyzw, r1.xyzw);";
+constexpr std::string_view kTrafficAfterSharpRead =
+    "\n\tcarRefl = CarReflTrace(iTexCoord0.xyz, iTexCoord1.xyz, iTexCoord4.xyz);"
+    "\n\tr4.xyz = CarReflApply(r4.xyz, carRefl, 1.0);";
+constexpr std::string_view kTrafficAfterBlurredRead = "\n\tr0.xyz = CarReflApply(r0.xyz, carRefl, 0.5);";
+constexpr std::string_view kTrafficAfterFinalWrite = "\n\t[branch] if (g_CarReflB.y > 0.5) { oC0.xyz = CarReflDebug(carRefl, 1.0); }";
+// The traffic paint takes the host's ray traced image ALONE (RT-TRAFFIC-REFL): the screen-space march of the customisable paint is not run for it, so the paint is the game's, bit for bit, wherever the
+// image has no answer (a device that cannot trace, a frame with no image, a car the pass did not trace, a texel it has no data for). Two edits of the helper's copy that goes into the traffic
+// text (the paint's own helper is untouched): an early return when the frame has no image at all (the constants' flag, before any read of the history), and a return where the march would begin.
+constexpr std::string_view kHelperBeforeSettingsB = "    const float4 more = g_CarReflB;\n";
+constexpr std::string_view kHelperNoImage =
+    "    // The traffic paint (RT-TRAFFIC-REFL, version 9): the host's ray traced image is its only source, a frame without one is the game's paint.\n"
+    "    if ((g_CarReflC.w & 1u) == 0u)\n"
+    "    {\n"
+    "        return result;\n"
+    "    }\n";
+constexpr std::string_view kHelperMarchStart = "    // 2. The march: ";
+constexpr std::string_view kHelperNoMarch =
+    "    // The traffic paint: no march where the image has no data here (the game's paint stays).\n"
+    "    return result;\n"
+    "\n";
+// The debug view reads the exponent bias the target's colours are scaled by (gInvColorExpBias, the game's pixel constant c27 for every shader that writes the main target): the traffic paint
+// does not declare it (it reads no such constant), so the edit declares it where the shader declares its own pixel constants (DL4 is the last of them, in both backends).
+constexpr std::string_view kTrafficSpirvDl4 = "#define DL4 vk::RawBufferLoad<float4>(g_PushConstants.PixelShaderConstants + 1616, 0x10)\n";
+constexpr std::string_view kTrafficDxilDl4 = "\tfloat4 DL4 : packoffset(c101);\n";
+constexpr std::string_view kTrafficSpirvExpBias = "#define gInvColorExpBias vk::RawBufferLoad<float4>(g_PushConstants.PixelShaderConstants + 432, 0x10)\n";
+constexpr std::string_view kTrafficDxilExpBias = "\tfloat4 gInvColorExpBias : packoffset(c27);\n";
 
 // The helper and its types, before main. The constants are declared by the two edits below it. (Three raw strings that join: the
 // compiler's limit for one string literal is 16 KB.)
@@ -68,7 +107,9 @@ struct CarReflResult
     float face;     // 0..1: 1 the ray met the surface the camera sees from its front, 0 it reached it from behind (a hidden face)
     float dist;     // the hit's distance as a share of the ray length
     float state;    // debug: 0 off, 1 the shaded point is not in the history, 2 the ray left the picture, 3 no hit, 4 hit
-    float rt;       // debug, version 5: 0 the ray traced image was not read, 1 it has no data here (the march ran), 2 it says no hit, 3 a hit on a part the camera sees, 4 on one it does not
+    float rt;       // debug, version 5: 0 the ray traced image was not read, 1 it has no data here (the march ran), 2 it says no hit, 3 a hit on the player's own part (or nothing of another car), 4 on another car (version 8: the sign of the image's code)
+    float coat;     // version 8: the weight of the hit that is on ANOTHER CAR (hit x the share of the image's weight with the sign): what the clear coat's layer takes by the fresnel
+    float nv;       // version 8: N.V of the shaded point (the layer's fresnel)
 };
 
 // What the helpers need of the ray: the matrix to the history frame's clip space, the ray, the image's size, the slack of a slanted
@@ -205,7 +246,7 @@ bool CarReflSample(Texture2D<float4> history, CarReflRay ray, float t, out CarRe
     }
     const float4 texel = CarReflLoad(history, ray.size, uv);
     p.t = t;
-    p.on = (texel.a > 0.0) ? 1.0 : 0.0;
+    p.on = (texel.a > 0.0) ? 1.0f : 0.0f;
     p.diff = c.w - texel.a;
     p.stored = texel.a;
     p.uv = uv;
@@ -234,15 +275,17 @@ bool CarReflInWindow(CarReflPoint p, CarReflRay ray)
 // half size image's blocks at a hit's edge; only the texels the history shows at the paint's own distance (the same surface) count, a
 // texel with no data is left out, and the image answers where the texels with data are at least half of those that are that surface
 // (else the march). The weight is the share of the footprint that hits, the colour the mean of the hits' (a miss's black does not darken a hit).
+// Version 8: the code's sign is "mostly on ANOTHER CAR" (it was "mostly on parts the camera does not see"): `car` is the share of the weight with that sign over the footprint.
 struct CarReflRtRead
 {
     float use;       // 1: the image answers
     float weight;    // 0..1
     float3 colour;   // in the history's units
-    float state;     // 1 no data, 2 no hit, 3 a hit on a part the camera sees, 4 on one it does not
+    float car;       // 0..1: the share of the weight that is on another car
+    float state;     // 1 no data, 2 no hit, 3 a hit on the player's own part, 4 on another car
 };
 
-CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot)
+CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv, float depth, float tolerance, uint slot, uint flags)
 {
     CarReflRtRead r = (CarReflRtRead)0;
     r.state = 1.0;
@@ -256,7 +299,7 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
     float geometry = 0.0;
     float known = 0.0;
     float weight = 0.0;
-    float hidden = 0.0;
+    float car = 0.0;
     float3 colour = float3(0.0, 0.0, 0.0);
     [unroll]
     for (int k = 0; k < 9; ++k)
@@ -265,7 +308,9 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
         const int2 texel = clamp(int2(nearest) + offset, int2(0, 0), last);
         const float wb = wx[k % 3] * wy[k / 3];
         const float4 h = history.Load(int3(texel, 0));
-        const float agree = (h.a > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(h.a - depth)) : 0.0;
+        // Version 10 (RT-PARKED-PAINT): the history holds a PARKED car's texels with the negated distance (flags bit 2: this draw is a parked car's); the others' alpha is read as it is
+        const float texelDistance = ((flags & 4u) != 0u) ? abs(h.a) : h.a;
+        const float agree = (texelDistance > 0.0) ? 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(texelDistance - depth)) : 0.0;
         const float wg = wb * agree;
         geometry += wg;
         const float4 t = image.Load(int3(texel, 0));
@@ -275,7 +320,7 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
             const float wt = saturate(code - 1.0);
             known += wg;
             weight += wg * wt;
-            hidden += (t.a < 0.0) ? wg * wt : 0.0;
+            car += (t.a < 0.0) ? wg * wt : 0.0;
             colour += wg * wt * t.rgb;
         }
     }
@@ -284,7 +329,10 @@ CarReflRtRead CarReflRtLookup(Texture2D<float4> history, float2 size, float2 uv,
         r.use = 1.0;
         r.weight = weight / known;
         r.colour = (weight > 1e-5) ? colour / weight : float3(0.0, 0.0, 0.0);
-        r.state = (r.weight <= 0.02) ? 2.0 : ((hidden > 0.5 * weight) ? 4.0 : 3.0);
+        r.car = (weight > 1e-5) ? saturate(car / weight) : 0.0;
+        // The f suffixes are needed: a ternary of bare literals is double precision in HLSL, and here dxc kept it as `select double` in the DXIL, which a GPU without
+        // double precision (the Intel iGPUs) refuses to create (D3D12: "Shader uses double precision float ops"). Version 9.
+        r.state = (r.weight <= 0.02) ? 2.0f : ((car > 0.5 * weight) ? 4.0f : 3.0f);
     }
     return r;
 }
@@ -418,6 +466,7 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     {
         return result;
     }
+    result.nv = nv;
 
     CarReflRay ray;
     ray.m0 = g_CarReflM0;
@@ -448,8 +497,10 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     ray.slack = CarReflSlack(start.w, ray.size.y, length(float3(ray.m0.y, ray.m1.y, ray.m2.y)), nv);
     ray.shape = CarReflWindowShape(start.w, ray.thickness, ray.slack);
     const float tolerance = 0.06 + 0.02 * start.w + ray.slack;
-    const float agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(own.a - start.w));
-    if (!(own.a > 0.0) || agreement <= 0.0)
+    // Version 10 (RT-PARKED-PAINT): the history holds a parked car's texels with the negated distance; the constants' flags bit 2 says this draw is a parked car's (src/gpu/car_selfrefl_rules.h kParkedFlag)
+    const float ownDistance = ((slots.w & 4u) != 0u) ? abs(own.a) : own.a;
+    const float agreement = 1.0 - smoothstep(0.5 * tolerance, tolerance, abs(ownDistance - start.w));
+    if (!(ownDistance > 0.0) || agreement <= 0.0)
     {
         return result;
     }
@@ -461,14 +512,15 @@ CarReflResult CarReflTrace(float3 world, float3 normal, float3 viewVector)
     // another vehicle) the march runs as before; with the bit clear this block does nothing and the output is version 4's.
     if ((slots.w & 1u) != 0u)
     {
-        const CarReflRtRead rt = CarReflRtLookup(history, ray.size, startUv, start.w, 2.0 * (0.01 + 0.004 * start.w + ray.slack), slots.z);
+        const CarReflRtRead rt = CarReflRtLookup(history, ray.size, startUv, start.w, 2.0 * (0.01 + 0.004 * start.w + ray.slack), slots.z, slots.w);
         result.rt = rt.state;
         if (rt.use > 0.5)
         {
             result.colour = min(max(rt.colour, 0.0) * more.z, 64.0);
             result.face = 1.0;
             result.hit = rt.weight * agreement;
-            result.state = (result.hit > 0.02) ? 4.0 : 3.0;
+            result.coat = result.hit * rt.car;
+            result.state = (result.hit > 0.02) ? 4.0f : 3.0f;
             return result;
         }
     }
@@ -543,10 +595,35 @@ float3 CarReflApply(float3 env, CarReflResult hit, float share)
     return env * (1.0 - kCarReflDark * weight);
 }
 
-// The debug views of g_CarReflB.y: 1 the hit weight, 2 the colour the ray sees, 3 the paint's baked vertex AO, 4 the
-// state of the trace (red: the point is not in the history, blue: the ray left the picture, green: no hit, yellow: a hit,
-// orange where the hit is the hidden face; brighter the heavier), 5 the ray traced image's state at the pixel. The write of the colour is scaled by the exponent bias of
-// the target, so they are in its units.
+// Version 8 (RT-HIT-SHADING-4; car_rt_hit_rules.h CoatLayerFresnel, CoatLayerAmount, CoatLayerMix are the same arithmetic): the clear coat's LAYER over the paint's finished colour. The paint's own
+// reflection of the environment is a few percent of what it reflects at a grazing view (a door seen along its plane); a real clear coat, a dielectric over the paint, reflects a car beside it
+// at its own fresnel (Schlick, F0 0.04, power 5: 0.07 at N.V 0.5, 0.20 at 0.3, 0.36 at 0.2). For the reflection of ANOTHER CAR only (the ray traced image's sign) the layer takes
+// that fresnel of the paint's colour by the hit's weight: lerp(paint, the car's colour, amount). Mode 2 only, and only where the host asks (g_CarReflC.w bit 1: mcla_gpu_car_rt_coat_layer).
+static const float kCarReflCoatF0 = 0.04;      // the clear coat's reflectance facing the camera
+static const float kCarReflCoatPower = 5.0;    // Schlick's exponent
+static const float kCarReflCoatMax = 0.6;      // the most of the paint the layer takes
+
+float CarReflCoatAmount(CarReflResult hit)
+{
+    const float fresnel = min(kCarReflCoatF0 + (1.0 - kCarReflCoatF0) * pow(saturate(1.0 - hit.nv), kCarReflCoatPower), kCarReflCoatMax);
+    return saturate(hit.coat) * fresnel;
+}
+
+float3 CarReflCoat(float3 paint, CarReflResult hit)
+{
+    if ((g_CarReflC.w & 2u) == 0u || g_CarReflA.x < 1.5 || hit.coat <= 0.0)
+    {
+        return paint;
+    }
+    return lerp(paint, hit.colour, CarReflCoatAmount(hit));
+}
+
+// The debug views of g_CarReflB.y: 1 the hit weight, 2 the colour the ray sees (the ray traced reflection alone, at full intensity: no weight, no fresnel; black where it has no hit), 3 the paint's baked
+// vertex AO, 4 the state of the trace (red: the point is not in the history, blue: the ray left the picture, green: no hit, yellow: a hit, orange where the march's hit is the hidden face; brighter the heavier),
+// 5 the ray traced image's state at the pixel, 6 (version 8) the clear coat's layer's amount (the fresnel times the share of the hit on another car; white is 1), 7 (version 8) what the layer adds: the
+// car's colour times that amount. The write of the colour is scaled by the exponent bias of the target, so they are in its units.
+static const float kCarReflAmountViewGain = 64.0;  // debug view 6: the amount, times the target's unit, times this
+
 float3 CarReflDebug(CarReflResult hit, float bakedAo)
 {
     const uint view = uint(g_CarReflB.y + 0.5);
@@ -563,11 +640,21 @@ float3 CarReflDebug(CarReflResult hit, float bakedAo)
     {
         return float3(bakedAo, bakedAo, bakedAo) * unit;
     }
+    if (view == 6u)
+    {
+        // RT-HIT-SHADING-6: a script reads the edge's ramp off this picture, and 0.04 to 0.3 at the unit were 8-bit codes 2 to 4 (rthit4)
+        const float amount = CarReflCoatAmount(hit);
+        return float3(amount, amount, amount) * (unit * kCarReflAmountViewGain);
+    }
+    if (view == 7u)
+    {
+        return hit.colour * CarReflCoatAmount(hit);
+    }
     if (view == 5u)
     {
         // The ray traced image at the paint's pixel: red the shaded point is not in the history, purple no image this frame, grey the image was
-        // not read (a grazing view), cyan it has no data here (the march ran), green no hit, yellow a hit on a part the camera sees, orange on one
-        // it does not; brighter the heavier.
+        // not read (a grazing view), cyan it has no data here (the march ran), green no hit, yellow a hit on the player's own part, orange on another car
+        // (version 8; it was "on a part the camera does not see"); brighter the heavier.
         float3 tint = float3(0.0, 0.0, 0.0);
         if (hit.state > 0.5 && hit.state < 1.5)
         {
@@ -616,9 +703,69 @@ float3 CarReflDebug(CarReflResult hit, float bakedAo)
 }
 )HLSL";
 
+// The part of both transforms that does not depend on the shader's own lines: the local result after the cube map data, the stage's constants in both backends' declarations, and the helper
+// before main. False with *error (the shader's name first) when an anchor is not found.
+bool AddLocalConstantsAndHelper(std::string& text, const VariantShader& shader, const StageContext& ctx, std::string* error, std::string_view helper = kHelper) {
+  std::string why;
+  static constexpr Piece kCubeMap[] = {Lit("CubeMapData cubeMapData = (CubeMapData)0;")};
+  static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
+                                    Lit("#endif"),            Ws(0), Lit("void main(")};
+  if (!ReplaceOnce(text, kCubeMap, 0, 0, "the start of main's registers",
+                   [](std::string_view group) {
+                     return std::string(group) + "\n\tCarReflResult carRefl = (CarReflResult)0;";
+                   },
+                   &why)) {
+    *error = std::string(shader.name) + ": " + why;
+    return false;
+  }
+  static constexpr ConstantMember kMembers[] = {{"float4", "g_CarReflM0"}, {"float4", "g_CarReflM1"}, {"float4", "g_CarReflM2"},
+                                                {"float4", "g_CarReflM3"}, {"float4", "g_CarReflA"},  {"float4", "g_CarReflB"},
+                                                {"uint4", "g_CarReflC"}};
+  if (!DeclareConstants(text, ctx, "Car self-reflection variant (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608.", kMembers, &why)) {
+    *error = std::string(shader.name) + ": " + why;
+    return false;
+  }
+  if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",
+                   [helper](std::string_view group) { return std::string(helper) + "\n" + std::string(group); }, &why)) {
+    *error = std::string(shader.name) + ": " + why;
+    return false;
+  }
+  return true;
+}
+
+// The checks of the finished text: the helper's definitions and their calls, one declaration of each constant in each backend's declaration, and the game's lines nowhere without their edit. The
+// history is read as points (never a filtered sample), with one read of the image per ray point, three for a segment with an outline in it (in the one function that samples a point) and one for
+// the shaded point. The four call lines are the shader's own (they differ between the two paints), and so is the clear coat's layer (version 8): the customisable paint calls it once, the traffic paint
+// (version 9) has its definitions (the helper is shared) and no call.
+bool CheckFinishedText(const std::string& text, const VariantShader& shader, std::string_view trace_call, std::string_view sharp_apply, std::string_view blurred_apply,
+                       std::string_view debug_call, size_t coat_calls, std::string* error) {
+  const struct {
+    std::string_view needle;
+    size_t want;
+  } kChecks[] = {
+      {"CarReflResult CarReflTrace(", 1}, {trace_call, 1},
+      {"float3 CarReflApply(", 1},        {sharp_apply, 1},
+      {blurred_apply, 1},
+      {"float3 CarReflDebug(", 1},        {debug_call, 1},
+      {"CarReflResult carRefl = (CarReflResult)0;", 1},
+      {"float3 CarReflCoat(", 1},         {"oC0.xyz = CarReflCoat(oC0.xyz, carRefl);", coat_calls},
+      {"float CarReflCoatAmount(", 1},
+      {"history.SampleLevel(", 0},        {"history.Sample(", 0},
+      {"CarReflLoad(history, ray.size, uv)", 1}, {"CarReflLoad(history, ray.size, startUv)", 1},
+  };
+  for (const auto& check : kChecks) {
+    const size_t count = CountOccurrences(text, check.needle);
+    if (count != check.want) {
+      *error = std::format("{}: the transformed HLSL has '{}' {} times (need {})", shader.name, check.needle, count, check.want);
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
-VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl) {
+VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
   VariantTransformResult result;
   if (shader.name != kCarPaint.name) {
     result.error = std::format("{} is not the car paint this variant was written for", shader.name);
@@ -639,83 +786,63 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
   }
 
   // 2. The anchored edits: the local result, the constants of both backends and the helper.
-  static constexpr Piece kCubeMap[] = {Lit("CubeMapData cubeMapData = (CubeMapData)0;")};
-  static constexpr Piece kSpirvDeclaration[] = {
-      Lit("#define g_InvResolutionScale"), Ws(1),
-      Lit("vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 592)")};
-  static constexpr Piece kDxilDeclaration[] = {Lit("float2 g_InvResolutionScale : packoffset(c37.x);")};
-  static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
-                                    Lit("#endif"),            Ws(0), Lit("void main(")};
-  if (!ReplaceOnce(text, kCubeMap, 0, 0, "the start of main's registers",
-                   [](std::string_view group) {
-                     return std::string(group) + "\n\tCarReflResult carRefl = (CarReflResult)0;";
-                   },
-                   &error)) {
-    result.error = std::string(shader.name) + ": " + error;
+  if (!AddLocalConstantsAndHelper(text, shader, ctx, &error)) {
+    result.error = error;
     return result;
   }
-  if (!ReplaceOnce(text, kSpirvDeclaration, 0, 2, "SPIR-V g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group) +
-                            "\n// Car self-reflection variant (src/gpu/constants.h CarSelfReflConstants): 112 bytes after the 608.\n"
-                            "#define g_CarReflM0 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)\n"
-                            "#define g_CarReflM1 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)\n"
-                            "#define g_CarReflM2 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)\n"
-                            "#define g_CarReflM3 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 656, 0x10)\n"
-                            "#define g_CarReflA vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 672, 0x10)\n"
-                            "#define g_CarReflB vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 688, 0x10)\n"
-                            "#define g_CarReflC vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 704, 0x10)";
-                   },
-                   &error)) {
-    result.error = std::string(shader.name) + ": " + error;
+
+  // What the text must hold now: the helper's definitions and their calls (CheckFinishedText).
+  if (!CheckFinishedText(text, shader, "= CarReflTrace(", "CarReflApply(r10.xyz, carRefl, 1.0)", "CarReflApply(r13.xyz, carRefl, 0.5)", "CarReflDebug(carRefl, iTexCoord4.w)", 1, &error)) {
+    result.error = error;
     return result;
   }
-  if (!ReplaceOnce(text, kDxilDeclaration, 0, 0, "DXIL g_InvResolutionScale",
-                   [](std::string_view group) {
-                     return std::string(group.substr(0, group.size() - 1)) +
-                            "; \\\n    float4 g_CarReflM0 : packoffset(c38); \\\n"
-                            "    float4 g_CarReflM1 : packoffset(c39); \\\n"
-                            "    float4 g_CarReflM2 : packoffset(c40); \\\n"
-                            "    float4 g_CarReflM3 : packoffset(c41); \\\n"
-                            "    float4 g_CarReflA : packoffset(c42); \\\n"
-                            "    float4 g_CarReflB : packoffset(c43); \\\n"
-                            "    uint4 g_CarReflC : packoffset(c44);";
-                   },
-                   &error)) {
-    result.error = std::string(shader.name) + ": " + error;
+  result.ok = true;
+  result.hlsl = std::move(text);
+  return result;
+}
+
+VariantTransformResult TransformCarSelfReflTrafficHlsl(const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
+  VariantTransformResult result;
+  if (shader.name != kTrafficPaint.name) {
+    result.error = std::format("{} is not the traffic paint this transform was written for", shader.name);
     return result;
   }
-  if (!ReplaceOnce(text, kMain, 0, 6, "pixel shader main",
-                   [](std::string_view group) { return std::string(kHelper) + "\n" + std::string(group); }, &error)) {
+  std::string text = NormalizeNewlines(hlsl);
+  std::string error;
+
+  // 1. The three lines the edits follow: each exactly once.
+  if (!ReplaceAllExactly(text, kTrafficSharpRead, std::string(kTrafficSharpRead) + std::string(kTrafficAfterSharpRead), 1, "the sharp environment read", &error) ||
+      !ReplaceAllExactly(text, kTrafficBlurredRead, std::string(kTrafficBlurredRead) + std::string(kTrafficAfterBlurredRead), 1, "the blurred environment read", &error) ||
+      !ReplaceAllExactly(text, kTrafficFinalWrite, std::string(kTrafficFinalWrite) + std::string(kTrafficAfterFinalWrite), 1, "the last write of the colour", &error)) {
     result.error = std::string(shader.name) + ": " + error;
     return result;
   }
 
-  // What the text must hold now: the helper's definitions and their calls, one declaration of each constant in
-  // each backend's declaration, and the game's three lines nowhere without their edit. The history is read as points
-  // (never a filtered sample), with one read of the image per ray point, three for a segment with an outline in it (in the one
-  // function that samples a point) and one for the shaded point.
-  const struct {
-    std::string_view needle;
-    size_t want;
-  } kChecks[] = {
-      {"CarReflResult CarReflTrace(", 1}, {"= CarReflTrace(", 1},
-      {"float3 CarReflApply(", 1},        {"CarReflApply(r10.xyz, carRefl, 1.0)", 1},
-      {"CarReflApply(r13.xyz, carRefl, 0.5)", 1},
-      {"float3 CarReflDebug(", 1},        {"CarReflDebug(carRefl, iTexCoord4.w)", 1},
-      {"CarReflResult carRefl = (CarReflResult)0;", 1},
-      {"SharedConstants + 608", 1},       {"SharedConstants + 704", 1},
-      {"history.SampleLevel(", 0},        {"history.Sample(", 0},
-      {"CarReflLoad(history, ray.size, uv)", 1}, {"CarReflLoad(history, ray.size, startUv)", 1},
-      {"g_CarReflM0 : packoffset(c38)", 1}, {"g_CarReflC : packoffset(c44)", 1},
-  };
-  for (const auto& check : kChecks) {
-    const size_t count = CountOccurrences(text, check.needle);
-    if (count != check.want) {
-      result.error = std::format("{}: the transformed HLSL has '{}' {} times (need {})", shader.name, check.needle,
-                                 count, check.want);
-      return result;
-    }
+  // 2. The exponent bias the debug view scales by: declared after the shader's own last pixel constant, in both backends (each once).
+  if (!ReplaceAllExactly(text, kTrafficSpirvDl4, std::string(kTrafficSpirvDl4) + std::string(kTrafficSpirvExpBias), 1, "the SPIR-V declaration of DL4", &error) ||
+      !ReplaceAllExactly(text, kTrafficDxilDl4, std::string(kTrafficDxilDl4) + std::string(kTrafficDxilExpBias), 1, "the DXIL declaration of DL4", &error)) {
+    result.error = std::string(shader.name) + ": " + error;
+    return result;
+  }
+
+  // 3. The local result, the constants of both backends and the helper: as the paint's, with the helper's two returns (the host's image alone).
+  std::string helper(kHelper);
+  if (!ReplaceAllExactly(helper, kHelperBeforeSettingsB, std::string(kHelperNoImage) + std::string(kHelperBeforeSettingsB), 1, "the helper's read of the settings", &error) ||
+      !ReplaceAllExactly(helper, kHelperMarchStart, std::string(kHelperNoMarch) + std::string(kHelperMarchStart), 1, "the helper's march", &error)) {
+    result.error = std::string(shader.name) + ": " + error;
+    return result;
+  }
+  if (!AddLocalConstantsAndHelper(text, shader, ctx, &error, helper)) {
+    result.error = error;
+    return result;
+  }
+  if (!CheckFinishedText(text, shader, "= CarReflTrace(", "CarReflApply(r4.xyz, carRefl, 1.0)", "CarReflApply(r0.xyz, carRefl, 0.5)", "CarReflDebug(carRefl, 1.0)", 0, &error)) {
+    result.error = error;
+    return result;
+  }
+  if (CountOccurrences(text, "gInvColorExpBias") != 3) {  // the two declarations and the debug view's one read
+    result.error = std::format("{}: the transformed HLSL has gInvColorExpBias {} times (need 3: the two declarations and the debug view)", shader.name, CountOccurrences(text, "gInvColorExpBias"));
+    return result;
   }
   result.ok = true;
   result.hlsl = std::move(text);
@@ -724,13 +851,14 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
 
 VariantDef MakeCarSelfReflVariant() {
   VariantDef def;
-  def.id = kVariantCarSelfRefl;
+  def.feature = kFeatureCarSelfRefl;
   def.name = "car_selfrefl";
   def.version = kCarSelfReflVariantVersion;
-  def.needs_rpf = true;  // xCarPaintCustomizable lives in xarchive_cache.rpf (cars)
-  def.pixel_shaders = {kCarPaint};
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) {
-    return TransformCarSelfReflHlsl(shader, hlsl);
+  def.needs_rpf = true;  // xCarPaintCustomizable and xAmbientCarPaint live in xarchive_cache.rpf (cars)
+  def.pixel_shaders = {kCarPaint, kTrafficPaint};
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext& ctx) {
+    if (shader.key == kTrafficPaint.key) return TransformCarSelfReflTrafficHlsl(shader, hlsl, ctx);
+    return TransformCarSelfReflHlsl(shader, hlsl, ctx);
   };
   return def;
 }

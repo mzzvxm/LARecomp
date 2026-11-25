@@ -63,15 +63,16 @@
 // gone to 0.
 //
 // THE SOUND (M2c). The take's audio is capture_audio.h's: at the take's start (BeginTake) the game's mixer is taken over, at every gate
-// (GateInTake) it is given the credits that cover the video frames so far and its frames are written to the take folder's audio.wav, at the end
+// (GateInTake) it is given the tickets that cover the video frames so far and its frames are written to the take folder's audio.wav, at the end
 // (EndTake) the real output gets its mixer back. Nothing else of the take knows about it.
 //
 // Written without a build or a run. CHECK marks what rests on reading the code and the E7 log only.
 //
 
 #include "capture_mode.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include <algorithm>
 #include <atomic>
@@ -116,9 +117,11 @@ extern char** environ;
 
 #include "capture_audio.h"
 #include "capture_core.h"
+#include "director/png_writer.h"
 #include "larecomp_log.h"
 #include "larecomp_version.h"
 #include "scene_runtime.h"
+#include "spots.h"
 #include "take_folder.h"
 
 #if defined(LARECOMP_HAS_GPU)
@@ -126,100 +129,6 @@ extern char** environ;
 #include "gpu/sync_builds.h"
 #endif
 
-REXCVAR_DEFINE_DOUBLE(mcla_capture_fps, 0.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: a take at this many frames a second, from the next update: the game steps by exactly 1 / this "
-    "whatever a frame takes to render, every frame is read back and the game waits for it before the next update. 0 ends the take. "
-    "10 to 1000. A scene's capture key does the same.")
-    .range(0.0, 1000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mcla_fixed_step_fps, 0.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: the game steps by exactly 1 / this many frames a second, whatever the frame takes (the engine timer is given "
-    "the game's own tick count for it); the FPS limit, the step cap and frame pacing stand aside. No take, no frame gate. 0: off. "
-    "10 to 1000.")
-    .range(0.0, 1000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_dir, "captures", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the folder the take folders go in (a relative path is relative to the game's folder). Read when a "
-    "take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_name, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the take's folder name when the scene gives none (a name that is taken gets -2, -3 ...). Empty: "
-    "the scene's own name, else take. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_out, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the take folder itself, exactly (it has to be new or empty); the take then ignores the dir and "
-    "the name. Empty: <dir>/<name>. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_sink, "none", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: what happens to a frame once it is read back: none (counted and dropped), ffmpeg (a pipe to the "
-    "program in mcla_capture_ffmpeg: FFV1 in video.mkv), png (ffmpeg writes one PNG for every frame) or raw (video.bgra, B8G8R8A8 "
-    "frames). A scene's sink wins. Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_BOOL(mcla_capture_statelog, false, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: write state.csv in the take (the game's state for every frame: the scene's statelog on does the "
-    "same). Read when a take starts.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_ffmpeg, "ffmpeg", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode (sink ffmpeg): the ffmpeg program, a full path or a name on PATH.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_STRING(mcla_capture_ffmpeg_args, "-c:v ffv1 -level 3 -g 1 -slices 24 -pix_fmt bgr0", "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode (sink ffmpeg): ffmpeg's output options, between the raw input and video.mkv.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_ring, 4, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: host buffers between the readback and the writer (2 to 8): the most frames that wait for the writer. "
-    "Fewer are used when mcla_capture_memory_mb or the free memory says so. Read when a take starts.")
-    .range(2, 8)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_memory_mb, 2048, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the hard cap, in MiB, on the memory a take holds (its GPU readback buffers and its ring, one frame "
-    "each). The ring is cut first, then the GPU buffers; a take that does not fit with 2 + 2 frames does not run, and the log says what "
-    "to change (a lower render scale). Nothing grows with the take's length or the writer's speed. Read when a take starts.")
-    .range(64, 65536)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_ram_floor_mb, 1024, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: free physical memory, in MiB, that has to stay free. A take whose buffers would take it lower is cut "
-    "down or refused at its start, and a take that sees it fall below stops with an error (an 8K take used up the PC's RAM). 0: no floor.")
-    .range(0, 65536)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_lag, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: how many frames the game may run ahead of the readback. 0: it waits for frame k to be read back "
-    "before it starts update k + 1.")
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_gate_timeout_ms, 20000, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: how long the game waits at the frame gate before it goes on (counted in the summary; three in a "
-    "row switch the waiting off for the take).")
-    .range(100, 600000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_BOOL(mcla_capture_virtual_clock, true, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: during a take the upscaler's history rule and the UI movies' pacing read frames x step instead of "
-    "the wall clock. Off, a slow capture makes the upscaler start its history again on every frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mcla_capture_delay_ms, 0.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: the readback of each frame sleeps this long (a slow writer, in milliseconds).")
-    .range(0.0, 5000.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-REXCVAR_DEFINE_INT32(mcla_capture_log_every, 30, "MCLA/Cinematic",
-    "TRAILER TOOLKIT capture mode: a [cap] line with the costs of a frame every this many frames (0: the summary only).")
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -247,6 +156,9 @@ std::atomic<uint64_t> g_anchors{0}, g_anchor_restarts{0}, g_anchor_gap_restarts{
 std::mutex g_gate_mutex;
 std::condition_variable g_gate_cv;
 core::GateBook g_gate;  // g_gate_mutex
+// The game is closing (CaptureCloseNow): the gate stops holding the game thread (the render thread that reads the frames back is going away, and a frame
+// handed over before it stopped is never read back), and no take or still begins.
+std::atomic<bool> g_closing{false};
 
 // the scene clock
 std::mutex g_clock_mutex;
@@ -276,7 +188,8 @@ struct Take {
     uint64_t ticks = 0;
     double step_ms = 16.666;
     uint64_t first_update = 0;
-    double first_scene_t = 0.0;  // the scene time of the take's first update (the scene's time then, plus a step), when a scene runs
+    core::TakeSceneClock scene_clock;
+    double end_scene_t = -1.0;  // the Director's exclusive end, when present
     bool scene_running = false;
     std::string scene_name, scene_source, scene_fnv;  // a copy of the file is in the folder when scene_fnv is set
     std::vector<std::pair<std::string, std::string>> cvars;  // the settings that differ from their defaults, at the start
@@ -293,6 +206,7 @@ struct Take {
     uint64_t floor_bytes = 0;
     double ram_start_mb = -1.0, ram_min_mb = -1.0;  // free physical memory (game thread)
     bool state_log = false;
+    bool still = false;  // the Director's still (CaptureStillRequest): one frame, a PNG, no take folder
     std::string ffmpeg_command;
     // rows are appended in capture order by the render thread (g_rows_mutex)
     core::TakeBook book;
@@ -303,20 +217,37 @@ struct Take {
     uint32_t lost_in_a_row = 0;
     bool announced_rate_change = false;
 };
-Take g_take;
+Take& g_take = larecomp::Leak<Take>();
 std::mutex g_rows_mutex;
 bool g_announced_no_renderer = false;
 
 // What a scene's `capture fps` key asked for besides the rate (CaptureSceneSpec); read when a take starts.
 std::mutex g_spec_mutex;
-CaptureSpec g_spec;
+CaptureSpec& g_spec = larecomp::Leak<CaptureSpec>();
+
+// The Director (capture_mode.h): a take it asks for (take.render), the still it asks for (shot), and what became of the takes.
+std::atomic<double> g_dir_fps{0.0};  // the Director's request for a take (0: none); a scene's request outranks it
+CaptureSpec& g_dir_spec = larecomp::Leak<CaptureSpec>();  // g_spec_mutex
+std::mutex g_still_mutex;
+bool g_still_pending = false;        // g_still_mutex: asked for, the next gate starts it
+std::string& g_still_path = larecomp::Leak<std::string>();  // g_still_mutex
+StillResult& g_still_res = larecomp::Leak<StillResult>();  // g_still_mutex: the result of the still that ran last (done when `done`)
+std::atomic<bool> g_still_active{false};  // the running take is a still: no virtual clock
+std::mutex g_last_mutex;
+struct LastTake {
+    std::string name, folder, state, error;
+    double fps = 0.0;
+    uint64_t frames = 0;
+};
+LastTake& g_last_status = larecomp::Leak<LastTake>();  // g_last_mutex: the take that ended last
+std::atomic<uint64_t> g_takes_finished{0};
 
 // A take that cannot go on (the memory plan does not fit, the writer is stuck, the free memory is gone): the first reason is kept, the game
 // thread ends the take at its next gate, and the scene's request is not taken up again until it has gone to 0 (g_refused).
 std::atomic<bool> g_take_failed{false};
 std::atomic<bool> g_sink_stuck{false};  // the writer finished nothing for the gate's timeout: ending the take kills ffmpeg instead of waiting for it
 std::mutex g_fail_mutex;
-std::string g_fail_reason;  // g_fail_mutex
+std::string& g_fail_reason = larecomp::Leak<std::string>();  // g_fail_mutex
 bool g_refused = false;     // game thread
 // Counts every frame read back, lost or written: a wait on the writer or the readback that sees it move is not stuck.
 std::atomic<uint64_t> g_progress{0};
@@ -567,6 +498,30 @@ Sink& g_sink = *new Sink;  // never destroyed: the writer thread ends with its t
 bool WriteFrame(uint64_t row, const uint8_t* data, uint64_t bytes) {
     Sink& s = g_sink;
     const auto t0 = Clock::now();
+    if (g_take.still) {
+        // The Director's still: the one frame is a PNG. g_take is not changed while the writer runs (a take is begun when none runs); the game thread waits for
+        // this frame at the gate.
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lock(g_still_mutex);
+            path = g_still_path;
+        }
+        std::string err;
+        const bool ok = director::WritePngFile(path, data, s.format.width, s.format.height, 0, s.format.bgra, &err);
+        std::error_code ec;
+        const uintmax_t size = ok ? std::filesystem::file_size(Path(path), ec) : 0;
+        {
+            std::lock_guard<std::mutex> lock(g_still_mutex);
+            g_still_res.ok = ok;
+            g_still_res.error = err;
+            g_still_res.width = s.format.width;
+            g_still_res.height = s.format.height;
+            g_still_res.bytes = ec ? 0 : static_cast<uint64_t>(size);
+        }
+        if (!ok) TakeFail("the still could not be written: " + err);
+        g_progress.fetch_add(1, std::memory_order_relaxed);
+        return ok;
+    }
     bool ok = !s.sink_failed.load(std::memory_order_relaxed);
     if (ok) {
         if (core::SinkUsesFfmpeg(s.kind)) {
@@ -612,10 +567,10 @@ bool OpenSink(const mc::cinematic::FrameFormat& f) {
     if (core::SinkUsesFfmpeg(s.kind)) {
         // CHECK: `-pix_fmt bgr0` is taken by the ffv1 encoder of the ffmpeg 9.0 full build (E7's 4K take ran with it: 1224 MB mkv); the png
         // line (-c:v png -pix_fmt rgb24, image2 numbering from 0, -fps_mode passthrough) has not run.
-        const std::string& program = REXCVAR_GET(mcla_capture_ffmpeg);
+        const std::string& program = larecomp::settings::mcla_capture_ffmpeg.Get();
         const std::string cmd = s.kind == core::SinkKind::kPng
                                     ? core::FfmpegPngCommandLine(program, f.width, f.height, f.bgra, t.fps, t.layout.frame_pattern)
-                                    : core::FfmpegCommandLine(program, f.width, f.height, f.bgra, t.fps, REXCVAR_GET(mcla_capture_ffmpeg_args),
+                                    : core::FfmpegCommandLine(program, f.width, f.height, f.bgra, t.fps, larecomp::settings::mcla_capture_ffmpeg_args.Get(),
                                                               t.layout.video_mkv);
         t.ffmpeg_command = cmd;
         if (!s.pipe.Start(cmd, t.layout.ffmpeg_log)) {
@@ -693,7 +648,7 @@ struct ExeInfo {
     std::string version;
 };
 const ExeInfo& GetExeInfo() {
-    static const ExeInfo info = [] {
+    static const ExeInfo& info = larecomp::Leak<const ExeInfo>([] {
         ExeInfo i;
         i.version = larecomp::kVersionLabel;
         std::filesystem::path exe;
@@ -718,17 +673,17 @@ const ExeInfo& GetExeInfo() {
             if (const char* env = std::getenv("LARECOMP_EXE_COMMIT")) i.commit = env;
         }
         return i;
-    }();
+    }());
     return info;
 }
 
 // The settings that differ from their defaults, sorted by name (a setting that holds a secret keeps its name and loses its value).
 std::vector<std::pair<std::string, std::string>> SnapshotCvars() {
     std::vector<std::pair<std::string, std::string>> out;
-    for (const std::string& name : rex::cvar::ListModifiedFlags()) {
-        const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-        if (!info || info->type == rex::cvar::FlagType::Command) continue;
-        std::string value = core::IsSecretCvarName(name) ? std::string("(not recorded)") : rex::cvar::GetFlagByName(name);
+    for (const std::string& name : larecomp::cvar::ListModifiedFlags()) {
+        const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+        if (!info || info->type == larecomp::cvar::FlagType::Command) continue;
+        std::string value = core::IsSecretCvarName(name) ? std::string("(not recorded)") : larecomp::cvar::GetFlagByName(name);
         if (value.size() > 400) value.resize(400);
         out.emplace_back(name, std::move(value));
     }
@@ -804,8 +759,8 @@ void WriteFramesCsv(const Take& t) {
     for (size_t k = 0; k < t.rows.size(); ++k) {
         const Row& r = t.rows[k];
         const double gate = k < t.gate_ms.size() ? t.gate_ms[k] : -1.0;
-        const double scene_t = t.scene_running ? t.first_scene_t + static_cast<double>(k) * t.step_ms / 1000.0 : -1.0;
-        std::snprintf(line, sizeof line, "%zu,%llu,%.6f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.1f,%d\n", k, static_cast<unsigned long long>(r.update),
+        const double scene_t = t.scene_running ? t.scene_clock.Time(r.update - t.first_update) : -1.0;
+        std::snprintf(line, sizeof line, "%zu,%llu,%.17g,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%.3f,%u,%.1f,%d\n", k, static_cast<unsigned long long>(r.update),
                       scene_t, r.t_ms, gate, r.c.record_ms, r.c.gpu_ms, r.c.copy_ms, r.c.stall_ms, r.write_ms, r.ring_fill, r.c.vram_mb,
                       r.lost ? 1 : 0);
         csv += line;
@@ -827,7 +782,8 @@ void WriteTakeJson(const Take& t, const Outcome& o) {
     r.scene_source = t.scene_source;
     r.scene_copy = t.scene_fnv.empty() ? std::string() : std::string(core::kSceneCopyName);
     r.scene_fnv64 = t.scene_fnv;
-    r.first_scene_t = t.first_scene_t;
+    r.first_scene_t = t.scene_clock.t0;
+    r.scene_step_s = t.scene_clock.step;
     const ExeInfo& exe = GetExeInfo();
     r.exe_path = exe.path;
     r.exe_commit = exe.commit;
@@ -946,6 +902,12 @@ void CopySceneFile(Take& t) {
         return;
     }
     t.scene_fnv = core::Hex64(core::Fnv1a64(text.data(), text.size()));
+    // A scene that names places (`spot:<name>`) is run from the take folder with the places it had: the spots files it read, beside the copy (spots.h).
+    if (text.find("spot:") != std::string::npos) {
+        const std::string spots = SpotsTextFor(src);
+        const std::string spots_copy = core::JoinPath(t.layout.folder, core::kSpotsCopyName);
+        if (!spots.empty() && !WriteTextFile(spots_copy, spots)) LARECOMP_APP_WARN("[cap] cannot write {}", spots_copy);
+    }
 }
 
 // The take's folder: mcla_capture_out exactly, else <mcla_capture_dir>/<name> with the first free name. False: `why` says what is wrong, and no
@@ -953,7 +915,7 @@ void CopySceneFile(Take& t) {
 bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
     std::error_code ec;
     std::string folder;
-    const std::string& out = REXCVAR_GET(mcla_capture_out);
+    const std::string& out = larecomp::settings::mcla_capture_out.Get();
     if (!out.empty()) {
         folder = out;
         while (folder.size() > 1 && (folder.back() == '/' || folder.back() == '\\')) folder.pop_back();
@@ -970,8 +932,8 @@ bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
         t.name = Utf8(Path(folder).filename());
         if (t.name.empty()) t.name = "take";
     } else {
-        const std::string& root = REXCVAR_GET(mcla_capture_dir);
-        const std::string wanted = !spec.name.empty() ? spec.name : REXCVAR_GET(mcla_capture_name);
+        const std::string& root = larecomp::settings::mcla_capture_dir.Get();
+        const std::string wanted = !spec.name.empty() ? spec.name : larecomp::settings::mcla_capture_name.Get();
         const std::string base = core::SanitizeTakeName(wanted, SceneName());
         const std::string name = core::UniqueName(base, [&](const std::string& n) {
             std::error_code e2;
@@ -997,36 +959,36 @@ bool MakeTakeFolder(Take& t, const CaptureSpec& spec, std::string* why) {
 // ---------------------------------------------------------------------------------------------------------------------
 // the take's start and end, and the gate
 // ---------------------------------------------------------------------------------------------------------------------
-// The rate a take is asked for now: the scene's, else the debug setting's; 0 = none.
+// The rate a take is asked for now: an explicit Director request, the scene, then the debug setting.
 double WantedFps() {
+    const double director = g_dir_fps.load(std::memory_order_relaxed);
+    if (director > 0.0) return core::ClampFps(director);
     const double scene = g_scene_fps.load(std::memory_order_relaxed);
     if (scene > 0.0) return core::ClampFps(scene);
-    return core::ClampFps(REXCVAR_GET(mcla_capture_fps));
+    return core::ClampFps(larecomp::settings::mcla_capture_fps.Get());
 }
 
-// Waits until `needed` take frames have been read back or reported lost. False: `timeout_ms` went by with nothing moving (no frame read back,
-// lost or written): a slow writer that keeps finishing frames is not a timeout, however long a frame takes.
-bool WaitForFrames(uint64_t needed, int timeout_ms) {
-    auto deadline = Clock::now() + std::chrono::milliseconds(timeout_ms);
-    uint64_t seen = g_progress.load(std::memory_order_relaxed);
+// Waits until `needed` take frames have been read back or reported lost, or the game is closing (capture_core.h WaitAtGate says why that ends it).
+// kTimedOut: `timeout_ms` went by with nothing moving (no frame read back, lost or written): a slow writer that keeps finishing frames is not a
+// timeout, however long a frame takes.
+core::GateEnd WaitForFrames(uint64_t needed, int timeout_ms) {
     std::unique_lock<std::mutex> lock(g_gate_mutex);
-    while (!g_gate.Met(needed)) {
-        const auto now = Clock::now();
-        const uint64_t p = g_progress.load(std::memory_order_relaxed);
-        if (p != seen) {
-            seen = p;
-            deadline = now + std::chrono::milliseconds(timeout_ms);
-        }
-        if (now >= deadline) return false;
-        g_gate_cv.wait_until(lock, std::min(deadline, now + std::chrono::milliseconds(200)));
-    }
-    return true;
+    return core::WaitAtGate(
+        lock, g_gate_cv, [&] { return g_gate.Met(needed); }, [] { return g_progress.load(std::memory_order_relaxed); },
+        [] { return g_closing.load(std::memory_order_acquire); }, timeout_ms);
 }
 
 // A take that cannot start: nothing runs, and the scene's request is not taken up again until it has gone to 0.
 void RefuseTake(const std::string& why) {
     LARECOMP_APP_ERROR("[cap] TAKE REFUSED: {}", why);
     g_refused = true;
+    {
+        std::lock_guard<std::mutex> lock(g_last_mutex);
+        g_last_status = LastTake{};
+        g_last_status.state = "failed";
+        g_last_status.error = why;
+    }
+    g_takes_finished.fetch_add(1, std::memory_order_release);
 }
 
 void BeginTake(uint64_t u0, double fps) {
@@ -1044,21 +1006,30 @@ void BeginTake(uint64_t u0, double fps) {
     CaptureSpec spec;
     {
         std::lock_guard<std::mutex> lock(g_spec_mutex);
-        spec = g_spec;
+        if (g_dir_fps.load(std::memory_order_relaxed) > 0.0) spec = g_dir_spec;
+        else if (g_scene_fps.load(std::memory_order_relaxed) > 0.0) spec = g_spec;
     }
     t.fps = fps;
     t.ticks = core::StepTicksForFps(fps);
-    t.step_ms = 1000.0 / fps;
+    const SceneTransport scene = GetSceneTransport();
+    t.scene_running = scene.state == SceneState::kRunning;
+    // Normally the runner visits the authored key exactly. If it was explicitly scrubbed past it, start after the scrub.
+    const double request_time = spec.request_scene_t >= 0.0 && scene.t <= spec.request_scene_t + 1e-9 ? spec.request_scene_t : scene.t;
+    t.scene_clock = core::PlanTakeSceneClock(request_time, fps, spec.t0);
+    t.step_ms = t.scene_clock.step * 1000.0;
+    t.end_scene_t = spec.end_scene_t;
     t.first_update = u0;
-    t.virtual_clock = REXCVAR_GET(mcla_capture_virtual_clock);
-    t.lag = std::clamp<int>(REXCVAR_GET(mcla_capture_lag), 0, 2);
-    t.ring = REXCVAR_GET(mcla_capture_ring);
-    t.scene_running = CurrentSceneState() == SceneState::kRunning || CurrentSceneState() == SceneState::kFinished;
-    // the scene's time at the update before this one, and this update's own step on top: the time this update's frame shows
-    t.first_scene_t = SceneTime() + t.step_ms / 1000.0;
-    t.cap_bytes = static_cast<uint64_t>(std::max(64, REXCVAR_GET(mcla_capture_memory_mb))) << 20;
-    t.floor_bytes = static_cast<uint64_t>(std::max(0, REXCVAR_GET(mcla_capture_ram_floor_mb))) << 20;
-    const std::string& sink_text = !spec.sink.empty() ? spec.sink : REXCVAR_GET(mcla_capture_sink);
+    t.virtual_clock = larecomp::settings::mcla_capture_virtual_clock.Get();
+    t.lag = std::clamp<int>(larecomp::settings::mcla_capture_lag.Get(), 0, 2);
+    t.ring = larecomp::settings::mcla_capture_ring.Get();
+    if ((spec.t0 >= 0.0 && !t.scene_running) ||
+        (t.scene_running && t.scene_clock.PastEnd(0, t.end_scene_t, scene.duration))) {
+        RefuseTake("the take's first frame falls outside a running scene");
+        return;
+    }
+    t.cap_bytes = static_cast<uint64_t>(std::max(64, larecomp::settings::mcla_capture_memory_mb.Get())) << 20;
+    t.floor_bytes = static_cast<uint64_t>(std::max(0, larecomp::settings::mcla_capture_ram_floor_mb.Get())) << 20;
+    const std::string& sink_text = !spec.sink.empty() ? spec.sink : larecomp::settings::mcla_capture_sink.Get();
     if (!core::ParseSinkKind(sink_text, &t.sink)) {
         LARECOMP_APP_ERROR("[cap] the sink '{}' is none, ffmpeg, png or raw: using none", sink_text);
     }
@@ -1070,7 +1041,7 @@ void BeginTake(uint64_t u0, double fps) {
     t.started_utc = core::FormatUtc(UnixNow());
     CopySceneFile(t);
     t.cvars = SnapshotCvars();
-    t.state_log = spec.state_log || REXCVAR_GET(mcla_capture_statelog);
+    t.state_log = spec.state_log || larecomp::settings::mcla_capture_statelog.Get();
     g_state_rows = 0;
     if (t.state_log) {
         g_state_file = OpenWrite(t.layout.state_csv);
@@ -1094,7 +1065,8 @@ void BeginTake(uint64_t u0, double fps) {
     g_anchors = 0;
     g_anchor_restarts = 0;
     g_anchor_gap_restarts = 0;
-    capture_audio::Begin(fps, t.layout.audio_wav, t.layout.audio_csv, u0);  // the take's sound: the game's mixer is the take's until EndTake (capture_audio.h)
+    // CHECK: on a live take the first video update owns the first WAV samples, with no pre-roll or drift.
+    capture_audio::Begin(fps, t.layout.audio_wav, t.layout.audio_csv, u0);
     t.t0 = Clock::now();
     g_take_first.store(u0, std::memory_order_release);
     g_take_ticks.store(t.ticks, std::memory_order_release);
@@ -1110,7 +1082,7 @@ void BeginTake(uint64_t u0, double fps) {
     }
     LARECOMP_APP_INFO("[cap] take starts at update {} ({:g} fps, step {:.4f} ms = {} ticks, sink {}, folder {}, ring {} asked, lag {}, virtual clock {}{}{})", u0,
                       fps, t.step_ms, t.ticks, core::SinkKindName(t.sink), t.layout.folder, t.ring, t.lag, t.virtual_clock ? "on" : "off",
-                      t.scene_running ? std::string(", scene t of the first frame ") + std::to_string(t.first_scene_t) : std::string(),
+                      t.scene_running ? std::string(", scene t of the first frame ") + std::to_string(t.scene_clock.t0) : std::string(),
                       t.state_log ? ", state log on" : "");
 }
 
@@ -1191,6 +1163,112 @@ void EndTake(uint64_t u_end) {
     }
     LARECOMP_APP_INFO("[cap] take folder: {} (state {}, {} frames, dropped {}, repeated {})", t.layout.folder, o.state, t.rows.size(), o.verdict.dropped,
                       o.verdict.repeated);
+    {
+        std::lock_guard<std::mutex> lock(g_last_mutex);
+        g_last_status = LastTake{};
+        g_last_status.name = t.name;
+        g_last_status.folder = t.layout.folder;
+        g_last_status.fps = t.fps;
+        g_last_status.frames = t.rows.size();
+        g_last_status.state = o.state;
+        g_last_status.error = o.error;
+    }
+    g_takes_finished.fetch_add(1, std::memory_order_release);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// the Director's still: a take of one frame, with no folder, no audio and no virtual clock, that the writer turns into a PNG
+// ---------------------------------------------------------------------------------------------------------------------
+// The step of the still's one update: the fixed step already in force, else the scene's own rate, else 60.
+double StillFps() {
+    const double fixed = larecomp::settings::mcla_fixed_step_fps.Get();
+    if (fixed > 0.0) return core::ClampFps(fixed);
+    const double scene = g_scene_fps.load(std::memory_order_relaxed);
+    if (scene > 0.0) return core::ClampFps(scene);
+    return 60.0;
+}
+
+void BeginStill(uint64_t u0) {
+    Take& t = g_take;
+    {
+        std::lock_guard<std::mutex> lock(g_rows_mutex);
+        t = Take{};
+    }
+    g_take_failed.store(false, std::memory_order_release);
+    g_sink_stuck.store(false, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_fail_mutex);
+        g_fail_reason.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_still_mutex);
+        g_still_pending = false;
+        g_still_res.done = false;
+        g_still_res.ok = false;
+        g_still_res.error.clear();
+        g_still_res.width = g_still_res.height = 0;
+        g_still_res.bytes = 0;
+        g_still_res.update = u0;
+        g_still_res.path = g_still_path;
+    }
+    t.still = true;
+    t.sink = core::SinkKind::kNone;
+    t.fps = StillFps();
+    t.ticks = core::StepTicksForFps(t.fps);
+    t.step_ms = 1000.0 / t.fps;
+    t.first_update = u0;
+    t.virtual_clock = false;
+    t.lag = 0;
+    t.ring = 2;
+    t.scene_running = CurrentSceneState() == SceneState::kRunning;
+    t.scene_clock.t0 = SceneTime() + t.step_ms / 1000.0;
+    t.cap_bytes = static_cast<uint64_t>(std::max(64, larecomp::settings::mcla_capture_memory_mb.Get())) << 20;
+    t.floor_bytes = 0;
+    t.book.Begin(u0);
+    {
+        std::lock_guard<std::mutex> lock(g_gate_mutex);
+        g_gate = core::GateBook{};
+    }
+    g_handover.BeginTake();
+    g_sink.ffmpeg_exit = -2;
+    g_sink.frame_bytes = 0;
+    t.t0 = Clock::now();
+    g_take_first.store(u0, std::memory_order_release);
+    g_take_ticks.store(t.ticks, std::memory_order_release);
+    g_state_log_on.store(false, std::memory_order_release);
+    g_still_active.store(true, std::memory_order_release);
+    g_take_active.store(true, std::memory_order_release);
+#if defined(LARECOMP_HAS_GPU)
+    ::mcla::gpu::sync_builds::SetCaptureActive(true);
+#endif
+    LARECOMP_APP_INFO("[cap] still starts at update {} (step {:.4f} ms, scene t of the frame {:.4f}): {}", u0, t.step_ms, t.scene_clock.t0, g_still_res.path);
+}
+
+void EndStill(uint64_t u_end) {
+    Take& t = g_take;
+    g_take_active.store(false, std::memory_order_release);
+#if defined(LARECOMP_HAS_GPU)
+    ::mcla::gpu::sync_builds::SetCaptureActive(false);
+#endif
+    CloseSink();  // the writer finishes the PNG before this returns
+    g_still_active.store(false, std::memory_order_release);
+    const std::string reason = FailReason();
+    {
+        std::lock_guard<std::mutex> lock(g_still_mutex);
+        g_still_res.done = true;
+        g_still_res.update = t.first_update;
+        g_still_res.scene_t = t.scene_running ? t.scene_clock.t0 : -1.0;
+        if (!g_still_res.ok && g_still_res.error.empty()) {
+            g_still_res.error = !reason.empty() ? reason : std::string("the frame was not read back");
+        }
+        if (g_still_res.ok) {
+            LARECOMP_APP_INFO("[cap] still done: {} ({}x{}, {} bytes, update {})", g_still_res.path, g_still_res.width, g_still_res.height, g_still_res.bytes, t.first_update);
+        } else {
+            LARECOMP_APP_ERROR("[cap] STILL FAILED: {} ({})", g_still_res.path, g_still_res.error);
+        }
+    }
+    if (g_take_failed.load(std::memory_order_acquire)) g_refused = false;  // a failed still is not a refused take request
+    (void)u_end;
 }
 
 // The gate of update `u` while a take runs (game thread).
@@ -1208,23 +1286,26 @@ void GateInTake(uint64_t u, double want_fps) {
         }
     }
     const bool failed = g_take_failed.load(std::memory_order_acquire);
-    const bool ending = !(want_fps > 0.0) || failed;
+    const double duration = t.scene_running ? GetSceneTransport().duration : -1.0;
+    const bool at_end = t.scene_running && t.scene_clock.PastEnd(u - t.first_update, t.end_scene_t, duration);
+    const bool ending = t.still || !(want_fps > 0.0) || failed || at_end;
     if (!ending && std::fabs(want_fps - t.fps) > 1e-9 && !t.announced_rate_change) {
         t.announced_rate_change = true;  // a take keeps its rate: the log says so once
         LARECOMP_APP_WARN("[cap] a take of {:g} fps is running: the request for {:g} is ignored until it ends", t.fps, want_fps);
     }
     const uint64_t handed = g_handover.Handed();
     const uint64_t needed = core::FramesNeeded(handed, static_cast<uint32_t>(t.lag), ending);
-    const int timeout_ms = REXCVAR_GET(mcla_capture_gate_timeout_ms);
-    capture_audio::StepBegin(handed);  // the mixer runs for the frames so far while the readback is waited for
+    const int timeout_ms = larecomp::settings::mcla_capture_gate_timeout_ms.Get();
+    if (!t.still) capture_audio::StepBegin(handed);  // the mixer runs for the frames so far while the readback is waited for
     const auto w0 = Clock::now();
     bool off;
     {
         std::lock_guard<std::mutex> lock(g_gate_mutex);
         off = g_gate.off;
     }
-    bool ok = true;
-    if (!off) ok = WaitForFrames(needed, timeout_ms);
+    core::GateEnd end = core::GateEnd::kMet;
+    if (!off) end = WaitForFrames(needed, timeout_ms);
+    const bool ok = end != core::GateEnd::kTimedOut;
     const double wait_ms = std::chrono::duration<double, std::milli>(Clock::now() - w0).count();
     if (!ok) {
         uint64_t captured = 0;
@@ -1243,17 +1324,20 @@ void GateInTake(uint64_t u, double want_fps) {
             LARECOMP_APP_ERROR("[cap] three gate timeouts in a row: the game is not held at the gate for the rest of the take");
             g_sink_stuck.store(true, std::memory_order_release);
         }
-    } else {
+    } else if (end == core::GateEnd::kMet) {  // a gate left because the game is closing is neither met nor timed out: the books stay as they are
         std::lock_guard<std::mutex> lock(g_gate_mutex);
         g_gate.NoteMet();
     }
-    capture_audio::StepEnd();  // the mixer's frames are in, the video frames' samples are in the WAV
+    if (!t.still) capture_audio::StepEnd();  // the mixer's frames are in, the video frames' samples are in the WAV
     t.gate_ms.push_back(wait_ms);
-    if (const int every = REXCVAR_GET(mcla_capture_log_every); every > 0 && !t.gate_ms.empty()) {
+    if (const int every = larecomp::settings::mcla_capture_log_every.Get(); every > 0 && !t.gate_ms.empty()) {
         const uint64_t k_prev = t.gate_ms.size() - 1;
         if (k_prev % uint64_t(every) == 0 || k_prev < 3) LogFrame(t, static_cast<size_t>(k_prev));
     }
-    if (ending) EndTake(u);
+    if (ending) {
+        if (t.still) EndStill(u);
+        else EndTake(u);
+    }
 }
 
 }  // namespace
@@ -1265,6 +1349,31 @@ void CaptureGate() {
     const uint64_t before = g_updates.load(std::memory_order_relaxed);  // updates that ran
     const uint64_t u = before + 1;                                      // the update about to run
     if (!g_take_active.load(std::memory_order_relaxed)) {
+        if (g_closing.load(std::memory_order_acquire)) {  // a game that is closing starts no take and no still (the sound's mixer would be held again)
+            g_updates.store(u, std::memory_order_release);
+            return;
+        }
+        bool still = false;
+        {
+            std::lock_guard<std::mutex> lock(g_still_mutex);
+            still = g_still_pending;
+        }
+        if (still) {  // the Director's still: one frame, then the take that was waiting (if any) starts at the next gate
+#if defined(LARECOMP_HAS_GPU)
+            if (mcla::gpu::Enabled()) {
+                BeginStill(u);
+                g_updates.store(u, std::memory_order_release);
+                return;
+            }
+#endif
+            {
+                std::lock_guard<std::mutex> lock(g_still_mutex);
+                g_still_pending = false;
+                g_still_res.done = true;
+                g_still_res.ok = false;
+                g_still_res.error = "a still needs the native renderer";
+            }
+        }
         const double want = WantedFps();
         if (g_refused) {
             // A take failed or was refused: the request that started it has to go away before another take is tried (the log has said why).
@@ -1289,12 +1398,25 @@ void CaptureGate() {
     g_updates.store(u, std::memory_order_release);
 }
 
+void CaptureCloseNow() {
+    g_closing.store(true, std::memory_order_release);
+    {
+        std::lock_guard<std::mutex> lock(g_gate_mutex);  // a game thread between its question and its wait has the mutex: it asks again or is waiting when the notify comes
+    }
+    g_gate_cv.notify_all();
+    capture_audio::Abort();  // the take's sound: the mixer's gate opens, the device gets its mix back, and the audio steps stop waiting for it
+}
+
 void CaptureOnHandOver() {
     // CHECK: that the render thread is idle here and has swapped the frame before. frame_pacing.cpp's header says so of sub_82305B38 (read in
     // the generated code: the hand-over waits for "render done", which the render thread signals after D3DDevice_Swap, then signals it again);
     // nothing has run it. If a swap ever arrives with the stamp of the frame after it, every take shows "[cap] TAG" lines.
     if (!g_take_active.load(std::memory_order_acquire)) return;
     const core::HandOver h = g_handover.Note(g_updates.load(std::memory_order_relaxed), true, g_take_first.load(std::memory_order_acquire));
+    if (h.take_frame) {
+        const double pinned = CapturePinnedSceneTime();
+        if (pinned >= 0.0 && SceneTime() != pinned) CaptureSceneInterrupted();
+    }
     g_stamp.store(h.tag, std::memory_order_release);
     if (h.take_frame && g_state_log_on.load(std::memory_order_acquire)) WriteStateRow(h);
 }
@@ -1318,9 +1440,86 @@ bool CaptureTakeActive() {
     return g_take_active.load(std::memory_order_acquire);
 }
 
+double CapturePinnedSceneTime(uint64_t* frame) {
+    if (!g_take_active.load(std::memory_order_acquire) || g_take.still || !g_take.scene_running) return -1.0;
+    const uint64_t index = g_updates.load(std::memory_order_relaxed) - g_take.first_update;
+    if (frame) *frame = index;
+    return g_take.scene_clock.Time(index);
+}
+
+void CaptureSceneInterrupted() {
+    if (CapturePinnedSceneTime() >= 0.0) TakeFail("the scene was interrupted during a pinned take");
+}
+
 void CaptureSceneSpec(const CaptureSpec& spec) {
     std::lock_guard<std::mutex> lock(g_spec_mutex);
     g_spec = spec;
+}
+
+bool CaptureStillRequest(const StillRequest& request, std::string* why) {
+    const auto refuse = [&](const char* text) {
+        if (why) *why = text;
+        return false;
+    };
+#if defined(LARECOMP_HAS_GPU)
+    if (!mcla::gpu::Enabled()) return refuse("a still needs the native renderer");
+#else
+    return refuse("a still needs the native renderer");
+#endif
+    if (g_take_active.load(std::memory_order_acquire)) return refuse("a take is running");
+    if (request.path.empty()) return refuse("no path");
+    std::lock_guard<std::mutex> lock(g_still_mutex);
+    if (g_still_pending) return refuse("another still is waiting");
+    g_still_pending = true;
+    g_still_path = request.path;
+    g_still_res = StillResult{};
+    g_still_res.id = request.id;
+    g_still_res.path = request.path;
+    return true;
+}
+
+bool CaptureStillPoll(uint64_t id, StillResult* out) {
+    std::lock_guard<std::mutex> lock(g_still_mutex);
+    if (g_still_res.id != id || !g_still_res.done) return false;
+    if (out) *out = g_still_res;
+    return true;
+}
+
+void CaptureDirectorRequest(double fps, const CaptureSpec& spec) {
+    {
+        std::lock_guard<std::mutex> lock(g_spec_mutex);
+        g_dir_spec = spec;
+    }
+    const double before = g_dir_fps.exchange(fps > 0.0 ? fps : 0.0, std::memory_order_relaxed);
+    if ((before > 0.0) != (fps > 0.0)) {
+        if (fps > 0.0) LARECOMP_APP_INFO("[cap] the Director asks for a take at {:g} fps", fps);
+        else LARECOMP_APP_INFO("[cap] the Director ends the take");
+    }
+}
+
+CaptureStatus CaptureGetStatus() {
+    CaptureStatus st;
+    st.active = g_take_active.load(std::memory_order_acquire) && !g_still_active.load(std::memory_order_acquire);
+    st.still = g_still_active.load(std::memory_order_acquire);
+    if (st.active) {
+        const Take& t = g_take;
+        st.name = t.name;
+        st.folder = t.layout.folder;
+        st.fps = t.fps;
+        st.frames = g_handover.Handed();
+        st.failed = g_take_failed.load(std::memory_order_acquire);
+        if (st.failed) st.error = FailReason();
+    }
+    st.finished = g_takes_finished.load(std::memory_order_acquire);
+    {
+        std::lock_guard<std::mutex> lock(g_last_mutex);
+        st.last_name = g_last_status.name;
+        st.last_folder = g_last_status.folder;
+        st.last_state = g_last_status.state;
+        st.last_frames = g_last_status.frames;
+        st.last_error = g_last_status.error;
+    }
+    return st;
 }
 
 void CaptureSceneRequest(double fps) {
@@ -1339,11 +1538,15 @@ void CaptureSceneRequest(double fps) {
 // ---------------------------------------------------------------------------------------------------------------------
 uint64_t FixedStepTicks() {
     if (g_take_active.load(std::memory_order_acquire)) return g_take_ticks.load(std::memory_order_acquire);
-    return core::StepTicksForFps(REXCVAR_GET(mcla_fixed_step_fps));
+    return core::StepTicksForFps(larecomp::settings::mcla_fixed_step_fps.Get());
 }
 
 bool FixedStepActive() {
-    return g_take_active.load(std::memory_order_acquire) || REXCVAR_GET(mcla_fixed_step_fps) > 0.0;
+    return g_take_active.load(std::memory_order_acquire) || larecomp::settings::mcla_fixed_step_fps.Get() > 0.0;
+}
+
+uint64_t UpdateCount() {
+    return g_updates.load(std::memory_order_relaxed);
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1351,7 +1554,7 @@ bool FixedStepActive() {
 // ---------------------------------------------------------------------------------------------------------------------
 namespace {
 bool ClockWanted() {
-    return g_take_active.load(std::memory_order_acquire) && REXCVAR_GET(mcla_capture_virtual_clock) &&
+    return g_take_active.load(std::memory_order_acquire) && !g_still_active.load(std::memory_order_acquire) && larecomp::settings::mcla_capture_virtual_clock.Get() &&
            g_take_ticks.load(std::memory_order_acquire) != 0;
 }
 }  // namespace
@@ -1367,7 +1570,7 @@ double SceneClockNowMs(uint64_t frame) {
     }
     if (!g_clock.active()) return steady;
     const double step_ms = core::StepMsForTicks(g_take_ticks.load(std::memory_order_acquire));
-    const bool by_update = frame == kNoFrame;
+    const bool by_update = frame == kNoClockFrame;
     return g_clock.NowMs(by_update ? 0 : 1, by_update ? g_updates.load(std::memory_order_relaxed) : frame, steady, step_ms);
 }
 
@@ -1401,11 +1604,11 @@ void SceneClockNoteAnchor(uint32_t reset, uint32_t time_bit) {
 // the interface: render thread
 // ---------------------------------------------------------------------------------------------------------------------
 int CaptureLag() {
-    return std::clamp<int>(REXCVAR_GET(mcla_capture_lag), 0, 2);
+    return std::clamp<int>(larecomp::settings::mcla_capture_lag.Get(), 0, 2);
 }
 
 double CaptureDelayMs() {
-    return REXCVAR_GET(mcla_capture_delay_ms);
+    return larecomp::settings::mcla_capture_delay_ms.Get();
 }
 
 MemoryGrant CaptureMemoryPlan(uint32_t width, uint32_t height, uint32_t gpu_max, uint32_t gpu_min) {
@@ -1476,7 +1679,7 @@ HostBuffer CaptureAcquire(double* stall_ms) {
     // gate's timeout (ffmpeg stuck, a disk that stopped taking data): the take then ends with an error, it never queues beyond its ring.
     double waited = 0.0;
     bool stuck = false;
-    const core::HostRing::Slot slot = s.ring.Acquire(REXCVAR_GET(mcla_capture_gate_timeout_ms), &waited, &stuck);
+    const core::HostRing::Slot slot = s.ring.Acquire(larecomp::settings::mcla_capture_gate_timeout_ms.Get(), &waited, &stuck);
     if (stall_ms) *stall_ms = waited;
     if (waited > 1.0) {
         std::lock_guard<std::mutex> rows(g_rows_mutex);
@@ -1485,7 +1688,7 @@ HostBuffer CaptureAcquire(double* stall_ms) {
     if (!slot.data) {
         if (stuck) {
             g_sink_stuck.store(true, std::memory_order_release);
-            TakeFail("the writer freed no buffer for " + std::to_string(REXCVAR_GET(mcla_capture_gate_timeout_ms) / 1000) +
+            TakeFail("the writer freed no buffer for " + std::to_string(larecomp::settings::mcla_capture_gate_timeout_ms.Get() / 1000) +
                      " s: ffmpeg or the disk has stopped taking frames (see ffmpeg.log in the take folder)");
         }
         return b;
@@ -1572,13 +1775,15 @@ void ApplierBegin(const Scene& scene) {
     spec.name = scene.capture_name;
     spec.sink = scene.capture_sink;
     spec.state_log = scene.capture_state_log;
+    spec.request_scene_t = scene.capture_from;
     CaptureSceneSpec(spec);
 }
 
 void ApplierApply(const Scene& scene, double t) {
     if (scene.capture_fps <= 0.0) return;  // a scene with no capture key costs nothing
     const CaptureWindow w = EvaluateCapture(scene, t);
-    CaptureSceneRequest(w.on ? w.fps : 0.0);
+    const SceneTransport tr = GetSceneTransport();
+    CaptureSceneRequest(w.on && !tr.holding_for_ready && !tr.held ? w.fps : 0.0);
 }
 
 void ApplierEnd() {
@@ -1615,14 +1820,25 @@ struct Registrar {
 
 namespace mc::cinematic {
 void CaptureGate() {}
+void CaptureCloseNow() {}
 void CaptureOnHandOver() {}
 void CaptureOnSwap() {}
 bool CaptureTakeActive() { return false; }
+double CapturePinnedSceneTime(uint64_t*) { return -1.0; }
+void CaptureSceneInterrupted() {}
 void CaptureSceneRequest(double) {}
 void CaptureSceneSpec(const CaptureSpec&) {}
+bool CaptureStillRequest(const StillRequest&, std::string* why) {
+    if (why) *why = "not in this build";
+    return false;
+}
+bool CaptureStillPoll(uint64_t, StillResult*) { return false; }
+void CaptureDirectorRequest(double, const CaptureSpec&) {}
+CaptureStatus CaptureGetStatus() { return CaptureStatus{}; }
 MemoryGrant CaptureMemoryPlan(uint32_t, uint32_t, uint32_t, uint32_t) { return MemoryGrant{}; }
 uint64_t FixedStepTicks() { return 0; }
 bool FixedStepActive() { return false; }
+uint64_t UpdateCount() { return 0; }
 double SceneClockNowMs(uint64_t) {
     return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }

@@ -9,105 +9,17 @@
 #include <cstring>
 #include <functional>
 
-#include <rex/cvar.h>
-#include <rex/input/input_system.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
+#include <rex/hid/input_system.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/input_keys.h>
 #include <rex/ui/ui_event.h>
-#include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
 
-REXCVAR_DEFINE_BOOL(map_mouse, true, "MCLA/Input",
-    "Drive the full map's cursor with the mouse. The pointer position is "
-    "unprojected onto the map plane, so the cursor lands where you point "
-    "instead of drifting like a stick would.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(map_mouse_fov, 45.0, "MCLA/Input",
-    "Vertical field of view, in degrees, of the camera the full map is drawn "
-    "with. The only number the unprojection cannot read out of the game. Too "
-    "small and the cursor lags behind the pointer towards the screen edges; "
-    "too large and it runs ahead. The centre of the screen is correct at any "
-    "value, so calibrate by pointing at a corner.")
-    .range(5.0, 150.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_flip_x, false, "MCLA/Input",
-    "Mirror the horizontal axis of the map cursor. Needed only if the camera "
-    "basis rows turn out to be left-handed -- the cursor then moves the wrong "
-    "way along one axis while the other tracks correctly.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_flip_y, false, "MCLA/Input",
-    "Mirror the vertical axis of the map cursor. See map_mouse_flip_x.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_zoom, true, "MCLA/Input",
-    "Zoom the full map with the scroll wheel. The camera height is the zoom, "
-    "so this walks it through the game's own min/max at +1124/+1128.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(map_mouse_zoom_step, 1.15, "MCLA/Input",
-    "Multiplier applied to the map camera's height per wheel detent.")
-    .range(1.01, 3.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(map_mouse_zoom_smooth, 0.22, "MCLA/Input",
-    "How much of the remaining distance to the wheel's target height the "
-    "camera covers each frame. A detent is a step, and stepping the camera "
-    "straight to it is what made the zoom read as jerky; this eases into it "
-    "instead. 1.0 restores the instant jump.")
-    .range(0.02, 1.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_zoom_to_cursor, true, "MCLA/Input",
-    "Zoom around the point under the pointer instead of around the middle of "
-    "the view. With this off the camera only changes height, which slides the "
-    "world under a pointer that has not moved and drags the cursor towards "
-    "the centre on every detent.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_magnet, false, "MCLA/Input",
-    "Leave the map's cursor magnet alone. The map snaps the cursor onto the "
-    "selected icon, both on selecting it and again on every frame it stays "
-    "selected, which is how a thumbstick is made to feel sticky over "
-    "waypoints and what welds a pointer to the first one it brushes. Off "
-    "suppresses both snaps for whichever device currently owns the cursor "
-    "being the mouse -- a stick moved out of its deadzone takes ownership "
-    "back and gets its magnet with it. The selection and its highlight are "
-    "never touched either way, so hovering works regardless.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(map_mouse_max_steps, 96, "MCLA/Input",
-    "Ceiling on how many stick-sized steps one frame may walk the cursor "
-    "towards the pointer. The map's boundary sweep is written for the small "
-    "deltas a stick produces and reads a null neighbour pointer when handed a "
-    "long chord, so the move is subdivided rather than teleported. Anything "
-    "left over is covered by the next frame, so a ceiling too low shows up as "
-    "a cursor that crawls after a fast flick rather than as anything worse. "
-    "The walk stops as soon as it arrives or stops making progress, so a high "
-    "ceiling costs nothing on the small movements that make up most frames.")
-    .range(1, 512)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_hide_cursor, true, "MCLA/Input",
-    "Hide the OS pointer while the full map is up. The in-game cursor tracks "
-    "it one to one, so the visible cursor is the game's own.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(map_mouse_diag, false, "MCLA/Input",
-    "Log the map screen pointer, camera basis and the world point the mouse "
-    "unprojects to, once a second.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "mc_engine/sdk_access.h"
+#include "mc_engine/ui_events.h"
 
 namespace {
 
@@ -176,8 +88,8 @@ constexpr uint32_t kIsActiveVFunc = 92;
 // ── Guest memory ───────────────────────────────────────────────────────
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadGuestBE32(uint32_t ea) {
@@ -224,9 +136,9 @@ void WriteGuestFloat(uint32_t ea, float f) {
 // ── Guest calls ────────────────────────────────────────────────────────
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 void CallSetCursorPos(uint32_t screen, float x, float y, float z) {
@@ -238,14 +150,14 @@ void CallSetCursorPos(uint32_t screen, float x, float y, float z) {
                     "cursor cannot be driven");
         return;
     }
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, screen, double(x), double(y),
+    larecomp::guest::Call<uint32_t>(fn, screen, double(x), double(y),
                                            double(z));
 }
 
 void CallMoveMapCamera(uint32_t screen, uint32_t vec4, bool use_given_height) {
     PPCFunc* fn = GuestFn(kMoveMapCameraFn);
     if (!fn) return;
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, screen, vec4, 0u, 1u, 1u, 1u,
+    larecomp::guest::Call<uint32_t>(fn, screen, vec4, 0u, 1u, 1u, 1u,
                                            use_given_height ? 1u : 0u);
 }
 
@@ -258,7 +170,7 @@ bool ScreenIsActive(uint32_t screen) {
     if (!fn_addr) return false;
     PPCFunc* fn = GuestFn(fn_addr);
     if (!fn) return false;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, screen) != 0;
+    return larecomp::guest::Call<uint32_t>(fn, screen) != 0;
 }
 
 // sub_82625F50 reads its target with lvx, which ignores the low four bits of
@@ -271,7 +183,7 @@ uint32_t ScratchVec4() {
 
     PPCFunc* malloc_fn = GuestFn(kGuestMallocFn);
     if (!malloc_fn) return 0;
-    uint32_t raw = rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, 32u);
+    uint32_t raw = larecomp::guest::Call<uint32_t>(malloc_fn, 32u);
     if (!raw) return 0;
 
     uint32_t aligned = (raw + 15u) & ~15u;
@@ -344,48 +256,32 @@ std::atomic<bool> g_map_wants_pointer{false};
 float g_zoom_target = 0.0f;
 bool g_zoom_running = false;
 
-class MapMouseListener final : public rex::ui::WindowInputListener {
- public:
-    void OnMouseMove(rex::ui::MouseEvent& e) override { Record(e); }
-    void OnMouseDown(rex::ui::MouseEvent& e) override { Record(e); }
-    void OnMouseUp(rex::ui::MouseEvent& e) override { Record(e); }
+// The wheel's detent in the units of g_wheel_accum. 0.10 gave integer wheel units (MouseEvent::kScrollPerDetent, 120 on
+// Windows); 0.11 gives detents, fractional for a smooth wheel, so the sum keeps the old units.
+constexpr int32_t kScrollPerDetent = 120;
 
-    void OnMouseWheel(rex::ui::MouseEvent& e) override {
-        Record(e);
-        if (e.scroll_y())
-            g_wheel_accum.fetch_add(e.scroll_y(), std::memory_order_relaxed);
+// The UI system's input events (ui_events.h): layer 0 like before, it never marks an event handled, and an overlay that
+// wants the mouse gets first refusal, so a console that is capturing the mouse stops the map cursor from chasing it.
+void OnInput(rex::InputEvent& e) {
+    using Type = rex::InputEvent::Type;
+    if (e.type != Type::kMotion && e.type != Type::kButtonDown && e.type != Type::kButtonUp && e.type != Type::kWheel) return;
+    uint64_t packed = (uint64_t(uint32_t(int32_t(e.x))) << 32) | uint32_t(int32_t(e.y));
+    g_mouse_xy.store(packed, std::memory_order_relaxed);
+    g_mouse_seq.fetch_add(1, std::memory_order_relaxed);
+    if (e.type == Type::kWheel) {
+        // CHECK: scroll_y is positive away from the player (wheel up), as MouseEvent::scroll_y was: the map zooms in on a wheel turned up.
+        const int32_t units = int32_t(std::lround(e.scroll_y * float(kScrollPerDetent)));
+        if (units) g_wheel_accum.fetch_add(units, std::memory_order_relaxed);
     }
-
- private:
-    static void Record(rex::ui::MouseEvent& e) {
-        uint64_t packed = (uint64_t(uint32_t(e.x())) << 32) | uint32_t(e.y());
-        g_mouse_xy.store(packed, std::memory_order_relaxed);
-        g_mouse_seq.fetch_add(1, std::memory_order_relaxed);
-    }
-};
-
-MapMouseListener g_listener;
-
-rex::ui::Window* GetWindow() {
-    auto* rt = rex::Runtime::instance();
-    if (!rt) return nullptr;
-    auto* isys = static_cast<rex::input::InputSystem*>(rt->input_system());
-    return isys ? isys->window() : nullptr;
 }
 
 void AttachListener() {
     if (g_listener_attached.load(std::memory_order_relaxed)) return;
-    rex::ui::Window* window = GetWindow();
-    if (!window) return;
-    // Layer 0, the same one the app and the mnk driver use. Listeners in a
-    // layer run in reverse order of registration and this one is added last,
-    // so it sees the event first -- which costs nothing, because it never
-    // marks anything handled. Anything registered above layer 0 (the ImGui
-    // overlays) still gets first refusal, so a console that is capturing the
-    // mouse stops the map cursor from chasing it.
-    window->AddInputListener(&g_listener, 0);
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    if (!ui || !ui->HasWindow()) return;
+    larecomp::uievents::AddInputHandler(&OnInput);
     g_listener_attached.store(true, std::memory_order_relaxed);
-    MC_INFO("[map-mouse] mouse listener attached to the window");
+    MC_INFO("[map-mouse] mouse handler attached to the UI system's input events");
 }
 
 // Hands the pointer back: the OS cursor becomes visible again and any scroll
@@ -393,18 +289,12 @@ void AttachListener() {
 // zoom the map the moment it closes.
 void ReleaseMouse();
 
-// Cursor visibility has to be applied on the UI thread -- SDL video calls are
-// not safe from the guest threads the hook runs on.
+// The pointer mode is the input system's (one for the whole window): the arbiter in sdk_access.h keeps the strongest wish
+// of mouse look, this file and the cursor hide, and the UI system applies it on the UI thread.
 void SetOsCursorHidden(bool hidden) {
     if (g_cursor_hidden.load(std::memory_order_relaxed) == hidden) return;
-    rex::ui::Window* window = GetWindow();
-    if (!window) return;
     g_cursor_hidden.store(hidden, std::memory_order_relaxed);
-    window->app_context().CallInUIThreadDeferred([window, hidden]() {
-        window->SetCursorVisibility(hidden
-            ? rex::ui::Window::CursorVisibility::kHidden
-            : rex::ui::Window::CursorVisibility::kVisible);
-    });
+    larecomp::pointer::Want(larecomp::pointer::Owner::kMap, hidden ? rex::PointerMode::kHidden : rex::PointerMode::kFree);
 }
 
 // ── The unprojection ───────────────────────────────────────────────────
@@ -428,8 +318,8 @@ bool UnprojectToMapPlane(uint32_t screen, int32_t mx, int32_t my,
 
     float ndc_x = (2.0f * float(mx) / float(width)) - 1.0f;
     float ndc_y = 1.0f - (2.0f * float(my) / float(height));
-    if (REXCVAR_GET(map_mouse_flip_x)) ndc_x = -ndc_x;
-    if (REXCVAR_GET(map_mouse_flip_y)) ndc_y = -ndc_y;
+    if (larecomp::settings::map_mouse_flip_x.Get()) ndc_x = -ndc_x;
+    if (larecomp::settings::map_mouse_flip_y.Get()) ndc_y = -ndc_y;
 
     Vec3 right = Normalize(ReadGuestVec3(screen + kCameraBasis));
     Vec3 up    = Normalize(ReadGuestVec3(screen + kCameraBasis + 16));
@@ -444,7 +334,7 @@ bool UnprojectToMapPlane(uint32_t screen, int32_t mx, int32_t my,
     if (fwd.y > 0.0f) fwd = fwd * -1.0f;
     if (up.y < 0.0f) up = up * -1.0f;
 
-    float tan_half = std::tan(float(REXCVAR_GET(map_mouse_fov)) *
+    float tan_half = std::tan(float(larecomp::settings::map_mouse_fov.Get()) *
                               3.14159265358979f / 360.0f);
     float aspect = float(width) / float(height);
     // In a TALL picture (aspect ratio under 16:9) the game's cameras keep their horizontal field of view and
@@ -502,7 +392,7 @@ void MoveCamera(uint32_t screen, uint32_t vec, float x, float y, float z) {
 // the camera was moved this frame.
 bool ApplyWheelZoom(uint32_t screen, const Vec3& anchor, int32_t mx, int32_t my,
                     uint32_t width, uint32_t height) {
-    if (!REXCVAR_GET(map_mouse_zoom)) {
+    if (!larecomp::settings::map_mouse_zoom.Get()) {
         g_wheel_accum.store(0, std::memory_order_relaxed);
         g_zoom_running = false;
         return false;
@@ -514,7 +404,7 @@ bool ApplyWheelZoom(uint32_t screen, const Vec3& anchor, int32_t mx, int32_t my,
 
     // Take whole detents and put the remainder back, so a wheel that reports
     // in fractions still adds up to a step instead of being rounded away.
-    constexpr int32_t kPerDetent = int32_t(rex::ui::MouseEvent::kScrollPerDetent);
+    constexpr int32_t kPerDetent = kScrollPerDetent;
     int32_t units = g_wheel_accum.load(std::memory_order_relaxed);
     int32_t detents = units / kPerDetent;
     if (detents) {
@@ -525,7 +415,7 @@ bool ApplyWheelZoom(uint32_t screen, const Vec3& anchor, int32_t mx, int32_t my,
         // view back to wherever the wheel last left it.
         if (!g_zoom_running) g_zoom_target = cam_y;
         // Scrolling up is zooming in, which is the camera coming down.
-        g_zoom_target *= std::pow(float(REXCVAR_GET(map_mouse_zoom_step)),
+        g_zoom_target *= std::pow(float(larecomp::settings::map_mouse_zoom_step.Get()),
                                   float(-detents));
         if (hi > lo) {
             if (g_zoom_target < lo) g_zoom_target = lo;
@@ -545,7 +435,7 @@ bool ApplyWheelZoom(uint32_t screen, const Vec3& anchor, int32_t mx, int32_t my,
         return false;
     }
 
-    float new_height = cam_y + remaining * float(REXCVAR_GET(map_mouse_zoom_smooth));
+    float new_height = cam_y + remaining * float(larecomp::settings::map_mouse_zoom_smooth.Get());
 
     uint32_t vec = ScratchVec4();
     if (!vec) {
@@ -573,7 +463,7 @@ bool ApplyWheelZoom(uint32_t screen, const Vec3& anchor, int32_t mx, int32_t my,
     // all: translating the camera horizontally leaves the ray direction and
     // the plane alone, so the point under a given pixel moves by exactly the
     // same vector the camera did.
-    if (REXCVAR_GET(map_mouse_zoom_to_cursor)) {
+    if (larecomp::settings::map_mouse_zoom_to_cursor.Get()) {
         Vec3 after;
         if (UnprojectToMapPlane(screen, mx, my, width, height, after)) {
             float ex = anchor.x - after.x;
@@ -612,10 +502,10 @@ void DropFocusIfCursorLeft(uint32_t screen) {
     if (!in_range || !set_focus) return;
 
     float radius = ReadGuestFloat(screen + kFocusRadius) * 0.5f;
-    if (rex::ppc::GuestToHostFunction<uint32_t>(in_range, screen, double(radius)))
+    if (larecomp::guest::Call<uint32_t>(in_range, screen, double(radius)))
         return;
 
-    rex::ppc::GuestToHostFunction<uint32_t>(set_focus, screen, 0u);
+    larecomp::guest::Call<uint32_t>(set_focus, screen, 0u);
 }
 
 // Walks the cursor to `target` in steps no longer than the stick's own, and
@@ -637,7 +527,7 @@ bool StepCursorTowards(uint32_t screen, const Vec3& target, float dt) {
         if (!(step > 0.0f)) return false;
     }
 
-    int32_t budget = REXCVAR_GET(map_mouse_max_steps);
+    int32_t budget = larecomp::settings::map_mouse_max_steps.Get();
     bool moved = false;
 
     for (int32_t i = 0; i < budget; ++i) {
@@ -723,14 +613,14 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
     // in flight. screen+16 & 0x100 is the screen's own active bit, which every
     // one of the game's movers tests first and which the boundary sweep's data
     // hangs off.
-    bool gated_in = REXCVAR_GET(map_mouse) &&
+    bool gated_in = larecomp::settings::map_mouse.Get() &&
                     ReadGuestU8(screen + kInputEnabled) != 0 &&
                     ReadGuestU8(screen + kCursorActive) != 0 &&
                     ScreenIsActive(screen);
 
     g_map_wants_pointer.store(gated_in, std::memory_order_relaxed);
 
-    if (REXCVAR_GET(map_mouse_diag)) {
+    if (larecomp::settings::map_mouse_diag.Get()) {
         static uint8_t last_in = 0xFF, last_cur = 0xFF;
         uint8_t in = ReadGuestU8(screen + kInputEnabled);
         uint8_t cur = ReadGuestU8(screen + kCursorActive);
@@ -743,13 +633,19 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
         }
     }
 
-    rex::ui::Window* window = GetWindow();
-    if (!window) {
+    rex::hid::IInputSystem* input = larecomp::sdk::Input();
+    if (!input) {
         ReleaseMouse();
         return;
     }
-    uint32_t width = window->GetActualPhysicalWidth();
-    uint32_t height = window->GetActualPhysicalHeight();
+    // The window's client size in physical pixels, from the last resize event the input system saw (0 before the first).
+    const rex::PointerState pointer = input->GetPointer();
+    uint32_t width = pointer.window_width;
+    uint32_t height = pointer.window_height;
+    if (width == 0 || height == 0) {
+        ReleaseMouse();
+        return;
+    }
 
     uint64_t packed = g_mouse_xy.load(std::memory_order_relaxed);
     int32_t mx = int32_t(uint32_t(packed >> 32));
@@ -801,7 +697,7 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
         return;
     }
 
-    SetOsCursorHidden(REXCVAR_GET(map_mouse_hide_cursor));
+    SetOsCursorHidden(larecomp::settings::map_mouse_hide_cursor.Get());
 
     // Unprojected every frame, not only on the frames the pointer moves: the
     // zoom anchors on this point, and a wheel turned while the mouse sits
@@ -851,7 +747,7 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
     // one, so this is where a selection the cursor has left gets released.
     DropFocusIfCursorLeft(screen);
 
-    if (REXCVAR_GET(map_mouse_diag)) {
+    if (larecomp::settings::map_mouse_diag.Get()) {
         static uint64_t next_log = 0;
         uint64_t frame = g_frame_counter.load(std::memory_order_relaxed);
         if (frame >= next_log) {
@@ -870,7 +766,7 @@ void Hook_MapInputTick(PPCRegister& r31, PPCRegister& f1) {
 }
 
 bool MCLA_MapCursorMagnetGuard() {
-    if (!REXCVAR_GET(map_mouse) || REXCVAR_GET(map_mouse_magnet)) return false;
+    if (!larecomp::settings::map_mouse.Get() || larecomp::settings::map_mouse_magnet.Get()) return false;
     return g_mouse_owns.load(std::memory_order_relaxed);
 }
 

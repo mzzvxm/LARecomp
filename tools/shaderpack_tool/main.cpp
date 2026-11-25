@@ -142,7 +142,7 @@ void Usage() {
       "  build         --game <dir> (--xex <default.xex> | --image <flat image>) --out <dir> --dxc <dir>\n"
       "                [--formats dxil|spirv|both (default both)] [--threads N] [--force]\n"
       "                [--position-stride N] [--no-variants]\n"
-      "                Builds mcla_shaders.v8.pack, mcla_shaders_variants.v2.pack and the stamp.\n"
+      "                Builds mcla_shaders.v8.pack, mcla_shaders_variants.v3.pack and the stamp.\n"
       "                --game   the folder with xarchive_cache.rpf and default.xex\n"
       "                --xex    default.xex itself: its image is decoded here, as larecomp.exe\n"
       "                         --build_shader_packs does it\n"

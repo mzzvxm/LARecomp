@@ -10,11 +10,12 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "ao.h"
 #include "car_frame.h"
+#include "contact_trace.h"
 #include "descriptors.h"
 #include "device.h"
 #include "draw_state.h"
@@ -24,6 +25,7 @@
 #include "host_plan.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "shadow_filter.h"
 #include "menu_world.h"
 #include "temporal_identities.h"
 #include "texture_bytes.h"
@@ -42,24 +44,6 @@
 #endif
 #include "host_shaders.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_car_shadow_map, "auto", "MCLA/GPU",
-    "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it. The game's own sun shadows "
-    "draw the car in a rough low-detail form into maps whose texels are 1 to 25 cm, so the wing, the mirrors, the sills and the "
-    "wheels cast no shadow of their own; this draws the car again from the sun, at full detail, into a small map fitted to it "
-    "(2048 by 2048 on ultra, 1024 by 1024 on high), and the contact shadows read it. It only runs while the contact shadows "
-    "(mcla_gpu_contact_shadows) are on, in the game view, in daylight. off, high, ultra or auto (the default): ultra on a discrete "
-    "graphics card, high on an integrated one. Costs a little graphics card time (the car's triangles drawn once more, depth only) "
-    "and 8 or 32 MiB of video memory. Live.")
-    .allowed({"auto", "off", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_car_shadow_map_view, 0, "MCLA/GPU",
-    "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
-    "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.")
-    .debug_only()
-    .range(0, 1)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -178,6 +162,8 @@ bool CarShadowMap::MakeShaders() {
 }
 
 void CarShadowMap::Shutdown() {
+  rules::PublishOwner(false);  // the game's cascades draw the car again from here on
+  owner_ = rules::Owner{};
   // The host builder's functions name this object's shaders and layout: stop it first.
   if (passes_) {
     passes_->precache().Stop();
@@ -458,6 +444,21 @@ void CarShadowMap::ReleaseImages() {
 
 void CarShadowMap::BeginFrame() {
   ++frame_;
+  // Who casts the player's car's shadow on the world from now on (car_shadow_map_rules.h Owner): last frame's map and strength decide,
+  // and the guest's hook in Vehicle::Draw reads the answer (hooks/traffic_shadow.cpp), so it is published before this frame's map is made.
+  {
+    const bool allowed = larecomp::settings::mcla_gpu_car_shadow_map_owns.Get();
+    const float strength = ao_ != nullptr ? ao_->ContactStrength() : 0.0f;
+    const rules::Owner before = owner_;
+    owner_ = rules::NextOwner(owner_, view_.valid, strength, allowed);
+    rules::PublishOwner(owner_.owns);
+    if (owner_.owns != before.owns) {
+      REXLOG_INFO("{} the player's car's shadow on the world is {} (the contact shadows' strength {:.2f}; mcla_gpu_car_shadow_map_owns = {}; logged when "
+                  "it changes)",
+                  kPrefix, owner_.owns ? "the map's alone: the game's sun shadow maps no longer draw the car" : "the game's again: its sun shadow maps draw the car",
+                  strength, allowed ? "true" : "false");
+    }
+  }
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
@@ -470,7 +471,7 @@ void CarShadowMap::BeginFrame() {
   choice_ = rules::Resolve(cls, Setting().Get());
   contact_on_ =
       host_plan::Resolve(host_plan::Pass::kContact, cls, true, ContactSetting().Get()).level != host_plan::Level::kOff;
-  view_mode_ = int(REXCVAR_GET(mcla_gpu_car_shadow_map_view));
+  view_mode_ = int(larecomp::settings::mcla_gpu_car_shadow_map_view.Get());
   wanted_ = choice_.level != rules::Level::kOff && contact_on_ && car_frame_ != nullptr;
   const uint32_t state = uint32_t(choice_.level) * 2u + (contact_on_ ? 1u : 0u);
   if (state != last_level_logged_) {
@@ -665,7 +666,22 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
   matrix_rows[12] = float(fit.texel_m);
   matrix_rows[13] = float(fit.depth_m);
   matrix_rows[14] = float(size);
-  matrix_rows[15] = 1.0f;
+  // The car's shadow is filtered as the world's is (mcla_gpu_shadow_filter: game keeps the map's own crisp ring, soft and pcss are the world's
+  // disk; contact_trace.h "THE FILTER FOLLOWS THE WORLD'S"): the mode and, for pcss, the sun's size go into the matrix texture's last component.
+  {
+    const shadow_filter::Mode world = shadow_filter::CurrentMode();
+    const uint32_t mode = world == shadow_filter::Mode::kPcss   ? contact_trace::kCarMapFilterPcss
+                          : world == shadow_filter::Mode::kSoft ? contact_trace::kCarMapFilterSoft
+                                                                : contact_trace::kCarMapFilterGame;
+    matrix_rows[15] = contact_trace::CarMapFilterCode(mode, shadow_filter::SunBits(larecomp::settings::mcla_gpu_shadow_filter_sun.Get()));
+    if (mode != last_filter_logged_) {
+      last_filter_logged_ = mode;
+      REXLOG_INFO("{} the car's shadow is filtered as the world's is: {} (mcla_gpu_shadow_filter; logged when it changes)", kPrefix,
+                  mode == contact_trace::kCarMapFilterPcss   ? "pcss, a blocker search and the penumbra's width, the sun at the world's size"
+                  : mode == contact_trace::kCarMapFilterSoft ? "soft, a disk of 16 taps"
+                                                             : "the map's own crisp ring (the world's filter is the game's)");
+    }
+  }
   passes_->DrawInto(list, matrix_, matrix_pipeline, matrix_rows, sizeof(matrix_rows));
   if (view_mode_ == 1) {
     RecordView(summary, list);

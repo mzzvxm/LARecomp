@@ -11,125 +11,20 @@
 #include <string>
 #include <thread>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
+#include "upscale_modes.h"
 #include "upscaler_load_policy.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_lazy_load, true, "MCLA/GPU",
-    "Debug (A/B): load the upscalers' libraries only when they are needed. On (the default): "
-    "AMD's FidelityFX runtime (amd_fidelityfx_upscaler_*.dll, 35 to 55 MiB) is opened when an FSR "
-    "is first used, not at every start (an AMD graphics card still asks it at the start, because "
-    "only the runtime can say whether FSR 4 is offered), and NVIDIA's Streamline and DLSS (D3D12 on "
-    "an RTX card) start their background warm-up only once the pause menu's UPSCALING row has been "
-    "shown or DLSS frame generation is chosen, not five seconds after every start; DLSS and FSR "
-    "chosen at the start load at the start as always. Off: the old behaviour, FidelityFX opened by "
-    "every start and the DLSS warm-up five seconds after the game first draws. Read at the start.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_upscaler, "off", "MCLA/GPU",
-    "Upscaling of the 3D scene: off, fsr31 (AMD FSR 3.1), fsr4 (AMD FSR 4, only where the "
-    "graphics card and driver run it) or dlss (NVIDIA DLSS, only on an NVIDIA RTX card, with "
-    "NVIDIA's files next to the game). The scene is moved by a different sub-pixel amount every "
-    "frame and the upscaler rebuilds a sharper, steadier picture from the frames; the menus, the "
-    "HUD and the bloom, glow and tone map stay at full size. The picture it makes is the size of "
-    "the window (its 16:9 area), whatever mcla_gpu_resolution_scale says, and the scene is drawn "
-    "at the mode's share of that. While one is on, FXAA and SMAA are "
-    "held off and MSAA is 1 sample (your MSAA choice, mcla_gpu_msaa, is kept and comes back when "
-    "the upscaler is off). A choice this PC cannot run is treated as off. Live: turning an "
-    "upscaler on, off or to another one is made at a frame boundary once the new one is ready, "
-    "while the old one keeps working (FSR in about half a "
-    "second, DLSS in several seconds). The exception is DLSS on Vulkan: that graphics device is "
-    "made through NVIDIA's Streamline only when dlss is the saved choice at the start (it adds "
-    "several seconds to every start), so choosing dlss in a Vulkan game started with something "
-    "else is saved and applies at the next start, and the menu offers a restart. Until then the "
-    "game keeps what it runs (the upscaler and its mode as they were, or none), it is not turned "
-    "off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_fsr31_mode, "native_aa", "MCLA/GPU",
-    "FSR 3.1's mode, AMD's names and the share of the output the scene is drawn at: native_aa "
-    "(100%, only smoothed), quality (67%), balanced (59%), performance (50%) or ultra_performance "
-    "(33%), per direction, of the output (the window's 16:9 area, whatever "
-    "mcla_gpu_resolution_scale says). Live: the scene is drawn at the new size from a frame "
-    "boundary once the upscaler is ready for it, and the old mode works until then.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_fsr4_mode, "native_aa", "MCLA/GPU",
-    "FSR 4's mode, AMD's names and the share of the output the scene is drawn at: native_aa "
-    "(100%, only smoothed), quality (67%), balanced (59%), performance (50%) or ultra_performance "
-    "(33%), per direction, of the output (the window's 16:9 area, whatever "
-    "mcla_gpu_resolution_scale says). Live: the scene is drawn at the new size from a frame "
-    "boundary once the upscaler is ready for it, and the old mode works until then.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_dlss_mode, "dlaa", "MCLA/GPU",
-    "DLSS's mode, NVIDIA's names and the share of the output the scene is drawn at: dlaa (100%, "
-    "only smoothed), quality (67%), balanced (58%), performance (50%) or ultra_performance (33%), "
-    "per direction, of the output (the window's 16:9 area, whatever mcla_gpu_resolution_scale "
-    "says). Live: the scene is drawn at the new size from a frame boundary once the upscaler is "
-    "ready for it (several seconds for DLSS), and the old mode works until then.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(
-    mcla_gpu_upscaler_sharpness, 0.2, "MCLA/GPU",
-    "How much the FSR upscalers sharpen their picture (AMD's RCAS pass), 0 to 1: 0 adds no "
-    "sharpening, 1 the most. DLSS has no sharpening. Live.")
-    .range(0.0, 1.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_fsr_debug_view, false, "MCLA/GPU",
-    "Test lever (FSR 3.1 and FSR 4 only): the upscaler's context is made with AMD's debug "
-    "visualization (it holds more video memory) and every dispatch asks it to draw its own views "
-    "into the picture it makes: the motion vectors it received and how much it trusts its history "
-    "(its reactive, disocclusion and blend factor views, as its version has them; in FSR 4 the "
-    "bright purple is a pixel whose history it does not trust). Everything the game does "
-    "afterwards (bloom, tone map) reads that picture, overlay included. A change makes a new "
-    "context: about half a second of plain frames. For A/B. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
 bool UpscalerDebugView(Upscaler upscaler) {
   return (upscaler == Upscaler::kFsr31 || upscaler == Upscaler::kFsr4) &&
-         REXCVAR_GET(mcla_gpu_fsr_debug_view);
+         larecomp::settings::mcla_gpu_fsr_debug_view.Get();
 }
 
 namespace {
-
-// AMD's names and ratios (FSR 3.1 and FSR 4).
-constexpr ModeInfo kModes[size_t(UpscaleMode::kCount)] = {
-    {"native_aa", "NATIVE AA", 100, 1.0},
-    {"quality", "QUALITY", 67, 1.5},
-    {"balanced", "BALANCED", 59, 1.7},
-    {"performance", "PERFORMANCE", 50, 2.0},
-    {"ultra_performance", "ULTRA PERFORMANCE", 33, 3.0},
-};
-// NVIDIA's: DLAA, Quality 66.7%, Balanced 58%, Performance 50%, Ultra Performance 33.3% of the
-// output per direction (the sizes slDLSSGetOptimalSettings gives; the backend checks the scene's
-// size against the range it reports).
-constexpr ModeInfo kDlssModes[size_t(UpscaleMode::kCount)] = {
-    {"dlaa", "DLAA", 100, 1.0},
-    {"quality", "QUALITY", 67, 1.5},
-    {"balanced", "BALANCED", 58, 1.0 / 0.58},
-    {"performance", "PERFORMANCE", 50, 2.0},
-    {"ultra_performance", "ULTRA PERFORMANCE", 33, 3.0},
-};
-
-std::string Lower(std::string_view text) {
-  std::string out(text);
-  std::transform(out.begin(), out.end(), out.begin(),
-                 [](unsigned char c) { return char(std::tolower(c)); });
-  return out;
-}
 
 // Packed for one atomic: bit 0 probed, 1 fsr31, 2 fsr4.
 std::atomic<uint32_t> g_availability{0};
@@ -140,76 +35,39 @@ std::atomic<uint32_t> g_dlss_refused{0};
 std::atomic<uint32_t> g_running{0};
 std::atomic<uint32_t> g_kept{0};
 std::atomic<bool> g_switching{false};
+std::atomic<bool> g_no_room{false};
 
 }  // namespace
 
+// The words, the mode tables and the parses are upscale_modes.h's (pure, upscale_modes_test.cpp); these keep the names the renderer uses.
 const char* UpscalerCvarValue(Upscaler upscaler) {
-  switch (upscaler) {
-    case Upscaler::kFsr31: return "fsr31";
-    case Upscaler::kFsr4: return "fsr4";
-    case Upscaler::kDlss: return "dlss";
-    default: return "off";
-  }
+  return upscale_modes::CvarValue(upscaler);
 }
 
 const char* UpscalerName(Upscaler upscaler) {
-  switch (upscaler) {
-    case Upscaler::kFsr31: return "FSR 3.1";
-    case Upscaler::kFsr4: return "FSR 4";
-    case Upscaler::kDlss: return "DLSS";
-    default: return "OFF";
-  }
+  return upscale_modes::Name(upscaler);
 }
 
 bool ParseUpscaler(std::string_view text, Upscaler* out) {
-  const std::string value = Lower(text);
-  *out = Upscaler::kOff;
-  if (value == "fsr31" || value == "fsr3.1" || value == "fsr 3.1") {
-    *out = Upscaler::kFsr31;
-    return true;
-  }
-  if (value == "fsr4" || value == "fsr 4") {
-    *out = Upscaler::kFsr4;
-    return true;
-  }
-  if (value == "dlss") {
-    *out = Upscaler::kDlss;
-    return true;
-  }
-  return value == "off" || value.empty();
+  return upscale_modes::ParseUpscaler(text, out);
 }
 
 const ModeInfo& ModeInfoOf(Upscaler upscaler, UpscaleMode mode) {
-  const ModeInfo* table = upscaler == Upscaler::kDlss ? kDlssModes : kModes;
-  return table[size_t(mode) < size_t(UpscaleMode::kCount) ? size_t(mode) : 0];
+  return upscale_modes::InfoOf(upscaler, mode);
 }
 
 bool ParseUpscaleMode(std::string_view text, UpscaleMode* out) {
-  const std::string value = Lower(text);
-  *out = UpscaleMode::kNativeAa;
-  if (value == "dlaa") {  // DLSS's name for the first mode
-    return true;
-  }
-  for (size_t i = 0; i < size_t(UpscaleMode::kCount); ++i) {
-    if (value == kModes[i].cvar) {
-      *out = UpscaleMode(i);
-      return true;
-    }
-  }
-  return false;
+  return upscale_modes::ParseMode(text, out);
 }
 
 bool ModeRuns(Upscaler upscaler, UpscaleMode mode) {
-  // FSR 3.1, FSR 4 and DLSS all take the five modes of their vendor (the scene's size is the
-  // start's choice: GetStartUpscale). DLSS can refuse a mode at some output sizes (ModeVerdicts):
-  // that is not decided here but by the backend, for the sizes the renderer works at.
-  return upscaler != Upscaler::kOff && size_t(mode) < size_t(UpscaleMode::kCount);
+  return upscale_modes::Runs(upscaler, mode);
 }
 
 UpscaleMode SavedUpscaleMode(Upscaler upscaler) {
-  const std::string mode = upscaler == Upscaler::kFsr4   ? REXCVAR_GET(mcla_gpu_fsr4_mode)
-                           : upscaler == Upscaler::kDlss ? REXCVAR_GET(mcla_gpu_dlss_mode)
-                                                         : REXCVAR_GET(mcla_gpu_fsr31_mode);
+  const std::string mode = upscaler == Upscaler::kFsr4   ? larecomp::settings::mcla_gpu_fsr4_mode.Get()
+                           : upscaler == Upscaler::kDlss ? larecomp::settings::mcla_gpu_dlss_mode.Get()
+                                                         : larecomp::settings::mcla_gpu_fsr31_mode.Get();
   UpscaleMode parsed = UpscaleMode::kNativeAa;
   ParseUpscaleMode(mode, &parsed);
   return ModeRuns(upscaler, parsed) ? parsed : UpscaleMode::kNativeAa;
@@ -217,9 +75,9 @@ UpscaleMode SavedUpscaleMode(Upscaler upscaler) {
 
 UpscalerSettings ReadUpscalerSettings() {
   UpscalerSettings out;
-  ParseUpscaler(REXCVAR_GET(mcla_gpu_upscaler), &out.upscaler);
+  ParseUpscaler(larecomp::settings::mcla_gpu_upscaler.Get(), &out.upscaler);
   out.mode = SavedUpscaleMode(out.upscaler);
-  out.sharpness = float(std::clamp(REXCVAR_GET(mcla_gpu_upscaler_sharpness), 0.0, 1.0));
+  out.sharpness = float(std::clamp(larecomp::settings::mcla_gpu_upscaler_sharpness.Get(), 0.0, 1.0));
   return out;
 }
 
@@ -250,6 +108,10 @@ void PublishUpscalerSwitching(bool switching) {
   g_switching.store(switching, std::memory_order_relaxed);
 }
 
+void PublishUpscalerNoRoom(bool no_room) {
+  g_no_room.store(no_room, std::memory_order_relaxed);
+}
+
 UpscalerAvailability GetUpscalerAvailability() {
   const uint32_t v = g_availability.load(std::memory_order_relaxed);
   UpscalerAvailability a;
@@ -265,6 +127,7 @@ UpscalerAvailability GetUpscalerAvailability() {
   a.running = Upscaler(g_running.load(std::memory_order_relaxed) & 3u);
   a.kept = Upscaler(g_kept.load(std::memory_order_relaxed) & 3u);
   a.switching = g_switching.load(std::memory_order_relaxed);
+  a.no_room = g_no_room.load(std::memory_order_relaxed);
   return a;
 }
 
@@ -273,7 +136,7 @@ upscaler_load::Interest g_interest;
 }  // namespace
 
 bool UpscalerLazyLoad() {
-  return REXCVAR_GET(mcla_gpu_upscaler_lazy_load);
+  return larecomp::settings::mcla_gpu_upscaler_lazy_load.Get();
 }
 
 void NoteUpscalerInterest(const char* why) {
@@ -301,7 +164,7 @@ std::atomic<uint32_t> g_start_upscale{0};
 
 void DecideStartUpscale() {
   Upscaler chosen = Upscaler::kOff;
-  ParseUpscaler(REXCVAR_GET(mcla_gpu_upscaler), &chosen);
+  ParseUpscaler(larecomp::settings::mcla_gpu_upscaler.Get(), &chosen);
   bool probed = false;
   bool runs = false;
   UpscaleMode mode = UpscaleMode::kNativeAa;

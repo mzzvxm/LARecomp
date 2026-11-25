@@ -146,12 +146,12 @@ VariantTransformResult TransformEnvMapHlsl(const VariantShader& shader, std::str
 
 VariantDef MakeEnvMapVariant() {
   VariantDef def;
-  def.id = kVariantEnvMap;
+  def.feature = kFeatureEnvMap;
   def.name = "env_map";
   def.version = kEnvMapVariantVersion;
   def.needs_rpf = true;  // xSpecMapGen::PS_Blit lives in the RPF (cars); the mip pass is in the executable
   def.pixel_shaders = {kEnvMipPass, kEnvReduce};
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) {
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext&) {
     return TransformEnvMapHlsl(shader, hlsl);
   };
   return def;

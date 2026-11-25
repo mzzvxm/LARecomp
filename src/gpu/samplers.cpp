@@ -15,64 +15,66 @@
 #include <cctype>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/graphics/xenos.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/fetch.h>
+#include <rex/logging/log_category.h>
 
+#include "aniso_rules.h"
 #include "descriptors.h"
 #include "device.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_anisotropy, "game", "MCLA/GPU",
-    "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
-    "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "sampler_modes.h"
 
 namespace mcla::gpu {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 
 namespace {
 
-// mcla_gpu_anisotropy as an xenos::AnisoFilter, -1 = the game's.
+// The levels of aniso_rules.h are the values of the fetch constant's field.
+namespace ar = aniso;
+static_assert(int32_t(xe::AnisoFilter::kDisabled) == ar::kDisabled);
+static_assert(int32_t(xe::AnisoFilter::kMax11) == ar::kMax1);
+static_assert(int32_t(xe::AnisoFilter::kMax21) == ar::kMax2);
+static_assert(int32_t(xe::AnisoFilter::kMax41) == ar::kMax4);
+static_assert(int32_t(xe::AnisoFilter::kMax81) == ar::kMax8);
+static_assert(int32_t(xe::AnisoFilter::kMax161) == ar::kMax16);
+
+// mcla_gpu_anisotropy as an xenos::AnisoFilter, -1 = the game's (aniso_rules.h).
 int32_t ReadOverride() {
-  std::string value = REXCVAR_GET(mcla_gpu_anisotropy);
-  std::string v;
-  for (unsigned char c : value) {
-    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
-  }
-  if (!v.empty() && v.back() == 'x') v.pop_back();
-  if (v == "off" || v == "0" || v == "1") return int32_t(xe::AnisoFilter::kDisabled);
-  if (v == "2") return int32_t(xe::AnisoFilter::kMax_2_1);
-  if (v == "4") return int32_t(xe::AnisoFilter::kMax_4_1);
-  if (v == "8") return int32_t(xe::AnisoFilter::kMax_8_1);
-  if (v == "16") return int32_t(xe::AnisoFilter::kMax_16_1);
-  return -1;
+  return ar::ParseText(larecomp::settings::mcla_gpu_anisotropy.Get());
 }
 
 const char* OverrideName(int32_t o) {
-  switch (o) {
-    case -1: return "game";
-    case int32_t(xe::AnisoFilter::kDisabled): return "off";
-    case int32_t(xe::AnisoFilter::kMax_2_1): return "2x";
-    case int32_t(xe::AnisoFilter::kMax_4_1): return "4x";
-    case int32_t(xe::AnisoFilter::kMax_8_1): return "8x";
-    case int32_t(xe::AnisoFilter::kMax_16_1): return "16x";
-  }
-  return "?";
+  return ar::Name(o);
 }
 
-plume::RenderTextureAddressMode AddressMode(uint32_t clamp) {
+namespace sm = sampler_modes;
+
+// The guest's clamp mode as the host mode it stands for (before the device is asked what it can make).
+sm::Mode WantedMode(uint32_t clamp) {
   switch (xe::ClampMode(clamp)) {
-    case xe::ClampMode::kRepeat: return plume::RenderTextureAddressMode::WRAP;
-    case xe::ClampMode::kMirroredRepeat: return plume::RenderTextureAddressMode::MIRROR;
-    case xe::ClampMode::kClampToEdge: return plume::RenderTextureAddressMode::CLAMP;
-    case xe::ClampMode::kMirrorClampToEdge: return plume::RenderTextureAddressMode::MIRROR_ONCE;
+    case xe::ClampMode::kRepeat: return sm::Mode::kWrap;
+    case xe::ClampMode::kMirroredRepeat: return sm::Mode::kMirror;
+    case xe::ClampMode::kClampToEdge: return sm::Mode::kClamp;
+    case xe::ClampMode::kMirrorClampToEdge: return sm::Mode::kMirrorOnce;
     // No clamp-to-half-edge on the host; no Direct3D 9 equivalent either (Xenia).
-    case xe::ClampMode::kClampToHalfway: return plume::RenderTextureAddressMode::CLAMP;
-    case xe::ClampMode::kMirrorClampToHalfway: return plume::RenderTextureAddressMode::MIRROR_ONCE;
-    case xe::ClampMode::kClampToBorder: return plume::RenderTextureAddressMode::BORDER;
-    case xe::ClampMode::kMirrorClampToBorder: return plume::RenderTextureAddressMode::MIRROR_ONCE;
+    case xe::ClampMode::kClampToHalfway: return sm::Mode::kClamp;
+    case xe::ClampMode::kMirrorClampToHalfway: return sm::Mode::kMirrorOnce;
+    case xe::ClampMode::kClampToBorder: return sm::Mode::kBorder;
+    case xe::ClampMode::kMirrorClampToBorder: return sm::Mode::kMirrorOnce;
+  }
+  return sm::Mode::kWrap;
+}
+
+// `mirror_once_supported`: the device can make mirror once (Direct3D 12 always; Vulkan with VK_KHR_sampler_mirror_clamp_to_edge). Without it
+// mirror once is mirrored wrap (sampler_modes.h).
+plume::RenderTextureAddressMode AddressMode(uint32_t clamp, bool mirror_once_supported) {
+  switch (sm::ForDevice(WantedMode(clamp), mirror_once_supported)) {
+    case sm::Mode::kWrap: return plume::RenderTextureAddressMode::WRAP;
+    case sm::Mode::kMirror: return plume::RenderTextureAddressMode::MIRROR;
+    case sm::Mode::kClamp: return plume::RenderTextureAddressMode::CLAMP;
+    case sm::Mode::kMirrorOnce: return plume::RenderTextureAddressMode::MIRROR_ONCE;
+    case sm::Mode::kBorder: return plume::RenderTextureAddressMode::BORDER;
   }
   return plume::RenderTextureAddressMode::WRAP;
 }
@@ -107,6 +109,13 @@ void Samplers::Initialize(Device& device, BindlessHeap& heap) {
   override_ = ReadOverride();
   REXLOG_INFO("[gpu] sampler: anisotropic filtering {} (mcla_gpu_anisotropy, live)",
               OverrideName(override_));
+  // Plume's Vulkan device says whether VK_KHR_sampler_mirror_clamp_to_edge is there (Direct3D 12: always).
+  mirror_once_ = device.capabilities().samplerMirrorClampToEdge;
+  if (!mirror_once_) {
+    REXLOG_WARN("[gpu] sampler: this device cannot make mirror-once addressing (no "
+                "VK_KHR_sampler_mirror_clamp_to_edge); the guest's mirror-clamp modes are made as "
+                "mirrored repeat");
+  }
 }
 
 bool Samplers::FrameSettingChanged() {
@@ -130,7 +139,7 @@ void Samplers::Shutdown() {
 
 uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_t mip_max,
                        int32_t extra_bias) {
-  xe::xe_gpu_texture_fetch_t fetch;
+  xe::TextureFetch fetch;
   std::memcpy(&fetch, fetch_dwords, sizeof(fetch));
 
   Description d;
@@ -139,15 +148,13 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   d.clamp[2] = uint8_t(fetch.clamp_z);
   const xe::TextureFilter mip_filter = fetch.mip_filter;
   d.mip_base_map = mip_filter == xe::TextureFilter::kBaseMap;
-  xe::AnisoFilter aniso = std::min(fetch.aniso_filter, xe::AnisoFilter::kMax_16_1);
+  xe::AnisoFilter aniso = std::min(fetch.aniso_filter, xe::AnisoFilter::kMax161);
   const bool game_aniso = aniso != xe::AnisoFilter::kDisabled;
-  const bool eligible = mip_max > mip_min && !d.mip_base_map &&
-                        fetch.mag_filter == xe::TextureFilter::kLinear &&
-                        fetch.min_filter == xe::TextureFilter::kLinear &&
-                        mip_filter == xe::TextureFilter::kLinear;
-  if (override_ >= 0 && eligible) {
-    aniso = xe::AnisoFilter(override_);
-  }
+  const bool eligible = ar::Eligible(mip_min, mip_max, d.mip_base_map,
+                                     fetch.mag_filter == xe::TextureFilter::kLinear,
+                                     fetch.min_filter == xe::TextureFilter::kLinear,
+                                     mip_filter == xe::TextureFilter::kLinear);
+  aniso = xe::AnisoFilter(ar::Effective(override_, eligible, uint32_t(aniso)));
   d.aniso = uint8_t(aniso);
   if (aniso != xe::AnisoFilter::kDisabled) {
     d.mag_linear = d.min_linear = d.mip_linear = 1;
@@ -176,11 +183,11 @@ uint32_t Samplers::Get(const uint32_t fetch_dwords[6], uint32_t mip_min, uint32_
   desc.magFilter = d.mag_linear ? plume::RenderFilter::LINEAR : plume::RenderFilter::NEAREST;
   desc.minFilter = d.min_linear ? plume::RenderFilter::LINEAR : plume::RenderFilter::NEAREST;
   desc.mipmapMode = d.mip_linear ? plume::RenderMipmapMode::LINEAR : plume::RenderMipmapMode::NEAREST;
-  desc.addressU = AddressMode(d.clamp[0]);
-  desc.addressV = AddressMode(d.clamp[1]);
-  desc.addressW = AddressMode(d.clamp[2]);
+  desc.addressU = AddressMode(d.clamp[0], mirror_once_);
+  desc.addressV = AddressMode(d.clamp[1], mirror_once_);
+  desc.addressW = AddressMode(d.clamp[2], mirror_once_);
   desc.anisotropyEnabled = aniso != xe::AnisoFilter::kDisabled;
-  desc.maxAnisotropy = desc.anisotropyEnabled ? (1u << (uint32_t(aniso) - 1)) : 1u;
+  desc.maxAnisotropy = desc.anisotropyEnabled ? ar::MaxAnisotropy(uint32_t(aniso)) : 1u;
   // CHECK: Vulkan's maxSamplerLodBias is at least 2 and 16 or so on desktop drivers; Plume does not
   // clamp, so a total beyond what the device takes (the scene's bias reaches about -2.6 at 33%) is
   // for the driver to limit.

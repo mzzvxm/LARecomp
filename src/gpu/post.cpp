@@ -15,8 +15,8 @@
 #include <cstring>
 #include <format>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"
@@ -26,13 +26,6 @@
 
 #include "smaa/AreaTex.h"
 #include "smaa/SearchTex.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_aa, "off", "MCLA/GPU",
-    "Anti-aliasing of the composed scene, before the UI (M6c): off, fxaa (FXAA "
-    "3.11, Xenia's preset) or smaa (SMAA 1x, preset HIGH). The image the game resolves into the "
-    "front buffer includes it (photos too). Live.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -59,7 +52,7 @@ uint64_t PackKey(const EdramKey& k) {
 }
 
 PostAa::Mode ReadMode() {
-  std::string value = REXCVAR_GET(mcla_gpu_aa);
+  std::string value = larecomp::settings::mcla_gpu_aa.Get();
   std::transform(value.begin(), value.end(), value.begin(),
                  [](unsigned char c) { return char(std::tolower(c)); });
   if (value == "fxaa") {

@@ -27,26 +27,38 @@
 #include <string_view>
 #include <system_error>
 
+#include "mod_paths.h"
+
 namespace mc::modloader {
 
 // The mod folder beside the executable. Three names are accepted, the first
 // one present wins: modloader/, mods/, models/. With none of them present it
-// is modloader/, which is what anything creating the folder makes.
+// is modloader/, which is what anything creating the folder makes. The case of
+// the name does not matter (mod_paths.h): "Mods" is found on Linux too.
 inline std::filesystem::path ModRootDir(const std::filesystem::path& exe_dir) {
     std::error_code ec;
-    for (const char* name : {"modloader", "mods", "models"}) {
-        std::filesystem::path dir = exe_dir / name;
+    constexpr const char* kNames[] = {"modloader", "mods", "models"};
+    // Probe the names as written first so common folder names need no directory scan.
+    for (const char* name : kNames) {
+        const std::filesystem::path dir = exe_dir / name;
         if (std::filesystem::is_directory(dir, ec)) return dir;
+    }
+    // None is there as written: one look at the folder for the three names in any case.
+    const std::vector<std::string> names = EntryNames(exe_dir, /*directories_only=*/true);
+    for (const char* name : kNames) {
+        const int pick = PickNoCase(names, name);
+        if (pick >= 0) return exe_dir / std::filesystem::path(names[size_t(pick)]);
     }
     return exe_dir / "modloader";
 }
 
 // Folders in the mod folder that are not mods: the texture dumps
 // (textures_dump/), loose replacements (textures_replace/), music and caches
-// (any name starting with '.').
+// (any name starting with '.'). The case does not matter ("Music" is the music
+// folder, not a mod called Music).
 inline bool IsReservedModFolder(std::string_view name) {
-    return name.empty() || name.front() == '.' || name == "textures_dump" ||
-           name == "textures_replace" || name == "music";
+    return name.empty() || name.front() == '.' || EqualsNoCase(name, "textures_dump") ||
+           EqualsNoCase(name, "textures_replace") || EqualsNoCase(name, "music");
 }
 
 // Scans the mod folder, builds xarchive_mods.rpf and prepares the archive list the

@@ -4,7 +4,7 @@
 // ===========================================================================
 // Every register the replay reads for a draw is decoded here once, from the
 // captured window R (records.h, guest_device.h), with the field layouts of the
-// SDK's rex/graphics/registers.h (Xenia's), into what the pipelines, the
+// SDK's rex/xenos/register.h (Xenia's), into what the pipelines, the
 // viewport, the EDRAM targets and the constants need.
 //
 // A colour target counts as bound when D3D has a surface set for it and
@@ -21,15 +21,15 @@
 
 #include <cstdint>
 
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
+#include <rex/xenos/register.h>
+#include <rex/xenos/format.h>
 
 #include "draw_decode.h"
 
 namespace mcla::gpu {
 
-namespace xe = rex::graphics::xenos;
-namespace xreg = rex::graphics::reg;
+namespace xe = rex::xenos;
+namespace xreg = rex::xenos::reg;
 
 inline constexpr uint32_t kColorTargetCount = 4;
 
@@ -44,7 +44,7 @@ struct ColorTargetState {
 
 struct XenosState {
   uint32_t surface_pitch = 0;  // pixels
-  xe::MsaaSamples msaa = xe::MsaaSamples::k1X;
+  xe::MSAASamples msaa = xe::MSAASamples::k1X;
   ColorTargetState color[kColorTargetCount];
   bool depth_bound = false;
   uint32_t depth_base_tiles = 0;
@@ -86,10 +86,10 @@ struct XenosState {
 XenosState DecodeXenosState(const DrawView& view);
 
 // The sample count a guest MSAA mode stands for.
-inline uint32_t MsaaSampleCount(xe::MsaaSamples msaa) {
+inline uint32_t MsaaSampleCount(xe::MSAASamples msaa) {
   switch (msaa) {
-    case xe::MsaaSamples::k2X: return 2;
-    case xe::MsaaSamples::k4X: return 4;
+    case xe::MSAASamples::k2X: return 2;
+    case xe::MSAASamples::k4X: return 4;
     default: return 1;
   }
 }

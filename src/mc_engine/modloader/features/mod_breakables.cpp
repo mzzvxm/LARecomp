@@ -59,11 +59,12 @@
 //   sub_8255A1B0(vehicle, &vel, &angvel)
 //
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include <algorithm>
 #include <array>
@@ -83,14 +84,8 @@
 #include "mc_engine/core/logging.h"
 #include "mod_breakables.h"
 #include "mod_data.h"
+#include "larecomp_guest.h"
 
-REXCVAR_DEFINE_BOOL(mod_breakables, true, "MCLA/World",
-    "Props a mod baked into the city sectors break off when the car hits them fast "
-    "enough (models/<mod>/breakables.bin); a slow bump still stops the car.")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_breakable_speed_scale, 1.0, "MCLA/World",
-    "Multiplier on the speed a mod's breakable prop needs to break.")
-    .debug_only();
 
 namespace {
 
@@ -143,16 +138,16 @@ struct Prop {
 };
 
 bool g_loaded = false;
-std::vector<Prop> g_props;
-std::unordered_map<int64_t, std::vector<uint32_t>> g_grid;
-std::vector<uint32_t> g_broken;  // indices into g_props
+std::vector<Prop>& g_props = larecomp::Leak<std::vector<Prop>>();
+std::unordered_map<int64_t, std::vector<uint32_t>>& g_grid = larecomp::Leak<std::unordered_map<int64_t, std::vector<uint32_t>>>();
+std::vector<uint32_t>& g_broken = larecomp::Leak<std::vector<uint32_t>>();  // indices into g_props
 std::shared_mutex g_down_mu;
-std::unordered_set<uint64_t> g_down;  // (mod << 32) | id, read by the glow feed
+std::unordered_set<uint64_t>& g_down = larecomp::Leak<std::unordered_set<uint64_t>>();  // (mod << 32) | id, read by the glow feed
 uint32_t g_scratch = 0;               // guest: velocity (16) + angular velocity (16)
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t R32(uint8_t* b, uint32_t ea) {
@@ -352,22 +347,22 @@ void ApplyModels(uint8_t* b, Prop& p, uint32_t data, bool broken) {
 
 bool EnsureScratch() {
     if (g_scratch) return true;
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kGuestMallocFn) : nullptr;
-    const uint32_t raw = fn ? rex::ppc::GuestToHostFunction<uint32_t>(fn, 48u) : 0;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(kGuestMallocFn).value_or(nullptr) : nullptr;
+    const uint32_t raw = fn ? larecomp::guest::Call<uint32_t>(fn, 48u) : 0;
     if (raw) g_scratch = (raw + 15) & ~15u;
     return g_scratch != 0;
 }
 
 void SlowCar(uint8_t* b, uint32_t vehicle, uint32_t col, float keep) {
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kSetVelocityFn) : nullptr;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* fn = rt ? rt->FindFunction(kSetVelocityFn).value_or(nullptr) : nullptr;
     if (!fn || !EnsureScratch()) return;
     for (int k = 0; k < 4; ++k) {
         WF(b, g_scratch + 4 * k, RF(b, col + 272 + 4 * k) * (k < 3 ? keep : 1.0f));
         WF(b, g_scratch + 16 + 4 * k, RF(b, col + 288 + 4 * k));
     }
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, vehicle, g_scratch, g_scratch + 16);
+    larecomp::guest::Call<uint32_t>(fn, vehicle, g_scratch, g_scratch + 16);
 }
 
 uint64_t DownKey(int mod, uint32_t id) { return (uint64_t(uint32_t(mod)) << 32) | id; }
@@ -388,7 +383,7 @@ void Break(uint8_t* b, uint32_t index, float vx, float vz, float speed, uint32_t
     p.applied_data = data;
     SlowCar(b, vehicle, col, p.keep);
     MC_INFO("[breakables] prop {} knocked over at {:.0f} km/h (breaks at {:.0f}), car keeps {:.0f}%", p.id,
-            speed * 3.6f, p.brk * 3.6f * float(REXCVAR_GET(mod_breakable_speed_scale)), p.keep * 100.0f);
+            speed * 3.6f, p.brk * 3.6f * float(larecomp::settings::mod_breakable_speed_scale.Get()), p.keep * 100.0f);
 }
 
 void Restore(uint8_t* b, Prop& p) {
@@ -432,7 +427,7 @@ bool ModBreakableDown(int mod, uint32_t id) {
 void TickModBreakables() {
     uint8_t* b = Membase();
     if (!b) return;
-    if (!REXCVAR_GET(mod_breakables)) {
+    if (!larecomp::settings::mod_breakables.Get()) {
         if (!g_broken.empty()) TendBroken(b, 0.0f, 0.0f, true);
         return;
     }
@@ -452,7 +447,7 @@ void TickModBreakables() {
     const float vx = RF(b, col + 272), vz = RF(b, col + 280);
     const float speed = std::sqrt(vx * vx + vz * vz);
     if (!(speed > kMinSpeed)) return;
-    const float scale = float(REXCVAR_GET(mod_breakable_speed_scale));
+    const float scale = float(larecomp::settings::mod_breakable_speed_scale.Get());
     for (int gx = -1; gx <= 1; ++gx) {
         for (int gz = -1; gz <= 1; ++gz) {
             const auto it = g_grid.find(GridKey(px + gx * kGridCell, pz + gz * kGridCell));

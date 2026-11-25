@@ -1,6 +1,7 @@
 // Both branches below define the same symbols, so the declarations they are
 // checked against have to be visible to both.
 #include "camera_look.h"
+#include "settings/immortal.h"
 #include "mc_engine/menus/menu_items.h"
 #include "mc_engine/input/map_mouse.h"
 #include "mc_engine/input/mouse_look.h"
@@ -23,309 +24,13 @@
 #include <system_error>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
-#include <rex/ui/window.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
 
 #if defined(_WIN32)
 #include <Windows.h>
 #include "imgui.h"
 #endif
-
-REXCVAR_DEFINE_BOOL(cam_freelook, true, "MCLA/Camera",
-    "Mouse look on the gameplay camera. The shipped lookaround is four digital pan actions "
-    "easing towards clamped limits, which is why the camera settles on a handful of angles "
-    "instead of following you. With this on, the mouse steers the view directly while you drive "
-    "with the keyboard and mouse: the pointer is hidden and locked (the window's relative mouse "
-    "mode, raw counts from the mouse) and the view eases back behind the car when the mouse "
-    "has been still for a moment. It is active only while the keyboard and mouse are the last "
-    "thing you used, with the car on the road: no menu, map, phone or overlay up, and the window "
-    "in front. A controller's right stick looks around as it always did.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The sensitivity rule (mouse_look_core.h): radians of view per RAW mouse count. At Windows' default pointer speed one count was one cursor pixel, which is what this
-// used to be measured in, so 0.0035 keeps the same feel at default sensitivity whatever the mouse's DPI is (360 degrees = 1795 counts: 5.7 cm at 800 DPI, 2.8 cm at 1600).
-REXCVAR_DEFINE_DOUBLE(cam_freelook_sens, 0.0035, "MCLA/Camera",
-    "Mouse look sensitivity: radians of view movement per count the mouse reports. 0.0035 "
-    "turns the view a full circle for about 6 cm of movement on an 800 DPI mouse and about 3 cm "
-    "on a 1600 DPI one; a mouse with a higher DPI turns further for the same movement, so "
-    "lower this for it.")
-    .range(0.0001, 0.05)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_yaw_limit, 3.14159, "MCLA/Camera",
-    "How far the view may turn left or right, in radians. Pi is all the way "
-    "round. This is the cap on our own angle, not the game's -- the game's own "
-    "limits are what this feature overwrites.")
-    .range(0.1, 3.15)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_pitch_limit, 0.7, "MCLA/Camera",
-    "How much tilt the mouse may accumulate, in radians. This caps the input, "
-    "not the result -- where the camera ends up is decided by the two "
-    "elevation limits below, which are what keep it out of the ground.")
-    .range(0.05, 1.5)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// A camera bolted to the car -- cockpit, bumper, bonnet -- has nothing to
-// orbit: it turns where it sits, like a head. Swinging it round a centre seven
-// metres away, which is right for a chase camera, walks it straight out
-// through the bodywork.
-//
-// Which rigs those are cannot be worked out from here. The honest signal would
-// be the camera's real distance to the car, and that distance is exactly what
-// this feature never manages to find out -- it is why the orbit radius is a
-// cvar in the first place. So it is a list, and the diagnostic prints the rig
-// number every time it applies, which makes filling the list a matter of
-// reading one line per view.
-//
-// r24 in sub_822C0320 is the rig the camera system settled on this frame, and
-// Hook_CameraSystem has been recording it since the first probe. Per the note
-// on Patch_DebugCam it is 1 for the cockpit view and 2 for a static one.
-REXCVAR_DEFINE_STRING(cam_freelook_inplace_rigs, "0,1", "MCLA/Camera",
-    "Comma-separated camera rig indices that turn in place instead of "
-    "orbiting: the views mounted on the car. Switch to a view, read the rig "
-    "number out of the cam_freelook_diag line, add it here. Empty orbits "
-    "everything.\n"
-    "\n"
-    "The camera button cycles 3, 2, 1, 0 and wraps; 4 belongs to some other "
-    "context and turns up on its own. 1 is the cockpit, and 0 is the bumper "
-    "sitting next to it in the cycle -- which is a reading of the cycle order, "
-    "not something measured, so if a view mounted on the car still swings out "
-    "of the bodywork, its number belongs in this list.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Rotating the finished matrix means the game's camera collision never sees
-// the result, so the floor has to be put back by hand. It states cleanly in
-// geometry: pos = centre - forward * d with d negative, so the camera sits
-// forward.y * |d| above the point it orbits and its elevation is
-// asin(forward.y). Clamping that angle is exactly clamping how far under the
-// car the view can get. Orbiting rigs only -- in place the position never
-// moves, so there is nothing to keep out of the ground.
-REXCVAR_DEFINE_DOUBLE(cam_freelook_min_elev, -0.08, "MCLA/Camera",
-    "Lowest the camera may go, as an angle in radians above the horizontal "
-    "through the point it orbits. 0 is dead level with the car; below that it "
-    "goes under it and into the ground. Negative values are allowed for "
-    "deliberately low shots, on the understanding that the ground is not "
-    "consulted.")
-    .range(-0.5, 1.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_max_elev, 1.3, "MCLA/Camera",
-    "Highest the camera may go, same units. Short of pi/2 on purpose: at dead "
-    "overhead the forward vector is parallel to world up and the yaw stops "
-    "meaning anything.")
-    .range(0.2, 1.5)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Both default to 0 = leave the shipped value alone. Their units are not known
-// -- "rate" reads as per-second and "factor" as a 0..1 blend, but neither is
-// confirmed -- and a wrong value here is indistinguishable from the whole
-// approach not working. Changing one thing at a time is the point.
-REXCVAR_DEFINE_DOUBLE(cam_freelook_approach, 0.0, "MCLA/Camera",
-    "LookaroundApproachRate while free look is on. 0 leaves the shipped value. "
-    "The shipped one eases the view towards its target over a good fraction of "
-    "a second, which reads as lag under a mouse.")
-    .range(0.0, 200.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_lerp, 0.0, "MCLA/Camera",
-    "LookaroundLerpFactor while free look is on. 0 leaves the shipped value.")
-    .range(0.0, 1.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The shipped camera recentres itself: LookaroundDelayTime then
-// LookaroundDecayRate. Not reproducing that was the difference between a free
-// look and a view that silently accumulates every stray twitch of the mouse
-// until the car is sitting crooked and there is no way to put it back.
-REXCVAR_DEFINE_DOUBLE(cam_freelook_return_delay, 0.35, "MCLA/Camera",
-    "Seconds the mouse has to sit still before the view starts easing back "
-    "behind the car. The game's own equivalent is LookaroundDelayTime. Set it "
-    "very high to keep the view wherever it was left.")
-    .range(0.0, 30.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_return_rate, 4.0, "MCLA/Camera",
-    "How quickly the view eases back once the delay is up, as a fraction of "
-    "the remaining angle per second. The game's own equivalent is "
-    "LookaroundDecayRate.")
-    .range(0.1, 40.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_freelook_invert_x, false, "MCLA/Camera",
-    "Mirror the horizontal axis. Needed if the tune's left/right limits turn "
-    "out to be signed the other way round from what this assumes.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_freelook_invert_y, false, "MCLA/Camera",
-    "Mirror the vertical axis. See cam_freelook_invert_x.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// ── Driving the camera object the probe found ──────────────────────────
-//
-// The measurement landed on one object -- camsys+860, which came out as
-// 0xBD910980 -- and on fourteen floats inside it, at +96 through +156. Three
-// rows of unit-length vectors at +96/+112/+128 and a world position at +144:
-// the camera's own matrix, rotating about Y and orbiting as the view swings.
-//
-// The two floats that are not part of it are the interesting ones. +140 and
-// +156 are the w lanes of the third and fourth rows, which is where RAGE
-// habitually parks a scalar it did not want to give a field of its own, and
-// they went from about zero to -0.947685 and -7.34199 -- an angle in radians
-// and, to within the accuracy of reading a matrix, the radius the position
-// orbited on.
-//
-// Whether +140 is what the camera READS to build that matrix or what it WROTE
-// afterwards is the only thing left to settle, and no amount of staring
-// settles it. So the offsets are cvars, the write happens inside the camera
-// tick before the update runs, and the value is read back on the next frame
-// and compared against what was written. That answers it in one run and lets
-// other candidates be tried without a rebuild.
-REXCVAR_DEFINE_INT32(cam_look_obj, 860, "MCLA/Camera",
-    "Byte offset into the camera system holding the pointer to the object the "
-    "look lives in. 860 is what the field probe found.")
-    .range(0, 4096)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_orbit, 7.5, "MCLA/Camera",
-    "Distance from the camera to the point it turns around, used whenever the "
-    "object's own +156 is not usable.\n"
-    "\n"
-    "It usually is not. +156 was measured at -7.34 during a held look and that "
-    "is where this default comes from, but it is the w lane of the position "
-    "row and the game computes it the same way it computes the angle at +140 "
-    "-- both read zero whenever the game's own look is idle, which is exactly "
-    "when this feature is doing the looking instead. The field still wins when "
-    "it holds something sane, so a camera that keeps a real distance there is "
-    "followed rather than overridden.")
-    .range(1.0, 200.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(cam_look_phase, 2, "MCLA/Camera",
-    "Which matrix the look turns. 2 is the real one: the camera matrix "
-    "sub_8220AA68 is handed at 0x8220AA88, before it has read a byte of "
-    "it, from which the game publishes to dword_8286D804+4208 and +4272 "
-    "and mirrors into the cine director. 0 and 1 turn that mirror "
-    "instead, at 0x822C0790 and at the camera tick epilogue, and are "
-    "kept only because they were tried first -- sub_823CC2E8 is a plain "
-    "setter that copies the real matrix into it, so writing there is "
-    "writing to a copy and nothing on screen ever changed. The camera "
-    "collision lives on its own switch, cam_freelook_collide, and not on "
-    "this one -- see there.")
-    .range(0, 2)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_freelook_cs_invert, false, "MCLA/Camera",
-    "Flip the sign used when feeding the camera state's own two angle channels "
-    "(cs+776 yaw, cs+772 pitch). The offset and direction were derived from "
-    "sub_82202E38 and sub_82227DE0 -- both store `pi/2 - angle`, so a turn is a "
-    "subtraction -- but which way that reads on screen is a handedness question "
-    "the maths does not settle. If the view turns opposite to the mouse with "
-    "cam_freelook_collide on, this is the switch. Only affects the collide "
-    "path.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_freelook_collide, false, "MCLA/Camera",
-    "Turn the camera one stage earlier, at the camera state (0x8231CEB0), so "
-    "the game's own camera collision resolves the rotated position and the "
-    "view stops passing through walls and buildings. OFF by default because it "
-    "is unproven: it hands the look to sub_8231CE30, and any rig whose camera "
-    "state does not route through there gets no free look at all while this is "
-    "on. Turn cam_freelook_diag on with it -- the log says whether the hook "
-    "ran, which camera state it got, and what CollideType that state carries. "
-    "With this off, cam_look_phase decides everything, exactly as before.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The gameplay cameras are camBoomCS, and their update has a pivot of its own (camera_orbit_core.h): this is the look that turns about the car's middle.
-REXCVAR_DEFINE_BOOL(cam_freelook_boom, false, "MCLA/Camera",
-    "Turn the mouse look inside the gameplay cameras' own update (camBoomCS, 0x82320EA0) instead of "
-    "on the finished view matrix: the chase cameras orbit the car's middle at their own distance, "
-    "the bumper and cockpit turn in place, and the game's camera collision then keeps the view "
-    "out of walls. Off: the old look, which orbits a point guessed 7.5 units along the view line. "
-    "Cameras that are not camBoomCS (cinematics, replays) keep the old look either way.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_freelook_inplace_dist, 3.0, "MCLA/Camera",
-    "With cam_freelook_boom: a camera closer than this to the car's middle, measured flat, is "
-    "mounted on the car (bumper, cockpit) and turns in place instead of orbiting. The game's own "
-    "mounted flag (cs+668) counts too.")
-    .range(0.0, 20.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_orbit_record, false, "MCLA/Camera",
-    "Write every gameplay camera update while the mouse look is engaged to <exe>/cam_orbit.csv "
-    "(camera, look-at target, the game's pivot, the angles), old look or new, for "
-    "`larecomp_camera_orbit_test cam_orbit.csv` to check offline. At most 36000 rows a run.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_freelook_tune, false, "MCLA/Camera",
-    "Also pin the LookaroundLimit* tune fields, the first approach. It did not "
-    "hold on its own and is kept only so the two can be tried together.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(bool, mouse_look_log);  // mouse_look.cpp
-
-REXCVAR_DEFINE_BOOL(cam_freelook_diag, false, "MCLA/Camera",
-    "Log the lookaround tune fields as they are found and the angles being "
-    "written, once a second.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_probe_mark, false, "MCLA/Camera",
-    "Button: snapshot the gameplay camera object. Flips back off. Do it with "
-    "the car still and the view centred, then look around, then use "
-    "cam_probe_dump.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(cam_probe_dump, false, "MCLA/Camera",
-    "Button: snapshot the camera again, diff it against cam_probe_mark and "
-    "write every float that moved to <exe>/cam_fields.txt. Flips back off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The two buttons above cannot be used for the measurement they were written
-// for: reaching them means opening the settings overlay, and opening it takes
-// the game out of whatever camera state was being held. This runs the whole
-// sequence on a timer instead, so the overlay is only ever open while the
-// camera is idle and both samples are taken with it shut.
-REXCVAR_DEFINE_BOOL(cam_probe_run, false, "MCLA/Camera",
-    "Button: run the whole camera measurement on a timer. Close the overlay "
-    "when it is armed; the baseline is taken after cam_probe_arm_delay with "
-    "the camera left alone, and the diff cam_probe_hold_delay after that with "
-    "the look held. Both samples happen with nothing on screen. Flips back "
-    "off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_probe_arm_delay, 4.0, "MCLA/Camera",
-    "Seconds between arming cam_probe_run and the baseline sample. Long "
-    "enough to close the overlay and let the camera settle.")
-    .range(1.0, 30.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(cam_probe_hold_delay, 6.0, "MCLA/Camera",
-    "Seconds between the baseline sample and the diff. Hold the look for all "
-    "of it.")
-    .range(1.0, 30.0)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -355,7 +60,7 @@ struct LookTune {
 };
 
 std::mutex g_tunes_mutex;
-std::vector<LookTune> g_tunes;
+std::vector<LookTune>& g_tunes = larecomp::Leak<std::vector<LookTune>>();
 
 // Set once a complete tune is known, so the per-frame tick can skip the lock
 // entirely until there is something to do.
@@ -387,8 +92,8 @@ std::atomic<uint32_t> g_cs_applied{0};
 void TickCameraProbe();
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 float ReadGuestFloat(uint32_t ea) {
@@ -426,7 +131,7 @@ LookTune& TuneFor(uint32_t owner) {
 // ── The mouse ──────────────────────────────────────────────────────────
 //
 // The raw counts come from mouse_look.cpp: the window is put in relative mouse mode while the mouse is the player's (the keyboard and mouse are the active
-// device, a car is on the road, no menu / map / phone / overlay, the window in front), a listener sums every motion event's dx / dy, and the camera tick takes the sum
+// device, a car is on the road, no menu / map / phone / overlay, the window in front), the input system sums the motion (IInputSystem::TakeMotion), and the camera tick takes the sum
 // with exchange(0). Nothing is recentred and nothing polls the OS, so it is the same on Windows, Linux and the Steam Deck. This file asks (Want, once a frame from
 // TickCameraLook) and takes (Take, once per camera tick, from UpdateLookAngles); the decision is mouse_look_core.h's Gate.
 //
@@ -474,9 +179,9 @@ void ApplyAngles(LookTune& t, float yaw, float pitch) {
     WriteGuestFloat(t.decay_rate, 0.0f);
     WriteGuestFloat(t.delay_time, 3600.0f);
 
-    float approach = float(REXCVAR_GET(cam_freelook_approach));
+    float approach = float(larecomp::settings::cam_freelook_approach.Get());
     if (approach > 0.0f) WriteGuestFloat(t.approach_rate, approach);
-    float lerp = float(REXCVAR_GET(cam_freelook_lerp));
+    float lerp = float(larecomp::settings::cam_freelook_lerp.Get());
     if (lerp > 0.0f) WriteGuestFloat(t.lerp_factor, lerp);
 }
 
@@ -502,7 +207,7 @@ void CameraLookOnTuneField(const char* name, uint32_t owner, uint32_t field_addr
 
     if (t.complete()) {
         g_have_tune.store(true, std::memory_order_relaxed);
-        if (REXCVAR_GET(cam_freelook_diag)) {
+        if (larecomp::settings::cam_freelook_diag.Get()) {
             MC_INFO("[cam-look] tune 0x{:08X} complete: L=0x{:08X} R=0x{:08X} "
                     "U=0x{:08X} D=0x{:08X} decay=0x{:08X} delay=0x{:08X}",
                     t.owner, t.limit_left, t.limit_right, t.limit_up,
@@ -530,15 +235,15 @@ void TickCameraLook() {
         // Behind the diag switch: the map's gate drops and comes back every
         // time something opens over it, so this would otherwise be a running
         // commentary on the Active Missions pop-up.
-        if (!was && REXCVAR_GET(cam_freelook_diag))
+        if (!was && larecomp::settings::cam_freelook_diag.Get())
             MC_INFO("[cam-look] map has the pointer; free look standing down");
-    } else if (was && REXCVAR_GET(cam_freelook_diag)) {
+    } else if (was && larecomp::settings::cam_freelook_diag.Get()) {
         MC_INFO("[cam-look] pointer back");
     }
-    if (REXCVAR_GET(cam_freelook) && !yield) larecomp::mouselook::Want(larecomp::mouselook::Client::Look);
+    if (larecomp::settings::cam_freelook.Get() && !yield) larecomp::mouselook::Want(larecomp::mouselook::Client::Look);
     larecomp::mouselook::Tick();
 
-    bool want = REXCVAR_GET(cam_freelook);
+    bool want = larecomp::settings::cam_freelook.Get();
 
     if (!g_have_tune.load(std::memory_order_relaxed)) {
         if (want) {
@@ -554,7 +259,7 @@ void TickCameraLook() {
     // The angles come from Hook_CameraSystem, which is where the mouse is
     // read. All this path does is the optional tune pinning on top.
     bool active = g_look_active.load(std::memory_order_relaxed) &&
-                  REXCVAR_GET(cam_freelook_tune);
+                  larecomp::settings::cam_freelook_tune.Get();
 
     std::lock_guard<std::mutex> lock(g_tunes_mutex);
 
@@ -604,8 +309,8 @@ struct ProbeRegion {
     bool is_root = false;
 };
 
-std::vector<ProbeRegion> g_regions;
-std::vector<float> g_baseline;
+std::vector<ProbeRegion>& g_regions = larecomp::Leak<std::vector<ProbeRegion>>();
+std::vector<float>& g_baseline = larecomp::Leak<std::vector<float>>();
 uint32_t g_probe_sys = 0;
 int32_t g_probe_rig = -1;
 
@@ -788,9 +493,9 @@ void TickCameraProbe() {
         g_phase_deadline =
             now + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
                       std::chrono::duration<double>(
-                          REXCVAR_GET(cam_probe_hold_delay)));
+                          larecomp::settings::cam_probe_hold_delay.Get()));
         MC_INFO("[cam-probe] BASELINE TAKEN -- hold the look now, for {:.0f}s",
-                double(REXCVAR_GET(cam_probe_hold_delay)));
+                double(larecomp::settings::cam_probe_hold_delay.Get()));
     } else {
         g_phase = ProbePhase::kIdle;
         CameraProbeDump();
@@ -805,11 +510,11 @@ void CameraProbeRun() {
     g_phase_deadline =
         std::chrono::steady_clock::now() +
         std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-            std::chrono::duration<double>(REXCVAR_GET(cam_probe_arm_delay)));
+            std::chrono::duration<double>(larecomp::settings::cam_probe_arm_delay.Get()));
     MC_INFO("[cam-probe] armed. Close the overlay and leave the camera alone; "
             "baseline in {:.0f}s, then hold the look for {:.0f}s.",
-            double(REXCVAR_GET(cam_probe_arm_delay)),
-            double(REXCVAR_GET(cam_probe_hold_delay)));
+            double(larecomp::settings::cam_probe_arm_delay.Get()),
+            double(larecomp::settings::cam_probe_hold_delay.Get()));
 }
 
 namespace {
@@ -828,11 +533,11 @@ void LogShippedLookaround() {
                 "the mouse look returns after {:.2f} s at rate {:.2f}",
                 t.owner, ReadGuestFloat(t.delay_time), ReadGuestFloat(t.decay_rate), ReadGuestFloat(t.approach_rate), ReadGuestFloat(t.lerp_factor),
                 ReadGuestFloat(t.limit_left), ReadGuestFloat(t.limit_right), ReadGuestFloat(t.limit_up), ReadGuestFloat(t.limit_down),
-                REXCVAR_GET(cam_freelook_return_delay), REXCVAR_GET(cam_freelook_return_rate));
+                larecomp::settings::cam_freelook_return_delay.Get(), larecomp::settings::cam_freelook_return_rate.Get());
         ++n;
     }
     if (n == 0) MC_INFO("[cam-look] the game's own lookaround tune has not registered yet; the mouse look returns after {:.2f} s at rate {:.2f}",
-                        REXCVAR_GET(cam_freelook_return_delay), REXCVAR_GET(cam_freelook_return_rate));
+                        larecomp::settings::cam_freelook_return_delay.Get(), larecomp::settings::cam_freelook_return_rate.Get());
 }
 
 // Takes the mouse's raw counts and integrates them into the shared angles (mouse_look_core.h StepLook). Called from exactly one place, once per camera tick.
@@ -856,13 +561,13 @@ void UpdateLookAngles() {
     was_active = active;
 
     larecomp::mouselook::LookParams params;
-    params.sens = float(REXCVAR_GET(cam_freelook_sens));
-    params.invert_x = REXCVAR_GET(cam_freelook_invert_x);
-    params.invert_y = REXCVAR_GET(cam_freelook_invert_y);
-    params.return_delay = float(REXCVAR_GET(cam_freelook_return_delay));
-    params.return_rate = float(REXCVAR_GET(cam_freelook_return_rate));
-    params.yaw_limit = float(REXCVAR_GET(cam_freelook_yaw_limit));
-    params.pitch_limit = float(REXCVAR_GET(cam_freelook_pitch_limit));
+    params.sens = float(larecomp::settings::cam_freelook_sens.Get());
+    params.invert_x = larecomp::settings::cam_freelook_invert_x.Get();
+    params.invert_y = larecomp::settings::cam_freelook_invert_y.Get();
+    params.return_delay = float(larecomp::settings::cam_freelook_return_delay.Get());
+    params.return_rate = float(larecomp::settings::cam_freelook_return_rate.Get());
+    params.yaw_limit = float(larecomp::settings::cam_freelook_yaw_limit.Get());
+    params.pitch_limit = float(larecomp::settings::cam_freelook_pitch_limit.Get());
     state.yaw = g_yaw;
     state.pitch = g_pitch;
     larecomp::mouselook::StepLook(state, active, dx, dy, dt, params);
@@ -870,7 +575,7 @@ void UpdateLookAngles() {
     g_pitch = state.pitch;
 
     // mouse_look_log: the counts that came in and where the view is, about every tenth of a second while something moves (the chain reads the turn and the return from it).
-    if (REXCVAR_GET(mouse_look_log) && log_lines < 4000 &&
+    if (larecomp::settings::mouse_look_log.Get() && log_lines < 4000 &&
         (active || g_yaw != 0.0f || g_pitch != 0.0f) &&
         (std::fabs(dx) + std::fabs(dy) >= 0.5f || std::chrono::duration<float>(now - last_log).count() >= 0.1f)) {
         last_log = now;
@@ -881,7 +586,7 @@ void UpdateLookAngles() {
 
 // Resolves camsys -> the look object through the cvar-configured offset.
 uint32_t LookObject(uint32_t sys) {
-    int32_t off = REXCVAR_GET(cam_look_obj);
+    int32_t off = larecomp::settings::cam_look_obj.Get();
     if (off < 0) return 0;
     uint8_t raw[4];
     if (!SafeReadGuest(sys + uint32_t(off), 4, raw)) return 0;
@@ -1013,8 +718,8 @@ void RotateBasis(Vec3& right, Vec3& up, Vec3& fwd, float yaw, float pitch,
 
     float want = e0 + pitch;
     if (clamp_elev) {
-        float lo = float(REXCVAR_GET(cam_freelook_min_elev));
-        float hi = float(REXCVAR_GET(cam_freelook_max_elev));
+        float lo = float(larecomp::settings::cam_freelook_min_elev.Get());
+        float hi = float(larecomp::settings::cam_freelook_max_elev.Get());
         if (hi < lo) hi = lo;
         want = std::fmax(lo, std::fmin(hi, want));
     }
@@ -1054,7 +759,7 @@ float ApplyLookToMatrix(uint32_t mat, float yaw, float pitch,
             // -- that is what made `pos + forward * (a negative d)` land on
             // the same world point across the sample -- so a fallback has to
             // carry the same sign as the field it stands in for.
-            d = -std::fabs(float(REXCVAR_GET(cam_freelook_orbit)));
+            d = -std::fabs(float(larecomp::settings::cam_freelook_orbit.Get()));
             if (!usable(d)) return 0.0f;
         }
     }
@@ -1147,8 +852,8 @@ bool ApplyLookToCameraState(uint32_t cs, float yaw, float pitch, float* out_d) {
             // limits are actually about, and now measured in world space where
             // the number means something.
             float e0 = std::asin(std::fmax(-1.0f, std::fmin(1.0f, rel.y / dist)));
-            float lo = float(REXCVAR_GET(cam_freelook_min_elev));
-            float hi = float(REXCVAR_GET(cam_freelook_max_elev));
+            float lo = float(larecomp::settings::cam_freelook_min_elev.Get());
+            float hi = float(larecomp::settings::cam_freelook_max_elev.Get());
             if (hi < lo) hi = lo;
             float want = std::fmax(lo, std::fmin(hi, e0 + pitch));
             pitch_used = want - e0;
@@ -1170,7 +875,7 @@ bool ApplyLookToCameraState(uint32_t cs, float yaw, float pitch, float* out_d) {
 
     // The orientation, through the game's own channels. phi = pi/2 - angle, so
     // a turn of +phi means SUBTRACTING phi from the stored value.
-    float sign = REXCVAR_GET(cam_freelook_cs_invert) ? -1.0f : 1.0f;
+    float sign = larecomp::settings::cam_freelook_cs_invert.Get() ? -1.0f : 1.0f;
     float ya = ReadGuestFloat(cs + kCsYaw);
     float pa = ReadGuestFloat(cs + kCsPitch);
     if (std::isfinite(ya)) WriteGuestFloat(cs + kCsYaw, ya - sign * yaw);
@@ -1287,7 +992,6 @@ void Hook_CameraSystem(PPCRegister& r20, PPCRegister& r24) {
 
     UpdateLookAngles();
 
-
     // r24 is the camera rig the system settled on this frame -- 1 is the
     // cockpit view and 2 a static one, per the note on Patch_DebugCam. If this
     // moves when the player looks around, the on-screen angles are whole rig
@@ -1296,6 +1000,8 @@ void Hook_CameraSystem(PPCRegister& r20, PPCRegister& r24) {
     if (g_cam_rig.exchange(rig, std::memory_order_relaxed) != rig)
         MC_INFO("[cam-probe] camera rig {} (r24 in sub_822C0320)", rig);
 }
+
+int32_t CurrentCameraRig() { return g_cam_rig.load(std::memory_order_relaxed); }
 
 namespace {
 
@@ -1307,7 +1013,7 @@ namespace {
 bool RigTurnsInPlace(int32_t rig) {
     // By value, not a view: the cvar accessor hands back a std::string and a
     // view of a temporary would dangle the moment this line ended.
-    const std::string list = REXCVAR_GET(cam_freelook_inplace_rigs);
+    const std::string list = larecomp::settings::cam_freelook_inplace_rigs.Get();
     size_t at = 0;
     while (at < list.size()) {
         while (at < list.size() && (list[at] == ' ' || list[at] == ',')) ++at;
@@ -1331,7 +1037,7 @@ bool RigTurnsInPlace(int32_t rig) {
 }
 
 void ApplyFreeLook(uint32_t sys, int phase) {
-    if (REXCVAR_GET(cam_look_phase) != phase) return;
+    if (larecomp::settings::cam_look_phase.Get() != phase) return;
     if (!g_look_active.load(std::memory_order_relaxed)) return;
     if (g_yaw == 0.0f && g_pitch == 0.0f) return;
     if (!sys) return;
@@ -1342,13 +1048,13 @@ void ApplyFreeLook(uint32_t sys, int phase) {
         if (!told.exchange(true))
             MC_WARN("[cam-look] camsys+{} does not hold a usable pointer -- "
                     "check cam_look_obj against the region list at the top of "
-                    "cam_fields.txt.", REXCVAR_GET(cam_look_obj));
+                    "cam_fields.txt.", larecomp::settings::cam_look_obj.Get());
         return;
     }
 
     float used = ApplyLookToMatrix(obj + kMirrorMatrix, g_yaw, g_pitch, true, false);
 
-    if (REXCVAR_GET(cam_freelook_diag)) {
+    if (larecomp::settings::cam_freelook_diag.Get()) {
         static int throttle = 0;
         if (--throttle <= 0) {
             throttle = 60;
@@ -1399,9 +1105,9 @@ void Hook_CameraMatrixPublish(PPCRegister& r30) {
     // Before every gate below: this is the matrix the frame is rendered from,
     // and it is the only place that can say whether the camera state the other
     // hook turns is the object the screen is drawn from.
-    if (REXCVAR_GET(cam_freelook_diag)) ReportCsMatch(r30.u32);
+    if (larecomp::settings::cam_freelook_diag.Get()) ReportCsMatch(r30.u32);
 
-    int phase = REXCVAR_GET(cam_look_phase);
+    int phase = larecomp::settings::cam_look_phase.Get();
     // The camera-state hook turns the camera upstream of the game's collision.
     // On the frames it did that, turning the matrix again here would double the
     // angle, so this site stands down. It does not fire for every rig -- a
@@ -1412,7 +1118,7 @@ void Hook_CameraMatrixPublish(PPCRegister& r30) {
 
     if (phase != 2) {
         static std::atomic<bool> told{false};
-        if (!told.exchange(true) && REXCVAR_GET(cam_freelook))
+        if (!told.exchange(true) && larecomp::settings::cam_freelook.Get())
             MC_WARN("[cam-look] cam_look_phase is {}, so the look is being "
                     "applied to the cine director's MIRROR and cannot move the "
                     "screen. Set it to 2. The default is 2, but a value saved "
@@ -1441,7 +1147,7 @@ void Hook_CameraMatrixPublish(PPCRegister& r30) {
 
     float used = ApplyLookToMatrix(mat, g_yaw, g_pitch, false, in_place);
 
-    if (REXCVAR_GET(cam_freelook_diag)) {
+    if (larecomp::settings::cam_freelook_diag.Get()) {
         static int throttle = 0;
         if (--throttle <= 0) {
             throttle = 60;
@@ -1501,10 +1207,10 @@ void Hook_CameraStateUpdate(PPCRegister& r31) {
     // the collision OFF -- that is, with free look known to be working on the
     // published matrix. Measuring a feature while it is broken tells you much
     // less than measuring it while it works.
-    const bool diag = REXCVAR_GET(cam_freelook_diag);
+    const bool diag = larecomp::settings::cam_freelook_diag.Get();
     if (diag) RecordCsSnapshot(cs);
 
-    if (!REXCVAR_GET(cam_freelook_collide)) return;
+    if (!larecomp::settings::cam_freelook_collide.Get()) return;
     if (!g_look_active.load(std::memory_order_relaxed)) return;
     if (g_yaw == 0.0f && g_pitch == 0.0f) return;
 
@@ -1608,8 +1314,8 @@ void Hook_CameraBoomLook(PPCRegister& r1, PPCRegister& r31, PPCVRegister& v127, 
     static std::atomic<bool> announced{false};
     if (!announced.exchange(true)) MC_INFO("[cam-look] camBoomCS hook is live, boom=0x{:08X}", cs);
 
-    const bool use = REXCVAR_GET(cam_freelook_boom);
-    const bool record = REXCVAR_GET(cam_orbit_record);
+    const bool use = larecomp::settings::cam_freelook_boom.Get();
+    const bool record = larecomp::settings::cam_orbit_record.Get();
     if (!use && !record) return;
     if (!g_look_active.load(std::memory_order_relaxed)) return;
     const float yaw = g_yaw, pitch = g_pitch;
@@ -1638,9 +1344,9 @@ void Hook_CameraBoomLook(PPCRegister& r1, PPCRegister& r31, PPCVRegister& v127, 
     if (!use || (yaw == 0.0f && pitch == 0.0f)) return;
 
     larecomp::camorbit::Params params;
-    params.min_elev = float(REXCVAR_GET(cam_freelook_min_elev));
-    params.max_elev = float(REXCVAR_GET(cam_freelook_max_elev));
-    params.inplace_dist = float(REXCVAR_GET(cam_freelook_inplace_dist));
+    params.min_elev = float(larecomp::settings::cam_freelook_min_elev.Get());
+    params.max_elev = float(larecomp::settings::cam_freelook_max_elev.Get());
+    params.inplace_dist = float(larecomp::settings::cam_freelook_inplace_dist.Get());
     const larecomp::camorbit::Out out = larecomp::camorbit::Apply(in, yaw, pitch, params);
     if (out.mode == larecomp::camorbit::Mode::Skipped) return;
 
@@ -1651,7 +1357,7 @@ void Hook_CameraBoomLook(PPCRegister& r1, PPCRegister& r31, PPCVRegister& v127, 
     // The publish site turns the finished matrix for every other camera; this frame's view is already turned.
     g_cs_applied.store(1, std::memory_order_relaxed);
 
-    if (REXCVAR_GET(cam_freelook_diag)) {
+    if (larecomp::settings::cam_freelook_diag.Get()) {
         static int throttle = 0;
         if (--throttle <= 0) {
             throttle = 60;
@@ -1821,6 +1527,7 @@ void CameraProbeDump() {
 void CameraLookOnTuneField(const char*, uint32_t, uint32_t) {}
 void TickCameraLook() {}
 void Hook_CameraSystem(PPCRegister&, PPCRegister&) {}
+int32_t CurrentCameraRig() { return -1; }
 void Hook_CameraPostUpdate(PPCRegister&) {}
 void Hook_CameraPrePublish(PPCRegister&) {}
 void Hook_CameraMatrixPublish(PPCRegister&) {}

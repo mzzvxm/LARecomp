@@ -15,15 +15,9 @@
 
 #include <imgui.h>
 
-#include <rex/filesystem.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/immediate_drawer.h>
-#include <rex/ui/keybinds.h>
-#if __has_include(<rex/ui/image_decode.h>)
-#include <rex/ui/image_decode.h>
+#include <rex/platform/file.h>
+#include <rex/ui/ui_system.h>
 #define LARECOMP_MODS_HAS_IMAGES 1
-#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -38,6 +32,7 @@
 #include "mod_download.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/ui/imgui_theme.h"
+#include "mc_engine/ui/overlay_support.h"
 
 namespace fs = std::filesystem;
 
@@ -63,8 +58,6 @@ constexpr ImVec4 kBlue = mcla::ui::kColorCyanGlow;
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
-fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder()); }
-
 std::string Utf8(const fs::path& p) {
     const auto u = p.u8string();
     return std::string(u.begin(), u.end());
@@ -83,10 +76,10 @@ struct LocalMod {
     std::vector<uint8_t> image;
 };
 
-std::vector<LocalMod> ScanLocal() {
+std::vector<LocalMod> ScanLocal(const fs::path& models_dir) {
     std::vector<LocalMod> out;
     std::error_code ec;
-    for (const auto& e : fs::directory_iterator(ModelsDir(), ec)) {
+    for (const auto& e : fs::directory_iterator(models_dir, ec)) {
         if (!e.is_directory()) continue;
         const std::string folder = Utf8(e.path().filename());
         LocalMod m;
@@ -110,8 +103,8 @@ std::vector<LocalMod> ScanLocal() {
             m.bytes += f.file_size(sub);
             ++m.files;
         }
-        m.info = br::ReadLocalModInfo(folder);
-        m.image = br::ReadLocalModImage(folder, m.info);
+        m.info = br::ReadLocalModInfo(e.path());
+        m.image = br::ReadLocalModImage(e.path(), m.info);
         out.push_back(std::move(m));
     }
     std::sort(out.begin(), out.end(), [](const LocalMod& a, const LocalMod& b) {
@@ -138,7 +131,7 @@ struct Available {
 
 // Every server that answered and has mods: its manifest (with each mod's
 // mod.toml and image), compared with here.
-std::vector<Available> ScanServers(const br::Snapshot& snap) {
+std::vector<Available> ScanServers(const br::Snapshot& snap, const fs::path& models_dir) {
     std::vector<const br::ServerView*> servers;
     for (const auto& s : snap.servers)
         if (s.answered && s.http_port && (s.mods_required + s.mods_optional) > 0) servers.push_back(&s);
@@ -148,7 +141,7 @@ std::vector<Available> ScanServers(const br::Snapshot& snap) {
     for (int i = 0; i < 6 && size_t(i) < servers.size(); ++i)
         pool.emplace_back([&] {
             for (size_t k; (k = next.fetch_add(1)) < servers.size();)
-                checks[k] = br::CheckServerMods(servers[k]->host, servers[k]->http_port, true, true);
+                checks[k] = br::CheckServerMods(servers[k]->host, servers[k]->http_port, true, true, models_dir);
         });
     for (auto& t : pool) t.join();
 
@@ -196,10 +189,16 @@ Verdict Judge(const LocalMod* local, const br::ServerMod& remote) {
 
 // ---------------------------------------------------------------- window ---
 
-class ModBrowserDialog final : public rex::ui::ImGuiDialog {
+class ModBrowserDialog;
+ModBrowserDialog* g_mod_dialog = nullptr;
+
+class ModBrowserDialog final : public mcla::ui::PanelDialog {
 public:
-    ModBrowserDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate)
-        : ImGuiDialog(drawer), immediate_(immediate) {}
+    explicit ModBrowserDialog(rex::ui::IUISystem& ui) : ui_(&ui) { g_mod_dialog = this; }
+    ~ModBrowserDialog() override {
+        g_mod_dialog = nullptr;
+        pad_block_.Set(false);
+    }
 
     void Toggle() {
         if (g_mod_open.load())
@@ -269,7 +268,11 @@ private:
     };
 
     void Open_() {
+        // CHECK: Trace the executable lookup in game across open, refresh and reopen.
+        models_dir_ = mc::modloader::ModRootDir(rex::platform::GetExecutableFolder());
+        models_dir_name_ = Utf8(models_dir_.filename());
         g_mod_open.store(true);
+        pad_block_.Set(true);
         first_frame_ = true;
         client_.SetAutoRefresh(true);
         Rescan();
@@ -278,8 +281,9 @@ private:
 
     void Close_() {
         g_mod_open.store(false);
+        pad_block_.Set(false);
         client_.SetAutoRefresh(false);
-        auto& io = GetIO();
+        auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
@@ -292,8 +296,8 @@ private:
         scanning_local_ = true;
         scanning_remote_ = servers_too;
         remote_started_ = false;
-        std::thread([r] {
-            r->local = ScanLocal();
+        std::thread([r, models_dir = models_dir_] {
+            r->local = ScanLocal(models_dir);
             r->local_ready.store(true);
         }).detach();
         if (servers_too) remote_wait_since_ = std::chrono::steady_clock::now();
@@ -313,8 +317,8 @@ private:
              std::chrono::steady_clock::now() - remote_wait_since_ > std::chrono::seconds(4))) {
             remote_started_ = true;
             auto r = results_;
-            std::thread([r, snap] {
-                r->remote = ScanServers(snap);
+            std::thread([r, snap, models_dir = models_dir_] {
+                r->remote = ScanServers(snap, models_dir);
                 r->remote_ready.store(true);
             }).detach();
         }
@@ -329,12 +333,9 @@ private:
 
     void MakeTexture(const std::string& key, const std::vector<uint8_t>& bytes) {
 #if defined(LARECOMP_MODS_HAS_IMAGES)
-        if (bytes.empty() || !immediate_ || textures_.count(key)) return;
-        int w = 0, h = 0;
-        std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(bytes.data(), bytes.size(), w, h);
-        if (rgba.empty() || w <= 0 || h <= 0 || w > 2048 || h > 2048) return;
-        auto tex = immediate_->CreateTexture(uint32_t(w), uint32_t(h), rex::ui::ImmediateTextureFilter::kLinear, false,
-                                             rgba.data());
+        // In OnDraw's call tree (TakeResults): the ImGui context is current, which IconTexture needs.
+        if (bytes.empty() || textures_.count(key)) return;
+        auto tex = mcla::ui::IconTexture::FromEncoded(bytes.data(), bytes.size());
         if (tex) textures_[key] = std::move(tex);
 #else
         (void)key;
@@ -346,7 +347,7 @@ private:
     void Thumb(const std::string& key, const std::string& name) {
         auto it = textures_.find(key);
         if (it != textures_.end()) {
-            ImGui::Image(reinterpret_cast<ImTextureID>(it->second.get()), ImVec2(kThumb, kThumb));
+            ImGui::Image(it->second->Ref(), ImVec2(kThumb, kThumb));
             return;
         }
         const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -409,7 +410,7 @@ private:
         LARECOMP_APP_INFO("[mods] downloading {} {} ({}) from {}", name, o.mod.info.version,
                           br::FormatBytes(o.mod.need_bytes), o.server);
         download_name_ = name;
-        download_ = std::make_unique<br::ModDownload>(o.host, o.http_port, std::vector<br::ServerMod>{o.mod});
+        download_ = std::make_unique<br::ModDownload>(o.host, o.http_port, std::vector<br::ServerMod>{o.mod}, models_dir_);
         message_.clear();
     }
 
@@ -483,11 +484,11 @@ private:
 
     void DrawInstalled() {
         if (scanning_local_ && local_.empty()) {
-            ImGui::TextDisabled("Reading %s/...", Utf8(ModelsDir().filename()).c_str());
+            ImGui::TextDisabled("Reading %s/...", models_dir_name_.c_str());
             return;
         }
         if (local_.empty())
-            ImGui::TextDisabled("No mods in %s/.", Utf8(ModelsDir().filename()).c_str());
+            ImGui::TextDisabled("No mods in %s/.", models_dir_name_.c_str());
         if (BeginCards("##local")) {
             SetupCards();
             for (const auto& m : local_) {
@@ -603,12 +604,11 @@ private:
     }
 
     void SwitchMod(const LocalMod& m) {
-        const fs::path from = ModelsDir() / FromUtf8(m.folder);
-        const fs::path to = ModelsDir() / FromUtf8(m.enabled ? std::string(kDisabledPrefix) + m.name : m.name);
+        const fs::path from = models_dir_ / FromUtf8(m.folder);
+        const fs::path to = models_dir_ / FromUtf8(m.enabled ? std::string(kDisabledPrefix) + m.name : m.name);
         std::error_code ec;
         if (fs::exists(to, ec)) {
-            message_ = "Cannot: " + Utf8(ModelsDir().filename()) + "/" + Utf8(to.filename()) +
-                       " already exists.";
+            message_ = "Cannot: " + models_dir_name_ + "/" + Utf8(to.filename()) + " already exists.";
             return;
         }
         fs::rename(from, to, ec);
@@ -625,21 +625,23 @@ private:
 
     void Delete(const LocalMod& m) {
         std::error_code ec;
-        fs::remove_all(ModelsDir() / FromUtf8(m.folder), ec);
+        fs::remove_all(models_dir_ / FromUtf8(m.folder), ec);
         message_ = ec ? "Cannot delete " + m.folder + " (" + ec.message() + ")" : "Deleted " + m.folder + ".";
         textures_.erase("local:" + m.folder);
         Rescan(false);
     }
 
-    static void OpenFolder() {
+    void OpenFolder() {
 #ifdef _WIN32
-        const std::wstring dir = ModelsDir().wstring();
-        ShellExecuteW(nullptr, L"open", dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        ShellExecuteW(nullptr, L"open", models_dir_.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #endif
     }
 
-    rex::ui::ImmediateDrawer* immediate_;
+    rex::ui::IUISystem* ui_;
+    mcla::ui::InputBlock pad_block_;
     br::Client client_;
+    fs::path models_dir_;
+    std::string models_dir_name_;
     std::shared_ptr<Results> results_;
     bool scanning_local_ = false;
     bool scanning_remote_ = false;
@@ -647,7 +649,7 @@ private:
     std::chrono::steady_clock::time_point remote_wait_since_{};
     std::vector<LocalMod> local_;
     std::vector<Available> remote_;
-    std::map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> textures_;
+    std::map<std::string, std::unique_ptr<mcla::ui::IconTexture>> textures_;
     std::unique_ptr<br::ModDownload> download_;
     std::string download_name_;
     std::string message_;
@@ -656,16 +658,17 @@ private:
     char search_[64] = {};
 };
 
-ModBrowserDialog* g_mod_dialog = nullptr;
-
 }  // namespace
 
-void StartModBrowser(rex::ui::ImGuiDrawer* imgui_drawer, rex::ui::ImmediateDrawer* immediate_drawer) {
-    if (!imgui_drawer || g_mod_dialog) return;
-    g_mod_dialog = new ModBrowserDialog(imgui_drawer, immediate_drawer);
-    rex::ui::RegisterBind("bind_mod_browser", "F5", "Open or close the mod browser", [] {
-        if (g_mod_dialog) g_mod_dialog->Toggle();
-    });
+void StartModBrowser(rex::ui::IUISystem& ui) {
+    if (g_mod_dialog) return;
+    // The dialog is always in the UI system's list and draws nothing while closed (as it did on 0.10); the UI
+    // system owns it, and its destructor clears g_mod_dialog.
+    ui.AddDialog(std::make_unique<ModBrowserDialog>(ui));
+}
+
+void ModBrowserKeyPressed() {
+    if (g_mod_dialog) g_mod_dialog->Toggle();
 }
 
 void ModBrowserOpen() { g_mod_open_asked.store(true); }

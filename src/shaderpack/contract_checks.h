@@ -22,6 +22,7 @@
 //   position    SPIR-V: every BuiltIn Position variable is Invariant and the
 //               module has NoContraction; DXIL: no `fast` fp op reaches
 //               SV_Position (from the disassembly).
+//   doubles     a variant's DXIL has no double precision (CheckDxilNoDoubles).
 //
 // The HDR variant pack (build_hdr_variants.py) has its own, smaller checks;
 // they belong to its step, not here.
@@ -79,6 +80,10 @@ struct BlobContractInput {
   std::span<const uint8_t> spirv;
 };
 bool CheckBlobContract(const BlobContractInput& input, Problems* problems);
+
+// A VARIANT's DXIL must not use double precision (dxil_features.h): an Intel iGPU on D3D12 cannot create the pipeline, and the draw takes
+// the game's own shader (or a variant with fewer features). Not run on the main pack's shaders, whose text is the translator's.
+bool CheckDxilNoDoubles(std::string_view name, int variant, std::span<const uint8_t> dxil, Problems* problems);
 
 struct SpirvTraits {
   bool writes_sample_mask = false;   // OpDecorate .. BuiltIn SampleMask

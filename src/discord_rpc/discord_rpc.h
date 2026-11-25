@@ -17,6 +17,9 @@ enum class LarecompDiscordState : uint32_t {
 
 void LARECOMP_Discord_Init();
 void LARECOMP_Discord_Shutdown();
+// Per frame, from the game's thread (RpcOnRaceTick): acts on a change of larecomp_discord_rpc made since the last call, which is live
+// (rpc_toggle_rules.h). A flag read and nothing else while the setting has not changed.
+void LARECOMP_Discord_Poll();
 
 void LARECOMP_Discord_SetState(LarecompDiscordState state);
 void LARECOMP_Discord_SetStateText(LarecompDiscordState state,
@@ -74,3 +77,11 @@ void RpcOnDistrictChanged(int district_idx);
 // presence can name the race being run and, in a series or tournament, how the
 // player stands in it. Self-throttled; a no-op outside a race.
 void RpcOnRaceTick();
+
+// True while the game's own state machine is in its Cruising state (free roam, the last "Cruising" / "Racing" / "Garage" / "Loading" /
+// "Intro" activation: a pause menu in free roam is still free roam). The traffic probe's spawn test asks it.
+bool RpcInFreeRoam();
+
+// The activity the same activations say (Boot until the first one): the server browser's join refuses to start from a race or the
+// garage and waits for free roam in the others (online/server_browser/browser_join_core.h). A pause menu in free roam is FreeRoam.
+LarecompDiscordState RpcActivity();

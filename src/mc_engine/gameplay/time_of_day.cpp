@@ -8,7 +8,8 @@
 //   sub_822F1DB0(mgr)       Its per-frame time-of-day update — hooked here.
 //   sub_822F1518(mgr,h,r)   Graphics_WarpToTimeOfDay(hour, rate): sets the
 //                           target and raises the warp flag.
-//   sub_822F10D0(mgr)       Graphics_GetTimeOfDay.
+//   sub_822F10D0(mgr)       Graphics_GetTimeOfDay. Reads +14540 on the update
+//                           thread and the published slot on the render thread.
 //   sub_82304F20            Graphics_GetAndSetAutoUpdateTimeOfDay: swaps the
 //                           auto-advance byte.
 //
@@ -29,12 +30,13 @@
 //   night 23.5 — useful reference points for the cvar.
 //
 // Registered as a midasm hook in larecomp_config.toml:
+//   0x822C2858  Hook_TimeOfDayBeforeFog
 //   0x822F1DB0  Hook_TimeOfDay  (r3)
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/runtime.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
 #include <chrono>
@@ -44,49 +46,16 @@
 #include <cstring>
 #include <ctime>
 #include <string>
+#include <utility>
 
 #include "gpu/menu_world.h"
+#include "gpu/world_clock.h"
 #include "larecomp_log.h"
 #include "mc_engine/core/config_save.h"
 #include "real_weather.h"
 #include "time_of_day.h"
-
-REXCVAR_DEFINE_BOOL(time_of_day_hold, false, "MCLA/World",
-    "Freeze the world at time_of_day instead of letting the day cycle run. This "
-    "is the on/off switch — the hour by itself changes nothing while this is "
-    "off, so you can park a value and arm it later.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(time_of_day, 12.0, "MCLA/World",
-    "Hour to hold the world at (0-24, fractional), applied while "
-    "time_of_day_hold is on. Takes effect every frame, so dragging the bar walks "
-    "the sun across the sky live. Menu presets: 6.0 sunrise, 16.75 afternoon, "
-    "17.4 sunset, 23.5 night.")
-    .range(0.0, 24.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(time_of_day_realtime, false, "MCLA/World",
-    "Follow your computer's clock: the world sits at the real local hour and "
-    "keeps up with it. Outranks time_of_day_hold.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(weather, "game", "MCLA/World",
-    "Force the weather. 'game' leaves it alone, including its own random "
-    "changes; a named sky pins that one and stops the automatic changes. 'real' "
-    "follows the actual weather where you are, refreshed once an hour — it "
-    "resolves your location from your IP through ipapi.co and reads the forecast "
-    "from open-meteo.com, so those two services see your IP while it is on. "
-    "Applies live.")
-    .allowed({"game", "real", "nice", "cloudy", "stormy", "foggy"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(time_of_day_speed, 1.0, "MCLA/World",
-    "Multiplier on the day cycle speed. Only applies while time_of_day_hold is "
-    "off — a held hour does not advance at all. 1 = stock, 0 = frozen where it "
-    "is, 10 = ten times faster. The stock rate varies with the hour (about 2 "
-    "minutes per hour at midday, 3 at night).")
-    .range(0.0, 100.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "time_of_day_rules.h"
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -177,10 +146,34 @@ std::atomic<int> g_shot_weather{-1};
 std::atomic<int> g_scene_hour_milli{-1};
 std::atomic<int> g_scene_weather{-1};
 
+// One sample on the update thread. Both fog and the later clock update use
+// this decision even if a live setting changes between the two hooks.
+struct FramePin {
+    uint32_t manager = 0;
+    float previous_hour = -1.0f;
+    float hour = -1.0f;
+    bool hold = false;
+    bool from_scene = false;
+};
+FramePin g_frame_pin;
+
+float RealTimeHour() {
+    if (!larecomp::settings::time_of_day_realtime.Get()) return -1.0f;
+    const std::time_t t = std::time(nullptr);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &t);
+#else
+    localtime_r(&t, &tm);
+#endif
+    return static_cast<float>(tm.tm_hour) + static_cast<float>(tm.tm_min) / 60.0f +
+           static_cast<float>(tm.tm_sec) / 3600.0f;
+}
+
 }  // namespace
 
 int Weather_GetIndex() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return -1;
     int idx = static_cast<int>(ReadU32(base, kWeatherIndex));
     return (idx >= 0 && idx < 4) ? idx : -1;
@@ -205,7 +198,7 @@ int Weather_NameToIndex(const char* name) {
 }
 
 float TimeOfDay_GetHour() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return -1.0f;
     // Read the manager from its global rather than from whatever the hook last
     // saw: the menu-camera hook can run before the lighting update on a frame,
@@ -226,18 +219,67 @@ void TimeOfDay_SceneHour(float hour) {
                              std::memory_order_relaxed);
 }
 
+// The menu-camera request (0x822C27F4) and TickScene have already run.
+// The call at 0x822C2858 leads to 0x822D9F38, which evaluates the hour-keyed
+// fog (0x822E1B58) and sets the postfx constants (0x822E19B0). The stock
+// clock update runs later at 0x822C2D24 and publishes to the render slot
+// used by the lighting manager and prop lamps (0x8272948C).
+// CHECK: regenerate the guest hook and compare the first 9H frame against
+// the next on both backends, including a scene cut and a menu shot.
+void Hook_TimeOfDayBeforeFog() {
+    g_frame_pin = {};
+    auto* base = larecomp::guest::Membase();
+    if (!base) return;
+    const uint32_t mgr = ReadU32(base, kLightingMgrPtr);
+    if (mgr < 0x10000u) return;
+
+    const int scene_hour = g_scene_hour_milli.load(std::memory_order_relaxed);
+    const int shot_hour = g_shot_hour_milli.load(std::memory_order_relaxed);
+    const bool hold = larecomp::settings::time_of_day_hold.Get();
+    const float hour = larecomp::tod::ResolvePin(scene_hour, shot_hour, hold,
+        RealTimeHour, [] { return static_cast<float>(larecomp::settings::time_of_day.Get()); });
+    g_frame_pin = {mgr, -1.0f, hour, hold, scene_hour >= 0};
+    if (hour >= 0.0f) {
+        g_frame_pin.previous_hour = ReadF32(base, mgr + kTodCurrent);
+        WriteF32(base, mgr + kTodCurrent, hour);
+    }
+}
+
 // mcLightingManager's per-frame time-of-day update (sub_822F1DB0). r3 = manager.
 //
-// We set the fields and let the original body run: with auto-advance off and no
-// warp pending it skips both the advance and the warp maths and just publishes
-// the hour to the render slot at the end, so the lighting, sky, shadows and
-// headlights all follow through the game's own path.
+// With auto-advance off and no warp pending, the original body publishes the
+// pin to the render slot. The unpinned day cycle still updates here.
 void Hook_TimeOfDay(PPCRegister& r3) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    FramePin frame = std::exchange(g_frame_pin, FramePin{});
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     uint32_t mgr = static_cast<uint32_t>(r3.u64);
     if (mgr < 0x10000u) return;
     g_mgr.store(mgr, std::memory_order_relaxed);
+    if (frame.manager != mgr) {
+        // The pre-fog hook did not run in this update (a game state that skips 0x822C2858, or the first frame):
+        // decide the hour here, as this hook did before the pre-fog hook existed, so the hold, the clock, a scene
+        // and a menu shot keep working in every state; only the frames that pass 0x822C2858 get the fog fix.
+        const int scene_hour = g_scene_hour_milli.load(std::memory_order_relaxed);
+        const int shot_hour = g_shot_hour_milli.load(std::memory_order_relaxed);
+        const bool hold = larecomp::settings::time_of_day_hold.Get();
+        const float hour = larecomp::tod::ResolvePin(scene_hour, shot_hour, hold,
+            RealTimeHour, [] { return static_cast<float>(larecomp::settings::time_of_day.Get()); });
+        frame = {mgr, hour >= 0.0f ? ReadF32(base, mgr + kTodCurrent) : -1.0f, hour, hold, scene_hour >= 0};
+        static uint32_t s_fallbacks = 0;
+        if (++s_fallbacks == 1 || s_fallbacks == 600) {
+            LARECOMP_APP_INFO("[TimeOfDay] the clock update ran without the pre-fog hook ({} time(s) so far): the hour was decided here", s_fallbacks);
+        }
+    }
+    const bool same_manager = frame.manager == mgr;
+    const bool want_pin = same_manager && frame.hour >= 0.0f;
+
+    if (want_pin) {
+        WriteF32(base, mgr + kTodCurrent, frame.hour);
+    }
+    // The renderer's ray tracing world frame gets this update's hour (including
+    // the pin applied before fog) and the weather at the start of this hook.
+    mcla::gpu::world_clock::Publish(ReadF32(base, mgr + kTodCurrent), static_cast<int32_t>(ReadU32(base, kWeatherIndex)));
 
     // ── Weather ───────────────────────────────────────────────────────
     {
@@ -245,7 +287,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         static uint8_t s_saved_auto = 1;
         static int s_forced_idx = -1;
 
-        std::string want_weather = REXCVAR_GET(weather);
+        std::string want_weather = larecomp::settings::weather.Get();
         bool real = (want_weather == "real");
         RealWeather_SetEnabled(real);
 
@@ -314,7 +356,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     if (s_first) {
         s_first = false;
         LARECOMP_APP_INFO("[TimeOfDay] hook live, mgr=0x{:08X}, world at {:.2f}h",
-                          mgr, ReadF32(base, mgr + kTodCurrent));
+                          mgr, want_pin ? frame.previous_hour : ReadF32(base, mgr + kTodCurrent));
     }
 
     // The auto-advance byte is the game's, not ours. Pinning an hour clears it,
@@ -322,55 +364,32 @@ void Hook_TimeOfDay(PPCRegister& r3) {
     // cycle stays dead for the rest of the session and every later request to
     // just rescale it silently does nothing, because there is no advance left to
     // scale. That is exactly what made time_of_day_speed look broken.
-    static bool s_pinned = false;
+    static uint32_t s_pinned_manager = 0;
     static uint8_t s_saved_auto = 1;
 
-    // A shot's hour outranks everything but a running scene's: it only lasts
-    // while the menu camera keeps renewing it. The scene's own request is the
-    // top of the list (and with it on, the hold below is just not consulted:
-    // the cvar and the pinned flag go back to what they were when it lets go).
-    const int scene_hour = g_scene_hour_milli.load(std::memory_order_relaxed);
-    int shot = scene_hour >= 0 ? scene_hour : g_shot_hour_milli.load(std::memory_order_relaxed);
+    const bool from_scene = want_pin && frame.from_scene;
     static bool s_scene_hour = false;
-    if ((scene_hour >= 0) != s_scene_hour) {
-        s_scene_hour = scene_hour >= 0;
+    if (from_scene != s_scene_hour) {
+        s_scene_hour = from_scene;
         LARECOMP_APP_INFO("[TimeOfDay] a scene {} the hour{}", s_scene_hour ? "sets" : "lets go of",
                           s_scene_hour ? "" : ": the hold, the clock or the day cycle again");
     }
-    bool want_pin = shot >= 0;
-    float hour = want_pin ? static_cast<float>(shot) / 1000.0f : 0.0f;
-
-    if (!want_pin && REXCVAR_GET(time_of_day_realtime)) {
-        std::time_t t = std::time(nullptr);
-        std::tm tm{};
-#if defined(_WIN32)
-        localtime_s(&tm, &t);
-#else
-        localtime_r(&t, &tm);
-#endif
-        hour = static_cast<float>(tm.tm_hour) + static_cast<float>(tm.tm_min) / 60.0f +
-               static_cast<float>(tm.tm_sec) / 3600.0f;
-        want_pin = true;
-    }
-
-    bool hold_on = REXCVAR_GET(time_of_day_hold);
-
     // The cvar tracks the world whenever it is not the thing driving it: boot at
     // 15h and it reads 15, drive until 18h and it reads 18. So arming the hold
     // needs no separate seeding — the value is already the current hour — and
     // releasing it lets the cycle carry on from wherever you left it.
-    if (!hold_on) {
+    if (same_manager && !frame.hold && !larecomp::settings::time_of_day_hold.Get()) {
         static int64_t s_next_mirror_ms = 0;
         static float s_mirrored = -1.0f;
         int64_t now_ms = NowMs();
-        float current = ReadF32(base, mgr + kTodCurrent);
+        float current = want_pin ? frame.previous_hour : ReadF32(base, mgr + kTodCurrent);
         if (now_ms >= s_next_mirror_ms && current >= 0.0f && current < 24.0f &&
             (s_mirrored < 0.0f || std::fabs(current - s_mirrored) > 0.005f)) {
             s_next_mirror_ms = now_ms + 200;
             s_mirrored = current;
             char buf[32];
             std::snprintf(buf, sizeof(buf), "%.4f", current);
-            rex::cvar::SetFlagByName("time_of_day", buf);
+            larecomp::cvar::SetFlagByName("time_of_day", buf);
             // The mirror is the world's hour, not the player's choice: a settings
             // save leaves it out (it only matters while the hold is on, and then
             // this does not run).
@@ -378,22 +397,17 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         }
     }
 
-    if (!want_pin && hold_on) {
-        hour = static_cast<float>(REXCVAR_GET(time_of_day));
-        want_pin = true;
-    }
-
     if (!want_pin) {
-        if (s_pinned) {
+        if (s_pinned_manager == mgr) {
             base[mgr + kTodAuto] = s_saved_auto;  // hand the day cycle back
-            s_pinned = false;
         }
+        s_pinned_manager = 0;
 
         // Rescale the game's own cycle. Rather than guess at the frame time and
         // the rate it will pick, measure what it actually advanced last frame and
         // add the missing share on top. Self-calibrating, and speed 0 lands on a
         // clean freeze because the extra is exactly minus the step.
-        double speed = REXCVAR_GET(time_of_day_speed);
+        double speed = larecomp::settings::time_of_day_speed.Get();
         static float s_prev = -1.0f;
         float now = ReadF32(base, mgr + kTodCurrent);
         if (speed != 1.0 && s_prev >= 0.0f) {
@@ -411,24 +425,21 @@ void Hook_TimeOfDay(PPCRegister& r3) {
         return;
     }
 
-    while (hour >= 24.0f) hour -= 24.0f;
-    if (hour < 0.0f) hour = 0.0f;
-
-    if (!s_pinned) {
+    if (s_pinned_manager != mgr) {
         s_saved_auto = base[mgr + kTodAuto];
-        s_pinned = true;
+        s_pinned_manager = mgr;
     }
 
-    // Pin it: kill the auto-advance and any warp the menu may have started, then
-    // write the hour straight in.
+    // Keep the hour sampled before fog through the stock render-slot publish.
+    // The game can request a warp between the two hooks.
+    const float hour = frame.hour;
     base[mgr + kTodAuto] = 0;
     base[mgr + kTodWarping] = 0;
-    WriteF32(base, mgr + kTodCurrent, hour);
     WriteF32(base, mgr + kTodTarget, hour);
 
     // A scene's ramp moves the hour every frame: its own [scene] lines say where it is.
     static float s_last = -1.0f;
-    if (scene_hour < 0 && static_cast<int>(s_last * 60.0f) != static_cast<int>(hour * 60.0f)) {
+    if (!from_scene && static_cast<int>(s_last * 60.0f) != static_cast<int>(hour * 60.0f)) {
         s_last = hour;
         int h = static_cast<int>(hour);
         int m = static_cast<int>((hour - h) * 60.0f);
@@ -440,6 +451,7 @@ void Hook_TimeOfDay(PPCRegister& r3) {
 
 #include <rex/ppc/context.h>
 
+void Hook_TimeOfDayBeforeFog() {}
 void Hook_TimeOfDay(PPCRegister& r3) {}
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

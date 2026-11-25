@@ -38,21 +38,23 @@
 //
 
 #include "tournament.h"
+#include "settings/immortal.h"
 
 #include "online_common.h"
 #include "tournament_schedule.h"
 #include "rate_my_ride/rmr_client.h"
+#include "larecomp_guest.h"
 
 #include <cstring>
 #include <deque>
 #include <mutex>
 #include <vector>
 
-#include <rex/system/xmemory.h>
+#include <rex/kernel/guest_memory.h>
 
 namespace {
 
-using rex::memory::Memory;
+using Memory = rex::kernel::GuestAddressSpace;
 
 // rlUpload record, 152 bytes (layout in rate_my_ride.cpp). The state machines
 // only check the count and read the file id; the rest makes it a record any
@@ -104,7 +106,7 @@ struct Completed {
 };
 
 std::mutex g_mutex;
-std::deque<Completed> g_done;  // replies waiting for the game thread
+std::deque<Completed>& g_done = larecomp::Leak<std::deque<Completed>>();  // replies waiting for the game thread
 
 // Game thread only: per table, the file of the last reply, its id, and the
 // status object its state machine polls (the read's, reused for the download).
@@ -113,11 +115,11 @@ struct Served {
   uint32_t file_id = 0;
   uint32_t status = 0;
 };
-Served g_served[kKinds];
+Served (&g_served)[kKinds] = *new Served[1][kKinds]();
 
 Memory* Mem() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->memory() : nullptr;
+  auto* rt = REX_RUNTIME();
+  return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
 void Put32(uint8_t* p, uint32_t v) {
@@ -288,6 +290,8 @@ void Hook_TournamentPump(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
+#include <rex/kernel/title_runtime.h>
 
 void Hook_TournamentPump(PPCRegister& r3) {}
 #endif  // REXGLUE_HAS_XEO3_TARGET

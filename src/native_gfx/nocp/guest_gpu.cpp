@@ -3,6 +3,7 @@
 // See guest_gpu.h for what this replaces and why.
 
 #include "guest_gpu.h"
+#include "settings/immortal.h"
 #include "nocp_app.h"
 
 #include <algorithm>
@@ -12,16 +13,16 @@
 #include <mutex>
 #include <vector>
 
-#include <rex/chrono/clock.h>
-#include <rex/cvar.h>
-#include <rex/kernel/xboxkrnl/video.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/xmemory.h>
-#include <rex/system/xthread.h>
-#include <rex/thread.h>
+#include <rex/chrono.h>
+#include "settings/larecomp_settings.h"
+#include <rex/guest.h>
+#include <rex/title.h>
+#include <rex/xenos/register.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
+#include <stop_token>
+#include <rex/platform/thread.h>
 
 #include <cstring>
 
@@ -31,25 +32,14 @@
 #include "../guest/vblank_probe.h"
 
 // Defined in nocp_app.cpp, at global scope like every cvar here.
-REXCVAR_DECLARE(bool, mcla_native_gfx_nocp_vsync);
 
 namespace mcla::native_gfx::nocp {
 
 namespace {
 
-// The window GraphicsSystem::Setup claims, byte for byte.
-constexpr uint32_t kGpuWindowBase = 0x7FC80000u;
-constexpr uint32_t kGpuWindowMask = 0xFFFF0000u;
-constexpr uint32_t kGpuWindowSize = 0x0000FFFFu;
-
 // Registers, as (address & 0xFFFF) / 4. Named after what the SDK calls them.
-constexpr uint32_t kRegEdramTiming = 0x0F00;
-constexpr uint32_t kRegBcControl = 0x0F01;
 constexpr uint32_t kRegPrimarySurfaceAddress = 0x1844;  // the flip
 constexpr uint32_t kRegCpRbWptr = 0x01C5;               // ring write pointer
-constexpr uint32_t kRegVCounter = 0x194C;
-constexpr uint32_t kRegInterruptStatus = 0x1951;
-constexpr uint32_t kRegViewportSize = 0x1961;
 
 // Same size as the SDK's RegisterFile, so an unknown register reads back what
 // was last written to it instead of faulting.
@@ -97,53 +87,36 @@ struct State {
   std::atomic<uint64_t> owned_publishes{0};
   std::atomic<bool> installed{false};
   std::atomic<bool> worker_running{false};
-  rex::system::object_ref<rex::system::XHostThread> worker;
+  rex::IGuestInterrupts* interrupts = nullptr;  // from the driver's AttachTitle
+  rex::VideoMode video_mode;
+  rex::ScopeGuard worker;  // StartHostThread's guard: destroyed = stopped and joined
 };
 
+// The host base of the title's guest memory: valid from TitleRuntime::Load until Unload (GuestMembase::GetBase, in
+// rex/memory/mapped_ptr.h).
+uint8_t* GuestMembaseNow() {
+  rex::kernel::TitleRuntime* runtime = rex::kernel::GetProcessRuntime();
+  return runtime ? runtime->GetMembase().GetBase() : nullptr;
+}
+
 State& state() {
-  static State s;
+  static State& s = larecomp::Leak<State>();
   return s;
 }
 
-uint32_t ReadRegister(void* /*ppc_context*/, void* /*context*/, uint32_t addr) {
+uint32_t ReadRegisterIndex(uint32_t r) {
   State& s = state();
-  const uint32_t r = (addr & 0xFFFF) / 4;
-  switch (r) {
-    case kRegEdramTiming:
-      return 0x08100748;
-    case kRegBcControl:
-      return 0x0000200E;
-    case kRegVCounter: {
-      // The scanline the display is on. The guest uses it to spin for a
-      // raster position; returning the bottom line means "never mid-frame".
-      //
-      // Sweeping this over the frame period was tried (a wait-for-beam spin
-      // cannot escape a constant) and changed nothing about the missing pause
-      // menu, so it is back to the value that was measured working.
-      rex::system::X_VIDEO_MODE video_mode;
-      rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
-      return std::min(uint32_t(video_mode.display_height), uint32_t(0x0FFF));
-    }
-    case kRegInterruptStatus:
-      // Bit 0 = vblank. The guest's handler early-outs without it, so this is
-      // the single value that makes the whole vblank path run.
-      return 1;
-    case kRegViewportSize: {
-      rex::system::X_VIDEO_MODE video_mode;
-      rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
-      const uint32_t w = std::min(uint32_t(video_mode.display_width), uint32_t(0x0FFF));
-      const uint32_t h = std::min(uint32_t(video_mode.display_height), uint32_t(0x0FFF));
-      return (w << 16) | h;
-    }
-    default:
-      break;
+  // The registers that report the display mode or a fixed value (EDRAM timing, BC control, the scanline, the
+  // interrupt status with bit 0 set, the viewport size) are the SDK's own table now; the values are the ones
+  // this file used to return.
+  if (const auto fixed = rex::xenos::ReadFixedRegister(r, s.video_mode)) {
+    return *fixed;
   }
   return r < s.registers.size() ? s.registers[r] : 0;
 }
 
-void WriteRegister(void* /*ppc_context*/, void* /*context*/, uint32_t addr, uint32_t value) {
+void WriteRegisterIndex(uint32_t r, uint32_t value) {
   State& s = state();
-  const uint32_t r = (addr & 0xFFFF) / 4;
   switch (r) {
     case kRegPrimarySurfaceAddress:
       // THE FLIP. The guest's vblank handler writes the front buffer address
@@ -290,39 +263,32 @@ void RetireRingConsumption(uint8_t* base, uint32_t device_va) {
   }
 }
 
-// Delivers one vblank to the guest, the same way
-// GraphicsSystem::DispatchInterruptCallback does: on a thread that can run
-// guest code, with the CPU pinned, through the function dispatcher.
-void DispatchVblank(uint32_t device_va) {
-  auto* kernel = rex::system::KernelState::shared();
-  auto* dispatcher = kernel ? kernel->function_dispatcher() : nullptr;
-  if (!dispatcher) {
+// Delivers one vblank to the guest: the SDK calls the graphics interrupt callback the title registered
+// (VdSetGraphicsInterruptCallback: sub_82411478 with the D3DDevice as its context, the same pair this file used
+// to call by hand) on this thread, source 0 = vblank, on guest CPU 2, as the SDK's own vsync thread does.
+// The guest does register the pair: D3DDevice_InitializeEngines (sub_82426468) calls VdSetGraphicsInterruptCallback(
+// sub_82411478, device) (native_gfx/hooks.cpp), the kernel export stores both unconditionally
+// (FunctionDispatcher::SetGraphicsInterrupt, src/kernel/xboxkrnl/xboxkrnl_video.cpp: no graphics system is involved any
+// more, which 0.10 needed), and RaiseGraphicsInterrupt calls callback(source, user_data) = sub_82411478(0, device) on this
+// thread: the same call the old dispatch made with the constant address. Until the guest has registered, it does nothing.
+// KernelThread::SetActiveCPU(2) (RaiseGraphicsInterrupt does it on every call) logs "Too few processor cores" only ONCE
+// (REXSYS_WARN_ONCE) on a PC with fewer than 6 logical processors, so the 0.10 log flood is gone; with 6 or more it sets the
+// thread affinity mask on every call, up to 1000 syscalls a second with vsync off. CHECK: measure that against the 0.10
+// pin-once (the SDK's own vsync thread pays the same).
+void DispatchVblank() {
+  State& s = state();
+  if (!s.interrupts) {
     return;
   }
-  auto thread = rex::system::XThread::GetCurrentThread();
-  if (!thread) {
-    return;
+  if (auto raised = s.interrupts->RaiseGraphicsInterrupt(kInterruptSourceVblank, kInterruptCpu); !raised) {
+    REXLOG_ERROR("[nocp] graphics interrupt refused: {}", raised.error().message);
   }
-  // Pinned once, and again only if something moved it: SetActiveCpu on every
-  // vblank (up to 1000 a second with vsync off) set the same processor each
-  // time, and on a PC with fewer than 6 logical processors the SDK logs "Too
-  // few processor cores" on every call, flushing the log file with it.
-  thread_local bool pinned = false;
-  if (!pinned || thread->active_cpu() != kInterruptCpu) {
-    thread->SetActiveCpu(kInterruptCpu);
-    pinned = true;
-  }
-  uint64_t args[] = {uint64_t(kInterruptSourceVblank), uint64_t(device_va)};
-  dispatcher->ExecuteInterrupt(thread->thread_state(),
-                               /*address=*/0x82411478u, args, 2);
 }
 
-int VblankWorker() {
+void VblankWorker(std::stop_token stop) {
   State& s = state();
-  rex::system::X_VIDEO_MODE video_mode;
-  rex::kernel::xboxkrnl::VdQueryVideoMode(&video_mode);
-  const double refresh_hz = std::max(1.0, double(float(video_mode.refresh_rate)));
-  const uint64_t tick_frequency = rex::chrono::Clock::guest_tick_frequency();
+  const double refresh_hz = std::max(1.0, double(s.video_mode.refresh_rate));
+  const uint64_t tick_frequency = rex::Clock::GetGuestTickFrequency();
   const uint64_t vsync_interval = std::max(uint64_t(1), uint64_t(double(tick_frequency) / refresh_hz));
   // Vsync off runs at 1000 Hz, not uncapped: measured on MCLA at 910/s, and
   // the game's pacing is built on the rate.
@@ -332,20 +298,20 @@ int VblankWorker() {
       "[nocp] vblank source: {} Hz (mcla_native_gfx_nocp_vsync={}). The SDK's `vsync` cvar is "
       "defined in the GPU plugin and is absent in this mode, so a `vsync` line in larecomp.toml "
       "does nothing here.",
-      REXCVAR_GET(mcla_native_gfx_nocp_vsync) ? refresh_hz : 1000.0,
-      REXCVAR_GET(mcla_native_gfx_nocp_vsync) ? "true" : "false");
+      larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? refresh_hz : 1000.0,
+      larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? "true" : "false");
 
   uint32_t report_ticks = 0;
-  uint64_t last = rex::chrono::Clock::QueryGuestTickCount();
-  while (s.worker_running.load(std::memory_order_relaxed)) {
-    const uint64_t now = rex::chrono::Clock::QueryGuestTickCount();
+  uint64_t last = rex::Clock::QueryGuestTickCount();
+  while (!stop.stop_requested()) {
+    const uint64_t now = rex::Clock::QueryGuestTickCount();
     // Our own cvar, not the SDK's `vsync`: that one is defined in
     // src/graphics/command_processor.cpp, so it lives in the GPU plugin and
     // does not exist in this mode. Querying it by name would have answered
     // false no matter what the config said -- Query<bool> on an unregistered
     // name returns the default -- which is a silent wrong answer, not an error.
     const uint64_t interval =
-        REXCVAR_GET(mcla_native_gfx_nocp_vsync) ? vsync_interval : free_interval;
+        larecomp::settings::mcla_native_gfx_nocp_vsync.Get() ? vsync_interval : free_interval;
     // The guest clock is not monotonic across two reads: it re-bases its
     // snapshot, and truncation can publish a baseline one tick lower. Every
     // value here is unsigned, so a single backwards step made the difference
@@ -365,8 +331,7 @@ int VblankWorker() {
       pending = kMaxCatchUp;
     }
     const uint32_t device = GraphicsDeviceVa();
-    auto* runtime = rex::Runtime::instance();
-    auto* membase = runtime ? runtime->virtual_membase() : nullptr;
+    uint8_t* membase = GuestMembaseNow();
     // Before the interrupt, so anything the guest releases in the handler sees
     // an already-consistent fence pair.
     if (device && membase) {
@@ -375,7 +340,7 @@ int VblankWorker() {
     }
     for (uint64_t i = 0; i < pending; ++i) {
       if (device) {
-        DispatchVblank(device);
+        DispatchVblank();
         s.vblanks.fetch_add(1, std::memory_order_relaxed);
       }
       last += interval;
@@ -387,52 +352,37 @@ int VblankWorker() {
       report_ticks = 0;
       REXLOG_INFO("[nocp] {}", Summary());
     }
-    rex::thread::Sleep(std::chrono::milliseconds(1));
+    rex::platform::SleepFor(std::chrono::milliseconds(1));
   }
-  return 0;
 }
 
 }  // namespace
 
-bool Install() {
+uint32_t ReadGuestRegister(uint32_t index) { return ReadRegisterIndex(index); }
+void WriteGuestRegister(uint32_t index, uint32_t value) { WriteRegisterIndex(index, value); }
+
+bool Install(rex::IGuestInterrupts& interrupts, const rex::VideoMode& video_mode) {
   State& s = state();
   if (s.installed.load(std::memory_order_relaxed)) {
     return true;
   }
-  auto* runtime = rex::Runtime::instance();
-  auto* memory = runtime ? runtime->memory() : nullptr;
-  auto* kernel = rex::system::KernelState::shared();
-  if (!memory || !kernel) {
-    REXLOG_ERROR("[nocp] no memory or kernel state; the guest GPU cannot be installed");
-    return false;
-  }
-  // Refusing here is the point: if the window is already mapped, the SDK's
-  // graphics system is alive, and running both would mean two owners of the
-  // guest's vblank and flip. This is a whole-path switch, not a mode.
-  if (memory->LookupVirtualMappedRange(kGpuWindowBase)) {
-    REXLOG_ERROR(
-        "[nocp] the GPU register window at {:#010x} is already mapped -- the SDK graphics system "
-        "is running. Set config.graphics = nullptr before installing the native guest GPU.",
-        kGpuWindowBase);
-    return false;
-  }
-
+  // No mapped range to claim any more: the SDK attached the GPU register window to the driver this is called
+  // from (TitleState::AttachSystems), and routes every guest load and store of it to ReadRegisterIndex and
+  // WriteRegisterIndex. What 0.10 checked here (that no graphics system already owned the window) is the
+  // driver selection now: gpu.driver = larecomp.
   s.registers.assign(kRegisterCount, 0);
-  if (!memory->AddVirtualMappedRange(kGpuWindowBase, kGpuWindowMask, kGpuWindowSize,
-                                     /*context=*/nullptr, &ReadRegister, &WriteRegister)) {
-    REXLOG_ERROR("[nocp] failed to map the GPU register window at {:#010x}", kGpuWindowBase);
+  s.interrupts = &interrupts;
+  s.video_mode = video_mode;
+  s.worker_running.store(true, std::memory_order_relaxed);
+  auto started = interrupts.StartHostThread("MCLA Native VSync", [](std::stop_token stop) { VblankWorker(stop); });
+  if (!started) {
+    s.worker_running.store(false, std::memory_order_relaxed);
+    REXLOG_ERROR("[nocp] the vblank thread could not start: {}", started.error().message);
     return false;
   }
-
-  s.worker_running.store(true, std::memory_order_relaxed);
-  s.worker = rex::system::object_ref<rex::system::XHostThread>(
-      new rex::system::XHostThread(kernel, 128 * 1024, 0, VblankWorker));
-  s.worker->set_name("MCLA Native VSync");
-  s.worker->Create();
-
+  s.worker = std::move(*started);
   s.installed.store(true, std::memory_order_relaxed);
-  REXLOG_INFO("[nocp] guest GPU installed: register window {:#010x}, vblank source running",
-              kGpuWindowBase);
+  REXLOG_INFO("[nocp] guest GPU installed: register window routed by the SDK, vblank source running");
   return true;
 }
 
@@ -442,7 +392,8 @@ void Shutdown() {
     return;
   }
   s.worker_running.store(false, std::memory_order_relaxed);
-  s.worker.reset();
+  s.worker = rex::ScopeGuard();  // stops and joins the vblank thread
+  s.interrupts = nullptr;
   s.installed.store(false, std::memory_order_relaxed);
 }
 
@@ -486,8 +437,7 @@ bool FenceRetirementAcquired() {
 
 bool PublishOwnedRetiredFence(uint32_t device, uint32_t retired) {
   State& s = state();
-  auto* runtime = rex::Runtime::instance();
-  auto* membase = runtime ? runtime->virtual_membase() : nullptr;
+  uint8_t* membase = GuestMembaseNow();
   if (!membase || device == 0) {
     return false;
   }

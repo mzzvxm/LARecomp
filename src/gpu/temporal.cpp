@@ -9,11 +9,13 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "scene_noise.h"
 #include "constants.h"
+#include "denoiser_setting.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
@@ -22,51 +24,17 @@
 #include "records.h"
 #include "render_scale.h"
 #include "resolve.h"
+#include "temporal_dlss.h"
+#include "ray_regen.h"
 #include "texture_bytes.h"
 #include "textures.h"
 #include "topology.h"
 #include "upscaler_load_policy.h"
 #include "upscaler_math.h"
+#include "vram_room.h"
 
-REXCVAR_DECLARE(bool, mcla_gpu_upscaler_masks);  // scene.cpp
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_pause_vehicle_vectors, false, "MCLA/GPU",
-    "Diagnostic: in the pause menu's world, the garage and the map, take the game's own per-vehicle motion for a "
-    "vehicle's pixels in the temporal upscalers' motion vectors, as in the game view. Off (the default): a vehicle "
-    "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
-    "the game's slots for the vehicles are not trusted in those frames). Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_temporal_jitter_hold, true, "MCLA/GPU",
-    "Diagnostic: hold the temporal upscalers' sub-pixel jitter at zero while the history restarts in every frame (a "
-    "camera the cut rule or the game's previous-matrix test cannot follow): a frame resolved from one frame is "
-    "steadier unjittered. Off: the jitter goes on as before. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-// Test levers for the static-scene flicker analysis (debug only, live, never saved; defaults = the
-// behaviour without them).
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_zero_jitter, false, "MCLA/GPU",
-    "While FSR or DLSS draws the scene: no sub-pixel jitter at all. The projection is not moved and "
-    "the upscaler is told a jitter of 0 (one value, so the draws, the motion vectors and the upscaler "
-    "agree). The upscaler then has no sub-pixel samples to rebuild detail from and the picture is "
-    "no sharper than the render size; a flicker that follows the jitter phase is gone with it, one "
-    "that stays is not the jitter's. For A/B. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_upscaler_post_reads_output, true, "MCLA/GPU",
-    "While FSR or DLSS draws the scene at the output's size (FSR's Native AA, DLAA): the game's post "
-    "chain before the upscale (the half-size downsample that the bloom's bright pass, the exposure "
-    "and the motion blur's half-size layer are made from) reads the previous frame's upscaled "
-    "picture, as it does at every other mode (on, the default since 2026-11-14: measured on a still "
-    "pause view with FSR Native AA, flat areas 8x and the distant tower 3x steadier). Off: the old "
-    "path, the raw jittered scene at that size, kept for A/B. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -275,6 +243,10 @@ void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   if (dlss_) {
     dlss_->Probe(device, frames);
   }
+  // AMD FSR Ray Regeneration (perf/RAY-REGEN.md): the card's vendor, name and the Windows build are noted first (the pause menu lists the AMD FSR RAY REGENERATION row only on a Radeon RX 9000 series card on Windows 11), and the runtime is opened here only where the debug cvar or the row asks for it and
+  // the device is a Radeon on Direct3D 12 (never on any other PC); a row that leaves OURS later opens it live (the plan: ray_regen_plan.h).
+  rayregen::NoteDevice(uint32_t(device.description().vendor), ActiveBackend() == Backend::kD3D12, device.description().name, WindowsBuildNumber());
+  rayregen::StartIfWanted(device, frames);
 }
 
 void TemporalSystem::Shutdown() {
@@ -285,6 +257,8 @@ void TemporalSystem::Shutdown() {
   }
   stand_in_set_ = false;
   output_ = HostImage{};
+  rr_pass_ = nullptr;  // the Renderer shuts it down itself
+  rayregen::StopAll();
   if (ffx_) {
     ffx_->Shutdown();
     ffx_.reset();
@@ -431,7 +405,11 @@ uint64_t TemporalSystem::HeldBytes() const {
     bytes += ffx_->Status().context_bytes;
   }
   if (dlss_) {
-    bytes += dlss_->Status().context_bytes;
+    const BackendStatus status = dlss_->Status();
+    bytes += status.context_bytes + status.companion_bytes;  // Super Resolution's context, and Ray Reconstruction's beside it
+  }
+  if (rr_pass_) {
+    bytes += rr_pass_->HeldBytes();  // Ray Reconstruction's guide images (rr_guides.h)
   }
   return bytes;
 }
@@ -541,6 +519,8 @@ BackendRequest TemporalSystem::RequestFor(Upscaler upscaler, UpscaleMode mode,
   request.upscaler = upscaler;
   request.mode = mode;
   request.debug_view = UpscalerDebugView(upscaler);
+  // The request of the current (and the prepared) context is always Super Resolution's: Ray Reconstruction is the companion's (ManageRrContext), so a live switch between them never
+  // breaks the upscaler's own context.
   // The same two edges the anchor reports for a frame (OnAnchor: the main view at the scene's
   // scale, the anchor's own target at the images of the screen's), so that the context made before
   // the switch is the one the first frame asks for.
@@ -631,6 +611,86 @@ UpscaleMode TemporalSystem::ResolveDlssMode(UpscaleMode wanted, const ModeSizes&
                 why.empty() ? std::string("DLSS does not take its size here") : why, tail);
   }
   return use;
+}
+
+// vram_room.h numbers the upscalers as gpu.h does.
+static_assert(vram_room::kKindOff == uint8_t(Upscaler::kOff) &&
+              vram_room::kKindFsr31 == uint8_t(Upscaler::kFsr31) &&
+              vram_room::kKindFsr4 == uint8_t(Upscaler::kFsr4) &&
+              vram_room::kKindDlss == uint8_t(Upscaler::kDlss));
+
+// CHECK: with a small budget (mcla_gpu_vram_budget_mb, debug) and FSR 3.1 or FSR 4 chosen, live and at the
+// start: "[gpu] ffx: no room for the ... context" from the worker, then this file's "no room in video
+// memory for ..." line once, the pause menu's UPSCALING row saying NO ROOM, the game running with no upscaler
+// (or FSR 3.1 for FSR 4), no stall and no "(APPLYING)" stuck; and after the wait (5 s, 10 s, ... one
+// minute) the context is asked again, and made when the budget was raised.
+Upscaler TemporalSystem::FitToRoom(Upscaler chosen, UpscaleMode* mode, Scale* output_ptr,
+                                   Scale output_now, const uint32_t guest[2], bool* held) {
+  *held = false;
+  const Scale output = *output_ptr;
+  const UpscalerAvailability available = GetUpscalerAvailability();
+  const UpscaleMode chosen_mode = *mode;
+  // The same upscaler runs with its context and a new mode or output was refused: it goes on as it is.
+  if (chosen == effective_ && chosen != Upscaler::kOff) {
+    TemporalBackend* backend = BackendFor(chosen);
+    if (backend && backend->NoRoom(RequestFor(chosen, chosen_mode, guest, output)) && request_made_ &&
+        request_.upscaler == chosen && backend->Ready(request_)) {
+      const UpscaleMode keep = mode_in_use_;
+      const uint64_t key = 2u | uint64_t(chosen) << 4 | uint64_t(chosen_mode) << 8 |
+                           uint64_t(keep) << 12 | uint64_t(output.n) << 16;
+      if (key != room_logged_key_) {
+        room_logged_key_ = key;
+        REXLOG_INFO("{} no room in video memory for {} (the backend refused its context): {} keeps "
+                    "running as it is. The setting stays {}; the pause menu says NO ROOM, and the "
+                    "change is tried again after the backend's wait (5 s, then less often, up to a "
+                    "minute)",
+                    kPrefix, PathText(chosen, chosen_mode), PathText(chosen, keep),
+                    PathText(chosen, chosen_mode));
+      }
+      *mode = keep;
+      *output_ptr = output_now;
+      *held = true;
+      return chosen;
+    }
+  }
+  const auto mode_of = [&](uint8_t kind) {
+    return kind == uint8_t(chosen) ? chosen_mode : SavedUpscaleMode(Upscaler(kind));
+  };
+  const auto refused = [&](uint8_t kind) {
+    const Upscaler upscaler = Upscaler(kind);
+    TemporalBackend* backend = BackendFor(upscaler);
+    if (!backend) {
+      return false;
+    }
+    if (backend->NoRoom(RequestFor(upscaler, mode_of(kind), guest, output))) {
+      return true;
+    }
+    // What the frames ask the backend for (BeginFrame) is the same request when the sizes are the
+    // path's; the running path's own refusal counts whichever way the two were worked out.
+    return upscaler == effective_ && request_made_ && request_.upscaler == upscaler &&
+           backend->NoRoom(request_);
+  };
+  const auto can_run = [&](uint8_t kind) { return CanRun(Upscaler(kind), available); };
+  const uint8_t kind = vram_room::FitKind(uint8_t(chosen), refused, can_run);
+  const Upscaler fit = Upscaler(kind);
+  if (fit == chosen) {
+    return chosen;
+  }
+  *held = true;
+  *mode = fit == Upscaler::kOff ? UpscaleMode::kNativeAa : mode_of(kind);
+  const uint64_t key = 1u | uint64_t(chosen) << 4 | uint64_t(chosen_mode) << 8 | uint64_t(fit) << 12 |
+                       uint64_t(output.n) << 16;
+  if (key != room_logged_key_) {
+    room_logged_key_ = key;
+    REXLOG_INFO("{} no room in video memory for {} (the backend refused its context): {}. The setting "
+                "stays {}; the pause menu says NO ROOM, and the choice is tried again after the "
+                "backend's wait (5 s, then less often, up to a minute)",
+                kPrefix, PathText(chosen, chosen_mode),
+                fit == Upscaler::kOff ? std::string("the game runs with no upscaler")
+                                      : std::format("{} runs instead", PathText(fit, *mode)),
+                UpscalerName(chosen));
+  }
+  return fit;
 }
 
 void TemporalSystem::AdoptStartPath() {
@@ -797,6 +857,33 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
       }
     }
   }
+  // Video memory (vram_room.h): an upscaler whose context was refused for want of room is not asked for
+  // again until the backend's wait is over; the next one down is (FSR 4 -> FSR 3.1), else none. The
+  // setting is not changed. Not for the DLSS that waits for a restart (the path that runs stays).
+  const Upscaler room_chosen = to;
+  const UpscaleMode room_chosen_mode = to_mode;
+  bool room_lowered = false;
+  if (to != Upscaler::kOff && !keep_running) {
+    uint32_t room_guest[2] = {};
+    if (GuestFrameSize(room_guest, /*quiet=*/true)) {
+      to = FitToRoom(to, &to_mode, &to_output, output_now, room_guest, &room_lowered);
+    }
+  }
+  {
+    const uint64_t key = uint64_t(room_chosen) | uint64_t(room_chosen_mode) << 8;
+    if (room_chosen == Upscaler::kOff || key != room_key_) {
+      room_lowered_ = false;
+      room_logged_key_ = 0;
+    }
+    if (room_lowered) {
+      room_lowered_ = true;
+      room_key_ = key;
+    } else if (effective_ == room_chosen && mode_in_use_ == room_chosen_mode) {
+      room_lowered_ = false;  // the choice runs
+      room_logged_key_ = 0;
+    }
+    PublishUpscalerNoRoom(room_lowered_);
+  }
   // What the frames are steered to, for the host MSAA level (UpscalerNext): its pipelines are made
   // while the path's context is, and the level changes once the path has settled (msaa_level.h).
   next_ = to;
@@ -812,6 +899,7 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   }
   if (to == effective_ && to_mode == mode_in_use_ && to_output == output_now) {
     CancelStage(keep_running ? "DLSS is chosen and waits for the restart; the running path stays"
+                : room_lowered ? "there is no room in video memory for it; the path that runs stays"
                 : dlss_refusal_key_ != 0 ? "DLSS does not take that mode at this output; the running path stays"
                                          : "the setting is back on the path that runs");
     change_pending_ = false;
@@ -1122,7 +1210,7 @@ void TemporalSystem::StandInForPostChain() {
   // depends on the ratio: the products, the output image and the scale are the same ones.
   if (!upscaler_math::PostChainReadsOutput(last_render_size_[0], last_render_size_[1],
                                            last_output_size_[0], last_output_size_[1],
-                                           REXCVAR_GET(mcla_gpu_upscaler_post_reads_output))) {
+                                           larecomp::settings::mcla_gpu_upscaler_post_reads_output.Get())) {
     return;
   }
   if (!output_.texture || output_.layout != plume::RenderTextureLayout::SHADER_READ ||
@@ -1182,6 +1270,9 @@ void TemporalSystem::ReleaseUpscaler() {
   }
   request_made_ = false;
   off_since_ = Clock::time_point{};
+  rr_context_asked_ = false;  // the DLSS backend let its companion go with the rest (Release)
+  rr_ready_reported_ = false;
+  rr_keeper_.Reset();
 }
 
 void TemporalSystem::FailUpscaler(const std::string& why) {
@@ -1269,6 +1360,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     return false;
   }
 
+  // Ray Reconstruction's guides (rr_guides.h, RR-2), where the pass is wanted: made from the G-buffer's planes and the kept depth before the backend gets the frame. Their layout is the
+  // upscaler's read state when this returns; RecordRrGuides hands them over (NoteRrGuides) and the dispatch below decides whether they are used.
+  RecordRrGuides(list, kept, width, height);
+
   TemporalInputs in;
   in.frame = fr.frame;
   in.render_size[0] = width;
@@ -1293,6 +1388,28 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
                        kept.transparency->flags};
   }
   in.output = {output_.texture.get(), out_width, out_height, kOutputFormat, kOutputFlags};
+  // RR-3: which context this frame goes to. Ray Reconstruction's needs the plan, its context, no failure and THIS frame's guides; anything missing is Super Resolution's frame (its
+  // context is always there), and the backend does the same in the call itself when the rules refuse what the frame carries.
+  const rr::DispatchChoice dispatch = ChooseRrDispatch();
+  if (dispatch.kind == rr::Dispatch::kRayReconstruction) {
+    in.guides = rr_guides_;  // the guide pass states them for the compute stage
+    in.ray_reconstruction = true;
+    // The debug lever (mcla_gpu_dlss_rr_test): frames Ray Reconstruction cannot take, on purpose. 1 is applied where the guides are handed over (RecordRrGuides).
+    switch (rr::TestLeverOf(int(larecomp::settings::mcla_gpu_dlss_rr_test.Get()))) {
+      case rr::TestLever::kRefuseGuides:
+        if (rr::TestPhaseActive(fr.frame)) {
+          in.guides.diffuse_albedo = TemporalImage{};  // the rules refuse the frame (a required guide is missing): the backend gives it to Super Resolution
+        }
+        break;
+      case rr::TestLever::kInjectErrors:
+        if (rr_test_errors_ < rr::kTestErrorFrames) {
+          ++rr_test_errors_;
+          in.test_rr_error = true;
+        }
+        break;
+      default: break;
+    }
+  }
   in.jitter[0] = fr.jitter[0];
   in.jitter[1] = fr.jitter[1];
   in.frame_time_ms = fr.frame_time_ms;
@@ -1365,6 +1482,7 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   list->barriers(Stage::COMPUTE, plume::RenderTextureBarrier(output_.texture.get(),
                                                               plume::RenderTextureLayout::GENERAL));
   const bool ok = backend->Upscale(list, in);
+  const bool used_rr = ok && backend->LastUpscaleUsedCompanion();
   backend::InvalidateAfterExternalWork(list);
   list->barriers(graphics_and_compute,
                  plume::RenderTextureBarrier(product->texture.get(),
@@ -1395,6 +1513,10 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
     }
     return false;  // this frame is plain
   }
+  // The debug view of a guide (mcla_gpu_dlss_rr_view) replaces what the upscaler made, before anything reads it.
+  if (rr_pass_ && rr_pass_->viewing()) {
+    rr_pass_->RecordView(list, output_);
+  }
 
   // Every fetch of the scene colour from here on reads the output.
   TextureCache::Override stand_in;
@@ -1416,6 +1538,7 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   ++window_.upscaled;
   ++window_.view_upscaled[size_t(fr.view)];
   window_.upscale_resets += in.reset;
+  NoteRrDispatch(dispatch, used_rr, width, height, out_width, out_height);
   if (switch_log_pending_) {
     switch_log_pending_ = false;
     REXLOG_INFO("{} live change to {}: the new path ran its first upscaled frame (frame {}, {}x{} "
@@ -1424,6 +1547,42 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
                 MillisSince(switch_asked_));
   }
   return true;
+}
+
+void TemporalSystem::RecordRrGuides(plume::RenderCommandList* list, const TemporalMotion::Kept& kept, uint32_t width, uint32_t height) {
+  if (!rr_pass_ || !rr_pass_->wanted()) {
+    return;
+  }
+  const temporal::Camera& cam = frame_.camera;
+  RrGuides::Inputs in;
+  in.frame = frame_.frame;
+  in.render_size[0] = width;
+  in.render_size[1] = height;
+  in.depth = kept.depth;
+  in.mask = kept.mask;
+  in.transparency = kept.transparency;
+  in.hit[0] = rr_hit_[0];  // RR-4: the reflection effects' hit distance images of this frame (the guide pass checks each one's size and format)
+  in.hit[1] = rr_hit_[1];
+  in.bounce_hit = rr_bounce_hit_;  // CITY-RT G6: the bounce light's (the guide pass checks its format and takes it only where no reflection wrote a distance)
+  in.pause_view = frame_.view == temporal::View::kPause;
+  for (int i = 0; i < 3; ++i) {
+    in.right[i] = float(cam.right[i]);
+    in.up[i] = float(cam.up[i]);
+    in.forward[i] = float(cam.forward[i]);
+  }
+  // The lens as the occlusion reads it (ao.cpp FillPush): tan of half the field of view from the projection's x and y scales, and its depth rows for the linearisation of the stored depth.
+  const temporal::Mat4& p = cam.projection;
+  in.tan_x = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
+  in.tan_y = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
+  in.lin[0] = float(p.m[2][2]);
+  in.lin[1] = float(p.m[2][3]);
+  in.lin[2] = float(p.m[3][2]);
+  in.lin[3] = float(p.m[3][3]);
+  // The frame's guides go to the upscaler's dispatch (and, next frame, to the plan): the images and whether this frame has them.
+  const bool made = rr_pass_->Record(list, in);
+  // The debug lever 1 (mcla_gpu_dlss_rr_test): the guides are withheld in the lever's frames, as in a frame that has none.
+  const bool withheld = rr::TestLeverOf(int(larecomp::settings::mcla_gpu_dlss_rr_test.Get())) == rr::TestLever::kWithholdGuides && rr::TestPhaseActive(frame_.frame);
+  NoteRrGuides(rr_pass_->guides(), made && rr_pass_->ready() && !withheld);
 }
 
 void TemporalSystem::ResetRun() {
@@ -1447,6 +1606,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   if (!frame_open_) {
     // A frame is jittered whole or not at all, and drawn at one scale: the path changes only
     // between frames, here, before the frame's first draw.
+    UpdateDenoiserPlan();
     UpdatePath(list);
     PrewarmDlss();
     SyncVectors();
@@ -1490,6 +1650,7 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
     backend->Request(request);
     request_ = request;
     request_made_ = true;
+    ManageRrContext(request);
     context_ready = backend->Ready(request);
     // A runtime occupied making another context (DLSS to DLSS) cannot take this frame: plain and not
     // jittered, as before a context is ready.
@@ -1527,33 +1688,291 @@ void TemporalSystem::BeginFrame(uint32_t slot, plume::RenderCommandList* list) {
   // main view draw says so (StartRun).
   frame_.armed = ran_last_ && !ViewDisarmed(run_view_) && !VectorsOnly() &&
                  (effective_ == Upscaler::kOff || ready);
+  // RR-4: what the boundary knows of whether Ray Reconstruction takes this frame (RawModes adds the play view, known at the first main draw). Nothing is asked of Streamline or the backend unless the
+  // plan is RR: with Super Resolution, FSR or no upscaler the facts stay false.
+  frame_.raw.plan_rr = rr_plan_.use_rr && effective_ == Upscaler::kDlss;
+  // Under AUTO (the debug switch leaving the row to decide) RR takes the frame for the effects kConsumers' auto_uses_rr trusts it with; the others keep their own filter in that frame (RawWhyOf).
+  frame_.raw.row_auto = rr_debug_ == rr::DebugSwitch::kRow && rr_setting_ == rr::Denoiser::kAuto;
+  if (frame_.raw.plan_rr) {
+    frame_.raw.failed = dlss::GetRayReconstructionFacts().failed;
+    frame_.raw.context_ready = ready && dlss_ && rr_context_asked_ && dlss_->CompanionReady(rr_request_);
+    frame_.raw.armed = frame_.armed;
+  }
   if (frame_.armed) {
     // The sequence's length follows the ratio of the last accepted frame (8 at 1, 18 at 1.5, 32 at
     // 2, 72 at 3): the upscaler's own count for its context when it has one.
     frame_.ratio = (last_render_size_[0] != 0 && last_output_size_[0] != 0)
                        ? double(last_output_size_[0]) / double(last_render_size_[0])
                        : 1.0;
-    frame_.phase_count = JitterPhases(frame_.ratio, ready && backend ? backend->JitterPhaseCount() : 0u);
-    frame_.jitter_index = jitter_index_ % frame_.phase_count;
+    uint32_t from_runtime = ready && backend ? backend->JitterPhaseCount() : 0u;
+    // Ray Reconstruction wants at least 32 positions (rr::JitterPhases): the longer of that and Super Resolution's while it may run this frame (the plan is RR and its context is made;
+    // a frame that turns out to be Super Resolution's keeps the longer sequence, which Super Resolution takes as well).
+    const bool rr_may_run = ready && rr_plan_.use_rr && effective_ == Upscaler::kDlss && rr_context_asked_ && dlss_ && dlss_->CompanionReady(rr_request_);
+    from_runtime = rr::RuntimePhaseCount(from_runtime, frame_.ratio, rr_may_run);
+    frame_.phase_count = JitterPhases(frame_.ratio, from_runtime);
+    // While a scene runs the sequence follows the scene's update number (scene_noise.h): the same scene frame has the same jitter in every run. NoiseIndex, not Index: a pinned still (scene_at, the trailer
+    // toolkit's stills) shows the same update number in every frame, so the scene's number alone gave ONE sub-pixel offset for ever and the upscaler had nothing to resolve detail from; NoiseIndex adds the
+    // frames the update has been held (NOISE-RESOLVE, NOISE-AUDIT CHECK 2), so a still walks the whole jitter sequence and converges like a supersampled picture. A running scene (a new number every frame)
+    // and a frame outside a scene are as they were; mcla_gpu_noise_held false gives the scene's number alone again.
+    frame_.jitter_index = static_cast<uint32_t>(scene_noise::Active() ? scene_noise::NoiseIndex(jitter_index_) % frame_.phase_count : jitter_index_ % frame_.phase_count);
     // Halton(2,3) from index 1, minus a half: in (-0.5, 0.5) render pixels, +y down.
     upscaler_math::JitterOffset(frame_.jitter_index, frame_.phase_count, frame_.jitter);
     // While the history restarts in every frame the upscaler cannot take the jitter out: held at zero (temporal_menu.h).
-    const bool hold_on = REXCVAR_GET(mcla_gpu_temporal_jitter_hold);
+    const bool hold_on = larecomp::settings::mcla_gpu_temporal_jitter_hold.Get();
     frame_.jitter[0] = temporal::HeldJitter(frame_.jitter[0], jitter_hold_.Held(), hold_on);
     frame_.jitter[1] = temporal::HeldJitter(frame_.jitter[1], jitter_hold_.Held(), hold_on);
     // mcla_gpu_upscaler_zero_jitter (debug): no sub-pixel offset. This one value is the draws'
     // projection offset (OnMainView), the vectors' jitter (pending_.jitter) and the upscaler's
     // jitterOffset (RecordUpscale), so all three get the 0.
-    upscaler_math::ApplyZeroJitter(REXCVAR_GET(mcla_gpu_upscaler_zero_jitter), frame_.jitter);
+    upscaler_math::ApplyZeroJitter(larecomp::settings::mcla_gpu_upscaler_zero_jitter.Get(), frame_.jitter);
   }
   NoteLeverChanges();
+}
+
+void TemporalSystem::UpdateDenoiserPlan() {
+  rr_hit_[0] = rr_hit_[1] = nullptr;  // RR-4: last frame's hit distance images are not this frame's
+  rr_bounce_hit_ = nullptr;           // ... nor the bounce light's (CITY-RT G6)
+  rr::PlanInputs in;
+  // The pause menu's row (DLSS RAY RECONSTRUCTION, mcla_gpu_vendor_denoiser, live) is the master switch (denoiser::Setting: the debug chooser mcla_gpu_denoiser overrides it when it says auto, rr or ours). The debug cvar
+  // mcla_gpu_dlss_rr (restart) only overrides that: off takes RR away whatever the row says, probe loads the plugin and logs what it can do, on stands for the row ON with the consumer rule lifted (the A/B
+  // and cost runs); auto, its default, leaves the row to decide.
+  if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &in.debug)) {
+    in.debug = rr::DebugSwitch::kRow;
+  }
+  in.setting = denoiser::Setting();
+  // The effects that are on and have a raw mode (they say it every frame: denoiser::NoteConsumer): AUTO takes the ones RR is known to clean better than ours, the row's RR value any of them.
+  const uint32_t consumers_on = denoiser::ConsumersOn();
+  in.consumers_active = rr::AnyAutoConsumerOn(consumers_on);
+  in.consumers_any = rr::AnyConsumerOn(consumers_on);
+  // What Streamline and the files said. Every 16 frames, and every frame while Ray Reconstruction is wanted (the failure flag moves the plan at once); the copy holds two strings and the menu's
+  // row reads the same facts through the snapshot below.
+  if (in.debug != rr::DebugSwitch::kOff && (!rr_facts_valid_ || (frame_number_ & 15u) == 0 || rr::ContextWanted(rr_plan_.why))) {
+    const dlss::RayReconstructionFacts facts = dlss::GetRayReconstructionFacts();
+    rr_facts_.build_has_rr = facts.built;
+    rr_facts_.files_ok = facts.files_ok || !facts.queried;  // before the support query the files are not the question
+    rr_facts_.streamline_running = facts.queried;
+    rr_facts_.asked = facts.asked;
+    rr_facts_.loadable = facts.loadable;
+    rr_facts_.supported = facts.supported;
+    rr_facts_.failed = facts.failed;
+    rr_facts_valid_ = true;
+    if (facts.failed && !rr_failed_logged_) {
+      rr_failed_logged_ = true;
+      REXLOG_WARN("{} Ray Reconstruction failed in this session ({}): Super Resolution does every frame from now on", kPrefix, facts.failed_why);
+    }
+  }
+  if (in.debug != rr::DebugSwitch::kOff) {
+    in.facts = rr_facts_;
+  }
+  in.upscaler_is_dlss = effective_ == Upscaler::kDlss;
+  // The room in video memory for the context (RR-3), asked only where RR would be the choice (the rules with the room and the guides taken as met): every other reason is named first by the rules, and
+  // nothing is asked of the adapter for an RR that is not wanted.
+  in.room_ok = true;
+  in.guides_ready = true;
+  if (rr::SelectDenoiser(in).use_rr) {
+    in.room_ok = RrRoomOk();
+  }
+  // The guide pass says it every frame (NoteRrGuides, before the anchor): last frame's word is this frame's plan, and the flag is taken back so that a frame the pass
+  // did not run in does not keep it.
+  in.guides_ready = rr_guides_ready_;
+  rr_guides_ready_ = false;
+  rr_plan_ = rr::SelectDenoiser(in);
+  if (!rr_plan_logged_ || rr_plan_.use_rr != rr_plan_last_.use_rr || rr_plan_.why != rr_plan_last_.why) {
+    REXLOG_INFO("{} denoiser: {} ({}; DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, rr_plan_.use_rr ? "DLSS Ray Reconstruction" : "ours (no Ray Reconstruction)",
+                rr::WhyText(rr_plan_.why), denoiser::WordOf(in.setting), rr::DebugSwitchName(in.debug));
+    rr_plan_last_ = rr_plan_;
+    rr_plan_logged_ = true;
+  }
+  rr_debug_ = in.debug;
+  rr_setting_ = in.setting;
+  // What the pause menu's row reads (any thread): the PC's facts, whether DLSS is the upscaler, whether the context is being made, and the plan.
+  denoiser::Snapshot snapshot;
+  snapshot.debug = in.debug;
+  snapshot.facts = rr_facts_;
+  snapshot.upscaler_is_dlss = in.upscaler_is_dlss;
+  snapshot.context_making = rr_context_asked_ && dlss_ && !dlss_->CompanionReady(rr_request_);
+  snapshot.plan = rr_plan_;
+  denoiser::Publish(snapshot);
+  // RG-3: AMD FSR Ray Regeneration's plan beside it (one vendor: at most one of the two is ever on). Nothing happens on a PC that is not a Radeon RX 9000 on Direct3D 12 with the row on its value.
+  {
+    rayregen::Planner::Inputs regen_in;
+    regen_in.device = device_;
+    regen_in.frames = frames_;
+    regen_in.setting = in.setting;
+    regen_in.consumers_on = consumers_on;
+    regen_in.frame = frame_number_;
+    regen_in.dlss_plan = rr_plan_;
+    regen_.Update(regen_in);
+  }
+  // The guide pass (rr_guides.h) is Want-driven: it runs while the plan would be Ray Reconstruction if the guides were there (or is), and for a debug view while an upscaler runs.
+  if (rr_pass_) {
+    rr_pass_->BeginFrame(rr_guides::PassWanted(rr_plan_, RrGuides::ViewSetting(), effective_ != Upscaler::kOff));
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Ray Reconstruction's second context, the room for it and the dispatch (RR-3)
+// ---------------------------------------------------------------------------
+
+bool TemporalSystem::RrRoomOk() {
+  if (!dlss_ || !device_) {
+    return true;
+  }
+  // The context exists: what it holds is in the adapter's use already, and asking again would count it twice.
+  if (rr_context_asked_ && dlss_->CompanionReady(rr_request_)) {
+    rr_room_ok_ = true;
+    rr_room_wait_ms_ = 0;
+    return true;
+  }
+  // The sizes are those of the last accepted frame; before there is one the creation itself is the judge.
+  if (last_output_size_[0] == 0 || last_output_size_[1] == 0 || last_render_size_[0] == 0 || last_render_size_[1] == 0) {
+    return true;
+  }
+  const Clock::time_point now = Clock::now();
+  if (now < rr_room_until_) {
+    return rr_room_ok_;
+  }
+  const dlss::RayReconstructionFacts facts = dlss::GetRayReconstructionFacts();
+  const backend::VideoMemory memory = device_->QueryVideoMemory();
+  // The guide images are asked for too where the pass has not made them yet; the Super Resolution context beside the new one is in the use already.
+  const uint64_t guide_bytes = (rr_pass_ && rr_pass_->HeldBytes() != 0) ? 0 : rr_guides::BytesOf(last_render_size_[0], last_render_size_[1]);
+  const uint64_t need = rr::ContextNeedBytes(last_output_size_[0], last_output_size_[1], facts.measured_bytes, facts.measured_pixels, guide_bytes);
+  const bool ok = rr::HasRoomForContext(memory.used, memory.budget, need);
+  if (ok) {
+    rr_room_ok_ = true;
+    rr_room_wait_ms_ = 0;
+    rr_room_until_ = now + std::chrono::seconds(1);
+    if (rr_room_refused_logged_) {
+      rr_room_refused_logged_ = false;
+      REXLOG_INFO("{} Ray Reconstruction: there is room in video memory for its context again (about {} MiB asked for, {} of {} MiB in use): it is made now", kPrefix, need >> 20, memory.used >> 20,
+                  memory.budget >> 20);
+    }
+  } else {
+    rr_room_ok_ = false;
+    rr_room_wait_ms_ = vram_room::NextWaitMs(rr_room_wait_ms_);
+    rr_room_until_ = now + std::chrono::milliseconds(rr_room_wait_ms_);
+    if (!rr_room_refused_logged_) {
+      rr_room_refused_logged_ = true;
+      REXLOG_INFO("{} Ray Reconstruction: no room in video memory for its context (about {} MiB: the network {} MiB and the guide images {} MiB; {} of {} MiB in use, the line is {}%): Super "
+                  "Resolution goes on, and the context is asked for again in {} s, then less often, up to a minute",
+                  kPrefix, need >> 20, (need - guide_bytes) >> 20, guide_bytes >> 20, memory.used >> 20, memory.budget >> 20, vram_room::kHighPercent, rr_room_wait_ms_ / 1000);
+    }
+  }
+  return rr_room_ok_;
+}
+
+void TemporalSystem::ManageRrContext(const BackendRequest& base) {
+  if (!dlss_ || effective_ != Upscaler::kDlss) {
+    // Another upscaler (or none) runs: the DLSS backend let its contexts go with the switch (SwitchPath releases the runtime the path left), so the next DLSS path asks again.
+    rr_context_asked_ = false;
+    rr_ready_reported_ = false;
+    rr_keeper_.Reset();
+    return;
+  }
+  const bool keep = rr_keeper_.Update(rr::ContextWanted(rr_plan_.why));
+  if (!keep) {
+    if (rr_context_asked_) {
+      dlss_->ReleaseCompanion();
+      rr_context_asked_ = false;
+      rr_ready_reported_ = false;
+      REXLOG_INFO("{} the Ray Reconstruction context is released ({} frames without Ray Reconstruction wanted): its video memory is given back; Super Resolution's context is untouched", kPrefix,
+                  rr::kContextHoldFrames);
+    }
+    return;
+  }
+  BackendRequest request = base;
+  request.ray_reconstruction = true;
+  if (!rr_context_asked_ || !(rr_request_ == request)) {
+    const bool first = !rr_context_asked_;
+    rr_request_ = request;
+    rr_context_asked_ = true;
+    rr_asked_at_ = Clock::now();
+    rr_ready_reported_ = false;
+    REXLOG_INFO("{} Ray Reconstruction: {} its context ({} {}x{} to {}x{}) in the background beside Super Resolution's, which keeps upscaling the frames meanwhile and takes every frame Ray "
+                "Reconstruction cannot (the pause, garage and map worlds, cutscenes, frames without guides)",
+                kPrefix, first ? "making" : "making again", ModeInfoOf(Upscaler::kDlss, request.mode).name, request.render_size[0], request.render_size[1], request.output_size[0],
+                request.output_size[1]);
+  }
+  dlss_->RequestCompanion(rr_request_);
+  if (!rr_ready_reported_ && dlss_->CompanionReady(rr_request_)) {
+    rr_ready_reported_ = true;
+    REXLOG_INFO("{} Ray Reconstruction: its context is ready {:.0f} ms after it was asked for (about {} MB): frames with guides are Ray Reconstruction's from now on", kPrefix,
+                MillisSince(rr_asked_at_), dlss_->Status().companion_bytes >> 20);
+  }
+}
+
+rr::DispatchChoice TemporalSystem::ChooseRrDispatch() const {
+  rr::DispatchInputs in;
+  in.plan_rr = rr_plan_.use_rr && effective_ == Upscaler::kDlss;
+  if (in.plan_rr) {
+    in.rr_failed = dlss::GetRayReconstructionFacts().failed;
+    in.guides_now = rr_guides_ready_;  // set by this frame's RecordRrGuides, cleared at the frame boundary
+    in.context_ready = dlss_ && rr_context_asked_ && dlss_->CompanionReady(rr_request_);
+  }
+  return rr::ChooseDispatch(in);
+}
+
+rr::RawModes TemporalSystem::RawModes() {
+  rr::RawFrame f = frame_.raw;
+  // The frame's own view is known from its first main draw (OnMainView); a frame that has seen none, and the pause, garage and map worlds, are not ones Ray Reconstruction takes (no guides there).
+  f.play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
+  const rr::RawModes modes = rr::RawModesOf(f, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_ssr.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_car_refl.Get())),
+                                            rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())), rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_lights.Get())),
+                                            rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_ao.Get())));
+  if (f.plan_rr || rr_raw_logged_) {
+    const bool ao_raw = modes.RtAo() && (denoiser::ConsumersOn() & rr::ConsumerBit(rr::Consumer::kRtAo)) != 0;
+    if (!rr_raw_logged_ || !(modes == rr_raw_last_)) {
+      rr_raw_logged_ = true;
+      rr_raw_last_ = modes;
+      REXLOG_INFO("{} raw modes for Ray Reconstruction (frame {}): {}: {}; {}: {}; {}: {}; {}: {}; {}: {} (logged when it changes)", kPrefix, frame_.frame, rr::RawEffectName(rr::RawEffect::kSsr), rr::RawWhyText(modes.ssr),
+                  rr::RawEffectName(rr::RawEffect::kCarRefl), rr::RawWhyText(modes.car_refl), rr::RawEffectName(rr::RawEffect::kRtGi), rr::RawWhyText(modes.rt_gi),
+                  rr::RawEffectName(rr::RawEffect::kRtLights), rr::RawWhyText(modes.rt_lights), rr::RawEffectName(rr::RawEffect::kRtAo), rr::RawWhyText(modes.rt_ao));
+    }
+    if (!frame_.raw_counted) {
+      frame_.raw_counted = true;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kSsr)] += modes.Ssr() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)] += modes.CarRefl() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kRtGi)] += modes.RtGi() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kRtLights)] += modes.RtLights() ? 1 : 0;
+      window_.rr_raw_frames[size_t(rr::RawEffect::kRtAo)] += ao_raw ? 1 : 0;
+    }
+    frame_.raw_any = frame_.raw_any || modes.Ssr() || modes.CarRefl() || modes.RtGi() || modes.RtLights();
+    frame_.raw_any |= ao_raw;
+  }
+  return modes;
+}
+
+rr::RawModes TemporalSystem::RegenModes() {
+  // The frame's own view is known from its first main draw (OnMainView), as RawModes(): the pause, garage and map worlds are not ones the effects' guides exist for.
+  const bool play_view = frame_.samples != 0 && frame_.view == temporal::View::kPlay;
+  return regen_.Modes(play_view, rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_ray_regen_ssr.Get())), false);   // the cars' reflections have no signal writer (ray_regen_rules.h kConsumers)
+}
+
+void TemporalSystem::NoteRrDispatch(const rr::DispatchChoice& choice, bool used_rr, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height) {
+  if (frame_.raw_any && !used_rr) {
+    ++window_.rr_raw_but_sr;  // an effect handed its noise over raw in a frame that Super Resolution upscaled after all: nothing cleaned it
+  }
+  if (used_rr) {
+    ++window_.rr_frames;
+    if (!rr_first_frame_logged_) {
+      rr_first_frame_logged_ = true;
+      REXLOG_INFO("{} the first Ray Reconstruction frame (frame {}, {}x{} to {}x{}), {:.0f} ms after its context was asked for; frames it cannot take stay Super Resolution's", kPrefix,
+                  frame_.frame, width, height, out_width, out_height, MillisSince(rr_asked_at_));
+    }
+    return;
+  }
+  if (choice.kind == rr::Dispatch::kRayReconstruction) {
+    ++window_.rr_backend_fallbacks;  // asked to be Ray Reconstruction's, and the backend gave it to Super Resolution (the guides were refused): its own log line says why
+  } else if (choice.why != rr::DispatchWhy::kPlanOurs) {
+    ++window_.rr_sr_frames[size_t(choice.why)];
+  }
 }
 
 void TemporalSystem::NoteLeverChanges() {
   // One log line each time a test lever of this file changes (and the first time it is on), so that a
   // run's log says which frames had it.
-  const bool zero = REXCVAR_GET(mcla_gpu_upscaler_zero_jitter);
-  const bool post = REXCVAR_GET(mcla_gpu_upscaler_post_reads_output);
+  const bool zero = larecomp::settings::mcla_gpu_upscaler_zero_jitter.Get();
+  const bool post = larecomp::settings::mcla_gpu_upscaler_post_reads_output.Get();
   if (zero != lever_zero_jitter_) {
     lever_zero_jitter_ = zero;
     REXLOG_INFO("{} debug lever mcla_gpu_upscaler_zero_jitter is now {} (from frame {}): {}", kPrefix,
@@ -1561,6 +1980,15 @@ void TemporalSystem::NoteLeverChanges() {
                 zero ? "no sub-pixel jitter in the projection, the vectors or the upscaler's "
                        "jitterOffset"
                      : "the jitter sequence is back");
+  }
+  const int rr_test = larecomp::settings::mcla_gpu_dlss_rr_test.Get();
+  if (rr_test != rr_test_lever_) {
+    rr_test_lever_ = rr_test;
+    REXLOG_INFO("{} debug lever mcla_gpu_dlss_rr_test is now {} (from frame {}): {}", kPrefix, rr_test, frame_number_,
+                rr::TestLeverOf(rr_test) == rr::TestLever::kWithholdGuides ? "the guide images are withheld from the upscaler in the second 30 frames of every 60 (Super Resolution takes them)"
+                : rr::TestLeverOf(rr_test) == rr::TestLever::kRefuseGuides  ? "the dispatch carries no diffuse albedo in the second 30 frames of every 60 (the rules refuse it, Super Resolution takes the frame in the same call)"
+                : rr::TestLeverOf(rr_test) == rr::TestLever::kInjectErrors   ? "Ray Reconstruction's evaluation fails three frames in a row, once (it is dropped for the session)"
+                                                                             : "no frames are made to fall back");
   }
   if (post != lever_post_reads_output_) {
     lever_post_reads_output_ = post;
@@ -1740,7 +2168,7 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
   for (uint32_t slot = 0; slot < 3; ++slot) {
     uint32_t dwords[6];
     f.view->FetchGroup(slot, dwords);
-    xe::xe_gpu_texture_fetch_t t;
+    xe::TextureFetch t;
     std::memcpy(&t, dwords, sizeof(t));
     sizes[slot][0] = uint32_t(t.size_2d.width) + 1;
     sizes[slot][1] = uint32_t(t.size_2d.height) + 1;
@@ -1934,7 +2362,7 @@ bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared)
   pending_.previous =
       (ran_last_ && (reset & ~uint32_t(kResetNoPrevious)) == 0) ? &last_camera_ : nullptr;
   if (pending_.previous && temporal::UseGameVehicleMotion(fr.view == temporal::View::kPause,
-                                                          REXCVAR_GET(mcla_gpu_pause_vehicle_vectors))) {
+                                                          larecomp::settings::mcla_gpu_pause_vehicle_vectors.Get())) {
     // The vehicles' own motion from the game's slots, on top of the camera's from this renderer's
     // own history (vehicle_motion.h); the anchor's constants are only at hand here. Not in the pause view (the
     // pause menu, the garage, the map): a vehicle there takes the camera's motion, as the occlusion's history
@@ -2268,9 +2696,26 @@ void TemporalSystem::Report() {
                 w.post_reads_served, w.view_upscaled[kPlayView], w.view_upscaled[kPauseView],
                 w.upscale_plain_not_ready, w.upscale_plain_first, w.upscale_plain_no_vectors,
                 w.upscale_plain_no_color,
-                motion_.masks().StateText(REXCVAR_GET(mcla_gpu_upscaler_masks)),
+                motion_.masks().StateText(larecomp::settings::mcla_gpu_upscaler_masks.Get()),
                 MsaaKeptUnderUpscaler() ? "yes" : "no",
                 status.failed ? std::format(" | FAILED: {}", status.reason) : std::string());
+  }
+  // Ray Reconstruction (RR-3), where RR is in play (a debug switch is set, the plan wants it or its context exists, or it ran): the plan, the frames by who upscaled them, what kept RR from the frames it was wanted for, the context and the
+  // backend's own count of evaluations.
+  if (rr_plan_logged_ && (rr_debug_ != rr::DebugSwitch::kRow || rr::ContextWanted(rr_plan_last_.why) || rr_plan_last_.use_rr || rr_context_asked_ || w.rr_frames != 0)) {
+    const BackendStatus rr_status = dlss_ ? dlss_->Status() : BackendStatus{};
+    const std::string context = !rr_context_asked_ ? std::string("none")
+                                : (dlss_ && dlss_->CompanionReady(rr_request_)) ? std::format("made, about {} MB", rr_status.companion_bytes >> 20)
+                                                                                 : std::string("being made");
+    REXLOG_INFO("{} Ray Reconstruction: the plan is '{}' ({}); upscaled frames that were Ray Reconstruction's {}, Super Resolution's although the plan wanted RR (no guides {}, context not made "
+                "{}, dropped {}, refused by the backend {}) | context: {} | {}{}",
+                kPrefix, rr_plan_last_.use_rr ? "Ray Reconstruction" : "ours", rr::WhyText(rr_plan_last_.why), w.rr_frames, w.rr_sr_frames[size_t(rr::DispatchWhy::kNoGuides)],
+                w.rr_sr_frames[size_t(rr::DispatchWhy::kContextNotReady)], w.rr_sr_frames[size_t(rr::DispatchWhy::kRrFailed)], w.rr_backend_fallbacks, context,
+                dlss_ ? dlss_->CompanionSummary() : std::string("no DLSS backend"),
+                rr_raw_logged_ ? std::format(" | raw modes (RR-4, CITY-RT G6): frames asked: screen-space reflections {}, the cars' reflections {}, the bounce light's per-pixel pass {}, the ray traced light visibility {}, the ray traced ambient occlusion {}; of the asked frames Super Resolution upscaled {} after all (noise not cleaned)",
+                                             w.rr_raw_frames[size_t(rr::RawEffect::kSsr)], w.rr_raw_frames[size_t(rr::RawEffect::kCarRefl)], w.rr_raw_frames[size_t(rr::RawEffect::kRtGi)],
+                                             w.rr_raw_frames[size_t(rr::RawEffect::kRtLights)], w.rr_raw_frames[size_t(rr::RawEffect::kRtAo)], w.rr_raw_but_sr)
+                               : std::string());
   }
 }
 

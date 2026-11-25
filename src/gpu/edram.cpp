@@ -9,67 +9,22 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/graphics/xenos.h>
-#include <rex/hash.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/format.h>
+#include "xxhash_inline.h"
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
 
 #include "descriptors.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
 #include "gpu.h"
+#include "msaa_plan.h"
 #include "records.h"
 #include "render_scale.h"
 #include "temporal_identities.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_edram_aliasing, false, "MCLA/GPU",
-    "EDRAM inheritance detector (M5.2d): per EDRAM "
-    "tile and aspect, the identity that wrote it last, reporting a draw or a resolve that would "
-    "see another identity's bytes on the console -- which the host does not carry over. Off: "
-    "none of its work is done.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_coverage_queries, false, "MCLA/GPU",
-    "With mcla_gpu_edram_aliasing: an occlusion query around each opaque draw the detector "
-    "takes to cover its scissor, checking that it did. Costs GPU time, for "
-    "checking a report. Off: no query pool is made, read or reset, and such takes go "
-    "unchecked (listed once per pair).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_edram_capture, 0, "MCLA/GPU",
-    "With mcla_gpu_edram_aliasing: a RenderDoc capture of the frame after the first report of "
-    "each kind picked by these bits, 4 at most: 1 a pair met by a write that keeps "
-    "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
-    "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_ghost_log_interval, 0, "MCLA/GPU",
-    "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
-    "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
-    "frame. Hot reload for reproducing the frame ghost.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_msaa, "2", "MCLA/GPU",
-    "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the "
-    "console's), 4 or 8 samples on the host. The game itself always draws its own 2 sample "
-    "layout; the host gives its images of the screen the samples chosen here, so its pause menu "
-    "and map world view, which the game draws with 4 samples, get the same as the game view. "
-    "Targets the game does not multisample, or that are not images of the screen, keep the "
-    "game's samples. Live: a change is made between two frames, after the pipelines for the new "
-    "sample count are made. While an upscaler (mcla_gpu_upscaler) runs, MSAA is 1 sample "
-    "whatever this says (the upscaler smooths the picture, and MSAA under it only costs time); "
-    "the choice is kept and comes back when the upscaler is off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -100,18 +55,10 @@ uint32_t BytesPerPixel(plume::RenderFormat format) {
 
 }  // namespace
 
-uint32_t FoldColorFormat(uint32_t color_format) {
-  switch (color_format) {
-    case 10: return 2;  // k_2_10_10_10_AS_10_10_10_10
-    case 12: return 3;  // k_2_10_10_10_FLOAT_AS_16_16_16_16
-    default: return color_format;
-  }
-}
-
 bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height, bool quiet) {
   if (screen_width_ == 0) {
-    const rex::Runtime* runtime = rex::Runtime::instance();
-    const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
+    const uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
     if (!base) {
       return false;
     }
@@ -302,33 +249,18 @@ void EdramTargets::NoteMainViews(const Target& target) {
 }
 
 EdramTargets::MsaaSetting EdramTargets::ReadMsaaSetting() {
+  // The parse is msaa_plan.h's (pure, msaa_plan_test.cpp); this reads the setting's text.
   MsaaSetting setting;
-  setting.text = REXCVAR_GET(mcla_gpu_msaa);
-  std::string v;
-  for (unsigned char c : setting.text) {
-    if (!std::isspace(c)) v.push_back(char(std::tolower(c)));
-  }
-  if (!v.empty() && v.back() == 'x') v.pop_back();
-  if (v == "4") {
-    setting.level = 4;
-  } else if (v == "8") {
-    setting.level = 8;
-  } else if (v == "off" || v == "1") {
-    // One host sample over the game's own 2 sample layout.
-    setting.level = 1;
-    setting.off = true;
-  } else if (v != "2") {
-    setting.invalid = true;
-  }
+  setting.text = larecomp::settings::mcla_gpu_msaa.Get();
+  const msaa_plan::Parsed parsed = msaa_plan::ParseText(setting.text);
+  setting.level = parsed.level;
+  setting.off = parsed.off;
+  setting.invalid = parsed.invalid;
   return setting;
 }
 
 uint32_t EdramTargets::LevelWithin(uint32_t supported_samples, uint32_t wanted) {
-  uint32_t level = wanted;
-  while (level > 2 && (supported_samples & level) == 0) {
-    level >>= 1;
-  }
-  return level;
+  return msaa_plan::LevelWithin(supported_samples, wanted);
 }
 
 uint32_t EdramTargets::SupportedScreenSamples(plume::RenderDevice* device) {
@@ -393,7 +325,7 @@ size_t EdramTargets::KeyHash::operator()(const EdramKey& k) const {
 }
 
 bool EdramTargets::FramebufferKey::operator==(const FramebufferKey& o) const {
-  if (color_count != o.color_count) {
+  if (color_count != o.color_count || extra_count != o.extra_count || extra_generation != o.extra_generation) {
     return false;
   }
   for (uint32_t i = 0; i < 5; ++i) {
@@ -401,10 +333,18 @@ bool EdramTargets::FramebufferKey::operator==(const FramebufferKey& o) const {
       return false;
     }
   }
+  for (uint32_t i = 0; i < 3; ++i) {
+    if (extras[i] != o.extras[i]) {
+      return false;
+    }
+  }
   return true;
 }
 
 size_t EdramTargets::FramebufferKeyHash::operator()(const FramebufferKey& k) const {
+  // Hashed as bytes (the == above is field by field): eight pointers, five generations, the counts: no padding, every member set.
+  static_assert(key_guard::kNoPadding<FramebufferKey>, "FramebufferKey is hashed as bytes: it must have no padding (key_guard.h)");
+  static_assert(key_guard::AllMembersSet<FramebufferKey>(), "every FramebufferKey member needs a default initializer (key_guard.h)");
   return size_t(XXH3_64bits(&k, sizeof(k)));
 }
 
@@ -457,10 +397,10 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   }
   // The side views (side_views.h): the scale each class starts at, from the settings as they stand
   // (`auto` by the GPU class, gpu_class.h; a change while the game runs is UpdateSideViews').
-  side_scales_ = side_views::Wanted();
+  side_scales_ = side_views::Wanted(resolution_scale_);
   side_dirty_ = false;
   side_stage_ = SideStage{};
-  for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+  for (const SideView view : kAllSideViews) {
     if (!side_scales_[view].unit()) {
       REXLOG_INFO("[gpu] edram: the {} side view is made at {}x the game's size (setting '{}'); "
                   "the game's own size is 1x",
@@ -468,15 +408,15 @@ void EdramTargets::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
     }
   }
   // The detector and its checks are chosen at start.
-  aliasing_ = REXCVAR_GET(mcla_gpu_edram_aliasing);
+  aliasing_ = larecomp::settings::mcla_gpu_edram_aliasing.Get();
   if (!aliasing_) {
     return;
   }
   for (auto& owners : tile_owner_) {
     owners.fill(kNoOwner);
   }
-  capture_ = REXCVAR_GET(mcla_gpu_edram_capture);
-  if (!REXCVAR_GET(mcla_gpu_coverage_queries)) {
+  capture_ = larecomp::settings::mcla_gpu_edram_capture.Get();
+  if (!larecomp::settings::mcla_gpu_coverage_queries.Get()) {
     REXLOG_INFO("[gpu] edram: inheritance detector on; opaque draws it takes to cover their "
                 "scissor go unchecked (mcla_gpu_coverage_queries off)");
     return;
@@ -738,7 +678,8 @@ Scale EdramTargets::ScaleAfter(const Target& target, Scale output, Scale scene,
 
 bool EdramTargets::SetScales(Scale output, Scale scene, plume::RenderCommandList* list) {
   DecideScene();  // may give the host MSAA level up for an upscaler that runs from the start
-  return Retarget(output, scene, msaa_level_, side_scales_, list);
+  // The side view classes that follow the screen's scale (the HUD's small views) move with it, in the same step.
+  return Retarget(output, scene, msaa_level_, side_views::FollowOutput(side_scales_, output), list);
 }
 
 bool EdramTargets::SetMsaaLevel(uint32_t level, plume::RenderCommandList* list) {
@@ -807,7 +748,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level, const Sid
       if (scale_move_failures_logged_ < 4) {
         ++scale_move_failures_logged_;
         std::string sides;
-        for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+        for (const SideView view : kAllSideViews) {
           if (side[view] != side_scales_[view]) {
             sides += std::format("{}{} {}x to {}x", sides.empty() ? "; side views: " : ", ",
                                  side_views::Name(view), side_scales_[view], side[view]);
@@ -877,7 +818,7 @@ bool EdramTargets::Retarget(Scale output, Scale scene, uint32_t level, const Sid
   if (side != side_before) {
     // A side view class moved (SetSideScales), with or without the rest: one line a class. The
     // memory is that of everything remade in this step.
-    for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+    for (const SideView view : kAllSideViews) {
       if (side[view] == side_before[view]) {
         continue;
       }
@@ -978,7 +919,7 @@ void EdramTargets::UpdateSideViews(plume::RenderCommandList* list) {
     }
     return;
   }
-  const SideScales wanted = side_views::Wanted();
+  const SideScales wanted = side_views::Wanted(resolution_scale_);
   if (wanted == side_scales_) {
     side_stage_ = SideStage{};
     return;
@@ -1004,7 +945,7 @@ void EdramTargets::UpdateSideViews(plume::RenderCommandList* list) {
     if (!side_stage_.failure_logged) {
       side_stage_.failure_logged = true;
       std::string what;
-      for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+      for (const SideView view : kAllSideViews) {
         if (wanted[view] != before[view]) {
           what += std::format("{}{} {}x", what.empty() ? "" : ", ", side_views::Name(view),
                               wanted[view]);
@@ -1120,7 +1061,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     }
     AssignOwner(*target);
     it = targets_.emplace(key, std::move(target)).first;
-    if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
+    if (larecomp::settings::mcla_gpu_ghost_log_interval.Get() != 0) {
       const Target& made = *it->second;
       REXLOG_INFO("[gpu] ghost target create frame {} {} target {} texture {} height {} gen {}",
                   frame_, DescribeEdramKey(key), static_cast<const void*>(&made),
@@ -1193,7 +1134,7 @@ EdramTargets::Target* EdramTargets::Get(const EdramKey& key, uint32_t height, Sc
     stats_.barriers += 2;
   }
   ++stats_.grown;
-  if (REXCVAR_GET(mcla_gpu_ghost_log_interval) != 0) {
+  if (larecomp::settings::mcla_gpu_ghost_log_interval.Get() != 0) {
     REXLOG_INFO("[gpu] ghost target grow frame {} {} target {} texture {} -> {} height {} -> {} "
                 "gen {}",
                 frame_, DescribeEdramKey(key), static_cast<const void*>(&t),
@@ -1218,8 +1159,8 @@ void EdramTargets::AssignOwner(Target& t) {
   // doubled for a 64 bpp format (Xenia's RenderTargetKey::GetPitchTiles). 4x
   // doubles the samples across, 2x and 4x down.
   const uint32_t across = t.key.samples >= 4 ? 2 : 1;
-  const bool wide = !t.key.depth && rex::graphics::xenos::IsColorRenderTargetFormat64bpp(
-                                        rex::graphics::xenos::ColorRenderTargetFormat(t.key.format));
+  const bool wide = !t.key.depth && rex::xenos::IsColorRenderTargetFormat64bpp(
+                                        rex::xenos::ColorRenderTargetFormat(t.key.format));
   t.columns_per_texel = wide ? 2 : 1;
   t.pitch_tiles = ((uint32_t(t.key.pitch) * across + 79) / 80) * t.columns_per_texel;
   if (owner_keys_.size() >= kNoOwner) {
@@ -1797,11 +1738,21 @@ void EdramTargets::Transition(plume::RenderCommandList* list, Target& target,
   ++stats_.barriers;
 }
 
-plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint32_t color_count,
-                                                    Target* depth) {
+plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint32_t color_count, Target* depth,
+                                                    const plume::RenderTexture* const* extras, uint32_t extra_count,
+                                                    uint32_t extras_generation) {
+  // The pipeline key has four colour slots: the EDRAM colours and the extra images share them.
+  const uint32_t colors_used = std::min(color_count, kMaxExtraColors);
+  const uint32_t extras_used =
+      extras ? std::min(std::min(extra_count, kMaxExtraColors - colors_used), 3u) : 0u;
   FramebufferKey key;
   key.color_count = color_count;
-  for (uint32_t i = 0; i < color_count && i < 4; ++i) {
+  key.extra_count = extras_used;
+  key.extra_generation = extras_used ? extras_generation : 0;
+  for (uint32_t i = 0; i < extras_used; ++i) {
+    key.extras[i] = extras[i];
+  }
+  for (uint32_t i = 0; i < colors_used; ++i) {
     key.targets[i] = colors[i];
     key.generations[i] = colors[i] ? colors[i]->generation : 0;
   }
@@ -1811,11 +1762,15 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
   if (it != framebuffers_.end()) {
     return it->second.get();
   }
-  const plume::RenderTexture* attachments[4] = {};
-  for (uint32_t i = 0; i < color_count && i < 4; ++i) {
-    attachments[i] = colors[i]->texture.get();
+  const plume::RenderTexture* attachments[kMaxExtraColors + 1] = {};
+  uint32_t attachment_count = 0;
+  for (uint32_t i = 0; i < colors_used; ++i) {
+    attachments[attachment_count++] = colors[i]->texture.get();
   }
-  plume::RenderFramebufferDesc desc(attachments, color_count,
+  for (uint32_t i = 0; i < extras_used; ++i) {
+    attachments[attachment_count++] = extras[i];
+  }
+  plume::RenderFramebufferDesc desc(attachments, attachment_count,
                                     depth ? depth->texture.get() : nullptr);
   std::unique_ptr<plume::RenderFramebuffer> framebuffer =
       device_->CreateFramebuffer(desc, "edram framebuffer");
@@ -1826,6 +1781,29 @@ plume::RenderFramebuffer* EdramTargets::Framebuffer(Target* const* colors, uint3
   plume::RenderFramebuffer* raw = framebuffer.get();
   framebuffers_.emplace(key, std::move(framebuffer));
   return raw;
+}
+
+void EdramTargets::RetireFramebuffersWithExtra(const plume::RenderTexture* extra) {
+  ++change_serial_;
+  for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
+    if (it->first.HasExtra(extra)) {
+      frames_->Retire(std::move(it->second));
+      it = framebuffers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
+}
+
+void EdramTargets::DestroyFramebuffersWithExtra(const plume::RenderTexture* extra) {
+  ++change_serial_;
+  for (auto it = framebuffers_.begin(); it != framebuffers_.end();) {
+    if (it->first.HasExtra(extra)) {
+      it = framebuffers_.erase(it);
+    } else {
+      ++it;
+    }
+  }
 }
 
 void EdramTargets::RetireFramebuffersOf(const Target* target) {
@@ -1948,7 +1926,7 @@ std::string EdramTargets::TakeSummary() {
   {
     // The side views: each class's scale and what its targets hold now.
     std::string sides;
-    for (const SideView view : {SideView::kShadow, SideView::kEnv, SideView::kReflection}) {
+    for (const SideView view : kAllSideViews) {
       uint32_t members = 0;
       uint32_t samples = 0;
       uint64_t member_bytes = 0;

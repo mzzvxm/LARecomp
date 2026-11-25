@@ -8,16 +8,21 @@
 #
 # Sets LARECOMP_DXC_LINUX_LIB (the libdxcompiler.so to copy next to the executable) and
 # LARECOMP_DXC_LINUX_LICENCE (its LICENSE-LLVM.txt); both empty when nothing could be found.
+# Also exposes the matching bin/dxc path and its archive pin to FetchDxcHost.cmake.
 # LARECOMP_DXC_LINUX_DIR names an unpacked archive (a folder holding lib/libdxcompiler.so) and
 # LARECOMP_DXC_LINUX_ARCHIVE a local copy of the .tar.gz, for a build without network. When neither
 # works, the older dxc of the thirdparty/dxc-bin submodule (v1.8.2407) is used with a warning.
 #
-# CHECK: not run (written on Windows, 2026-11-07). The archive name is the release's own, spelled
-# "x86_x64" there (checked against the GitHub release API); the SHA-256 values were taken from the
-# archive downloaded that day.
+# Written on Windows (2026-11-07); the fetch, the hash check and the shader pack builds with this
+# library have run since in the WSL builds (perf/out/LINUXCHECK-land7.txt: dxc-linux-1.9.2609,
+# SPIR-V packs built and validated). The archive name is the release's own, spelled "x86_x64" there
+# (checked against the GitHub release API); the SHA-256 values were taken from the archive downloaded
+# on 2026-11-07.
 
 set(LARECOMP_DXC_LINUX_LIB "")
 set(LARECOMP_DXC_LINUX_LICENCE "")
+set(LARECOMP_DXC_LINUX_TOOL "")
+set(LARECOMP_DXC_LINUX_TOOL_SHA256 "")
 
 set(LARECOMP_DXC_LINUX_DIR "" CACHE PATH
     "An unpacked DXC Linux release (the folder holding lib/libdxcompiler.so); empty fetches the pinned one")
@@ -29,6 +34,7 @@ set(_dxcl_version "1.9.2609")
 set(_dxcl_url "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v${_dxcl_version}/linux_dxc_2026_09_28.x86_x64.tar.gz")
 set(_dxcl_archive_sha256 "96faadc7f5c282d2ffda49804beb4c3ee38127bc252b723234e3c5cdf7aa39a1")
 set(_dxcl_lib_sha256 "d40e4a7b3b46490313f4bfd08101946483a673831b3ea65c93d746de1c2f9216")
+set(_dxcl_tool_sha256 "3dfc856b76291ffc7e45e21fd37ab80e85b34101de76a03253df6608785c92a0")
 set(_dxcl_licence_sha256 "729615317e28dd03907e46f0fc3b5e88f7853cee61d1a1471d2749335516b46f")
 set(_dxcl_root "${CMAKE_BINARY_DIR}/_deps/dxc-linux-${_dxcl_version}")
 
@@ -40,6 +46,7 @@ endif()
 if(LARECOMP_DXC_LINUX_DIR)
     if(EXISTS "${LARECOMP_DXC_LINUX_DIR}/lib/libdxcompiler.so")
         set(LARECOMP_DXC_LINUX_LIB "${LARECOMP_DXC_LINUX_DIR}/lib/libdxcompiler.so")
+        set(LARECOMP_DXC_LINUX_TOOL "${LARECOMP_DXC_LINUX_DIR}/bin/dxc")
         if(EXISTS "${LARECOMP_DXC_LINUX_DIR}/LICENSE-LLVM.txt")
             set(LARECOMP_DXC_LINUX_LICENCE "${LARECOMP_DXC_LINUX_DIR}/LICENSE-LLVM.txt")
         endif()
@@ -96,6 +103,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
     endif()
     if(_dxcl_have_lib)
         set(LARECOMP_DXC_LINUX_LIB "${_dxcl_root}/lib/libdxcompiler.so")
+        set(LARECOMP_DXC_LINUX_TOOL "${_dxcl_root}/bin/dxc")
+        set(LARECOMP_DXC_LINUX_TOOL_SHA256 "${_dxcl_tool_sha256}")
         if(EXISTS "${_dxcl_root}/LICENSE-LLVM.txt")
             file(SHA256 "${_dxcl_root}/LICENSE-LLVM.txt" _dxcl_have)
             if(_dxcl_have STREQUAL _dxcl_licence_sha256)

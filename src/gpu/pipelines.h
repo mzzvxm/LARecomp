@@ -16,8 +16,9 @@
 //     shader (g_BlendPremult*, constants.h);
 //   - a copy blend (ONE, ZERO, ADD on both equations) is "blend off";
 //   - depth and stencil state are zeroed when depth/stencil are off;
-//   - the stencil reference is static (Plume has no dynamic stencil
-//     reference; three references per state were measured, 24.3);
+//   - the stencil reference is not in the key: every pipeline has it dynamic and the draw puts it
+//     on the command list (stencil_ref.h; Plume's setStencilReference), so draws that differ only
+//     by it share a pipeline (three references per state were measured, 24.3);
 //   - the depth bias is dynamic where the device has it (Vulkan always,
 //     D3D12 with options16 and Plume's Agility SDK build), as reblue does, and
 //     part of the key otherwise;
@@ -30,8 +31,9 @@
 // translates every field whether blending is on or not, and UNKNOWN is not a
 // valid D3D12 or Vulkan value.
 // What the host cannot express is reported once per kind: a constant blend
-// factor (Plume has no setBlendFactor), separate back-face stencil masks or
-// reference (one set of masks in a D3D12 pipeline), point fill, an alpha
+// factor (the host default is used: Plume's setBlendConstants could set the guest's per draw, nothing does yet),
+// separate back-face stencil masks or reference (one set of masks in a D3D12 pipeline, one reference
+// on the list), point fill, an alpha
 // test function that is not a lower bound, alpha test or alpha to coverage on
 // a pixel shader compiled without the variant. Both faces culled is not a
 // failure: the draw has no effect (the caller skips it).
@@ -57,7 +59,7 @@
 // pipeline is taken only for a layout equal to its record's, byte for byte.
 // Session layouts with other ids and the same content share a persistent key,
 // and so the pipeline: the later keys alias the first one's.
-// With fewer than 8 usable processors the workers start in boot mode (boot_mode_):
+// With fewer than 12 usable processors the workers start in boot mode (boot_mode_, kBootBoostBelow):
 // more of them, at normal priority, following the render thread through the list.
 //
 // Background builds: a pipeline nobody precached cost 20 to 150 ms on the
@@ -80,6 +82,11 @@
 // that failed here. A finished build nobody asks for again is taken at the end
 // of the frame (EndFrame), so it is recorded and persists like any other.
 //
+// A draw whose key adds a variant of the light stack to the game's own shader (the headlight's word, the G-buffer's planes: variant_wait.h) is not left to that rule:
+// it has the game's own pipeline to draw with, so the Scene asks with a Deferral that always says yes and walks a ladder of keys (the full key, the key without the
+// planes, the key without the headlight) while the build runs. The lit world draws all write the stencil, which the rule refuses, so before this every variant of
+// them was made on the render thread: 41 to 52 pipelines in one frame at the first night, 211 to 276 at the G-buffer's first frames (3 to 17 s, the freeze watchdog).
+//
 // While a capture runs (sync_builds.h: the debug cvar mcla_gpu_sync_builds, or capture mode's
 // SetCaptureActive) no draw may be left out: MaySkip says no whatever the Deferral answers, so every
 // lookup above takes the old way for a draw that may not be skipped -- waits for a build under way,
@@ -99,6 +106,18 @@
 // it, not at the end of the frame like other background builds: copies for a level the player went
 // back from leave nothing in the cache file.
 //
+// Level seeds (level_seeds.h): the copies above are for pipelines the session has drawn. A pipeline it has
+// not drawn yet (the map, a race, a shop when the player changed the setting in free roam) first
+// appeared at the new level with no copy, and was made when its draw asked (10 to 50 ms cold). So the same
+// call also converts the records of the saved lists with more than one sample (the startup MSAA rule)
+// to the new level's sample count and hands them to the builder threads as seeds: after the urgent work,
+// the copies above and the precache list (seed_), on all the steady workers but one, never in boot mode,
+// and never waited for by the switch. A draw takes a seed like a precache entry (TakePrecached through
+// seeds_by_key_) and then records it; a seed nobody asks for is recorded by nothing. Memory: one level's
+// seeds at a time (a call for another level drops the untaken ones of the old), at most
+// level_seeds::kMaxSeeds, and only while the video memory in use stays under 80% of the OS's budget; they
+// are let go above 85% (SeedFrame) and when the precache stops.
+//
 // Command line prebuild (larecomp.exe --precache_pipelines, pipeline_prebuild.h): the launcher
 // runs the same precache before the first start, with no render thread and no guest
 // (PrecacheForSetup): the same files are read, the same workers make the same pipelines, only more
@@ -106,10 +125,10 @@
 // form in its own cache on disk, which is the point), and the records are written back at the end.
 // It also makes a copy of every multisampled record at the sample counts the start's MSAA level
 // asks for (SetupOptions::level_samples: the setting's level, 1 under an upscaler), which is what
-// PrebuildForLevel would hand the builders at runtime; the copies are made, not recorded.
+// PrebuildForLevel would hand the builders at runtime. The loaded base keys also supply the
+// render state for shader variants selected by the startup settings. These copies are made, not recorded.
 //
-// Level copies at the game's own start: StartPersistence makes the same copies
-// (StartSampleCounts) and the precache workers make them in the list's order, each right after
+// StartPersistence queues the same copies and the precache workers make them in the list's order, each right after
 // the record it was made from. A draw takes one like any other entry; a copy that a draw took is
 // recorded then (RecordStored), so a level the player never draws with leaves nothing in the cache
 // file. Without them a first start at another level than the list's (MSAA 4 or off, an upscaler's
@@ -124,7 +143,9 @@
 // in pipelines_ takes no lock.
 // ===========================================================================
 
+#include <array>
 #include <atomic>
+#include <bit>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -134,6 +155,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -145,7 +167,11 @@
 #include "backend.h"
 #include "draw_state.h"
 #include "input_layout.h"
+#include "key_guard.h"
+#include "level_seeds.h"
+#include "precache_queue.h"
 #include "shaders.h"
+#include "sync_build_log.h"
 #include "sync_builds.h"
 
 namespace mcla::gpu {
@@ -168,7 +194,7 @@ struct PipelineKey {
   uint32_t blend[kColorTargetCount] = {};
   uint32_t depth = 0;    // enable | write | func
   uint32_t stencil = 0;  // enable | func, fail, zpass, zfail front; func, fail, zpass back (4 bits)
-  uint32_t stencil_masks = 0;  // read | write | ref, 8 bits each
+  uint32_t stencil_masks = 0;  // read | write, 8 bits each; bits 16-23 the reference (0: it is on the command list, stencil_ref.h); back depth fail at 24
   uint32_t raster = 0;   // cull | front ccw | fill | depth clip
   int32_t depth_bias = 0;  // static depth bias only (0 with the dynamic one)
   float slope_scaled_depth_bias = 0.0f;
@@ -176,7 +202,16 @@ struct PipelineKey {
 
   bool operator==(const PipelineKey& o) const { return std::memcmp(this, &o, sizeof(*this)) == 0; }
 };
-static_assert(sizeof(PipelineKey) == 104, "PipelineKey must have no padding");
+// The key is hashed (PipelineKeyHash) and compared (==) as bytes, and the cache file stores it as bytes: no padding, and
+// every member set by a default-constructed key (BuildKey starts from PipelineKey{}). It holds a float, so the size is
+// checked against the members added up: vs, ps | vs_variant, ps_variant, input_layout, topology, sample_count, color_count |
+// color_format[] | depth_format | blend[] | depth, stencil, stencil_masks, raster, depth_bias, slope_scaled_depth_bias, reserved.
+// The float is kept canonical (key_guard::CanonicalZero): a -0.0 slope is the same pipeline as +0.0 and the same bytes.
+static_assert(key_guard::SizeIsMemberSum<PipelineKey>(2 * sizeof(uint64_t) +
+                                                       sizeof(uint32_t) * (6 + kColorTargetCount + 1 + kColorTargetCount + 7)),
+              "PipelineKey is hashed and compared as bytes: it must have no padding (key_guard.h)");
+static_assert(sizeof(PipelineKey) == 104, "PipelineKey is the cache file's record: 104 bytes (tools/pipelines/pipeline_list.py KEY_SIZE)");
+static_assert(key_guard::AllMembersSet<PipelineKey>(), "every PipelineKey member needs a default initializer (key_guard.h)");
 
 struct PipelineKeyHash {
   size_t operator()(const PipelineKey& k) const;
@@ -223,6 +258,71 @@ struct DepthBias {
   bool operator==(const DepthBias& o) const { return constant == o.constant && slope == o.slope; }
 };
 
+// The inputs BuildKey reads from the draw. Shader entries and layouts are
+// immutable for the session. The backend's bias capabilities are fixed at
+// Initialize. WantedFeatures is sampled once and passed to the full builder.
+struct PipelineBuildSignature {
+  const ShaderStore::Entry* vs = nullptr;
+  const ShaderStore::Entry* ps = nullptr;
+  const InputLayout* layout = nullptr;
+  uint32_t wanted_features = 0;
+  plume::RenderPrimitiveTopology topology{};
+  plume::RenderFormat depth_format{};
+  bool polygonal = false;
+  bool depth_bound = false;
+  xe::MSAASamples msaa{};
+  xe::DepthRenderTargetFormat guest_depth_format{};
+  struct Color {
+    plume::RenderFormat format{};
+    uint32_t blend = 0;
+    uint32_t write_mask = 0;
+    bool bound = false;
+    bool operator==(const Color&) const = default;
+  };
+  std::array<Color, kColorTargetCount> colors{};
+  uint32_t mode = 0;
+  uint32_t depth_control = 0;
+  uint32_t stencil = 0;
+  uint32_t stencil_bf = 0;
+  uint32_t color_control = 0;
+  uint32_t sc_mode = 0;
+  uint32_t clip = 0;
+  uint32_t alpha_ref = 0;
+  std::array<uint32_t, 4> poly_offset{};
+  bool operator==(const PipelineBuildSignature&) const = default;
+
+  static PipelineBuildSignature From(const XenosState& state, const PipelineInputs& inputs,
+                                     plume::RenderPrimitiveTopology topology, bool polygonal,
+                                     const plume::RenderFormat (&formats)[kColorTargetCount],
+                                     plume::RenderFormat depth_format, uint32_t wanted_features) {
+    PipelineBuildSignature key;
+    key.vs = inputs.vs;
+    key.ps = inputs.ps;
+    key.layout = inputs.input_layout;
+    key.wanted_features = wanted_features;
+    key.topology = topology;
+    key.depth_format = depth_format;
+    key.polygonal = polygonal;
+    key.depth_bound = state.depth_bound;
+    key.msaa = state.msaa;
+    key.guest_depth_format = state.depth_format;
+    for (uint32_t i = 0; i < kColorTargetCount; ++i) {
+      const ColorTargetState& color = state.color[i];
+      key.colors[i] = {formats[i], color.blend.value, color.write_mask, color.bound};
+    }
+    key.mode = uint32_t(state.mode.edram_mode);
+    key.depth_control = state.depth_control.value;
+    key.stencil = state.stencil.value;
+    key.stencil_bf = state.stencil_bf.value;
+    key.color_control = state.color_control.value;
+    key.sc_mode = state.sc_mode.value;
+    key.clip = uint32_t(state.clip.clip_disable);
+    key.alpha_ref = std::bit_cast<uint32_t>(state.alpha_ref);
+    key.poly_offset = std::bit_cast<std::array<uint32_t, 4>>(state.poly_offset);
+    return key;
+  }
+};
+
 // Why BuildKey refused a draw.
 enum class KeyResult : uint8_t {
   kOk,
@@ -236,10 +336,16 @@ enum class KeyResult : uint8_t {
 // a lookup that hits has nothing to prepare for it. While a capture runs
 // (sync_builds.h) the answer is never used: the lookup waits for the build, and
 // `kind` says which path waited, for the count of waits.
+//
+// `has_fallback`: the draw has another pipeline to draw with when this one cannot be made (a key that adds the headlight's word or the G-buffer's planes to the
+// game's own shader: variant_wait.h). Then a build that FAILED is final for the key: it is not made again on the render thread (a precache entry that failed on a
+// worker would otherwise be tried once more here, for a pipeline that fails the same), and it is logged once, with its error, whatever the cap on the other
+// failures' lines. Get then answers null and not pending, and the caller takes the fallback.
 struct Deferral {
   bool (*may_skip)(const void* context) = nullptr;
   const void* context = nullptr;
   sync_builds::Kind kind = sync_builds::Kind::kGuestDraw;
+  bool has_fallback = false;
 };
 
 class Pipelines {
@@ -263,7 +369,7 @@ class Pipelines {
   // (EdramTargets::HostSamplesAt): the MSAA setting's level within what the device can do, and 1
   // when an upscaler is the saved choice (whether this PC can run it is the game's probe's to say,
   // so both are listed). StartPersistence and the command line prebuild make a copy of every
-  // multisampled record at these counts (MakeLevelCopies).
+  // multisampled record at these counts (MakeStartupCopies).
   static std::vector<uint32_t> StartSampleCounts(Device& device);
   // The GPU must be idle.
   void Shutdown();
@@ -275,8 +381,19 @@ class Pipelines {
   // Anything but kOk: the draw is skipped.
   KeyResult BuildKey(const XenosState& state, const PipelineInputs& inputs,
                      plume::RenderPrimitiveTopology topology, bool polygonal,
-                     const plume::RenderFormat color_formats[kColorTargetCount],
+                     const plume::RenderFormat (&color_formats)[kColorTargetCount],
                      plume::RenderFormat depth_format, PipelineKey& key, DepthBias& bias);
+
+  void SetDrawMemo(bool enabled) { draw_memo_enabled_ = enabled; }
+  struct DrawMemoProfile {
+    DrawMemoStats build_key;
+    DrawMemoStats get;
+  };
+  DrawMemoProfile TakeDrawMemoProfile() {
+    const DrawMemoProfile stats = draw_memo_profile_;
+    draw_memo_profile_ = {};
+    return stats;
+  }
 
   // True when every pipeline takes its depth bias from the command list.
   bool dynamic_depth_bias() const { return dynamic_depth_bias_; }
@@ -300,10 +417,25 @@ class Pipelines {
     uint32_t present = 0;  // ... whose copy at `level` was there already or needs nothing made
     uint32_t queued = 0;   // copies handed to the builders by this call
     uint32_t waiting = 0;  // copies, this call's or earlier ones, not finished yet
+    // The level seeds (level_seeds.h), which no switch waits for: records of the saved lists with more
+    // than one sample, converted to `level`.
+    uint32_t seed_sources = 0;  // such records
+    uint32_t seeds = 0;         // seeds handed to the builders by this call
+    uint32_t seed_present = 0;  // sources that have a copy, a twin or a pipeline at `level` already
+    uint32_t seed_limited = 0;  // copies left out by the cap or the video memory's room
   };
-  LevelPrebuild PrebuildForLevel(uint32_t level);
-  // Copies of the last PrebuildForLevel not finished yet (being made or waiting for a thread).
-  // 0: the targets may change. A copy that failed counts as finished: its draws are made (and the
+  // `from_level`: the level in force (0 when not known): the seeds recorded at its sample count go first.
+  LevelPrebuild PrebuildForLevel(uint32_t level, uint32_t from_level = 0);
+  // `level` is the one in force and no change is asked for (every frame, MsaaLevel): the seeds of another
+  // level (a change that was asked for and taken back before it was made) are let go. A level that was
+  // switched to keeps its seeds.
+  void NoteLevelInForce(uint32_t level) {
+    if (seed_level_ != 0 && seed_level_ != level) {
+      DropSeeds("the level stayed");
+    }
+  }
+  // Copies of the last PrebuildForLevel not finished yet (being made or waiting for a thread); the seeds are
+  // not counted. 0: the targets may change. A copy that failed counts as finished: its draws are made (and the
   // failure reported) the usual way.
   uint32_t PrebuildWaiting() const;
 
@@ -339,8 +471,14 @@ class Pipelines {
     uint64_t request_wait_ns = 0;
     uint64_t made_here_new = 0;       // made here: nobody had begun it, no waiting
     uint64_t made_here_retry = 0;     // made here again after a background build failed
+    // A key with a fallback (Deferral::has_fallback) whose build failed: the key (logged once, also in `failed`), and the draws that took the game's own
+    // pipeline because of it (NoteVariantFailedDraw; counted when the draw falls back, whether or not the game's own key then draws; a draw that waits for a build under way is not counted).
+    uint64_t variant_failed = 0;
+    uint64_t variant_fallback_draws = 0;
   };
   Stats TakeStats();
+  // A draw took the game's own pipeline because the build of its variant FAILED (Get: null, not pending). Render thread.
+  void NoteVariantFailedDraw() { ++stats_.variant_fallback_draws; }
   size_t size() const { return pipelines_.size(); }
 
   // --- the command line prebuild (pipeline_prebuild.h) --------------------------------------------
@@ -348,7 +486,7 @@ class Pipelines {
   // list that the pack has the shaders for, and a hash of their keys (what a stamp binds).
   struct SetupList {
     size_t records = 0;
-    size_t copies = 0;   // the level copies on top of them (SetupOptions::level_samples)
+    size_t copies = 0;   // derived keys for startup shader variants and sample counts
     uint64_t hash = 0;   // of the records' keys, then the copies'
   };
   struct SetupOptions {
@@ -358,7 +496,7 @@ class Pipelines {
     // draws with (EdramTargets::HostSamplesAt: the MSAA setting's level, and 1 when an upscaler
     // is the saved choice). For every record whose key has more than one sample, a copy at each
     // of these counts that no record has is made too (what PrebuildForLevel makes at runtime when
-    // the level changes); the cache file does not get them. Empty: the records as they are.
+    // the level changes); the cache file does not get the copies. Empty: no additional sample counts.
     std::vector<uint32_t> level_samples;
     // Called once with the list, before any pipeline is made; false: nothing to do (the cache is
     // complete for this driver and pack). May be empty (always build).
@@ -442,9 +580,11 @@ class Pipelines {
                  ShaderStore::ShaderResult* ps_result);
   // The persistent key of a session key with the layout `stored`.
   PipelineKey PersistentKey(const PipelineKey& key, uint32_t stored) const;
-  // Counts a pipeline that could not be made and reports it (the first few).
+  // Counts a pipeline that could not be made and reports it: the first few, but every key with a fallback (`fallback`: Deferral::has_fallback), once, since the
+  // key is remembered as failed and never built again. Every path that ends a build with no pipeline goes through here (the render thread's, a background
+  // request's, a precache entry's), so the books and the log agree.
   void LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
-                  ShaderStore::ShaderResult ps_result);
+                  ShaderStore::ShaderResult ps_result, bool fallback);
   // `setup_threads` != 0: the command line prebuild (PrecacheForSetup): that many workers, none
   // leaves, normal priority, no boot mode.
   void StartPrecache(uint32_t setup_threads = 0);
@@ -454,7 +594,7 @@ class Pipelines {
   void LoadPersistent();
   uint64_t HashRecords() const;
   // StartPersistence and PrecacheForSetup: fills setup_copies_ (see SetupOptions::level_samples).
-  void MakeLevelCopies(const std::vector<uint32_t>& samples);
+  void MakeStartupCopies(const std::vector<uint32_t>& samples);
   void PrecacheWorker(uint32_t index);
 
   // How a lookup that gave no pipeline ended: nothing is known of the key
@@ -486,18 +626,40 @@ class Pipelines {
   // Counts a held lookup's wait (sync_builds.h) and logs the first few.
   void NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
                     std::chrono::steady_clock::time_point began);
+  // The render thread's own builds and its waits for a builder thread, counted for the session and
+  // logged (sync_build_log.h): "[pipeline] sync build #N ..." / "sync wait #N ...", the first ones each
+  // and then every 16th, and the totals once at Shutdown. `source`: "list" or "request".
+  void LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t ns);
+  void LogSyncWait(const PipelineKey& key, const char* source, uint64_t ns);
   // Remembers a pipeline just had for a draw whose targets take the MSAA level (PrebuildForLevel).
   void NoteLevelDependent(const PipelineKey& key, const PipelineInputs& inputs);
+  // The precache entry or the level seed of a persistent key, if there is one.
+  struct Precached;
+  Precached* FindListed(const PipelineKey& persistent) const;
 
   Device* device_ = nullptr;
   const GuestLayout* layout_ = nullptr;
   ShaderStore* shaders_ = nullptr;
   std::unordered_map<PipelineKey, std::unique_ptr<plume::RenderPipeline>, PipelineKeyHash>
       pipelines_;
+  KeyResult BuildKeyUncached(const XenosState& state, const PipelineInputs& inputs,
+                             plume::RenderPrimitiveTopology topology, bool polygonal,
+                             const plume::RenderFormat (&color_formats)[kColorTargetCount],
+                             plume::RenderFormat depth_format, PipelineKey& key, DepthBias& bias,
+                             std::optional<uint32_t> wanted_features);
+  struct BuiltKey {
+    PipelineKey key;
+    DepthBias bias;
+  };
+  bool draw_memo_enabled_ = false;
+  DrawMemoProfile draw_memo_profile_;
+  TwoWayDrawMemo<PipelineBuildSignature, BuiltKey> build_key_memo_;
+  TwoWayDrawMemo<PipelineKey, plume::RenderPipeline*> pipeline_lookup_memo_;
   // Where kD24S8 is kept as D32 float (format::Depth24Unsupported): the shift that turns
   // the guest's constant offset in 2^-24 steps into the float buffer's steps; 0 otherwise.
   uint32_t depth24_bias_shift_ = 0;
   Stats stats_;
+  sync_build_log::Counters sync_log_;  // the session's, render thread only; Stats above restarts every report
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;
 
@@ -524,40 +686,66 @@ class Pipelines {
   std::chrono::steady_clock::time_point last_save_;
   std::thread autosave_thread_;
   std::atomic<bool> autosave_running_{false};
+  bool vulkan_cache_after_precache_ = false;  // startup snapshot scheduled by the render thread
   static constexpr uint32_t kNoLayout = 0xFFFFFFFFu;  // a layout that cannot be persisted
 
   // Precache: one entry per loaded record, its state moved by
   // compare-exchange (queued -> building or claimed; building -> ready or
   // failed, under precache_mutex_ for the waiter).
   enum PrecacheState : uint8_t { kQueued, kBuilding, kReady, kFailed, kClaimed };
-  struct Precached {
+  struct Precached : std::enable_shared_from_this<Precached> {
     PipelineKey key;                  // persistent
     const StoredLayout* layout = nullptr;
     std::unique_ptr<plume::RenderPipeline> pipeline;
     std::atomic<uint8_t> state{kQueued};
     uint32_t index = 0;               // its place in precached_
     PipelineKey taken_as;             // the session key it went to (claimed or taken)
+    // The worker that began the build (its index in workers_; -1 until it says): the render thread hands it
+    // normal priority when a draw is waiting for it (WaitForBuild, pipeline_wait.h). Written by the worker
+    // right after the state moved to building.
+    std::atomic<int32_t> builder{-1};
+    // Why a failed build failed (written with the state, under precache_mutex_): a draw with a fallback key does not make it again, it reports this.
+    ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
+    ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
     bool taken = false;
     // Render thread only: a draw that may be skipped asked for it, in this frame
     // (EndFrame's count); the worker is told to make it first.
     bool asked = false;
     uint64_t asked_frame = 0;
+    // A level seed (SeedForLevel): owned by seeds_by_key_ and shared with the queues and the worker
+    // building it, outside the list's numbers (no index, no claim of the start, no count of the list's
+    // end). `seed_gen` is the run it belongs to (level_seeds::SeedBook).
+    bool seed = false;
+    uint32_t seed_gen = 0;
   };
   std::vector<std::unique_ptr<Precached>> precached_;
   // Session keys served by another key's pipeline (same persistent key).
   std::unordered_map<PipelineKey, plume::RenderPipeline*, PipelineKeyHash> aliases_;
   std::unordered_map<PipelineKey, Precached*, PipelineKeyHash> precached_by_key_;
   std::vector<std::thread> workers_;
-  // Where the workers are in the list (work_mutex_): the next entry and the end of the run they
-  // are in. The entries a jump of the cursor passed over (FollowRenderThread) wait in
-  // list_skipped_ and are made after the run.
-  struct ListRange {
-    size_t begin = 0;
-    size_t end = 0;
-  };
-  size_t list_cursor_ = 0;
-  size_t list_end_ = 0;
-  std::deque<ListRange> list_skipped_;
+  // The render thread's wait for a build a worker has begun (pipeline_wait.h). workers_ is reserved before
+  // the first worker starts, so the ones counted by workers_started_ (released after each start) can be
+  // read from the render thread while the others are still being added. worker_raised_[i]: the render
+  // thread gave worker i normal priority for a draw that waited; the worker goes back to its own level
+  // when it takes its next entry.
+  std::atomic<uint32_t> workers_started_{0};
+  std::unique_ptr<std::atomic<bool>[]> worker_raised_;
+  uint32_t handovers_ = 0;      // waits that raised a worker (render thread)
+  uint32_t made_here_too_ = 0;  // waits that ended with the render thread making the pipeline itself
+  // Waits for `state` to leave "building" (precache_mutex_ is taken inside). True: it did. False: the wait
+  // gave up for the render thread to make the pipeline itself (pipeline_wait.h; never when
+  // `may_make_here` is false). `*raised`: a worker was handed normal priority in this wait. Render thread.
+  bool WaitForBuild(const std::atomic<uint8_t>& state, const std::atomic<int32_t>& builder,
+                    bool may_make_here, bool* raised);
+  void RaiseWorker(int32_t index);
+  // Counts a wait that raised a worker or ended with the render thread making the pipeline too, and
+  // writes the first few as a line ("[pipeline] sync wait handover ...").
+  void NoteHandover(const PipelineKey& key, const char* source, bool raised, bool made_here,
+                    uint64_t waited_ns);
+  // Where the workers are in the queue (work_mutex_, precache_queue.h): the cursor, and the windows
+  // the render thread's claims in boot mode put in front of it (FollowRenderThread). No claim moves the
+  // cursor, so no entry is left behind.
+  precache_queue::Cursor list_;
   std::atomic<bool> stop_precache_{false};
   std::atomic<uint32_t> precache_ready_{0};
   std::atomic<uint32_t> precache_failed_{0};
@@ -571,25 +759,36 @@ class Pipelines {
   // at below normal priority, sharing four processors with the guest's own threads, made them
   // slower than the guest asked. Until the list is done or kBootSeconds have passed, up to all
   // the processors but one make pipelines at normal priority, and a claim by the render thread
-  // moves the workers on to the entries after it (FollowRenderThread). Then the extra workers
+  // has the workers make the entries after it first (FollowRenderThread). Then the extra workers
   // leave and the others drop to below normal, as with more processors, which never have it.
   std::atomic<bool> boot_mode_{false};
   // The command line prebuild: set before the workers start, not changed while they run. Its
   // workers run at normal priority and drop each pipeline once it is made.
   bool setup_mode_ = false;
-  // The copies of records at other sample counts (MakeLevelCopies), in the order of the records
+  // The copies of records for startup shader variants and sample counts, in the order of the records
   // they were made from; setup_copy_source_[i] is the index in records_ of setup_copies_[i]'s
   // record. StartPrecache puts each right after its record; a draw takes one like a record, and
   // it is recorded only then (TakePrecached). Both are set before the workers start.
   std::vector<Record> setup_copies_;
   std::vector<uint32_t> setup_copy_source_;
+  // The counts MakeStartupCopies was given (what this start draws the images of the screen at,
+  // StartSampleCounts); StartPrecache orders the queue by them. Set before the workers start.
+  std::vector<uint32_t> start_samples_;
   uint32_t steady_workers_ = 0;           // the workers that stay: indices below it
+  // The entries the render thread made itself, in any mode (NoteClaim): how many, which entries
+  // of the queue (first and last) and when (microseconds after the start; -1 for none). Written
+  // by the render thread, read once by whichever thread logs "precache done".
+  std::atomic<uint32_t> precache_claims_{0};
+  std::atomic<uint32_t> precache_first_claim_index_{0};
+  std::atomic<uint32_t> precache_last_claim_index_{0};
+  std::atomic<int64_t> precache_first_claim_us_{-1};
+  std::atomic<int64_t> precache_last_claim_us_{-1};
   std::chrono::steady_clock::time_point boot_deadline_;
   std::atomic<uint32_t> boot_claims_{0};  // entries the render thread made itself in boot mode
   std::atomic<uint32_t> boot_waits_{0};   // ... and builds under way it waited for
   void EndBootMode(const char* why);
-  // The render thread made entry `index` itself in boot mode: the workers go on after it, and the
-  // entries between their place and it are made once the run is over.
+  // The render thread made entry `index` itself in boot mode: the workers make the entries after it
+  // first (a window, precache_queue.h), then go on where they were.
   void FollowRenderThread(size_t index);
   void NoteClaim(size_t index);
   bool HasListWork() const;                // work_mutex_ held
@@ -609,11 +808,13 @@ class Pipelines {
     const StoredLayout* layout = nullptr;    // owned by stored_layouts_
     uint32_t stored = 0;                     // its index there
     uint64_t asked_frame = 0;
+    bool fallback = false;                  // the asking draw has a fallback key (Deferral::has_fallback)
     // A copy for a coming MSAA level (PrebuildForLevel), in low_ until a draw asks for it (then
     // `promoted`: it was moved up to urgent_). Render thread only.
     bool low = false;
     bool promoted = false;
     std::atomic<uint8_t> state{kQueued};
+    std::atomic<int32_t> builder{-1};       // the worker that began it (Precached::builder)
     std::unique_ptr<plume::RenderPipeline> pipeline;
     ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
     ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
@@ -623,6 +824,7 @@ class Pipelines {
   struct Urgent {
     Precached* precached = nullptr;
     std::shared_ptr<Request> request;
+    std::shared_ptr<Precached> seed;  // a level seed: the queue and the worker keep it alive
   };
   std::unordered_map<PipelineKey, std::shared_ptr<Request>, PipelineKeyHash> requests_;
   std::deque<Urgent> urgent_;  // work_mutex_
@@ -639,14 +841,42 @@ class Pipelines {
   // The copies PrebuildForLevel waits for.
   std::vector<std::shared_ptr<Request>> prebuild_requests_;
   std::vector<Precached*> prebuild_precached_;
+  std::vector<std::shared_ptr<Precached>> prebuild_seeds_;  // seeds a drawn pipeline's copy turned out to be
+  // Level seeds. seed_ is after urgent_, low_ and the list (work_mutex_); seed_active_ the seeds being
+  // built from it and seed_slots_ the most at once (level_seeds::Slots). The rest is the render thread's:
+  // the seeds by persistent key (taken ones stay, as the alias marker of a precache entry), the level
+  // they are for (0: none), the generation of the run and the frame of the next look at the budget.
+  std::deque<Urgent> seed_;
+  uint32_t seed_active_ = 0;
+  uint32_t seed_slots_ = 1;
+  std::unordered_map<PipelineKey, std::shared_ptr<Precached>, PipelineKeyHash> seeds_by_key_;
+  // Made seeds that were let go, destroyed level_seeds::kReleasePerFrame a frame (EndFrame). No command
+  // list ever held them.
+  std::vector<std::unique_ptr<plume::RenderPipeline>> seed_graveyard_;
+  uint32_t seed_level_ = 0;
+  uint32_t seed_gen_ = 0;
+  uint64_t seed_next_check_ = 0;
+  level_seeds::SeedBook seed_book_;
   std::mutex work_mutex_;
   std::condition_variable work_cv_;
   uint64_t frame_ = 0;  // EndFrame's count, for the waits
 
+  // PrebuildForLevel's second half: the seeds (see the top of the file). `covered`: the persistent keys at
+  // `level` that the first half dealt with.
+  void SeedForLevel(uint32_t level, uint32_t from_level,
+                    const std::unordered_set<PipelineKey, PipelineKeyHash>& covered,
+                    LevelPrebuild& result);
+  // The untaken seeds go (queued ones are cancelled, made ones freed) and the run is reported.
+  void DropSeeds(const char* why);
+  // Once a frame (EndFrame): the run's line when it is done, the look at the video memory.
+  void SeedFrame();
+  bool HasSeedWork() const;  // work_mutex_ held
+
   void PushUrgent(Urgent urgent);
   // Hands `key` to the builders. False when it cannot be built in the
   // background (no shaders, a layout that cannot be stored, no workers).
-  bool StartRequest(const PipelineKey& key, const PipelineInputs& inputs);
+  // `fallback`: the draw has a fallback key (Deferral::has_fallback): a failure is logged for the key.
+  bool StartRequest(const PipelineKey& key, const PipelineInputs& inputs, bool fallback);
   // The background build of `key`, if one was asked for: taken when ready,
   // waited for when the draw may not be skipped (made here when no worker had
   // begun it), pending when it may.

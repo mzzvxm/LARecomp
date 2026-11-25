@@ -1,12 +1,14 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 
 #include "guest_profiler.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
-#include <rex/ppc/func.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
 
 #include "logging.h"
 #include "os/thread_priority.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 
 #if defined(_WIN32)
 
@@ -45,16 +47,6 @@
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
-
-REXCVAR_DEFINE_BOOL(guest_profile, false, "MCLA/Diag",
-    "Sample the busiest threads, and photograph every thread when the game stops. "
-    "The same thing MCLA_PROFILE=1 turns on, reachable from the config file so a "
-    "session need not be launched from a shell to get it. The periodic report says "
-    "where frame time goes; the stall dump is the one that matters when a load "
-    "never finishes, because the thread the sampler follows is parked in a wait by "
-    "then and the stuck one is somebody else. Reports land in logs/profile_*.log.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mc::profiler {
 namespace {
@@ -130,15 +122,15 @@ std::atomic<bool> g_running{false};
 std::atomic<bool> g_frame_is_slow{false};
 
 std::mutex g_frame_mtx;
-std::vector<float> g_frame_ms;  // every frame time in the current window
+std::vector<float>& g_frame_ms = larecomp::Leak<std::vector<float>>();  // every frame time in the current window
 uint64_t g_total_frames = 0;
 uint64_t g_total_slow_frames = 0;
 
-std::thread g_sampler;
+std::thread& g_sampler = larecomp::Leak<std::thread>();
 std::FILE* g_log = nullptr;
 int g_report_index = 0;
 DWORD g_pinned_tid = 0;
-std::string g_pinned_name;
+std::string& g_pinned_name = larecomp::Leak<std::string>();
 
 int64_t NowNs() {
     return std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -150,7 +142,7 @@ int64_t NowNs() {
 // Guest address recovery, without a PDB
 //=============================================================================
 //
-// Codegen emits PPCFuncMappings[] -- every recompiled function as a
+// Codegen emits kPPCFuncMappings[] -- every recompiled function as a
 // { guest address, host function pointer } pair, terminated by { 0, nullptr }.
 // It is linked into the exe and needs no symbols at all, which matters because
 // a profile taken on somebody else's machine has no PDB next to it: every
@@ -163,9 +155,9 @@ int64_t NowNs() {
 // that belongs to no recompiled function is rejected outright instead of being
 // charged to whichever entry happens to precede it.
 
-std::vector<std::pair<uint64_t, uint32_t>> g_guest_by_host;  // sorted by host
-std::unordered_map<uint64_t, uint32_t> g_guest_exact;        // host start -> guest
-std::unordered_set<uint64_t> g_guest_folded;                 // host claimed by 2+ guests
+std::vector<std::pair<uint64_t, uint32_t>>& g_guest_by_host = larecomp::Leak<std::vector<std::pair<uint64_t, uint32_t>>>();  // sorted by host
+std::unordered_map<uint64_t, uint32_t>& g_guest_exact = larecomp::Leak<std::unordered_map<uint64_t, uint32_t>>();  // host start -> guest
+std::unordered_set<uint64_t>& g_guest_folded = larecomp::Leak<std::unordered_set<uint64_t>>();  // host claimed by 2+ guests
 uint64_t g_exe_lo = 0, g_exe_hi = 0;                         // larecomp.exe image
 
 void BuildGuestMap() {
@@ -187,13 +179,13 @@ void BuildGuestMap() {
     }
 
     size_t n = 0;
-    for (const PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) ++n;
+    for (const PPCFuncMapping* m = kPPCFuncMappings; m->host; ++m) ++n;
     g_guest_by_host.reserve(n);
     g_guest_exact.reserve(n * 2);
 
-    for (const PPCFuncMapping* m = PPCFuncMappings; m->host; ++m) {
+    for (const PPCFuncMapping* m = kPPCFuncMappings; m->host; ++m) {
         const uint64_t host = reinterpret_cast<uint64_t>(m->host);
-        const uint32_t guest = static_cast<uint32_t>(m->guest);
+        const uint32_t guest = static_cast<uint32_t>(m->address);
         g_guest_by_host.emplace_back(host, guest);
 
         // Release links fold identical functions together (/OPT:ICF), and with
@@ -472,7 +464,7 @@ struct CpuRow {
     std::string name;
 };
 
-std::unordered_map<DWORD, uint64_t> g_thread_prev;  // tid -> cumulative 100ns
+std::unordered_map<DWORD, uint64_t>& g_thread_prev = larecomp::Leak<std::unordered_map<DWORD, uint64_t>>();  // tid -> cumulative 100ns
 int64_t g_cpu_epoch_ns = 0;  // when those figures were last read
 
 std::string ThreadName(HANDLE h) {
@@ -576,8 +568,8 @@ struct Target {
     bool pinned = false;
 };
 
-std::unordered_map<DWORD, ThreadData> g_data;
-std::vector<Target> g_targets;
+std::unordered_map<DWORD, ThreadData>& g_data = larecomp::Leak<std::unordered_map<DWORD, ThreadData>>();
+std::vector<Target>& g_targets = larecomp::Leak<std::vector<Target>>();
 
 void CloseUnpinnedTargets() {
     for (Target& t : g_targets) {
@@ -1066,7 +1058,7 @@ void DumpAllThreads(const char* reason) {
 
 bool EnabledImpl() {
     const char* e = std::getenv("MCLA_PROFILE");
-    return (e && *e == '1') || REXCVAR_GET(guest_profile);
+    return (e && *e == '1') || larecomp::settings::guest_profile.Get();
 }
 
 // MCLA_PROFILE_THREAD pins the sampler to a named thread, matched as a
@@ -1153,16 +1145,18 @@ void Tick(double frame_ms) {
             RtlLookupFunctionEntry(reinterpret_cast<DWORD64>(&Tick), &base, nullptr);
         }
 
+        // Next to the SDK's log file (app.log_root), not a "logs" folder of the working directory: the logger decides where.
+        const std::filesystem::path log_dir = LarecompLogFolder();
         std::error_code ec;
-        std::filesystem::create_directories("logs", ec);
+        std::filesystem::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
         std::tm tm{};
         localtime_s(&tm, &t);
         char name[160];
-        std::snprintf(name, sizeof(name), "logs/profile_%04d%02d%02d_%02d%02d%02d.log",
+        std::snprintf(name, sizeof(name), "profile_%04d%02d%02d_%02d%02d%02d.log",
                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min,
                       tm.tm_sec);
-        g_log = std::fopen(name, "w");
+        g_log = _wfopen((log_dir / name).c_str(), L"w");
         if (g_log) {
             std::fprintf(g_log,
                          "LARecomp guest sampling profile\n"

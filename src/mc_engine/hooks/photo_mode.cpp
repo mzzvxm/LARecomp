@@ -2,35 +2,17 @@
 // picture the game JPEG-encodes on the CPU is the frame that was on screen.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/interfaces/graphics.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/gpu/graphics_system.h>
+#include <rex/module.h>
+#include <rex/kernel/guest_memory.h>
 #include <cstdint>
 
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "mc_engine/core/logging.h"
-
-REXCVAR_DEFINE_BOOL(photo_auto_readback, true, "MCLA/PhotoMode",
-    "Fix: photo mode previews show an old frame or garbage. The game takes its "
-    "picture on the CPU, by locking the front buffer and JPEG-encoding it, so it "
-    "needs the GPU resolve copied back to guest memory. This asks for a readback "
-    "of just the two front buffers for a few frames around each shot, instead of "
-    "the global readback_resolve cvar which stalls every resolve of every frame "
-    "(on an SDK without the scoped readback, the global one for about a second "
-    "around each shot). Leave ON.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
-    "Diagnostics for photo_auto_readback: logs the photo album state machine's "
-    "phase transitions and the front buffer addresses the readback is armed for. "
-    "Pair with the GPU-side gpu_log_resolve_readback_misses to see whether the "
-    "resolve that fills the front buffer actually lands in the armed range.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 // ---------------------------------------------------------------------------
 // Photo mode: front buffer readback
@@ -48,11 +30,12 @@ REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
 // an address-scoped request for just the two front buffers while the photo state
 // machine winds up to the capture.
 //
-// The address-scoped request is the fork's SDK's (IGraphicsSystem::
-// RequestResolveReadback). The stock SDK has no such call, and there the shot
-// holds the global readback open instead, through the same window the vinyls
-// use (readback_window.cpp): every resolve for about a second around the shot,
-// which costs frame rate in photo mode and nowhere else.
+// The address-scoped request is LAR-RXSDK's (IGraphicsSystem::
+// RequestResolveReadback, version 2 of the interface on rexglue 0.11). It answers
+// false where no XENIA renderer runs (LARecomp's own renderer) or on a stock SDK,
+// and there the shot holds the global readback open instead, through the same
+// window the vinyls use (readback_window.cpp): every resolve for about a second
+// around the shot, which costs frame rate in photo mode and nowhere else.
 
 // Reads the base address out of a guest D3DTexture's GPU fetch constant, the
 // same field sub_82410440 feeds to LockRect: dword 1 of the fetch constant
@@ -65,9 +48,9 @@ REXCVAR_DEFINE_BOOL(photo_readback_debug, false, "MCLA/PhotoMode",
 // plausible object or the address isn't in a physical heap.
 static uint32_t GuestTextureBaseAddress(uint32_t texture_ea) {
     if (texture_ea < 0x10000u || texture_ea >= 0xFFFF0000u) return 0;
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return 0;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return 0;
     const auto* p = mem->TranslateVirtual<const uint8_t*>(texture_ea + 32);
     if (!p) return 0;
@@ -80,14 +63,14 @@ static uint32_t GuestTextureBaseAddress(uint32_t texture_ea) {
 }
 
 // Asks the SDK to read back [base, base + span) for the next `frames` frames.
-// False when it cannot: a template so that, on an SDK without the call, the
-// requires-expression is simply false instead of a compile error.
+// False when it cannot (the SDK refuses: no XENIA renderer, or more ranges than it
+// holds): a template so that, on an SDK without the call, the requires-expression
+// is simply false instead of a compile error.
 template <typename Gfx>
 static bool RequestScopedResolveReadback(Gfx* gfx, uint32_t base, uint32_t span,
                                          uint32_t frames) {
     if constexpr (requires { gfx->RequestResolveReadback(base, span, frames); }) {
-        gfx->RequestResolveReadback(base, span, frames);
-        return true;
+        return gfx->RequestResolveReadback(base, span, frames);
     } else {
         return false;
     }
@@ -97,11 +80,13 @@ static bool RequestScopedResolveReadback(Gfx* gfx, uint32_t base, uint32_t span,
 // dword_82839374 on every swap and the capture locks whichever is current, so
 // covering only one of them would be a coin flip.
 static void ArmPhotoFrontBufferReadback() {
-    if (!REXCVAR_GET(photo_auto_readback)) return;
-    auto* rt = rex::Runtime::instance();
+    if (!larecomp::settings::photo_auto_readback.Get()) return;
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
-    auto* gfx = rt->graphics_system();
+    auto* mem = larecomp::guest::AddressSpace(rt);
+    // 0.11: the graphics system is an interface of the running app (0.10: rt->graphics_system()); LAR-RXSDK gives it
+    // RequestResolveReadback again (4244ef59), and a refusal falls back to the global readback window below.
+    auto* gfx = REX_INTERFACE(rex::gpu::IGraphicsSystem);
     if (!mem || !gfx) return;
 
     const auto* array = mem->TranslateVirtual<const uint8_t*>(0x828393ACu);  // front buffers[2]
@@ -135,7 +120,7 @@ static void ArmPhotoFrontBufferReadback() {
     if (!scoped) {
         HoldGlobalReadback(ReadbackClient::kPhoto, kGlobalHoldNs);
     }
-    if (REXCVAR_GET(photo_readback_debug)) {
+    if (larecomp::settings::photo_readback_debug.Get()) {
         static uint32_t last_logged[2] = {0, 0};
         if (bases[0] != last_logged[0] || bases[1] != last_logged[1]) {
             last_logged[0] = bases[0];
@@ -155,16 +140,16 @@ static void ArmPhotoFrontBufferReadback() {
 // Arming from 3/5/6 puts the readback window several frames ahead of the
 // LockRect in sub_82178B20, which is what the front buffer resolve needs.
 void Hook_PhotoModeCapture(PPCRegister& r3) {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
     uint32_t state_ea = static_cast<uint32_t>(r3.u64);
     if (state_ea < 0x10000u || state_ea >= 0xFFFF0000u) return;
     const auto* p = mem->TranslateVirtual<const uint8_t*>(state_ea + 132);
     if (!p) return;
     uint32_t phase = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3];
-    if (REXCVAR_GET(photo_readback_debug)) {
+    if (larecomp::settings::photo_readback_debug.Get()) {
         static uint32_t last_phase = 0xFFFFFFFFu;
         if (phase != last_phase) {
             last_phase = phase;

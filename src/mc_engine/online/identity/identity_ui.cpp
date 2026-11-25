@@ -14,11 +14,9 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/keybinds.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/ui/ui_system.h>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -36,8 +34,10 @@
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "identity_client.h"
+#include "identity_rename.h"
 #include "identity_store.h"
 #include "mc_engine/ui/imgui_theme.h"
+#include "mc_engine/ui/overlay_support.h"
 
 namespace larecomp {
 
@@ -131,9 +131,16 @@ constexpr ImVec4 kWarn = mcla::ui::kColorWarn;
 constexpr ImVec4 kBad = mcla::ui::kColorBad;
 constexpr ImVec4 kDim = mcla::ui::kColorTextDim;
 
-class IdentityDialog final : public rex::ui::ImGuiDialog {
+class IdentityDialog;
+IdentityDialog* g_dialog = nullptr;
+
+class IdentityDialog final : public mcla::ui::PanelDialog {
 public:
-    explicit IdentityDialog(rex::ui::ImGuiDrawer* drawer) : ImGuiDialog(drawer) {}
+    explicit IdentityDialog(rex::ui::IUISystem& ui) : ui_(&ui) { g_dialog = this; }
+    ~IdentityDialog() override {
+        g_dialog = nullptr;
+        pad_block_.Set(false);
+    }
 
     void Toggle() {
         if (g_open.load())
@@ -357,22 +364,8 @@ private:
         const std::string name = pf::SanitizeName(typed);
         const std::string current = id::Nick();
         const std::filesystem::path root = id::UserDataRoot();
-        if (name.empty() || name != typed) {
-            nick_msg_ = "Use only letters, digits and spaces, up to 15 characters.";
-        } else if (pf::IsReservedName(name)) {
-            nick_msg_ = "That name is reserved.";
-        } else if (pf::SameName(name, current)) {
-            nick_msg_ = "That is already your gamertag.";
-        } else if (root.empty()) {
-            nick_msg_ = "The save folder is not known; change user_name by hand.";
-        } else {
-            std::error_code ec;
-            if (std::filesystem::exists(root / name, ec)) {
-                nick_msg_ = "You already have a save with that name.";
-            } else if (!std::filesystem::exists(root / current, ec)) {
-                nick_msg_ = "Your save folder was not found; change user_name by hand.";
-            }
-        }
+        // The rules (identity_rename.cpp) are shared with `larecomp_online_tool identity rename`.
+        nick_msg_ = id::RenameProblem(typed, current, root);
         if (!nick_msg_.empty()) return;
 
         // The content manager only renames the folder .profile names; make it
@@ -381,10 +374,10 @@ private:
             nick_msg_ = "Could not write the save marker.";
             return;
         }
-        rex::cvar::SetFlagByName("user_name", name);
+        larecomp::cvar::SetFlagByName("user_name", name);
         std::vector<pf::ConfigEdit> edits;
         edits.push_back({"user_name", pf::QuoteTomlString(name)});
-        if (!pf::EditConfig(rex::filesystem::GetExecutableFolder() / "larecomp.toml", edits)) {
+        if (!pf::EditConfig(rex::platform::GetExecutableFolder() / "larecomp.toml", edits)) {
             nick_msg_ = "Could not write larecomp.toml.";
             return;
         }
@@ -495,20 +488,24 @@ private:
 
     void Open_() {
         g_open.store(true);
+        pad_block_.Set(true);
         first_frame_ = true;
     }
 
     void Close_() {
         g_open.store(false);
+        pad_block_.Set(false);
         std::memset(pw1_, 0, sizeof(pw1_));
         std::memset(pw2_, 0, sizeof(pw2_));
-        auto& io = GetIO();
+        auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         // As the mod browser does: no pad left claimed once the window is gone.
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
     }
 
+    rex::ui::IUISystem* ui_;
+    mcla::ui::InputBlock pad_block_;
     id::Status status_;
     std::string code_;
     std::string shown_code_;
@@ -530,17 +527,18 @@ private:
     std::string picked_;      // guarded by msg_mtx_: the file dialog's answer
 };
 
-IdentityDialog* g_dialog = nullptr;
-
 }  // namespace
 
-void StartIdentity(rex::ui::ImGuiDrawer* imgui_drawer) {
-    if (!imgui_drawer || g_dialog) return;
-    g_dialog = new IdentityDialog(imgui_drawer);
-    rex::ui::RegisterBind("bind_identity", "F8", "Open or close the online identity window", [] {
-        if (g_dialog) g_dialog->Toggle();
-    });
+void StartIdentity(rex::ui::IUISystem& ui) {
+    if (g_dialog) return;
+    // Always in the UI system's list, drawing nothing while closed (as on 0.10); AutoOpen opens it when something
+    // needs the player. The UI system owns it; its destructor clears g_dialog.
+    ui.AddDialog(std::make_unique<IdentityDialog>(ui));
     id::StartClient();
+}
+
+void IdentityKeyPressed() {
+    if (g_dialog) g_dialog->Toggle();
 }
 
 bool IdentityCapturesInput() { return g_open.load(std::memory_order_relaxed); }

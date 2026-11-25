@@ -25,6 +25,8 @@
 #include <string>
 #include <tuple>
 
+#include "setting_source.h"
+#include "side_view_ui_map.h"
 #include "side_views.h"
 
 using namespace mcla::gpu;
@@ -219,6 +221,47 @@ void EitherOrder() {
   }
 }
 
+// A class that follows the screen's scale (side_views.h OutputScale): 720p at a render scale of 1x, or any scale below 1.25x, is the guest's size, so the class changes nothing
+// there (round 3: UI-SHARP's "the 720p minimap is not identical" was the phone sliding out between the two pictures, but a render scale of 1.05 used to remake the targets).
+void FollowsTheScreenFromOnePointTwoFive() {
+  using side_views::OutputScale;
+  Check(OutputScale(Scale{}).unit() && OutputScale(Scale{20}).unit(), "at 1x the class is at the guest's size");
+  Check(OutputScale(Scale{21}).unit() && OutputScale(Scale{24}).unit(), "below 1.25x too (1.05x, 1.2x)");
+  Check(OutputScale(Scale{25}) == Scale{25}, "at 1.25x it follows");
+  Check(OutputScale(Scale{30}) == Scale{30} && OutputScale(Scale{45}) == Scale{45} && OutputScale(Scale{60}) == Scale{60}, "at 1.5x (1080p), 2.25x and 3x (4K) it follows");
+  Check(OutputScale(Scale{10}).unit(), "never below the guest's size (a render scale of 0.5x)");
+  Check(side_views::kFollowMinScale == 25, "the threshold is 1.25x in twentieths");
+}
+
+void QuickMap() {
+  struct Key {
+    uint16_t base_tiles;
+    uint16_t pitch;
+    uint8_t depth;
+    uint8_t format;
+    uint8_t samples;
+    uint8_t reserved;
+  };
+  using ui_map_views::Matches;
+  constexpr Key colour{0, 760, 0, kFormat8888, 4, 0};
+  constexpr uint32_t size = Size(749, 430);
+  Check(Matches(colour, size), "the logged 749x430 quick map belongs to the UI map views");
+  Check(Matches(colour, 0), "the quick map's key also matches when size is unavailable");
+  Check(!Matches(colour, Size(760, 430)), "pitch 760 is not the quick map's declared width");
+  Check(!Matches(colour, Size(749, 432)), "a different declared height uses the same key outside the class");
+  Check(!Matches(Key{0, 760, 1, kFormat8888, 4, 0}, size), "tile 0 depth cannot match even with the same format bits");
+  Check(!Matches(Key{0, 760, 1, kFormatD24FS8, 4, 0}, 0), "pitch 760 D24FS8 depth with no declared size is outside the class");
+  Check(!Matches(Key{0, 760, 0, kFormatFloat7e3, 4, 0}, size), "pitch 760 colour of a different format is outside the class");
+  Check(!Matches(Key{0, 760, 0, kFormat8888, 2, 0}, size), "a two-sample target is outside the class");
+  Check(!Matches(Key{0, 752, 0, kFormat8888, 4, 0}, size), "another pitch is outside the class");
+  Check(!Matches(Key{16, 760, 0, kFormat8888, 4, 0}, size), "another tile is outside the class");
+  Check(!Matches(Key{0, 760, 0, kFormat8888, 4, 1}, size), "a nonzero layer is outside the class");
+  Check(side_views::OutputScale(Scale{60}, false).unit(), "quick map off at 3x is made at 1x");
+  Check(side_views::OutputScale(Scale{24}, true).unit(), "quick map on below 1.25x is made at 1x");
+  Check(side_views::OutputScale(Scale{25}, true) == Scale{25}, "quick map on at 1.25x follows the render scale");
+  Check(side_views::OutputScale(Scale{60}, true) == Scale{60}, "quick map on at 3x follows the render scale");
+}
+
 void UnknownSizeAndOtherIdentities() {
   Table t;
   t.class_scale = 2;
@@ -245,6 +288,44 @@ void UnknownSizeAndOtherIdentities() {
   // A layer other than 0 given in (the key as a caller keeps it) does not change the answer: the rules see layer 0.
   Check(DepthLayer({0, 520, true, kFormatD24FS8, 4, 1}, kNightSize, true) == side_views::kForeignUseLayer,
         "the layer a caller already set does not hide the identity");
+}
+
+// ---- the HUD's 128x128 pass at night: its second colour (rthit4, 2026-11-21) ----------------------------------------
+// The night run's log: "colour k_8_8_8_8@224 pitch 160 4x made at 3x (the UI map views side view ...)", "colour k_8_8_8_8@288 pitch 160 4x made at 3x (an image of the screen; declared 128x128 ...)", "depth
+// kD24FS8@0 pitch 160 4x made at 3x (the UI map views side view ...)": one pass with two colours and a depth. A target that is no class's is made at the draw's scale the first time (the class's 3x, as
+// the draw's first target is a member) and moved by the next live change of a scale to what its declared size classifies at (EdramTargets::ScaleAfter: a 128x128 surface is no image of the screen: 1x). At 8 s
+// the tour set the shadows', the reflections' and the road reflection's resolution to 'game': the pass's colour at 288 went to 1x, its companions stayed at 3x, and from then on all of its draws (25 a frame)
+// were left out: "targets of different resolution scales". The rule: every identity the pass binds is a member of the class.
+struct PassKey {
+  uint16_t base;
+  uint16_t pitch;
+  bool depth;
+  uint8_t samples;
+};
+bool PassMember(const PassKey& k, bool second_colour_listed) {
+  if (k.pitch != 160 || k.samples != 4) return false;
+  if (k.depth) return k.base == 0;
+  return k.base == 224 || (second_colour_listed && k.base == 288);
+}
+
+void SecondColourOfTheNightPass() {
+  const PassKey colour0{224, 160, false, 4}, colour1{288, 160, false, 4}, depth{0, 160, true, 4};
+  for (const bool listed : {false, true}) {
+    for (const int scale : {2, 3}) {
+      // made at the first draw at the draw's scale (the class's: the first target is a member), then a live change of a scale moves every target by its kind
+      const int made[3] = {scale, scale, scale};
+      const PassKey keys[3] = {colour0, colour1, depth};
+      int after[3];
+      for (int i = 0; i < 3; ++i) {
+        after[i] = PassMember(keys[i], listed) ? scale : 1;
+      }
+      const bool agree_made = made[0] == made[1] && made[1] == made[2];
+      const bool agree_after = after[0] == after[1] && after[1] == after[2];
+      Check(agree_made, std::string("the pass agrees when its targets are made, at ") + std::to_string(scale) + "x");
+      Check(agree_after == listed, std::string(listed ? "with the second colour in the class" : "without it") + ": after a live change of a scale the pass " +
+                                       (listed ? "still agrees" : "disagrees (the logged case)") + ", at " + std::to_string(scale) + "x");
+    }
+  }
 }
 
 // ---- the source: the model's numbers are the rule files', and no DepthLayer call forgets the size -------------------
@@ -293,7 +374,7 @@ void CheckSource(const std::string& dir) {
   Check(Has(env, "key.reserved != 0") && Has(reflection, "key.reserved != 0"),
         "the rules match layer 0 only (a layer 2 depth is no class's)");
 
-  for (const char* file : {"scene.cpp", "resolve.cpp"}) {
+  for (const char* file : {"scene.cpp", "draw_target_memo.h", "resolve.cpp"}) {
     const std::string text = ReadFile(dir + "/" + file);
     Check(!text.empty(), std::string(file) + " is readable");
     int calls = 0;
@@ -311,6 +392,36 @@ void CheckSource(const std::string& dir) {
   }
   const std::string edram = ReadFile(dir + "/edram.cpp");
   Check(Has(edram, "side_views::IsForeignUse(depth, size_bits)"), "EdramTargets::DepthLayer applies the rule");
+  {
+    const std::string scene = ReadFile(dir + "/scene.cpp");
+    Check(Has(scene, "all += std::format(\"{}{} at {}x\", all.empty() ? \"\" : \", \", DescribeEdramKey(colors[i]->key),") && Has(scene, "targets of different resolution scales (pitch {}): {}, {}"),
+          "the scale disagreement's log line names every colour of the draw and the depth, each with its scale (the logged line named colour 0 and the depth, both at 3x)");
+  }
+
+  // The HUD's and the menus' views (side_view_ui_map.h): the five identities of the 3x logs (colour k_8_8_8_8 at tile 224 pitch 160 and 280, tile 168 pitch 240;
+  // depth kD24FS8 at tile 0 pitch 160 and 280; 4 samples; declared 128, 256 and 220) and, since round 3, the menus' page (colour at tile 960 pitch 960 and depth at tile 0
+  // pitch 960, 2 samples, declared 960x640), the guest's samples at any scale, layer 0 only, and a class that follows the screen's scale: EdramTargets asks for the
+  // output's scale (Wanted(resolution_scale_)) and every loop over the classes is the one list.
+  const std::string ui_map = ReadFile(dir + "/side_view_ui_map.cpp");
+  const std::string identities = ReadFile(dir + "/side_view_ui_map.h");
+  Check(!ui_map.empty(), "side_view_ui_map.cpp is readable");
+  Check(Has(identities, "{false, 224, 160, 4, 128, 128}") && Has(identities, "{true, 0, 160, 4, 128, 128}") && Has(identities, "{false, 224, 280, 4, 256, 256}") &&
+            Has(identities, "{true, 0, 280, 4, 256, 256}") && Has(identities, "{false, 168, 240, 4, 220, 220}"),
+        "side_view_ui_map.h has the five identities of the census, with their 4 samples");
+  Check(Has(identities, "{false, 288, 160, 4, 128, 128}"),
+        "side_view_ui_map.h has the 128x128 pass's second colour (k_8_8_8_8 at tile 288, pitch 160, 4 samples): every identity a pass binds is the class's (the rthit4 night log)");
+  Check(Has(identities, "{false, 960, 960, 2, 960, 640}") && Has(identities, "{true, 0, 960, 2, 960, 640}"),
+        "side_view_ui_map.h has the menus' page: colour at tile 960 and depth at tile 0, pitch 960, 2 samples, declared 960x640");
+  Check(Has(ui_map, ".matches = ui_map_views::Matches<EdramKey>") && Has(ui_map, "return guest_samples;") && Has(ui_map, ".follows_output = true"),
+        "the UI map rule uses the tested matcher, keeps the guest's samples and follows the output");
+  Check(Has(ui_map, ".enabled = Enabled") && Has(ui_map, "return larecomp::settings::mcla_ui_minimap_scale.Get();"),
+        "SHARP MINIMAP enables the UI map views live");
+  // The setting is a REX_SETTING row of src/settings/generated (or, before the conversion, the REXCVAR_DEFINE call of side_view_ui_map.cpp): setting_source.h reads either form.
+  const setting_source::Info minimap = setting_source::Find(dir, ui_map, "mcla_ui_minimap_scale");
+  Check(setting_source::DefaultIsTrue(minimap) && !minimap.debug_only, "the setting is on by default and is no debug setting any more");
+  Check(Has(edram, "side_views::Wanted(resolution_scale_)") && Has(edram, "side_views::FollowOutput(side_scales_, output)"),
+        "EdramTargets asks for the classes at the screen's scale, and a change of the render scale moves the followers with it");
+  Check(!Has(edram, "{SideView::kShadow, SideView::kEnv, SideView::kReflection}"), "no loop over the classes names three of them any more");
 }
 
 }  // namespace
@@ -319,7 +430,10 @@ int main(int argc, char** argv) {
   TruthTable();
   LoggedFrame();
   EitherOrder();
+  FollowsTheScreenFromOnePointTwoFive();
+  QuickMap();
   UnknownSizeAndOtherIdentities();
+  SecondColourOfTheNightPass();
   if (argc > 1) {
     CheckSource(argv[1]);
   }

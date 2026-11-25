@@ -19,13 +19,13 @@
 #include <filesystem>
 #include <fstream>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/graphics/pipeline/texture/info.h>
-#include <rex/graphics/pipeline/texture/util.h>
-#include <rex/graphics/registers.h>
-#include <rex/graphics/xenos.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/xenos/texture.h>
+#include <rex/xenos/register.h>
+#include <rex/xenos/fetch.h>
+#include <rex/xenos/format.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"
@@ -42,48 +42,12 @@
 #include "texture_decode.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(mcla_gpu_lock_dump, false, "MCLA/GPU",
-                    "Diagnostic: after a Lock write-back, every 8888 level the locked range "
-                    "covers is decoded from guest memory and written as "
-                    "mcla_gpu_lock_<serial>_<base>_<w>x<h>_L<level>.tga next to the executable "
-                    "(the vinyl's mip chain).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_fill_half_pixel, true, "MCLA/GPU",
-                    "With mcla_gpu_resolution_scale above 1, a resolve of a scaled target reads "
-                    "its first host columns and rows -- the half-pixel gap no full-screen draw "
-                    "covers -- from the first one surely covered, as Xenia's "
-                    "resolve_resolution_scale_fill_half_pixel_offset does. Off: "
-                    "the gap keeps whatever was there, a 1-pixel line on the top and left "
-                    "edges. A/B switch.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_resolve_7e3_ceiling, true, "MCLA/GPU",
-                    "A resolve of a 7e3 colour target (k_2_10_10_10_FLOAT, the 3D scene) clamps "
-                    "each sample's red, green and blue to what the console's target holds, as "
-                    "Xenia does: 0 to 31.875 as stored, which with the game's exponent bias of 4 "
-                    "is a colour of 1.99 at most. The host's float16 target holds far more, "
-                    "and the tone map and the bloom then see lights the console never had: a "
-                    "red underglow pool is white in the middle instead of pink. Off: no clamp. "
-                    "Not applied to a frame that can carry the HDR float scene (HDR output with "
-                    "the HDR pack loaded and no FXAA or SMAA running): its tone map wants the "
-                    "range. "
-                    "A/B switch.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DECLARE(uint32_t, mcla_gpu_ghost_log_interval);
-REXCVAR_DECLARE(bool, mcla_gpu_work_17oct);  // scene.cpp: the 17/10 work on or off
-REXCVAR_DECLARE(bool, mcla_gpu_census_scale);  // scene.cpp
 
 namespace mcla::gpu {
 
-namespace xe = rex::graphics::xenos;
-namespace xreg = rex::graphics::reg;
-namespace tu = rex::graphics::texture_util;
-using rex::graphics::FormatInfo;
+namespace xe = rex::xenos;
+namespace xreg = rex::xenos::reg;
+using rex::xenos::FormatInfo;
 
 namespace {
 
@@ -162,7 +126,7 @@ uint64_t AlignUp(uint64_t v, uint64_t a) {
 void DumpLevelTga(uint32_t serial, const TextureKey& key, uint32_t level, uint32_t width,
                   uint32_t height, const uint8_t* rgba, uint32_t row_pitch) {
   const std::filesystem::path path =
-      rex::filesystem::GetExecutableFolder() /
+      rex::platform::GetExecutableFolder() /
       std::format("mcla_gpu_lock_{:04}_{:08x}_{}x{}_L{}.tga", serial, key.base_page << 12,
                   key.width, key.height, level);
   std::ofstream out(path, std::ios::binary);
@@ -230,53 +194,12 @@ void UpdateInheritedCells(ResolveCache::Product::Coverage& c, uint32_t level_wid
   }
 }
 
-// The copy pass's variants listed for the host builder (ListPrecache), likeliest
-// first. A variant is (depth or colour source, a source with more than one
-// sample, destination format); the destination formats are the host formats
-// of the conversions Execute has (its `mode` switch): colour into R8G8B8A8
-// (k_8_8_8_8), R16G16B16A16_FLOAT (k_16_16_16_16_EXPAND / _FLOAT), R32_FLOAT
-// (k_32_FLOAT), R32G32_FLOAT (k_32_32_FLOAT, the rain's particle state), R8_UNORM
-// (k_8) and B5G5R5A1_UNORM (k_1_5_5_5); depth into R32_FLOAT (k_24_8,
-// k_24_8_FLOAT, k_32_FLOAT) and R8G8B8A8 (raw k_8_8_8_8). B5G5R5A1 is the
-// one its owner keeps (host_precache.h): an optional render target format, and
-// no pass-timing label in the logs of the measured drives is a resolve into
-// it. The first six are the labels those logs show (MCLA, 1280x720 products);
-// the rest are the same conversions at the other sample count and the
-// formats of the rarer targets.
-struct ResolveVariant {
-  bool depth;
-  bool msaa;
-  plume::RenderFormat format;
-};
-constexpr plume::RenderFormat kRgba8 = plume::RenderFormat::R8G8B8A8_UNORM;
-constexpr plume::RenderFormat kRgba16F = plume::RenderFormat::R16G16B16A16_FLOAT;
-constexpr plume::RenderFormat kR32F = plume::RenderFormat::R32_FLOAT;
-constexpr plume::RenderFormat kRg32F = plume::RenderFormat::R32G32_FLOAT;
-constexpr plume::RenderFormat kR8 = plume::RenderFormat::R8_UNORM;
-constexpr ResolveVariant kListedResolves[] = {
-    {false, true, kRgba8},
-    {true, true, kR32F},
-    {false, true, kRgba16F},
-    {false, false, kRgba8},
-    {false, false, kRgba16F},
-    {true, true, kRgba8},
-    {false, false, kR32F},
-    {false, true, kR32F},
-    {true, false, kR32F},
-    {true, false, kRgba8},
-    {false, false, kRg32F},
-    {false, true, kRg32F},
-    {false, false, kR8},
-    {false, true, kR8},
-};
 // The reduction's destination formats listed when the render scale is not 1x
 // (ResolveCache::ListPrecache): the formats of the three common products.
-constexpr plume::RenderFormat kListedReduces[] = {kRgba8, kRgba16F, kR32F};
+constexpr plume::RenderFormat kListedReduces[] = {
+    resolve_variants::kRgba8, resolve_variants::kRgba16F, resolve_variants::kR32F};
 
-// The key of a copy pipeline in ResolveCache::pipelines_.
-constexpr uint32_t PipelineKeyOf(bool depth, bool msaa, plume::RenderFormat format) {
-  return (uint32_t(depth) << 9) | (uint32_t(msaa) << 8) | uint32_t(format);
-}
+using resolve_variants::PipelineKeyOf;  // a copy pipeline's key in ResolveCache::pipelines_
 
 // Their names: the debug name, and the entry's in the host precache's log.
 std::string ResolvePipelineName(bool depth, bool msaa, plume::RenderFormat format) {
@@ -367,7 +290,7 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
   passes_ = &passes;
   // The resolve memory reports the readers of inherited pages (reach).
   resolve_memory.SetEdram(&edram);
-  census_scale_ = REXCVAR_GET(mcla_gpu_census_scale);
+  census_scale_ = larecomp::settings::mcla_gpu_census_scale.Get();
   subscriber_ = memory.Subscribe("resolve products");
   for (uint32_t depth = 0; depth < 2; ++depth) {
     for (uint32_t msaa = 0; msaa < 2; ++msaa) {
@@ -389,9 +312,14 @@ bool ResolveCache::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
 
 void ResolveCache::ListPrecache() {
   HostPrecache& precache = passes_->precache();
-  for (const ResolveVariant& v : kListedResolves) {
-    const uint64_t key =
-        HostPrecache::Key(HostPrecache::kResolve, PipelineKeyOf(v.depth, v.msaa, v.format));
+  // The copy pass's variants: the ones a drive was seen to ask for, the likeliest first, then every
+  // destination the conversion table has (CopyConversion, the one Execute uses; resolve_variants.h), so
+  // a format added to that table is listed with no change here. A variant is (depth or colour source,
+  // a source with more than one host sample, the host format of the destination): there is no sample
+  // count in it, 2x, 4x and 8x sources share the one multisampled pipeline, so nothing is made for an
+  // MSAA level that is not run.
+  for (const resolve_variants::Variant& v : resolve_variants::ListedCopies()) {
+    const uint64_t key = HostPrecache::Key(HostPrecache::kResolve, PipelineKeyOf(v));
     precache.Add(key, ResolvePipelineName(v.depth, v.msaa, v.format),
                  [this, v] { return MakePipeline(v.depth, v.msaa, v.format); });
   }
@@ -714,7 +642,7 @@ void ResolveCache::OnLock(const LockRecord& record,
                 record.size, pages, double(ns) / 1e6,
                 write_back_logged_ == 8 ? " (further ones counted, not logged)" : "");
   }
-  if (REXCVAR_GET(mcla_gpu_lock_dump)) {
+  if (larecomp::settings::mcla_gpu_lock_dump.Get()) {
     // What the CPU reads now: every level of the locked texture (an 8888 one)
     // whose storage the lock covers, decoded from guest memory. The key comes
     // from the resource's own header: the product may be gone already (the
@@ -1272,21 +1200,12 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       uint32_t src_header_samples = 1;
       key_of(source, &src_key, &src_format, &src_bias, &src_header_samples);
       // The conversion: what the destination's fetch reads.
-      uint32_t mode = kModeCount;
-      switch (key.format) {
-        case 6: mode = depth_source ? kModeDepthRaw8888 : kModeUnorm8888; break;
-        case 3: mode = depth_source ? kModeCount : kModeUnorm1555; break;
-        case 2: mode = depth_source ? kModeCount : kModeUnorm8; break;
-        case 29:
-        case 32: mode = depth_source ? kModeCount : kModeFloat; break;
-        case 36: mode = depth_source ? kModeDepthFloatBits : kModeRed32; break;
-        case 37: mode = depth_source ? kModeCount : kModeFloat32; break;
-        case 22: mode = depth_source ? kModeDepthFloat : kModeCount; break;
-        case 23:
-          mode = depth_source ? uint32_t(kModeDepthFloat) | uint32_t(kFlagDestFloat24)
-                              : uint32_t(kModeCount);
-          break;
-        default: break;
+      // (resolve_variants.h: the same table lists the pipelines at the start.)
+      const resolve_variants::Conversion conversion =
+          resolve_variants::CopyConversion(key.format, depth_source);
+      uint32_t mode = conversion.mode;
+      if (conversion.dest_float24) {
+        mode |= uint32_t(kFlagDestFloat24);
       }
       const format::TextureHostFormat host = format::TextureHost(key.format);
       if (mode == kModeCount || host.status != format::Status::kOk) {
@@ -1320,7 +1239,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         // Blends the game draws after the overshoot (the fog quad, particles) were made against
         // the unclamped colour; the clamp is only here, at the resolve, so a pool core can stay a
         // little brighter than the console's (the console clamps every write). Small, left.
-        if (src_format == 3 && REXCVAR_GET(mcla_gpu_resolve_7e3_ceiling) && !float_scene) {
+        if (src_format == 3 && larecomp::settings::mcla_gpu_resolve_7e3_ceiling.Get() && !float_scene) {
           full_mode |= kFlagSourceCeiling7e3;
         }
       } else if (src_format == uint32_t(xe::DepthRenderTargetFormat::kD24FS8)) {
@@ -1398,7 +1317,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       }
 
       // The source target, at least as tall as the copy reads.
-      const uint32_t ghost_interval = REXCVAR_GET(mcla_gpu_ghost_log_interval);
+      const uint32_t ghost_interval = larecomp::settings::mcla_gpu_ghost_log_interval.Get();
       const bool ghost_sample = ghost_interval != 0 && frame_ % ghost_interval == 0 &&
                                 key.width == 1280 && key.height == 720 && tx0 == 0 && tx1 == 1280;
       const EdramTargets::Target* prior_src = ghost_sample ? edram_->Find(src_key) : nullptr;
@@ -1565,8 +1484,8 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       // here by the target's origin, not the copy's: the surface is drawn whole
       // at once and a tile's rectangle starts inside covered pixels.
       push.fill = 0;
-      if (resolution_scale.HalfPixelGap() != 0 && REXCVAR_GET(mcla_gpu_resolve_fill_half_pixel) &&
-          REXCVAR_GET(mcla_gpu_work_17oct)) {
+      if (resolution_scale.HalfPixelGap() != 0 && larecomp::settings::mcla_gpu_resolve_fill_half_pixel.Get() &&
+          larecomp::settings::mcla_gpu_work_17oct.Get()) {
         bool present = false;
         xreg::PA_SU_VTX_CNTL vtx;
         vtx.value = pre.Register(guest::reg::kPaSuVtxCntl, &present);

@@ -4,7 +4,7 @@
 // category; what they share is in hooks_internal.h.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <atomic>
 #include <string>
 #include <string_view>
@@ -18,6 +18,7 @@
 #include "mc_engine/camera/camera_look.h"
 #include "mc_engine/camera/camera_trace.h"
 #include "../cinematic/cars.h"
+#include "../cinematic/director/director.h"
 #include "../cinematic/scene_runtime.h"
 #include "mc_engine/input/cursor_hide.h"
 #include "mc_engine/gameplay/cutscene_gallery.h"
@@ -31,7 +32,11 @@
 #include "../mp3custom/mp3custom.h"
 #include "../online/race_props.h"
 #include "../online/car_guard.h"
+#include "../online/online_tables.h"
 #include "mc_engine/display/ultrawide.h"
+
+// See hooks.h: the manifest hook at sub_82130678 returns right after this call.
+void MCLA_DiscErrorBypass() {}
 
 void InitHooks() {
     // Builds xarchive_mods.rpf from models/*.obj. Must run before guest code
@@ -49,11 +54,11 @@ void InitHooks() {
 
     // export_vinyl acts as a button: toggling it ON runs the export, then it
     // flips back OFF so it can be triggered again.
-    rex::cvar::RegisterChangeCallback("export_vinyl",
+    larecomp::cvar::RegisterChangeCallback("export_vinyl",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 ExportVinyl();
-                rex::cvar::SetFlagByName("export_vinyl", "false");
+                larecomp::cvar::SetFlagByName("export_vinyl", "false");
             }
         }
     );
@@ -61,20 +66,20 @@ void InitHooks() {
     // cam_probe_mark / cam_probe_dump: buttons — snapshot the gameplay camera
     // and diff it, to find what the look-around actually moves. Same
     // flip-back-off shape as the dumps below.
-    rex::cvar::RegisterChangeCallback("cam_probe_mark",
+    larecomp::cvar::RegisterChangeCallback("cam_probe_mark",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 CameraProbeMark();
-                rex::cvar::SetFlagByName("cam_probe_mark", "false");
+                larecomp::cvar::SetFlagByName("cam_probe_mark", "false");
             }
         }
     );
 
-    rex::cvar::RegisterChangeCallback("cam_probe_dump",
+    larecomp::cvar::RegisterChangeCallback("cam_probe_dump",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 CameraProbeDump();
-                rex::cvar::SetFlagByName("cam_probe_dump", "false");
+                larecomp::cvar::SetFlagByName("cam_probe_dump", "false");
             }
         }
     );
@@ -82,54 +87,54 @@ void InitHooks() {
     // The one that is actually usable: arms both samples on a timer, because
     // opening this overlay to press a button is itself enough to take the game
     // out of the camera state being measured.
-    rex::cvar::RegisterChangeCallback("cam_probe_run",
+    larecomp::cvar::RegisterChangeCallback("cam_probe_run",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 CameraProbeRun();
-                rex::cvar::SetFlagByName("cam_probe_run", "false");
+                larecomp::cvar::SetFlagByName("cam_probe_run", "false");
             }
         }
     );
 
     // rubberband_dump: button — writes the 11 parsed tune entries out and flips
     // itself back off so it can be triggered again.
-    rex::cvar::RegisterChangeCallback("rubberband_dump",
+    larecomp::cvar::RegisterChangeCallback("rubberband_dump",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 DumpRubberBandTuning();
-                rex::cvar::SetFlagByName("rubberband_dump", "false");
+                larecomp::cvar::SetFlagByName("rubberband_dump", "false");
             }
         }
     );
 
     // import_vinyl: type a .vgp file name + Enter to apply it, then the field
     // clears itself. The empty write re-fires this callback, hence the guard.
-    rex::cvar::RegisterChangeCallback("import_vinyl",
+    larecomp::cvar::RegisterChangeCallback("import_vinyl",
         [](std::string_view name, std::string_view new_value) {
             if (new_value.empty()) return;
             ImportVinyl(std::string(new_value));
-            rex::cvar::SetFlagByName("import_vinyl", "");
+            larecomp::cvar::SetFlagByName("import_vinyl", "");
         }
     );
 
     // dump_vinyl_shapes: button — toggling ON writes the shape catalog manifest,
     // then flips back OFF so it can be triggered again.
-    rex::cvar::RegisterChangeCallback("dump_vinyl_shapes",
+    larecomp::cvar::RegisterChangeCallback("dump_vinyl_shapes",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 DumpVinylShapes();
-                rex::cvar::SetFlagByName("dump_vinyl_shapes", "false");
+                larecomp::cvar::SetFlagByName("dump_vinyl_shapes", "false");
             }
         }
     );
 
     // capture_vinyl_shapes: button — starts the hands-free sweep, which runs on
     // the per-frame tick (Patch_DeltaTimePre) and finalizes itself.
-    rex::cvar::RegisterChangeCallback("capture_vinyl_shapes",
+    larecomp::cvar::RegisterChangeCallback("capture_vinyl_shapes",
         [](std::string_view name, std::string_view new_value) {
             if (new_value == "true" || new_value == "1") {
                 RequestVinylShapeCapture();
-                rex::cvar::SetFlagByName("capture_vinyl_shapes", "false");
+                larecomp::cvar::SetFlagByName("capture_vinyl_shapes", "false");
             }
         }
     );
@@ -173,12 +178,14 @@ void Patch_DeltaTimePre() {
     TickModBreakables();        // mods' breakable sector props: knock-over on a hard hit
     TickRaceProps();            // online race props: the watched owner word, if any
     larecomp::car_guard::Tick();  // rigged-car notice: shows a queued one, restores the dialog text
+    larecomp::online_tables::Tick();  // online_tables.json: the game's stats views + session property names, once (a launcher reads it)
     TickCameraLook();           // cam_freelook: mouse -> gameplay camera lookaround
     TickRearView();             // rearview: the mirror's visible bit + placement, live
     TickRoadReflCars();         // mcla_gpu_road_reflection_cars_test (debug): log of a change + counts; changes nothing
     TickVibration();            // controller_vibration: stops a motor that was running when it went off
     RpcOnRaceTick();            // Discord RPC: race name + series/tournament standings
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
+    TickTrafficProbe();           // mcla_traffic_probe / mcla_traffic_probe_spawn (debug): reads the ambient cars, pools and police; one flag test when off
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
     ApplyRenderPhaseMask();       // perf_no_shadows, live
     ApplyLoadTimeDevOptions();    // keeps node+4 in sync for the load-time switches
@@ -187,6 +194,7 @@ void Patch_DeltaTimePre() {
     ApplyRubberBandScales();      // AI catch-up / hold-back limits
     ApplyRubberBandLive();        // ...pushed into the AI racers of the race in progress
     mc::cinematic::TickScene();   // trailer toolkit: a scene armed by mcla_scene (hour, weather, traffic, time scale, settings); one string test when off
+    mc::cinematic::director::Tick();  // trailer toolkit Director: runs the queued commands and publishes the snapshot (after the scene's tick, before the cars'); one setting read when off
     mc::cinematic::TickCars();    // trailer toolkit: the scene's cars (spawn, delete, the player's garage car) and their poses; one flag test when no scene uses cars
     LogRenderPhaseMaskOnce();     // a few samples of the real per-frame masks
     g_frame_heartbeat.fetch_add(1, std::memory_order_relaxed);

@@ -22,7 +22,7 @@
 #include <set>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 #include <rex/ui/d3d12/d3d12_api.h>
@@ -60,39 +60,6 @@
 
 #include <rex/ui/d3d12/d3d12_presenter.h>
 
-REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_exposure, 8.0, "MCLA/NativeGfx",
-                      "Exposure multiplier applied by the present-time tonemap (HDR anchor -> "
-                      "LDR). The raw scene target is very dark (linear, unconverged exposure); "
-                      "this lifts it before the ACES curve and gamma. Only used when "
-                      "mcla_native_gfx_present_anchor is on.")
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_fxaa, false, "MCLA/NativeGfx",
-                    "Run NVIDIA FXAA over the composite at present. The console had no "
-                    "anti-aliasing to inherit here -- the game renders unresolved -- so this "
-                    "is an addition, not a fidelity fix, and it is a whole-frame filter that "
-                    "deserves its own A/B. It goes before the display gamma ramp, which is "
-                    "where the console's own ramp sits (the DC_LUT is scanout, after "
-                    "everything the GPU drew). Independent of mcla_native_gfx_msaa: MSAA "
-                    "resolves geometry edges only, FXAA also catches shader and alpha-test "
-                    "edges, and the two compose. Ignored on the present_anchor path, whose "
-                    "source is the raw HDR scene target.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_keep_idle_display, true, "MCLA/NativeGfx",
-                    "Fix: the second Rate My Ride photo (and any picture grabbed late) comes "
-                    "out black. On the console the presented surface keeps its pixels from one "
-                    "frame to the next unless the game clears it; here every frame started "
-                    "from the runtime's stand-in clear. While a picture is taken the game stops "
-                    "rendering the world and only draws a blit or a UI quad on top of the frozen "
-                    "frame, so the frame it grabbed held nothing but that clear. With this on, "
-                    "the presented R8G8B8A8 surface keeps its colour on a frame where no other "
-                    "screen-sized pass has drawn and the guest asked for no clear. Depth is "
-                    "cleared as before. Off for A/B.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 // TEMP DIAG helper for the rim probe: IEEE half -> float. first_draw.cpp has one
 // but it is not exported, and this is scaffolding that leaves with the probe.
 static float RimHalfToFloat(uint16_t h) {
@@ -122,165 +89,7 @@ static float RimHalfToFloat(uint16_t h) {
   return out;
 }
 
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_shadow_quads, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: check this many times whether the four 640x640 quadrants of "
-                      "the resolved shadow atlas (0x06E65000) are distinct, one check every 180 "
-                      "published frames. Two identical quadrants mean a cascade inherited the "
-                      "previous cascade depth and rejected every fragment -- the 'sun only "
-                      "inside a box' failure, which on the GPS map (the 3D city at low LOD) "
-                      "reads as a whole map with no sun. Reads the RESOLVED copy: a pooled "
-                      "1280x1280 hands back its clear colour through recycling and would read "
-                      "as a false negative.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_exposure_probe, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: read back the auto-exposure targets (1x1 at 0x02D6C000 and "
-                      "4x4 at 0x02D6D000) this many times, one every 200 published frames, as "
-                      "raw floats. The native path renders cam 53 with its midtones +84 and "
-                      "11.6% of the frame clipped white against the emulated path's 2.6%, with "
-                      "matching shadows -- the shape of a gain before the tonemap.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_addr, 0x02DE6000, "MCLA/NativeGfx",
-                      "TEMP DIAG: guest address mcla_native_gfx_lowres_dump reads.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_w, 320, "MCLA/NativeGfx",
-                      "TEMP DIAG: width for mcla_native_gfx_lowres_dump.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_h, 180, "MCLA/NativeGfx",
-                      "TEMP DIAG: height for mcla_native_gfx_lowres_dump.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_lowres_dump, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: dump this many raw copies of the guest memory behind the "
-                      "320x180 post-process buffer at 0x02DE6000, one every 300 published "
-                      "frames. That buffer's resolve misses every frame (the key asks for "
-                      "R8G8B8A8, the only 320x180 pass in the pool is the HDR one), so a fetch "
-                      "of it reads whatever the title left in memory.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_rim_probe, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: report this many xRimMain draws -- the vertex declaration, "
-                      "TEXCOORD0 of the first vertices, and VS constants 206..215 (tintColors). "
-                      "The wheel picks its paint slot with a0 = trunc(TEXCOORD0.z), so a wrong "
-                      "third component reads a neighbouring part's colour.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_aniso_census, false, "MCLA/NativeGfx",
-                    "TEMP DIAG: count texture binds by whether the sampler is eligible for "
-                    "anisotropy and whether the texture actually has a mip chain to filter "
-                    "down. Anisotropy picks a finer level along the major axis, so a "
-                    "single-level texture makes a correct 16x sampler change nothing.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_ps_census, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: every distinct pixel shader the scene runs -- draw count, the "
-                      "vertex declaration's COLOR0 format and offset, and the first bound "
-                      "textures -- dumped every N draws. The runtime's shader identity is NOT "
-                      "the identity column of shader_report.tsv; translate these with "
-                      "build_shader_pack.collect_shaders(). This is what NAMES an unknown "
-                      "material: run the scene that shows the bug and read the list.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_eye_probe, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: report this many draws of the character eye/teeth material "
-                      "(xCharacter_teeth_normalmap) with its tintColor constant and its bound "
-                      "textures. Chasing eyes that render black in the native path and normal "
-                      "in the emulated one.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_fxaa_dump, 0, "MCLA/NativeGfx",
-                      "TEMP DIAG: write this many pre/post TGA pairs of the FXAA pass "
-                      "(native_gfx_fxaa_pre_N.tga / _post_N.tga). Both come from the same "
-                      "frame and the same submission, so the difference between them is the "
-                      "filter and nothing else.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_threshold, 0.125, "MCLA/NativeGfx",
-                      "FXAA edge threshold: the minimum local luma contrast, as a fraction of "
-                      "the brighter luma, before a pixel is filtered at all. Lower catches "
-                      "more edges and softens more of the frame; 0.333 is NVIDIA's fastest "
-                      "preset, 0.125 the default quality one, 0.063 the most aggressive.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(mcla_native_gfx_fxaa_subpixel, 0.75, "MCLA/NativeGfx",
-                      "How much of FXAA's sub-pixel term is allowed through. That term is what "
-                      "handles thin features and lone pixels the edge walk cannot resolve -- "
-                      "wires, railings, distant lamp posts -- and it is also the part that "
-                      "blurs. 0 turns it off and keeps the image sharpest, 1 is the softest.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_present_anchor, false, "MCLA/NativeGfx",
-                    "Continuous mode: present the anchor (raw scene target) instead of the "
-                    "readback (composite) pass. The continuous readback comes out flat/black "
-                    "while the anchor holds the real rendered scene, so this makes the native "
-                    "world visible while the composite-selection bug is still open.")
-    .debug_only();
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_drawcap, 0, "MCLA/NativeGfx",
-                      "Continuous mode: cap the number of native ANCHOR (main scene) draws "
-                      "recorded per frame. 0 = uncapped. A low value (e.g. 300) tests whether "
-                      "the DEVICE_HUNG TDR is aggregate GPU load rather than one bad draw: if "
-                      "capping stops the crash, it is load. Also a direct performance lever.")
-    .debug_only();
-
-REXCVAR_DEFINE_UINT32(mcla_native_gfx_auxcap, 8192, "MCLA/NativeGfx",
-                      "Per-frame cap on AUXILIARY draws (shadow, light, reflection passes) the "
-                      "native runtime records. 0 = uncapped. Was a hardcoded 2600, which "
-                      "measurement showed saturating in dense scenes and silently dropping the "
-                      "very lighting passes it bounded. A cap still exists because the documented "
-                      "failure is aggregate GPU load exceeding the TDR window on weak hardware, "
-                      "not one resource running out -- lower it if frame time regresses. The "
-                      "shipped default should come from the measured peak (peak_aux in the prepare "
-                      "log), not a guess; 8192 is a deliberately loose value for that measurement.")
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(mcla_native_gfx_hangfind, false, "MCLA/NativeGfx",
-                    "Diagnostic: in continuous mode, submit each recorded draw on its own and "
-                    "wait for it with a timeout. The draw whose shader spins forever (the "
-                    "DEVICE_HUNG TDR) is the one that times out; its vs/ps identity is written "
-                    "to native_gfx_hang.txt. Extremely slow — a one-shot to name the culprit.")
-    .debug_only();
-
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
-REXCVAR_DECLARE(bool, mcla_native_gfx_state_cache);
-REXCVAR_DECLARE(bool, mcla_native_gfx_alpha_ref);
-REXCVAR_DECLARE(bool, mcla_native_gfx_guest_clear);
-REXCVAR_DECLARE(bool, mcla_native_gfx_reclear);
-REXCVAR_DECLARE(bool, mcla_native_gfx_reclear_depth);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_reclear_depth_probe);
-REXCVAR_DECLARE(bool, mcla_native_gfx_skip_punch);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_water);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_msaa);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
-REXCVAR_DECLARE(bool, mcla_native_gfx_surface_key);
-REXCVAR_DECLARE(bool, mcla_native_gfx_gamma_ramp);
-REXCVAR_DECLARE(bool, mcla_native_gfx_unsupplied_drop);
-REXCVAR_DECLARE(std::string, mcla_native_gfx_skip_ps);
-REXCVAR_DECLARE(std::string, mcla_native_gfx_dump_ps);
-REXCVAR_DECLARE(std::string, mcla_native_gfx_ab_cvar);
-REXCVAR_DECLARE(bool, mcla_native_gfx_inline_fenced);
-REXCVAR_DECLARE(bool, mcla_native_gfx_inline_direct);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_ab_frames);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_first);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_skip_draw_last);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_first);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_dump_draw_last);
-REXCVAR_DECLARE(bool, mcla_native_gfx_half_pixel);
-REXCVAR_DECLARE(bool, mcla_native_gfx_swapped_texcoords);
 
 namespace mcla::native_gfx {
 
@@ -992,7 +801,7 @@ ID3D12Resource* ResolveForReadback(D3D12Context& context, ID3D12GraphicsCommandL
 // through a resolve step. The LDR composite is read back for presentation, and
 // the aux passes (shadow 640x640, minimap 220x220) are left alone.
 uint32_t PooledSampleCountFields(uint32_t rt_format, uint32_t ds_format, uint32_t width) {
-  const uint32_t forced = REXCVAR_GET(mcla_native_gfx_msaa);
+  const uint32_t forced = larecomp::settings::mcla_native_gfx_msaa.Get();
   if (forced != 2u && forced != 4u && forced != 8u) {
     return 1u;
   }
@@ -1567,7 +1376,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // The TEMP DIAG / TEMP INSTRUMENTATION blocks below run only with the master
   // switch on, or in the one-shot capture, whose report is built from them.
   // Continuous mode is the one that has to run at frame rate.
-  const bool diag = REXCVAR_GET(mcla_native_gfx_diag) || !g_cap.continuous;
+  const bool diag = larecomp::settings::mcla_native_gfx_diag.Get() || !g_cap.continuous;
   // Continuous mode ends a frame from the boundary hook (ResetContinuousFrame),
   // never from inside a draw, so the one-shot finish paths are skipped.
   if (g_cap.started && g_cap.end_requested && !g_cap.continuous) {
@@ -1583,9 +1392,9 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // nine times in a row on the black shards, while every guess cost a build and
   // a run. Bisection cannot guess wrong.
   {
-    const uint32_t skip_last = REXCVAR_GET(mcla_native_gfx_skip_draw_last);
+    const uint32_t skip_last = larecomp::settings::mcla_native_gfx_skip_draw_last.Get();
     if (skip_last != 0) {
-      const uint32_t skip_first = REXCVAR_GET(mcla_native_gfx_skip_draw_first);
+      const uint32_t skip_first = larecomp::settings::mcla_native_gfx_skip_draw_first.Get();
       if (g_cap.offered >= skip_first && g_cap.offered <= skip_last) {
         ++g_cap.skipped_by_range;
         return;
@@ -1632,13 +1441,13 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   const HostViewport hv = ComputeHostViewport(rs);
   TargetConfig cfg;
   cfg.rt_format = ColorRenderTargetFormatToDxgi(rs.color_format);
-  if (REXCVAR_GET(mcla_native_gfx_surface_key)) {
+  if (larecomp::settings::mcla_native_gfx_surface_key.Get()) {
     cfg.guest_msaa = rs.msaa_samples;
     cfg.surface_pitch = rs.surface_info & 0x3FFFu;
   }
   // Second colour target, only when RB_COLOR_MASK write-enables it. Left at 0
   // otherwise so single-target passes keep the pool key they already had.
-  cfg.rt1_format = (rs.mrt && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x2u))
+  cfg.rt1_format = (rs.mrt && (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x2u))
                        ? ColorRenderTargetFormatToDxgi(rs.color1_format)
                        : 0u;
   cfg.ds_format = DepthRenderTargetFormatToDxgi(rs.depth_format);
@@ -1798,7 +1607,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // bound. The cap stays (the documented failure is aggregate GPU load, which
     // resource accounting cannot remove) but its value now comes from the
     // measured peak in `peak_aux`, not from a guess.
-    const uint32_t kMaxAuxDraws = uint32_t(REXCVAR_GET(mcla_native_gfx_auxcap));
+    const uint32_t kMaxAuxDraws = uint32_t(larecomp::settings::mcla_native_gfx_auxcap.Get());
     constexpr uint32_t kMaxCompositeDraws = 768;
     const uint32_t cap = is_display ? kMaxCompositeDraws
                                     : (kMaxAuxDraws ? kMaxAuxDraws : 0xFFFFFFFFu);
@@ -1819,7 +1628,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // 0 = uncapped (default). Only the anchor pass is capped here; auxiliary
   // passes keep their own kMaxAuxDraws budget above.
   if (g_cap.continuous && g_cap.has_anchor && cfg == g_cap.config) {
-    const uint32_t draw_cap = uint32_t(REXCVAR_GET(mcla_native_gfx_drawcap));
+    const uint32_t draw_cap = uint32_t(larecomp::settings::mcla_native_gfx_drawcap.Get());
     if (draw_cap != 0 && g_cap.accepted >= draw_cap) {
       return;
     }
@@ -1917,7 +1726,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // disappears with this on, the zero stream is producing it, and the fix
     // belongs in geometry.cpp. If the artefact stays, this whole branch is
     // eliminated and the cause is elsewhere.
-    if (REXCVAR_GET(mcla_native_gfx_unsupplied_drop)) {
+    if (larecomp::settings::mcla_native_gfx_unsupplied_drop.Get()) {
       return;
     }
     // Deliberately falls through: the zero stream makes the draw renderable.
@@ -1958,7 +1767,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // Parsed once. strtoull with base 0 takes both "0xF43F..." and a decimal.
   {
     static uint64_t skip_ps = [] {
-      const std::string v = REXCVAR_GET(mcla_native_gfx_skip_ps);
+      const std::string v = larecomp::settings::mcla_native_gfx_skip_ps.Get();
       return v.empty() ? 0ull : std::strtoull(v.c_str(), nullptr, 0);
     }();
     if (skip_ps != 0ull && ps_id == skip_ps) {
@@ -2047,7 +1856,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     const uint32_t out_bytes = out_verts * inline_geom->stride;
     uint64_t gpu = 0;
     uint8_t* dst = nullptr;
-    if (out_bytes && REXCVAR_GET(mcla_native_gfx_inline_fenced)) {
+    if (out_bytes && larecomp::settings::mcla_native_gfx_inline_fenced.Get()) {
       // The per-slot upload ring is only rewound once the GPU has finished the
       // submission that used it (BeginFrame waits on the slot's fence).
       // g_inline_vertices is rewound at the first draw of EVERY frame in
@@ -2097,7 +1906,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // if the ring is full the cached path still takes the draw.
   InlineGeometry inline_direct;
   if (inline_geom && !inline_geom->host_gpu_address &&
-      REXCVAR_GET(mcla_native_gfx_inline_direct)) {
+      larecomp::settings::mcla_native_gfx_inline_direct.Get()) {
     const uint32_t bytes = inline_geom->size_bytes;
     const uint32_t physical = inline_geom->address & 0x1FFFFFFFu;
     const uint8_t* src = TranslatePhysicalGuest(physical);
@@ -2271,7 +2080,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     //
     // Eligibility is the same rule the sampler builder uses: not base-map
     // (mip_filter != 2) and both min and mag linear.
-    if (REXCVAR_GET(mcla_native_gfx_aniso_census)) {
+    if (larecomp::settings::mcla_native_gfx_aniso_census.Get()) {
       static uint64_t big = 0, big_elig = 0, big_elig_mips = 0, big_basemap = 0, big_nomips = 0;
       static uint64_t big_basemap_mips = 0;
       static uint64_t big_basemap_fmt[64] = {};
@@ -2340,7 +2149,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // the two differ (report 6F13A15EB1C89968, pack 5E41952680F1F209). The census
     // prints every pixel shader the scene runs with a draw count, and the names
     // come from the pack map offline.
-    if (const uint32_t census_every = REXCVAR_GET(mcla_native_gfx_ps_census)) {
+    if (const uint32_t census_every = larecomp::settings::mcla_native_gfx_ps_census.Get()) {
       constexpr uint32_t kCensus = 256;
       struct CensusRow {
         uint64_t ps = 0;
@@ -2429,12 +2238,12 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       // registers, so the index the mesh asks for can be compared against the
       // colour that sits there.
       static uint32_t rim_taken = 0;
-      if (vs_id == 0x0824D18D088E17E8ull && rim_taken < REXCVAR_GET(mcla_native_gfx_rim_probe)) {
+      if (vs_id == 0x0824D18D088E17E8ull && rim_taken < larecomp::settings::mcla_native_gfx_rim_probe.Get()) {
         ++rim_taken;
         if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
           std::fprintf(f, "RIM#%u vs=%016llX ps=%016llX swapped_tc=%u elems=%u\n", rim_taken,
                        (unsigned long long)vs_id, (unsigned long long)ps_id,
-                       REXCVAR_GET(mcla_native_gfx_swapped_texcoords) ? 1u : 0u,
+                       larecomp::settings::mcla_native_gfx_swapped_texcoords.Get() ? 1u : 0u,
                        uint32_t(bound.input_layout.size()));
           uint32_t tc0_off = 0xFFFFFFFFu, tc0_fmt = 0, tc0_slot = 0;
           for (const auto& el : bound.input_layout) {
@@ -2514,7 +2323,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     static uint32_t taken = 0;
     const bool is_eye = ps_id == 0x5E41952680F1F209ull ||   // __PS, the lit pass
                         ps_id == 0xD7BA99C168F84D73ull;    // __PS_ShadowBlend
-    if (is_eye && taken < REXCVAR_GET(mcla_native_gfx_eye_probe)) {
+    if (is_eye && taken < larecomp::settings::mcla_native_gfx_eye_probe.Get()) {
       ++taken;
       auto psreg = [&](uint32_t reg, float* out) {
         const uint32_t ea = dev + kDevPsConstantBankOffset + reg * 16u;
@@ -3286,7 +3095,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // so the car comes wholly from the 640x360 blurred buffer.
   {
     static const uint64_t dump_ps = [] {
-      const std::string v = REXCVAR_GET(mcla_native_gfx_dump_ps);
+      const std::string v = larecomp::settings::mcla_native_gfx_dump_ps.Get();
       return v.empty() ? 0ull : std::strtoull(v.c_str(), nullptr, 0);
     }();
     if (dump_ps != 0ull && ps_id == dump_ps) {
@@ -3546,7 +3355,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // BuildGeometrySnapshot derives the mask from the declaration; the translated
   // vertex shader undoes it with value.yxwz. See geometry.cpp for the capture
   // this was measured in.
-  if (REXCVAR_GET(mcla_native_gfx_swapped_texcoords)) {
+  if (larecomp::settings::mcla_native_gfx_swapped_texcoords.Get()) {
     shared_values.swapped_texcoords = bound.swapped_texcoords;
   }
   // The register-driven threshold is the default. It reads RB_ALPHA_REF and
@@ -3556,7 +3365,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // shader's flush-to-zero turns back into 0 and nothing gets clipped -- that
   // was the green squares on tree foliage. mcla_native_gfx_alpha_ref off falls
   // back to the bring-up's fixed 0.5, which made alpha-tested cars invisible.
-  shared_values.alpha_threshold = REXCVAR_GET(mcla_native_gfx_alpha_ref)
+  shared_values.alpha_threshold = larecomp::settings::mcla_native_gfx_alpha_ref.Get()
                                       ? AlphaTestThreshold(rs)
                                       : (rs.alpha_test_enable ? 0.5f : 0.0f);
   // Every translated vertex shader ends with
@@ -3612,7 +3421,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // -1/H because NDC y points up while screen y points down.
   const bool pix_center_zero =
       (rs.pa_su_vtx_cntl & uint32_t(1)) == xenos_pix_center_d3d_zero;
-  if (REXCVAR_GET(mcla_native_gfx_half_pixel) && pix_center_zero && hv.width > 0.0f &&
+  if (larecomp::settings::mcla_native_gfx_half_pixel.Get() && pix_center_zero && hv.width > 0.0f &&
       hv.height > 0.0f) {
   if (diag) {  // TEMP DIAG (A2M): quem pede alpha-to-mask, e com que referencia de alpha.
     static std::set<uint64_t> seen_a2m;
@@ -3963,7 +3772,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // the render-target count: a PSO declaring one target cannot be used with two
   // bound, and the guest's own oC1 write would be dropped.
   key.sample_count = PooledSampleCount(cfg);
-  key.rt1_format = (REXCVAR_GET(mcla_native_gfx_mrt) & 0x20u) ? cfg.rt1_format : 0u;
+  key.rt1_format = (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x20u) ? cfg.rt1_format : 0u;
   ID3D12PipelineState* pso = pipelines.GetOrCreate(context, key, vs_code, ps_code, bound);
   ProfileAdd(g_profile.pso_us, t_pso);
   if (!pso) {
@@ -4155,13 +3964,13 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // of the same heap, so a single handle plus RTsSingleHandleToDescriptorRange
   // covers them.
   const UINT rtv_count =
-      (have_second_target && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x20u)) ? 2u : 1u;
+      (have_second_target && (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x20u)) ? 2u : 1u;
   // Only what changed from the last draw on this list. The target pointer is
   // compared as well as the handles: a pool entry released and replaced could
   // hand back the same descriptor address for a different resource. (It
   // cannot happen inside one batch -- releases are deferred to the fence --
   // but the check costs one comparison.)
-  const bool reuse = g_rec.armed && REXCVAR_GET(mcla_native_gfx_state_cache);
+  const bool reuse = g_rec.armed && larecomp::settings::mcla_native_gfx_state_cache.Get();
   if (!reuse || g_rec.target != target || g_rec.rtv.ptr != rtv.ptr ||
       g_rec.dsv.ptr != dsv.ptr || g_rec.rtv_count != rtv_count) {
     cl->OMSetRenderTargets(rtv_count, &rtv, rtv_count > 1 ? TRUE : FALSE, &dsv);
@@ -4187,7 +3996,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // the same request: the first-draw policy clear and the mid-frame re-clear.
   GuestClearRequest guest_clear;
   const bool have_guest_clear =
-      REXCVAR_GET(mcla_native_gfx_guest_clear) && TakeGuestClear(&guest_clear);
+      larecomp::settings::mcla_native_gfx_guest_clear.Get() && TakeGuestClear(&guest_clear);
   if (!target->cleared) {
     // Cleared once per target: every later draw of that pass accumulates into
     // it, which is what makes the shadow atlas and the scene build up.
@@ -4222,7 +4031,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     bool keep_color = false;
     if (!from_guest && target->color_defined && display_shaped &&
         target->key.rt_format == 28u && target->key.sample_count == 1u &&
-        REXCVAR_GET(mcla_native_gfx_keep_idle_display)) {
+        larecomp::settings::mcla_native_gfx_keep_idle_display.Get()) {
       keep_color = true;
       for (uint32_t i = 0; i < g_cap.candidate_count; ++i) {
         if (g_cap.candidate_draws[i] != 0 && !(g_cap.candidate_config[i] == cfg)) {
@@ -4259,7 +4068,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       cl->ClearRenderTargetView(rtv, clear_rgba, 0, nullptr);
       target->color_defined = true;
     }
-    if (!keep_color && target->color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x4u)) {
+    if (!keep_color && target->color1 && (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x4u)) {
       // Target 1 is cleared with target 0's colour: the guest issues one
       // D3DDevice_Clear for the pass, and on the console it wipes every bound
       // surface. Leaving it dirty would let the previous species' normals show
@@ -4271,7 +4080,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     }
     cl->ClearDepthStencilView(dsv, D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL,
                               target->clear_depth, 0, 0, nullptr);
-  } else if (have_guest_clear && REXCVAR_GET(mcla_native_gfx_reclear)) {
+  } else if (have_guest_clear && larecomp::settings::mcla_native_gfx_reclear.Get()) {
     // One pooled target serves every pass of the same shape, so "cleared once
     // per frame" hands the second pass of a frame the first pass's pixels. The
     // guest clears before each pass; honour that clear here, restricted to the
@@ -4283,7 +4092,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
                              LONG(hv.top_left_y + hv.height)};
     if (rect.right > rect.left && rect.bottom > rect.top && guest_clear.color) {
       cl->ClearRenderTargetView(rtv, guest_clear.rgba, 1, &rect);
-      if (target->color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x4u)) {
+      if (target->color1 && (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x4u)) {
         D3D12_CPU_DESCRIPTOR_HANDLE rtv1 = rtv;
         rtv1.ptr += target->rtv_descriptor_size;
         cl->ClearRenderTargetView(rtv1, guest_clear.rgba, 1, &rect);
@@ -4310,7 +4119,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     // goes to the target's own clear value -- the one its first-draw clear
     // used, chosen from its viewport -- not the guest's Z, which is in the
     // guest's depth convention.
-    if (guest_clear.depth && !guest_clear.color && REXCVAR_GET(mcla_native_gfx_reclear_depth)) {
+    if (guest_clear.depth && !guest_clear.color && larecomp::settings::mcla_native_gfx_reclear_depth.Get()) {
       const BoundSurfaces now = ReadBoundSurfaces(base, dev);
       const bool same_surfaces = guest_clear.depth_surface != 0 &&
                                  guest_clear.depth_surface == now.depth &&
@@ -4336,7 +4145,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
       static std::map<uint64_t, uint32_t> probe_cases;
       static uint32_t probe_total = 0;
       ++probe_total;
-      if (REXCVAR_GET(mcla_native_gfx_reclear_depth_probe) != 0u) {
+      if (larecomp::settings::mcla_native_gfx_reclear_depth_probe.Get() != 0u) {
         const bool on_anchor = g_cap.has_anchor && cfg == g_cap.config;
         const uint64_t sig = ps_id ^ (uint64_t(target->key.width) << 52) ^
                              (uint64_t(target->key.height) << 40) ^
@@ -4350,7 +4159,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
         // counts of the frequent ones stay visible without a line per frame.
         const bool decade = case_n == 1u || case_n == 10u || case_n == 100u ||
                             case_n == 1000u || case_n == 10000u || case_n == 100000u;
-        if (decade && probe_cases.size() <= REXCVAR_GET(mcla_native_gfx_reclear_depth_probe)) {
+        if (decade && probe_cases.size() <= larecomp::settings::mcla_native_gfx_reclear_depth_probe.Get()) {
           if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
             std::fprintf(f,
                          "RECLEARZ total=%u case_n=%u %s draw=%u %ux%u rt=%u ds=%u s=%u "
@@ -5003,8 +4812,8 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // projection (a degenerate transform is what drags a triangle across the
   // screen), and the bound textures.
   {
-    const uint32_t dump_last = REXCVAR_GET(mcla_native_gfx_dump_draw_last);
-    if (dump_last != 0 && g_cap.offered >= REXCVAR_GET(mcla_native_gfx_dump_draw_first) &&
+    const uint32_t dump_last = larecomp::settings::mcla_native_gfx_dump_draw_last.Get();
+    if (dump_last != 0 && g_cap.offered >= larecomp::settings::mcla_native_gfx_dump_draw_first.Get() &&
         g_cap.offered <= dump_last) {
       if (FILE* f = std::fopen("native_gfx_draws.txt", "ab")) {
         std::fprintf(f,
@@ -5095,7 +4904,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // de surf da praia) e nao no mar aberto, o que aponta para o shore -- mas
   // apontar nao e medir.
   {
-    const uint32_t skip = uint32_t(REXCVAR_GET(mcla_native_gfx_skip_water));
+    const uint32_t skip = uint32_t(larecomp::settings::mcla_native_gfx_skip_water.Get());
     if (skip) {
       const bool shore = ps_id == 0x18821F3A51B6E4DEull;
       const bool ocean = ps_id == 0xC5C95CAE57E0D1C4ull;
@@ -5117,7 +4926,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
     }
   }
   const bool skip_this_punch =
-      REXCVAR_GET(mcla_native_gfx_skip_punch) && cfg.width == 220u && cfg.height == 220u &&
+      larecomp::settings::mcla_native_gfx_skip_punch.Get() && cfg.width == 220u && cfg.height == 220u &&
       rs.blend_control0 == 0x01810181u && bound_tex_count &&
       bound_tex[0].fetch.base_address == 0x02D64000u;
   // Only the Draw* is skipped, never the dump below: with the switch on the
@@ -5148,7 +4957,7 @@ static void CaptureDrawImpl(const uint8_t* base, uint32_t dev, uint32_t primitiv
   // Hang-find: submit this draw by itself and wait for it with a timeout. The
   // draw whose shader spins forever (the DEVICE_HUNG TDR) is the one that never
   // completes; log its identity before the device is lost.
-  if (REXCVAR_GET(mcla_native_gfx_hangfind)) {
+  if (larecomp::settings::mcla_native_gfx_hangfind.Get()) {
     FlushBatch(context);
     if (!context.WaitLastSubmitTimeout(1500)) {
       if (FILE* f = std::fopen("native_gfx_hang.txt", "ab")) {
@@ -5765,16 +5574,16 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // This dumps the raw guest bytes so the content can be looked at offline.
     static uint32_t lowres_taken = 0;
     static uint32_t lowres_tick = 0;
-    const uint32_t want = REXCVAR_GET(mcla_native_gfx_lowres_dump);
+    const uint32_t want = larecomp::settings::mcla_native_gfx_lowres_dump.Get();
     if (want && lowres_taken < want && (++lowres_tick % 300u) == 0u) {
       // Address and size are cvars so the same probe can be pointed at any
       // surface whose resolve misses. 0x02DE6000 (320x180) came back all zero --
       // that buffer is not the artifact. 0x050A0000 (1024x1024) is the next one:
       // the fast-mipmap chain samples it, and the diag shows the fetch resolving
       // as src=G, a guest-memory decode.
-      const uint32_t kAddr = REXCVAR_GET(mcla_native_gfx_lowres_addr);
-      const uint32_t kW = REXCVAR_GET(mcla_native_gfx_lowres_w);
-      const uint32_t kH = REXCVAR_GET(mcla_native_gfx_lowres_h);
+      const uint32_t kAddr = larecomp::settings::mcla_native_gfx_lowres_addr.Get();
+      const uint32_t kW = larecomp::settings::mcla_native_gfx_lowres_w.Get();
+      const uint32_t kH = larecomp::settings::mcla_native_gfx_lowres_h.Get();
       if (!kAddr || !kW || !kH) {
         lowres_taken = want;
       }
@@ -5826,8 +5635,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // recycling and reads as a false negative.
     static uint32_t sq_taken = 0;
     static uint32_t sq_tick = 0;
-    if (REXCVAR_GET(mcla_native_gfx_shadow_quads) &&
-        sq_taken < REXCVAR_GET(mcla_native_gfx_shadow_quads) && (++sq_tick % 180u) == 0u) {
+    if (larecomp::settings::mcla_native_gfx_shadow_quads.Get() &&
+        sq_taken < larecomp::settings::mcla_native_gfx_shadow_quads.Get() && (++sq_tick % 180u) == 0u) {
       // The atlas is registered by the DEPTH resolve, and its shape follows the
       // time of day (1280x1280 by day, 1280x720 at night were both seen on slot
       // 15), so the lookup has to search rather than assume. Assuming
@@ -5888,8 +5697,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // above it. Both are the addresses the diag already names (FIND / FALLBACK).
     static uint32_t exp_taken = 0;
     static uint32_t exp_tick = 0;
-    if (REXCVAR_GET(mcla_native_gfx_exposure_probe) &&
-        exp_taken < REXCVAR_GET(mcla_native_gfx_exposure_probe) && (++exp_tick % 200u) == 0u) {
+    if (larecomp::settings::mcla_native_gfx_exposure_probe.Get() &&
+        exp_taken < larecomp::settings::mcla_native_gfx_exposure_probe.Get() && (++exp_tick % 200u) == 0u) {
       struct Probe { uint32_t addr, w, h, fmt; const char* name; };
       static const Probe kProbes[] = {
           {0x02D6C000u, 1, 1, 41u, "exposure 1x1"},
@@ -5927,7 +5736,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // Done from here, not the draw path, because a readback needs its own
     // command list and a WaitForIdle.
     static bool done = false;
-    if (!done && REXCVAR_GET(mcla_native_gfx_eye_probe)) {
+    if (!done && larecomp::settings::mcla_native_gfx_eye_probe.Get()) {
       D3D12_RESOURCE_STATES st = D3D12_RESOURCE_STATE_COMMON;
       ID3D12Resource* res =
           render_targets.FindResolvedTarget(0x0329C000u, 8, 8, /*want_depth=*/false, &st);
@@ -5951,7 +5760,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   // flat (a constant) while the anchor holds the actual rendered world, so this
   // makes the native scene visible on screen even before the composite selection
   // is fixed.
-  const bool present_anchor = REXCVAR_GET(mcla_native_gfx_present_anchor);
+  const bool present_anchor = larecomp::settings::mcla_native_gfx_present_anchor.Get();
   if (present_anchor && g_cap.has_anchor) {
     display = render_targets.Find(g_cap.anchor_key);
   }
@@ -6009,7 +5818,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       win_wall_max = std::max(win_wall_max, wall_ms);
       win_slow_100 += wall_ms >= 100.0;
       win_slow_1000 += wall_ms >= 1000.0;
-      if (wall_ms >= 100.0 && REXCVAR_GET(mcla_native_gfx_diag)) {
+      if (wall_ms >= 100.0 && larecomp::settings::mcla_native_gfx_diag.Get()) {
         REXLOG_INFO(
             "[native_gfx] hitch frame={} wall={:.2f} gpu_wait={:.2f} draw={:.2f} "
             "geom={:.2f} bind={:.2f} pso={:.2f} begin={:.2f} submit={:.2f} ms | "
@@ -6047,8 +5856,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // marked settle=1 so a transition (re-uploads, cache refill) can be dropped.
     static int ab_phase = -1;
     static int ab_settle = 0;
-    const std::string ab_cvar = REXCVAR_GET(mcla_native_gfx_ab_cvar);
-    const uint32_t ab_frames = std::max<uint32_t>(60u, REXCVAR_GET(mcla_native_gfx_ab_frames));
+    const std::string ab_cvar = larecomp::settings::mcla_native_gfx_ab_cvar.Get();
+    const uint32_t ab_frames = std::max<uint32_t>(60u, larecomp::settings::mcla_native_gfx_ab_frames.Get());
     if ((total % 60u) == 0u && win_frames) {
       if (FILE* fw = std::fopen("native_gfx_diag.txt", "ab")) {
         const double n = double(win_frames);
@@ -6077,7 +5886,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       if (!ab_cvar.empty()) {
         const int want = int((total / ab_frames) & 1u);
         if (want != ab_phase) {
-          rex::cvar::SetFlagByName(ab_cvar, want ? "true" : "false");
+          larecomp::cvar::SetFlagByName(ab_cvar, want ? "true" : "false");
           ab_phase = want;
           ab_settle = 1;
         }
@@ -6248,7 +6057,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // but its clear colour, which reads as "flat" for a reason that has nothing
     // to do with lighting. Re-dump periodically so a LATE frame -- streaming
     // settled, exposure converged -- can be compared against it.
-    if (REXCVAR_GET(mcla_native_gfx_diag) && ((!dumped && seen >= 4u) || (seen % 900u) == 0u)) {
+    if (larecomp::settings::mcla_native_gfx_diag.Get() && ((!dumped && seen >= 4u) || (seen % 900u) == 0u)) {
       dumped = true;
       // Readback (the pass we present) and the anchor (main scene) side by side.
       RenderTarget* anchor = g_cap.has_anchor ? render_targets.Find(g_cap.anchor_key) : nullptr;
@@ -6445,7 +6254,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   // Present the raw HDR anchor? Then tonemap it (HDR -> LDR R8G8B8A8) instead of
   // a plain copy, so the dark linear scene is viewable. The composite (readback)
   // path is already LDR and just copies. g_tonemap is initialised lazily here.
-  const bool want_tonemap = REXCVAR_GET(mcla_native_gfx_present_anchor);
+  const bool want_tonemap = larecomp::settings::mcla_native_gfx_present_anchor.Get();
   if (want_tonemap && !g_tonemap.initialized()) {
     g_tonemap.Initialize(context);
   }
@@ -6454,7 +6263,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       tonemap ? DXGI_FORMAT_R8G8B8A8_UNORM : DXGI_FORMAT(display->key.rt_format);
   // The ramp is a compute pass, so the slot it writes has to carry a UAV even
   // on the plain-copy path.
-  const bool want_ramp = !tonemap && REXCVAR_GET(mcla_native_gfx_gamma_ramp);
+  const bool want_ramp = !tonemap && larecomp::settings::mcla_native_gfx_gamma_ramp.Get();
   if (!EnsureOwnedDisplay(context.device(), slot, display->key.width, display->key.height,
                           slot_format, tonemap || want_ramp)) {
     return false;
@@ -6500,7 +6309,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     GpuProfiler::Instance().SetMarker(cl, "ACES Tonemap Pass");
     g_tonemap.Record(context, cl, display->color.Get(), display->key.rt_format, slot.tex.Get(),
                      display->key.width, display->key.height,
-                     float(REXCVAR_GET(mcla_native_gfx_exposure)));
+                     float(larecomp::settings::mcla_native_gfx_exposure.Get()));
     D3D12_RESOURCE_BARRIER post = {};
     post.Transition.pResource = slot.tex.Get();
     post.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -6526,7 +6335,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // The UAV the shader writes is typed as the slot format, so restrict this
     // to the two formats that view: an unexpected composite format falls
     // through to the untouched copy rather than presenting garbage.
-    const bool want_fxaa = REXCVAR_GET(mcla_native_gfx_fxaa) &&
+    const bool want_fxaa = larecomp::settings::mcla_native_gfx_fxaa.Get() &&
                            display->key.sample_count <= 1 &&
                            (slot_format == DXGI_FORMAT_R8G8B8A8_UNORM ||
                             slot_format == DXGI_FORMAT_B8G8R8A8_UNORM);
@@ -6560,8 +6369,8 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
         g_fxaa.Record(context, cl, display->color.Get(), display->key.rt_format,
                       g_fxaa_buffer.tex.Get(), uint32_t(slot_format), display->key.width,
                       display->key.height,
-                      float(REXCVAR_GET(mcla_native_gfx_fxaa_threshold)),
-                      float(REXCVAR_GET(mcla_native_gfx_fxaa_subpixel)));
+                      float(larecomp::settings::mcla_native_gfx_fxaa_threshold.Get()),
+                      float(larecomp::settings::mcla_native_gfx_fxaa_subpixel.Get()));
         D3D12_RESOURCE_BARRIER post_fx = {};
         post_fx.Transition.pResource = g_fxaa_buffer.tex.Get();
         post_fx.Transition.StateBefore = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
@@ -6607,7 +6416,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
     // processor -- see gamma_pass.h. Falls back to the plain copy while the
     // title has not built the table yet, and whenever the cvar is off.
     bool ramped = false;
-    if (REXCVAR_GET(mcla_native_gfx_gamma_ramp) && slot.uav) {
+    if (larecomp::settings::mcla_native_gfx_gamma_ramp.Get() && slot.uav) {
       if (!g_gamma.initialized()) {
         g_gamma.Initialize(context);
       }
@@ -6671,7 +6480,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
       ++frames;
       const bool settled = frames >= 300u && (frames % 300u) == 0u;
       if (want_fxaa && src_is_fxaa && settled &&
-          taken < REXCVAR_GET(mcla_native_gfx_fxaa_dump)) {
+          taken < larecomp::settings::mcla_native_gfx_fxaa_dump.Get()) {
         char pre_path[64], post_path[64];
         std::snprintf(pre_path, sizeof(pre_path), "native_gfx_fxaa_pre_%u.tga", taken);
         std::snprintf(post_path, sizeof(post_path), "native_gfx_fxaa_post_%u.tga", taken);
@@ -6695,7 +6504,7 @@ bool PrepareContinuousDisplay(D3D12Context& context, RenderTargetPool& render_ta
   // only place the offending invalid API call surfaces is the InfoQueue, and it
   // has to be read the same frame it is recorded, before the async abort. Also
   // dump DRED here if the device is already gone.
-  if (REXCVAR_GET(d3d12_debug)) {
+  if (larecomp::settings::GetAs<bool>("gpu.d3d12.debug")) {
     context.DrainDebugMessagesIfAny("continuous frame");
     if (FAILED(context.device()->GetDeviceRemovedReason())) {
       REXLOG_ERROR("[native_gfx] continuous frame: device removed, dumping DRED");
@@ -6741,7 +6550,7 @@ void ResetContinuousFrame(RenderTargetPool& render_targets) {
     }
     const TargetConfig& winner = g_cap.candidate_config[best];
     if (!g_cap.has_preferred_anchor || !(winner == g_cap.preferred_anchor)) {
-      if (REXCVAR_GET(mcla_native_gfx_diag)) {
+      if (larecomp::settings::mcla_native_gfx_diag.Get()) {
         if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
           std::fprintf(f,
                        "ANCHOR preferred %ux%u rt=%u ds=%u msaa=%u pitch=%u with %u draws "

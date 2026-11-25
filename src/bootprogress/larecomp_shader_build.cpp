@@ -1,4 +1,5 @@
 #include "larecomp_shader_build.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <chrono>
@@ -27,17 +28,20 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/logging.h>
-#include <rex/system.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/windowed_app_context.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
+#include <rex/ui/ui_system.h>
+
+#include "larecomp_dialog.h"
 
 #include "larecomp_log.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 #include "larecomp_version.h"
+#include "bootprogress/pack_folder_rules.h"
+#include "bootprogress/pack_progress_rules.h"
 #include "bootprogress/larecomp_boot_progress.h"
+#include "gpu/renderer_fallback.h"  // the words of the compatibility renderer offer (standard library only)
 #include "mc_engine/core/boot_progress.h"
 #include "mc_engine/ui/imgui_theme.h"
 #include "shaderpack/builder.h"
@@ -47,30 +51,6 @@
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #endif
-
-REXCVAR_DEFINE_INT32(
-    shader_pack_threads, 0, "MCLA/GPU",
-    "How many threads build the shader packs from your game files on the first start. 0 chooses "
-    "by itself from the processor's cores and the free memory. A lower number leaves the PC more "
-    "usable during the build, which then takes longer.")
-    .range(0, 64)
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(
-    build_shader_packs, false, "MCLA/GPU",
-    "Builds the shader packs from your game files and closes, without starting the game: no "
-    "window, no graphics. The launcher runs this at the end of its setup so that the first start "
-    "has nothing to build. Progress is printed to the console; the log is logs/shader_build.txt. "
-    "Exit code 0 when the packs are in place.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(
-    build_shader_packs_force, false, "MCLA/GPU",
-    "With build_shader_packs: build even when the packs in place are current.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
 
 namespace larecomp::shaderbuild {
 namespace {
@@ -96,7 +76,7 @@ constexpr uint32_t AllFormats() {
 // D3D12 folder next to the program (the Agility SDK's folder). Defined here once: the startup
 // check, the stamp check and the build request all take it from this function.
 std::filesystem::path ShaderCompilerFolder() {
-  return rex::filesystem::GetExecutableFolder() / "D3D12";
+  return rex::platform::GetExecutableFolder() / "D3D12";
 }
 
 // The variant pack's step (the HDR scene's tone map, the bloom's Gaussians at a render scale, ...): the
@@ -104,31 +84,20 @@ std::filesystem::path ShaderCompilerFolder() {
 // A variant this build cannot make (the HDR scene's, when the tone map curve is not embedded: the HDR
 // feature's file is not in the tree) is left out and logged; the others are built.
 sp::VariantStep* VariantStepForBuild() {
-  static const std::unique_ptr<sp::VariantStep> step = [] {
+  static const std::unique_ptr<sp::VariantStep>& step = larecomp::Leak<const std::unique_ptr<sp::VariantStep>>([] {
     std::vector<std::string> left_out;
     std::unique_ptr<sp::VariantStep> made = sp::CreateBuiltInVariantStep(&left_out);
     for (const std::string& line : left_out) {
       LARECOMP_APP_INFO("[shaderpack] no shader variant {}", line);
     }
     return made;
-  }();
+  }());
   return step.get();
 }
 
 std::string PathUtf8(const std::filesystem::path& path) {
   const std::u8string u8 = path.u8string();
   return std::string(u8.begin(), u8.end());
-}
-
-// Where the logs are: next to the file the logger writes (LARECOMP_LOG_FILE), else ./logs, as
-// InitLarecompLogging does.
-std::filesystem::path LogFolder() {
-  std::error_code ec;
-  if (const char* file = std::getenv("LARECOMP_LOG_FILE"); file && *file) {
-    const std::filesystem::path parent = std::filesystem::path(file).parent_path();
-    if (!parent.empty()) return std::filesystem::absolute(parent, ec);
-  }
-  return std::filesystem::absolute("logs", ec);
 }
 
 void OpenFolder(const std::filesystem::path& folder) {
@@ -211,7 +180,7 @@ sp::BuildRequest MakeRequest(const std::filesystem::path& game_root, const std::
   request.out_dir = folder;
   request.dxc_dir = ShaderCompilerFolder();
   request.formats = formats;
-  request.threads = static_cast<unsigned>(std::max(0, REXCVAR_GET(shader_pack_threads)));
+  request.threads = static_cast<unsigned>(std::max(0, larecomp::settings::shader_pack_threads.Get()));
   request.force = force;
   request.sink = sink;
   request.variant_step = VariantStepForBuild();
@@ -234,18 +203,20 @@ sp::BuildResult BuildGuarded(const sp::BuildRequest& request) {
 }
 
 // The dialog after a build that failed or was cancelled: the short reason, and what can be done.
-// Retry runs the build again from the start; the game cannot draw without the packs.
-class FailureDialog final : public rex::ui::ImGuiDialog {
+// Retry runs the build again from the start; the game cannot draw without the packs. After a build that FAILED (not one the player
+// stopped) a fourth choice may be there, `use_compatibility`: the compatibility renderer (the hidden XENIA fallback, renderer_fallback.h),
+// which needs none of the packs; the app sets it and starts the game again.
+class FailureDialog final : public ui::ImGuiDialog {
  public:
-  FailureDialog(rex::ui::ImGuiDrawer* drawer, bool cancelled, std::string reason,
+  FailureDialog(bool cancelled, std::string reason,
                 std::filesystem::path log_folder, std::function<void()> retry,
-                std::function<void()> quit)
-      : ImGuiDialog(drawer),
-        cancelled_(cancelled),
+                std::function<void()> quit, std::function<void()> use_compatibility)
+      : cancelled_(cancelled),
         reason_(std::move(reason)),
         log_folder_(std::move(log_folder)),
         retry_(std::move(retry)),
-        quit_(std::move(quit)) {
+        quit_(std::move(quit)),
+        use_compatibility_(std::move(use_compatibility)) {
     // The first paragraph is for the player (the panel's large face); the rest is the build's own
     // message, with paths and the compiler's words, in the small dim text.
     if (const size_t split = reason_.find("\n\n"); split != std::string::npos) {
@@ -256,7 +227,9 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
 
  protected:
   void OnDraw(ImGuiIO& io) override {
-    const float width = std::min(640.0f, std::max(420.0f, io.DisplaySize.x - 64.0f));
+    // The offer is only for a build that failed; it makes the footer longer, so the panel is wider (the prompts sit on one line).
+    const bool offer = !cancelled_ && static_cast<bool>(use_compatibility_);
+    const float width = std::min(offer ? 760.0f : 640.0f, std::max(420.0f, io.DisplaySize.x - 64.0f));
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
                             ImGuiCond_Always, ImVec2(0.5f, 0.5f));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0f), ImGuiCond_Always);
@@ -266,12 +239,20 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
         {"LOG FOLDER", "L", mcla::ui::kPromptX},
         {"QUIT", "ESC", mcla::ui::kPromptBack},
     };
+    // RETRY and LOG FOLDER keep their places (0 and 1); the new choice sits before QUIT, which stays last.
+    const mcla::ui::Prompt failed_offer_prompts[] = {
+        {"RETRY", "ENTER", mcla::ui::kPromptAccept},
+        {"LOG FOLDER", "L", mcla::ui::kPromptX},
+        {mcla::gpu::fallback::kShaderDialogPrompt, "C", mcla::ui::kPromptNeutral},
+        {"QUIT", "ESC", mcla::ui::kPromptBack},
+    };
     const mcla::ui::Prompt cancelled_prompts[] = {
         {"RETRY", "ENTER", mcla::ui::kPromptAccept},
         {"QUIT", "ESC", mcla::ui::kPromptBack},
     };
     const std::span<const mcla::ui::Prompt> prompts =
         cancelled_ ? std::span<const mcla::ui::Prompt>(cancelled_prompts)
+        : offer    ? std::span<const mcla::ui::Prompt>(failed_offer_prompts)
                    : std::span<const mcla::ui::Prompt>(failed_prompts);
 
     if (mcla::ui::BeginPanel("##larecomp_shader_build_failed",
@@ -295,6 +276,10 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
         ImGui::Dummy(ImVec2(0.0f, 2.0f));
         ImGui::TextWrapped("Details: %s", PathUtf8(log_folder_ / "shader_build.txt").c_str());
       }
+      if (offer) {
+        ImGui::Dummy(ImVec2(0.0f, 2.0f));
+        ImGui::TextWrapped("%s", mcla::gpu::fallback::kShaderDialogText);
+      }
       ImGui::PopStyleColor();
     }
     const int clicked = mcla::ui::EndPanel();
@@ -305,6 +290,8 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
                        ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false);
     if (clicked == 0 || enter) {
       Finish(retry_);
+    } else if (offer && (clicked == 2 || ImGui::IsKeyPressed(ImGuiKey_C, false))) {
+      Finish(use_compatibility_);
     } else if (clicked == quit_index || ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
       Finish(quit_);
     } else if (!cancelled_ && (clicked == 1 || ImGui::IsKeyPressed(ImGuiKey_L, false))) {
@@ -325,6 +312,7 @@ class FailureDialog final : public rex::ui::ImGuiDialog {
   std::filesystem::path log_folder_;
   std::function<void()> retry_;
   std::function<void()> quit_;
+  std::function<void()> use_compatibility_;  // empty: no such choice (a build the player stopped, a launch option sets gpu.driver)
   bool done_ = false;
 };
 
@@ -420,9 +408,14 @@ bool PacksCurrentAtStartup(const std::filesystem::path& game_root) {
 void ConfigurePackFolder(const std::filesystem::path& cache_root) {
 #if defined(LARECOMP_HAS_GPU)
   // Only a cache folder the player named moves the packs; otherwise the renderer picks (next to
-  // the program, or the local application data folder where that cannot be written).
-  if (cache_root.empty() || rex::cvar::GetFlagByName("cache_root").empty()) return;
-  mcla::gpu::SetShaderPackFolder(cache_root / "shaders");
+  // the program, or the local application data folder where that cannot be written). "Named" is
+  // the layer the value came from: LARecomp itself gives cache_root a value on every start (the
+  // title layer, LarecompApp::ChooseUserFolder), so the setting having text proves nothing
+  // (pack_folder_rules.h). Source::kDefault is the default and LARecomp's own title layer.
+  const bool named = larecomp::cvar::GetFlagSource("cache_root") != larecomp::cvar::Source::kDefault;
+  if (const std::filesystem::path folder = PackFolderFor(cache_root, named); !folder.empty()) {
+    mcla::gpu::SetShaderPackFolder(folder);
+  }
 #else
   (void)cache_root;
 #endif
@@ -442,7 +435,7 @@ bool PacksCurrent(const std::filesystem::path& game_root) {
 }
 
 bool CommandLineRequested() {
-  return REXCVAR_GET(build_shader_packs);
+  return larecomp::settings::build_shader_packs.Get();
 }
 
 namespace {
@@ -451,6 +444,7 @@ namespace {
 // line starting with "@shaderpack|" (the console also carries the engine's own log lines, which are
 // not for it). Fields are separated by '|'; the last one is free text and may contain more of them.
 //   @shaderpack|folder|<where the packs go>                      once, first
+//   @shaderpack|phases|<name>:<weight>:<title>[;...]              before the first phase
 //   @shaderpack|phase|<steps, 0 when unknown>|<name>             a phase begins ("Compiling shaders")
 //   @shaderpack|step|<done>|<steps>|<item>                       progress in it, at most five a second
 //   @shaderpack|log|<info|warn|error>|<text>                     the build's own log lines
@@ -511,7 +505,7 @@ class CommandLineSink final : public AppSink {
 
 // CHECK: written without a build of larecomp (the xex image decoder was compiled and run on its own, the
 // rest only syntax checked). Run it: `larecomp.exe --build_shader_packs` in the install's game folder, with
-// the stdout piped; expect the folder, phase, step and result lines, exit 0, and then a normal start of the
+// the stdout piped; expect the folder, phases, phase, step and result lines, exit 0, and then a normal start of the
 // game that logs no shader build and shows no "preparing" popup (the stamp it wrote is current).
 int RunCommandLine(const std::filesystem::path& game_root) {
 #if defined(LARECOMP_HAS_GPU)
@@ -519,7 +513,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   // (a cache folder the player named), else <program folder>\cache\shaders, else the local
   // application data folder. Needs no renderer, so it is the same here as at the game's start.
   const std::filesystem::path folder = mcla::gpu::ShaderPackFolder();
-  CommandLineSink sink(LogFolder() / "shader_build.txt");
+  CommandLineSink sink(LarecompLogFolder() / "shader_build.txt");
   Emit("@shaderpack|folder|" + Field(PathUtf8(folder), 1000));
   sink.Line("command line: building the shader packs into " + PathUtf8(folder) + " from " + PathUtf8(game_root));
 
@@ -535,7 +529,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   };
 
   // Packs that are current need nothing, not even the executable's image to be read.
-  const bool force = REXCVAR_GET(build_shader_packs_force);
+  const bool force = larecomp::settings::build_shader_packs_force.Get();
   if (!force) {
     const sp::StampCheck check =
         sp::CheckStamp(folder, AllFormats(), sp::GameFilesQuick{game_root, ShaderCompilerFolder()}, VariantStepForBuild());
@@ -559,6 +553,7 @@ int RunCommandLine(const std::filesystem::path& game_root) {
   request.image.size = xex.data.size();
   request.image.base_address = sp::kGuestImageBase;
 
+  Emit(pack_progress::kShaderPhasesLine);
   const sp::BuildResult result = BuildGuarded(request);
   sink.Summary(result);
   mc::boot::EndPhase();
@@ -577,13 +572,14 @@ int RunCommandLine(const std::filesystem::path& game_root) {
 Phase::Phase(const std::filesystem::path& game_root, const uint8_t* guest_memory, bool force)
     : game_root_(game_root), guest_memory_(guest_memory), force_(force) {
 #if defined(LARECOMP_HAS_GPU)
-  // The Xenia backend (mcla_gpu off) needs no pack. With the Plume renderer a pack that is
-  // attached is in use and is left alone.
+  // The XENIA renderer (gpu.driver = any / d3d12 / vulkan) needs no pack: nothing here runs, and nothing can fail,
+  // so the start goes on to the mods and the music. With LARecomp's own renderer a pack that is attached is in use
+  // and is left alone. mcla::gpu::Enabled() is the one test of which renderer runs.
   if (mcla::gpu::Enabled() && !mcla::gpu::ShaderPacksAttached()) {
     needed_ = true;
     formats_ = AllFormats();
     folder_ = mcla::gpu::ShaderPackFolder();
-    log_file_ = LogFolder() / "shader_build.txt";
+    log_file_ = LarecompLogFolder() / "shader_build.txt";
     std::error_code ec;
     first_start_ = !std::filesystem::exists(folder_ / sp::kStampFileName, ec);
   }
@@ -644,33 +640,34 @@ bool Phase::Finish() {
   return false;
 }
 
-void Phase::ShowFailure(rex::ui::ImGuiDrawer* drawer, rex::ui::WindowedAppContext& app_context,
-                        std::function<void(bool force)> retry, std::function<void()> quit) {
+void Phase::ShowFailure(rex::ui::IUISystem& ui,
+                        std::function<void(bool force)> retry, std::function<void()> quit,
+                        std::function<void()> use_compatibility) {
   if (kind_ == Kind::kClosing) return;  // the app is going away: nobody to ask
   const bool cancelled = kind_ == Kind::kCancelled;
   LARECOMP_APP_WARN("[shaderpack] the game cannot start: {}", reason_);
 
-  if (!drawer) {
-    // Nothing to draw a dialog with: say it plainly and quit.
-    rex::ShowSimpleMessageBox(rex::SimpleMessageBoxType::Error,
-                              reason_ + "\n\nThe game needs these shaders to draw. Details: " +
-                                  PathUtf8(LogFolder() / "shader_build.txt"));
+  if (!ui.HasWindow()) {
+    // Nothing to draw a dialog with: say it plainly and quit (ShowMessage logs it when there is no window).
+    ui.ShowMessage(rex::MessageType::kError, "LARecomp",
+                   reason_ + "\n\nThe game needs these shaders to draw. Details: " +
+                       PathUtf8(LarecompLogFolder() / "shader_build.txt"));
     if (quit) quit();
     return;
   }
 
   // The buttons are pressed inside the dialog's own draw: what they start runs after it.
-  const auto later = [&app_context](std::function<void()> action) -> std::function<void()> {
+  const auto later = [&ui](std::function<void()> action) -> std::function<void()> {
     if (!action) return {};
-    return [&app_context, action = std::move(action)]() { app_context.CallInUIThreadDeferred(action); };
+    return [&ui, action = std::move(action)]() mutable { ui.PostTask([action = std::move(action)] { action(); }); };
   };
   const bool force = retry_forces_;
-  (void)new FailureDialog(
-      drawer, cancelled, reason_, LogFolder(),
+  (void)ui::ShowDialog<FailureDialog>(
+      ui, cancelled, reason_, LarecompLogFolder(),
       later([retry = std::move(retry), force]() {
         if (retry) retry(force);
       }),
-      later(std::move(quit)));
+      later(std::move(quit)), later(std::move(use_compatibility)));
 }
 
 }  // namespace larecomp::shaderbuild

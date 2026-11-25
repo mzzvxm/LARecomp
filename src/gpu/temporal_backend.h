@@ -97,6 +97,7 @@ struct BackendStatus {
   std::string reason;     // kUnavailable, or why it failed
   std::string provider;   // the running provider's name once a context exists
   uint64_t context_bytes = 0;  // video memory the ready context holds, as the runtime reports it
+  uint64_t companion_bytes = 0;  // ... and the companion context beside it (RequestCompanion: DLSS Ray Reconstruction)
 };
 
 // One image of a dispatch.
@@ -106,6 +107,21 @@ struct TemporalImage {
   uint32_t height = 0;
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   plume::RenderTextureFlags flags = plume::RenderTextureFlag::NONE;
+};
+
+// DLSS Ray Reconstruction's guide images (dlss_rr_rules.h, perf/DLSS-RR.md): all at the render size, in SHADER_READ at the COMPUTE stage like the other inputs, linear
+// (never sRGB); a null texture is a guide this frame does not have. Only a context made for ray reconstruction (BackendRequest::ray_reconstruction) reads them; the
+// rules (rr::PlanTags) say which are required and what a missing or wrong one means. The guide pass (rr_guides.h, package RR-2) makes them (RrGuides::guides()); TemporalSystem hands them to the dispatch (RR-3: NoteRrGuides, TemporalInputs::ray_reconstruction).
+struct TemporalGuides {
+  TemporalImage diffuse_albedo;             // RGB linear
+  TemporalImage specular_albedo;            // RGB linear
+  TemporalImage normal_roughness;           // world normals, the linear roughness in alpha (packed) ...
+  TemporalImage normals;                    // ... or the normals alone
+  TemporalImage roughness;                  // ... and the roughness alone
+  TemporalImage specular_motion;            // the reflection's motion, render pixels like the primary vectors
+  TemporalImage specular_hit_distance;      // world units from the primary surface (the sky: 65504)
+  TemporalImage responsivity;               // optional, signed [-1, 1]
+  TemporalImage color_before_transparency;  // optional, the colour's format
 };
 
 // Everything a frame's dispatch reads (F4-DESIGN.md 6.1, in the conventions the groundwork keeps).
@@ -119,16 +135,23 @@ struct TemporalInputs {
   TemporalImage color;
   TemporalImage depth;
   TemporalImage motion;
-  // Optional (texture null: none this frame): the reactive mask, R8_UNORM at the render size,
+  // Optional (texture null: none this frame): the reactive mask, R8_UNORM (R16_FLOAT on Vulkan: upscaler_mask_plan.h Storage) at the render size,
   // SHADER_READ at the COMPUTE stage like the others (upscaler_masks.h): how much of the pixel is a
   // layer no motion vector is right for, the cars' shadow decals, particles and light volumes. 0 to 1,
   // 1 rejects the pixel's history: FSR's reactive mask, DLSS's bias-current-colour and reactive hints.
   TemporalImage mask;
-  // Optional likewise: the transparency and composition mask, R8_UNORM, the same size and state: how
+  // Optional likewise: the transparency and composition mask, R8_UNORM (R16_FLOAT on Vulkan), the same size and state: how
   // much of the pixel is car glass, whose pixel lock the upscaler should give up. 0 to 1: FSR's
   // transparencyAndComposition, DLSS's hint of that name.
   TemporalImage transparency;
   TemporalImage output;
+  // Ray Reconstruction's guides (above), read only by a context made for it.
+  TemporalGuides guides;
+  // This dispatch is Ray Reconstruction's (RR-3, dlss_rr_rules.h ChooseDispatch): the backend evaluates its companion context (RequestCompanion) with `guides`. Where that cannot be done (no
+  // companion, or the guides are refused) it does the ordinary upscale instead, in the same call, and LastUpscaleUsedCompanion says so. False: the ordinary upscale.
+  bool ray_reconstruction = false;
+  // Debug lever (mcla_gpu_dlss_rr_test 3): the companion's evaluation of this dispatch fails as if Streamline had said no (nothing is recorded for it).
+  bool test_rr_error = false;
   float jitter[2] = {};        // render pixels, +y down: what this frame's draws were moved by
   float motion_scale[2] = {1.0f, 1.0f};  // the vectors times this are render pixels
   float frame_time_ms = 16.667f;
@@ -161,10 +184,14 @@ struct BackendRequest {
   // visualization on and its dispatches draw the runtime's own views into the output. Part of the
   // request, so that a change of the setting makes another context (UpscalerDebugView).
   bool debug_view = false;
+  // DLSS only (dlss_rr_rules.h, perf/DLSS-RR.md): the context is made for Ray Reconstruction, which denoises and upscales in one and replaces Super Resolution while
+  // it is the plan. Part of the request, so that the choice changing makes another context (Prepare / Commit).
+  bool ray_reconstruction = false;
   bool operator==(const BackendRequest& o) const {
     return upscaler == o.upscaler && mode == o.mode && render_size[0] == o.render_size[0] &&
            render_size[1] == o.render_size[1] && output_size[0] == o.output_size[0] &&
-           output_size[1] == o.output_size[1] && debug_view == o.debug_view;
+           output_size[1] == o.output_size[1] && debug_view == o.debug_view &&
+           ray_reconstruction == o.ray_reconstruction;
   }
 };
 
@@ -300,6 +327,31 @@ class TemporalBackend {
   virtual bool PrewarmNext(UpscaleMode*) { return false; }
   virtual void Prewarm(const BackendRequest&) {}
 
+  // Video memory (vram_room.h). The runtime's context for `request` was refused for want of room: the use
+  // plus what it needs would pass the line the caches start releasing at, so it was not made (a context is
+  // the one thing here that nothing can trim to fit). True while the wait after that refusal lasts; the
+  // request is not asked of the worker meanwhile (Request and Prepare do nothing for it), and the caller
+  // runs another path (temporal.cpp UpdatePath). After the wait it is false: the next Request or Prepare
+  // asks again, and the answer is a context or a longer wait. The default is a runtime that makes no such
+  // check (DLSS: Streamline gives no figure before a feature exists). Any thread.
+  virtual bool NoRoom(const BackendRequest&) const { return false; }
+
+  // A companion context (DLSS Ray Reconstruction, RR-3; the defaults are for a runtime with none). The current context (Request) is the upscaler the player chose and is never given up for
+  // it: the companion is a second context, for a request with BackendRequest::ray_reconstruction set, made in the background beside the current one (its feature is built on the worker
+  // with the guide images, never by a frame) and kept ready while it is asked for. A dispatch with TemporalInputs::ray_reconstruction goes to it, any other to the current one; a frame
+  // the companion cannot take (not made yet, the guides refused) is the current context's, so the upscale is never lost to it. A failing companion is dropped for the session and the
+  // current context goes on (Status().failed stays clear).
+  //   RequestCompanion   render thread, every frame it is wanted (the same request again does nothing; another one replaces it, the old context is retired behind the frames)
+  //   ReleaseCompanion   not wanted any more: its context goes
+  //   CompanionReady     the companion for exactly this request exists and was not dropped. Any thread.
+  //   LastUpscaleUsedCompanion  the last Upscale() call that returned true ran the companion (render thread, read right after the call).
+  virtual void RequestCompanion(const BackendRequest&) {}
+  virtual void ReleaseCompanion() {}
+  virtual bool CompanionReady(const BackendRequest&) const { return false; }
+  virtual bool LastUpscaleUsedCompanion() const { return false; }
+  //   CompanionSummary   one plain phrase for the census: what the companion's evaluations came to (render thread).
+  virtual std::string CompanionSummary() const { return {}; }
+
   // GPU idle: the worker stops and every context goes.
   virtual void Shutdown() = 0;
 };
@@ -329,5 +381,8 @@ void PublishRunningUpscaler(Upscaler running);
 void PublishKeptUpscaler(Upscaler kept);
 // The settings ask for another path than the one running and its context is being made.
 void PublishUpscalerSwitching(bool switching);
+// The upscaler the settings choose was refused for want of video memory and something else runs (gpu.h
+// UpscalerAvailability::no_room).
+void PublishUpscalerNoRoom(bool no_room);
 
 }  // namespace mcla::gpu

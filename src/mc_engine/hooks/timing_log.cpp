@@ -1,12 +1,11 @@
 // Frame-time instrumentation (MCLA_TIMING_LOG=1): per-second frame, GPU and
-// guest counters plus a frame-time histogram in logs/timing_*.log, and the GPU
+// guest counters plus a frame-time histogram in timing_*.log next to the log, and the GPU
 // interrupt probe it reports.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/perf/counter.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/perf.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -14,13 +13,15 @@
 #include <cstdlib>
 #include <ctime>
 #include <filesystem>
+#include <optional>
 #include <thread>
 
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "mc_engine/core/draw_stats.h"
+#include "larecomp_guest.h"
+#include "spdlog_console.h"  // LarecompLogFolder()
 
-REXCVAR_DECLARE(int32_t, fps_limit);  // frame_timing.cpp
 
 // ── Frame-time instrumentation ─────────────────────────────────────────
 //
@@ -68,59 +69,52 @@ CounterAccum g_ctr{};
 
 #define CTR(field) static_cast<unsigned long long>(g_ctr.field)
 
-// The GPU timing counters are the fork's SDK's: the stock SDK's CounterId has
-// none of them, and there these columns of the log stay 0. A template on the
-// enum so the names are only looked up on an SDK that has them.
-template <typename Id, typename AddDelta>
-static void AddGpuTimingDeltas(AddDelta&& add_delta) {
-    if constexpr (requires {
-                      Id::kGpuSubmitTimeUs;
-                      Id::kGpuDrawTimeUs;
-                      Id::kGpuFenceWaitTimeUs;
-                      Id::kGpuResolveTimeUs;
-                      Id::kGpuPipelineTimeUs;
-                      Id::kGpuPipelineCreateTimeUs;
-                      Id::kGpuPipelineCreateCount;
-                      Id::kGpuTextureUploadTimeUs;
-                      Id::kGpuTextureUploadCount;
-                      Id::kGpuWaitRegMemTimeUs;
-                      Id::kGpuWaitRegMemCount;
-                      Id::kGpuCommandWaitTimeUs;
-                  }) {
-        add_delta(g_ctr.gpu_submit_us,          Id::kGpuSubmitTimeUs);
-        add_delta(g_ctr.gpu_draw_us,            Id::kGpuDrawTimeUs);
-        add_delta(g_ctr.gpu_fencewait_us,       Id::kGpuFenceWaitTimeUs);
-        add_delta(g_ctr.gpu_resolve_us,         Id::kGpuResolveTimeUs);
-        add_delta(g_ctr.gpu_pipeline_us,        Id::kGpuPipelineTimeUs);
-        add_delta(g_ctr.gpu_pipeline_create_us, Id::kGpuPipelineCreateTimeUs);
-        add_delta(g_ctr.gpu_pipeline_create_n,  Id::kGpuPipelineCreateCount);
-        add_delta(g_ctr.gpu_texupload_us,       Id::kGpuTextureUploadTimeUs);
-        add_delta(g_ctr.gpu_texupload_n,        Id::kGpuTextureUploadCount);
-        // The guest CPU blocking on the GPU. If frame time is unaccounted for and
-        // nothing is being drawn, this is where to look first.
-        add_delta(g_ctr.gpu_waitregmem_us,      Id::kGpuWaitRegMemTimeUs);
-        add_delta(g_ctr.gpu_waitregmem_n,       Id::kGpuWaitRegMemCount);
-        add_delta(g_ctr.gpu_cmdwait_us,         Id::kGpuCommandWaitTimeUs);
+// The runtime's counters are registered by name in rexglue 0.11 (rex/platform/perf.h), no longer an enum. The GPU timing
+// counters were the fork's SDK's (gpu_submit_us ... gpu_cmdwait_us): 0.11 has none of them, so those columns of the log stay
+// 0, as they did on the stock SDK.
+enum class Ctr : size_t {
+    kFunctionsDispatched,
+    kInterruptDispatches,
+    kTextureCacheHits,
+    kTextureCacheMisses,
+    kPipelineCacheHits,
+    kPipelineCacheMisses,
+    kCommandBufferStalls,
+    kCriticalRegionContentions,
+    kCount,
+};
+constexpr const char* kCtrNames[static_cast<size_t>(Ctr::kCount)] = {
+    "functions_dispatched",   "interrupt_dispatches", "texture_cache_hits",           "texture_cache_misses",
+    "pipeline_cache_hits",    "pipeline_cache_misses", "command_buffer_stalls", "critical_region_contentions",
+};
+
+// The live value of a runtime counter looked up once by name, -1 when it is not registered (the SDK built without
+// REXGLUE_ENABLE_PERF_COUNTERS registers none of the GPU ones).
+int64_t ReadCounterByName(const char* name, std::optional<rex::platform::CounterID>& cache, bool& looked_up) {
+    if (!looked_up) {
+        cache = rex::platform::FindCounter(name);
+        looked_up = cache.has_value();
     }
+    return cache ? rex::platform::GetCounter(*cache) : -1;
 }
 
 void SampleCounters() {
-    using rex::perf::CounterId;
-    using rex::perf::GetCounter;
-
-    static int64_t s_prev_counters[static_cast<size_t>(CounterId::kCount)];
+    static int64_t s_prev_counters[static_cast<size_t>(Ctr::kCount)];
+    static std::optional<rex::platform::CounterID> s_ids[static_cast<size_t>(Ctr::kCount)];
+    static bool s_looked_up[static_cast<size_t>(Ctr::kCount)];
     static bool s_initialized = false;
     if (!s_initialized) {
-        for (size_t i = 0; i < static_cast<size_t>(CounterId::kCount); ++i) {
+        for (size_t i = 0; i < static_cast<size_t>(Ctr::kCount); ++i) {
             s_prev_counters[i] = -1;
         }
         s_initialized = true;
     }
 
-    auto add_delta = [](uint64_t& dst, CounterId id) {
+    auto add_delta = [](uint64_t& dst, Ctr id) {
         const size_t idx = static_cast<size_t>(id);
-        if (idx >= static_cast<size_t>(CounterId::kCount)) return;
-        const int64_t cur = GetCounter(id);
+        if (idx >= static_cast<size_t>(Ctr::kCount)) return;
+        const int64_t cur = ReadCounterByName(kCtrNames[idx], s_ids[idx], s_looked_up[idx]);
+        if (cur < 0) return;  // not registered
         const int64_t prev = s_prev_counters[idx];
         s_prev_counters[idx] = cur;
 
@@ -136,17 +130,16 @@ void SampleCounters() {
         }
     };
 
-    AddGpuTimingDeltas<CounterId>(add_delta);
     // Raw guest CPU churn: a collapse with flat GPU counters and a rising
     // dispatch count is guest code, not the emulator.
-    add_delta(g_ctr.dispatched,             CounterId::kFunctionsDispatched);
-    add_delta(g_ctr.interrupts,             CounterId::kInterruptDispatches);
-    add_delta(g_ctr.tex_hit,                CounterId::kTextureCacheHits);
-    add_delta(g_ctr.tex_miss,               CounterId::kTextureCacheMisses);
-    add_delta(g_ctr.pipe_hit,               CounterId::kPipelineCacheHits);
-    add_delta(g_ctr.pipe_miss,              CounterId::kPipelineCacheMisses);
-    add_delta(g_ctr.cmdbuf_stalls,          CounterId::kCommandBufferStalls);
-    add_delta(g_ctr.crit_contentions,       CounterId::kCriticalRegionContentions);
+    add_delta(g_ctr.dispatched,             Ctr::kFunctionsDispatched);
+    add_delta(g_ctr.interrupts,             Ctr::kInterruptDispatches);
+    add_delta(g_ctr.tex_hit,                Ctr::kTextureCacheHits);
+    add_delta(g_ctr.tex_miss,               Ctr::kTextureCacheMisses);
+    add_delta(g_ctr.pipe_hit,               Ctr::kPipelineCacheHits);
+    add_delta(g_ctr.pipe_miss,              Ctr::kPipelineCacheMisses);
+    add_delta(g_ctr.cmdbuf_stalls,          Ctr::kCommandBufferStalls);
+    add_delta(g_ctr.crit_contentions,       Ctr::kCriticalRegionContentions);
 
     // Guest draw stats: recorded directly at D3DDevice draw entrypoints, ensuring accurate
     // counts even when SDK REXGLUE_ENABLE_PERF_COUNTERS is compiled out.
@@ -178,7 +171,7 @@ void MCLA_GuestInterruptProbe(PPCRegister& r3, PPCRegister& r31) {
     }
     g_int_cpu.fetch_add(1, std::memory_order_relaxed);
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t user_data = static_cast<uint32_t>(r31.u32);
     if (!user_data) return;
@@ -199,8 +192,10 @@ void RecordFrameTime() {
     // One file per run: a fixed name opened with "w" would destroy the
     // previous capture on the next launch.
     static std::FILE* log = [] () -> std::FILE* {
+        // Next to the SDK's log file (app.log_root), not a "logs" folder of the working directory: the logger decides where.
+        const std::filesystem::path log_dir = LarecompLogFolder();
         std::error_code ec;
-        std::filesystem::create_directories("logs", ec);
+        std::filesystem::create_directories(log_dir, ec);
         std::time_t t = std::time(nullptr);
         std::tm tm{};
 #if defined(_WIN32)
@@ -210,11 +205,15 @@ void RecordFrameTime() {
 #endif
         char name[160];
         std::snprintf(name, sizeof(name),
-                      "logs/timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
+                      "timing_%04d%02d%02d_%02d%02d%02d_cap%d.log",
                       tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
                       tm.tm_hour, tm.tm_min, tm.tm_sec,
-                      int(REXCVAR_GET(fps_limit)));
-        return std::fopen(name, "w");
+                      int(larecomp::settings::fps_limit.Get()));
+#if defined(_WIN32)
+        return _wfopen((log_dir / name).c_str(), L"w");
+#else
+        return std::fopen((log_dir / name).c_str(), "w");
+#endif
     }();
     if (!log) return;
 
@@ -252,7 +251,7 @@ void RecordFrameTime() {
 
     if (now - last_report >= 1000000) {
         wrote = true;
-        auto* membase = rex::Runtime::instance()->virtual_membase();
+        auto* membase = larecomp::guest::Membase();
 
         // Use the ACTUAL elapsed interval, not an assumed 1000 ms: the report
         // fires on the first frame at or past the boundary, so the real window
@@ -318,14 +317,17 @@ void RecordFrameTime() {
                 (unsigned long long)g_fence_switch_us.exchange(0, std::memory_order_relaxed),
                 (unsigned long long)g_limiter_spin_us.exchange(0, std::memory_order_relaxed),
                 (unsigned long long)g_limiter_spins.exchange(0, std::memory_order_relaxed));
+            // The gauges, by name (-1: not registered; the audio ones belong to the audio driver in use).
+            auto now = [](const char* name) -> long long {
+                const auto id = rex::platform::FindCounter(name);
+                return id ? static_cast<long long>(rex::platform::GetCounter(*id)) : -1LL;
+            };
             std::fprintf(log,
                 "           sys: cmdbuf_stalls=%llu crit_contentions=%llu"
                 " | now: apc_depth=%lld threads=%lld qdepth=%lld audio_lat_us=%lld\n",
                 CTR(cmdbuf_stalls), CTR(crit_contentions),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kApcQueueDepth),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kActiveThreads),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kBufferQueueDepth),
-                (long long)rex::perf::GetCounter(rex::perf::CounterId::kAudioFrameLatencyUs));
+                now("apc_queue_depth"), now("active_threads"), now("buffer_queue_depth"),
+                now("audio_frame_latency_us"));
             g_ctr = {};
         }
 

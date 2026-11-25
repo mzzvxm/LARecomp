@@ -119,4 +119,8 @@ Image LampGlowMap(const Image& picture, float scale = 0.55f);
 // file that owns stb_image, whose zlib decoder it borrows.
 bool InflateRaw(const uint8_t* data, size_t size, size_t expected, std::vector<uint8_t>& out);
 
+// A PNG (or any picture stb reads) as tightly packed RGBA8 for a dialog's icons; empty, with 0 x 0, on failure.
+// Replaces the SDK's rex::ui::DecodeImageRGBA, which is private since rexglue 0.11.
+std::vector<uint8_t> DecodeImageRGBA(const uint8_t* data, size_t size, int& width, int& height);
+
 }  // namespace mc::modloader

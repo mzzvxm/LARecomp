@@ -30,8 +30,10 @@
 #include "max_players.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
 #include <cstdint>
@@ -72,7 +74,7 @@ void NetPool_82279D50(PPCRegister& r4) {
 // sub_82278620 just built. Logs what the game allocated.
 void NetPool_82279D58(PPCRegister& r3) {
     if (!net_limits::MaxPlayersChanged()) return;
-    const uint8_t* b = rex::Runtime::instance()->virtual_membase();
+    const uint8_t* b = larecomp::guest::Membase();
     const uint32_t pool = r3.u32;
     if (pool == 0) {
         LARECOMP_APP_ERROR("[net-pool] gamer item pool header was not allocated");

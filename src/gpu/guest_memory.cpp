@@ -3,11 +3,13 @@
 
 #include "guest_memory.h"
 
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
+#include <rex/kernel/heap.h>
 
 #include "native_gfx/guest/guest_resources.h"
+#include "larecomp_guest.h"
 
 namespace mcla::gpu {
 
@@ -47,8 +49,8 @@ bool GuestMemory::Attach() {
   if (memory_) {
     return true;
   }
-  auto* runtime = rex::Runtime::instance();
-  rex::memory::Memory* memory = runtime ? runtime->memory() : nullptr;
+  auto* runtime = REX_RUNTIME();
+  rex::kernel::GuestAddressSpace* memory = runtime ? larecomp::guest::AddressSpace(runtime) : nullptr;
   if (!memory) {
     if (!reported_no_memory_) {
       reported_no_memory_ = true;
@@ -104,8 +106,8 @@ uint8_t* GuestMemory::WritablePhysical(uint32_t physical, uint32_t length) const
   if (length == 0 || !nfx::IsPhysicalRangeReadable(physical, length)) {
     return nullptr;
   }
-  auto* runtime = rex::Runtime::instance();
-  rex::memory::Memory* memory = runtime ? runtime->memory() : nullptr;
+  auto* runtime = REX_RUNTIME();
+  rex::kernel::GuestAddressSpace* memory = runtime ? larecomp::guest::AddressSpace(runtime) : nullptr;
   return memory ? memory->TranslatePhysical<uint8_t*>(physical) : nullptr;
 }
 
@@ -144,7 +146,7 @@ bool GuestMemory::IsWatchable(uint32_t physical, uint32_t length) {
     }
     const uint32_t low = alias.base + (physical - alias.page_offset);
     const uint32_t high = alias.base + (last - alias.page_offset);
-    rex::memory::BaseHeap* heap = memory_->LookupHeap(low);
+    rex::kernel::BaseHeap* heap = memory_->LookupHeap(low);
     if (!heap || memory_->LookupHeap(high) != heap) {
       continue;
     }

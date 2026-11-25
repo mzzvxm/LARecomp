@@ -40,8 +40,8 @@
 #include <utility>
 #include <vector>
 
-namespace rex::memory {
-class Memory;
+namespace rex::kernel {
+class GuestAddressSpace;
 }
 
 namespace mcla::gpu {
@@ -129,7 +129,7 @@ class GuestMemory {
   static std::pair<uint32_t, uint32_t> OnInvalidate(void* context, uint32_t start,
                                                     uint32_t length, bool exact_range);
 
-  rex::memory::Memory* memory_ = nullptr;
+  rex::kernel::GuestAddressSpace* memory_ = nullptr;
   void* callback_ = nullptr;
   bool reported_no_memory_ = false;
 

@@ -1,8 +1,12 @@
 #pragma once
-#include <rex/logging.h>
+#include <array>
 
+#include <rex/logging/log_category.h>
+#include <rex/logging/logger.h>
+
+// The "mc" category (rexglue 0.11: a constinit LogCategory, added to the logger with larecomp::log::Register's table).
 namespace mc::log {
-inline const rex::LogCategoryId mc = rex::RegisterLogCategory("mc");
+inline constinit rex::log::LogCategory mc{"mc", "Midnight Club game code and hooks"};
 }
 
 #define MC_TRACE(...)    REXLOG_CAT_TRACE(::mc::log::mc, __VA_ARGS__)

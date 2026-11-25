@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- samplers from the guest's texture fetch constants
 // ===========================================================================
 // The sampling state lives in the
-// texture fetch constant (xe_gpu_texture_fetch_t, rex/graphics/xenos.h): clamp
+// texture fetch constant (rex::xenos::TextureFetch, rex/xenos/fetch.h): clamp
 // modes, min/mag/mip filters, anisotropy, LOD bias, the mip range and the
 // border colour. The mapping is Xenia's D3D12 texture cache
 // (D3D12TextureCache::GetSamplerParameters / WriteSampler in the SDK,
@@ -83,6 +83,8 @@ class Samplers {
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
+  // The device can make mirror-once addressing (sampler_modes.h); without it the guest's mirror-clamp modes are mirrored repeat.
+  bool mirror_once_ = true;
   std::unordered_map<uint64_t, uint32_t> slots_;  // description key -> bindless slot
   std::vector<std::unique_ptr<plume::RenderSampler>> samplers_;
   uint32_t reported_ = 0;

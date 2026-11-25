@@ -13,17 +13,10 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/input/input_system.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/immediate_drawer.h>
-#include <rex/ui/keybinds.h>
-#if __has_include(<rex/ui/image_decode.h>)
-#include <rex/ui/image_decode.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/ui/ui_system.h>
 #define LARECOMP_BROWSER_HAS_ICON 1
-#endif
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -34,33 +27,21 @@
 
 #include "larecomp_log.h"
 #include "profile/larecomp_profile_store.h"
+#include "../online_platform.h"
+#include "../online_toast.h"
 #include "../relay_info.h"
 #include "../system_link.h"
 #include "browser_client.h"
 #include "browser_join.h"
+#include "join_server.h"
 #include "../../modloader/modsbrowser/mod_browser_ui.h"
 #include "../../modloader/modsbrowser/mod_download.h"
 #include "../identity/identity_ui.h"
+#include "mc_engine/ui/overlay_support.h"
 #include "mc_engine/input/input_state.h"
 #include "mc_engine/ui/gamepad.h"
 #include "mc_engine/ui/imgui_theme.h"
 
-REXCVAR_DEFINE_STRING(online_master_server, "26.24.254.19:31003", "MCLA/Multiplayer",
-                      "Server list for the server browser (F6): host or host:port of a "
-                      "larecomp_master_server (port 31003 if omitted). Empty = no list, only "
-                      "server_browser_servers and the current server.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(server_browser_servers, "", "MCLA/Multiplayer",
-                      "Your own servers for the server browser, comma-separated host:port.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_BOOL(server_browser_show_icons, true, "MCLA/Multiplayer",
-                    "Server browser: show each server's icon.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-REXCVAR_DEFINE_STRING(server_browser_pending, "", "MCLA/Multiplayer",
-                      "Set by the server browser when a room needs another server: the room to "
-                      "offer right after the restart (address|vip|label). Cleared once used.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace larecomp {
 namespace {
@@ -73,12 +54,12 @@ std::atomic<bool> g_open_asked{false};
 
 // --------------------------------------------------------------- config ---
 
-std::filesystem::path ConfigPath() { return rex::filesystem::GetExecutableFolder() / "larecomp.toml"; }
+std::filesystem::path ConfigPath() { return rex::platform::GetExecutableFolder() / "larecomp.toml"; }
 
 // Live cvar and larecomp.toml together: the game rewrites the toml from the
 // live cvars when it exits, and the file is what the next boot reads.
 void SaveSetting(const char* name, const std::string& toml_value, const std::string& live_value) {
-    rex::cvar::SetFlagByName(name, live_value);
+    larecomp::cvar::SetFlagByName(name, live_value);
     std::vector<profiles::ConfigEdit> edits;
     edits.push_back({name, toml_value});
     if (!profiles::EditConfig(ConfigPath(), edits))
@@ -217,16 +198,24 @@ std::string PendingText(const Pending& p) {
     return p.address + "|" + std::to_string(p.vip) + "|" + p.label + "|" + std::to_string(p.kind);
 }
 
-class BrowserDialog final : public rex::ui::ImGuiDialog {
+class BrowserDialog;
+BrowserDialog* g_dialog = nullptr;
+
+class BrowserDialog final : public mcla::ui::PanelDialog {
 public:
-    BrowserDialog(rex::ui::ImGuiDrawer* drawer, rex::ui::ImmediateDrawer* immediate)
-        : ImGuiDialog(drawer), immediate_(immediate) {
-        pending_ = ParsePending(rex::cvar::GetFlagByName("server_browser_pending"));
+    explicit BrowserDialog(rex::ui::IUISystem& ui) : ui_(&ui) {
+        g_dialog = this;
+        pending_ = ParsePending(larecomp::cvar::GetFlagByName("server_browser_pending"));
         if (pending_.valid()) {
             // Offered once, right after the restart it asked for.
             SaveString("server_browser_pending", "");
             pending_until_ = Clock::now() + std::chrono::minutes(3);
         }
+    }
+
+    ~BrowserDialog() override {
+        g_dialog = nullptr;
+        pad_block_.Set(false);
     }
 
     void Toggle() {
@@ -273,6 +262,7 @@ protected:
                 ImGui::SetWindowFocus();
                 first_frame_ = false;
             }
+            DrawJoinServerFailure();
             DrawToolbar();
             ImGui::Separator();
             const float left_w = std::max(320.0f, ImGui::GetContentRegionAvail().x * 0.42f);
@@ -301,7 +291,15 @@ protected:
 
 private:
     void Open_() {
+        // Linux (online_platform.h): there is no online client to join a server with. The window stays shut and
+        // the pop-up says why.
+        if (!larecomp::kOnlineAvailable) {
+            LARECOMP_APP_INFO("[browser] not opened: {}", larecomp::kOnlineUnavailableText);
+            larecomp::OnlineToastNotice();
+            return;
+        }
         g_open.store(true);
+        pad_block_.Set(true);
         first_frame_ = true;
         client_.SetAutoRefresh(true);
         LARECOMP_APP_INFO("[browser] opened");
@@ -309,37 +307,51 @@ private:
 
     void Close_() {
         g_open.store(false);
+        pad_block_.Set(false);
         client_.SetAutoRefresh(false);
-        auto& io = GetIO();
+        br::JoinServerClearFailure();
+        auto& io = ui_->GetImGuiIO();
         io.ConfigFlags &= ~(ImGuiConfigFlags_NavEnableGamepad | ImGuiConfigFlags_NavEnableKeyboard);
         io.BackendFlags &= ~ImGuiBackendFlags_HasGamepad;
         ReleaseBrowserGamepad();
         LARECOMP_APP_INFO("[browser] closed");
     }
 
-    // A new icon becomes a texture here, on the UI thread.
+    // Why --join_server could not join (join_server.h): in red above the list until the player dismisses it or closes the window.
+    void DrawJoinServerFailure() {
+        const std::string failure = br::JoinServerFailureText();
+        if (failure.empty()) return;
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(mcla::ui::kColorBad, "Could not join: %s", failure.c_str());
+        ImGui::PopTextWrapPos();
+        if (ImGui::SmallButton("Dismiss")) br::JoinServerClearFailure();
+        ImGui::Separator();
+    }
+
+    // A new icon becomes a texture here, on the UI thread, in the draw (the ImGui context is current).
     void TakeIcons() {
         for (auto& up : client_.TakeIcons()) {
 #if defined(LARECOMP_BROWSER_HAS_ICON)
-            if (!immediate_) continue;
-            int w = 0, h = 0;
-            std::vector<uint8_t> rgba = rex::ui::DecodeImageRGBA(up.png.data(), up.png.size(), w, h);
-            if (rgba.empty() || w <= 0 || h <= 0 || w > 512 || h > 512) {
+            // The header is read before the decoder allocates what it says (a 64 KB file can claim a huge picture).
+            // CHECK: not run in a game: a real relay's icon (the recorded one is 2135 bytes) must still show in the F6 list.
+            auto tex = br::PngHeaderFits(up.png.data(), up.png.size(), br::kIconMaxSide)
+                           ? mcla::ui::IconTexture::FromEncoded(up.png.data(), up.png.size(), br::kIconMaxSide)
+                           : nullptr;
+            if (!tex) {
                 LARECOMP_APP_WARN("[browser] icon of {} could not be decoded", up.address);
                 continue;
             }
-            auto tex = immediate_->CreateTexture(uint32_t(w), uint32_t(h), rex::ui::ImmediateTextureFilter::kLinear,
-                                                 false, rgba.data());
-            if (tex) icons_[up.address] = std::move(tex);
+            icons_[up.address] = std::move(tex);
 #else
             (void)up;
 #endif
         }
     }
 
-    ImTextureID Icon(const std::string& address) const {
+    // The icon of a server, or null (none yet).
+    mcla::ui::IconTexture* Icon(const std::string& address) const {
         auto it = icons_.find(address);
-        return it == icons_.end() ? ImTextureID{} : reinterpret_cast<ImTextureID>(it->second.get());
+        return it == icons_.end() ? nullptr : it->second.get();
     }
 
     bool Matches(const br::ServerView& s) const {
@@ -362,7 +374,7 @@ private:
         ImGui::SetNextItemWidth(ImGui::CalcTextSize(hint).x + ImGui::GetStyle().FramePadding.x * 2.0f + 8.0f);
         ImGui::InputTextWithHint("##search", hint, search_, sizeof(search_));
         ImGui::SameLine();
-        bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
+        bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         if (ImGui::Checkbox("Icons", &icons))
             SaveSetting("server_browser_show_icons", icons ? "true" : "false", icons ? "true" : "false");
         ImGui::SameLine();
@@ -393,7 +405,7 @@ private:
             ImGui::TextDisabled(snapshot_.refreshing ? "Looking for servers..." : "No servers.");
             ImGui::TextDisabled("Add one below, or set online_master_server.");
         }
-        const bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
+        const bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         const float row_h = icons ? 48.0f : ImGui::GetTextLineHeightWithSpacing() * 2.0f;
         const std::string current = CurrentRelay();
         // The game's list row (teal bar and cursor) instead of the flat fill.
@@ -411,9 +423,9 @@ private:
             // Past the cursor triangle.
             ImGui::SetCursorPos(ImVec2(start.x + 22.0f, start.y));
             if (icons) {
-                const ImTextureID tex = Icon(s->address);
+                mcla::ui::IconTexture* tex = Icon(s->address);
                 if (tex)
-                    ImGui::Image(tex, ImVec2(row_h - 4, row_h - 4));
+                    ImGui::Image(tex->Ref(), ImVec2(row_h - 4, row_h - 4));
                 else
                     ImGui::Dummy(ImVec2(row_h - 4, row_h - 4));
                 ImGui::SameLine();
@@ -452,10 +464,10 @@ private:
             ImGui::TextDisabled("Pick a server on the left.");
             return;
         }
-        const bool icons = rex::cvar::GetFlagByName("server_browser_show_icons") != "false";
+        const bool icons = larecomp::cvar::GetFlagByName("server_browser_show_icons") != "false";
         if (icons) {
-            if (const ImTextureID tex = Icon(s->address)) {
-                ImGui::Image(tex, ImVec2(96, 96));
+            if (mcla::ui::IconTexture* tex = Icon(s->address)) {
+                ImGui::Image(tex->Ref(), ImVec2(96, 96));
                 ImGui::SameLine();
             }
         }
@@ -477,7 +489,7 @@ private:
             ImGui::Spacing();
             ImGui::TextWrapped("%s", s->description.c_str());
         }
-        auto favs = SplitList(rex::cvar::GetFlagByName("server_browser_servers"));
+        auto favs = SplitList(larecomp::cvar::GetFlagByName("server_browser_servers"));
         const bool fav = std::find(favs.begin(), favs.end(), s->address) != favs.end();
         if (ImGui::SmallButton(fav ? "Remove from my servers" : "Add to my servers")) {
             if (fav)
@@ -600,7 +612,7 @@ private:
         br::ClassifyRoom(r.props, &cruise, &lan);
         const std::string label = (r.gamertag.empty() ? VipText(r.host_vip) : r.gamertag) + " @ " +
                                   (s.name.empty() ? s.address : s.name);
-        if (s.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty()) {
+        if (s.address != CurrentRelay() || larecomp::cvar::GetFlagByName("mcla_online_server").empty()) {
             switch_ = {s.address, r.host_vip, label, kRoom};
             open_switch_ = true;  // opened at window level, where the modal is drawn
             return;
@@ -621,7 +633,7 @@ private:
 
     void PlayOnServer(const br::ServerView& s, bool cruise) {
         const std::string label = s.name.empty() ? s.address : s.name;
-        if (s.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty()) {
+        if (s.address != CurrentRelay() || larecomp::cvar::GetFlagByName("mcla_online_server").empty()) {
             switch_ = {s.address, 0, label, cruise ? kCruise : kRace};
             open_switch_ = true;
             return;
@@ -698,7 +710,7 @@ private:
             } else if (p.finished) {
                 ImGui::TextColored(mcla::ui::kColorGood, "Done. The game restarts to load them.");
                 // After the restart: this server, and what was asked for on it.
-                if (mods_server_.address != CurrentRelay() || rex::cvar::GetFlagByName("mcla_online_server").empty())
+                if (mods_server_.address != CurrentRelay() || larecomp::cvar::GetFlagByName("mcla_online_server").empty())
                     SaveString("mcla_online_server", mods_server_.address);
                 SaveSetting("mcla_online_enable", "true", "true");
                 Pending next = mods_action_;
@@ -856,7 +868,7 @@ private:
         ImGui::InputTextWithHint("##add", "host:port", add_, sizeof(add_));
         ImGui::SameLine();
         if (ImGui::Button("Add server") && add_[0]) {
-            auto favs = SplitList(rex::cvar::GetFlagByName("server_browser_servers"));
+            auto favs = SplitList(larecomp::cvar::GetFlagByName("server_browser_servers"));
             std::string a = add_;
             a.erase(std::remove_if(a.begin(), a.end(), [](char c) { return std::isspace(static_cast<unsigned char>(c)); }),
                     a.end());
@@ -909,10 +921,11 @@ private:
         }
     }
 
-    rex::ui::ImmediateDrawer* immediate_;
+    rex::ui::IUISystem* ui_;
+    mcla::ui::InputBlock pad_block_;
     br::Client client_;
     br::Snapshot snapshot_;
-    std::map<std::string, std::unique_ptr<rex::ui::ImmediateTexture>> icons_;
+    std::map<std::string, std::unique_ptr<mcla::ui::IconTexture>> icons_;
     std::string selected_;
     char search_[64] = {};
     char add_[96] = {};
@@ -938,28 +951,21 @@ private:
     Clock::time_point failed_since_{};
 };
 
-BrowserDialog* g_dialog = nullptr;
-
 }  // namespace
 
-void StartServerBrowser(rex::ui::ImGuiDrawer* imgui_drawer, rex::ui::ImmediateDrawer* immediate_drawer,
-                        rex::system::IInputSystem* input_system) {
-    if (!imgui_drawer || g_dialog) return;
-    g_dialog = new BrowserDialog(imgui_drawer, immediate_drawer);
-    StartModBrowser(imgui_drawer, immediate_drawer);
-    rex::ui::RegisterBind("bind_server_browser", "F6", "Open or close the server browser",
-                          [] {
-                              if (g_dialog) g_dialog->Toggle();
-                          });
-    // The SDK's own rule (the game reads input unless one of its overlays has
-    // the mouse) plus ours: nothing while the browser is open. The SDK set its
-    // callback before this runs; this one replaces it.
-    if (auto* input = static_cast<rex::input::InputSystem*>(input_system)) {
-        input->SetActiveCallback([imgui_drawer]() {
-            if (ServerBrowserCapturesInput()) return false;
-            return !imgui_drawer->GetIO().WantCaptureMouse;
-        });
-    }
+void StartServerBrowser(rex::ui::IUISystem& ui, rex::hid::IInputSystem*) {
+    if (g_dialog) return;
+    // The UI system owns the dialogs; they are always in its list and draw nothing while closed (as on 0.10).
+    ui.AddDialog(std::make_unique<BrowserDialog>(ui));
+    StartModBrowser(ui);
+    // 0.10 replaced the input system's "active" callback here (the game reads input unless an overlay has the mouse,
+    // and nothing while a browser is open). 0.11's UI system keeps the game's keyboard and mouse from an overlay that
+    // wants them (SetInputCaptured); the rest is ours: the pads through InputBlock above, the keyboard and mouse
+    // listeners of LARecomp through ServerBrowserCapturesInput (keyboard_native.cpp, mouse_look.cpp).
+}
+
+void ServerBrowserKeyPressed() {
+    if (g_dialog) g_dialog->Toggle();
 }
 
 void ServerBrowserOpen() { g_open_asked.store(true); }

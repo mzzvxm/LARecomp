@@ -37,6 +37,7 @@
 //
 
 #include "../online_common.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <array>
@@ -47,19 +48,20 @@
 #include <string>
 #include <vector>
 
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
-#include <rex/system/xmemory.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/xam/user_profile.h>
+#include <rex/kernel/guest_memory.h>
 
 #include "rmr_client.h"
 #include "rmr_protocol.h"
 #include "../tournament.h"
+#include "larecomp_guest.h"
 
 namespace {
 
-using rex::memory::Memory;
+using Memory = rex::kernel::GuestAddressSpace;
 
 constexpr char kTable[] = "RateMyRide";
 
@@ -118,8 +120,8 @@ bool g_failure_text_swapped = false;  // game thread only
 // ----------------------------------------------------------- guest i/o ----
 
 Memory* Mem() {
-  auto* rt = rex::Runtime::instance();
-  return rt ? rt->memory() : nullptr;
+  auto* rt = REX_RUNTIME();
+  return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
 uint32_t U32(PPCRegister& r) { return static_cast<uint32_t>(r.u64); }
@@ -159,11 +161,10 @@ bool IsRmrTable(Memory* mem, uint32_t table) {
 
 template <typename... Args>
 uint32_t CallGuest(uint32_t fn_addr, Args... args) {
-  auto* rt = rex::Runtime::instance();
-  auto* dispatcher = rt ? rt->function_dispatcher() : nullptr;
-  PPCFunc* fn = dispatcher ? dispatcher->GetFunction(fn_addr) : nullptr;
+  auto* rt = REX_RUNTIME();
+  PPCFunc* fn = rt ? rt->FindFunction(fn_addr).value_or(nullptr) : nullptr;
   if (!fn) return 0;
-  return rex::ppc::GuestToHostFunction<uint32_t>(fn, static_cast<uint32_t>(args)...);
+  return larecomp::guest::Call<uint32_t>(fn, static_cast<uint32_t>(args)...);
 }
 
 // Sets the text of the "RMR_Failure_Menu" dialog, like sub_826B0D50 does for
@@ -238,14 +239,13 @@ Me LocalPlayer(Memory* mem) {
     me.gamertag = GuestCStr(mem, gamer + kGamerTag, 16);
   }
   if (!me.valid) {
-    // The game's own handle is {1, profile XUID} (kSharedGuestXuid on SDKs
-    // without per-profile XUIDs); the chain above only confirms it.
-    auto* ks = rex::system::kernel_state();
-    const auto* profile = ks ? ks->user_profile() : nullptr;
+    // The game's own handle is {1, profile XUID} (kSharedGuestXuid before the title is loaded); the chain above
+    // only confirms it.
+    auto* rt = REX_RUNTIME();
     me.handle.fill(0);
     me.handle[0] = 1;
     StoreBe64(me.handle.data() + kRecHandleId,
-              profile ? profile->xuid() : rmr::kSharedGuestXuid);
+              rt ? rt->GetUserProfile().GetXUID() : rmr::kSharedGuestXuid);
     me.valid = true;
   }
   return me;
@@ -403,7 +403,7 @@ struct Completed {
 };
 
 std::mutex g_done_mutex;
-std::deque<Completed> g_done;
+std::deque<Completed>& g_done = larecomp::Leak<std::deque<Completed>>();
 
 void Begin(Memory* mem, rmr::Request&& req, Pending&& p) {
   RestoreFailureText();
@@ -840,5 +840,6 @@ void Hook_RmrEnter(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

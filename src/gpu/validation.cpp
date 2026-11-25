@@ -9,8 +9,8 @@
 #include <fstream>
 #include <iterator>
 
-#include <rex/filesystem.h>
-#include <rex/logging.h>
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "cycles.h"
@@ -571,7 +571,7 @@ void FrameValidator::Finish() {
 }
 
 void FrameValidator::WriteCsv() const {
-  const std::filesystem::path dir = rex::filesystem::GetExecutableFolder();
+  const std::filesystem::path dir = rex::platform::GetExecutableFolder();
   {
     std::ofstream f(dir / "mcla_gpu_validation_shaders.csv", std::ios::binary | std::ios::trunc);
     f << "identity,stage,ucode_bytes,draws,in_pack,blob_bytes\n";

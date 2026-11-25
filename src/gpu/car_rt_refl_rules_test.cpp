@@ -10,14 +10,18 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <string>
 #include <vector>
 
 #include "car_rt_refl_rules.h"
+#include "dlss_rr_rules.h"
 
 namespace rt = mcla::gpu::car_rt_refl;
 namespace cr = mcla::gpu::car_selfrefl;
@@ -36,6 +40,21 @@ void Check(bool ok, const std::string& what) {
 }
 
 bool Near(double a, double b, double tolerance = 1e-6) { return std::fabs(a - b) <= tolerance * std::max(1.0, std::fabs(b)); }
+
+bool Has(const std::string& text, const std::string& needle) { return text.find(needle) != std::string::npos; }
+size_t Count(const std::string& text, const std::string& needle) {
+  size_t n = 0;
+  for (size_t at = text.find(needle); at != std::string::npos; at = text.find(needle, at + needle.size())) ++n;
+  return n;
+}
+std::string Read(const std::string& dir, const std::string& rel) {
+  std::ifstream in(dir + "/" + rel, std::ios::binary);
+  std::ostringstream out;
+  out << in.rdbuf();
+  const std::string text = out.str();
+  Check(!text.empty(), "the source " + rel + " can be read");
+  return text;
+}
 
 // A half float round trip (round to nearest even), what the image's alpha goes through on the GPU.
 float ThroughHalf(float value) {
@@ -250,11 +269,202 @@ EdgeStats MeasureEdge(const Image& img, float edge, float radius) {
 
 }  // namespace
 
-int main() {
+// the text of a function from its first line to the next function at column 0 (a rough but stable cut)
+std::string FunctionOf(const std::string& text, const std::string& head) {
+  const size_t at = text.find(head);
+  if (at == std::string::npos) return "";
+  const size_t end = text.find("\n}\n", at);
+  return text.substr(at, end == std::string::npos ? std::string::npos : end - at);
+}
+
+// The variants of the host precache's kCarRtRefl owner that the sources build their keys from (host_precache.h). A key listed twice is one entry in the precache: the owner that asks second is handed the
+// first one's pipeline (car_rt_refl.cpp HitKey: the hit distance pass was handed the glass trace's, which has four sets, and dispatched it under the denoise's two: VUID-vkCmdDispatch-None-08600).
+struct KeyRun {
+  uint32_t first = 0;
+  uint32_t count = 0;  // a run `N + index` is kApplyVariants keys
+  std::string file;
+};
+
+uint32_t NumberAfter(const std::string& text, const std::string& head, size_t from = 0) {
+  const size_t at = text.find(head, from);
+  if (at == std::string::npos) {
+    return 0;
+  }
+  uint32_t value = 0;
+  for (size_t p = at + head.size(); p < text.size() && std::isdigit(static_cast<unsigned char>(text[p])); ++p) {
+    value = value * 10 + uint32_t(text[p] - '0');
+  }
+  return value;
+}
+
+void CollectKeyRuns(const std::string& text, const std::string& file, uint32_t run_width, std::vector<KeyRun>* runs) {
+  const std::string head = "HostPrecache::Key(HostPrecache::kCarRtRefl, ";
+  for (size_t at = text.find(head); at != std::string::npos; at = text.find(head, at + head.size())) {
+    size_t p = at + head.size();
+    KeyRun run;
+    run.file = file;
+    while (p < text.size() && std::isdigit(static_cast<unsigned char>(text[p]))) {
+      run.first = run.first * 10 + uint32_t(text[p] - '0');
+      ++p;
+    }
+    run.count = text.compare(p, 8, " + index") == 0 ? run_width : 1;
+    runs->push_back(run);
+  }
+}
+
+// RR-4b: the raw mode's rules, the hit pass as a C++ twin of the shader, and the sources (given the src/gpu folder).
+void RawChecks(const std::string& dir) {
+  namespace rr = mcla::gpu::rr;
+  // the filter's passes: the setting's, and none in a raw frame whatever the setting says
+  bool same_when_plain = true, none_when_raw = true;
+  for (int setting = -3; setting <= 9; ++setting) {
+    for (float tan_half : {0.0f, 0.0437f, 0.2f}) {
+      same_when_plain = same_when_plain && rt::DenoisePassesFor(false, setting, tan_half) == rt::DenoisePassCount(setting, tan_half);
+      none_when_raw = none_when_raw && rt::DenoisePassesFor(true, setting, tan_half) == 0;
+    }
+  }
+  Check(same_when_plain, "RR-4b: a frame that is not raw has the setting's passes exactly (the plan not RR: the filter is what it was)");
+  Check(none_when_raw, "RR-4b: a raw frame has no filter pass, whatever the setting");
+  // the hit distance of a texel
+  const float reach = 4.0f;
+  Check(rt::RawHitDistance(0.7f, 0.0f, reach) == 0.0f && rt::RawHitDistance(0.0f, 0.0f, reach) == 0.0f && rt::RawHitDistance(1.0f, 0.4f, reach) == 0.0f,
+        "RR-4b: a texel with no data in the aux image (w under a half) holds no car: nothing was traced, 0 (the surface itself)");
+  Check(rt::RawHitDistance(0.0f, 1.0f, reach) == rt::kRawMissDistance && rt::kRawMissDistance == 4096.0f && rt::RawHitDistance(0.0f, 1.0f, reach, 100.0f) == 100.0f,
+        "RR-4b: a car's texel whose cone hit no part is the environment's distance (4096), or what the caller says");
+  Check(rt::kRawMissDistance == rr::kRawMissDistance, "RR-4b: the same miss distance as the guide side's raw rule (and the screen-space reflections', 4096)");
+  bool survives = true, monotone = true, within_reach = true;
+  float previous = 0.0f;
+  for (int k = 1; k <= 255; ++k) {
+    const float code = float(k) / 255.0f;
+    const float d = rt::RawHitDistance(code, 1.0f, reach);
+    monotone = monotone && d > previous;
+    within_reach = within_reach && d > 0.0f && d <= reach + 1e-5f;
+    previous = d;
+  }
+  for (float d : {0.02f, 0.1f, 0.5f, 1.0f, 2.5f, 4.0f}) {
+    const float back = rt::RawHitDistance(rt::EncodeHitDistance(d, reach), 1.0f, reach);
+    survives = survives && std::fabs(back - d) <= 0.03f * d + 0.001f;
+  }
+  Check(survives && monotone && within_reach, "RR-4b: a hit's distance is the aux code decoded as the denoise decodes it (the code squared times the reach): within 3% of what the trace encoded, rising with the code, never past the reach");
+  Check(rt::kRawReleaseAfter == 120, "RR-4b: the hit image goes back after 120 frames of the pass running without the raw mode");
+  // the pass as a C++ twin of hlsl/car_rt_refl_hit_cs.hlsl: the pixel's texel is its coordinates over the divisor, clamped to the image
+  {
+    struct Aux { float x, w; };
+    const int tex_w = 4, tex_h = 3;
+    std::vector<Aux> aux(size_t(tex_w * tex_h), Aux{0.0f, 0.0f});
+    aux[size_t(1 * tex_w + 2)] = Aux{0.5f, 1.0f};   // texel (2, 1): a hit
+    aux[size_t(2 * tex_w + 3)] = Aux{0.0f, 1.0f};   // texel (3, 2): a car, no hit
+    const auto pass = [&](int px, int py, int divisor, int out_w, int out_h) {
+      if (px >= out_w || py >= out_h) return -1.0f;
+      const int tx = std::min(px / std::max(divisor, 1), tex_w - 1);
+      const int ty = std::min(py / std::max(divisor, 1), tex_h - 1);
+      const Aux a = aux[size_t(ty * tex_w + tx)];
+      return rt::RawHitDistance(a.x, a.w, reach);
+    };
+    Check(Near(pass(5, 3, 2, 8, 6), 0.25 * reach) && Near(pass(4, 2, 2, 8, 6), 0.25 * reach) && Near(pass(5, 2, 2, 8, 6), 0.25 * reach) && Near(pass(4, 3, 2, 8, 6), 0.25 * reach),
+          "RR-4b: at divisor 2 the 2x2 block of pixels over texel (2, 1) takes that texel's distance (0.5 squared times the reach)");
+    Check(pass(3, 3, 2, 8, 6) == 0.0f && pass(6, 3, 2, 8, 6) == 0.0f, "RR-4b: the neighbouring blocks, no car there, are 0");
+    Check(pass(7, 5, 2, 8, 6) == rt::kRawMissDistance && pass(9, 9, 1, 8, 6) == -1.0f, "RR-4b: the block over the car's texel with no hit is the miss distance; a thread past the image writes nothing");
+    Check(pass(11, 8, 2, 12, 9) == 0.0f || pass(11, 8, 2, 12, 9) == rt::kRawMissDistance, "RR-4b: a pixel past the last texel's block reads the last texel (clamped), never outside the image");
+    Check(Near(pass(2, 1, 1, 4, 3), 0.25 * reach) && pass(3, 2, 1, 4, 3) == rt::kRawMissDistance, "RR-4b: at divisor 1 the pixel is the texel");
+  }
+  if (dir.empty()) return;
+  const std::string rules = Read(dir, "car_rt_refl_rules.h"), header = Read(dir, "car_rt_refl.h"), cpp = Read(dir, "car_rt_refl.cpp"), hit = Read(dir, "hlsl/car_rt_refl_hit_cs.hlsl"),
+                    denoise = Read(dir, "hlsl/car_rt_refl_denoise_cs.hlsl"), cmake = Read(dir, "CMakeLists.txt"), shaders = Read(dir, "host_shaders.h"), self_cpp = Read(dir, "car_selfrefl.cpp"),
+                    self_h = Read(dir, "car_selfrefl.h"), scene = Read(dir, "scene.cpp"), settings = Read(dir, "../settings/generated/settings_gpu.h"), manifest = Read(dir, "../settings/generated/manifest.json"),
+                    meta = Read(dir, "../settings/generated/settings_meta.inc"), opp = Read(dir, "car_rt_opp_refl.cpp");
+  // the shader: what the C++ twin says
+  Check(Has(hit, "const int divisor = int(max(g_push.lens.y, 1.0));") && Has(hit, "const int2 texel = min(pixel / divisor, texels - 1);") && Has(hit, "if (aux.w > 0.5)") &&
+            Has(hit, "result = aux.x > 0.0 ? aux.x * aux.x * g_push.lens.x : g_push.lens.z;") && Has(hit, "g_output[pixel] = result;") && Has(hit, "[[vk::image_format(\"r16f\")]]") &&
+            Has(hit, "RWTexture2D<float> g_output : register(u0, space1);") && Has(hit, "ConstantBuffer<CarRtHitPush> g_push : register(b0, space2);"),
+        "RR-4b: the hit shader is the twin's arithmetic: the texel over the divisor clamped, 0 without a car, the squared code times the reach, the miss distance where no ray hit; R16F storage, the denoise's registers");
+  Check(Has(denoise, "const float hitDistance = tapAux.x * tapAux.x * reach;") && Has(hit, "aux.x * aux.x * g_push.lens.x"), "RR-4b: the hit shader decodes the aux's x as the denoise does");
+  Check(Has(hit, "uint4 slots;") && Has(hit, "float4 image;") && Has(hit, "float4 lens;") && Has(hit, "float4 reserved;") && Has(header, "static_assert(sizeof(HitPush) == 64);") &&
+            Has(header, "uint32_t slots[4];  // the aux image's slot") && Has(header, "float lens[4];      // the reflection ray's reach, the divisor, the distance a miss writes") && Has(denoise, "float4 tune;"),
+        "RR-4b: the hit pass's push block is four rows of 16 bytes (64, the denoise layout's push range) in the host's and the shader's order");
+  Check(Has(cpp, "hit_push.slots[0] = aux_.slot;") && Has(cpp, "hit_push.lens[2] = car_rt_refl::kRawMissDistance;") && Has(cpp, "hit_push.lens[1] = float(std::max<uint32_t>(info.divisor, 1));") &&
+            Has(cpp, "hit_push.image[2] = float(history.width);"),
+        "RR-4b: the host fills the push as the shader reads it");
+  // the build
+  Check(Has(cmake, "larecomp_gpu_host_shader(car_rt_refl_hit_cs cs_6_0)") && Has(shaders, "#include \"car_rt_refl_hit_cs.hlsl.dxil.h\"") && Has(shaders, "#include \"car_rt_refl_hit_cs.hlsl.spirv.h\"") &&
+            Has(shaders, "inline HostShaderBlob CarRtReflHitShader() {\n  return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_hit_cs);\n}"),
+        "RR-4b: the hit shader is built for both backends (plain Shader Model 6.0) and handed out");
+  // the host: nothing raw unless asked
+  Check(Has(header, "bool raw = false;") && Has(header, "const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }"), "RR-4b: HistoryInfo::raw is false by default; the hit image is announced for the frame that wrote it only");
+  const size_t asked_at = cpp.find("  if (info.raw) {\n    raw_ever_asked_ = true;");
+  const size_t call_at = cpp.find("HitPipeline() != nullptr");
+  Check(asked_at != std::string::npos && call_at != std::string::npos && asked_at < call_at && Count(cpp, "raw = HitPipeline() != nullptr") == 1 && Count(cpp, "= HitPipeline()") == 1 && Count(cpp, "HitKey()") >= 3,
+        "RR-4b: the hit pass's pipeline is asked for in one place, inside `if (info.raw)`: a frame that is not asked never makes its shader or lists its pipeline with the host precache");
+  // The filter's own count is DenoisePassesFor's. The setting-only DenoisePassCount is called in ONE place, on purpose: `stable_gap` (NOISE-FOLLOW), which asks whether the setting wants the history
+  // although the passes are 0 in a Ray Reconstruction frame; any other call would run the filter in a raw frame (or drift the two counts apart).
+  Check(Has(cpp, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);") && Count(cpp, "car_rt_refl::DenoisePassCount(") == 1 &&
+            Has(cpp, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler"),
+        "RR-4b: the filter's passes go through the rules' DenoisePassesFor (the setting's, none when raw); the setting-only DenoisePassCount is read once, by the history's stable_gap");
+  Check(Has(cpp, "raw = HitPipeline() != nullptr && info.render_width != 0 && info.render_height != 0 && EnsureHitImage(info.render_width, info.render_height);"),
+        "RR-4b: a frame is raw only with the pipeline made and the image made (else it is a plain frame with its filter)");
+  const size_t trace_at = cpp.find("list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);");
+  const size_t opp_at = cpp.find("opp_.Record(opponents);");
+  const size_t hit_at = cpp.find("  if (raw) {\n    // RR-4b: how far each reflection went");
+  const size_t closing_at = cpp.find("pass_timing_->Mark(list, \"after car rt refl\");");
+  const size_t hit_mark = cpp.find("pass_timing_->Mark(list, \"car rt hit\");");
+  Check(trace_at != std::string::npos && opp_at != std::string::npos && hit_at != std::string::npos && closing_at != std::string::npos && trace_at < opp_at && opp_at < hit_at && hit_at < hit_mark && hit_mark < closing_at &&
+            Has(cpp, "transition(Stage::COMPUTE, {{&aux_, Layout::SHADER_READ}, {&hit_, Layout::GENERAL}});") && Has(cpp, "transition(Stage::GRAPHICS_AND_COMPUTE, {{&hit_, Layout::SHADER_READ}});") &&
+            Has(cpp, "list->setPipeline(hit_pipeline_.get());") && Has(cpp, "hit_ready_ = true;"),
+        "RR-4b: in a raw frame the hit pass follows the trace and the opponents' trace (the aux image holds both) and comes before the closing mark; the aux is read, the hit image written, then readable");
+  Check(Has(FunctionOf(cpp, "void CarRtRefl::BeginFrame(bool reflection_on) {"), "hit_ready_ = false;") && Has(FunctionOf(cpp, "void CarRtRefl::ReleaseImage() {"), "passes_->ReleaseImage(hit_);") &&
+            Has(FunctionOf(cpp, "uint64_t CarRtRefl::HeldBytes() const {"), "&hit_"),
+        "RR-4b: the hit image is announced for the frame that wrote it only, released with the others and counted in the memory line");
+  Check(Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 8)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)") && Has(opp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)"),
+        "RR-4b: the hit pass's pipeline has a precache key of its own (variant 8; 0 the trace, 1 the denoise, 2 the opponents', 3 to 7 the player's glass)");
+  {
+    // VERIFY-VK-VALIDATION: the hit pass and the glass trace both had variant 3, so the hit pass was handed the glass trace's pipeline (host_precache.h lists the variants). No two keys of the owner overlap.
+    const std::string glass = Read(dir, "car_rt_glass_refl.cpp"), glass_h = Read(dir, "car_rt_glass_refl.h");
+    const uint32_t apply_variants = NumberAfter(glass_h, "kApplyVariants = ");
+    Check(apply_variants == 4, "the glass apply has four pipelines (1, 2, 4 and 8 samples): the run `4 + index` is variants 4 to 7");
+    std::vector<KeyRun> runs;
+    CollectKeyRuns(cpp, "car_rt_refl.cpp", apply_variants, &runs);
+    CollectKeyRuns(opp, "car_rt_opp_refl.cpp", apply_variants, &runs);
+    CollectKeyRuns(glass, "car_rt_glass_refl.cpp", apply_variants, &runs);
+    Check(runs.size() == 6, "the owner's keys are read from the three files: the trace, the denoise and the hit pass (car_rt_refl.cpp), the opponents' trace, the glass trace and the glass apply (6 in all): " + std::to_string(runs.size()));
+    bool distinct = true;
+    for (size_t i = 0; i < runs.size(); ++i) {
+      for (size_t j = i + 1; j < runs.size(); ++j) {
+        const bool overlap = runs[i].first < runs[j].first + runs[j].count && runs[j].first < runs[i].first + runs[i].count;
+        if (overlap) {
+          distinct = false;
+          std::printf("  kCarRtRefl variant %u (%s) and %u (%s) are one key\n", runs[i].first, runs[i].file.c_str(), runs[j].first, runs[j].file.c_str());
+        }
+      }
+    }
+    Check(distinct, "kCarRtRefl: the trace, the denoise, the opponents' trace, the glass trace, the glass apply and the hit pass each have keys of their own in the host precache (one key is one pipeline: the second asker gets the first's)");
+  }
+  Check(Has(cpp, "device_->CreateComputePipeline(plume::RenderComputePipelineDesc(denoise_layout_.get(), hit_shader_.get(), kGroup, kGroup, 1), kHitName)"), "RR-4b: the hit pass is a pipeline on the denoise's layout");
+  // the wiring
+  Check(Has(self_h, "void SetRawMode(bool raw) { raw_ = raw; }") && Has(self_h, "const HostImage* RawHitImage() const;") && Has(self_cpp, "info.raw = raw_;") &&
+            Has(FunctionOf(self_cpp, "void CarSelfRefl::BeginFrame() {"), "raw_ = false;") && Has(self_cpp, "const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }"),
+        "RR-4b: CarSelfRefl hands the raw flag to the ray traced pass (false at the frame's start) and the hit image back");
+  const size_t set_at = scene.find("car_refl_->SetRawMode(temporal_ && temporal_->RawModes().CarRefl());");
+  const size_t resolve_at = scene.find("car_refl_->OnResolve(record, summary, list);");
+  Check(set_at != std::string::npos && resolve_at != std::string::npos && set_at < resolve_at && Has(scene, "temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);"),
+        "RR-4b: Scene says whether the frame is raw before the trigger's history pass and hands both hit images to the guide pass afterwards");
+  bool in_all = true;
+  const size_t decl = settings.find(std::string("REX_") + "SETTING(i32, mcla_gpu_dlss_rr_car_refl, 1,");
+  const size_t end = decl == std::string::npos ? std::string::npos : settings.find(");\n", decl);
+  in_all = decl != std::string::npos && end != std::string::npos && Has(settings.substr(decl, end - decl), "rex::kDebugOnly, rex::Range{0, 1}") && !Has(settings.substr(decl, end - decl), "kRestart") &&
+           Has(settings, "inline auto& mcla_gpu_dlss_rr_car_refl = g_gpu.mcla_gpu_dlss_rr_car_refl;") && Has(manifest, "\"mcla_gpu_dlss_rr_car_refl\": {") && Has(meta, "{\"mcla_gpu_dlss_rr_car_refl\", \"MCLA/GPU\"},");
+  Check(in_all, "RR-4b: the switch mcla_gpu_dlss_rr_car_refl is debug-only, live, 0 or 1, on by default, in the settings header, its alias, the manifest and the meta list");
+  (void)rules;
+}
+
+int main(int argc, char** argv) {
+  const std::string src_dir = argc > 1 && argv[1][0] != '-' ? argv[1] : std::string();
+  RawChecks(src_dir);
   // the setting
   Check(rt::SettingOf("auto") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kAuto &&
             rt::SettingOf("") == rt::Setting::kAuto,
         "off is off, auto and a word that is no value are auto");
+  // The ray tracing tier's `auto` table (rt_tier.h kRtEffects) hands this setting "on" (a strong or a weak card) or "off" (no ray tracing): on is the default
+  Check(rt::SettingOf("on") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff, "the tier's cells: on is the default, off is off");
   Check(rt::Wanted(rt::Setting::kAuto, true, true) && !rt::Wanted(rt::Setting::kOff, true, true) && !rt::Wanted(rt::Setting::kAuto, false, true) &&
             !rt::Wanted(rt::Setting::kAuto, true, false),
         "wanted: auto, on a device that can, with the self-reflection on");
@@ -266,12 +476,12 @@ int main() {
         "a miss is alpha 1 and carries no weight");
   for (float w : {0.004f, 0.1f, 0.25f, 0.5f, 0.73f, 1.0f}) {
     const rt::Texel hit = rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kHit, w)));
-    const rt::Texel hidden = rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kHidden, w)));
-    Check(hit.kind == rt::Kind::kHit && Near(hit.weight, w, 1.0 / 1024.0), "a visible hit's weight " + std::to_string(w) + " survives a half float");
-    Check(hidden.kind == rt::Kind::kHidden && Near(hidden.weight, w, 1.0 / 1024.0), "a hidden hit's weight " + std::to_string(w) + " survives it too, by its sign");
+    const rt::Texel car = rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kOtherCar, w)));
+    Check(hit.kind == rt::Kind::kHit && Near(hit.weight, w, 1.0 / 1024.0), "a hit's weight " + std::to_string(w) + " survives a half float");
+    Check(car.kind == rt::Kind::kOtherCar && Near(car.weight, w, 1.0 / 1024.0), "a hit on another car's weight " + std::to_string(w) + " survives it too, by its sign");
   }
   Check(rt::DecodeAlpha(ThroughHalf(rt::EncodeAlpha(rt::Kind::kHit, 1.0f))).weight == 1.0f && rt::EncodeAlpha(rt::Kind::kHit, 5.0f) == 2.0f &&
-            rt::EncodeAlpha(rt::Kind::kHidden, -1.0f) == -1.0f,
+            rt::EncodeAlpha(rt::Kind::kOtherCar, -1.0f) == -1.0f,
         "weights are clamped to 0..1");
   Check(rt::DecodeAlpha(0.4f).kind == rt::Kind::kNoData && rt::DecodeAlpha(-0.4f).kind == rt::Kind::kNoData,
         "a value below one half is no data (a stray number is not a trace)");
@@ -592,8 +802,27 @@ int main() {
     shares[1] = back;
     shares[2] = back;
     all = rt::CombineRays(shares, 4, 4.0f);
-    Check(all.kind == rt::Kind::kHidden && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0) && all.rgb[0] > surface[0] * 0.4f && all.rgb[0] < 0.9f,
-          "three hidden hits and a visible one: hidden by the majority of the weight, the colour between the shade and the hit's");
+    Check(all.kind == rt::Kind::kHit && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0) && all.rgb[0] > surface[0] * 0.4f && all.rgb[0] < 0.9f,
+          "three hidden hits and a visible one, none of them on another car: still a plain hit (the sign says another car, not what the camera sees), the colour between the shade and the hit's");
+    // RT-HIT-SHADING-4: the code's sign is the weight's majority ON ANOTHER CAR, whatever the camera sees
+    for (auto& share : shares) {
+      share = rt::MakeShare(1.0f, length, hidden, surface, true);
+    }
+    shares[3] = rt::MakeShare(1.0f, length, seen, surface, false);
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kOtherCar && Near(all.weight, (3.0 * 0.85 + 1.0) / 4.0), "three hits on another car and one on the player's own part: another car, by the majority of the weight");
+    shares[0] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[1] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[2] = rt::MakeShare(1.0f, length, seen, surface, true);
+    shares[3] = rt::MakeShare(1.0f, length, seen, surface, true);
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kOtherCar, "half the weight on another car is another car (the sign's rule is >= a half)");
+    shares[1] = rt::MakeShare(1.0f, length, seen, surface, true);
+    shares[2] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[3] = rt::MakeShare(1.0f, length, seen, surface, false);
+    shares[0] = rt::MakeShare(1.0f, length, seen, surface, false);
+    all = rt::CombineRays(shares, 4, 4.0f);
+    Check(all.kind == rt::Kind::kHit, "a quarter of the weight on another car: the player's own");
     rt::RayShare faint;
     faint.weight = 0.001f;
     faint.rgb[0] = 1.0f;
@@ -703,12 +932,18 @@ int main() {
       auto all = nine(tap(9.0f, rt::Kind::kHit, 1.0f, 0.6f));
       Check(!rt::ReadForPaint(wx, wy, all.data(), depth, tolerance).use, "no texel is the surface the paint is on: no answer");
     }
-    // hidden hits: the debug kind
+    // hits on another car: the sign (the clear coat's layer follows the share of the weight that is on a car)
     {
-      auto grid = nine(tap(5.0f, rt::Kind::kHidden, 0.5f, 0.2f));
+      auto grid = nine(tap(5.0f, rt::Kind::kOtherCar, 0.5f, 0.2f));
       grid[8] = tap(5.0f, rt::Kind::kHit, 0.5f, 0.9f);
       const rt::PaintRead read = rt::ReadForPaint(wx, wy, grid.data(), depth, tolerance);
-      Check(read.use && read.kind == rt::Kind::kHidden && Near(read.weight, 0.5, 1e-5), "mostly hidden hits are a hidden hit, at their weight");
+      Check(read.use && read.kind == rt::Kind::kOtherCar && Near(read.weight, 0.5, 1e-5), "mostly hits on another car are a hit on another car, at their weight");
+      Check(read.car > 0.9f && read.car < 1.0f, "and the share of the weight that is on a car is what the layer takes (0.9 to 1 with one ninth of the weight on the player's own part)");
+      const auto none = nine(tap(5.0f, rt::Kind::kHit, 0.5f, 0.2f));
+      const rt::PaintRead own = rt::ReadForPaint(wx, wy, none.data(), depth, tolerance);
+      Check(own.use && own.kind == rt::Kind::kHit && own.car == 0.0f, "hits on the player's own parts have no car share: no layer");
+      const auto all_car = nine(tap(5.0f, rt::Kind::kOtherCar, 0.5f, 0.2f));
+      Check(Near(rt::ReadForPaint(wx, wy, all_car.data(), depth, tolerance).car, 1.0, 1e-5), "all of it on a car: a share of 1");
     }
   }
 
@@ -880,11 +1115,11 @@ int main() {
       const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
       Check(rt::DecodeAlpha(o.alpha).weight > 0.5f, "a texel whose rays all missed, among texels that hit with a wide cone, takes their share of the weight (the penumbra's tail)");
     }
-    // hidden against visible: the majority of the weight decides the sign, and the colour is the weighted mean
+    // another car against the player's own: the majority of the weight decides the sign, and the colour is the weighted mean
     {
-      auto taps = make(rt::EncodeAlpha(rt::Kind::kHidden, 1.0f), 0.2f, kPanelDistance, 3, wide_hit, true);
+      auto taps = make(rt::EncodeAlpha(rt::Kind::kOtherCar, 1.0f), 0.2f, kPanelDistance, 3, wide_hit, true);
       const rt::DenoiseOut o = rt::DenoiseTexel(taps.data(), kPanelDistance, 0.8f, setup);
-      Check(o.alpha < -1.0f && Near(o.rgb[0], (4.0 * 1.0 + 12.0 * 0.2) / 16.0, 0.01), "a visible hit among hidden hits (12/16 of the weight): hidden, and the colours are mixed by weight");
+      Check(o.alpha < -1.0f && Near(o.rgb[0], (4.0 * 1.0 + 12.0 * 0.2) / 16.0, 0.01), "a hit on the player's own part among hits on another car (12/16 of the weight): another car, and the colours are mixed by weight");
     }
     // a slope: the depth changes 17 mm a texel at N.V 0.3, and the taps of step 2 are still the same surface
     {
@@ -925,8 +1160,11 @@ int main() {
         Check(both.alpha == raw.alpha && both.rgb == raw.rgb,
               "a cone narrower than " + std::to_string(rt::kDenoiseFootprintFrom) + " texels (a part a few cm off the panel): the image is left exactly as the trace made it");
       } else if (width >= 4.0f) {
-        Check(s2.grain <= 0.45 * s0.grain && s2.grain < 0.012,
-              "cone " + std::to_string(width) + " texels wide: the grain along the edge falls to under 0.45 of the raw's and under 0.012 (" + std::to_string(s0.grain) + " -> " + std::to_string(s2.grain) + ")");
+        // The turn is the blue noise tile's (NOISE-AUDIT), no longer interleaved gradient noise: the gradient noise is even over any 3 x 3 block, which the first pass of the filter (all a 4 texel cone gets)
+        // takes out well, but a lattice that the filter leaves as thin diagonal lines (car_refl_noise_test.cpp: 9% of the error in one frequency, a direction 4 times the mean, against 0.6% and 2).
+        // The blue tile leaves a little more grain at the narrowest cone (0.015 against 0.010) and the same, or less, from 8 texels (0.010 against 0.0085).
+        Check(s2.grain <= 0.55 * s0.grain && s2.grain < 0.017,
+              "cone " + std::to_string(width) + " texels wide: the grain along the edge falls to under 0.55 of the raw's and under 0.017 (" + std::to_string(s0.grain) + " -> " + std::to_string(s2.grain) + ")");
         Check(s2.ramp <= 1.3 * s0.ramp + 0.2,
               "cone " + std::to_string(width) + " texels wide: the edge's ramp (0.9 to 0.1) grows by at most 30% (" + std::to_string(s0.ramp) + " -> " + std::to_string(s2.ramp) + ")");
         Check(std::fabs(s2.crossing - double(edge)) < 0.12, "cone " + std::to_string(width) + " texels wide: the edge stays where it was (50% at " + std::to_string(s2.crossing) + ")");
@@ -1001,7 +1239,149 @@ int main() {
     const cr::CarSelfReflConstants on = cr::MakeConstants(cr::Mode::kReflection, tuning, matrix, 77, 3, 1.0f, 1234);
     Check(on.c[0] == 77 && on.c[1] == 3 && on.c[2] == 1234 && (on.c[3] & cr::kRtImageFlag) != 0 && sizeof(on) == 112,
           "the image's bindless slot in c[2] and the flag in c[3]; the block is still 112 bytes");
-    Check(cr::kMaxView == 5, "the debug view has a fifth value, the image");
+    Check(cr::kMaxView == 7, "the debug view has a fifth value, the image, and (version 8) a sixth and seventh, the clear coat's layer");
+    const cr::CarSelfReflConstants coat = cr::MakeConstants(cr::Mode::kReflection, tuning, matrix, 77, 3, 1.0f, 1234, true);
+    Check((coat.c[3] & cr::kRtImageFlag) != 0 && (coat.c[3] & cr::kCoatLayerFlag) != 0 && cr::kCoatLayerFlag == 2u && (on.c[3] & cr::kCoatLayerFlag) == 0 &&
+              (cr::MakeConstants(cr::Mode::kReflection, tuning, matrix, 77, 3, 1.0f).c[3] & cr::kCoatLayerFlag) == 0,
+          "the coat layer's flag is bit 1 of c[3], set only with the image and when asked");
+  }
+
+  // the other cars (hlsl/car_rt_refl_cs.hlsl OtherCarColour; car_rt_instances_rules.h)
+  {
+    Check(rt::kPartOthers == 0x10 && rt::kPartAll == 0x1F, "the other cars' part is 16 and the parts' mask has five bits");
+    Check((rt::kPrimaryParts & rt::kPartOthers) == 0, "the primary ray never finds another car");
+    Check((rt::kDefaultReflectionParts & rt::kPartOthers) != 0 && rt::kDefaultReflectionParts == 0x17, "the reflection ray hits them by default (23)");
+    Check((rt::kDefaultReflectionParts & ~rt::kPartDriver & rt::kPartAll) == rt::kDefaultReflectionParts, "and not the driver");
+
+    // The taps: tap k at the offset (k % 3 - 1, k / 3 - 1); every texel at the centre's distance 10 holds the colour (0.5, 0.25, 0.125).
+    rt::SurfaceTap taps[9];
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f;
+      tap.rgb[0] = 0.5f;
+      tap.rgb[1] = 0.25f;
+      tap.rgb[2] = 0.125f;
+    }
+    rt::OtherCarColour all = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
+    Check(Near(all.share, 1.0, 1e-5) && all.known() && Near(all.rgb[0], 0.5, 1e-5) && Near(all.rgb[1], 0.25, 1e-5) && Near(all.rgb[2], 0.125, 1e-5),
+          "every tap at the centre's distance: the whole share, the colour");
+    // The depth window: kOtherCarDepth radii (1.92 m at a radius of 1.6): full weight to half of it, nothing at it.
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f + 0.9f;
+    }
+    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f).share, 1.0, 1e-5), "within half the window every tap counts in full");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f + 1.92f;
+    }
+    const rt::OtherCarColour edge = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
+    Check(edge.share < 1e-3f && !edge.known() && edge.rgb[0] == 0.0f, "at the window's edge the taps are no longer the car's: no colour");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 14.0f;  // the road or a car behind it: another surface
+    }
+    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f).known(), "a surface far behind the car is not the car");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 0.0f;  // no vehicle here (the history's alpha 0)
+    }
+    const rt::OtherCarColour none = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
+    Check(none.share == 0.0f && !none.known() && none.rgb[0] == 0.0f && none.rgb[1] == 0.0f, "no vehicle texel: share 0, black");
+    // The left column only (the taps 0, 3, 6 hold the car): the tent weights 1/2 x (1/2 + 1 + 1/2) over the sum 4.
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = (k % 3) == 0 ? 10.0f : 0.0f;
+      taps[k].rgb[0] = (k % 3) == 0 ? 0.8f : 0.0f;
+    }
+    const rt::OtherCarColour column = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
+    Check(Near(column.share, 0.25, 1e-5) && column.known() && Near(column.rgb[0], 0.8, 1e-5), "a column of taps: a quarter of the share, the colour of those");
+    // Only the middle tap (the centre's own place): 1/4 of the sum.
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = k == 4 ? 10.0f : 0.0f;
+      taps[k].rgb[0] = k == 4 ? 0.3f : 0.0f;
+    }
+    const rt::OtherCarColour middle = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
+    Check(Near(middle.share, 0.25, 1e-5) && Near(middle.rgb[0], 0.3, 1e-5), "the middle tap alone: a quarter of the share");
+    // A corner alone is 1/16 of the sum: under kOtherCarMinShare, no colour.
+    for (int k = 0; k < 9; ++k) {
+      taps[k].distance = k == 0 ? 10.0f : 0.0f;
+      taps[k].rgb[0] = k == 0 ? 0.3f : 0.0f;
+    }
+    const rt::OtherCarColour corner = rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f);
+    Check(Near(corner.share, 0.0625, 1e-5) && !corner.known(), "a corner alone is too little to be the car's colour");
+    // A car placed from memory (a negative radius in its record): the history holds nothing of it, whatever the taps hold; it is known in full, a fixed grey.
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 0.0f;
+      tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
+    }
+    const rt::OtherCarColour remembered = rt::FindOtherCarColour(taps, 10.0f, -1.6f, nullptr, 1.0f);
+    Check(remembered.known() && Near(remembered.share, 1.0, 1e-6) && Near(remembered.rgb[0], rt::kRememberedCarColour, 1e-6) &&
+              Near(remembered.rgb[1], rt::kRememberedCarColour, 1e-6) && Near(remembered.rgb[2], rt::kRememberedCarColour, 1e-6),
+          "a car placed from memory (negative radius): the fixed grey, known in full, the taps not looked at");
+    Check(rt::kRememberedCarColour > 0.0f && rt::kRememberedCarColour < 1.0f, "the grey is a colour");
+    // the same car with its paint known (the record's second row): its hidden hits take the paint, the grey is the fallback
+    const float paint[3] = {0.063f, 0.349f, 0.071f};
+    const rt::OtherCarColour painted = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint, 1.0f);
+    Check(painted.known() && Near(painted.share, 1.0, 1e-6) && Near(painted.rgb[0], 0.063, 1e-6) && Near(painted.rgb[1], 0.349, 1e-6) && Near(painted.rgb[2], 0.071, 1e-6),
+          "a car the camera does not draw, with its paint known: the paint, known in full");
+    // A car the camera draws (a positive radius) whose taps hold nothing (the history has no vehicle there): its paint stands in, in full (RT-MODEL-CARS-3: the neighbour
+    // the game draws beside the player while the camera looks at the player's door); with no paint, no colour, as before.
+    const rt::OtherCarColour drawn_unseen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, 1.0f);
+    Check(drawn_unseen.known() && Near(drawn_unseen.share, 1.0, 1e-6) && Near(drawn_unseen.rgb[0], 0.063, 1e-6) && Near(drawn_unseen.rgb[2], 0.071, 1e-6),
+          "a car the camera draws but the history shows nothing of, with its paint known: the paint, known in full");
+    Check(!rt::FindOtherCarColour(taps, 10.0f, 1.6f, nullptr, 1.0f).known(), "... and with no paint known: no colour, as before");
+    // its centre behind the camera, or no centre in its record (a radius of 0): no taps are looked at, the paint or nothing
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = -3.0f;
+      tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
+    }
+    Check(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint, 1.0f).known() && Near(rt::FindOtherCarColour(taps, -3.0f, 1.6f, paint, 1.0f).rgb[0], 0.063, 1e-6),
+          "a centre behind the camera: the paint");
+    Check(!rt::FindOtherCarColour(taps, -3.0f, 1.6f, nullptr, 1.0f).known() && rt::FindOtherCarColour(taps, -3.0f, 1.6f, nullptr, 1.0f).rgb[0] == 0.0f, "a centre behind the camera, no paint: no colour");
+    Check(Near(rt::FindOtherCarColour(taps, 10.0f, 0.0f, paint, 1.0f).rgb[1], 0.349, 1e-6) && !rt::FindOtherCarColour(taps, 10.0f, 0.0f, nullptr, 1.0f).known(), "a record with no centre (radius 0): the paint or nothing");
+    // where the history shows the car, its colour stays, whatever the paint row says
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f;
+      tap.rgb[0] = 0.5f;
+      tap.rgb[1] = 0.25f;
+      tap.rgb[2] = 0.125f;
+    }
+    const rt::OtherCarColour seen = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, 1.0f);
+    Check(Near(seen.share, 1.0, 1e-5) && Near(seen.rgb[0], 0.5, 1e-5) && Near(seen.rgb[1], 0.25, 1e-5), "a car the camera draws and the history shows keeps the colour of the history, whatever its paint row says");
+
+    // UNITS (RT-MODEL-CARS-4). The image is in the history's units (the target's: the shader's output times 2^bias), the paint's constants and the grey are in the paint's (the
+    // shader's output): at the game's bias of 4 they are multiplied by 16; what the history shows is the history's already and is not multiplied.
+    const float units = 16.0f;
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 0.0f;
+      tap.rgb[0] = tap.rgb[1] = tap.rgb[2] = 0.9f;
+    }
+    const rt::OtherCarColour grey16 = rt::FindOtherCarColour(taps, 10.0f, -1.6f, nullptr, units);
+    Check(Near(grey16.rgb[0], rt::kRememberedCarColour * 16.0, 1e-5) && Near(grey16.rgb[2], rt::kRememberedCarColour * 16.0, 1e-5),
+          "the grey of a car placed from memory is multiplied by the units");
+    const rt::OtherCarColour paint16 = rt::FindOtherCarColour(taps, 10.0f, -1.6f, paint, units);
+    Check(Near(paint16.rgb[0], 0.063 * 16.0, 1e-5) && Near(paint16.rgb[1], 0.349 * 16.0, 1e-5) && Near(paint16.rgb[2], 0.071 * 16.0, 1e-5) && paint16.known(),
+          "the paint of a car placed from memory is multiplied by the units");
+    const rt::OtherCarColour drawn16 = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, units);
+    Check(drawn16.known() && Near(drawn16.rgb[1], 0.349 * 16.0, 1e-5), "the paint that stands in for a drawn car the history shows nothing of is multiplied by the units");
+    for (rt::SurfaceTap& tap : taps) {
+      tap.distance = 10.0f;
+      tap.rgb[0] = 0.5f;
+      tap.rgb[1] = 0.25f;
+      tap.rgb[2] = 0.125f;
+    }
+    const rt::OtherCarColour seen16 = rt::FindOtherCarColour(taps, 10.0f, 1.6f, paint, units);
+    Check(Near(seen16.rgb[0], 0.5, 1e-5) && Near(seen16.rgb[1], 0.25, 1e-5), "what the history shows keeps its own units (not multiplied)");
+    // What the paint then makes of it (the reflection ray's hidden hit: kShade of the colour; the paint reads the image times 2^-bias): a neighbour of paint radiance p shows
+    // p x kShade in the paint's units, not p x kShade / 16 (the dark silhouette of the first model-data check).
+    {
+      const float white[3] = {0.35f, 0.35f, 0.35f};  // a white car's row (car_model_rt_rules.h PaintRadiance)
+      const rt::OtherCarColour hit = rt::FindOtherCarColour(taps, -3.0f, 1.6f, white, units);
+      const double image = double(hit.rgb[0]) * rt::kShade;                  // what the pass writes for the hit (hidden: the colour times the shade)
+      const double in_paint_units = image * cr::ExpBiasGain(4);    // what the paint's debug view 2 and its blend read
+      Check(Near(in_paint_units, 0.35 * rt::kShade, 1e-5), "a hidden hit on a car of paint radiance p reaches the paint as p x kShade (the units cancel)");
+      const double before = 0.35 * rt::kShade * cr::ExpBiasGain(4);  // the first model-data check: no units, so 1/16 of that
+      Check(Near(before * 16.0, in_paint_units, 1e-6) && before < 0.01, "... where it reached it as 1/16 of that before: the dark silhouette");
+    }
+    // The step: kOtherCarSpread radii in texels, from one to the most.
+    Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
+              Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),
+          "the taps' spacing follows the car's size in texels, from one texel to the most");
   }
 
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

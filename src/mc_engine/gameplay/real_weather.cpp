@@ -21,6 +21,7 @@
 //
 
 #include "real_weather.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <chrono>
@@ -33,6 +34,7 @@
 #include <thread>
 
 #include "larecomp_log.h"
+#include "os/curl_get.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -53,7 +55,7 @@ std::atomic<int> g_index{-1};
 std::atomic<bool> g_enabled{false};
 
 std::mutex g_loc_mutex;
-std::string g_location;
+std::string& g_location = larecomp::Leak<std::string>();
 
 #if defined(_WIN32)
 
@@ -107,7 +109,30 @@ std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
 
 #else  // !_WIN32
 
-std::string HttpsGet(const wchar_t*, const wchar_t*) { return {}; }
+// Linux: the system's libcurl, loaded when it is first needed (os/curl_get.h). Before this the setting WEATHER: REAL did nothing here. The host and path are ASCII
+// (the two services' own); anything else is refused. One log line per different failure, not one every five minutes.
+// CHECK: libcurl itself is exercised by os/curl_get_test (a local server); the two real services were not asked from Linux, and libcurl.so.4 on SteamOS is assumed (Steam needs it).
+std::string HttpsGet(const wchar_t* host, const wchar_t* path) {
+    std::string url = "https://";
+    for (const wchar_t* part : {host, path}) {
+        for (const wchar_t* c = part; *c; ++c) {
+            if (*c < 0x20 || *c > 0x7E) return {};
+            url.push_back(static_cast<char>(*c));
+        }
+    }
+    const larecomp::os::HttpGetResult got = larecomp::os::HttpGet(url, std::chrono::seconds(15));
+    if (!got.ok) {
+        static std::mutex mutex;
+        static std::string last;
+        std::lock_guard<std::mutex> lock(mutex);
+        if (got.why != last) {
+            last = got.why;
+            LARECOMP_APP_INFO("[RealWeather] the request to {} failed: {}", url.substr(0, url.find('/', 8)), got.why);
+        }
+        return {};
+    }
+    return got.body;
+}
 
 #endif
 
@@ -269,7 +294,7 @@ private:
 };
 
 Poller& GetPoller() {
-    static Poller poller;
+    static Poller& poller = larecomp::Leak<Poller>();
     return poller;
 }
 

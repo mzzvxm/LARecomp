@@ -46,11 +46,12 @@
 // reverse): v.f32[3] = x, [2] = y, [1] = z, [0] = w.
 //
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include <algorithm>
 #include <atomic>
@@ -66,20 +67,8 @@
 #include "mod_breakables.h"
 #include "mod_data.h"
 #include "mod_glows.h"
+#include "larecomp_guest.h"
 
-REXCVAR_DEFINE_BOOL(mod_glows, true, "MCLA/World",
-    "Light glows a mod places in the world (models/<mod>/glows.bin), drawn by MCLA's "
-    "glow renderer.")
-    .debug_only();
-REXCVAR_DEFINE_INT32(mod_glows_max, 64, "MCLA/World",
-    "Mod glows submitted per frame, nearest first. MCLA draws 96 a frame in all, "
-    "car lights included.")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_glow_size, 1.8, "MCLA/World",
-    "Mod glow size multiplier (on top of each glow's own).")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_glow_intensity, 1.0, "MCLA/World", "Mod glow intensity multiplier.")
-    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_82729438);
 REX_EXTERN(rex_sub_822FC250);
@@ -120,10 +109,10 @@ static_assert(sizeof(Glow) == 32);
 constexpr uint16_t kFlashing = 1;
 
 std::once_flag g_load_once;
-std::vector<Glow> g_glows;
-std::vector<int> g_glow_mod;
-std::vector<uint32_t> g_slots;
-std::vector<std::pair<float, uint32_t>> g_near;
+std::vector<Glow>& g_glows = larecomp::Leak<std::vector<Glow>>();
+std::vector<int>& g_glow_mod = larecomp::Leak<std::vector<int>>();
+std::vector<uint32_t>& g_slots = larecomp::Leak<std::vector<uint32_t>>();
+std::vector<std::pair<float, uint32_t>>& g_near = larecomp::Leak<std::vector<std::pair<float, uint32_t>>>();
 std::atomic<uint32_t> g_scratch{0};  // guest: position (16) + size (8)
 const auto g_t0 = std::chrono::steady_clock::now();
 
@@ -170,9 +159,10 @@ void Load() {
     g_slots.assign(g_glows.size(), 0xFFFFFFFFu);
 }
 
-// One glow through AddGlow, on a fresh context below the caller's frame (what
-// GuestToHostFunction does, plus the position in v1, which it cannot pass).
-uint32_t AddGlow(PPCContext& ctx, uint8_t* base, uint32_t scratch, const Glow& g, uint32_t slot,
+// One glow through AddGlow, on the thread's own register file (rexglue 0.11: the hook's ctx IS that file),
+// cleared, below the hook's r1, which comes back as it was (what guest::Call does, plus the position in v1,
+// which it cannot pass).
+uint32_t AddGlow(PPCContext&, uint8_t* base, uint32_t scratch, const Glow& g, uint32_t slot,
                  uint32_t uid, float intensity, float sx, float sy) {
     WriteF32(base, scratch + 0, g.x);
     WriteF32(base, scratch + 4, g.y);
@@ -181,11 +171,10 @@ uint32_t AddGlow(PPCContext& ctx, uint8_t* base, uint32_t scratch, const Glow& g
     WriteF32(base, scratch + 16, sx);
     WriteF32(base, scratch + 20, sy);
 
-    PPCContext c{};
-    c.r1 = ctx.r1;
+    larecomp::guest::ThreadFile file;
+    if (!file) return slot;  // not a guest thread (cannot happen from the hook): the slot stays
+    PPCContext& c = file.ctx();
     c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
     c.r3.u64 = 0xFF000000u | g.rgb;
     c.r4.u64 = scratch + 16;
     c.r5.u64 = 0;
@@ -201,7 +190,6 @@ uint32_t AddGlow(PPCContext& ctx, uint8_t* base, uint32_t scratch, const Glow& g
     c.v1.f32[1] = g.z;
     c.v1.f32[0] = 1.0f;
     rex_sub_822FC250(c, base);
-    ctx.fpscr = c.fpscr;
     return c.r3.u32;
 }
 
@@ -237,15 +225,15 @@ void SubmitGlows(PPCContext& ctx, uint8_t* base) {
         const float d2 = dx * dx + dy * dy + dz * dz;
         if (d2 < draw2) g_near.emplace_back(d2, i);
     }
-    const size_t want = size_t(std::clamp(REXCVAR_GET(mod_glows_max), 0, 96));
+    const size_t want = size_t(std::clamp(larecomp::settings::mod_glows_max.Get(), 0, 96));
     if (g_near.size() > want) {
         std::nth_element(g_near.begin(), g_near.begin() + want, g_near.end());
         g_near.resize(want);
     }
 
     const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - g_t0).count();
-    const float size_mul = float(REXCVAR_GET(mod_glow_size));
-    const float glow_i = ReadF32(base, kGlowIntensity) * float(REXCVAR_GET(mod_glow_intensity));
+    const float size_mul = float(larecomp::settings::mod_glow_size.Get());
+    const float glow_i = ReadF32(base, kGlowIntensity) * float(larecomp::settings::mod_glow_intensity.Get());
     const float sx = ReadF32(base, kGlowSize + 0) * size_mul;
     const float sy = ReadF32(base, kGlowSize + 4) * size_mul;
 
@@ -271,19 +259,19 @@ void SubmitGlows(PPCContext& ctx, uint8_t* base) {
 extern "C" REX_FUNC(rex_sub_82729438) {
     const bool star_pass = (ctx.r4.u32 & 0xFF) != 0;
     __imp__rex_sub_82729438(ctx, base);
-    if (star_pass || !REXCVAR_GET(mod_glows)) return;
+    if (star_pass || !larecomp::settings::mod_glows.Get()) return;
     const uint64_t ret = ctx.r3.u64;
     SubmitGlows(ctx, base);
     ctx.r3.u64 = ret;
 }
 
 void TickModGlows() {
-    if (g_scratch.load(std::memory_order_relaxed) || !REXCVAR_GET(mod_glows)) return;
-    auto* rt = rex::Runtime::instance();
-    PPCFunc* malloc_fn = rt && rt->function_dispatcher() ? rt->function_dispatcher()->GetFunction(kGuestMallocFn)
+    if (g_scratch.load(std::memory_order_relaxed) || !larecomp::settings::mod_glows.Get()) return;
+    auto* rt = REX_RUNTIME();
+    PPCFunc* malloc_fn = rt ? rt->FindFunction(kGuestMallocFn).value_or(nullptr)
                                                         : nullptr;
-    if (!malloc_fn || !rt->virtual_membase()) return;
-    const uint32_t raw = rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, 64u);
+    if (!malloc_fn || !rt->GetMembase().GetBase()) return;
+    const uint32_t raw = larecomp::guest::Call<uint32_t>(malloc_fn, 64u);
     if (raw) g_scratch.store((raw + 15) & ~15u, std::memory_order_release);
 }
 

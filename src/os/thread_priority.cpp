@@ -1,6 +1,7 @@
 // Thread priorities for every OS. See thread_priority.h.
 
 #include "os/thread_priority.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -39,7 +40,7 @@ std::mutex& CallbackMutex() {
 }
 
 LogCallback& Callback() {
-  static LogCallback callback;
+  static LogCallback& callback = larecomp::Leak<LogCallback>();
   return callback;
 }
 

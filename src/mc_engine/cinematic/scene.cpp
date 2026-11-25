@@ -5,6 +5,7 @@
 #include "scene.h"
 
 #include "car_verbs.h"
+#include "spots.h"
 
 #include <algorithm>
 #include <array>
@@ -22,6 +23,7 @@ constexpr const char* kWeatherNames[] = {"nice", "cloudy", "stormy", "foggy"};
 constexpr double kMaxSeconds = 86400.0;
 constexpr double kMaxHour = 48.0;
 constexpr double kMaxTimeScale = 10.0;
+constexpr double kMaxDensityScale = 2.0;  // ped_density_scale and parked_car_scale go from 0 to 2
 constexpr double kEpsilon = 1e-9;
 
 std::string Lower(std::string_view s) {
@@ -151,6 +153,12 @@ bool ParseOnOff(std::string_view s, int* out) {
     return true;
 }
 
+// The folder of a file path ("C:\a\b.scene" -> "C:\a"), either slash; empty when the path has none.
+std::string FolderOf(const std::string& path) {
+    const size_t cut = path.find_last_of("/\\");
+    return cut == std::string::npos ? std::string() : path.substr(0, cut);
+}
+
 // Words of one line: split on blanks, "double quotes" keep a word together (and may be empty), '#' at the start of a word
 // (outside quotes) starts a comment. *unterminated is set when a quote is not closed.
 std::vector<std::string> SplitWords(std::string_view line, bool* unterminated) {
@@ -204,6 +212,8 @@ using Args = std::vector<std::string>;
 
 class Parser {
   public:
+    explicit Parser(const ParseOptions& options) : options_(options) {}
+
     ParseResult Run(std::string_view text) {
         if (text.size() >= 3 && text.substr(0, 3) == "\xEF\xBB\xBF") text.remove_prefix(3);  // a byte order mark
         int line_no = 0;
@@ -220,6 +230,8 @@ class Parser {
         std::stable_sort(result_.diagnostics.begin(), result_.diagnostics.end(),
                          [](const Diagnostic& x, const Diagnostic& y) { return x.line < y.line; });  // the whole-file ones (line 0) first
         result_.scene.events = std::move(events_);
+        result_.scene.source_path = options_.path;
+        result_.scene.source_dir = FolderOf(options_.path);
         return std::move(result_);
     }
 
@@ -338,8 +350,8 @@ class Parser {
         if (verb == "hour") return Hour(line, t, a);
         if (verb == "weather") return Weather(line, t, a);
         if (verb == "traffic") return Toggle(line, t, a, Track::kTraffic, verb);
-        if (verb == "peds") return Toggle(line, t, a, Track::kPeds, verb);
-        if (verb == "parked") return Toggle(line, t, a, Track::kParked, verb);
+        if (verb == "peds") return Density(line, t, a, Track::kPeds, verb);
+        if (verb == "parked") return Density(line, t, a, Track::kParked, verb);
         if (verb == "police") return Toggle(line, t, a, Track::kPolice, verb);
         if (verb == "timescale") return TimeScale(line, t, a);
         if (verb == "set") return SetCvar(line, t, a);
@@ -476,6 +488,34 @@ class Parser {
         e.line = line;
         e.track = track;
         e.state = state;
+        Add(std::move(e));
+    }
+
+    // peds, parked: `on`/`off` (the game's own switch) or a density scale, a number from 0 to 2 (the setting ped_density_scale / parked_car_scale).
+    void Density(int line, double t, const Args& a, Track track, const std::string& verb) {
+        const char* setting = track == Track::kPeds ? "ped_density_scale" : "parked_car_scale";
+        if (a.size() != 1) {
+            Error(line, verb + " on|off, or a density scale (a number from 0 to 2: the setting " + setting + ")");
+            return;
+        }
+        const std::string word = Lower(a[0]);
+        Event e;
+        e.t = t;
+        e.line = line;
+        e.track = track;
+        if (word == "on" || word == "true") {
+            e.state = 1;
+        } else if (word == "off" || word == "false") {
+            e.state = 0;
+        } else {
+            double v = 0.0;
+            if (!ParseNumber(a[0], &v) || v < 0.0 || v > kMaxDensityScale) {
+                Error(line, "bad " + verb + " '" + a[0] + "' (on, off, or a density scale from 0 to 2: the setting " + setting + ")");
+                return;
+            }
+            e.state = kStateScale;
+            e.to = v;
+        }
         Add(std::move(e));
     }
 
@@ -817,7 +857,17 @@ class Parser {
     }
 
     // camera, cut, hud, car and start: only their shape is checked here; the packages that apply them read the words.
-    void Opaque(int line, double t, const std::string& verb, const Args& a) {
+    void Opaque(int line, double t, const std::string& verb, const Args& given) {
+        // A spot word (`spot:<name>[@r,u,f]`, spots.h) is a place or a heading by name: it becomes numbers here, so the packages that read the
+        // words (the camera, the cars) see coordinates only. A statement that cannot be resolved is an error on its own line.
+        Args a = given;
+        if (verb == "cam" || verb == "car" || verb == "start") {
+            std::string why;
+            if (!ExpandSpotWords(&a, options_.spots, &why)) {
+                Error(line, why);
+                return;
+            }
+        }
         Event e;
         e.t = t;
         e.line = line;
@@ -884,6 +934,21 @@ class Parser {
             last[k] = &e;
         }
 
+        // An ambient car (`car <id> ambient`) is made by the game's parked spawner from the layout item the scene adds: with that spawner closed (`parked off`,
+        // a parked scale of 0, in force when the car is asked for) no car will appear.
+        for (const Event& e : events_) {
+            if (e.track != Track::kCar || e.words.size() < 2 || Lower(e.words[1]) != "ambient") continue;
+            const Event* closing = nullptr;
+            for (const Event& k : events_) {
+                if (k.track != Track::kParked || k.t > e.t + kEpsilon) continue;
+                closing = (k.state == 0 || (k.state == kStateScale && k.to <= 0.0)) ? &k : nullptr;
+            }
+            if (closing) {
+                Warn(e.line, "car " + e.words[0] + " is an ambient car, which the game's parked spawner makes from a layout item, and the parked spawner is closed at t=" + Num(e.t) +
+                                 " (line " + std::to_string(closing->line) + "): no car will appear (use a parked scale above 0, or leave parked alone)");
+            }
+        }
+
         // The take: one `capture fps`, an optional `capture off` after it.
         const Event* cap_start = nullptr;
         const Event* cap_stop = nullptr;
@@ -938,6 +1003,7 @@ class Parser {
         }
     }
 
+    ParseOptions options_;
     ParseResult result_;
     std::vector<Event> events_;
     int statements_ = 0;
@@ -1071,7 +1137,7 @@ bool EndsWith(std::string_view s, std::string_view suffix) {
 std::string CvarRefusal(std::string_view name) {
     const std::string n = Lower(name);
     const std::string given(name);
-    if (StartsWith(n, "mcla_scene")) return "a scene does not set " + given;
+    if (StartsWith(n, "mcla_scene") || StartsWith(n, "mcla_director")) return "a scene does not set " + given;
     bool refused = StartsWith(n, "mcla_capture_") || n.find("dump") != std::string::npos;
     for (const std::string_view suffix : kRefusedSuffixes) refused = refused || EndsWith(n, suffix);
     for (const std::string_view exact : kRefusedCvars) refused = refused || n == exact;
@@ -1114,7 +1180,11 @@ int ParseResult::WarningCount() const {
 }
 
 ParseResult ParseScene(std::string_view text) {
-    return Parser().Run(text);
+    return Parser(ParseOptions{}).Run(text);
+}
+
+ParseResult ParseScene(std::string_view text, const ParseOptions& options) {
+    return Parser(options).Run(text);
 }
 
 std::string Summarize(const Scene& scene) {
@@ -1156,10 +1226,12 @@ WorldState EvaluateWorld(const Scene& scene, double t) {
                 w.traffic = e.state;
                 break;
             case Track::kPeds:
-                w.peds = e.state;
+                w.peds = e.state == kStateScale ? -1 : e.state;
+                w.peds_scale = e.state == kStateScale ? e.to : -1.0;
                 break;
             case Track::kParked:
-                w.parked = e.state;
+                w.parked = e.state == kStateScale ? -1 : e.state;
+                w.parked_scale = e.state == kStateScale ? e.to : -1.0;
                 break;
             case Track::kPolice:
                 w.police = e.state;

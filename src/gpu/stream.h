@@ -22,7 +22,7 @@
 // (a fence, the present). Waking the consumer is a syscall, publishing is one
 // atomic store.
 //
-// Consumer: the render thread. It reads up to the published tail, spins
+// Consumer: the render thread. It reads up to the published tail, optionally spins
 // briefly when it is empty, then sleeps on a condition with the idle period as
 // timeout. Space is returned record by record.
 //
@@ -64,6 +64,7 @@ class CommandStream {
   static constexpr uint32_t kReleaseBytes = 64u << 10;
 
   CommandStream() = default;
+  ~CommandStream();
   CommandStream(const CommandStream&) = delete;
   CommandStream& operator=(const CommandStream&) = delete;
 
@@ -150,9 +151,11 @@ class CommandStream {
   // of the record being executed. Render thread only.
   uint64_t consumer_position() const { return read_; }
   const RecordHeader* Peek(uint64_t* position) const;
-  // Spins briefly, then sleeps until a record is published, the stream stops,
+  // Optionally spins briefly, then sleeps until a record is published, the stream stops,
   // or `timeout` passes. True when there is work (or stop), false on timeout.
-  bool WaitForWork(std::chrono::milliseconds timeout);
+  bool WaitForWork(std::chrono::milliseconds timeout, bool spin);
+  // Same wake conditions with a precise Windows QPC deadline and no spin.
+  bool WaitForPresentWork(int64_t due);
   // Wakes WaitExecuted callers of every sequence up to `sequence`.
   void MarkExecuted(uint64_t sequence);
 
@@ -164,6 +167,8 @@ class CommandStream {
  private:
   bool WaitForSpace(std::unique_lock<ProducerLock>& producer_lock, uint64_t end);
   void Publish(uint64_t tail);
+  void WakeConsumer();
+  bool WaitForWork(std::chrono::milliseconds timeout, bool spin, int64_t present_due);
   // Stores head_ = read_ and wakes a producer waiting for space.
   void ReleaseNow();
 
@@ -215,6 +220,10 @@ class CommandStream {
   // Waiting and waking (cold).
   alignas(kCacheLine) std::mutex wake_mutex_;
   std::condition_variable work_cv_;
+#if defined(_WIN32)
+  void* present_wake_event_ = nullptr;
+  bool waiting_for_present_ = false;  // guarded by wake_mutex_
+#endif
   std::condition_variable space_cv_;
   std::mutex done_mutex_;
   std::condition_variable done_cv_;

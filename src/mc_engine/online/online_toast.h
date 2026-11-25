@@ -8,17 +8,19 @@
 //
 
 namespace rex::ui {
-class ImGuiDrawer;
-class ImmediateDrawer;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp {
 
-// Creates the pop-up. UI thread, once, after the drawers exist.
-void StartOnlineToast(rex::ui::ImGuiDrawer* imgui_drawer,
-                      rex::ui::ImmediateDrawer* immediate_drawer);
+// Creates the pop-up (the UI system owns it). UI thread, once, after the window is open.
+void StartOnlineToast(rex::ui::IUISystem& ui);
 
 // Keeps the pop-up up for a moment longer. Any thread.
 void OnlineToastPoke();
+
+// Linux (online_platform.h): shows the pop-up for a few seconds with its one sentence, "Online play is not available on Linux
+// yet". Where online exists this is the same as OnlineToastPoke. Any thread.
+void OnlineToastNotice();
 
 }  // namespace larecomp

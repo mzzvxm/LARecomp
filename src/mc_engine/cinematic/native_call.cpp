@@ -8,10 +8,10 @@
 #include "native_call.h"
 
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/system/thread_state.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/kernel/thread_state.h>
 
 #include <algorithm>
 #include <chrono>
@@ -19,6 +19,7 @@
 #include <cstring>
 
 #include "larecomp_log.h"
+#include "larecomp_guest.h"
 
 namespace mc::cinematic {
 
@@ -45,8 +46,8 @@ struct Block {
 Block g_block;
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 void Put32(uint8_t* base, uint32_t ea, uint32_t v) {
@@ -61,9 +62,9 @@ uint32_t Get32(const uint8_t* base, uint32_t ea) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 bool EnsureBlock(uint8_t* base) {
@@ -71,7 +72,7 @@ bool EnsureBlock(uint8_t* base) {
     if (g_block.failed) return false;
     PPCFunc* malloc_fn = GuestFn(kGuestMallocFn);
     const uint32_t total = kCtxBytes + kRetBytes + kMaxArgs * 4 + kVecEntries * 16 + kStrBytes;
-    const uint32_t raw = malloc_fn ? rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, total + 16) : 0;
+    const uint32_t raw = malloc_fn ? larecomp::guest::Call<uint32_t>(malloc_fn, total + 16) : 0;
     if (!raw) {
         g_block.failed = true;
         LARECOMP_APP_WARN("[scene] native calls: the game's allocator gave no block; no native can be called");
@@ -105,7 +106,7 @@ float GetF(const uint8_t* base, uint32_t ea) {
 
 uint32_t GuestPutVec(float x, float y, float z, float w) {
     uint8_t* base = Membase();
-    if (!base || !rex::runtime::ThreadState::Get() || !EnsureBlock(base)) return 0;
+    if (!base || !rex::kernel::ThreadState::Get() || !EnsureBlock(base)) return 0;
     const uint32_t at = g_block.vecs + (g_block.vec_next++ % kVecEntries) * 16;
     PutF(base, at, x);
     PutF(base, at + 4, y);
@@ -116,7 +117,7 @@ uint32_t GuestPutVec(float x, float y, float z, float w) {
 
 uint32_t GuestPutString(const char* text) {
     uint8_t* base = Membase();
-    if (!base || !text || !rex::runtime::ThreadState::Get() || !EnsureBlock(base)) return 0;
+    if (!base || !text || !rex::kernel::ThreadState::Get() || !EnsureBlock(base)) return 0;
     const uint32_t need = static_cast<uint32_t>(std::strlen(text)) + 1;
     if (need > kStrBytes) return 0;
     if (g_block.str_next + need > kStrBytes) g_block.str_next = 0;  // wraps: an older string is overwritten
@@ -130,7 +131,7 @@ NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args, 
     NativeResult res;
     uint8_t* base = Membase();
     if (!base || args.size() > kMaxArgs) return res;
-    if (!rex::runtime::ThreadState::Get()) return res;  // not a guest thread: GuestToHostFunction would do nothing
+    if (!rex::kernel::ThreadState::Get()) return res;  // not a guest thread: GuestToHostFunction would do nothing
     PPCFunc* fn = GuestFn(wrapper);
     if (!fn || !EnsureBlock(base)) return res;
 
@@ -144,9 +145,9 @@ NativeResult CallNative(uint32_t wrapper, std::initializer_list<uint32_t> args, 
     uint32_t i = 0;
     for (const uint32_t a : args) Put32(base, g_block.args + 4 * i++, a);
 
-    if (flush_log) rex::FlushLogging();  // a line written before the call is on disk if the call takes the game down
+    if (flush_log) REX_LOGGER().Flush();  // a line written before the call is on disk if the call takes the game down
     const auto t0 = std::chrono::steady_clock::now();
-    rex::ppc::GuestToHostFunction<void>(fn, g_block.ctx);
+    larecomp::guest::Call<void>(fn, g_block.ctx);
     const auto t1 = std::chrono::steady_clock::now();
     res.called = true;
     res.ms = std::chrono::duration<double, std::milli>(t1 - t0).count();

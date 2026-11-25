@@ -3,7 +3,8 @@
 // The pages of the hidden DEBUG menu (SETTINGS-REVIEW.md 5.2 and 5.3).
 //
 // pause_menu.cpp lists them in kMenus as MenuDef::debug_only menus: a DEBUG hub on the SETTINGS tab
-// (a button only while DebugMenuUnlocked(), debug_menu.h) whose rows open seven pages. Their rows are
+// (a button only while DebugMenuUnlocked(), debug_menu.h) whose rows open eight pages (seven while the XENIA renderer runs: PICTURE FIXES is
+// the Plume renderer's). A page holds at most 24 rows (pause_menu.cpp kMaxRowsPerMenu, checked by tools/check_menu_rows.py). Their rows are
 // built here, next to the actions they run, and handed over through MenuDef::extra, the way
 // CameraLookMenuItems hands over the free-look rows.
 //
@@ -14,6 +15,13 @@
 //
 // A feature that wants a debug row of its own adds it to one of the tables in debug_menu_pages.cpp (or a
 // page's own row function), with a key that starts with PM_RxDbg and a cvar tagged .debug_only().
+//
+// The one exception is the RENDERER row (RENDERING page): the way to the XENIA renderer, which stays in the
+// program as a hidden fallback (owner, 2026-11-19; gpu/renderer_fallback.h). Its setting is the SDK's gpu.driver,
+// which is startup-only and not LARecomp's to tag, so the row HOLDS the choice (pause_menu.cpp kDeferredCvars)
+// instead of applying it: the next settings save writes it to larecomp.toml and leaving the menu offers RESTART
+// NOW. It is the only debug row that is kept. check_settings_exposure.py does not see it (a dotted name is not
+// one of its rows, and the SDK's setting is no definition of ours); settings_exposure.toml says so.
 //
 
 #include <string>
@@ -26,6 +34,9 @@ namespace mcla_menu {
 // that only one renderer has (the Plume renderer's views and logs) are tagged NativeOnly.
 const ItemDef* DebugHubRows(int& count);
 const ItemDef* DebugFixesRows(int& count);
+#if defined(LARECOMP_HAS_GPU)
+const ItemDef* DebugPictureFixesRows(int& count);
+#endif
 const ItemDef* DebugPerformanceRows(int& count);
 const ItemDef* DebugRenderingRows(int& count);
 const ItemDef* DebugCameraRows(int& count);

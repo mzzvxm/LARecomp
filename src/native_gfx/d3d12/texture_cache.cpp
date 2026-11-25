@@ -12,7 +12,7 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/runtime.h>
 #include <rex/system/xmemory.h>
@@ -22,19 +22,11 @@
 #include "../guest/guest_resources.h"
 #include "context.h"
 
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_texcache_mb);
-REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
-REXCVAR_DECLARE(bool, mcla_native_gfx_verify_textures);
-REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_index);
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
-REXCVAR_DECLARE(bool, mcla_native_gfx_verify_per_frame);
-REXCVAR_DECLARE(bool, mcla_native_gfx_texinv_incremental);
-REXCVAR_DECLARE(bool, mcla_native_gfx_tex_cached_decode);
 
 namespace mcla::native_gfx {
 
 uint64_t TextureCache::VerifyEpoch(const D3D12Context& context) const {
-  return REXCVAR_GET(mcla_native_gfx_verify_per_frame) ? game_frame_ : context.frame_index();
+  return larecomp::settings::mcla_native_gfx_verify_per_frame.Get() ? game_frame_ : context.frame_index();
 }
 
 namespace {
@@ -209,7 +201,7 @@ void TextureCache::IndexAdd(uint64_t key, const Entry& e) {
 }
 
 void TextureCache::NoteIndexRemoval() {
-  if (REXCVAR_GET(mcla_native_gfx_texinv_incremental) && !range_index_stale_) {
+  if (larecomp::settings::mcla_native_gfx_texinv_incremental.Get() && !range_index_stale_) {
     ++range_index_dead_;
   } else {
     range_index_stale_ = true;
@@ -273,7 +265,7 @@ void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
     return;
   }
   ++stats_.inval_drains;
-  const bool indexed = REXCVAR_GET(mcla_native_gfx_texinv_index);
+  const bool indexed = larecomp::settings::mcla_native_gfx_texinv_index.Get();
   if (indexed && (range_index_stale_ ||
                   (range_index_dead_ > 1024u && range_index_dead_ > range_index_.size() / 2u))) {
     RebuildRangeIndex();
@@ -344,7 +336,7 @@ void TextureCache::ApplyPendingInvalidations(D3D12Context& context) {
 }
 
 void TextureCache::EvictToBudget(D3D12Context& context, uint64_t current_frame) {
-  const uint64_t budget_mb = REXCVAR_GET(mcla_native_gfx_texcache_mb);
+  const uint64_t budget_mb = larecomp::settings::mcla_native_gfx_texcache_mb.Get();
   if (budget_mb == 0) {
     return;  // explicitly unbounded
   }
@@ -388,7 +380,7 @@ namespace {
 // in xAlphaModulate__PS_Textured samples fetch slot 0 and computes 1 - mask, so
 // a mask that falls back to white subtracts nothing and the corners survive.
 void NoteResolveFailure(const TextureFetch& fetch, const char* why) {
-  if (!REXCVAR_GET(mcla_native_gfx_diag)) {
+  if (!larecomp::settings::mcla_native_gfx_diag.Get()) {
     return;
   }
   static std::set<uint64_t> seen;
@@ -446,7 +438,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     *out_source = TextureSource::kUnresolved;
   }
   // TEMP DIAG (remove after): trace the exposure fetch at 0x02D6C000.
-  const bool diag = REXCVAR_GET(mcla_native_gfx_diag);
+  const bool diag = larecomp::settings::mcla_native_gfx_diag.Get();
   if (diag && fetch.base_address == 0x02D6C000u) {
     static unsigned n = 0;
     ++n;
@@ -632,7 +624,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     // changed. Without it the minimap's circular mask stayed a stale, unrelated
     // texture for the whole session -- the punch sampled it, produced a
     // near-constant `1 - mask`, and the map kept its square corners.
-    const bool verify = REXCVAR_GET(mcla_native_gfx_verify_textures) &&
+    const bool verify = larecomp::settings::mcla_native_gfx_verify_textures.Get() &&
                         it->second.content_hash != 0 &&
                         it->second.verified_frame != VerifyEpoch(context);
     if (verify) {
@@ -716,8 +708,8 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       (fetch.mip_address != 0 && fetch.mip_max_level != 0) ? fetch.mip_max_level : 0u;
   const rex::graphics::texture_util::TextureGuestLayout guest_layout =
       rex::graphics::texture_util::GetGuestTextureLayout(
-          rex::graphics::xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height,
-          /*depth_or_array_size=*/1u, fetch.tiled, rex::graphics::xenos::TextureFormat(fetch.format),
+          rex::xenos::DataDimension::k2DOrStacked, fetch.pitch / 32u, fetch.width, fetch.height,
+          /*depth_or_array_size=*/1u, fetch.tiled, rex::xenos::TextureFormat(fetch.format),
           fetch.packed_mips, /*has_base=*/true, guest_max_level);
 
   // Per-level source description, built once so the resource can be created
@@ -775,7 +767,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
         // uses for its own packed copies (D3D12TextureCache, GetPackedMipOffset).
         uint32_t off_z = 0;
         rex::graphics::texture_util::GetPackedMipOffset(
-            fetch.width, fetch.height, 1u, rex::graphics::xenos::TextureFormat(fetch.format), level,
+            fetch.width, fetch.height, 1u, rex::xenos::TextureFormat(fetch.format), level,
             p.off_x_blocks, p.off_y_blocks, off_z);
       }
       p.guest_pitch = lv.row_pitch_bytes ? lv.row_pitch_bytes
@@ -818,7 +810,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   // E melhoria, nao paridade: o 360 tambem aliasava nessas superficies. Por isso
   // vive atras de cvar.
   uint32_t generated_levels = 0;
-  const bool can_generate = REXCVAR_GET(mcla_native_gfx_gen_mips) && guest_max_level == 0 &&
+  const bool can_generate = larecomp::settings::mcla_native_gfx_gen_mips.Get() && guest_max_level == 0 &&
                             level_count == 1 && fi.block_width == 1 && fi.block_height == 1 &&
                             fi.bytes_per_block == 4 && fetch.width >= 8 && fetch.height >= 8;
   if (can_generate) {
@@ -968,7 +960,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
     // with one sequential copy. Same bytes either way.
     uint8_t* const staging_cpu = static_cast<uint8_t*>(staging.cpu);
     const bool cached_decode =
-        REXCVAR_GET(mcla_native_gfx_tex_cached_decode) &&
+        larecomp::settings::mcla_native_gfx_tex_cached_decode.Get() &&
         (TextureEndian(fetch.endianness) != TextureEndian::kNone ||
          (generated_levels && level == 0));
     static thread_local std::vector<uint8_t> decode_scratch;
@@ -1185,7 +1177,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
       // memory, then stream it to the ring, instead of reading the ring back
       // into `prev` for the next reduction.
       auto* const ring_out = static_cast<uint8_t*>(staging.cpu);
-      const bool cached_mip = REXCVAR_GET(mcla_native_gfx_tex_cached_decode);
+      const bool cached_mip = larecomp::settings::mcla_native_gfx_tex_cached_decode.Get();
       std::vector<uint8_t> next;
       if (cached_mip) {
         next.resize(size_t(pitch) * h);
@@ -1260,7 +1252,7 @@ ID3D12Resource* TextureCache::Resolve(D3D12Context& context, ID3D12GraphicsComma
   Entry& resident = entries_[key];
   resident = std::move(e);
   stats_.live_bytes += resident.bytes;
-  if (REXCVAR_GET(mcla_native_gfx_texinv_incremental) && !range_index_stale_) {
+  if (larecomp::settings::mcla_native_gfx_texinv_incremental.Get() && !range_index_stale_) {
     IndexAdd(key, resident);
   } else {
     range_index_stale_ = true;

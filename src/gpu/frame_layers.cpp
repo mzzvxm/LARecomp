@@ -6,7 +6,7 @@
 #include <cstring>
 #include <format>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "draw_decode.h"
 #include "draw_state.h"

@@ -11,6 +11,7 @@
 #include <rex/ui/d3d12/d3d12_util.h>
 
 #include "context.h"
+#include "settings/larecomp_settings.h"
 
 namespace mcla::native_gfx {
 
@@ -90,7 +91,7 @@ void GpuProfiler::Shutdown() {
 }
 
 void GpuProfiler::BeginFrame(D3D12Context& context, ID3D12GraphicsCommandList* cl) {
-  if (!initialized_ || !REXCVAR_GET(mcla_native_gfx_gpu_profiler)) {
+  if (!initialized_ || !larecomp::settings::mcla_native_gfx_gpu_profiler.Get()) {
     return;
   }
 
@@ -112,7 +113,7 @@ void GpuProfiler::BeginFrame(D3D12Context& context, ID3D12GraphicsCommandList* c
 
 void GpuProfiler::EndFrame(D3D12Context& context, ID3D12GraphicsCommandList* cl) {
   (void)context;
-  if (!initialized_ || !REXCVAR_GET(mcla_native_gfx_gpu_profiler)) {
+  if (!initialized_ || !larecomp::settings::mcla_native_gfx_gpu_profiler.Get()) {
     return;
   }
 
@@ -137,11 +138,11 @@ void GpuProfiler::EndFrame(D3D12Context& context, ID3D12GraphicsCommandList* cl)
 }
 
 void GpuProfiler::BeginScope(ID3D12GraphicsCommandList* cl, const char* name) {
-  if (REXCVAR_GET(mcla_native_gfx_pix_markers) && cl && name) {
+  if (larecomp::settings::mcla_native_gfx_pix_markers.Get() && cl && name) {
     cl->BeginEvent(0, name, static_cast<UINT>(std::strlen(name) + 1));
   }
 
-  if (!initialized_ || !REXCVAR_GET(mcla_native_gfx_gpu_profiler) || !cl || !name) {
+  if (!initialized_ || !larecomp::settings::mcla_native_gfx_gpu_profiler.Get() || !cl || !name) {
     return;
   }
 
@@ -162,11 +163,11 @@ void GpuProfiler::BeginScope(ID3D12GraphicsCommandList* cl, const char* name) {
 }
 
 void GpuProfiler::EndScope(ID3D12GraphicsCommandList* cl) {
-  if (REXCVAR_GET(mcla_native_gfx_pix_markers) && cl) {
+  if (larecomp::settings::mcla_native_gfx_pix_markers.Get() && cl) {
     cl->EndEvent();
   }
 
-  if (!initialized_ || !REXCVAR_GET(mcla_native_gfx_gpu_profiler) || !cl || open_scopes_.empty()) {
+  if (!initialized_ || !larecomp::settings::mcla_native_gfx_gpu_profiler.Get() || !cl || open_scopes_.empty()) {
     return;
   }
 
@@ -185,7 +186,7 @@ void GpuProfiler::EndScope(ID3D12GraphicsCommandList* cl) {
 }
 
 void GpuProfiler::SetMarker(ID3D12GraphicsCommandList* cl, const char* name) {
-  if (REXCVAR_GET(mcla_native_gfx_pix_markers) && cl && name) {
+  if (larecomp::settings::mcla_native_gfx_pix_markers.Get() && cl && name) {
     cl->SetMarker(0, name, static_cast<UINT>(std::strlen(name) + 1));
   }
 }

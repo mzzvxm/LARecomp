@@ -346,7 +346,7 @@ inline void DecodeIndices(const uint8_t* raw, uint32_t count, bool index32, uint
 // ---------------------------------------------------------------------------
 // what a vertex shader reads: the walk over its microcode
 // ---------------------------------------------------------------------------
-// The Xenos microcode (rex/graphics/format/ucode.h, the layout is copied here so that this header stays free of the SDK): three dwords
+// The Xenos microcode (rex/xenos/ucode.h, the layout is copied here so that this header stays free of the SDK): three dwords
 // of control flow hold two 48-bit instructions; an exec instruction (opcodes 1-6, 13, 14) names a block of up to six instructions
 // (address, count, a sequence of 2 bits an instruction whose low bit says fetch (1) or ALU (0)); an ALU instruction is three dwords:
 //   dword 0: bits 26-31 scalar opcode

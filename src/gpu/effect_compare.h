@@ -1,20 +1,23 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the compare key: which effect it flips, and the flip itself
+// MCLA GPU renderer -- the compare keys: which effect they flip, and the flip itself
 // ===========================================================================
 // A graphics effect (the bounce light, the contact shadows ...) is hard to judge from memory. The compare
-// key (mc_engine/display/effect_compare.h, F1 until it is rebound) flips ONE chosen effect off and on again at the
-// same spot, so the difference can be seen. This header is the shared, light half that the settings' readers
-// include: the list of effects, and the flip as the readers see it.
+// keys (mc_engine/display/effect_compare.h, F1 and F12 until they are rebound) flip ONE chosen effect off and on again at the
+// same spot, so the difference can be seen. They are a DEVELOPER TOOL: a build has them only with LARECOMP_DEV_TOOLS
+// (CMake option -DLARECOMP_DEV_TOOLS=ON, off by default). Without it nothing flips an effect: State below is
+// the inert one, whose answers are constants, so the readers that ask it compile to the plain setting. This header is the
+// shared, light half that the settings' readers include: the list of effects, and the flip as the readers see it.
 //
 // The flip is not a setting. It never writes a cvar, so the saved setting stays what it was (the pause
 // menu's row, larecomp.toml, the launcher) and nothing needs to be put back; the readers ask here instead:
 //   LiveText::Get() (live_text.h)      the string settings of the occlusion, the contact shadows, the sun
 //                                      shafts, the bounce light and the car self-reflections
 //   shadow_filter::CurrentMode()       the sun shadow filter
-//   ChoosePackedVariant() (pipelines)  the bloom size fix
-// and take `off` (or the text of an on value) while the flip says so. The flip is dropped as soon as the
-// setting it flips is changed (by the pause menu, F4 or the console), or the key is set to another effect.
+//   WantedFeatures() (pipelines)  the bloom size fix
+// and take `off` (or the text of an on value) while the flip says so. Ray traced AO compares with Ultra.
+// The flip is dropped as soon as the
+// setting it flips is changed (by the pause menu, F4 or the console), or another effect is selected.
 //
 // The rules that need the settings' texts (what is on now, what a press does, the label) are in
 // effect_compare_rules.h, which effect_compare_test.cpp checks without a renderer.
@@ -88,6 +91,8 @@ constexpr Effect EffectOfCvar(std::string_view cvar) {
   return Effect::kNone;
 }
 
+#if defined(LARECOMP_DEV_TOOLS)
+
 // The one flip there is: one chosen effect, forced one way. Any thread: the key's thread writes it, the
 // render thread reads it.
 class State {
@@ -123,6 +128,21 @@ class State {
  private:
   std::atomic<uint16_t> word_{0};  // effect << 8 | force; 0 is no flip
 };
+
+#else  // no developer tools: nothing flips an effect
+
+// The same questions with the same answers a State that was never set gives, as constants: the settings' readers
+// get the saved setting and the compiler drops the question.
+class State {
+ public:
+  constexpr Force ForcedFor(Effect) const { return Force::kNone; }
+  constexpr Effect Flipped() const { return Effect::kNone; }
+  constexpr void Set(Effect, Force) const {}
+  constexpr void Clear() const {}
+  constexpr bool Apply(Effect, bool saved) const { return saved; }
+};
+
+#endif
 
 // The one flip of the process.
 inline State& Global() {

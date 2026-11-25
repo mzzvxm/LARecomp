@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mp3custom.h"
+#include "settings/immortal.h"
 #include "mc_engine/modloader/modloader.h"
 #include "mc_engine/music/custom_music.h"
 #include "mp3_player.h"
@@ -17,11 +18,13 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/platform/file.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -29,62 +32,6 @@
 #endif
 #include <windows.h>
 #endif
-
-REXCVAR_DEFINE_BOOL(custom_music, false, "MCLA/Audio",
-    "Old host player: decodes <exe>/music/*.mp3 outside the game and plays them "
-    "over it, with the guest radio carrying only the row. Off, because the "
-    "native route (mc_engine/music) turns the same files into real game "
-    "objects, real cues and real streaming wave banks -- the radio then behaves "
-    "exactly as it does for a shipped song. This only ever sees a file the "
-    "native route could not take, and playing that one a second-class way hides "
-    "the reason instead of showing it.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(custom_music_announce, true, "MCLA/Audio",
-    "Print the song name on the HUD info strip (the bar under the speedometer "
-    "that normally carries the district name) whenever the radio moves to a new "
-    "track. Uses the game's own message channel, so it looks like any other line "
-    "the game puts there; applies to the shipped radio as well as custom MP3s.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(custom_music_announce_seconds, 15.0, "MCLA/Audio",
-    "How long the song name stays on the HUD info strip. The game's own uses of "
-    "that channel are short (3 s for MUSIC OFF, 5 s for a district name), but a "
-    "track title is worth reading, so this defaults longer. Anything the game "
-    "itself puts on the strip replaces it before the time is up.")
-    .range(1.0, 60.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(custom_music_volume, 0.5, "MCLA/Audio",
-    "Trim applied on top of the in-game music slider for custom MP3 tracks. "
-    "The shipped radio goes through the RAGE mixer and its ducking curves, "
-    "which the host player does not, so 1.0 comes out noticeably louder.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(custom_music_cue_gain_db, 4.0, "MCLA/Audio",
-    "Gain for native custom music in the game's audio mixer, after the bank's "
-    "3 dB MP3 decode headroom. Shipped songs keep their original gain.")
-    .range(0.0, 6.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(music_bank_log, false, "MCLA/Audio",
-    "Log every streaming wave bank the audio engine opens: the bank id (an index "
-    "into the sounds.dat string table) and whether the file was found. Use it "
-    "when a song plays silently -- it separates 'the bank was never asked for' "
-    "from 'the bank was opened and decoded to nothing'.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(music_list, false, "MCLA/Audio",
-    "Log the whole radio once, right after mcMusicManager finishes building it: "
-    "every genre bucket with each song's hash code and title. This is how you "
-    "tell whether a song added through the audio metadata (a rebuilt game.dat "
-    "plus its wave bank) actually reached AddSong, since the game's own log "
-    "line for that was compiled out.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
 
 namespace {
 
@@ -229,8 +176,8 @@ constexpr uint32_t kObjNameMax = kObjSize - kObjName - 1;
 // ── Guest memory helpers ──────────────────────────────────────────────
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 bool IsGuestPtr(uint32_t ea) { return ea >= 0x82000000u && ea < 0xC0000000u; }
@@ -289,29 +236,29 @@ void WriteGuestBEFloat(uint32_t ea, float value) {
 }
 
 uint32_t CallGuest1(uint32_t fn_addr, uint32_t a0) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0);
+    return larecomp::guest::Call<uint32_t>(fn, a0);
 }
 
 uint32_t CallGuest2(uint32_t fn_addr, uint32_t a0, uint32_t a1) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1);
 }
 
 // sub_82208930(uiLogic, text, a3, a4, seconds). Separate from the CallGuestN
 // helpers because the last argument has to reach f1, not a GPR.
 void CallInfoStrip(uint32_t ui_logic, uint32_t text, float seconds) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kInfoStripFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return;
+    PPCFunc* fn = rt->FindFunction(kInfoStripFn).value_or(nullptr);
     if (!fn) return;
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, ui_logic, text, uint32_t(-1), uint32_t(-1),
+    larecomp::guest::Call<uint32_t>(fn, ui_logic, text, uint32_t(-1), uint32_t(-1),
                                            seconds);
 }
 
@@ -385,7 +332,7 @@ struct Track {
     uint32_t     object_ea = 0; // synthetic music game object (song entry [0])
 };
 
-std::vector<Track> g_tracks;
+std::vector<Track>& g_tracks = larecomp::Leak<std::vector<Track>>();
 bool               g_installed = false;
 bool               g_strings_registered = false;
 int                g_current   = -1;  // index into g_tracks, -1 = not ours
@@ -443,7 +390,7 @@ void ScanFolder(const std::filesystem::path& dir) {
 //
 //   <exe>/models/<mod>/music_titles.txt
 //   Music_Rock_MyBand_MySong = My Band - My Song
-std::vector<std::pair<std::string, std::string>> g_native_titles;
+std::vector<std::pair<std::string, std::string>>& g_native_titles = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
 bool g_native_titles_registered = false;
 
 void ScanTitlesFile(const std::filesystem::path& file) {
@@ -478,7 +425,9 @@ void CollectNativeTitles() {
     if (!GetModuleFileNameW(nullptr, exe, MAX_PATH)) return;
     models = mc::modloader::ModRootDir(std::filesystem::path(exe).parent_path());
 #else
-    models = mc::modloader::ModRootDir(std::filesystem::current_path(ec));
+    // The folder of the executable (the mods sit beside the program), not the current directory.
+    const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
+    models = mc::modloader::ModRootDir(exe_folder.empty() ? std::filesystem::current_path(ec) : exe_folder);
 #endif
     if (!std::filesystem::is_directory(models, ec)) return;
 
@@ -531,7 +480,9 @@ void CollectTracks() {
                    L"User Music");
     }
 #else
-    ScanFolder(std::filesystem::current_path(ec) / "music");
+    // The music folder beside the program (whatever the case of its name), not the current directory's.
+    const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
+    ScanFolder(mc::modloader::FindDirNoCase(exe_folder.empty() ? std::filesystem::current_path(ec) : exe_folder, "music"));
 #endif
 
     std::sort(g_tracks.begin(), g_tracks.end(),
@@ -560,7 +511,7 @@ bool AppendToGenre(uint32_t mgr, uint32_t genre, uint32_t entry_ea) {
 // a song declared in the audio metadata was picked up.
 void DumpRadio(uint32_t mgr) {
     static bool done = false;
-    if (done || !REXCVAR_GET(music_list) || !IsGuestPtr(mgr)) return;
+    if (done || !larecomp::settings::music_list.Get() || !IsGuestPtr(mgr)) return;
     done = true;
 
     for (uint32_t g = 0; g < 8; ++g) {
@@ -681,7 +632,7 @@ float CurrentMusicVolume(uint32_t mgr) {
     if (!(v >= 0.0f && v <= 1.0f)) v = ReadGuestBEFloat(mgr + kMgrVolume);
     if (!(v >= 0.0f && v <= 1.0f)) v = 1.0f;
 
-    double trim = REXCVAR_GET(custom_music_volume);
+    double trim = larecomp::settings::custom_music_volume.Get();
     if (trim < 0.0) trim = 0.0;
     if (trim > 1.0) trim = 1.0;
 
@@ -718,7 +669,7 @@ bool     g_notify_primed = false;  // first song seen, deliberately not announce
 // and our own end-of-track advance alike, and at its tail the game had already
 // loaded this very string for a log call it no longer prints.
 void AnnounceSongByKey(uint32_t key_ea) {
-    if (!REXCVAR_GET(custom_music_announce)) return;
+    if (!larecomp::settings::custom_music_announce.Get()) return;
     if (!IsGuestPtr(key_ea) || key_ea == g_notified_key) return;
 
     // The boot-time selection is recorded, not shown: nobody is looking at the
@@ -759,7 +710,7 @@ void AnnounceSongByKey(uint32_t key_ea) {
 
     g_notified_key = key_ea;
 
-    double secs = REXCVAR_GET(custom_music_announce_seconds);
+    double secs = larecomp::settings::custom_music_announce_seconds.Get();
     if (!(secs > 0.0)) secs = 15.0;
 
     CallInfoStrip(ui_logic, g_notify_buf, static_cast<float>(secs));
@@ -775,7 +726,7 @@ void InitCustomMusic() {
     // metadata and ship no .mp3 at all.
     CollectNativeTitles();
 
-    if (!REXCVAR_GET(custom_music)) return;
+    if (!larecomp::settings::custom_music.Get()) return;
 
     CollectTracks();
     if (g_tracks.empty()) {
@@ -884,7 +835,7 @@ void MCLA_CustomMusic_CueGain(PPCRegister& r4, PPCRegister& r6) {
     if (!mc::music::IsCustomCue(static_cast<uint32_t>(r4.u32))) return;
     const uint32_t params = static_cast<uint32_t>(r6.u32);
     if (params < 0x1000u || params > 0xFFFFFFFBu) return;
-    const float gain = static_cast<float>(REXCVAR_GET(custom_music_cue_gain_db));
+    const float gain = static_cast<float>(larecomp::settings::custom_music_cue_gain_db.Get());
     if (!(gain > 0.0f)) return;
     const float original = ReadGuestBEFloat(params);
     if (!std::isfinite(original)) return;
@@ -901,7 +852,7 @@ void MCLA_CustomMusic_CueGain(PPCRegister& r4, PPCRegister& r6) {
 // sub_821372D8 from inside a hook, and the id is enough to identify the bank
 // against the file.
 void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
-    if (!REXCVAR_GET(music_bank_log)) return;
+    if (!larecomp::settings::music_bank_log.Get()) return;
     const uint32_t slot = static_cast<uint32_t>(r31.u32);
     if (!IsGuestPtr(slot)) return;
     const int32_t handle = static_cast<int32_t>(r3.u32);
@@ -909,7 +860,7 @@ void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
 
     // A streaming bank is re-requested for every chunk, so the same id comes
     // through thousands of times a minute. Each outcome is worth seeing once.
-    static std::vector<uint32_t> seen;
+    static std::vector<uint32_t>& seen = larecomp::Leak<std::vector<uint32_t>>();
     const uint32_t key = (id << 1) | (handle == -1 ? 1u : 0u);
     if (std::find(seen.begin(), seen.end(), key) != seen.end()) return;
     seen.push_back(key);
@@ -920,13 +871,13 @@ void MCLA_Audio_BankOpened(PPCRegister& r3, PPCRegister& r31) {
 // 0x821461F4, RequestLoad's failure tail. r4 is the assembled "Sfx/<BANK>" path,
 // so this is the one place the bank is named in full.
 void MCLA_Audio_BankError(PPCRegister& r4, PPCRegister& r31) {
-    if (!REXCVAR_GET(music_bank_log)) return;
+    if (!larecomp::settings::music_bank_log.Get()) return;
     const uint32_t slot = static_cast<uint32_t>(r31.u32);
     const uint32_t id = IsGuestPtr(slot) ? ReadGuestBE16(slot + 0x42) : 0;
 
     // Retried for as long as whatever wanted the bank keeps wanting it, which
     // for a missing ambience stream is every few frames forever.
-    static std::vector<uint32_t> seen;
+    static std::vector<uint32_t>& seen = larecomp::Leak<std::vector<uint32_t>>();
     if (std::find(seen.begin(), seen.end(), id) != seen.end()) return;
     seen.push_back(id);
 

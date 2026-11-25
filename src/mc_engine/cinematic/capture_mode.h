@@ -32,7 +32,7 @@
 
 namespace mc::cinematic {
 
-inline constexpr uint64_t kNoFrame = ~0ull;
+inline constexpr uint64_t kNoClockFrame = ~0ull;
 
 // ---------------------------------------------------------------------------------------------------------------- game thread
 
@@ -40,6 +40,13 @@ inline constexpr uint64_t kNoFrame = ~0ull;
 // that was asked for; during a take waits until the frames handed over have been read back, and ends the take that was
 // switched off.
 void CaptureGate();
+
+// The game is closing (larecomp_app.cpp FinishWindowCloseWork, before the renderer stops; any thread, latched): a take or still that runs is not held
+// by its frame gate any more (the render thread that reads the frames back stops, and a frame handed over before that is never read back: the game
+// thread would wait out the gate's timeout in a host wait that the SDK's stop request cannot end, and the title's termination would find its main
+// thread running), no take or still begins, and the take's sound lets the mixer go (capture_audio.h Abort). The take itself is not ended: its video
+// file is finished by ffmpeg when the process's end closes the pipe, its WAV by the exit hook, and take.json keeps "running".
+void CaptureCloseNow();
 
 // The hand-over of a frame to the render thread (hooks/frame_pacing.cpp, rex_sub_82305B38; the render thread is idle): stamps the
 // frame with the update it shows and whether it belongs to the take. The swap takes the stamp.
@@ -52,6 +59,11 @@ void CaptureOnSwap();
 // A take is running (the clock, the readback and the gate follow it).
 bool CaptureTakeActive();
 
+// Scene seconds for this update of a take, or -1. The optional frame index is relative to the start of the take. Game thread.
+double CapturePinnedSceneTime(uint64_t* frame = nullptr);
+// A running scene was stopped, replaced, or could not apply its pinned update. Game thread.
+void CaptureSceneInterrupted();
+
 // The scene's request (the capture applier): a take at this many frames a second, or 0 for none.
 void CaptureSceneRequest(double fps);
 
@@ -62,8 +74,53 @@ struct CaptureSpec {
     std::string name;
     std::string sink;
     bool state_log = false;
+    double t0 = -1.0;             // exact first scene time when requested by the Director
+    double end_scene_t = -1.0;    // exclusive upper bound for the Director's take range
+    double request_scene_t = -1.0;  // the authored capture key, when the request comes from a scene
 };
 void CaptureSceneSpec(const CaptureSpec& spec);
+
+// ---------------------------------------------------------------------------------------------------------------- the Director (src/mc_engine/cinematic/director)
+
+// A still (`shot`): one frame of the game read back the way a take's frames are (1:1 with the guest picture, before the overlay: no ImGui, no F4 menu) and
+// written as a PNG at `path`, a path the Director has checked. It is a take of one frame: the next update runs at the fixed step in force (else the scene's
+// rate, else 60), the game waits for the frame, and no take folder, audio or virtual clock is made (the upscaler's history is not restarted for it). Game thread.
+struct StillRequest {
+    uint64_t id = 0;  // the caller's number for CaptureStillPoll
+    std::string path;
+};
+// False with `why` when a take is running, another still waits, or there is no native renderer. Otherwise the still starts at the next update's gate.
+bool CaptureStillRequest(const StillRequest& request, std::string* why);
+struct StillResult {
+    uint64_t id = 0;
+    bool done = false;
+    bool ok = false;
+    std::string path;
+    std::string error;
+    uint32_t width = 0, height = 0;
+    uint64_t bytes = 0;
+    uint64_t update = 0;      // the game update the frame shows
+    double scene_t = -1.0;    // the scene time it shows, -1 when no scene runs
+};
+// True (and `out` filled) once the still with that id has finished, written or failed.
+bool CaptureStillPoll(uint64_t id, StillResult* out);
+
+// An explicit take (take.render) takes precedence over a scene key. FPS 0 clears the request.
+void CaptureDirectorRequest(double fps, const CaptureSpec& spec);
+
+struct CaptureStatus {
+    bool active = false;      // a take is running (not a still)
+    bool still = false;       // a still is running
+    std::string name, folder;
+    double fps = 0.0;
+    uint64_t frames = 0;      // frames handed over so far
+    bool failed = false;
+    std::string error;
+    uint64_t finished = 0;    // takes finished so far in this run: a change means `last_*` is new
+    std::string last_name, last_folder, last_state, last_error;  // the take that ended last (state: complete, inexact, failed)
+    uint64_t last_frames = 0;
+};
+CaptureStatus CaptureGetStatus();
 
 // ---------------------------------------------------------------------------------------------------------------- fixed step
 
@@ -72,14 +129,17 @@ void CaptureSceneSpec(const CaptureSpec& spec);
 uint64_t FixedStepTicks();
 // A fixed step is in force: the FPS limiter, the step cap and frame pacing stand aside. Any thread.
 bool FixedStepActive();
+// The updates the game thread has started: CaptureGate counts one before every update, in every mode (a take, the fixed step alone, or neither).
+// Under a fixed step the game's own time is this times FixedStepTicks(). Any thread.
+uint64_t UpdateCount();
 
 // ---------------------------------------------------------------------------------------------------------------- scene clock
 
 // Milliseconds on the scene clock: the steady clock, or, during a take (with mcla_capture_virtual_clock on), the take's frames
 // times its step, started where the steady clock was when the take began, so a value kept across the start of a take stays
-// comparable. `frame`: the caller's own frame counter (the renderer's guest frame); kNoFrame: the game thread's update counter.
+// comparable. `frame`: the caller's own frame counter (the renderer's guest frame); kNoClockFrame: the game thread's update counter.
 // Any thread.
-double SceneClockNowMs(uint64_t frame = kNoFrame);
+double SceneClockNowMs(uint64_t frame = kNoClockFrame);
 int64_t SceneClockNowNs();
 // Changes whenever the clock switches between the steady and the virtual one (a take starts or ends): what a pacing schedule
 // built on SceneClockNowNs has to start again at.

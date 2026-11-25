@@ -1,38 +1,16 @@
 // MCLA GPU renderer -- diagnostic watch of one guest memory range. See watch.h.
 
 #include "watch.h"
+#include "settings/immortal.h"
 
 #include <charconv>
 #include <deque>
 #include <format>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "textures.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_watch_base, "", "MCLA/GPU",
-    "Diagnostic: a guest physical address in hex. Every resolve into, product "
-    "activated or deactivated over, texture fetched from and resolve-memory decode of "
-    "[base, base + mcla_gpu_watch_size) is logged in order with the guest frame and draw: the "
-    "last 1500 events are kept until the first decode of the range, then written out with "
-    "every later one (at most 20000 lines). Empty: off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(mcla_gpu_watch_size, "400000", "MCLA/GPU",
-                      "Diagnostic: the length, in hex, of mcla_gpu_watch_base's range.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_watch_capture, 1, "MCLA/GPU",
-    "Diagnostic, with mcla_gpu_watch_base: a RenderDoc capture of the frame after 1 = the first "
-    "decode of the range from the resolve memory, 2 = the first product over it deactivated by "
-    "another resolve. 0: none. Needs the game started under RenderDoc.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu::watch {
 
@@ -42,7 +20,7 @@ namespace {
 // it), then written out with everything after, up to kMaxLines.
 constexpr uint32_t kRingLines = 1500;
 constexpr uint32_t kMaxLines = 20000;
-std::deque<std::string> g_ring;
+std::deque<std::string>& g_ring = larecomp::Leak<std::deque<std::string>>();
 bool g_flushed = false;
 
 bool g_active = false;
@@ -54,7 +32,7 @@ uint64_t g_ps = 0;     // the current draw's pixel shader identity
 uint32_t g_lines = 0;
 uint32_t g_capture_moment = 0;
 bool g_captured = false;
-std::function<void()> g_capture;
+std::function<void()>& g_capture = larecomp::Leak<std::function<void()>>();
 
 bool ParseHex(std::string text, uint32_t* out) {
   if (text.starts_with("0x") || text.starts_with("0X")) {
@@ -71,11 +49,11 @@ bool ParseHex(std::string text, uint32_t* out) {
 
 void Configure() {
   g_active = false;
-  const std::string base = REXCVAR_GET(mcla_gpu_watch_base);
+  const std::string base = larecomp::settings::mcla_gpu_watch_base.Get();
   if (base.empty()) {
     return;
   }
-  const std::string size = REXCVAR_GET(mcla_gpu_watch_size);
+  const std::string size = larecomp::settings::mcla_gpu_watch_size.Get();
   uint32_t b = 0;
   uint32_t s = 0;
   if (!ParseHex(base, &b) || !ParseHex(size, &s) || s == 0) {
@@ -86,7 +64,7 @@ void Configure() {
   }
   g_base = b;
   g_size = s;
-  g_capture_moment = REXCVAR_GET(mcla_gpu_watch_capture);
+  g_capture_moment = larecomp::settings::mcla_gpu_watch_capture.Get();
   g_active = true;
   REXLOG_INFO("[gpu] watch: guest {:08x}..{:08x}, every event in order{}", g_base,
               uint64_t(g_base) + g_size,

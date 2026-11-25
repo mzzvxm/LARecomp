@@ -22,7 +22,7 @@
 // instead of 6%, and the level pass's taps are a pixel shader constant in the game's texel size, so two
 // variants of the game's own shaders (shaderpack/variants/env_map.h, the variant pack, kEnvVariant) put those
 // taps back: the level pass on the 2x2 texels of a pixel of the next level, the reduction as an area average
-// of the same footprint. pipelines.cpp (ChoosePackedVariant) draws them while this setting is above `game`.
+// of the same footprint. pipelines.cpp (WantedFeatures) draws them while this setting is above `game`.
 //
 // The class: both identities, at a scale of its own (the setting: 2x = 1,024x512, 3x = 1,536x768) with as
 // many host samples as keep the density of the game's four per guest pixel (HostSamples: one from 2x on, the
@@ -67,28 +67,18 @@
 #include <cstdint>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/graphics/xenos.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/format.h>
 
 #include "edram.h"
 #include "live_text.h"
 #include "side_views.h"
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_env_resolution, "auto", "MCLA/GPU",
-    "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the "
-    "world around the car as a 512x256 picture for them to reflect, which is why the reflections look "
-    "soft up close. game (the game's own 512x256), high (1024x512), ultra (1536x768), or auto (game on "
-    "an integrated graphics chip or a card with less than about 6 GB of memory, high on any other card). "
-    "Costs a little graphics card time and video memory (about 4 MiB for high, 16 MiB for ultra). Live.")
-    .allowed({"auto", "game", "high", "ultra"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 namespace mcla::gpu {
 
 namespace {
 
-namespace xe = rex::graphics::xenos;
+namespace xe = rex::xenos;
 
 constexpr uint16_t kPitch = 520;
 constexpr uint8_t kSamples = 4;

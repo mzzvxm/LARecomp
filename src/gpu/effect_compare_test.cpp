@@ -8,6 +8,11 @@
 // The expected values are written out here again on purpose, as host_plan_test.cpp does: the setting names
 // and the `auto` table of gpu_class.h are the other side of the check.
 
+// The flip is real only with the developer tools (effect_compare.h): this program checks the real one.
+#ifndef LARECOMP_DEV_TOOLS
+#define LARECOMP_DEV_TOOLS 1
+#endif
+
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -230,8 +235,58 @@ void TestStanding() {
         "filter: soft on an unknown class");
   Check(!StandingOf(Effect::kBounceLight, Make(GpuClass::kHigh, false, "ultra", "off", "off", "auto", "game", true)).on,
         "bounce: auto on an unknown class is off");
+  // A handheld (the Steam Deck: Low with the soft shadow filter for `auto`): the filter is on for auto, so the compare key flips it OFF; the flag
+  // is read only once the class is known, and means nothing on another class.
+  {
+    Saved deck = Make(GpuClass::kLow, true, "off", "off", "off", "off", "auto", true);
+    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: auto on a plain Low class is the game's");
+    deck.handheld = true;
+    Check(StandingOf(Effect::kShadowFilter, deck).on, "filter: auto on a handheld is soft (on)");
+    deck.filter = "game";
+    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: game on a handheld");
+    deck.filter = "auto";
+    deck.class_known = false;
+    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: the handheld's cell waits for the class to be known");
+    Saved mid = Make(GpuClass::kMid, true, "off", "off", "off", "off", "auto", true);
+    mid.handheld = true;
+    Check(StandingOf(Effect::kShadowFilter, mid).on, "filter: the flag changes nothing on Mid (auto is pcss, on)");
+    const Press flip = PressOf(Effect::kShadowFilter, Force::kNone, [&] {
+      Saved s = Make(GpuClass::kLow, true, "off", "off", "off", "off", "auto", true);
+      s.handheld = true;
+      return s;
+    }());
+    Check(flip.force == Force::kOff && !flip.shown_on, "filter: a press on a handheld turns the soft filter off");
+  }
   Check(!StandingOf(Effect::kNone, Make(GpuClass::kHigh, true, "ultra", "ultra", "default", "ultra", "soft", true)).on,
         "no effect is never on");
+}
+
+void TestRayTracedOcclusion() {
+  constexpr auto effect = Effect::kAmbientOcclusion;
+  using mcla::gpu::gpu_class::RtTier;
+  Saved saved = Make(GpuClass::kHigh, true, "rt", "off", "off", "high", "game", true);
+  saved.rt_tier = RtTier::kStrong;
+  saved.rtao_built = true;
+  for (const char* value : {"rt", "auto"}) {
+    saved.occlusion = value;
+    const Standing standing = StandingOf(effect, saved);
+    Check(standing.on && !standing.blocked && standing.rt_ao_state == "RAY TRACED", "RT AO is the starting arm");
+    const Press flip = PressOf(effect, Force::kNone, saved);
+    Check(flip.force == Force::kOn && Info(effect).on_text == "ultra" && flip.rt_ao_state == "ULTRA",
+          "RT AO compares against Ultra");
+    Check(LabelOf(effect, flip.shown_on, flip.blocked, flip.rt_ao_state).state == "ULTRA",
+          "the compare overlay shows the Ultra arm");
+    const Press restore = PressOf(effect, flip.force, saved);
+    Check(restore.force == Force::kNone && restore.rt_ao_state == "RAY TRACED",
+          "the second press restores the saved RT arm");
+    Check(saved.occlusion == value, "comparing AO preserves the saved word");
+  }
+  saved.occlusion = "rt";
+  saved.rtao_built = false;
+  Check(StandingOf(effect, saved).rt_ao_state == "ULTRA", "pending RT shows the Ultra fallback");
+  Check(!StandingOf(Effect::kBounceLight, saved).blocked, "the fallback still supports bounce light");
+  saved.occlusion = "ultra";
+  Check(PressOf(effect, Force::kNone, saved).force == Force::kOff, "the explicit Ultra level still compares against Off");
 }
 
 // ---- the text a flip forces on is an on value of its setting, on every class ------------------------------
@@ -331,6 +386,41 @@ void TestLabel() {
 
 // ---- how often, and how the label fades ------------------------------------------------------------------
 
+// The select key: the six effects in order, round to the first; the bloom fix and no effect go on to the first.
+void TestSelect() {
+  const Effect order[] = {Effect::kBounceLight,      Effect::kContactShadows, Effect::kSunShafts,
+                          Effect::kAmbientOcclusion, Effect::kShadowFilter,   Effect::kCarSelfRefl};
+  Check(kSelectableCount == 6, "the select key walks six effects");
+  for (int i = 0; i < 6; ++i) {
+    const Effect next = order[(i + 1) % 6];
+    Check(NextEffect(order[i]) == next, "the effect after " + std::string(Info(order[i]).label));
+  }
+  Check(NextEffect(Effect::kBloomFix) == Effect::kBounceLight, "the bloom fix goes on to the bounce light");
+  Check(NextEffect(Effect::kNone) == Effect::kBounceLight, "no effect goes on to the bounce light");
+  // Six presses are a full turn from wherever it starts.
+  for (int i = 0; i < 6; ++i) {
+    Effect e = order[i];
+    for (int k = 0; k < 6; ++k) e = NextEffect(e);
+    Check(e == order[i], "six presses come back to " + std::string(Info(order[i]).label));
+  }
+  // The order of the list is the order of the six (the pause menu's old COMPARE KEY row): ParseEffect and Info agree.
+  for (int i = 0; i < 6; ++i) {
+    Check(static_cast<int>(order[i]) == i, "the effect list starts with the six in order");
+    Check(ParseEffect(Info(order[i]).choice) == order[i], "the choice word of " + std::string(Info(order[i]).label));
+  }
+  // The note: the effect with the prefix, and what the saved setting shows.
+  const Label on = SelectedLabelOf(Effect::kSunShafts, true, false);
+  CheckEq(on.name, "COMPARE: SUN SHAFTS", "the select note's title");
+  CheckEq(on.state, "ON", "the select note's state when on");
+  Check(on.good, "an effect that is on is drawn good");
+  const Label off = SelectedLabelOf(Effect::kBounceLight, false, false);
+  CheckEq(off.state, "OFF", "the select note's state when off");
+  Check(!off.good, "an effect that is off is not good");
+  const Label blocked = SelectedLabelOf(Effect::kBounceLight, false, true);
+  CheckEq(blocked.state, "NEEDS AMBIENT OCCLUSION", "the bounce light without occlusion says what it needs");
+  Check(SelectedLabelOf(Effect::kNone, false, false).name.empty(), "no effect, no note");
+}
+
 void TestTiming() {
   Check(AcceptPress(1000, -1), "the first press counts");
   Check(AcceptPress(0, -1), "the first press counts at time 0");
@@ -368,9 +458,11 @@ int main() {
   TestTable();
   TestState();
   TestStanding();
+  TestRayTracedOcclusion();
   TestForcedOnText();
   TestPress();
   TestLabel();
+  TestSelect();
   TestTiming();
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

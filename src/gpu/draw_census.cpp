@@ -8,30 +8,15 @@
 #include <map>
 #include <string_view>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "edram.h"
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_census_ps, "", "MCLA/GPU",
-    "Diagnostic: up to 4 pixel shader identities, hex, comma separated. Per "
-    "guest frame, the draws and vertices recorded with each; per report window, their "
-    "distribution. Empty: off.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_census_targets, false, "MCLA/GPU",
-    "Diagnostic: per report window, every pass the frames drew into (its EDRAM "
-    "targets) with its draws per frame and the pixel shaders that drew there.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
 void TargetCensus::Configure() {
-  active_ = REXCVAR_GET(mcla_gpu_census_targets);
+  active_ = larecomp::settings::mcla_gpu_census_targets.Get();
   if (active_) {
     REXLOG_WARN("[gpu] census ON (diagnostic): passes by EDRAM targets, with their pixel shaders");
   }
@@ -73,7 +58,7 @@ std::string TargetCensus::TakeReport() {
 
 void DrawCensus::Configure() {
   shader_count_ = 0;
-  const std::string text = REXCVAR_GET(mcla_gpu_census_ps);
+  const std::string text = larecomp::settings::mcla_gpu_census_ps.Get();
   std::string_view rest(text);
   while (!rest.empty()) {
     const size_t comma = rest.find(',');

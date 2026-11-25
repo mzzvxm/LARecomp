@@ -7,8 +7,10 @@ namespace mcla {
 // process for the new one to wait on (WaitForRestartedGame). Only that handle is inherited. The caller
 // saves the settings and waits for saves first, and closes the game after. False if it could not
 // start the new one (logged); then the caller should keep playing. On Linux the new game gets this
-// process's id on its command line instead of a handle, and an AppImage is started from its own
-// file (its mount goes away when this game closes).
+// process's id on its command line instead of a handle. It starts the game itself: a game that is an
+// AppImage is started from its own file (its mount goes away when this game closes); the launcher's
+// AppImage variables, which a launcher-started game inherits, are never taken for the game's own
+// (os/appimage_env.h).
 bool RelaunchGame();
 
 // Called first thing at start: when this process was started by RelaunchGame, waits for the old one

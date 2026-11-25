@@ -14,9 +14,10 @@
 #include <utility>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/logging.h>
+#include "os/file_replace.h"
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
 #include "descriptors.h"
@@ -28,8 +29,8 @@
 #include "pipelines.h"
 #include "shaders.h"
 #include "temporal_backend.h"
+#include "vulkan_pipeline_cache_rules.h"
 
-REXCVAR_DECLARE(bool, mcla_gpu_pipeline_cache);
 
 namespace mcla::gpu {
 
@@ -97,7 +98,7 @@ std::string StampText(Parts& parts, const Pipelines::SetupList& list,
   line("adapter=" + OneLine(d.name));
   line(std::format("vendor={}", static_cast<int>(d.vendor)));
   line(std::format("driver={:#x}", d.driverVersion));
-  line("exe=" + FileIdentity(rex::filesystem::GetExecutablePath()));
+  line("exe=" + FileIdentity(rex::platform::GetExecutablePath()));
   line("pack=" + FileIdentity(parts.shaders.path()));
   line("variant_pack=" + (parts.shaders.has_variants() ? FileIdentity(parts.shaders.variants_path())
                                                        : std::string("none")));
@@ -142,23 +143,12 @@ std::string WhatChanged(const std::string& have, const std::string& expected) {
   return "the stamp differs";
 }
 
+// A temporary name of its own and one step over the old stamp (os/file_replace.h): the prebuild of one start and the game of another may write the same stamp at once. A
+// stamp that is read half way or replaced meanwhile only makes the next start build again (ReadAll below compares text), it is never believed wrongly.
 void WriteStamp(const std::filesystem::path& path, const std::string& text) {
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::filesystem::path temp = path;
-  temp += ".tmp";
-  {
-    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-    file.write(text.data(), std::streamsize(text.size()));
-    if (!file) {
-      REXLOG_ERROR("[gpu] pipelines: the stamp {} could not be written", Utf8(temp));
-      return;
-    }
-  }
-  std::filesystem::rename(temp, path, ec);
-  if (ec) {
-    REXLOG_ERROR("[gpu] pipelines: the stamp {} could not replace the old one: {}", Utf8(path),
-                 ec.message());
+  std::string why;
+  if (!larecomp::os::Succeeded(larecomp::os::WriteFileReplacing(path, text.data(), text.size(), &why))) {
+    REXLOG_ERROR("[gpu] pipelines: the stamp {} could not be written: {}", Utf8(path), why);
   }
 }
 
@@ -220,10 +210,10 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
 
   if (!Enabled()) {
     return Fail(result, PrebuildStatus::kNotNeeded,
-                "The Plume renderer is not in use (mcla_gpu is off), so there are no pipelines to "
+                "The Plume renderer is not in use (gpu.driver names the XENIA renderer), so there are no pipelines to "
                 "prepare.");
   }
-  if (!REXCVAR_GET(mcla_gpu_pipeline_cache)) {
+  if (!larecomp::settings::mcla_gpu_pipeline_cache.Get()) {
     return Fail(result, PrebuildStatus::kNotNeeded,
                 "The pipeline cache is turned off (mcla_gpu_pipeline_cache), so the game keeps no "
                 "pipeline list and there is nothing to prepare.");
@@ -299,7 +289,7 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
   setup.threads = options.threads;
   setup.level_samples = Pipelines::StartSampleCounts(parts.device);
   log(0, "the start draws the multisampled images at " + JoinCounts(setup.level_samples) +
-             " sample(s): copies of the listed pipelines are made for those counts too");
+             " sample(s): copies of the listed pipelines cover those counts and startup shader variants");
   setup.wanted = [&](const Pipelines::SetupList& list) {
     expected = StampText(parts, list, setup.level_samples);
     stamp_path = parts.pipelines.cache_path();
@@ -309,10 +299,15 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
       return true;
     }
     const std::string have = ReadAll(stamp_path);
-    if (have.starts_with(expected)) {
+    const bool stamp_matches = have.starts_with(expected);
+    if (vulkan_pipeline_cache::CanUsePrebuildStamp(
+            stamp_matches, parts.device.HasPersistentVulkanPipelineCache(),
+            parts.device.LoadedVulkanPipelineCache())) {
       return false;
     }
-    log(0, "the pipelines need building: " + WhatChanged(have, expected));
+    log(0, "the pipelines need building: " +
+               (stamp_matches ? std::string("the Vulkan pipeline cache was not loaded")
+                              : WhatChanged(have, expected)));
     return true;
   };
   using Clock = std::chrono::steady_clock;
@@ -366,13 +361,17 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
                 std::format("None of the {} pipelines could be made (the log has the reasons).",
                             run.list.records + run.list.copies));
   }
-  // Last, like the shader packs' stamp: what the stamp vouches for is in place.
-  WriteStamp(stamp_path, expected + std::format("# ready={} failed={} seconds={:.1f}\n", run.ready,
-                                                 run.failed, run.seconds));
+  // The prebuild has joined its workers. Publish the compiled cache before stamping the list.
+  if (parts.device.SaveVulkanPipelineCache()) {
+    WriteStamp(stamp_path, expected + std::format("# ready={} failed={} seconds={:.1f}\n", run.ready,
+                                                   run.failed, run.seconds));
+  } else {
+    log(1, "the Vulkan pipeline cache could not be saved; the preparation stamp was not updated");
+  }
   std::string text = std::format("Prepared {} pipelines for {} ({}) in {:.0f} s.", run.ready,
                                  result.adapter, result.backend, run.seconds);
   if (run.list.copies != 0) {
-    text += std::format(" {} of them are copies at the MSAA level the game starts with.",
+    text += std::format(" {} of them are copies for the game's startup shader variants and MSAA settings.",
                         run.list.copies);
   }
   if (run.failed != 0) {

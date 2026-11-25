@@ -8,3 +8,12 @@
 [submodule "thirdparty/LAR-XenosRecomp"]
 	path = thirdparty/LAR-XenosRecomp
 	url = https://github.com/mzzvxm/LAR-XenosRecomp.git
+[submodule "thirdparty/tomlplusplus"]
+	path = thirdparty/tomlplusplus
+	url = https://github.com/marzer/tomlplusplus.git
+[submodule "thirdparty/o1heap"]
+	path = thirdparty/o1heap
+	url = https://github.com/pavel-kirienko/o1heap.git
+[submodule "thirdparty/libmspack"]
+	path = thirdparty/libmspack
+	url = https://github.com/kyz/libmspack.git

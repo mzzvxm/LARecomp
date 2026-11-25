@@ -16,11 +16,14 @@
 //
 //   - the average is replaced by ShadowFilterSoft(): N taps (8 on Low, 16 otherwise, the host's constants)
 //     on a Vogel disk (golden angle spiral, sqrt radius) of the game's own radius round the game's own centre,
-//     turned by interleaved gradient noise of the HOST pixel position (SV_Position: the game's angle comes
-//     from the guest's pixels, so at a render scale S its pattern is S x S pixel blocks) plus the R2 shift of
-//     the frame number while a temporal upscaler runs (the host sets the frame; 0 keeps the pattern fixed),
-//     compared with the game's `>=` and weighted by a smooth disk weight (1 - r^2 / 2). The edge is as wide
-//     as the game's (10 to 90 percent: 1.36 radii for the game's four taps, 1.36 for this disk at gain 1.05).
+//     turned by interleaved gradient noise of the HOST pixel position plus the R2 shift of the frame number
+//     ONLY WHILE A TEMPORAL UPSCALER RUNS (mode bit 4; the upscaler's history averages the noise out). Without
+//     one (plain MSAA, the default) a per pixel turn is a grain on every edge that nothing averages: the owner's
+//     "dithering artifacts on the world's shadows" (2026-11-19), a spectral line of the noise at (0.44, 0.31)
+//     cycles a pixel in the pictures and about 17 percent of high frequency energy in the penumbra (a simulated 16 tap
+//     binary lookup over a straight edge), so every pixel then takes the same disk, turned by a fixed angle.
+//     The taps are compared with the game's `>=` and weighted by a smooth disk weight (1 - r^2 / 2). The edge is
+//     as wide as the game's (10 to 90 percent: 1.36 radii for the game's four taps, 1.36 for this disk at gain 1.05).
 //   - the centre and the radius are not recomputed: the game's four tap coordinates are copied just before
 //     the fetches (they are overwritten by the fetched depths afterwards) and the receiver depth just before
 //     the compare, and the helper takes the centre and the radius from them: tap 1 is centre + 1.0 R u and
@@ -28,7 +31,14 @@
 //     R = |tap1 - tap3| / 1.5. The anchors check the constants that make it so (c255, c253.y).
 //   - the lookup is either the guest's bilinear sampler (a tap compares an interpolated depth, as the game's
 //     do: the game's bias constants were tuned for it) or Gather (each tap is a bilinear weighted compare of
-//     the four texels: a true PCF); the host picks (the constants' `mode`, mcla_gpu_shadow_filter_pcf).
+//     the four texels: a true PCF, each texel compared with the receiver's plane at that texel, so a slope
+//     needs no more bias than the sampler's blended depth does); the host picks (the constants' `mode`,
+//     mcla_gpu_shadow_filter_pcf). A binary tap (the sampler's compare of one blended depth) turns the atlas's
+//     texel stairs into steps of 1/N of the sun's share however the taps lie, which is most of the edge's
+//     remaining grain; a Gather tap is smooth over a texel, so 16 of them leave a few percent of it. The
+//     receiver's plane (ShadowFilterPlane) is the depth's change per atlas uv from the derivatives of the
+//     pixel's own centre and depth over its 2 x 2 block, held to 8 times the cascade's depth per metre over
+//     its metres per uv; the blocker search compares at it too.
 //
 // The four fetches and the compare stay in the text and are dead code the compiler removes. The game's other
 // lookups are not touched: the car paint, the skinned metal and the glass (5 shaders) already filter
@@ -64,7 +74,7 @@
 //     lower than about 3.5 m at the nearest cascade, so the sun's size is a setting (mcla_gpu_shadow_filter_sun).
 //   - a Low class never gets the search (the host leaves the bit out): LOW is soft.
 //
-// Runtime: src/gpu/pipelines.cpp selects it per draw (ps_variant kVariantShadowFilter) while
+// Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureShadowFilter) while
 // mcla_gpu_shadow_filter resolves to soft or pcss; src/gpu/scene.cpp uploads the constants. A variant is built for
 // spec variant 0 only, so a collector draw that has the alpha test or alpha to coverage on keeps the game's
 // shader (CHECK in the report: whether the alpha shaders are drawn that way).
@@ -78,7 +88,7 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line
 // variants_shadow_filter_version).
-inline constexpr uint32_t kShadowFilterVariantVersion = 2;  // 2: contact hardening (mode bit 2), a0 passed to the helper
+inline constexpr uint32_t kShadowFilterVariantVersion = 4;  // 4: the disk's turn is the blue noise tile stepped along R2 with mode bit 5 (NOISE-AUDIT), the first version's gradient noise without; 2: contact hardening (mode bit 2), a0 passed to the helper; 3: noise only with mode bit 4, the Gather taps and the blocker search at the receiver's plane
 
 // The collector's pixel shaders, found by name (the entry points of the .updb path; the identities differ
 // per material and the pack records each one's own).
@@ -90,7 +100,8 @@ VariantDef MakeShadowFilterVariant();
 // The text transform alone (pure; public for tests). `shader` is only used in messages. Returns `skip` for
 // a shader that reads no atlas or has a filter of its own, an error for a shader that reads the atlas in
 // a way these edits were not written for.
-VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, std::string_view hlsl);
+VariantTransformResult TransformShadowFilterHlsl(const VariantShader& shader, std::string_view hlsl,
+                                                 const StageContext& ctx = SoloContext(kFeatureShadowFilter));
 
 // The reasons a shader is left out (also what the tests look for).
 inline constexpr std::string_view kShadowSkipNoLookup = "it reads no shadow map";

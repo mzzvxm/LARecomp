@@ -27,6 +27,9 @@
 // which an unprivileged process may not do (RLIMIT_NICE or CAP_SYS_NICE allow it): then the
 // threads stay as they are and one line says why.
 //
+// The same override is the gate of a take's sound (cinematic/capture_audio.cpp): while a take runs, each call waits for a ticket before the
+// game's callback mixes its frame, so the mixer runs exactly as far as the video has.
+//
 // The same override counts audio dropouts. The callback runs for each 5.33 ms frame, but the
 // output device takes audio in 10 ms steps, so about half of the gaps between two calls are
 // ~10 ms on a healthy PC. A gap well over that means the worker or the mixer was not run in
@@ -41,9 +44,9 @@
 // worker alone, with no lock; the closing line reads them with atomics.
 
 #if !defined(REXGLUE_HAS_XEO3_TARGET)
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
 #include <chrono>
@@ -54,20 +57,10 @@
 #include "mc_engine/core/threading.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "mc_engine/cinematic/capture_audio.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "os/thread_priority.h"
-
-REXCVAR_DEFINE_INT32(audio_mixer_priority, -1, "MCLA/Audio",
-    "Host priority of the game's two audio threads: the guest thread that mixes each 5.33 ms "
-    "frame (the game's request for a higher priority is ignored) and the SDK's audio worker "
-    "that calls the game for each frame: 0 = normal, 1 = above normal, 2 = highest, 3 = highest "
-    "and registered with the Windows multimedia scheduler (\"Pro Audio\"), -1 = automatic: 3 on "
-    "a PC with 6 or fewer logical processors, 0 otherwise. On Linux 1 to 3 raise the threads' "
-    "nice value if the system allows it (it usually does not for an ordinary user). Takes "
-    "effect at the next start.")
-    .range(-1, 3)
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+#include "os/thread_qos.h"
 
 REX_EXTERN(__imp__rex_sub_823EC8C8);  // the mixer thread's body
 REX_EXTERN(__imp__sub_823F56D0);      // the game's audio callback, run by the SDK's audio worker
@@ -78,11 +71,13 @@ constexpr unsigned kSmallPcLogicalProcessors = 6;
 
 // The level to apply, from the setting and the PC.
 int AudioLevel(unsigned logical) {
-    const int setting = REXCVAR_GET(audio_mixer_priority);
+    const int setting = larecomp::settings::audio_mixer_priority.Get();
     if (setting >= 0) {
         return setting;
     }
-    return logical <= kSmallPcLogicalProcessors ? 3 : 0;
+    // A hybrid CPU at thread_qos 2 (os/thread_qos.h): the multimedia scheduler tags the audio threads for deadlines, which keeps
+    // them off a busy efficiency core, whatever the number of logical processors.
+    return logical <= kSmallPcLogicalProcessors || larecomp::os::WantsAudioScheduler() ? 3 : 0;
 }
 
 // Applies the setting to the calling thread and logs one line about it; `who` starts the line.
@@ -91,10 +86,15 @@ void ApplyToThisThread(const char* who) {
     const int level = AudioLevel(logical);
     // The name the SDK gave the thread, if any: it shows that the right thread was found.
     const std::string name = larecomp::os::CurrentThreadName();
+    // thread_qos 2: HighQoS for the thread whatever the priority level below does (empty when it is not asked for).
+    const std::string qos_line = larecomp::os::TagCurrentThreadHighQos(name.c_str());
+    if (!qos_line.empty()) {
+        LARECOMP_APP_INFO("{}: {}", who, qos_line);
+    }
     if (level == 0) {
         LARECOMP_APP_INFO("{}, priority left alone (audio_mixer_priority {}, {} logical "
                           "processors); thread \"{}\"",
-                          who, REXCVAR_GET(audio_mixer_priority), logical, name);
+                          who, larecomp::settings::audio_mixer_priority.Get(), logical, name);
         return;
     }
     // Level 1 above normal, 2 highest, 3 highest and the OS's audio scheduling (Windows: the
@@ -107,7 +107,7 @@ void ApplyToThisThread(const char* who) {
     const larecomp::os::ThreadResult result = larecomp::os::SetCurrentThreadIntent(intent);
     LARECOMP_APP_INFO("{}, level {} (audio_mixer_priority {}, {} logical processors): {}; "
                       "thread \"{}\"",
-                      who, level, REXCVAR_GET(audio_mixer_priority), logical, result.Text(true),
+                      who, level, larecomp::settings::audio_mixer_priority.Get(), logical, result.Text(true),
                       name);
 }
 
@@ -149,8 +149,9 @@ void CountCallbackGap() {
         return;
     }
 
-    const bool quiet =
-        larecomp::triggers::IsGamePaused() || !larecomp::triggers::IsWindowInFront();
+    // (a take's sound holds the callback at its gate between the take's frames: those gaps are no dropout either)
+    const bool quiet = larecomp::triggers::IsGamePaused() || !larecomp::triggers::IsWindowInFront() ||
+                       mc::cinematic::capture_audio::Active();
     const bool gap_is_quiet = quiet || previous_quiet;
     previous_quiet = quiet;
     if (!window_start_us) {
@@ -203,7 +204,7 @@ void LogAudioDropoutSummary() {
     } else {
         LARECOMP_APP_INFO("[Audio] session: no gap over 20 ms in {:.1f} min counted", minutes);
     }
-    rex::FlushLogging();  // the window's close ends the process without flushing
+    REX_LOGGER().Flush();  // the window's close ends the process without flushing
 }
 
 // Runs on the mixer thread, once, as it starts.
@@ -222,6 +223,9 @@ extern "C" REX_FUNC(sub_823F56D0) {
             "[AudioWorker] audio worker thread: first call of the callback (823F56D0)");
     }
     CountCallbackGap();
+    // While a take runs, the take's sound holds this callback here until it hands a ticket, so the mixer mixes a frame only when the take
+    // has the video for it (cinematic/capture_audio.h MixerGate); outside a take the gate only counts the call.
+    mc::cinematic::capture_audio::MixerGate gate;
     __imp__sub_823F56D0(ctx, base);
 }
 #else

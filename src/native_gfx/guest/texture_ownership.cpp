@@ -4,6 +4,7 @@
 // reason streamed textures are out of scope.
 
 #include "texture_ownership.h"
+#include "settings/immortal.h"
 
 #include <cstdio>
 #include <atomic>
@@ -11,42 +12,15 @@
 #include <mutex>
 #include <unordered_map>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d_structs.h"
 #include "guest_resources.h"
 #include "host_heap.h"
-
-REXCVAR_DEFINE_UINT32(
-    mcla_native_gfx_own_textures, 0, "MCLA/NativeGfx",
-    "Resource ownership, step two: who allocates the 52-byte D3DTexture header. "
-    "0 = the guest, as always. "
-    "1 = mirror and validate: the runtime allocates the header out of its own guest-visible "
-    "heap, copies the guest's bytes in, checks the guest VA translates back to the same bytes, "
-    "then frees it. Nothing the game can observe changes -- this is the proof that objects the "
-    "runtime allocates are addressable from guest code. "
-    "2 = hand over: grcTextureXenon+16/+28 are repointed at the runtime's copy, so every guest "
-    "read of that texture header reads runtime memory. The guest's original block is left "
-    "untouched and restored at destruction, so its allocator only frees what it allocated. "
-    "Covers only textures born in grcTextureXenon::Init; streamed ones are deserialized with "
-    "the header embedded in the resource and stay with the guest.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_native_gfx_own_heap_kb, 0, "MCLA/NativeGfx",
-    "Size of the guest-addressable block the runtime allocates its D3D objects out of, in KiB. "
-    "0 uses the built-in default (4096). Rounded down to a power of two -- o1heap only uses the "
-    "largest power-of-two span of its arena. "
-    "Taken from the guest VIRTUAL window, never from a physical one: the physical windows are "
-    "views of the console's 512 MiB of RAM, and taking 32 MiB of it killed the title during "
-    "loading with 'PhysicalHeap::Alloc unable to alloc physical memory in parent heap'. "
-    "Raise this if the exhaustion report fires.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+#include "larecomp_guest.h"
 
 namespace mcla::native_gfx {
 
@@ -81,7 +55,7 @@ struct State {
 };
 
 State& state() {
-  static State s;
+  static State& s = larecomp::Leak<State>();
   return s;
 }
 
@@ -141,7 +115,7 @@ bool InitTextureOwnership() {
 }
 
 void AdoptInitTexture(const uint8_t* base, uint32_t grc_texture_va) {
-  const uint32_t mode = REXCVAR_GET(mcla_native_gfx_own_textures);
+  const uint32_t mode = larecomp::settings::mcla_native_gfx_own_textures.Get();
   if (mode == 0) {
     return;
   }
@@ -192,7 +166,7 @@ void AdoptInitTexture(const uint8_t* base, uint32_t grc_texture_va) {
   // does. If the two disagree the game reads a different address than the one
   // the header was written to, and every texture comes out as garbage far from
   // here. Checking it at adoption turns that into a counter.
-  auto* memory = rex::Runtime::instance() ? rex::Runtime::instance()->memory() : nullptr;
+  auto* memory = REX_RUNTIME() ? larecomp::guest::AddressSpace(REX_RUNTIME()) : nullptr;
   auto* via_guest = rex::memory::GuestPtr<uint8_t*>(mutable_base, ours_va);
   auto* via_memory = memory ? memory->TranslateVirtual<uint8_t*>(ours_va) : nullptr;
   if (via_memory != via_guest) {
@@ -340,7 +314,7 @@ std::string TextureOwnershipSummary() {
                 "handed_over=%llu handed_back=%llu alloc_failed=%llu unreadable=%llu "
                 "orphaned=%llu readopted=%llu | heap ready=%d allocated=%zu peak=%zu "
                 "oom=%llu",
-                uint32_t(REXCVAR_GET(mcla_native_gfx_own_textures)), s.by_grc.size(),
+                uint32_t(larecomp::settings::mcla_native_gfx_own_textures.Get()), s.by_grc.size(),
                 (unsigned long long)s.validated, (unsigned long long)s.validate_failed,
                 (unsigned long long)s.handed_over, (unsigned long long)s.handed_back,
                 (unsigned long long)s.alloc_failed, (unsigned long long)s.skipped_unreadable,

@@ -6,6 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
+#include <bit>
+#include <chrono>
 #include <cstddef>
 #include <exception>
 #include <filesystem>
@@ -14,30 +17,46 @@
 #include <iterator>
 #include <map>
 #include <memory>
+#include <set>
 #include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include "native_gfx/shader_identity.h"
+#include "os/file_replace.h"
 #include "shaderpack/contract_checks.h"
+#include "shaderpack/gbuffer_material_pack.h"
 #include "shaderpack/hash.h"
 #include "shaderpack/hlsl_source.h"
 #include "shaderpack/log.h"
 #include "shaderpack/pack_format.h"
 #include "shaderpack/pack_writer.h"
+#include "shaderpack/variant_chain.h"
+#include "shaderpack/variant_compose.h"
 #include "shaderpack/variant_overlap.h"
+#include "shaderpack/variant_pack_format.h"
+#include "shaderpack/variant_shader_fate.h"
+#include "shaderpack/variant_stage_shaders.h"
 #include "shaderpack/variants/bloom_gauss.h"
 #include "shaderpack/variants/car_chrome.h"
+#include "shaderpack/variants/car_chrome_city.h"
 #include "shaderpack/variants/car_selfrefl.h"
 #include "shaderpack/variants/env_map.h"
+#include "shaderpack/variants/gbuffer.h"
+#include "shaderpack/variants/gbuffer_cars.h"
+#include "shaderpack/variants/gbuffer_day.h"
 #include "shaderpack/variants/glow_soft.h"
+#include "shaderpack/variants/headlight.h"
 #include "shaderpack/variants/hdr_scene.h"
 #include "shaderpack/variants/luminance_scale.h"
+#include "shaderpack/variants/road_mirror_blur.h"
 #include "shaderpack/variants/shadow_filter.h"
+#include "shaderpack/variants/ui_sharp.h"
 
 namespace larecomp::shaderpack {
 
@@ -71,86 +90,8 @@ const ShaderSource* ResolveShader(const ContainerSet& set, const VariantShader& 
   return found;
 }
 
-void Put32(std::vector<uint8_t>& out, uint32_t value) {
-  for (int shift = 0; shift < 32; shift += 8) out.push_back(uint8_t(value >> shift));
-}
-
-void Put64(std::vector<uint8_t>& out, uint64_t value) {
-  for (int shift = 0; shift < 64; shift += 8) out.push_back(uint8_t(value >> shift));
-}
-
-struct PackEntry {
-  uint32_t variant = 0;
-  uint64_t ps_key = 0;
-  std::array<uint64_t, kVariantVertexShaders> vs_keys{};  // 0 = none
-  std::vector<uint8_t> dxil;                              // empty: the format was not built
-  std::vector<uint8_t> spirv;
-};
-
-// header | entries | blobs (pack_format.h has the layout). `entries` are in increasing (variant, ps key)
-// order. False with *error when a size does not fit.
-bool LayOutVariantPack(std::span<const PackEntry> entries, uint32_t formats, std::vector<uint8_t>* out,
-                       std::string* error) {
-  out->clear();
-  out->insert(out->end(), kVariantPackMagic, kVariantPackMagic + 4);
-  Put32(*out, kVariantPackVersion);
-  Put32(*out, uint32_t(entries.size()));
-  Put32(*out, formats);
-  Put32(*out, kVariantContract);
-  Put32(*out, kPackVersion);  // the main pack the variants were built beside
-  Put32(*out, 0);
-  Put32(*out, 0);
-
-  const uint64_t blob_base = uint64_t(kVariantPackHeaderBytes) + uint64_t(entries.size()) * kVariantPackEntryBytes;
-  std::vector<uint8_t> blobs;
-  // A blob that is byte for byte one already laid out is not written twice: the entries point at one copy
-  // (the shadow collector's shaders share a text per body shape, so 147 entries hold four pairs of blobs).
-  std::map<std::pair<uint64_t, size_t>, std::vector<std::pair<uint64_t, size_t>>> laid_out;  // (fnv, size) -> (at, size)
-  for (const PackEntry& entry : entries) {
-    const size_t entry_start = out->size();
-    Put64(*out, entry.ps_key);
-    for (const uint64_t vs_key : entry.vs_keys) Put64(*out, vs_key);
-    Put32(*out, entry.variant);
-    Put32(*out, 0);  // reserved
-    for (const std::vector<uint8_t>* blob : {&entry.dxil, &entry.spirv}) {
-      if (blob->empty()) {
-        Put32(*out, 0);
-        Put32(*out, 0);
-        Put64(*out, 0);
-        continue;
-      }
-      const uint64_t fnv = mcla::native_gfx::Fnv1a64(blob->data(), blob->size());
-      uint64_t offset = 0;
-      bool shared = false;
-      std::vector<std::pair<uint64_t, size_t>>& same = laid_out[{fnv, blob->size()}];
-      for (const auto& placed : same) {
-        if (std::equal(blob->begin(), blob->end(), blobs.begin() + std::ptrdiff_t(placed.first))) {
-          offset = blob_base + placed.first;
-          shared = true;
-          break;
-        }
-      }
-      if (!shared) {
-        offset = blob_base + blobs.size();
-        if (offset + blob->size() > kMaxPackBytes) {
-          *error = "the variant pack would pass 4 GiB (blob offsets are 32 bit)";
-          return false;
-        }
-        same.emplace_back(blobs.size(), blob->size());
-        blobs.insert(blobs.end(), blob->begin(), blob->end());
-      }
-      Put32(*out, uint32_t(offset));
-      Put32(*out, uint32_t(blob->size()));
-      Put64(*out, fnv);
-    }
-    if (out->size() - entry_start != kVariantPackEntryBytes) {
-      *error = "internal error: a variant pack entry is not 80 bytes";
-      return false;
-    }
-  }
-  out->insert(out->end(), blobs.begin(), blobs.end());
-  return true;
-}
+// One entry to write (the file's layout and its writer are variant_pack_format.h's).
+using PackEntry = VariantPackNewEntry;
 
 std::string PathText(const std::filesystem::path& path) {
   const auto u8 = path.u8string();  // never throws, unlike path::string() on a non-ANSI path
@@ -189,6 +130,77 @@ void AddLeftOutLine(const VariantDef& def, std::string_view why, std::vector<Sta
   lines->push_back({StampKey(def, kStampVariantLeftOut), std::string(why)});  // informational
 }
 
+// One compile of a variant's text for the formats asked (spec: the XENOS_SPEC_CONSTANTS value, 0 for spec variant 0), and what the runtime relies
+// on, read back from the blobs: for a pixel shader the colour output is there, and the coverage output (SV_Coverage / the sample mask) exactly when
+// the draw is the alpha test one (spec != 0), no specialization constant; for a vertex shader the position is invariant and no fast operation reaches
+// it (the checks of the main pack's vertex shaders). Once per text: the same text gives the same blobs. kFailed with *error: this text does not compile or its
+// blobs break the contract (the shader loses its variant, variant_stage_shaders.h); kStop with *error: a cancel, or a compiler that cannot be used at all (dxil.dll or
+// dxcompiler not usable, DXIL not signed, a blob that is not DXIL / SPIR-V: every shader would fail the same way, so the stage stops, as it always did).
+CompileVerdict CompileChecked(DxcWorker& worker, const std::function<bool()>& cancelled, uint32_t formats, ShaderStage stage, const std::string& hlsl,
+                              uint32_t spec, const std::string& label, std::vector<uint8_t>* dxil, std::vector<uint8_t>* spirv, std::string* error) {
+  CompileRequest request;
+  request.hlsl = hlsl;
+  request.stage = stage;
+  request.spec_constants = spec;
+  request.name = label;
+  const auto judged = [](const DxcStatus& status) {
+    switch (status.error) {
+      case DxcError::kCompileFailed: return CompileVerdict::kFailed;  // dxc rejected this HLSL (its text is the message)
+      default: return CompileVerdict::kStop;                          // not found / not signed / not a blob / not possible here: not this shader's fault
+    }
+  };
+  DxcStatus status;
+  if ((formats & kDxil) != 0) {
+    status = worker.CompileDxil(request, dxil);
+    if (!status.ok()) {
+      *error = status.message;
+      return judged(status);
+    }
+  }
+  if (cancelled()) {
+    *error = "The shader build was cancelled.";
+    return CompileVerdict::kStop;
+  }
+  if ((formats & kSpirv) != 0) {
+    status = worker.CompileSpirv(request, spirv);
+    if (!status.ok()) {
+      *error = status.message;
+      return judged(status);
+    }
+  }
+  if (stage == ShaderStage::kPixel && !dxil->empty() && !BytesContain(*dxil, "SV_Target")) {
+    *error = label + ": the DXIL has no SV_Target";
+    return CompileVerdict::kFailed;
+  }
+  Problems problems;
+  BlobContractInput blob;
+  blob.name = label;
+  blob.stage = stage;
+  blob.variant = spec != 0 ? 1 : 0;
+  blob.writes_oc0 = stage == ShaderStage::kPixel && spec != 0;
+  blob.dxil = *dxil;
+  blob.spirv = *spirv;
+  if (!CheckBlobContract(blob, &problems)) {
+    *error = JoinProblems(problems);
+    return CompileVerdict::kFailed;
+  }
+  if (!CheckDxilNoDoubles(label, blob.variant, *dxil, &problems)) {
+    *error = JoinProblems(problems);
+    return CompileVerdict::kFailed;
+  }
+  if (stage == ShaderStage::kVertex) {
+    if (!spirv->empty()) CheckSpirvPosition(label, blob.variant, *spirv, &problems);
+    if (!dxil->empty()) CheckDxilPosition(worker, label, blob.variant, *dxil, &problems);
+    if (!problems.empty()) {
+      *error = JoinProblems(problems);
+      return CompileVerdict::kFailed;
+    }
+  }
+  return CompileVerdict::kOk;
+}
+
+using Compiled = StageBlobs;  // the blobs of one compile (variant_stage_shaders.h)
+
 class VariantStepImpl final : public VariantStep {
  public:
   explicit VariantStepImpl(std::vector<VariantDef> variants) : variants_(std::move(variants)) {}
@@ -200,7 +212,8 @@ class VariantStepImpl final : public VariantStep {
   }
 
   bool NeedsRpfShaders() const override {
-    return std::any_of(variants_.begin(), variants_.end(), [](const VariantDef& def) { return def.needs_rpf; });
+    // The G-buffer's material table names every shader of the game, the RPF's included (gbuffer_material_pack.h): the step always reads them.
+    return true;
   }
 
   VariantStepResult Build(const VariantStepInput& input) override {
@@ -221,6 +234,8 @@ class VariantStepImpl final : public VariantStep {
         {std::string(kStampVariantsPrefix) + "step_version", std::to_string(kVariantStepVersion)},
         {std::string(kStampVariantsPrefix) + "pack_version", std::to_string(kVariantPackVersion)},
         {std::string(kStampVariantsPrefix) + "contract", std::to_string(kVariantContract)},
+        // The G-buffer's material table (gbuffer_material_pack.h): hand bumped with its tables, gpu/gbuffer_material.h kMaterialRulesVersion.
+        {std::string(kStampVariantsPrefix) + "gbuffer_material_version", std::to_string(GBufferMaterialRulesVersion())},
     };
   }
 
@@ -233,50 +248,57 @@ class VariantStepImpl final : public VariantStep {
   // The pixel shaders of a variant: the ones it names by identity (found by name when the game is not the
   // retail one), then every one whose name ends with one of its suffixes, in key order (the container set
   // is sorted by key), each once. False with *error when a named shader is not there.
-  struct Target {
-    VariantShader shader;
-    const ShaderSource* source = nullptr;
-  };
   static bool ListTargets(const ContainerSet& set, const VariantDef& def, std::vector<Target>* targets,
                           std::string* error) {
     targets->clear();
+    const ShaderStage stage = def.vertex ? ShaderStage::kVertex : ShaderStage::kPixel;
     for (const VariantShader& named : def.pixel_shaders) {
-      const ShaderSource* pixel = ResolveShader(set, named, ShaderStage::kPixel, error);
+      const ShaderSource* pixel = ResolveShader(set, named, stage, error);
       if (!pixel) return false;
       targets->push_back({named, pixel});
     }
     for (const std::string_view suffix : def.pixel_name_suffixes) {
       for (const ShaderSource& shader : set.shaders) {
-        if (shader.stage != ShaderStage::kPixel || !std::string_view(shader.name).ends_with(suffix)) continue;
+        if (shader.stage != stage || !std::string_view(shader.name).ends_with(suffix)) continue;
         const bool have = std::any_of(targets->begin(), targets->end(),
                                       [&](const Target& target) { return target.source->key == shader.key; });
         if (!have) targets->push_back({VariantShader{shader.name, shader.key}, &shader});
       }
     }
     if (targets->empty()) {
-      *error = "no pixel shader of the game is one it names";
+      *error = def.vertex ? "no vertex shader of the game is one it names" : "no pixel shader of the game is one it names";
       return false;
     }
     return true;
   }
 
-  // One variant: its vertex shaders, then each of its pixel shaders translated, edited, compiled for the
+  // One stage on its own: its vertex shaders, then each of its shaders translated, edited, compiled for the
   // formats asked and checked. False with *error (the first thing that went wrong) and nothing of it in
-  // *entries; *note is a few words for the summary line (the compiles, the shaders left out).
+  // *entries; *note is a few words for the summary line (the compiles, the shaders left out or failed); `solo` gets one
+  // record per shader that was made, for the composition pass. A shader whose text the edits do not fit (the transform says
+  // !ok, not skip) has no variant and costs the stage nothing else (variant_shader_fate.h): one warning each, and *failed
+  // gets its stamp text. The same for a shader whose edited text does not compile (GB-H2-DXC: variant_stage_shaders.h). The stage fails only when none of its shaders could be made, or for a cancel or a
+  // compiler that cannot be used at all.
   bool BuildVariant(const VariantStepInput& input, DxcWorker& worker, const VariantDef& def, uint32_t formats,
-                    std::vector<PackEntry>* entries, std::string* note, std::string* error) const {
+                    std::vector<PackEntry>* entries, std::vector<SoloShader>* solo, std::string* note, std::string* failed_stamp, std::string* error) const {
     ProgressSink& sink = *input.sink;
+    const std::function<bool()> cancelled = [&sink] { return sink.Cancelled(); };
     if (!def.transform) {
       *error = "it has no transform";
       return false;
     }
     if (def.pixel_shaders.empty() && def.pixel_name_suffixes.empty()) {
-      *error = "it names no pixel shader";
+      *error = def.vertex ? "it names no vertex shader" : "it names no pixel shader";
       return false;
     }
-    if (def.id < kFirstPackedVariant || def.id >= kVariantSlots) {
-      *error = std::format("its id {} is not one of the variant pack's ({}..{})", def.id, kFirstPackedVariant,
-                           kVariantSlots - 1);
+    const chain::FeatureInfo* row = chain::Find(def.feature);
+    if (!row) {
+      *error = std::format("its feature {} has no row in the chain's table (variant_chain.h kFeatures)", def.feature);
+      return false;
+    }
+    if (row->name != def.name || (row->stage == chain::Stage::kVertex) != def.vertex) {
+      *error = std::format("its feature {} is the table's {} ({} stage), not {} ({} stage)", def.feature, row->name,
+                           row->stage == chain::Stage::kVertex ? "vertex" : "pixel", def.name, def.vertex ? "vertex" : "pixel");
       return false;
     }
     if (def.vertex_shaders.size() > kVariantVertexShaders) {
@@ -284,6 +306,8 @@ class VariantStepImpl final : public VariantStep {
                            kVariantVertexShaders);
       return false;
     }
+    const ShaderStage stage = def.vertex ? ShaderStage::kVertex : ShaderStage::kPixel;
+    const char* const stage_text = def.vertex ? "vertex" : "pixel";
 
     // 1. The vertex shaders the pixel shaders are drawn with.
     std::array<uint64_t, kVariantVertexShaders> vs_keys{};
@@ -294,126 +318,220 @@ class VariantStepImpl final : public VariantStep {
       vs_keys[i] = vertex->key;
     }
 
-    // 2. Each pixel shader: the translator's own text, the edits, the blobs (spec variant 0: no alpha test,
-    // the formats of the main pack, the same dxc arguments as every other pixel shader of the pack, dxc.h).
-    // Shaders whose edited text is the same are compiled once (the blobs depend on the text alone).
+    // 2. Each shader: the translator's own text, the edits, the blobs (variant_stage_shaders.h BuildStageShaders: spec variant 0, no alpha test, the formats of the main pack, the same dxc
+    // arguments as every other shader of the pack, dxc.h). Shaders whose edited text is the same are compiled once (the blobs depend on the text alone). A shader whose edits do not fit
+    // or whose text does not compile loses its own variant only; a cancel or an unusable compiler stops the stage.
     std::vector<Target> targets;
     if (!ListTargets(*input.containers, def, &targets, error)) return false;
-    struct Compiled {
-      std::vector<uint8_t> dxil;
-      std::vector<uint8_t> spirv;
+    StageHooks hooks;
+    hooks.translate = [](const ShaderSource& source, TranslatedShader* out, std::string* why) { return TranslateContainer(source.container, out, why); };
+    hooks.compile = [&](const std::string& hlsl, uint32_t spec, const std::string& label, StageBlobs* blobs, std::string* why) {
+      return CompileChecked(worker, cancelled, formats, stage, hlsl, spec, label, &blobs->dxil, &blobs->spirv, why);
     };
-    std::unordered_map<std::string, Compiled> compiled;  // by the variant's HLSL
-    std::map<std::string, size_t> skipped;               // why a shader was left out -> how many
-    std::vector<PackEntry> made;
-    for (const Target& target : targets) {
-      const ShaderSource* pixel = target.source;
-      TranslatedShader translated;
-      if (!TranslateContainer(pixel->container, &translated, error)) {
-        *error = pixel->name + ": " + *error;
-        return false;
-      }
-      if (translated.stage != ShaderStage::kPixel) {
-        *error = pixel->name + " is not a pixel shader";
-        return false;
-      }
-      const VariantTransformResult variant = def.transform(target.shader, translated.hlsl);
-      if (variant.skip) {
-        ++skipped[variant.error];
-        sink.Step(pixel->name);
-        continue;
-      }
-      if (!variant.ok) {
-        *error = pixel->name + ": " + variant.error;
-        return false;
-      }
-      if (sink.Cancelled()) {
-        *error = "The shader build was cancelled.";
-        return false;
-      }
-
-      PackEntry entry;
-      entry.variant = def.id;
-      entry.ps_key = pixel->key;
-      entry.vs_keys = vs_keys;
-      auto found = compiled.find(variant.hlsl);
-      if (found == compiled.end()) {
-        Compiled blobs;
-        const std::string label = std::format("{} [{}] ({} variant)", pixel->name, Hex64(pixel->key), def.name);
-        CompileRequest request;
-        request.hlsl = variant.hlsl;
-        request.stage = ShaderStage::kPixel;
-        request.spec_constants = 0;
-        request.name = label;
-        DxcStatus status;
-        if ((formats & kDxil) != 0) {
-          status = worker.CompileDxil(request, &blobs.dxil);
-          if (!status.ok()) {
-            *error = status.message;
-            return false;
-          }
-        }
-        if (sink.Cancelled()) {
-          *error = "The shader build was cancelled.";
-          return false;
-        }
-        if ((formats & kSpirv) != 0) {
-          status = worker.CompileSpirv(request, &blobs.spirv);
-          if (!status.ok()) {
-            *error = status.message;
-            return false;
-          }
-        }
-
-        // 3. What the runtime relies on, read back from the blobs: the colour output is there, and no
-        // coverage output, sample mask or specialization constant (this is the draw without alpha to
-        // coverage). Once per text: the same text gives the same blobs.
-        if (!blobs.dxil.empty() && !BytesContain(blobs.dxil, "SV_Target")) {
-          *error = label + ": the DXIL has no SV_Target";
-          return false;
-        }
-        Problems problems;
-        BlobContractInput blob;
-        blob.name = label;
-        blob.stage = ShaderStage::kPixel;
-        blob.variant = 0;
-        blob.writes_oc0 = false;
-        blob.dxil = blobs.dxil;
-        blob.spirv = blobs.spirv;
-        if (!CheckBlobContract(blob, &problems)) {
-          *error = JoinProblems(problems);
-          return false;
-        }
-        found = compiled.emplace(variant.hlsl, std::move(blobs)).first;
-      }
-      entry.dxil = found->second.dxil;
-      entry.spirv = found->second.spirv;
-      sink.Step(pixel->name);
-      made.push_back(std::move(entry));
-    }
+    hooks.warn = [](const std::string& line) { SHADERPACK_LOG_WARN("{}", line); };
+    StageShaders stage_shaders;
+    if (!BuildStageShaders(def, *row, vs_keys, targets, sink, hooks, &stage_shaders, error)) return false;
+    ShaderFateTally& fates = stage_shaders.fates;  // what became of each shader: built, left out (by reason), failed (no variant for it)
+    std::vector<PackEntry>& made = stage_shaders.made;
     if (made.empty()) {
-      *error = std::format("none of its {} pixel shaders is one its edits are for", targets.size());
+      *error = std::format("none of its {} {} shaders is one its edits are for", targets.size(), stage_text);
+      if (fates.any_failed()) *error += std::format(" ({} failed, the first: {})", fates.failed.size(), fates.failed.front());
       return false;
     }
-    if (!skipped.empty() || compiled.size() != made.size()) {
-      *note = std::format("{} compile{}", compiled.size(), compiled.size() == 1 ? "" : "s");
-      for (const auto& [why, count] : skipped) *note += std::format("; {} left out: {}", count, why);
+    const uint32_t solo_word = chain::Word(chain::FeatureBit(def.feature), 0);
+    const size_t shader_entries = size_t(std::count_if(made.begin(), made.end(), [&](const PackEntry& e) { return e.variant == solo_word; }));
+    if (!fates.left_out.empty() || fates.any_failed() || stage_shaders.compiles != shader_entries || stage_shaders.twin_compiles != 0) {
+      const size_t compiles = stage_shaders.compiles + stage_shaders.twin_compiles;
+      *note = std::format("{} compile{}", compiles, compiles == 1 ? "" : "s");
+      if (stage_shaders.twin_compiles != 0) *note += std::format(", {} of them for spec variant 1", stage_shaders.twin_compiles);
+      *note += fates.NoteText();
     }
+    *failed_stamp = fates.StampText();
     for (PackEntry& entry : made) entries->push_back(std::move(entry));
+    for (SoloShader& s : stage_shaders.solo) solo->push_back(std::move(s));
     return true;
+  }
+
+  // The compositions: for each shader that more than one stage made an entry for, the feature sets the chain's table allows
+  // (variant_chain.h Permutations), each built like a variant: the stages applied in chain order to the translated text, compiled
+  // and checked. A composition that cannot be made (a stage's anchors do not match after the stages before it, the text does not
+  // compile) is left out with a warning; the stages themselves are in the pack alone. The texts are made here, in a fixed order; the
+  // compiles (the cost: about 0.2 s of dxc for a lit shader's DXIL and SPIR-V) run on VariantStepInput::threads workers, one DxcWorker
+  // each, and the entries are put together here in the same fixed order, so the pack does not depend on which worker finished first.
+  // *compiles counts the distinct compiles done.
+  void ComposePass(const VariantStepInput& input, DxcWorker& first_worker, uint32_t formats, const std::vector<SoloShader>& solo,
+                   std::vector<PackEntry>* entries, std::vector<std::string>* left_out, size_t* composed, size_t* compiles) const {
+    ProgressSink& sink = *input.sink;
+    // Per shader (vertex shaders and pixel shaders have their own keys): the stages that made it alone.
+    std::map<std::pair<bool, uint64_t>, std::vector<const SoloShader*>> by_shader;
+    for (const SoloShader& s : solo) by_shader[{s.vertex, s.key}].push_back(&s);
+    std::map<std::pair<bool, uint64_t>, chain::PermutationList> plans;
+    for (const auto& [shader_key, stages] : by_shader) {
+      if (stages.size() < 2) continue;
+      uint32_t applicable = 0;
+      for (const SoloShader* s : stages) applicable |= chain::FeatureBit(s->feature);
+      chain::PermutationList plan = chain::Permutations(applicable, stages.front()->spec_mask != 0);
+      if (std::any_of(plan.sets.begin(), plan.sets.end(), [](uint32_t set) { return std::popcount(set) >= 2; }) || plan.dropped != 0) {
+        plans[shader_key] = std::move(plan);
+      }
+    }
+    if (plans.empty()) return;
+
+    // 1. The texts and the distinct compiles they need.
+    struct Job {
+      std::string hlsl;
+      ShaderStage stage = ShaderStage::kPixel;
+      uint32_t spec = 0;
+      std::string label;
+      Compiled blobs;
+      std::string error;
+      bool ok = false;
+    };
+    struct Planned {
+      uint64_t key = 0;
+      bool vertex = false;
+      uint32_t set = 0;
+      std::string name;
+      std::vector<std::pair<uint32_t, size_t>> words;  // (spec bit 0 or 1, job)
+    };
+    std::vector<Job> jobs;
+    std::map<std::string, size_t> job_of;  // by the text and the spec mask
+    std::vector<Planned> planned;
+    for (const auto& [shader_key, plan] : plans) {
+      const SoloShader& first = *by_shader[shader_key].front();
+      if (plan.dropped != 0) {
+        SHADERPACK_LOG_WARN("shader variants: {} compositions of {} were left out (more than {} stages in one text or {} variants of one shader)",
+                            plan.dropped, first.source->name, chain::kMaxStagesPerShader, chain::kMaxWordsPerShader);
+      }
+      TranslatedShader translated;
+      std::string error;
+      if (!TranslateContainer(first.source->container, &translated, &error)) {
+        left_out->push_back(first.source->name + ": " + error);
+        continue;
+      }
+      const ShaderStage stage = first.vertex ? ShaderStage::kVertex : ShaderStage::kPixel;
+      for (const uint32_t set : plan.sets) {
+        if (std::popcount(set) < 2) continue;
+        if (sink.Cancelled()) return;
+        const VariantTransformResult text = ComposeStages(variants_, set, first.shader, translated.hlsl);
+        if (!text.ok) {
+          const std::string why = std::format("{} with the features {:#x}: {}", first.source->name, set, text.error);
+          SHADERPACK_LOG_WARN("shader variants: a composition was not built: {}", why);
+          left_out->push_back(why);
+          continue;
+        }
+        // Words: the set alone (spec 0), and its twin when the shader has a spec variant and every stage of the set has one.
+        std::vector<uint32_t> specs = {0};
+        if (translated.spec_mask != 0 && chain::HasTwin(set)) specs.push_back(translated.spec_mask);
+        Planned plan_entry{first.key, first.vertex, set, first.source->name, {}};
+        for (const uint32_t spec_mask : specs) {
+          const std::string cache_key = text.hlsl + std::format("\n//spec {}", spec_mask);
+          auto found = job_of.find(cache_key);
+          if (found == job_of.end()) {
+            Job job;
+            job.hlsl = text.hlsl;
+            job.stage = stage;
+            job.spec = spec_mask;
+            job.label = std::format("{} [{}] (features {:#x}{})", first.source->name, Hex64(first.key), set, spec_mask != 0 ? ", spec variant 1" : "");
+            found = job_of.emplace(cache_key, jobs.size()).first;
+            jobs.push_back(std::move(job));
+          }
+          plan_entry.words.emplace_back(spec_mask != 0 ? 1u : 0u, found->second);
+        }
+        planned.push_back(std::move(plan_entry));
+      }
+    }
+    if (jobs.empty()) return;
+
+    // 2. The compiles, on the step's threads (this thread is one of them while the others start: the first worker is the one the step made).
+    sink.BeginPhase("Composing the shader variants", int(jobs.size()));
+    const unsigned threads = std::max(1u, std::min<unsigned>(input.threads, unsigned(jobs.size())));
+    std::atomic<size_t> next{0};
+    std::atomic<size_t> finished{0};
+    std::atomic<bool> stop{false};
+    std::atomic<unsigned> running{threads};
+    const std::function<bool()> stopped = [&stop] { return stop.load(std::memory_order_relaxed); };
+    const auto work = [&](DxcWorker* given) {
+      std::unique_ptr<DxcWorker> own;
+      DxcWorker* worker = given;
+      if (!worker) {
+        DxcStatus status;
+        own = input.dxc->CreateWorker(&status);
+        worker = own.get();
+      }
+      for (;;) {
+        const size_t index = worker ? next.fetch_add(1) : jobs.size();
+        if (index >= jobs.size() || stop.load(std::memory_order_relaxed)) break;
+        Job& job = jobs[index];
+        try {
+          job.ok = CompileChecked(*worker, stopped, formats, job.stage, job.hlsl, job.spec, job.label, &job.blobs.dxil, &job.blobs.spirv, &job.error) == CompileVerdict::kOk;
+        } catch (const std::exception& exception) {
+          job.ok = false;
+          job.error = std::string("exception: ") + exception.what();
+        }
+        finished.fetch_add(1);
+      }
+      own.reset();
+      running.fetch_sub(1);
+    };
+    std::vector<std::thread> pool;
+    for (unsigned i = 1; i < threads; ++i) pool.emplace_back(work, nullptr);
+    std::thread main_worker(work, &first_worker);  // a DxcWorker is used by one thread at a time: this one's, while this function polls
+    size_t reported = 0;
+    bool cancelled = false;
+    while (running.load() != 0) {
+      if (!cancelled && sink.Cancelled()) {
+        cancelled = true;
+        stop.store(true);
+      }
+      for (const size_t done = finished.load(); reported < done; ++reported) sink.Step(jobs[std::min(reported, jobs.size() - 1)].label);
+      std::this_thread::sleep_for(std::chrono::milliseconds(25));
+    }
+    main_worker.join();
+    for (std::thread& thread : pool) thread.join();
+    for (const size_t done = finished.load(); reported < done; ++reported) sink.Step(jobs[std::min(reported, jobs.size() - 1)].label);
+    if (cancelled) return;  // the caller sees sink.Cancelled() and fails the step
+
+    // 3. The entries, in the order the compositions were planned.
+    for (const Planned& plan_entry : planned) {
+      bool ok = true;
+      for (const auto& [spec, job] : plan_entry.words) {
+        if (!jobs[job].ok) {
+          const std::string why = std::format("{} with the features {:#x}: {}", plan_entry.name, plan_entry.set, jobs[job].error);
+          SHADERPACK_LOG_WARN("shader variants: a composition was not built: {}", why);
+          left_out->push_back(why);
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) continue;
+      for (const auto& [spec, job] : plan_entry.words) {
+        PackEntry entry;
+        entry.variant = chain::Word(plan_entry.set, spec);
+        entry.flags = plan_entry.vertex ? kVariantEntryVertex : 0;
+        entry.key = plan_entry.key;
+        entry.vs_features = chain::VertexNeedsOf(plan_entry.set);
+        entry.dxil = jobs[job].blobs.dxil;
+        entry.spirv = jobs[job].blobs.spirv;
+        entries->push_back(std::move(entry));
+      }
+      ++*composed;
+    }
+    *compiles = size_t(std::count_if(jobs.begin(), jobs.end(), [](const Job& job) { return job.ok; }));
   }
 
   void BuildChecked(const VariantStepInput& input, VariantStepResult* result) const {
     const std::filesystem::path final_path = input.out_dir / kVariantPackFileName;
-    const std::filesystem::path temporary_path = input.out_dir / (std::string(kVariantPackFileName) + ".tmp");
+    // A name of its own (os/file_replace.h): another game that starts now may build the same pack in this folder.
+    const std::filesystem::path temporary_path = larecomp::os::TempPathFor(final_path);
     {
       // Whatever variant pack is there was built beside a main pack that is being replaced (or from
-      // older edits): it must not be read while this step runs or when it fails. Nor the first version's
-      // file, which nothing reads any more.
+      // older edits): it must not be read while this step runs or when it fails. Nor the first and second
+      // versions' files, which nothing reads any more (the reader refuses a file of another version anyway).
       std::error_code ec;
       std::filesystem::remove(final_path, ec);
-      std::filesystem::remove(temporary_path, ec);
       std::filesystem::remove(input.out_dir / kLegacyHdrPackFileName, ec);
+      std::filesystem::remove(input.out_dir / kLegacyVariantPackFileName, ec);
     }
     const auto fail = [&](std::string message) {
       std::error_code ec;
@@ -446,16 +564,22 @@ class VariantStepImpl final : public VariantStep {
     std::string built_text;
     std::string left_out_text;
     std::vector<VariantTarget> made_targets;  // every (variant, shader) entry, for the overlap check
+    std::vector<SoloShader> solo;             // every shader a stage made alone, for the composition pass
     for (const VariantDef& def : variants_) {
       std::string error;
       std::string note;
+      std::string failed_stamp;
       std::vector<PackEntry> made;
-      if (BuildVariant(input, *worker, def, formats, &made, &note, &error)) {
+      if (BuildVariant(input, *worker, def, formats, &made, &solo, &note, &failed_stamp, &error)) {
         AddVariantLines(def, &variant_lines);
+        if (!failed_stamp.empty()) variant_lines.push_back({StampKey(def, "failed_shaders"), failed_stamp});  // informational: shaders whose text the edits did not fit, which keep the game's own
         std::string keys;
+        size_t shader_count_made = 0;  // the shaders, not the entries (an alpha test twin is the same shader)
         for (const PackEntry& entry : made) {
+          if (entry.variant != chain::Word(chain::FeatureBit(def.feature), 0)) continue;
           if (!keys.empty()) keys += ',';
-          keys += Hex64(entry.ps_key);
+          keys += Hex64(entry.key);
+          ++shader_count_made;
         }
         variant_lines.push_back({StampKey(def, "shaders"), keys});  // informational
         if (!made.empty() && made.front().vs_keys[0] != 0) {
@@ -468,14 +592,15 @@ class VariantStepImpl final : public VariantStep {
           variant_lines.push_back({StampKey(def, "vs_keys"), vertex_keys});  // informational
         }
         if (!built_text.empty()) built_text += ", ";
-        built_text += std::format("{} ({} shader{}{}{})", def.name, made.size(), made.size() == 1 ? "" : "s",
+        built_text += std::format("{} ({} shader{}{}{})", def.name, shader_count_made, shader_count_made == 1 ? "" : "s",
                                   note.empty() ? "" : "; ", note);
         for (PackEntry& entry : made) {
-          made_targets.push_back({def.name, entry.ps_key});
+          made_targets.push_back({def.name, entry.key});
           entries.push_back(std::move(entry));
         }
       } else {
         if (sink.Cancelled()) return fail("The shader build was cancelled.");
+        // A stage that failed has no solo records either (BuildVariant adds them only when it succeeds), so no composition of it is tried.
         SHADERPACK_LOG_WARN("the shader variant {} was not built: {}", def.name, error);
         if (!left_out_text.empty()) left_out_text += "; ";
         left_out_text += def.name + ": " + error;
@@ -489,31 +614,51 @@ class VariantStepImpl final : public VariantStep {
     // no entries: the renderer draws the game's own shaders and the stamp is current, instead of every start
     // translating the shaders again.
 
-    // A pixel shader that two variants made an entry for is drawn with one of them only (variant_overlap.h): say so.
+    // 1b. The compositions of the stages that edit the same shader and that the chain's table lets share a text.
+    size_t composed = 0;
+    size_t composed_compiles = 0;
+    std::vector<std::string> composition_left_out;
+    ComposePass(input, *worker, formats, solo, &entries, &composition_left_out, &composed, &composed_compiles);
+    if (sink.Cancelled()) return fail("The shader build was cancelled.");
+    variant_lines.push_back({std::string(kStampVariantsPrefix) + "composed", std::to_string(composed)});  // informational
+    if (!composition_left_out.empty()) {
+      std::string reasons;
+      for (const std::string& why : composition_left_out) reasons += (reasons.empty() ? "" : "; ") + why;
+      variant_lines.push_back({std::string(kStampVariantsPrefix) + "composed_left_out", reasons});  // informational
+    }
+
+    // A pixel shader that two variants made an entry for and that the chain does not compose is drawn with one of them only
+    // (variant_overlap.h): say so. (A pair the table composes has its composed entries from the pass above.)
     std::string overlap_text;
     for (const VariantOverlap& overlap : FindVariantOverlaps(made_targets)) {
+      uint32_t set = 0;
+      for (const std::string& name : overlap.variants) {
+        for (const VariantDef& def : variants_) {
+          if (def.name == name) set |= chain::FeatureBit(def.feature);
+        }
+      }
+      if (chain::CanCompose(set)) continue;
       if (!overlap_text.empty()) overlap_text += "; ";
       overlap_text += DescribeVariantOverlap(overlap);
     }
     if (!overlap_text.empty()) {
-      SHADERPACK_LOG_WARN("shader variants: a pixel shader is in more than one variant, and the renderer draws only the "
-                          "first the settings ask for (pipelines.cpp ChoosePackedVariant): {}", overlap_text);
+      SHADERPACK_LOG_WARN("shader variants: a pixel shader is in more than one variant that the chain does not compose, and the renderer draws only one of "
+                          "them per draw (variant_chain.h kFeatures composes_with): {}", overlap_text);
     }
 
     // 2. The file: entries in increasing (variant, pixel shader) order, under a temporary name and then
     // moved into place.
     std::sort(entries.begin(), entries.end(), [](const PackEntry& a, const PackEntry& b) {
-      return a.variant != b.variant ? a.variant < b.variant : a.ps_key < b.ps_key;
+      return variant_pack_detail::SortKey(a.vertex(), a.variant, a.key) < variant_pack_detail::SortKey(b.vertex(), b.variant, b.key);
     });
     for (size_t i = 1; i < entries.size(); ++i) {
-      if (entries[i].variant == entries[i - 1].variant && entries[i].ps_key == entries[i - 1].ps_key) {
-        return fail(std::format("variant {} has two entries for the shader {}", entries[i].variant,
-                                Hex64(entries[i].ps_key)));
+      if (entries[i].vertex() == entries[i - 1].vertex() && entries[i].variant == entries[i - 1].variant && entries[i].key == entries[i - 1].key) {
+        return fail(std::format("variant {} has two entries for the shader {}", entries[i].variant, Hex64(entries[i].key)));
       }
     }
     std::string error;
     std::vector<uint8_t> bytes;
-    if (!LayOutVariantPack(entries, formats, &bytes, &error)) return fail(error);
+    if (!LayOutVariantPack(entries, formats, kPackVersion, &mcla::native_gfx::Fnv1a64, &bytes, &error)) return fail(error);
     {
       std::ofstream file(temporary_path, std::ios::binary | std::ios::trunc);
       if (file) file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
@@ -521,6 +666,16 @@ class VariantStepImpl final : public VariantStep {
       if (!file) return fail("the variant pack could not be written to " + PathText(temporary_path));
     }
     if (!CommitFile(temporary_path, final_path, &error)) return fail(error);
+
+    // 2b. The G-buffer's material table, beside the variant pack, from the same containers (gbuffer_material_pack.h). Best effort: without it every draw takes the default
+    // material word, so a failure here is a warning, not the step's.
+    // CHECK: the step was not run on the game's files in this package (the file's writer was run on a made-up container set, the tables against the translated HLSL).
+    const MaterialTableResult material = WriteGBufferMaterialTable(*input.containers, input.out_dir);
+    if (material.written) {
+      SHADERPACK_LOG_INFO("G-buffer material table: {}", material.message);
+    } else {
+      SHADERPACK_LOG_WARN("the G-buffer material table was not written (the draws take the default material word): {}", material.message);
+    }
 
     // 3. What it was built from: the lines of the step and of every variant that was tried, built or left out
     // (a left out one also has its reason: see AddVariantLines).
@@ -536,9 +691,12 @@ class VariantStepImpl final : public VariantStep {
     } else {
       result->message = std::format("{} shaders in the variants {}: DXIL {} bytes, SPIR-V {} bytes, {} bytes in all",
                                     entries.size(), built_text, dxil_bytes, spirv_bytes, bytes.size());
+      if (composed != 0) result->message += std::format("; {} compositions ({} extra compiles)", composed, composed_compiles);
+      if (!composition_left_out.empty()) result->message += std::format("; {} compositions left out", composition_left_out.size());
       if (!left_out_text.empty()) result->message += "; left out: " + left_out_text;
       if (!overlap_text.empty()) result->message += "; in more than one variant (only one is drawn): " + overlap_text;
     }
+    result->message += material.written ? "; " + material.message : "; the G-buffer material table was not written: " + material.message;
     result->stamp_lines = StepLines();
     for (StampLine& line : variant_lines) result->stamp_lines.push_back(std::move(line));
     // Informational (CheckStamp compares only the lines it expects).
@@ -567,7 +725,18 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeGlowSoftVariant());
   variants.push_back(MakeCarSelfReflVariant());
   variants.push_back(MakeCarChromeVariant());
+  variants.push_back(MakeCarChromeCityVariant());  // CITY-RT M2 R3a: a stage on the chrome's (feature 13), drawn only while the city is in the reflections
   variants.push_back(MakeLuminanceScaleVariant());
+  variants.push_back(MakeRoadMirrorBlurVariant());
+  variants.push_back(MakeUiSharpVariant());
+  variants.push_back(MakeHeadlightVariant());
+  VariantDef gbuffer;
+  if (MakeGBufferVariant(&gbuffer, &why)) {
+    variants.push_back(std::move(gbuffer));
+  } else if (left_out) {
+    left_out->push_back("gbuffer: " + why);
+  }
+  variants.push_back(MakeGBufferVsVariantAll());  // the G-buffer's vertex stage (feature 12: the day families' three and the car stage's two): needs no helper text, so it is always there
   return variants;
 }
 

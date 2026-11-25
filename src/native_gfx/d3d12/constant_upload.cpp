@@ -8,15 +8,13 @@
 #include <cstdlib>
 #include <cstring>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 
 #include "../guest/guest_constants.h"
 #include "../guest/render_state.h"
 #include "context.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_color_exp_bias);
-REXCVAR_DECLARE(bool, mcla_native_gfx_exp_bias_unit);
 
 namespace mcla::native_gfx {
 namespace {
@@ -39,7 +37,7 @@ constexpr uint64_t kVsVehBlurImposterMotionBlur = 0x0C93FA31BBB56F49ull;
 }  // namespace
 
 void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev) {
-  if (!bank || !base || !REXCVAR_GET(mcla_native_gfx_color_exp_bias)) {
+  if (!bank || !base || !larecomp::settings::mcla_native_gfx_color_exp_bias.Get()) {
     return;
   }
   static_assert(kInvColorExpBiasByteOffset + sizeof(float) <= kAluBankBytes,
@@ -64,7 +62,7 @@ void ApplyColorExpBias(void* bank, const uint8_t* base, uint32_t dev) {
   // still there: 2^-4 * 2^2 = 0.25 on the hardware too. The fold reproduces
   // that. mcla_native_gfx_exp_bias_unit forces 1.0 instead, which is NOT what
   // the hardware does.
-  const float scaled = REXCVAR_GET(mcla_native_gfx_exp_bias_unit)
+  const float scaled = larecomp::settings::mcla_native_gfx_exp_bias_unit.Get()
                            ? 1.0f
                            : inv * std::ldexp(1.0f, bias);
   if (!std::isfinite(scaled)) {
@@ -81,7 +79,7 @@ void CorrectColorExpBiasFold(uint64_t vs_id, uint64_t ps_id, void* ps_bank, cons
       vs_id != kVsVehBlurImposterMotionBlur) {
     return;
   }
-  if (!ps_bank || !base || !REXCVAR_GET(mcla_native_gfx_color_exp_bias)) {
+  if (!ps_bank || !base || !larecomp::settings::mcla_native_gfx_color_exp_bias.Get()) {
     return;
   }
   const int32_t bias = ReadColorExpBias(base, dev);

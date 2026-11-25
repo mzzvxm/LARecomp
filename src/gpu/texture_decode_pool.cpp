@@ -19,10 +19,13 @@
 #include <windows.h>
 #endif
 
-#include <rex/thread.h>
+#include <rex/platform/thread.h>
 
 #include "mc_engine/core/threading.h"
 #include "os/thread_priority.h"
+#include "os/thread_name.h"
+#include "render_wait_rules.h"
+#include "settings/larecomp_app_settings.h"
 
 namespace mcla::gpu {
 
@@ -145,14 +148,21 @@ void DecodePool::NotifyDone() {
 }
 
 void DecodePool::WaitUntilSettled(DecodeJob& job) {
+  const auto settled = [&job] { return job.state() >= DecodeJob::kDone; };
+  if (settled()) return;
+  if (!render_wait::ShouldSpin(larecomp::settings::render_wait_mode.Get())) {
+    // The worker stores the final state and calls NotifyDone under the same wait protocol.
+    std::unique_lock lock(done_mutex_);
+    done_cv_.wait(lock, settled);
+    return;
+  }
   for (uint32_t spin = 0; job.state() < DecodeJob::kDone; ++spin) {
     if (spin < kSpinsBeforeSleep) {
       CpuRelax();
       continue;
     }
     std::unique_lock<std::mutex> lock(done_mutex_);
-    done_cv_.wait_for(lock, std::chrono::milliseconds(1),
-                      [&job] { return job.state() >= DecodeJob::kDone; });
+    done_cv_.wait_for(lock, std::chrono::milliseconds(1), settled);
   }
 }
 
@@ -186,7 +196,7 @@ void DecodePool::Quiesce(uint64_t before) {
 }
 
 void DecodePool::WorkerMain(uint32_t index) {
-  rex::thread::set_current_thread_name("larecomp texture decode");
+  rex::platform::SetCurrentThreadName(larecomp::os::ThreadNameFor("larecomp texture decode"));
   (void)index;
   // Below the game's threads: what they leave idle is what this uses. Not the background level:
   // the render thread waits for a job a worker is running (Finish).

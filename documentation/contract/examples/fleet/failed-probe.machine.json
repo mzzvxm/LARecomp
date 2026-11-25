@@ -1,0 +1,171 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "probe",
+  "final": false,
+  "written_by": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff"
+  },
+  "written_utc": "2026-11-24T12:00:00Z",
+  "hardware_id": "21da2c8f2d2b3a71699ae2f9b7286913b82b39aaefffd108c9bd7272871c65eb",
+  "gpu": {
+    "name": "NVIDIA GeForce RTX 4070",
+    "vendor": "nvidia",
+    "vendor_id": 4318,
+    "device_id": 10118,
+    "vram_mb": 12282,
+    "software": false,
+    "driver_version": "32.0.15.5612",
+    "shared_memory": null,
+    "class": null,
+    "class_why": null,
+    "handheld": null,
+    "rtx": null,
+    "rx9000": null,
+    "class_forced": null,
+    "rt_tier": null,
+    "rt_rung": null,
+    "rt_tier_why": null,
+    "rt_benchmarked": null,
+    "adapters": [
+      {
+        "name": "NVIDIA GeForce RTX 4070",
+        "vendor": "nvidia",
+        "vram_mb": 12282,
+        "software": false,
+        "selected": true,
+        "class": null
+      }
+    ]
+  },
+  "api": {
+    "name": null,
+    "version": null,
+    "shader_model": null,
+    "dxr_1_1": null,
+    "ray_query": null,
+    "car_rt": null,
+    "city_rt_shadows": null,
+    "by_api": {
+      "d3d12": {
+        "car_rt": null,
+        "rt_tier": null,
+        "ray_regen": null
+      },
+      "vulkan": {
+        "car_rt": null,
+        "rt_tier": null,
+        "ray_regen": "unsupported"
+      }
+    }
+  },
+  "features": {
+    "upscalers": {
+      "fsr1": null,
+      "fsr31": null,
+      "fsr4": null,
+      "dlss": null,
+      "dlss_modes_refused": null
+    },
+    "frame_generation": {
+      "fsr31": null,
+      "dlss": null,
+      "dlss_card": true,
+      "dlss_multiplier_max": null,
+      "dlss_after_restart": null
+    },
+    "latency": {
+      "kind": null,
+      "auto_on": null
+    },
+    "denoiser": {
+      "vendor": null,
+      "dlss_rr": null,
+      "ray_regen": null
+    },
+    "hdr": {
+      "display_capable": null,
+      "windows_hdr_on": false,
+      "auto_paper_white_nits": null,
+      "auto_peak_nits": null
+    },
+    "pcss": null
+  },
+  "display": {
+    "primary": {
+      "name": "Primary display",
+      "width": 1920,
+      "height": 1080,
+      "size": "1920X1080",
+      "refresh_hz": 60,
+      "hdr": false
+    },
+    "list": [
+      {
+        "name": "Primary display",
+        "width": 1920,
+        "height": 1080,
+        "size": "1920X1080",
+        "refresh_hz": 60,
+        "hdr": false
+      }
+    ],
+    "windowed_sizes": [
+      [
+        1280,
+        720
+      ],
+      [
+        1920,
+        1080
+      ]
+    ],
+    "exclusive_sizes": []
+  },
+  "os": {
+    "name": "windows",
+    "build": 26300,
+    "exclusive_fullscreen": true,
+    "live_window_resize": true,
+    "window_size_fixed": false,
+    "hdr_output": true,
+    "real_weather": true,
+    "mouse_look": true,
+    "wheel_ffb": true,
+    "frame_pacing_wake": true
+  },
+  "cpu": {
+    "threads": 16,
+    "level": "x86-64-v3"
+  },
+  "build": {
+    "rt_gi_update_built": null
+  },
+  "install": {
+    "portuguese_text": null,
+    "fidelityfx_files": null,
+    "streamline_files": null,
+    "city_pack": null,
+    "city_hit": null,
+    "shader_pack": null
+  },
+  "paths": {
+    "game_folder": "C:/Games/Fleet/failed-probe",
+    "config_file": "C:/Games/Fleet/failed-probe/larecomp.toml",
+    "user_root": "C:/Users/player/Documents/LARecomp",
+    "saves_root": "C:/Users/player/Documents/LARecomp\\content",
+    "cache_root": "C:/Users/player/Documents/LARecomp\\cache",
+    "logs": "C:/Games/Fleet/failed-probe/logs",
+    "game_data_root": "C:/Games/Fleet/MCLA_Game_Files",
+    "mod_root": "C:/Games/Fleet/failed-probe/modloader",
+    "strings_replace": "C:/Games/Fleet/failed-probe/strings/replace",
+    "mod_roots_ignored": [],
+    "music": [
+      "C:/Games/Fleet/failed-probe/music"
+    ],
+    "title_id": "545407F8",
+    "profile_id": "B13EBABEBABEBABE"
+  }
+}

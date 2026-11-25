@@ -4,8 +4,10 @@
 // coexists with a fork SDK that still exports its own copy.
 
 #include "rpc_client.h"
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/immortal.h"
+#include "rpc_toggle_rules.h"
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 #include <rex/platform.h>
 
 #include <atomic>
@@ -23,9 +25,6 @@
 // The SDK compiled this only on Windows and Linux (its CMakeLists bailed out
 // elsewhere); larecomp adds the file unconditionally, so the guard lives here.
 #if REX_PLATFORM_WIN32 || REX_PLATFORM_LINUX
-
-REXCVAR_DEFINE_BOOL(larecomp_discord_activity, true, "Discord", "Enable Discord Rich Presence activity")
-    .debug_only();
 
 #if REX_PLATFORM_WIN32
 #ifndef NOMINMAX
@@ -56,10 +55,10 @@ enum : uint32_t {
 };
 
 std::atomic<bool> g_running{false};
-std::thread g_thread;
+std::thread& g_thread = larecomp::Leak<std::thread>();
 std::mutex g_mutex;
-Presence g_presence;
-std::string g_client_id;
+Presence& g_presence = larecomp::Leak<Presence>();
+std::string& g_client_id = larecomp::Leak<std::string>();
 std::atomic<bool> g_dirty{false};
 
 #if REX_PLATFORM_WIN32
@@ -432,7 +431,9 @@ void WorkerThread() {
                                 .count();
   bool handshake_sent = false;
   bool ready = false;
-  bool last_activity_enabled = REXCVAR_GET(larecomp_discord_activity);
+  // A presence is shown while larecomp_discord_rpc AND larecomp_discord_activity are on: the first is live (rpc_toggle_rules.h), turning it off
+  // clears the presence from here within a quarter of a second, and the worker goes on idle (stopping it would wait on Discord's pipe).
+  bool last_activity_enabled = ActivityShown(larecomp::settings::larecomp_discord_rpc.Get(), larecomp::settings::larecomp_discord_activity.Get());
 
   while (g_running.load()) {
     if (!IsConnected()) {
@@ -459,7 +460,7 @@ void WorkerThread() {
 
     DrainMessages(&ready);
 
-    const bool activity_enabled = REXCVAR_GET(larecomp_discord_activity);
+    const bool activity_enabled = ActivityShown(larecomp::settings::larecomp_discord_rpc.Get(), larecomp::settings::larecomp_discord_activity.Get());
     if (activity_enabled != last_activity_enabled) {
       last_activity_enabled = activity_enabled;
       g_dirty = true;

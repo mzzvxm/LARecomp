@@ -20,3 +20,7 @@ bool SystemLinkOnlineConnected();
 // True while system_link.cpp itself is setting mcla_online_enable, which the
 // change callback must not take for the player's own switch.
 bool SystemLinkOnlineSettingCvar();
+
+// The game is in an online session (hosting one or joined to one): its own "session up at all" answer (sub_8226BE68), as the net
+// tick last saw it. False before the first net tick. Any thread. The server browser's join does not start from inside a session.
+bool SystemLinkSessionUp();

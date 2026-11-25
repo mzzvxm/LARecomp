@@ -9,7 +9,7 @@
 #include <cstring>
 #include <set>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/logging.h>
 #include <rex/system/xmemory.h>
 
@@ -20,13 +20,7 @@
 #include "context.h"
 #include "texture_cache.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_texture_swizzle);
-REXCVAR_DECLARE(bool, mcla_native_gfx_swizzle_by_source);
-REXCVAR_DECLARE(bool, mcla_native_gfx_pack_depth_stencil);
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_bind_memo);
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
-REXCVAR_DECLARE(bool, mcla_native_gfx_slot_cache);
 
 namespace mcla::native_gfx {
 
@@ -231,7 +225,7 @@ uint32_t HostFormatSwizzle(uint32_t guest_format, bool tiled, TextureSource sour
       // level (they had red and blue swapped), the garage hood's mean within 0.5
       // (the tiling rule put it 2.4 redder and 3.5 less blue), and the day and
       // night front end moved less than two runs of the same build do.
-      if (REXCVAR_GET(mcla_native_gfx_swizzle_by_source)) {
+      if (larecomp::settings::mcla_native_gfx_swizzle_by_source.Get()) {
         return source == TextureSource::kRenderTargetBridge ? kBgra : kRgba;
       }
       return tiled ? kBgra : kRgba;
@@ -257,7 +251,7 @@ uint32_t HostFormatSwizzle(uint32_t guest_format, bool tiled, TextureSource sour
       // Only when the packed copy is actually what the bridge hands back;
       // with the pass off the fetch still gets the raw depth plane, where G
       // reads nothing and RRRR is the right answer.
-      return REXCVAR_GET(mcla_native_gfx_pack_depth_stencil) ? kDepthStencilPacked : kRrrr;
+      return larecomp::settings::mcla_native_gfx_pack_depth_stencil.Get() ? kDepthStencilPacked : kRrrr;
     default:
       // Everything else this runtime binds is a straight component-for-
       // component DXGI match.
@@ -267,7 +261,7 @@ uint32_t HostFormatSwizzle(uint32_t guest_format, bool tiled, TextureSource sour
 
 uint32_t ShaderComponentMappingForSwizzle(uint32_t guest_swizzle, uint32_t guest_format,
                                          bool tiled, TextureSource source) {
-  if (!REXCVAR_GET(mcla_native_gfx_texture_swizzle)) {
+  if (!larecomp::settings::mcla_native_gfx_texture_swizzle.Get()) {
     return D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
   }
   // The repacked depth-as-8888 copy is written in the component order the
@@ -306,7 +300,7 @@ uint32_t TextureBinder::AcquireSrv(D3D12Context& context, ID3D12Resource* resour
   } id = {uint64_t(reinterpret_cast<uintptr_t>(resource)), fetch.format, fetch.width,
           fetch.height, fetch.swizzle,      uint32_t(source)};
   const uint64_t key = Hash64(&id, sizeof(id));
-  if (REXCVAR_GET(mcla_native_gfx_diag)) {  // TEMP DIAG (SWIZ): quais swizzles chegam, e de que tipo de origem. O
+  if (larecomp::settings::mcla_native_gfx_diag.Get()) {  // TEMP DIAG (SWIZ): quais swizzles chegam, e de que tipo de origem. O
      // swizzle so e aplicado a textura decodificada do guest; se um alvo de
      // render trouxer swizzle nao-identidade, o canal que o shader le esta
      // errado (o PS da sombra de folhagem corta por .x).
@@ -527,7 +521,7 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
   // drain of queued guest writes Resolve does first, so the drain happens here,
   // and the two ways the texture cache DROPS an entry join the guard: the memo
   // could live without them because it only ever spans two consecutive draws.
-  const bool slot_cache = REXCVAR_GET(mcla_native_gfx_slot_cache);
+  const bool slot_cache = larecomp::settings::mcla_native_gfx_slot_cache.Get();
   if (slot_cache) {
     textures.DrainPendingInvalidations(context);
   }
@@ -561,7 +555,7 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
     }
   }
 
-  const bool memo_enabled = REXCVAR_GET(mcla_native_gfx_bind_memo);
+  const bool memo_enabled = larecomp::settings::mcla_native_gfx_bind_memo.Get();
   if (memo_enabled && memo_valid_ && memo_dev_ == dev && memo_guard_ == guard &&
       std::memcmp(memo_shadow_, shadow_dwords, sizeof(shadow_dwords)) == 0) {
     if (shared_bytes) {
@@ -659,7 +653,7 @@ void TextureBinder::BindAll(D3D12Context& context, ID3D12GraphicsCommandList* cl
       // for the whole session, so it only ever shows the first frames -- it
       // cannot answer whether a LATER draw (the 2D start screen) is being
       // whitened by the render-target refusal.
-      if (REXCVAR_GET(mcla_native_gfx_diag)) {
+      if (larecomp::settings::mcla_native_gfx_diag.Get()) {
         static std::set<uint64_t> seen;
         const uint64_t id = (uint64_t(fetch.base_address) << 16) ^
                             (uint64_t(fetch.format) << 8) ^ uint64_t(slot);

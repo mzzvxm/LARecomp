@@ -28,6 +28,7 @@
 
 #if defined(_WIN32) && !defined(REXGLUE_HAS_XEO3_TARGET)
 #include "impulse_wgi.h"
+#include "settings/immortal.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -218,8 +219,8 @@ struct Api {
     IRawGameControllerStatics* raw_controllers = nullptr;  // optional (the ids and the name)
 } g_api;
 
-std::vector<Kept> g_kept;
-std::vector<PadRef> g_skipped;  // listed pads that are left alone (held so their address cannot be reused)
+std::vector<Kept>& g_kept = larecomp::Leak<std::vector<Kept>>();
+std::vector<PadRef>& g_skipped = larecomp::Leak<std::vector<PadRef>>();  // listed pads that are left alone (held so their address cannot be reused)
 int g_listed = -1;              // how many pads the last scan saw, for the log
 
 template <class Fn>

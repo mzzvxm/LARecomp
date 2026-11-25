@@ -9,8 +9,8 @@
 #include <cstdint>
 #include <cstring>
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
 
 // ─────────────────────────────────────────────────────────────────────────
 // Tire offset — the consumer for a field retail never reads.
@@ -58,20 +58,6 @@
 // looked at radius and ride height.
 // ─────────────────────────────────────────────────────────────────────────
 
-REXCVAR_DEFINE_DOUBLE(tire_offset_step, 0.012, "MCLA/Patches",
-    "Metres of lateral wheel movement per TIRE OFFSET notch (17 notches, "
-    "-8..+8, so the default spans about +/-10 cm). 0 disables the effect while "
-    "leaving the garage row usable.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_UINT32(tire_offset_targets, 31, "MCLA/Patches",
-    "Bitmask (decimal) of the per-wheel matrix blocks TIRE OFFSET moves: 1 = "
-    "model+1088 (the tyre), 2 = +1344, 4 = +1600, 8 = +1856, 16 = +1920. "
-    "31 moves all five; drop bits to find which block owns which part.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 using namespace wheel_matrices;
 
 namespace {
@@ -82,8 +68,8 @@ constexpr uint32_t kReflFromCustom  = 64;    // reflection base = CustomData+0x4
 constexpr uint32_t kReflTireOffset  = 2040;  // +0 front, +1 rear
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // Shifts one block of four wheel matrices. front/rear are the raw notch values.
@@ -159,8 +145,8 @@ void Hook_TireOffsetWheels(PPCRegister& r31) {
     const uint32_t refl = custom + kReflFromCustom;
     const int front = int(int8_t(base[refl + kReflTireOffset + 0]));
     const int rear = int(int8_t(base[refl + kReflTireOffset + 1]));
-    const uint32_t targets = REXCVAR_GET(tire_offset_targets);
-    const float step = float(REXCVAR_GET(tire_offset_step));
+    const uint32_t targets = larecomp::settings::tire_offset_targets.Get();
+    const float step = float(larecomp::settings::tire_offset_step.Get());
     if ((front || rear) && step > 0.0f) {
         for (int b = 0; b < kNumBlocks; ++b) {
             if (targets & (1u << b))

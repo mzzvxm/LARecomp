@@ -7,11 +7,13 @@
 // This used to go through xcompress32.dll's LZXDecompress. The copy that was
 // being shipped was a Debug build importing VCRUNTIME140D.dll and
 // ucrtbased.dll, so LoadLibrary failed on any machine without Visual Studio
-// and every mesh mod was skipped with "xcompress32.dll missing". The SDK
-// already carries libmspack's LZX decoder for XEX images (rex/system/lzx.h),
-// and once the XCompress chunk headers are peeled off it takes these streams
-// as they are: all 14,928 resources in xarchive_cache.rpf decode byte for
-// byte the same as the DLL did.
+// and every mesh mod was skipped with "xcompress32.dll missing". libmspack's
+// LZX decoder (the one the SDK uses for XEX images), once the XCompress chunk
+// headers are peeled off, takes these streams as they are: all 14,928
+// resources in xarchive_cache.rpf decode byte for byte the same as the DLL did.
+// Up to rexglue 0.10 it was reached as rex/system/lzx.h; 0.11 keeps it private,
+// so LARecomp builds libmspack's lzxd.c itself (the submodule
+// thirdparty/libmspack, LGPL-2.1).
 #pragma once
 
 #include <cstddef>

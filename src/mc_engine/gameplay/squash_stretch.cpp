@@ -9,9 +9,10 @@
 #include <cstdint>
 #include <cstring>
 
-#include <rex/cvar.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
 
 // ─────────────────────────────────────────────────────────────────────────
 // "Why's This Dealer?" squash & stretch — visual only, no physics contact.
@@ -72,41 +73,6 @@
 //   * headlight/exhaust effects are separate emitters positioned from the real
 //     matrices, so they stay at stock height.
 // ─────────────────────────────────────────────────────────────────────────
-
-REXCVAR_DEFINE_BOOL(squash_stretch, false, "MCLA/Fun",
-    "Squash & stretch the player's car like the \"Why's This Dealer?\" meme. "
-    "Visual only — physics and collision are untouched.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(squash_amplitude, 0.25, "MCLA/Fun",
-    "Squash depth, 0..0.9. 0.25 = the body loses a quarter of its height at the "
-    "bottom of the cycle and gains half of that in width.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(squash_hz, 1.5, "MCLA/Fun",
-    "Oscillations per second.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(squash_pivot, 0.0, "MCLA/Fun",
-    "Pivot height in metres along the up axis, in car space. 0 = scale about the "
-    "car origin (the body sinks and rises). Negative values push the pivot down "
-    "toward the tyre contact patch so the car keeps its ground contact.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(squash_up_axis, 2, "MCLA/Fun",
-    "Which car-space axis is up: 0 = X, 1 = Y, 2 = Z (RAGE default). The other "
-    "two axes take the anti-phase widening.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(squash_traffic, false, "MCLA/Fun",
-    "Apply the squash to every car in the world instead of just the player's.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -255,8 +221,8 @@ double NowSeconds() {
 }
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 // Allocates the scratch from the game's own heap once and keeps the 16-byte
@@ -266,12 +232,12 @@ uint32_t EnsureScratch() {
     uint32_t cur = g_scratch.load(std::memory_order_acquire);
     if (cur) return cur;
 
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(kGuestMallocFn);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(kGuestMallocFn).value_or(nullptr);
     if (!fn) return 0;
 
-    uint32_t raw = rex::ppc::GuestToHostFunction<uint32_t>(fn, 160u);
+    uint32_t raw = larecomp::guest::Call<uint32_t>(fn, 160u);
     if (!IsGuestPtr(raw)) {
         MC_WARN("[squash] guest malloc failed");
         return 0;
@@ -285,23 +251,23 @@ uint32_t EnsureScratch() {
 // Scale factors for the current instant. The up axis loses what the other two
 // gain, so the car reads as squashing rather than just shrinking.
 void CurrentScale(float& sx, float& sy, float& sz, float& pivot) {
-    double amp = REXCVAR_GET(squash_amplitude);
+    double amp = larecomp::settings::squash_amplitude.Get();
     if (amp < 0.0) amp = 0.0;
     if (amp > 0.9) amp = 0.9;
 
-    const double phase = NowSeconds() * REXCVAR_GET(squash_hz) * 6.283185307179586;
+    const double phase = NowSeconds() * larecomp::settings::squash_hz.Get() * 6.283185307179586;
     const double s = std::sin(phase);
 
     const float up = float(1.0 - amp * s);
     const float wide = float(1.0 + amp * s * 0.5);
 
     sx = sy = sz = wide;
-    switch (REXCVAR_GET(squash_up_axis)) {
+    switch (larecomp::settings::squash_up_axis.Get()) {
         case 0: sx = up; break;
         case 1: sy = up; break;
         default: sz = up; break;
     }
-    pivot = float(REXCVAR_GET(squash_pivot));
+    pivot = float(larecomp::settings::squash_pivot.Get());
 }
 
 // E = W⁻¹ · (scale about the car-space pivot) · W, so the world-space post
@@ -319,7 +285,7 @@ bool BuildSquashMatrix(const Mat4& world, Mat4& out) {
     s.m[1][1] = sy;
     s.m[2][2] = sz;
     s.m[3][3] = 1.0f;
-    switch (REXCVAR_GET(squash_up_axis)) {
+    switch (larecomp::settings::squash_up_axis.Get()) {
         case 0: s.m[3][0] = pivot * (1.0f - sx); break;
         case 1: s.m[3][1] = pivot * (1.0f - sy); break;
         default: s.m[3][2] = pivot * (1.0f - sz); break;
@@ -337,7 +303,7 @@ bool BuildSquashMatrix(const Mat4& world, Mat4& out) {
 
 // sub_82360518 entry — r3 = vehicle being rendered.
 void Hook_SquashSelectVehicle(PPCRegister& r3) {
-    if (!REXCVAR_GET(squash_stretch)) {
+    if (!larecomp::settings::squash_stretch.Get()) {
         g_armed.store(false, std::memory_order_relaxed);
         return;
     }
@@ -351,7 +317,7 @@ void Hook_SquashSelectVehicle(PPCRegister& r3) {
     const uint32_t vehicle = uint32_t(r3.u64);
     const uint32_t player = GuestReadU32(base, kPlayerVehicle);
     const bool armed = IsGuestPtr(vehicle)
-                    && (REXCVAR_GET(squash_traffic) || vehicle == player);
+                    && (larecomp::settings::squash_traffic.Get() || vehicle == player);
 
     g_armed.store(armed, std::memory_order_relaxed);
     g_have_root.store(false, std::memory_order_relaxed);

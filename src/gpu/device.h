@@ -22,13 +22,14 @@
 // host builder thread (host_precache.h). For that call, in the pinned Plume:
 // the D3D12 graphics pipeline's constructor takes no lock and keeps no shared
 // state (ID3D12Device::CreateGraphicsPipelineState is free-threaded), and the
-// Vulkan one keeps its scratch vectors thread_local and passes no pipeline
-// cache to vkCreateGraphicsPipelines. The other Create* are not checked for a
-// second thread: do not call them from one.
+// Vulkan one keeps its scratch vectors thread_local. Plume's pipeline cache,
+// where available, uses Vulkan's internal synchronization. The other Create*
+// are not checked for a second thread: do not call them from one.
 // ===========================================================================
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -41,6 +42,8 @@
 
 namespace mcla::gpu {
 
+class VulkanPipelineCache;
+
 class Device {
  public:
   struct Options {
@@ -49,9 +52,12 @@ class Device {
     bool debug_layer = false;
     // The backend asked for (graphics_backend); must be compiled.
     Backend backend = kDefaultBackend;
+    // A test (mcla_gpu_force_refusal): every backend is refused on purpose, before anything is created, so the box that offers the
+    // compatibility renderer can be seen on a PC that runs the renderer. Only Startup sets it.
+    bool force_refusal = false;
   };
 
-  Device() = default;
+  Device();
   ~Device();
   Device(const Device&) = delete;
   Device& operator=(const Device&) = delete;
@@ -62,12 +68,21 @@ class Device {
   // tells the user. False when no backend opens.
   bool Initialize(const Options& options);
   // Releases the queue, the device and the interface, in that order. Everything
-  // created from this device must already be gone.
-  void Shutdown();
+  // created from this device must already be gone. `part`, when given, is called
+  // before the cache save and each release (the caller times these stages).
+  void Shutdown(const std::function<void(const char*)>& part = {});
+
+  bool HasPersistentVulkanPipelineCache() const { return vulkan_pipeline_cache_ != nullptr; }
+  bool LoadedVulkanPipelineCache() const;
+  // From the autosave worker, or after all builders have joined. True if persistence is
+  // unavailable or the current snapshot is already on disk or was published successfully.
+  bool SaveVulkanPipelineCache();
 
   plume::RenderDevice* device() const { return device_.get(); }
   plume::RenderCommandQueue* queue() const { return queue_.get(); }
   const plume::RenderDeviceCapabilities& capabilities() const { return device_->getCapabilities(); }
+  // The wave (subgroup) operations of the device's compute shaders, which the capabilities do not carry (backend.h); the ray tracing decision reads them.
+  backend::WaveOps wave_ops() const { return backend::QueryWaveOps(device_.get()); }
   const plume::RenderDeviceDescription& description() const { return device_->getDescription(); }
   const std::string& backend_info() const { return backend_info_; }
   // The backend Initialize was asked for, and whether another one runs instead.
@@ -211,6 +226,7 @@ class Device {
   std::unique_ptr<plume::RenderInterface> interface_;
   std::unique_ptr<plume::RenderDevice> device_;
   std::unique_ptr<plume::RenderCommandQueue> queue_;
+  std::unique_ptr<VulkanPipelineCache> vulkan_pipeline_cache_;
   std::string backend_info_;
   std::string refusals_;
   Backend requested_backend_ = kDefaultBackend;
@@ -228,5 +244,8 @@ class Device {
 // renderer.cpp, which keeps what Enabled() decided; call it only after Enabled() returned true.
 // The pipeline prebuild (pipeline_prebuild.h) opens its device the same way.
 Device::Options PlannedDeviceOptions(const Backend* forced);
+
+// The Windows build number (22000 and later is Windows 11), 0 where it cannot be read or this is not Windows. The pause menu's AMD FSR RAY REGENERATION row is listed only on Windows 11 (ray_regen_rules.h RowListed).
+uint32_t WindowsBuildNumber();
 
 }  // namespace mcla::gpu

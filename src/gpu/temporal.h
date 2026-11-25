@@ -184,10 +184,13 @@
 #include <string>
 
 #include "constants.h"
+#include "dlss_rr_rules.h"
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "edram.h"
+#include "ray_regen_plan.h"
 #include "render_scale.h"
+#include "rr_guides.h"
 #include "scale.h"
 #include "shaders.h"
 #include "temporal_backend.h"
@@ -291,6 +294,10 @@ class TemporalSystem {
     // view, +y down (zero when not armed). The projection of the vertex shader epilogue shifts
     // the image by +x to the right and +y down by that much.
     bool armed = false;
+    // RR-4: what the frame boundary knows of whether Ray Reconstruction takes this frame (RawModes adds the view); all false with the plan not RR.
+    rr::RawFrame raw;
+    bool raw_counted = false;   // RawModes counted this frame's answer already (the census)
+    bool raw_any = false;       // some effect was told to run raw in this frame
     uint32_t jitter_index = 0;  // 0 .. phase_count - 1
     uint32_t phase_count = kPhasesAtRatio1;
     float jitter[2] = {};
@@ -427,6 +434,50 @@ class TemporalSystem {
   // D8: whether FXAA and SMAA are held off this frame (an upscaler is chosen and can run). Logs
   // once per change when `aa_asked` (mcla_gpu_aa is not off).
   bool HoldsAaOff(bool aa_asked);
+  // DLSS Ray Reconstruction (dlss_rr_rules.h, perf/DLSS-RR.md, package RR-3). The guide pass (rr_guides.h) makes the frame's guide images and RecordRrGuides hands them over here right after it,
+  // with whether the frame's G-buffer planes allowed them (NoteRrGuides: the pass's guides() and ready()). Last frame's word is this frame's plan (UpdateDenoiserPlan); this frame's is the
+  // dispatch's (ChooseRrDispatch). Render thread, before the upscale.
+  //
+  // THE TWO CONTEXTS. Super Resolution's context is the upscaler's own and never goes: it takes every frame Ray Reconstruction cannot (the pause world, the garage, the map, a cutscene, the first
+  // frames, a frame whose guides are missing or refused, the seconds the RR context is being made). Ray Reconstruction's is the DLSS backend's companion context (TemporalBackend::RequestCompanion),
+  // asked for by ManageRrContext while the plan wants it (rr::ContextWanted: RR is the choice, or would be once the guides are there), made in the background with the guide images of its
+  // warm-up, kept 600 frames after the want stops (rr::ContextKeeper) and released after that. The switch between them is live: the plan, the room check (RrRoomOk) and the frames' own
+  // guides decide every frame, nothing restarts. A dispatch that is Ray Reconstruction's carries the guides and TemporalInputs::ray_reconstruction; where the backend cannot take it
+  // (guides refused, a Streamline hold) it does Super Resolution's in the same call. Three failed evaluations in a row, or a feature that cannot be made, drop RR for the session
+  // (dlss::RayReconstructionFacts::failed -> Why::kRrFailed): the upscaler goes on as Super Resolution, never "DLSS off for the session". The jitter sequence is 32 positions or more while RR
+  // may run (rr::RuntimePhaseCount).
+  void NoteRrGuides(const TemporalGuides& guides, bool ready) {
+    rr_guides_ = guides;
+    rr_guides_ready_ = ready;
+  }
+  // The plan this frame: whether Ray Reconstruction does the denoising and the upscale (and why not).
+  const rr::Plan& DenoiserPlan() const { return rr_plan_; }
+  // RR-4: which effects run RAW this frame, because Ray Reconstruction takes the frame and is their denoiser (dlss_rr_rules.h RawModes: the plan says RR, its context is made, nothing failed, the frame is
+  // upscaled and the play view, and the effect's own debug switch is on). Asked by the effects at their trigger (Scene), after the frame's main view is known; with the plan not RR it says "not raw" for
+  // every effect and nothing else happens (no log, no count). Logs the answer each time it changes once the plan has been RR. Render thread.
+  rr::RawModes RawModes();
+  // RG-3, AMD FSR RAY REGENERATION (ray_regen_plan.h, perf/RAY-REGEN.md): the plan is made at the frame boundary beside DLSS Ray Reconstruction's (UpdateDenoiserPlan: the DENOISER row, the effects that are
+  // on, the runtime, the video memory; the context is made while the plan is on and freed after rr::kContextHoldFrames), and the effects ask at their trigger which of them are Ray Regeneration's this
+  // frame: the twin of RawModes() (the effect's own debug switch is the A/B; no upscaled frame is needed). With the plan not Ray Regeneration (every PC but a Radeon RX 9000 with the row on its value) it
+  // says "not Ray Regeneration's" for every effect and nothing else happens. The frame's jitter, render pixels +y down, is what the effect's guide pass takes the jitter out with.
+  rr::RawModes RegenModes();
+  void FrameJitter(float out[2]) const {
+    out[0] = frame_.jitter[0];
+    out[1] = frame_.jitter[1];
+  }
+  const rayregen::Planner& RegenPlanner() const { return regen_; }
+  // RR-4: the effects' hit distance images of this frame (R16_FLOAT at the render size; null where an effect did not write one), handed over by Scene after the trigger's passes and read by the guide
+  // pass at the anchor (rr_guides.h Inputs::hit): [0] the screen-space reflections', [1] the cars' ray traced reflections'. Forgotten at the next frame boundary.
+  void NoteRrHit(const HostImage* ssr, const HostImage* car_refl) {
+    rr_hit_[0] = ssr;
+    rr_hit_[1] = car_refl;
+  }
+  // CITY-RT G6: the bounce light's per-pixel pass's hit distance image of this frame (RG16F at the pass's own size, the distance in x; null where the pass did not run raw, or its switch leaves the hit distance
+  // out), handed over by Scene after the trigger's passes: the guide pass reads it as the LAST choice of its hit distance (rr_guides.h Inputs::bounce_hit). Forgotten at the next frame boundary.
+  void NoteRrBounceHit(const HostImage* bounce) { rr_bounce_hit_ = bounce; }
+  // The guide pass (rr_guides.h, RR-2): made and owned by the Renderer, run by RecordUpscale right before the backend is given the frame, and asked at each frame boundary (UpdateDenoiserPlan) whether
+  // it is wanted. RecordRrGuides passes its guides() and ready() to NoteRrGuides. Null: no guide pass (a build or a Renderer without one).
+  void SetRrGuidePass(RrGuides* pass) { rr_pass_ = pass; }
   // The composite marker: the UI starts.
   void OnComposite();
   // The guest's present: the frame ends, the state machine moves on, the log.
@@ -486,6 +537,15 @@ class TemporalSystem {
     uint64_t post_stand_in_set = 0;        // frames the post chain was offered the previous output
     uint64_t post_on_previous = 0;         // ... of them, frames a read before the anchor got it
     uint64_t post_reads_served = 0;        // reads before the anchor the stand-in served
+    // Ray Reconstruction (RR-3): upscaled frames that were its own, the frames the plan wanted it for that Super Resolution took instead (by rr::DispatchWhy), and of the frames that were
+    // asked to be RR's the ones the backend refused and gave to Super Resolution in the same call.
+    uint64_t rr_frames = 0;
+    uint64_t rr_sr_frames[size_t(rr::DispatchWhy::kCount)] = {};
+    uint64_t rr_backend_fallbacks = 0;
+    // RR-4: frames an effect was asked to run raw (by effect: rr::RawEffect), and of the frames that were asked for any effect the ones that Super Resolution took after all (the guide pass's pipeline
+    // was being made, the backend refused the guides or an evaluation failed: the noise of those frames is not cleaned).
+    uint64_t rr_raw_frames[size_t(rr::RawEffect::kCount)] = {};
+    uint64_t rr_raw_but_sr = 0;
     // The last accepted camera, for the line.
     bool have_camera = false;
     temporal::Camera camera;
@@ -604,6 +664,18 @@ class TemporalSystem {
   bool SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
                   const BackendRequest* request, Scale output);
   void CancelStage(const char* why);
+  // Video memory (vram_room.h). `chosen` with `*mode` and `*output` is the path UpdatePath wants; when its
+  // context was refused for want of room (TemporalBackend::NoRoom: the backend's worker found the use plus
+  // the context past the line the caches release at, and waits before it asks again):
+  //   - the same upscaler is running with a context (a new mode or output asked for): the running path
+  //     stays, `*mode` and `*output` become its own (`output_now`), as a render scale that could not be made
+  //     keeps the one that runs;
+  //   - else the next upscaler down that runs and has room is taken (FSR 4 -> FSR 3.1) with its own saved
+  //     mode, else none (Native AA in `*mode`).
+  // `*held` is true when the answer is not what was asked for. Logs once per change of the answer.
+  // Render thread.
+  Upscaler FitToRoom(Upscaler chosen, UpscaleMode* mode, Scale* output, Scale output_now,
+                     const uint32_t guest[2], bool* held);
   // The guest's frame size: the last accepted anchor's, else the game's screen; false until known.
   // `quiet`: a poll (PrewarmDlss) that must not log the game's unset screen size as an error.
   bool GuestFrameSize(uint32_t out[2], bool quiet = false) const;
@@ -625,6 +697,22 @@ class TemporalSystem {
   // upscaler's context says for its sizes (0: none), else 8 x ratio^2 rounded up; 1 to kMaxPhases.
   static uint32_t JitterPhases(double ratio, uint32_t from_runtime);
   void MakeRequest(BackendRequest* request) const;
+  // Reads the DENOISER row and the debug switch, the effects that are on (denoiser_setting.h), what Streamline said about Ray Reconstruction (including that it failed), the room in video memory and
+  // whether the guides are ready, and makes this frame's plan (rr_plan_); one log line each time the answer changes. Publishes the frame's snapshot for the pause menu's row.
+  void UpdateDenoiserPlan();
+  // The upscale's Ray Reconstruction guide pass (rr_guides.h): records it into `list` where it is wanted and the frame has what it reads. `kept` is the frame's kept depth and masks, `width` and
+  // `height` the render size. Hands the guides (or their absence) to NoteRrGuides.
+  void RecordRrGuides(plume::RenderCommandList* list, const TemporalMotion::Kept& kept, uint32_t width, uint32_t height);
+  // RR-3. At the frame boundary, with the Super Resolution request the frame asks for (`base`): asks the DLSS backend for the Ray Reconstruction companion context (the same sizes and mode) while
+  // the plan wants it, keeps it, releases it after the hold, and logs when it is asked for, made and released.
+  void ManageRrContext(const BackendRequest& base);
+  // Whether video memory has room for the Ray Reconstruction context (rr::ContextNeedBytes against the adapter's use and budget, vram_room.h's line): checked until the context exists, at most
+  // every second, and after a refusal not again until the shared wait (5 s, 10 s ... one minute) is over; one log line each time the answer changes.
+  bool RrRoomOk();
+  // This frame's dispatch (rr::ChooseDispatch): the plan, a failure, this frame's guides, the context's readiness.
+  rr::DispatchChoice ChooseRrDispatch() const;
+  // After an upscale that recorded: what the frame was, for the census and the first-frame line. `used_rr`: the backend ran its companion.
+  void NoteRrDispatch(const rr::DispatchChoice& choice, bool used_rr, uint32_t width, uint32_t height, uint32_t out_width, uint32_t out_height);
   // The debug levers of this file (mcla_gpu_upscaler_zero_jitter, mcla_gpu_upscaler_post_reads_output):
   // one log line for each change, at the frame boundary.
   void NoteLeverChanges();
@@ -705,6 +793,13 @@ class TemporalSystem {
   // The answer ResolveDlssMode last logged (the mode asked for, the mode it came to, the output),
   // 0 when the mode asked for runs: a line is written when it changes.
   uint64_t dlss_refusal_key_ = 0;
+  // The upscaler the settings choose was refused for want of video memory and another path runs (FitToRoom):
+  // set at the first refusal, cleared when the choice runs or changes (published as gpu.h
+  // UpscalerAvailability::no_room: the pause menu says NO ROOM). `room_key_` is the choice it is for,
+  // `room_logged_key_` the answer last logged (0: none).
+  bool room_lowered_ = false;
+  uint64_t room_key_ = 0;
+  uint64_t room_logged_key_ = 0;
   // The render scale the settings ask for (ReadRenderScale): the scale, what it came from (for the
   // log), and when it last changed. A change is taken once it has stood for kScaleSettle.
   Scale render_wanted_ = Scale::None();
@@ -732,6 +827,39 @@ class TemporalSystem {
   UpscaleMode mode_in_use_ = UpscaleMode::kNativeAa;
   bool request_made_ = false;        // a context was asked for and not released
   BackendRequest request_;
+  // Ray Reconstruction: this frame's plan, the guide images the frame's guide pass handed over (NoteRrGuides) and the plan last logged.
+  rr::Plan rr_plan_;
+  rr::RawModes rr_raw_last_;               // RR-4: the raw answer last logged
+  rayregen::Planner regen_;                // RG-3: AMD FSR Ray Regeneration's plan, context and modes
+  bool rr_raw_logged_ = false;
+  const HostImage* rr_hit_[2] = {nullptr, nullptr};   // RR-4: this frame's hit distance images (NoteRrHit)
+  const HostImage* rr_bounce_hit_ = nullptr;          // CITY-RT G6: the bounce light's hit distance image of this frame (NoteRrBounceHit)
+  RrGuides* rr_pass_ = nullptr;  // the guide pass (SetRrGuidePass)
+  TemporalGuides rr_guides_;
+  bool rr_guides_ready_ = false;
+  bool rr_plan_logged_ = false;
+  rr::Plan rr_plan_last_;
+  // RR-5: what Streamline and the files said, read again every 16 frames (UpdateDenoiserPlan), whether it was read, and the debug switch of the last plan.
+  rr::Facts rr_facts_;
+  bool rr_facts_valid_ = false;
+  rr::DebugSwitch rr_debug_ = rr::DebugSwitch::kRow;
+  rr::Denoiser rr_setting_ = rr::Denoiser::kAuto;  // the row as the last plan read it (RawFrame::row_auto)
+  // RR-3: the companion context. `rr_keeper_` holds it after the want stops; `rr_request_` is what it was asked for (the Super Resolution request with ray_reconstruction set);
+  // `rr_context_asked_` it is asked for now; `rr_asked_at_` for the "made after" line; `rr_ready_reported_` that line was written. The room check's answer, when it is asked again
+  // (`rr_room_until_`), the wait of the current refusal series (`rr_room_wait_ms_`) and whether a refusal was logged (`rr_room_refused_logged_`).
+  rr::ContextKeeper rr_keeper_;
+  BackendRequest rr_request_;
+  bool rr_context_asked_ = false;
+  Clock::time_point rr_asked_at_{};
+  bool rr_ready_reported_ = false;
+  bool rr_room_ok_ = true;
+  Clock::time_point rr_room_until_{};
+  uint64_t rr_room_wait_ms_ = 0;
+  bool rr_room_refused_logged_ = false;
+  bool rr_first_frame_logged_ = false;
+  uint32_t rr_test_errors_ = 0;  // the debug lever's injected evaluation errors made so far (rr::kTestErrorFrames, once)
+  int rr_test_lever_ = 0;        // what NoteLeverChanges last saw of mcla_gpu_dlss_rr_test
+  bool rr_failed_logged_ = false;
   Clock::time_point off_since_{};
   bool stand_in_set_ = false;
   uint64_t last_dispatch_frame_ = ~uint64_t(0);

@@ -43,7 +43,8 @@ class BackgroundBuild {
   BackgroundBuild(const BackgroundBuild&) = delete;
   BackgroundBuild& operator=(const BackgroundBuild&) = delete;
 
-  // Runs `work` on a new thread, below normal priority on Windows (the guest runs meanwhile).
+  // Runs `work` on a new thread at the background priority intent (os/thread_priority.h: below normal on
+  // Windows, SCHED_BATCH and nice +10 on Linux) while the guest runs.
   // False, and nothing started, while a job is running or ended and not yet collected.
   bool Start(std::function<void()> work);
   // A job was started and has not ended.

@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "string_table.h"
+#include "settings/immortal.h"
 #include "mc_engine/core/logging.h"
 
 #include <chrono>
@@ -13,50 +14,35 @@
 #include <memory>
 #include <mutex>
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/title_paths.h>
 
 #include "mc_engine/core/string_dumper.h"
 
-// The fork's SDK keeps its own dumper in KernelState, fed by its kernel string
-// exports as well. Use that one there: two dumpers flushing the same
-// dump/strings.toml would race and drop entries. The stock SDK has none, so
-// larecomp owns the store (string_dumper.h) and creates it on first use.
-#if __has_include(<rex/system/string_dumper.h>)
-#include <rex/system/kernel_state.h>
-#include <rex/system/string_dumper.h>
-#define LARECOMP_SDK_HAS_STRING_DUMPER 1
-#endif
+// The fork's SDK kept its own dumper in KernelState, fed by its kernel string exports as well; rexglue 0.11 has none (the
+// stock SDK never did), so larecomp owns the store (string_dumper.h) and creates it on first use.
 
 namespace {
 
-#if defined(LARECOMP_SDK_HAS_STRING_DUMPER)
-using Dumper = rex::system::StringDumper;
-
-Dumper* ActiveDumper() {
-    auto* ks = rex::system::kernel_state();
-    return ks ? &ks->string_dumper() : nullptr;
-}
-#else
 using Dumper = mc::strings::StringDumper;
 
 Dumper* ActiveDumper() {
     static std::once_flag once;
-    static std::unique_ptr<Dumper> dumper;
+    static std::unique_ptr<Dumper>& dumper = larecomp::Leak<std::unique_ptr<Dumper>>();
     std::call_once(once, [] {
-        if (auto* rt = rex::Runtime::instance()) {
-            dumper = std::make_unique<Dumper>(mc::strings::DefaultStringsDir(rt->game_data_root()));
+        if (auto* rt = REX_RUNTIME()) {
+            dumper = std::make_unique<Dumper>(mc::strings::DefaultStringsDir(rt->GetTitlePaths().game_root.Get()));
         }
     });
     return dumper.get();
 }
-#endif
 
 constexpr uint32_t kStringTableGlobal = 0x8286D7FC;
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadBE32(uint8_t* base, uint32_t ea) {
@@ -137,8 +123,8 @@ void ScanMCLAStringTable(bool trigger_rescan = false) {
     if (!active) return;
     Dumper& dumper = *active;
 
-    bool do_dump = REXCVAR_GET(string_dump_enabled);
-    bool do_replace = REXCVAR_GET(string_replace_enabled);
+    bool do_dump = larecomp::settings::string_dump_enabled.Get();
+    bool do_replace = larecomp::settings::string_replace_enabled.Get();
 
     if (!do_dump && !do_replace) return;
 
@@ -178,8 +164,8 @@ void InitStringTableTools() {
         bool was_replace_enabled = false;
         
         while (true) {
-            bool do_dump = REXCVAR_GET(string_dump_enabled);
-            bool do_replace = REXCVAR_GET(string_replace_enabled);
+            bool do_dump = larecomp::settings::string_dump_enabled.Get();
+            bool do_replace = larecomp::settings::string_replace_enabled.Get();
 
             // Trigger para garantir que o Rescan() só ocorra 1 vez quando ativado, 
             // e não a cada 500ms estourando o I/O do disco.

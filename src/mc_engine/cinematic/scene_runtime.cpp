@@ -15,8 +15,8 @@
 // leaves the scene's own clock alone; it holds while the game is paused. Every update, from Patch_DeltaTimePre on the game thread:
 //
 //   hour        TimeOfDay_SceneHour (time_of_day.cpp: the scene's own channel, which outranks a menu shot's request,
-//               time_of_day_realtime and time_of_day_hold, and which menu_camera.cpp never touches; Hook_TimeOfDay pins the
-//               hour at the next lighting update). Released with a negative hour. The shared TimeOfDay_RequestHour pair was
+//               time_of_day_realtime and time_of_day_hold, and which menu_camera.cpp never touches; the hour is pinned before
+//               that update's fog is evaluated). Released with a negative hour. The shared TimeOfDay_RequestHour pair was
 //               what the first version used: menu_camera.cpp clears it on every gameplay frame, so no hour ever applied.
 //   weather     Weather_SceneIndex, the same contract. Released with a negative index.
 //   traffic, peds, parked cars
@@ -24,7 +24,17 @@
 //               native_call.h: the native stores the enable byte (0x8282A7C8 + 0, 1, 2) and does what a script's call does. The
 //               byte is read back to see whether it took; a byte the game put back is written again (three times at most).
 //               E1b measured that the byte alone only stops NEW spawns; whether the native also clears what is on the road is
-//               what the first run says (CHECK).
+//               what the first run says (CHECK). The traffic native (SetTrafficEnable(false)) is read in the generated code to send the
+//               despawn message 0x60 as well, which clears the road.
+//   traffic off ALSO holds the setting traffic_density_scale at 0 (world_tuning.cpp: the zones' traffic density 0, and its gate holds the enable
+//               byte at 0 every update whatever writes it); `traffic on` and the scene's end give both back. ORDER: that gate saves the byte it finds when it
+//               closes, and puts it back when it opens, so the native is called one update AFTER the setting was taken (the gate runs at the top of
+//               every update, before this code): called before, the gate would save the 0 the native wrote and "restore" it at the end. The byte the
+//               game had before the scene is read when the setting is taken, so the end gives the native the right value.
+//   peds <scale>, parked <scale>
+//               the settings ped_density_scale / parked_car_scale held for the scene (the old value and its origin come back, as for `set`): the
+//               timeline's numbers, 0 to 2. (A 0 closes that spawner for new spawns; what is on the road stays until it leaves: `peds off` also
+//               calls the native.) A world key holds a setting through the same list as a `set` key and lets go of it when the key does.
 //   police      PoliceManager_SetAllPoliceActive (a native: no byte to read back).
 //   timescale   MCLATimeScaleOverride (the global function at the end of this file, a midasm hook in larecomp_config.toml): after
 //               `lfs f13,84(r3)` in the engine timer sub_821BDA90 it puts the scene's scale into f13, the register the timer
@@ -56,12 +66,15 @@
 //
 
 #include "scene_runtime.h"
+#include "settings/immortal.h"
+#include "scene_want.h"
+#include "spots.h"
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 #include <algorithm>
 #include <atomic>
@@ -83,31 +96,15 @@
 #include "mc_engine/core/config_save.h"
 #include "mc_engine/gameplay/time_of_day.h"
 #include "larecomp_log.h"
+#include "capture_mode.h"
+#include "capture_core.h"
 #include "native_call.h"
 #include "state_log.h"
 
 #include "../hooks/hooks.h"  // MCLATimeScaleOverride, defined at the end of this file
+#include "larecomp_guest.h"
 
 // ---------------------------------------------------------------- cvars
-
-REXCVAR_DEFINE_STRING(mcla_scene, "", "MCLA/Cinematic",
-    "TRAILER TOOLKIT: run the scene file at this path: a full path, or a name looked up next to the game and in its scenes "
-    "folder (.scene may be left off). Hour, weather, traffic, time scale and settings follow the scene's timeline; the file is "
-    "read again when it changes. Empty: off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_INT32(mcla_scene_restart, 0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: a change of this number runs the armed scene again from its start.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_DOUBLE(mcla_scene_t, -1.0, "MCLA/Cinematic",
-    "TRAILER TOOLKIT: 0 or more holds the scene's clock at this many seconds on every update (stills, scrubbing); -1 lets "
-    "it run.")
-    .range(-1.0, 86400.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mc::cinematic {
 
@@ -142,8 +139,8 @@ constexpr ToggleDef kToggles[] = {
 constexpr size_t kToggleCount = sizeof(kToggles) / sizeof(kToggles[0]);
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t R32(const uint8_t* base, uint32_t ea) {
@@ -158,9 +155,9 @@ float RF(const uint8_t* base, uint32_t ea) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 bool GamePaused(const uint8_t* base) {
@@ -175,8 +172,8 @@ uint32_t PlayerRacer(const uint8_t* base) {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -226,9 +223,12 @@ std::string Describe(const Event& e) {
         case Track::kWeather:
             if (e.release) return out + "game (the game's own weather)";
             return out + (Weather_IndexToName(e.index) ? Weather_IndexToName(e.index) : "?");
-        case Track::kTraffic:
         case Track::kPeds:
         case Track::kParked:
+            if (e.state == kStateScale) return out + Fmt(e.to) + " (the setting " + (e.track == Track::kPeds ? "ped_density_scale" : "parked_car_scale") + ", held for the scene)";
+            return out + (e.state ? "on" : "off");
+        case Track::kTraffic:
+            return out + (e.state ? "on" : "off (the native, and the setting traffic_density_scale held at 0)");
         case Track::kPolice:
             return out + (e.state ? "on" : "off");
         case Track::kTimeScale:
@@ -271,6 +271,11 @@ struct SavedCvar {
     std::string before;
 };
 
+// The density settings a world key holds (WantedScale): the cvar, a name for the log.
+constexpr size_t kScaleCount = 3;
+constexpr const char* kScaleCvars[kScaleCount] = {"traffic_density_scale", "ped_density_scale", "parked_car_scale"};
+constexpr const char* kScaleKeys[kScaleCount] = {"traffic off", "peds", "parked"};
+
 struct ToggleState {
     int orig = -1;     // the byte before the scene touched it (police: on)
     int applied = -1;  // what the scene made it, -1 = untouched
@@ -310,6 +315,12 @@ struct Runner {
     int ts_unfollowed = 0;        // updates in a row in which the engine's step ratio was not that scale
     bool ts_warned = false;
     ToggleState toggles[kToggleCount];
+    // The density settings the timeline holds (traffic_density_scale, ped_density_scale, parked_car_scale): the value held (-1 = not held), whether the
+    // cvar took it, and the update that took it (the traffic native waits one update after it).
+    double scale_applied[kScaleCount] = {-1.0, -1.0, -1.0};
+    bool scale_held[kScaleCount] = {false, false, false};
+    uint64_t scale_tick[kScaleCount] = {0, 0, 0};
+    uint64_t world_tick = 0;  // updates run with the world in force
     std::vector<SavedCvar> saved;
     int unapplied[32] = {};  // keys of tracks nobody applies, by Track (a bit each in TrackBit: 32 at most)
     double next_state_log = 0.0;
@@ -318,8 +329,31 @@ struct Runner {
     WorldState state_w;
     int calls_this_tick = 0;
     int waiting_ticks = 0;
+
+    // The Director's handles (SceneHold, SceneSeekTo, ... in scene_runtime.h). Reset with the rest when a scene is armed.
+    bool dir_held = false;      // the transport holds the clock (a pause or a seek)
+    bool dir_frozen = false;    // ... and the world is held at the engine's time scale floor
+    double dir_pin = -1.0;      // >= 0: the clock is put at this time every update (a seek; it stays until play, pause or another seek)
+    int dir_steps = 0;          // updates still to run of a step: the clock moves and the world runs for them, then the hold is back
+    bool dir_override_on = false;
+    WorldState dir_override;    // the live preview of the world (world.set without commit): its set fields replace the timeline's
+    bool ready_open = true;     // the ready gate let the clock go from t = 0 (true when no gate is installed)
+    int64_t ready_since_ms = 0;
+    bool ready_warned = false;
+    uint64_t updates = 0;       // updates run with a scene loaded
+    uint64_t begin_update = 0;  // the update count when the scene (re)started: the ready gate waits a few updates after it
+
+    // The scene's named places (spots.h): the table of the spots files read for the last parse and the stamps they had, so a changed spots file reloads the scene.
+    LoadedSpots spots;
 };
-Runner g;
+Runner& g = larecomp::Leak<Runner>();
+
+// What the Director installed: the observer of loads and keys, the gate that holds t = 0 until the cars and the streaming are ready, and whether a changed
+// file is loaded in place. Not part of the Runner: they outlive a scene that is armed again.
+const SceneObserver* g_observer = nullptr;
+bool (*g_ready_gate)() = nullptr;
+std::atomic<bool> g_soft_reload{false};
+constexpr int64_t kReadyGateMaxMs = 30000;  // the gate opens after this long whatever it says: a car that never comes must not hold a scene for ever
 
 bool HandledByApplier(Track t) {
     for (size_t i = 0; i < g_applier_count; ++i) {
@@ -412,10 +446,12 @@ void ApplyTimeScale(const WorldState& w, const uint8_t* base) {
                               ratio, g.ts_used, g.ts_unfollowed);
         }
     }
-    const double want = (w.timescale_set && !g.paused) ? TimeScaleForEngine(w.timescale) : -1.0;
+    // The Director's hold freezes the world: the scale goes to 0 (the engine's own floor of 1e-4 s under the scaled step is what is left). A step lets it run.
+    const bool frozen = g.dir_frozen && g.dir_steps == 0;
+    const double want = g.paused ? -1.0 : (frozen ? TimeScaleForEngine(0.0) : (w.timescale_set ? TimeScaleForEngine(w.timescale) : -1.0));
     g_timescale_override.store(static_cast<float>(want), std::memory_order_relaxed);
     g.ts_used = want;
-    if (w.timescale_set) {
+    if (w.timescale_set || frozen) {
         if (!g.timescale_active) {
             g.timescale_active = true;
             LARECOMP_APP_INFO("[scene] timescale: the scene's scale goes into the engine timer from now on (the game's own is {:.3f}); "
@@ -433,6 +469,66 @@ void StandDownTimeScale() {
     g_timescale_override.store(-1.0f, std::memory_order_relaxed);
     g.ts_used = -1.0;
     g.ts_unfollowed = 0;
+}
+
+// What the timeline wants a density setting at: -1 = not held. `traffic off` holds traffic_density_scale at 0 (the world's traffic key has no scale of its own).
+double WantedScale(size_t i, const WorldState& w) {
+    switch (i) {
+        case 0: return w.traffic == 0 ? 0.0 : -1.0;
+        case 1: return w.peds_scale;
+        default: return w.parked_scale;
+    }
+}
+
+// A setting held for a world key, through the same hold as a `set` key's (SetCvarForScene: the old value and where it came from are kept; a save in the middle
+// of the scene does not write the scene's value). False when this build has no such setting, or it does not take the value.
+bool HoldCvar(const char* name, const std::string& value, const char* why) {
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+    if (!info) {
+        LARECOMP_APP_WARN("[scene] {}: no setting called '{}' in this build: only the switch applies", why, name);
+        return false;
+    }
+    if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
+        LARECOMP_APP_WARN("[scene] {}: '{}' is read only at start; the scene cannot hold it", why, name);
+        return false;
+    }
+    const std::string before = larecomp::cvar::GetFlagByName(name);
+    const bool known = std::any_of(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == name; });
+    if (!larecomp::SetCvarForScene(name, value)) {
+        LARECOMP_APP_WARN("[scene] {}: '{}' did not take '{}' (a value out of its range, or not of its kind)", why, name, value);
+        return false;
+    }
+    if (!known) g.saved.push_back({name, before});
+    LARECOMP_APP_INFO("[scene] {}: {} = {} (was {})", why, name, larecomp::cvar::GetFlagByName(name), before);
+    return true;
+}
+
+void ReleaseCvar(const char* name, const char* why) {
+    const auto it = std::find_if(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == name; });
+    if (it == g.saved.end()) return;
+    if (larecomp::RestoreCvarForScene(name)) LARECOMP_APP_INFO("[scene] {}: {} back to {}", why, name, it->before);
+    else LARECOMP_APP_WARN("[scene] {}: {} could not be put back to {}", why, name, it->before);
+    g.saved.erase(it);
+}
+
+// The density settings the world keys hold: taken when a key asks, given back when it lets go (and by RestoreCvars at the end).
+void ApplyScales(const WorldState& w, const uint8_t* base) {
+    for (size_t i = 0; i < kScaleCount; ++i) {
+        const double want = WantedScale(i, w);
+        if (want == g.scale_applied[i]) continue;
+        if (want >= 0.0) {
+            if (i == 0 && g.toggles[0].orig < 0 && base) {
+                g.toggles[0].orig = static_cast<int>(base[kToggles[0].byte] != 0);  // the game's own byte, before the setting's gate can close and zero it
+            }
+            g.scale_held[i] = HoldCvar(kScaleCvars[i], Fmt(want, "%.6g"), kScaleKeys[i]);
+            g.scale_applied[i] = want;
+            g.scale_tick[i] = g.world_tick;
+        } else {
+            if (g.scale_held[i]) ReleaseCvar(kScaleCvars[i], kScaleKeys[i]);
+            g.scale_held[i] = false;
+            g.scale_applied[i] = -1.0;
+        }
+    }
 }
 
 // The world tracks as they should be now. `w` all unset hands everything back. budget: natives to call this update.
@@ -454,7 +550,14 @@ void ApplyWorld(const WorldState& w, uint8_t* base, int budget) {
         LARECOMP_APP_INFO("[scene] weather: the game's own again");
     }
     ApplyTimeScale(w, base);
-    for (size_t i = 0; i < kToggleCount; ++i) ApplyToggle(i, w.*(kToggles[i].field), base, budget);
+    ApplyScales(w, base);
+    for (size_t i = 0; i < kToggleCount; ++i) {
+        const int want = w.*(kToggles[i].field);
+        // traffic off: the setting was taken in this update or an earlier one; the native comes one update after it, when the setting's gate has closed and saved the
+        // game's own byte (see the header). Not held (a build without the setting): no wait.
+        if (i == 0 && want == 0 && g.scale_held[0] && g.world_tick <= g.scale_tick[0]) continue;
+        ApplyToggle(i, want, base, budget);
+    }
 }
 
 void ApplyCvar(const Event& e) {
@@ -464,27 +567,27 @@ void ApplyCvar(const Event& e) {
         LARECOMP_APP_ERROR("[scene] line {}: {}", e.line, why);
         return;
     }
-    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(e.name);
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(e.name);
     if (!info) {
         LARECOMP_APP_WARN("[scene] line {}: no setting called '{}'", e.line, e.name);
         return;
     }
-    if (info->type == rex::cvar::FlagType::Command) {
+    if (info->type == larecomp::cvar::FlagType::Command) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' is a command, not a setting", e.line, e.name);
         return;
     }
-    if (info->lifecycle != rex::cvar::Lifecycle::kHotReload) {
+    if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' is read only at start; a scene cannot change it", e.line, e.name);
         return;
     }
-    const std::string before = rex::cvar::GetFlagByName(e.name);
+    const std::string before = larecomp::cvar::GetFlagByName(e.name);
     const bool known = std::any_of(g.saved.begin(), g.saved.end(), [&](const SavedCvar& s) { return s.name == e.name; });
     if (!larecomp::SetCvarForScene(e.name, e.text)) {
         LARECOMP_APP_WARN("[scene] line {}: '{}' did not take '{}' (a value out of its range, or not of its kind)", e.line, e.name, e.text);
         return;
     }
     if (!known) g.saved.push_back({e.name, before});
-    LARECOMP_APP_INFO("[scene] set {} = {} (was {})", e.name, rex::cvar::GetFlagByName(e.name), before);
+    LARECOMP_APP_INFO("[scene] set {} = {} (was {})", e.name, larecomp::cvar::GetFlagByName(e.name), before);
 }
 
 // Every setting the scene took goes back to its value and its origin (default, file, command line, run time): a command-line value
@@ -498,6 +601,10 @@ void RestoreCvars() {
         }
     }
     g.saved.clear();
+    for (size_t i = 0; i < kScaleCount; ++i) {  // every setting a world key held went back with the list
+        g.scale_applied[i] = -1.0;
+        g.scale_held[i] = false;
+    }
 }
 
 void EndAppliers() {
@@ -521,6 +628,7 @@ void FlushState(const uint8_t* base);  // below, with the state line
 
 // Everything the scene changed goes back: the world, the settings, the other packages' tracks.
 void ReleaseAll(const char* why) {
+    CaptureSceneInterrupted();
     uint8_t* base = Membase();
     if (base) FlushState(base);  // the last update's state line, before the hand-back line
     LARECOMP_APP_INFO("[scene] handing the game back ({})", why);
@@ -536,6 +644,7 @@ void ReleaseAll(const char* why) {
 
 // The cvars and the other packages' tracks of the scene that is going; the world stays as it is until the next one says.
 void ReleaseEvents() {
+    CaptureSceneInterrupted();
     statelog::SceneEnd();
     RestoreCvars();
     EndAppliers();
@@ -546,6 +655,10 @@ void BeginScene(const char* why) {
     g.cursor.Reset();
     g.next_state_log = 0.0;
     g.state_pending = false;
+    g.ready_open = (g_ready_gate == nullptr);
+    g.ready_since_ms = NowMs();
+    g.ready_warned = false;
+    g.begin_update = g.updates;
     std::memset(g.unapplied, 0, sizeof(g.unapplied));
     LARECOMP_APP_INFO("[scene] start ({}): '{}', {}", why, g.scene.name, Summarize(g.scene));
     statelog::SceneBegin(g.scene);  // opens the state log when the scene asks for one (`statelog on`)
@@ -559,11 +672,12 @@ void LogState(double t, const uint8_t* base, const WorldState& w) {
     // What the engine really did with the time scale: the frame's scaled step over its unscaled one. "game" is the scale the game's own
     // code gave the timer (the scene's replaces it inside the timer, so the two differ while a scene's time scale runs).
     const double ratio = EngineStepRatio(RF(base, kGuestScaledDelta), RF(base, kGuestUnscaledDelta));
+    const auto scale = [](double s) { return s >= 0.0 ? " x" + Fmt(s) : std::string(); };  // " x0.30" while a density setting is held
     LARECOMP_APP_INFO("[scene] t={:.2f} state: hour {} (game {:.2f}), weather {} (game {}), timescale {} (game {:.3f}, engine step ratio {:.3f}), "
-                      "traffic {} peds {} parked {} police {}",
+                      "traffic {} peds {}{} parked {}{} police {}",
                       t, w.hour_set ? Fmt(w.hour) : std::string("-"), hour, w.weather >= 0 ? w.weather : -1, Weather_GetIndex(),
                       w.timescale_set ? Fmt(w.timescale, "%.3f") : std::string("-"), RF(base, kGuestTimeScale), ratio, w.traffic, w.peds,
-                      w.parked, w.police);
+                      scale(w.peds_scale), w.parked, scale(w.parked_scale), w.police);
 }
 
 // Writes the state line the last update queued, if there is one.
@@ -575,10 +689,12 @@ void FlushState(const uint8_t* base) {
 
 // One update of a running scene (the world is there): the keys that came due, the world tracks, the other packages' tracks.
 void RunAt(double t, uint8_t* base) {
+    ++g.world_tick;
     std::vector<const Event*> due;
     g.cursor.Take(g.scene, t, &due);
     for (const Event* e : due) {
         LARECOMP_APP_INFO("[scene] t={:.2f} (line {}) {}", t, e->line, Describe(*e));
+        if (g_observer && g_observer->key) g_observer->key(*e, t);
         switch (e->track) {
             case Track::kCvar:
                 ApplyCvar(*e);
@@ -601,7 +717,19 @@ void RunAt(double t, uint8_t* base) {
         }
     }
     g.calls_this_tick = 0;
-    const WorldState w = EvaluateWorld(g.scene, t);
+    WorldState w = EvaluateWorld(g.scene, t);
+    if (g.dir_override_on) {  // the Director's live preview: what it set replaces the timeline's value
+        const WorldState& o = g.dir_override;
+        if (o.hour_set) w.hour_set = true, w.hour = o.hour;
+        if (o.weather >= 0) w.weather = o.weather;
+        if (o.traffic >= 0) w.traffic = o.traffic;
+        if (o.peds >= 0) w.peds = o.peds, w.peds_scale = -1.0;
+        if (o.parked >= 0) w.parked = o.parked, w.parked_scale = -1.0;
+        if (o.peds_scale >= 0.0) w.peds_scale = o.peds_scale, w.peds = -1;
+        if (o.parked_scale >= 0.0) w.parked_scale = o.parked_scale, w.parked = -1;
+        if (o.police >= 0) w.police = o.police;
+        if (o.timescale_set) w.timescale_set = true, w.timescale = o.timescale;
+    }
     ApplyWorld(w, base, 2);
     for (size_t i = 0; i < g_applier_count; ++i) {
         if (g_appliers[i]->apply) g_appliers[i]->apply(g.scene, t);
@@ -620,27 +748,50 @@ void RunAt(double t, uint8_t* base) {
 
 // ---------------------------------------------------------------- the file
 
-void Load(const FileStamp& stamp) {
-    std::ifstream in(PathFromUtf8(g.path), std::ios::binary);
-    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-    g.watcher.Loaded(stamp);
-    ParseResult r = ParseScene(text);
-    for (const Diagnostic& d : r.diagnostics) {
-        const std::string line = FormatDiagnostic(d, g.file_name);
-        if (d.severity == Severity::kError) LARECOMP_APP_ERROR("[scene] {}", line);
-        else LARECOMP_APP_WARN("[scene] {}", line);
+void NoteLoaded(const std::string& text, bool ok, int errors, bool soft, const char* by) {
+    if (g_observer && g_observer->loaded) g_observer->loaded(g.path, text, ok, errors, soft, by);
+}
+
+// A changed scene replaces the one that runs IN PLACE (feature-parity/DIRECTOR-DESIGN.md 2.5): the clock stays where it is, the settings the old scene held go
+// back and those of the new scene that are due by now are taken, the keys that were due keep their effect and are not played again, and the track appliers
+// that can reload (the cars: only a car whose statement changed is made again) keep what they have. An applier with no `reload` is ended and begun again with
+// the new scene, which is what a restart did for it before (the camera's rig starts over: one cut).
+void SoftReload(Scene&& next, const char* by) {
+    const double t = g.clock.time();
+    RestoreCvars();
+    g.scene = std::move(next);
+    g.have_scene = true;
+    for (const Event& e : g.scene.events) {
+        if (e.track == Track::kCvar && e.t <= t + 1e-9) ApplyCvar(e);
     }
-    if (!r.Ok()) {
-        LARECOMP_APP_ERROR("[scene] {}: {} error(s), {}", g.file_name, r.ErrorCount(),
-                           g.have_scene ? "the scene that was loaded stays" : "nothing to run");
-        if (!g.have_scene) g.state = SceneState::kFailed;
-        return;
+    g.cursor.Reset();
+    std::vector<const Event*> past;
+    g.cursor.Take(g.scene, t, &past);  // the keys up to now are in force already: not due again
+    std::memset(g.unapplied, 0, sizeof(g.unapplied));
+    for (size_t i = 0; i < g_applier_count; ++i) {
+        const TrackApplier* a = g_appliers[i];
+        if (a->reload) {
+            a->reload(g.scene, t);
+        } else {
+            if (a->end) a->end();
+            if (a->begin) a->begin(g.scene);
+        }
     }
+    LARECOMP_APP_INFO("[scene] reloaded in place by {} at t={:.2f}: '{}', {} (the clock and the cars are kept)", by, t, g.scene.name, Summarize(g.scene));
+}
+
+// The parsed scene becomes the scene (a file that was read, or the Director's own text). True when it was loaded in place.
+bool ApplyScene(ParseResult&& r, const char* by) {
     const bool was_running = g.have_scene && (g.clock.state() == SceneClock::State::kRunning || g.clock.state() == SceneClock::State::kFinished);
+    const bool soft = g_soft_reload.load(std::memory_order_relaxed) && g.have_scene && g.clock.state() == SceneClock::State::kRunning && !CaptureTakeActive();
+    LARECOMP_APP_INFO("[scene] loaded {}: '{}', {}; {} warning(s)", g.file_name, r.scene.name, Summarize(r.scene), r.WarningCount());
+    if (soft) {
+        SoftReload(std::move(r.scene), by);
+        return true;
+    }
     if (g.have_scene) ReleaseEvents();
     g.scene = std::move(r.scene);
     g.have_scene = true;
-    LARECOMP_APP_INFO("[scene] loaded {}: '{}', {}; {} warning(s)", g.file_name, g.scene.name, Summarize(g.scene), r.WarningCount());
     if (was_running) {
         g.clock.Restart();
         g.state = SceneState::kRunning;
@@ -650,6 +801,40 @@ void Load(const FileStamp& stamp) {
         g.state = SceneState::kWaiting;
         g.waiting_ticks = 0;
     }
+    return false;
+}
+
+// The scene text parsed with the spots tables that apply to the scene's file (spots.h INTEGRATION): `spot:<name>` words become numbers, and the scene knows
+// where it lies (a camera rig's route is looked for beside it). What was read stays in g.spots for the change check in PollFile.
+ParseResult ParseSceneText(const std::string& text) {
+    ParseResult r = ParseSceneWithSpots(text, g.path, &g.spots);
+    for (const std::string& problem : g.spots.problems) LARECOMP_APP_WARN("[scene] spots: {}", problem);
+    return r;
+}
+
+void LogDiagnostics(const ParseResult& r) {
+    for (const Diagnostic& d : r.diagnostics) {
+        const std::string line = FormatDiagnostic(d, g.file_name);
+        if (d.severity == Severity::kError) LARECOMP_APP_ERROR("[scene] {}", line);
+        else LARECOMP_APP_WARN("[scene] {}", line);
+    }
+}
+
+void Load(const FileStamp& stamp) {
+    std::ifstream in(PathFromUtf8(g.path), std::ios::binary);
+    const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    g.watcher.Loaded(stamp);
+    ParseResult r = ParseSceneText(text);
+    LogDiagnostics(r);
+    if (!r.Ok()) {
+        LARECOMP_APP_ERROR("[scene] {}: {} error(s), {}", g.file_name, r.ErrorCount(),
+                           g.have_scene ? "the scene that was loaded stays" : "nothing to run");
+        if (!g.have_scene) g.state = SceneState::kFailed;
+        NoteLoaded(text, false, r.ErrorCount(), false, "file");
+        return;
+    }
+    const bool soft = ApplyScene(std::move(r), "file");
+    NoteLoaded(text, true, 0, soft, "file");
 }
 
 void PollFile() {
@@ -666,6 +851,11 @@ void PollFile() {
     }
     switch (g.watcher.Poll(stamp, now)) {
         case ReloadWatcher::Action::kNone:
+            // A spots file of the scene changed (a spot moved, one was added): the scene is read again, so the shot moves at once (soft: the clock and the cars stay).
+            if (g.have_scene && stamp.exists && SpotsChanged(g.path, g.spots)) {
+                LARECOMP_APP_INFO("[scene] a spots file of {} changed: reading the scene again", g.file_name);
+                Load(stamp);
+            }
             return;
         case ReloadWatcher::Action::kMissing:
             LARECOMP_APP_WARN("[scene] {}: no such file", g.path);
@@ -684,7 +874,7 @@ void Arm(const std::string& want) {
     g.requested = want;
     g.path = ResolvePath(want);
     g.file_name = LeafName(g.path);
-    g.restart_seen = REXCVAR_GET(mcla_scene_restart);
+    g.restart_seen = larecomp::settings::mcla_scene_restart.Get();
     g.state = SceneState::kPending;
     LARECOMP_APP_INFO("[scene] armed: {}", g.path);
 }
@@ -710,20 +900,55 @@ void Restart(const char* why, bool world_ready) {
 
 // One update of a loaded scene.
 void Step(uint8_t* base) {
-    if (g.state == SceneState::kFinished && g.restart_seen == REXCVAR_GET(mcla_scene_restart)) return;  // handed back; nothing more to do
+    if (g.state == SceneState::kFinished && g.restart_seen == larecomp::settings::mcla_scene_restart.Get()) return;  // handed back; nothing more to do
     const bool ready = WorldReady(base);
     const bool paused = GamePaused(base);
     const float dt = RF(base, kGuestUnscaledDelta);
     const double duration = g.scene.Duration();
 
-    if (g.restart_seen != REXCVAR_GET(mcla_scene_restart)) {
-        g.restart_seen = REXCVAR_GET(mcla_scene_restart);
+    if (g.restart_seen != larecomp::settings::mcla_scene_restart.Get()) {
+        g.restart_seen = larecomp::settings::mcla_scene_restart.Get();
         Restart("restart requested", ready);
     }
 
-    SceneClock::Step st = g.clock.Advance(ready, paused, (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0, duration);
-    const double still = REXCVAR_GET(mcla_scene_t);
-    if (still >= 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(still, duration);
+    ++g.updates;
+    // The Director's hold: the clock does not move for a pause or a seek (except in the updates of a step). Before t = 0 the clock also waits until the scene's
+    // cars are made and the streaming is done (the ready gate: a camera attached to a car that is still being made would hold the origin).
+    const bool hold_clock = g.dir_held && g.dir_steps == 0;
+    const bool was_ready = g.ready_open;
+    bool gate_wait = false;
+    if (!g.ready_open && g.clock.state() == SceneClock::State::kRunning && g.clock.time() <= 0.0 && g.dir_pin < 0.0) {
+        const bool settled = g.updates - g.begin_update >= 4 && g_ready_gate && g_ready_gate();
+        const bool overdue = NowMs() - g.ready_since_ms > kReadyGateMaxMs;
+        if (settled || overdue) {
+            g.ready_open = true;
+            if (overdue && !settled && !g.ready_warned) {
+                g.ready_warned = true;
+                LARECOMP_APP_WARN("[scene] the cars or the streaming were not ready after {} s: the clock goes on anyway", kReadyGateMaxMs / 1000);
+            }
+        } else {
+            gate_wait = true;
+        }
+    }
+    SceneClock::Step st;
+    const double take_t = CapturePinnedSceneTime();
+    if (take_t >= 0.0) {
+        if (!ready || paused || hold_clock || gate_wait) CaptureSceneInterrupted();
+        // The gate ends the take before it would step past the scene. Keep the last sampled update live through its hand-over.
+        // CHECK: two takes of a frozen scene have equal scene_t rows and identical pictures, including their first frame.
+        g.clock.SetTime(take_t, -1.0);
+    } else {
+        double scene_dt = (std::isfinite(dt) && dt > 0.0f) ? static_cast<double>(dt) : 0.0;
+        // Give the capture applier the authored key before the gate starts the next update. In particular, a long
+        // preview update cannot run keys after the take begins and then rewind the clock underneath them.
+        if (g.scene.capture_fps > 0.0) {
+            scene_dt = capture::StepToTakeKey(g.clock.time(), scene_dt, g.scene.capture_from, !was_ready && g.ready_open);
+        }
+        st = g.clock.Advance(ready, paused || hold_clock || gate_wait, scene_dt, duration);
+        double still = larecomp::settings::mcla_scene_t.Get();
+        if (still < 0.0) still = g.dir_pin;
+        if (still >= 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(still, duration);
+    }
 
     switch (g.clock.state()) {
         case SceneClock::State::kWaiting:
@@ -742,6 +967,7 @@ void Step(uint8_t* base) {
     g.paused = paused;
     if (ready) RunAt(g.clock.time(), base);
     else StandDownTimeScale();
+    if (g.dir_steps > 0 && ready) --g.dir_steps;  // one update of a step is done
     if (st.finished) {
         LARECOMP_APP_INFO("[scene] finished at t={:.2f}", g.clock.time());
         ReleaseAll("the scene's end");
@@ -751,59 +977,14 @@ void Step(uint8_t* base) {
 
 // ---------------------------------------------------------------- mcla_scene, read from two threads
 //
-// The cvar's string is written by whoever edits it (the F4 panel, the console: SetFlagByName, under the cvar registry's lock) and read
-// by the game thread (TickScene) and by the thread that runs the camera hook (CurrentSceneState). A std::string read while it is
-// assigned is a data race, so nothing here reads the cvar's own storage:
-//   - the cvar's change callback (it runs on the writer's thread, under the registry's lock) copies every new value into g_want_text
-//     under g_want_mutex and bumps a generation;
-//   - a value that arrives with no write through SetFlagByName (the command line, larecomp.toml) is read once, by the cvar system's
-//     own locked getter, the first time anyone asks (on a guest thread, long after the command line and the file were read);
-//   - the game thread keeps a copy of its own and takes the lock only when the generation moved. With no scene and no edit a tick is
-//     two atomic loads and an emptiness test: no lock, no allocation. CurrentSceneState reads one atomic.
-std::mutex g_want_mutex;
-std::string g_want_text;                 // guarded by g_want_mutex
-bool g_want_known = false;               // guarded by g_want_mutex: g_want_text holds a value (from the callback or the first read)
-std::atomic<uint32_t> g_want_gen{0};     // bumped under g_want_mutex with every new value
-std::atomic<bool> g_want_set{false};     // the value is not empty
-std::atomic<bool> g_want_seeded{false};  // the first read is done
-std::string g_want_mine;                 // the game thread's own copy (TickScene only)
-uint32_t g_want_mine_gen = 0;
-
-void StoreWantLocked(std::string_view value) {
-    g_want_text.assign(value);
-    g_want_known = true;
-    g_want_set.store(!value.empty(), std::memory_order_release);
-    g_want_gen.fetch_add(1, std::memory_order_release);
-}
-
-void OnSceneCvarChanged(std::string_view, std::string_view value) {
-    std::lock_guard<std::mutex> lock(g_want_mutex);
-    StoreWantLocked(value);
-}
-
-// After the cvar's own definition at the top of the file, so the cvar exists when the callback is added.
-[[maybe_unused]] const bool g_want_watching = (rex::cvar::RegisterChangeCallback("mcla_scene", OnSceneCvarChanged), true);
-
-void EnsureWantKnown() {
-    if (g_want_seeded.load(std::memory_order_acquire)) return;
-    const std::string value = rex::cvar::GetFlagByName("mcla_scene");  // the cvar system's own locked read; none of our locks is held
-    {
-        std::lock_guard<std::mutex> lock(g_want_mutex);
-        if (!g_want_known) StoreWantLocked(value);  // a callback that ran meanwhile holds a newer value
-    }
-    g_want_seeded.store(true, std::memory_order_release);
-}
-
-// The scene asked for, as of this update. The game thread only.
-const std::string& WantedScene() {
-    EnsureWantKnown();
-    if (g_want_gen.load(std::memory_order_acquire) != g_want_mine_gen) {
-        std::lock_guard<std::mutex> lock(g_want_mutex);
-        g_want_mine = g_want_text;
-        g_want_mine_gen = g_want_gen.load(std::memory_order_relaxed);
-    }
-    return g_want_mine;
-}
+// What scene is asked for is kept by SceneWant (scene_want.h: no lock and no allocation on a quiet tick, and why the change callback is
+// hooked up on the first ask and not from a static initializer here: on 0.11 the setting does not exist yet at static initialization).
+SceneWant& g_want = larecomp::Leak<SceneWant>(SceneWant::Source{
+    [](SceneWant::Notify notify) {
+        return larecomp::cvar::RegisterChangeCallback(
+            "mcla_scene", [notify = std::move(notify)](std::string_view, std::string_view value) { notify(value); });
+    },
+    [] { return larecomp::cvar::GetFlagByName("mcla_scene"); }});  // the cvar system's own locked read; none of our locks is held
 
 }  // namespace
 
@@ -811,7 +992,7 @@ const std::string& WantedScene() {
 
 void TickScene() {
     statelog::Tick();  // the per-update state log (mcla_state_log or a scene's `statelog on`): the row is the state after the update before; one string test when off
-    const std::string& want = WantedScene();
+    const std::string& want = g_want.Wanted();
     if (want.empty()) {
         if (g.armed) Disarm("mcla_scene was cleared");
         return;
@@ -824,10 +1005,7 @@ void TickScene() {
 }
 
 SceneState CurrentSceneState() {
-    if (!g.armed) {
-        EnsureWantKnown();
-        return g_want_set.load(std::memory_order_acquire) ? SceneState::kPending : SceneState::kOff;
-    }
+    if (!g.armed) return g_want.IsSet() ? SceneState::kPending : SceneState::kOff;
     return g.state;
 }
 
@@ -888,6 +1066,137 @@ bool RegisterTrackApplier(const TrackApplier* applier) {
     return true;
 }
 
+// ---------------------------------------------------------------- the Director's handles
+
+namespace {
+FileStamp CurrentStamp() {
+    const std::filesystem::path p = PathFromUtf8(g.path);
+    std::error_code ec;
+    FileStamp stamp;
+    stamp.exists = std::filesystem::is_regular_file(p, ec);
+    if (stamp.exists) {
+        stamp.size = static_cast<uint64_t>(std::filesystem::file_size(p, ec));
+        stamp.mtime = static_cast<int64_t>(std::filesystem::last_write_time(p, ec).time_since_epoch().count());
+    }
+    return stamp;
+}
+}  // namespace
+
+const SpotTable* SceneSpotTable() {
+    return g.armed ? &g.spots.table : nullptr;
+}
+
+const Scene* LoadedScene() {
+    return g.armed && g.have_scene ? &g.scene : nullptr;
+}
+
+SceneTransport GetSceneTransport() {
+    SceneTransport t;
+    t.state = CurrentSceneState();
+    if (!g.armed || !g.have_scene) return t;
+    t.t = g.clock.time();
+    t.duration = g.scene.Duration();
+    t.held = g.dir_held;
+    t.frozen = g.dir_frozen;
+    t.pending_steps = g.dir_steps;
+    t.pinned = g.dir_pin >= 0.0;
+    t.holding_for_ready = !g.ready_open && g.clock.state() == SceneClock::State::kRunning;
+    t.updates = g.updates;
+    return t;
+}
+
+void SceneHold(bool hold) {
+    if (!g.armed) return;
+    g.dir_steps = 0;
+    if (hold) {
+        g.dir_held = true;
+        g.dir_frozen = true;
+    } else {
+        g.dir_held = false;
+        g.dir_frozen = false;
+        g.dir_pin = -1.0;
+    }
+}
+
+void SceneSeekTo(double t) {
+    if (!g.armed || !g.have_scene) return;
+    t = std::max(0.0, t);
+    if (g.scene.Duration() >= 0.0) t = std::min(t, g.scene.Duration());
+    if (g.state == SceneState::kFinished) {  // handed back: it has to run again before it can show a time
+        SceneRestartAt(t);
+        return;
+    }
+    g.dir_held = true;
+    g.dir_frozen = true;
+    g.dir_pin = t;
+    g.dir_steps = 0;
+    if (g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(t, g.scene.Duration());
+}
+
+void SceneStepUpdates(int updates) {
+    if (!g.armed || !g.have_scene || updates < 1) return;
+    g.dir_steps = std::min(updates, 100000);
+    g.dir_pin = -1.0;
+}
+
+void SceneRestartAt(double t) {
+    if (!g.armed || !g.have_scene) return;
+    uint8_t* base = Membase();
+    g.dir_steps = 0;
+    Restart("the Director", base && WorldReady(base));
+    g.dir_pin = t > 0.0 ? t : -1.0;
+    g.dir_held = t > 0.0;
+    g.dir_frozen = t > 0.0;
+    if (t > 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(t, g.scene.Duration());
+}
+
+SceneTextResult SceneLoadText(const std::string& text, const char* by) {
+    SceneTextResult res;
+    if (!g.armed) return res;
+    ParseResult r = ParseSceneText(text);
+    res.diagnostics = r.diagnostics;
+    res.errors = r.ErrorCount();
+    LogDiagnostics(r);
+    if (!r.Ok()) {
+        LARECOMP_APP_ERROR("[scene] {}: {} error(s) in the text the Director gave: the scene that was loaded stays", g.file_name, r.ErrorCount());
+        NoteLoaded(text, false, res.errors, false, by);
+        return res;
+    }
+    g.watcher.Loaded(CurrentStamp());  // the Director wrote the file itself: the watcher must not read it again
+    res.soft = ApplyScene(std::move(r), by);
+    res.ok = true;
+    NoteLoaded(text, true, 0, res.soft, by);
+    return res;
+}
+
+void SceneSetWorldOverride(const WorldState& w) {
+    g.dir_override = w;
+    g.dir_override_on = true;
+}
+
+void SceneClearWorldOverride() {
+    g.dir_override = WorldState{};
+    g.dir_override_on = false;
+}
+
+WorldState SceneWorldOverride(bool* on) {
+    if (on) *on = g.dir_override_on;
+    return g.dir_override;
+}
+
+void SetSceneObserver(const SceneObserver* observer) {
+    g_observer = observer;
+}
+
+void SetSceneReadyGate(bool (*gate)()) {
+    g_ready_gate = gate;
+    if (g.armed) g.ready_open = (gate == nullptr) || g.ready_open;
+}
+
+void SetSceneSoftReload(bool on) {
+    g_soft_reload.store(on, std::memory_order_relaxed);
+}
+
 }  // namespace mc::cinematic
 
 // A running scene's time scale, put into the engine timer. Midasm hook after the instruction at 0x821BDAB4 (`lbz r7,56(r3)`, the one
@@ -917,6 +1226,23 @@ std::string SceneFilePath() { return std::string(); }
 std::string SceneName() { return std::string(); }
 bool SampleGameState(GameStateSample* out) { *out = GameStateSample{}; return false; }
 bool RegisterTrackApplier(const TrackApplier*) { return false; }
+const Scene* LoadedScene() { return nullptr; }
+const SpotTable* SceneSpotTable() { return nullptr; }
+SceneTransport GetSceneTransport() { return SceneTransport{}; }
+void SceneHold(bool) {}
+void SceneSeekTo(double) {}
+void SceneStepUpdates(int) {}
+void SceneRestartAt(double) {}
+SceneTextResult SceneLoadText(const std::string&, const char*) { return SceneTextResult{}; }
+void SetSceneSoftReload(bool) {}
+void SceneSetWorldOverride(const WorldState&) {}
+void SceneClearWorldOverride() {}
+WorldState SceneWorldOverride(bool* on) {
+    if (on) *on = false;
+    return WorldState{};
+}
+void SetSceneObserver(const SceneObserver*) {}
+void SetSceneReadyGate(bool (*)()) {}
 }  // namespace mc::cinematic
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

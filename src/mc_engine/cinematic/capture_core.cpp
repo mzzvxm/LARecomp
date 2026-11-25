@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <cstdio>
 
 namespace mc::cinematic::capture {
@@ -30,6 +31,19 @@ double FpsForStepTicks(uint64_t ticks) {
 
 double StepMsForTicks(uint64_t ticks) {
     return static_cast<double>(ticks) * kGameTickSeconds * 1000.0;
+}
+
+TakeSceneClock PlanTakeSceneClock(double request_time, double fps, double requested_t0) {
+    const double step = 1.0 / fps;
+    if (requested_t0 >= 0.0) return {requested_t0, step};
+    // A decimal scene key on the grid can round just below the corresponding integer in the division.
+    const double grid = std::nextafter(request_time / step, std::numeric_limits<double>::infinity());
+    return {(std::floor(grid) + 1.0) / fps, step};
+}
+
+double StepToTakeKey(double scene_t, double dt, double key, bool ready_opened) {
+    if (ready_opened && key == 0.0) return 0.0;
+    return scene_t < key ? std::min(dt, key - scene_t) : dt;
 }
 
 // ---------------------------------------------------------------------------------------------------------------- the hand-over

@@ -24,7 +24,9 @@
 //
 // What waits (the paths that left a draw out or put it off for something being built):
 //   kGuestDraw     the guest's own draws: Scene::Prepare -> Pipelines::Get with the rule of
-//                  Scene::MaySkipForPipeline (targets the game draws into in every frame).
+//                  Scene::MaySkipForPipeline (targets the game draws into in every frame), or, for a key
+//                  that carries the headlight's word or the G-buffer's planes (variant_wait.h), with a
+//                  deferral that always says yes: those lookups wait here too, stencil writers included.
 //   kHdrVariant    the HDR scene's second draw (Scene::PrepareHdrDraw): the frame's float scene lacked it.
 //   kUpscalerMask  the upscalers' mask draw (Scene::PrepareUpscalerMask): the frame's mask lacked it.
 //   kHostPass      the renderer's own pipelines made on a worker when a setting is switched on (the

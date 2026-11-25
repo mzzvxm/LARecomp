@@ -60,9 +60,9 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "adaptive_triggers.h"
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -88,8 +88,10 @@
 #pragma comment(lib, "hid.lib")
 #else
 #include <SDL3/SDL.h>
-#include <rex/input/input_system.h>
-#include <rex/ui/window.h>
+#include <rex/hid/input_system.h>
+#include <rex/ui/ui_system.h>
+
+#include "mc_engine/sdk_access.h"
 #include "trigger_sdl.h"
 #endif
 
@@ -99,33 +101,6 @@
 #include "larecomp_log.h"
 #include "trigger_mailbox.h"
 #include "mc_engine/gameplay/wheel_slip.h"
-
-REXCVAR_DEFINE_BOOL(trigger_resistance, true, "MCLA/Input",
-    "DualSense trigger resistance: a throttle spring on R2 and brake resistance on L2 while a car "
-    "is driven, slack everywhere else. Other controllers are not touched.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(trigger_vibration, true, "MCLA/Input",
-    "DualSense trigger vibration: R2 vibrates while the driven wheels spin under power and L2 while "
-    "the brakes lock the wheels, harder the more they slip. Other controllers are not touched.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The one setting both effects used to share. Only read for old settings files: false there turns
-// trigger_resistance and trigger_vibration off at the first tick, and this goes back to true.
-REXCVAR_DEFINE_BOOL(adaptive_triggers, true, "MCLA/Input",
-    "Old setting, replaced by trigger_resistance and trigger_vibration. False in an older settings "
-    "file turns both off.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(trigger_throttle, 3, "MCLA/Input",
-    "R2 resistance at the end of its travel, 1 (light) to 8 (firm). Used by trigger_resistance.")
-    .range(1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(trigger_brake, 6, "MCLA/Input",
-    "L2 resistance at the end of its travel, 1 (light) to 8 (firm). Used by trigger_resistance.")
-    .range(1, 8)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -155,8 +130,8 @@ int64_t NowMs() {
 std::atomic<int64_t> g_hud_ms{0};  // when the HUD last updated
 
 bool GamePaused() {
-    rex::Runtime* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base) return false;
     const uint32_t p = ReadGuestU32(base, kPauseStatePtr);
     return p != 0 && base[p + 4] != 0 && base[p + 10] == 0;
@@ -174,16 +149,14 @@ bool WindowInFront() {
     if (front) GetWindowThreadProcessId(front, &pid);
     return pid == GetCurrentProcessId();
 #else
-    // The SDK's window keeps its focus flag from SDL's focus events (the same flag the cursor hiding
-    // reads). A compositor that is showing something over the game (Steam's overlay or its Quick
+    // The UI system keeps a focus flag from the driver's focus events (IUISystem::IsFocused, the same flag the cursor
+    // hiding reads). A compositor that is showing something over the game (Steam's overlay or its Quick
     // Access menu under gamescope, another window) takes the keyboard focus, so the triggers go
     // slack then. No window yet (or none to ask) counts as in front: nothing is driven without one.
     // CHECK: that the flag follows a click on another window under X11 and Wayland, and the Steam
     // overlay on a Steam Deck; a flag that stays false would keep the triggers slack for good.
-    rex::Runtime* rt = rex::Runtime::instance();
-    auto* input = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
-    rex::ui::Window* window = input ? input->window() : nullptr;
-    return window ? window->HasFocus() : true;
+    rex::ui::IUISystem* ui = larecomp::sdk::UI();
+    return ui && ui->HasWindow() ? ui->IsFocused() : true;
 #endif
 }
 
@@ -465,14 +438,14 @@ void Release(Pad& pad) {
 void ReadOldSetting() {
     if (g_migrated) return;
     g_migrated = true;
-    if (REXCVAR_GET(adaptive_triggers)) return;
+    if (larecomp::settings::adaptive_triggers.Get()) return;
     // CHECK: the write goes through the cvar layer from the game's thread; after it larecomp.toml
     // should lose adaptive_triggers = false and gain the two new keys at the next settings save.
     LARECOMP_APP_INFO("[Triggers] adaptive_triggers is false in the settings: trigger_resistance "
                       "and trigger_vibration are set to false");
-    rex::cvar::SetFlagByName("trigger_resistance", "false");
-    rex::cvar::SetFlagByName("trigger_vibration", "false");
-    rex::cvar::SetFlagByName("adaptive_triggers", "true");
+    larecomp::cvar::SetFlagByName("trigger_resistance", "false");
+    larecomp::cvar::SetFlagByName("trigger_vibration", "false");
+    larecomp::cvar::SetFlagByName("adaptive_triggers", "true");
 }
 
 // What the tick wants the triggers to be, worked out from the settings, the car and the window.
@@ -491,16 +464,16 @@ struct Wish {
 // Reads the settings and the game and works out the wish. Game thread, every kTickMs.
 Wish WorkOutWish(int64_t now) {
     Wish wish;
-    const bool resistance = REXCVAR_GET(trigger_resistance);
-    const bool vibration = REXCVAR_GET(trigger_vibration);
+    const bool resistance = larecomp::settings::trigger_resistance.Get();
+    const bool vibration = larecomp::settings::trigger_vibration.Get();
     if (!resistance && !vibration) return wish;
     wish.enabled = true;
     const bool driving = Driving();
     const bool engaged = driving && WindowInFront();
     if (engaged) {
         if (resistance) {
-            wish.r2 = Slope(1, 9, 1, REXCVAR_GET(trigger_throttle));
-            wish.l2 = Slope(2, 8, 2, REXCVAR_GET(trigger_brake));
+            wish.r2 = Slope(1, 9, 1, larecomp::settings::trigger_throttle.Get());
+            wish.l2 = Slope(2, 8, 2, larecomp::settings::trigger_brake.Get());
         }
         if (vibration) {
             // A trigger holds one effect: the vibration replaces the spring or the brake while
@@ -736,7 +709,7 @@ void Tick() {
     if (!worker.started.load(std::memory_order_acquire)) {
         // No worker until the watcher has seen a DualSense: a player without one pays one atomic read.
         if (larecomp::devwatch::DualSenseCount() == 0) return;
-        if (!REXCVAR_GET(trigger_resistance) && !REXCVAR_GET(trigger_vibration)) return;
+        if (!larecomp::settings::trigger_resistance.Get() && !larecomp::settings::trigger_vibration.Get()) return;
         StartWorker();
         if (!worker.started.load(std::memory_order_acquire)) return;
         g_posted = Wish();  // the first wish always goes

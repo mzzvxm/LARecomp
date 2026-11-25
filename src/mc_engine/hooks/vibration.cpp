@@ -14,11 +14,11 @@
 // the game asks again, so the per-frame tick sends the stop itself.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/input/input.h>
-#include <rex/input/input_system.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xam/input.h>
+#include <rex/hid/input_system.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <atomic>
 #include <cstdint>
 #include <cstring>
@@ -26,11 +26,8 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(controller_vibration, true, "MCLA/Input",
-    "Controller vibration. Off keeps the game's rumble from reaching any controller and stops a "
-    "motor that is running.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
+#include "../sdk_access.h"
 
 namespace {
 
@@ -45,9 +42,9 @@ std::atomic<uint32_t> g_driven[kUsers];
 // 0x8275CC34 in sub_8275CB88: the `bl XamInputSetState`. r3 = the user, r5 = the speeds on the
 // stack (two big-endian 16-bit values, left first).
 void Hook_VibrationSet(PPCRegister& r3, PPCRegister& r5) {
-    uint8_t* base = rex::Runtime::instance()->virtual_membase();
+    uint8_t* base = larecomp::guest::Membase();
     if (!base || r5.u32 == 0) return;
-    if (!REXCVAR_GET(controller_vibration)) {
+    if (!larecomp::settings::controller_vibration.Get()) {
         std::memset(base + r5.u32, 0, 4);
     }
     if (r3.u32 < kUsers) {
@@ -66,18 +63,15 @@ uint32_t VibrationDriven(uint32_t user) {
 // Per frame, on the game's thread (Patch_DeltaTimePre): the option was turned off while a
 // motor was running.
 void TickVibration() {
-    if (REXCVAR_GET(controller_vibration)) return;
-    auto* input = static_cast<rex::input::InputSystem*>(
-        rex::Runtime::instance()->input_system());
+    if (larecomp::settings::controller_vibration.Get()) return;
+    auto* input = larecomp::sdk::Input();
     if (!input) return;
     for (uint32_t user = 0; user < kUsers; ++user) {
         if (g_driven[user].exchange(0, std::memory_order_relaxed) == 0) continue;
-        rex::input::X_INPUT_VIBRATION stop;
-        stop.left_motor_speed = 0;
-        stop.right_motor_speed = 0;
-        const uint32_t result = static_cast<uint32_t>(input->SetState(user, &stop));
-        LARECOMP_APP_INFO("[Vibration] off: motors of user {} stopped (input layer answered 0x{:X})",
-                          user, result);
+        const rex::hid::PadVibration stop{0, 0};
+        const auto result = input->SetVibration(user, stop);
+        LARECOMP_APP_INFO("[Vibration] off: motors of user {} stopped (input layer answered {})",
+                          user, result ? "ok" : result.error().message);
     }
 }
 #endif  // REXGLUE_HAS_XEO3_TARGET

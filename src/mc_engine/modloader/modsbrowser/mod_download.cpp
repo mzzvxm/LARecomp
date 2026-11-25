@@ -1,4 +1,5 @@
 #include "mod_download.h"
+#include "settings/immortal.h"
 
 #include "mc_engine/modloader/modloader.h"
 
@@ -15,7 +16,7 @@
 #include <map>
 #include <thread>
 
-#include <rex/filesystem.h>
+#include <rex/platform/file.h>
 
 #include "larecomp_log.h"
 #include "../../online/protocol/browser_protocol.h"
@@ -60,7 +61,7 @@ std::string Utf8(const fs::path& p) {
 // A path from UTF-8 text (fs::u8path is deprecated in C++20).
 fs::path FromUtf8(const std::string& s) { return fs::path(std::u8string(s.begin(), s.end())); }
 
-fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder()); }
+fs::path ModelsDir() { return mc::modloader::ModRootDir(rex::platform::GetExecutableFolder()); }
 
 bool ValidModName(const std::string& n) {
     if (n.empty() || n.size() > 64 || n[0] == '.') return false;
@@ -109,7 +110,7 @@ fs::path LocalPath(const fs::path& root, const std::string& rel) {
 // ~275 MB, and the check runs on every join.
 bool LocalHash(const fs::path& p, uint64_t size, uint64_t* out) {
     static std::mutex m;
-    static std::map<std::string, std::pair<std::pair<uint64_t, int64_t>, uint64_t>> cache;
+    static std::map<std::string, std::pair<std::pair<uint64_t, int64_t>, uint64_t>>& cache = larecomp::Leak<std::map<std::string, std::pair<std::pair<uint64_t, int64_t>, uint64_t>>>();
     std::error_code ec;
     const auto mtime = fs::last_write_time(p, ec);
     if (ec) return false;
@@ -323,18 +324,18 @@ ModInfo ParseModInfo(const std::string& text) {
     return info;
 }
 
-ModInfo ReadLocalModInfo(const std::string& folder) {
-    std::ifstream f(ModelsDir() / FromUtf8(folder) / "mod.toml", std::ios::binary);
+ModInfo ReadLocalModInfo(const fs::path& mod_dir) {
+    std::ifstream f(mod_dir / "mod.toml", std::ios::binary);
     if (!f) return {};
     std::string text((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
     if (text.size() > 16384) text.resize(16384);
     return ParseModInfo(text);
 }
 
-std::vector<uint8_t> ReadLocalModImage(const std::string& folder, const ModInfo& info) {
+std::vector<uint8_t> ReadLocalModImage(const fs::path& mod_dir, const ModInfo& info) {
     std::vector<uint8_t> out;
     if (info.image.empty()) return out;
-    const fs::path p = LocalPath(ModelsDir() / FromUtf8(folder), info.image);
+    const fs::path p = LocalPath(mod_dir, info.image);
     std::error_code ec;
     const auto size = fs::file_size(p, ec);
     if (ec || size == 0 || size > kMaxImageBytes) return out;
@@ -379,7 +380,8 @@ std::string FormatBytes(uint64_t b) {
     return out;
 }
 
-ModCheck CheckServerMods(const std::string& host, uint16_t http_port, bool with_info, bool with_images) {
+ModCheck CheckServerMods(const std::string& host, uint16_t http_port, bool with_info, bool with_images,
+                         const fs::path& models_dir) {
     ModCheck check;
     std::string text;
     uint64_t length = 0;
@@ -432,7 +434,7 @@ ModCheck CheckServerMods(const std::string& host, uint16_t http_port, bool with_
         }
     }
 
-    const fs::path models = ModelsDir();
+    const fs::path models = models_dir.empty() ? ModelsDir() : models_dir;
     for (auto& m : check.mods) {
         const fs::path dir = models / FromUtf8(m.name);
         std::error_code ec;
@@ -494,8 +496,7 @@ void SetProgress(ModDownload::State& st, const std::function<void(ModDownload::P
 }
 
 bool DownloadMod(const std::string& host, uint16_t port, const ServerMod& mod, ModDownload::State& st,
-                 std::string* error) {
-    const fs::path models = ModelsDir();
+                 const fs::path& models, std::string* error) {
     const fs::path final_dir = models / FromUtf8(mod.name);
     const fs::path tmp = models / FromUtf8(".download_" + mod.name);
     std::error_code ec;
@@ -567,17 +568,18 @@ bool DownloadMod(const std::string& host, uint16_t port, const ServerMod& mod, M
 
 }  // namespace
 
-ModDownload::ModDownload(std::string host, uint16_t http_port, std::vector<ServerMod> mods)
+ModDownload::ModDownload(std::string host, uint16_t http_port, std::vector<ServerMod> mods, fs::path models_dir)
     : state_(std::make_shared<State>()) {
     uint64_t total = 0;
     for (const auto& m : mods) total += m.bytes;
     state_->progress.total = total;
     auto st = state_;
-    std::thread([st, host = std::move(host), http_port, mods = std::move(mods)] {
+    std::thread([st, host = std::move(host), http_port, mods = std::move(mods), models_dir = std::move(models_dir)] {
         std::string error;
         bool ok = true;
         for (const auto& m : mods) {
-            if (!DownloadMod(host, http_port, m, *st, &error)) {
+            const fs::path models = models_dir.empty() ? ModelsDir() : models_dir;
+            if (!DownloadMod(host, http_port, m, *st, models, &error)) {
                 ok = false;
                 break;
             }

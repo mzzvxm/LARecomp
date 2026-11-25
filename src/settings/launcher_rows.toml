@@ -1,0 +1,323 @@
+﻿# Game settings without a corresponding pause-menu row. Table order is display order.
+
+[[tabs]]
+id = "launcher_audio"
+label = "AUDIO"
+
+[[tabs.sections]]
+id = "launcher_audio_settings"
+label = "MUSIC"
+
+[[tabs.sections.rows]]
+id = "L_custom_music_announce"
+label = "SHOW SONG NAME"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "custom_music_announce"
+help = "Shows the song name when the radio changes tracks."
+
+[[tabs.sections.rows]]
+id = "L_custom_music_announce_seconds"
+label = "SONG NAME DURATION"
+kind = "number"
+surfaces = ["launcher"]
+setting = "custom_music_announce_seconds"
+help = "Sets how long the song name stays on screen."
+values = [
+  {id = "5", label = "5 SECONDS"},
+  {id = "10", label = "10 SECONDS"},
+  {id = "15", label = "15 SECONDS"},
+  {id = "20", label = "20 SECONDS"},
+  {id = "30", label = "30 SECONDS"},
+]
+
+[[tabs.sections.rows]]
+id = "L_custom_music_cue_gain_db"
+label = "CUSTOM MUSIC GAIN"
+kind = "number"
+surfaces = ["launcher"]
+setting = "custom_music_cue_gain_db"
+help = "Adjusts the volume of custom music in the game’s mixer."
+values = [
+  {id = "0", label = "0 DB"},
+  {id = "2", label = "2 DB"},
+  {id = "4", label = "4 DB"},
+  {id = "6", label = "6 DB"},
+]
+
+[[tabs]]
+id = "launcher_social"
+label = "SOCIAL"
+
+[[tabs.sections]]
+id = "launcher_social_settings"
+label = "DISCORD"
+
+[[tabs.sections.rows]]
+id = "L_larecomp_discord_rpc"
+label = "DISCORD RICH PRESENCE"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "larecomp_discord_rpc"
+help = "Shows your current activity in Discord."
+
+[[tabs.sections.rows]]
+id = "L_larecomp_discord_rpc_language"
+label = "DISCORD PRESENCE LANGUAGE"
+kind = "choice"
+surfaces = ["launcher"]
+setting = "larecomp_discord_rpc_language"
+help = "Chooses the language Discord uses to show your activity."
+values = [
+  {id = "auto", label = "AUTO"},
+  {id = "en", label = "ENGLISH"},
+  {id = "es", label = "SPANISH"},
+  {id = "pt", label = "PORTUGUESE"},
+]
+
+[[tabs]]
+id = "launcher_online"
+label = "ONLINE"
+
+[[tabs.sections]]
+id = "launcher_server_browser"
+label = "SERVER BROWSER"
+
+[[tabs.sections.rows]]
+id = "L_online_master_server"
+label = "SERVER LIST ADDRESS"
+kind = "text"
+surfaces = ["launcher"]
+setting = "online_master_server"
+help = "Host or host:port of the list used by the server browser (F6). The default port is 31003. Leave it blank to use only your saved servers and the current server."
+
+[[tabs]]
+id = "launcher_wheel"
+label = "STEERING WHEEL"
+
+[[tabs.sections]]
+id = "launcher_wheel_settings"
+label = "STEERING WHEEL"
+
+[[tabs.sections.rows]]
+id = "L_wheel_mode"
+label = "STEERING INPUT"
+kind = "choice"
+surfaces = ["launcher"]
+setting = "wheel_mode"
+help = "Chooses which device controls the car."
+values = [
+  {id = "auto", label = "AUTO"},
+  {id = "gamepad", label = "GAMEPAD"},
+  {id = "wheel", label = "WHEEL"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_ffb"
+label = "FORCE FEEDBACK"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "wheel_ffb"
+help = "Allows the game to send forces to the steering wheel."
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_ffb_strength"
+label = "FORCE FEEDBACK STRENGTH"
+kind = "number"
+surfaces = ["launcher"]
+setting = "wheel_ffb_strength"
+help = "Limits the force the game can send to the steering wheel."
+values = [
+  {id = "0", label = "0%"},
+  {id = "25", label = "25%"},
+  {id = "50", label = "50%"},
+  {id = "70", label = "70%"},
+  {id = "75", label = "75%"},
+  {id = "100", label = "100%"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_ffb_boost"
+label = "FORCE FEEDBACK BOOST"
+kind = "number"
+surfaces = ["launcher"]
+setting = "wheel_ffb_boost"
+help = "Amplifies the forces the game asks the steering wheel to produce."
+values = [
+  {id = "100", label = "100%"},
+  {id = "150", label = "150%"},
+  {id = "200", label = "200%"},
+  {id = "300", label = "300%"},
+  {id = "400", label = "400%"},
+  {id = "500", label = "500%"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_ffb_centering"
+label = "CENTERING FORCE"
+kind = "number"
+surfaces = ["launcher"]
+setting = "wheel_ffb_centering"
+help = "Sets how strongly the wheel returns to the center when the game is not running its own spring."
+values = [
+  {id = "0", label = "0%"},
+  {id = "20", label = "20%"},
+  {id = "40", label = "40%"},
+  {id = "60", label = "60%"},
+  {id = "80", label = "80%"},
+  {id = "100", label = "100%"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_ffb_sign"
+label = "FORCE DIRECTION"
+kind = "choice"
+surfaces = ["launcher"]
+setting = "wheel_ffb_sign"
+help = "Reverses the direction of force feedback when the wheel driver uses the opposite convention."
+values = [
+  {id = "auto", label = "AUTO"},
+  {id = "normal", label = "NORMAL"},
+  {id = "inverted", label = "INVERTED"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_device_range"
+label = "DEVICE ROTATION RANGE"
+kind = "number"
+surfaces = ["launcher"]
+setting = "wheel_device_range"
+help = "Matches the rotation range set in the steering wheel driver."
+values = [
+  {id = "180", label = "180°"},
+  {id = "270", label = "270°"},
+  {id = "360", label = "360°"},
+  {id = "540", label = "540°"},
+  {id = "720", label = "720°"},
+  {id = "900", label = "900°"},
+  {id = "1080", label = "1080°"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_game_range"
+label = "IN-GAME ROTATION RANGE"
+kind = "number"
+surfaces = ["launcher"]
+setting = "wheel_game_range"
+help = "Sets how far the wheel must turn to reach full steering lock in the game."
+values = [
+  {id = "180", label = "180°"},
+  {id = "270", label = "270°"},
+  {id = "360", label = "360°"},
+  {id = "540", label = "540°"},
+  {id = "720", label = "720°"},
+  {id = "900", label = "900°"},
+  {id = "1080", label = "1080°"},
+]
+os = ["windows"]
+
+[[tabs.sections.rows]]
+id = "L_wheel_steer_deadzone"
+label = "STEERING DEAD ZONE"
+kind = "number"
+surfaces = ["launcher"]
+setting = "wheel_steer_deadzone"
+help = "Sets the range around the wheel’s center that reads as straight ahead."
+values = [
+  {id = "0", label = "0%"},
+  {id = "0.005", label = "0.5%"},
+  {id = "0.01", label = "1%"},
+  {id = "0.02", label = "2%"},
+  {id = "0.05", label = "5%"},
+  {id = "0.1", label = "10%"},
+]
+os = ["windows"]
+
+[[tabs]]
+id = "launcher_options"
+label = "GAME OPTIONS"
+
+[[tabs.sections]]
+id = "launcher_options_settings"
+label = "GAME OPTIONS"
+
+[[tabs.sections.rows]]
+id = "L_mcla_controller_toast"
+label = "CONTROLLER NOTIFICATIONS"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "mcla_controller_toast"
+help = "Shows a notification when a controller connects or disconnects."
+
+[[tabs.sections.rows]]
+id = "L_profile_auto_select"
+label = "SKIP SAVE PICKER"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "profile_auto_select"
+help = "Starts with the configured save profile and skips the save picker."
+
+[[tabs.sections.rows]]
+id = "L_model_mods"
+label = "MODEL MODS"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "model_mods"
+help = "Loads installed replacement models."
+
+[[tabs.sections.rows]]
+id = "L_unlock_ride_height"
+label = "UNLOCK RIDE HEIGHT"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "unlock_ride_height"
+help = "Makes the full stock ride-height range available in the shop."
+
+[[tabs.sections.rows]]
+id = "L_unlock_wheel_fit"
+label = "UNLOCK WHEEL FIT"
+kind = "bool"
+surfaces = ["launcher"]
+setting = "unlock_wheel_fit"
+help = "Removes car-specific clearance limits from wheel and tire choices."
+
+[[tabs]]
+id = "troubleshooting"
+label = "TROUBLESHOOTING"
+
+[[tabs.sections]]
+id = "troubleshooting_settings"
+label = "GRAPHICS DEVICE"
+
+[[tabs.sections.rows]]
+id = "L_mcla_gpu_adapter"
+label = "GRAPHICS CARD"
+kind = "choice"
+surfaces = ["launcher"]
+setting = "mcla_gpu_adapter"
+help = "Chooses which graphics card the native renderer uses."
+values_from = {generator = "gpu.adapters"}
+fallback_values = [{id = "auto", label = "AUTO", writes = [{setting = "mcla_gpu_adapter", value = ""}]}]
+default = "auto"
+renderers = ["native"]
+
+[[tabs.sections.rows]]
+id = "L_graphics_backend"
+label = "GRAPHICS API"
+kind = "choice"
+surfaces = ["launcher"]
+setting = "graphics_backend"
+help = "Chooses the graphics API used by the native renderer."
+values = [
+  {id = "auto", label = "AUTO"},
+  {id = "d3d12", label = "D3D12"},
+  {id = "vulkan", label = "VULKAN"},
+]
+renderers = ["native"]

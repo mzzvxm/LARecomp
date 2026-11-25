@@ -23,7 +23,7 @@
 #include <string_view>
 #include <vector>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 namespace larecomp {
 
@@ -51,7 +51,7 @@ void InitDebugMenu();
 struct DebugCvarChange {
   std::string name;
   std::string value;                // as the cvar's own getter prints it
-  rex::cvar::Source source;         // who wrote it last
+  larecomp::cvar::Source source;         // who wrote it last
 };
 
 // Every debug-only cvar whose value differs from its default, by name. Left out: debug_menu itself,
@@ -60,7 +60,7 @@ std::vector<DebugCvarChange> NonDefaultDebugCvars();
 
 // "command line", "environment", "larecomp.toml", "this session" (SetFlagByName: a menu, the
 // settings panel, the console) or "default".
-const char* CvarSourceName(rex::cvar::Source source);
+const char* CvarSourceName(larecomp::cvar::Source source);
 
 namespace testing {
 // For the unit test only: forgets the fixed answer so a test can start again.

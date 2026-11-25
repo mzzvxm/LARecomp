@@ -756,7 +756,8 @@ TakeReport SampleReport() {
     r.scene_source = "C:\\mcv\\larecomp\\ports\\scripts\\scenes\\take-20s.scene";
     r.scene_copy = kSceneCopyName;
     r.scene_fnv64 = Hex64(Fnv1a64("scene text", 10));
-    r.first_scene_t = 0.016666667;
+    r.first_scene_t = 12.00345678901234;
+    r.scene_step_s = 1.0 / 60.0;
     r.exe_path = "C:\\mcv\\larecomp\\ports\\exe\\b-m2b\\larecomp.exe";
     r.exe_commit = "3f1755e339dfd8f9b9259c2d0d18514b41e4d4b7";
     r.version = "PATCH 10 - PREVIEW 2";
@@ -846,6 +847,10 @@ void TestJson() {
     Check(scene && scene->type == 'o' && scene->Get("copy") && scene->Get("copy")->s == "scene.scene" && scene->Get("source") &&
               scene->Get("source")->s == rep.scene_source,
           "scene: a path with backslashes survives");
+    Check(scene && scene->Get("first_frame_scene_t") && scene->Get("first_frame_scene_t")->d == rep.first_scene_t,
+          "take start round-trips at full precision");
+    Check(scene && scene->Get("step_s") && scene->Get("step_s")->d == rep.scene_step_s,
+          "take step round-trips at full precision");
     const J* exe = t.Get("exe");
     Check(exe && exe->Get("commit") && exe->Get("commit")->s == rep.exe_commit, "exe commit");
     const J* pic = t.Get("picture");

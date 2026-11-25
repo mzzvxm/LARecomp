@@ -104,7 +104,7 @@ int g_consumed = 0;
 
 // What the runtime's ExceptionHandlerCallback does with write watches: lift the protection and
 // return so that the instruction runs again. A fault it does not know it declines, which is where
-// crash_handler.cpp's rex::arch::ExceptionHandler callback runs and calls ReportUnconsumed.
+// crash_handler.cpp's rex::platform::ExceptionHandler callback runs and calls ReportUnconsumed.
 void FakeRuntimeHandler(int sig, siginfo_t* info, void*) {
   const uintptr_t a = reinterpret_cast<uintptr_t>(info->si_addr);
   const uintptr_t w = reinterpret_cast<uintptr_t>(g_watched);

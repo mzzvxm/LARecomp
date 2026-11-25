@@ -4,8 +4,12 @@
 // This file is yours to edit. 'rexglue migrate' will NOT overwrite it.
 
 #include "crash_handler.h"
+#include "crash_options.h"
+#include "exit_fast.h"
 #include "larecomp_log.h"
+#include "process_exit.h"
 
+#include <atomic>
 #include <filesystem>
 
 #if defined(_WIN32)
@@ -14,7 +18,6 @@
 #endif
 #include <windows.h>
 #include <dbghelp.h>
-#include <spdlog/spdlog.h>
 
 #include <csignal>
 #include <cstdio>
@@ -29,6 +32,10 @@
 namespace {
 
 std::mutex g_sym_mtx;  // dbghelp is single-threaded; serialize handler entry
+
+// Hands what the logger holds to every sink, so the file has the last lines. rexglue 0.11: the SDK's logger is the only
+// registry (spdlog is private to the SDK), and rex::log::Flush() is its call for a crash handler.
+void FlushLogs() { rex::log::Flush(); }
 
 // Resolve one host address to "module+off  symbol+off (file:line)" and log it.
 // Recompiled guest functions appear in the PDB as rex_sub_82XXXXXX, so a symbol
@@ -51,6 +58,9 @@ void LogAddr(const char* label, DWORD64 a) {
         }
     }
 
+    // std::format (the SDK's log macros) takes a C string by pointer; an array argument is the one spelling left to doubt.
+    const char* const mod_name = modname;
+
     char symbuf[sizeof(SYMBOL_INFO) + 512] = {};
     auto* si = reinterpret_cast<SYMBOL_INFO*>(symbuf);
     si->SizeOfStruct = sizeof(SYMBOL_INFO);
@@ -65,13 +75,13 @@ void LogAddr(const char* label, DWORD64 a) {
     bool haveline = SymGetLineFromAddr64(proc, a, &ldisp, &line) != FALSE;
 
     if (sym && haveline) {
-        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}  ({}:{})", label, a, modname,
+        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}  ({}:{})", label, a, mod_name,
                              a - modbase, sym, sdisp, line.FileName, line.LineNumber);
     } else if (sym) {
-        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}", label, a, modname, a - modbase,
+        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  {}+0x{:X}", label, a, mod_name, a - modbase,
                              sym, sdisp);
     } else {
-        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  <no symbol>", label, a, modname,
+        LARECOMP_CRASH_ERROR("  {} 0x{:016X}  {}+0x{:X}  <no symbol>", label, a, mod_name,
                              a - modbase);
     }
 }
@@ -136,20 +146,19 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
         LogAddr(lbl, sf.AddrPC.Offset);
     }
 
-    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
-        if (logger) logger->flush();
-    });
+    FlushLogs();
+
+    // The test harness's switch (crash_options.h): the SDK's reporter has written its report and skipped its box (LarecompApp::
+    // GetCrashOptions) and has called this filter last, so nothing is left to write. End the process here with a status of its
+    // own instead of going on to Windows Error Reporting (its box, its minutes-long dump), so a test run sees the end at once.
+    if (larecomp::crash::NoDialogFromEnvironment()) {
+        larecomp::EndProcessNow(static_cast<int>(larecomp::crash::kNoDialogExitCode));
+    }
 
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
 namespace {
-
-void FlushLogs() {
-    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
-        if (logger) logger->flush();
-    });
-}
 
 // Stack trace for deaths that carry no EXCEPTION_POINTERS: std::terminate,
 // abort(), a CRT invalid parameter, a pure virtual call. SetUnhandledException
@@ -188,12 +197,14 @@ void OnTerminate() {
     LogCurrentStack("std::terminate", detail.c_str());
     // Exit without running the default terminate handler, which would abort
     // into Windows Error Reporting and can hang on a machine with no debugger.
-    std::_Exit(3);
+    // Not std::_Exit: that still ends in ExitProcess, whose DLL detach destroys a
+    // live graphics driver (process_exit.h), a second failure behind this one.
+    larecomp::EndProcessNow(3);
 }
 
 void OnAbortSignal(int) {
     LogCurrentStack("abort()");
-    std::_Exit(3);
+    larecomp::EndProcessNow(3);
 }
 
 void OnInvalidParameter(const wchar_t* expression, const wchar_t* function, const wchar_t* file,
@@ -203,12 +214,12 @@ void OnInvalidParameter(const wchar_t* expression, const wchar_t* function, cons
                   expression ? expression : L"<no expression>", function ? function : L"<unknown>",
                   file ? file : L"<no file>", line);
     LogCurrentStack("CRT invalid parameter", detail);
-    std::_Exit(3);
+    larecomp::EndProcessNow(3);
 }
 
 void OnPureCall() {
     LogCurrentStack("pure virtual call");
-    std::_Exit(3);
+    larecomp::EndProcessNow(3);
 }
 
 }  // namespace
@@ -226,6 +237,12 @@ void InstallCrashLogger() {
     // The paths above kill the process without ever raising an exception, so
     // without these the log just stops mid-line with no reason recorded.
     std::set_terminate(&OnTerminate);
+    // CHECK (rexglue 0.11): rex::Init then calls std::signal(SIGABRT, AbortSignal) (src/base/crash_win.cpp,
+    // InstallPlatform), which replaces this handler and does not call it (it keeps ours only to put it back at
+    // uninstall). So an abort() writes the SDK's "SIGABRT (abort, ...)" report and the CRT ends the process
+    // (status 3), not LogCurrentStack's "ABORT DETECTED" block with symbols. The unhandled-exception filter
+    // is not affected: the SDK's filter calls ours (its g_previous_filter). If the symbols are missed, set
+    // OnAbortSignal again in OnInit; decide from a run with an abort() (no test mode on Windows).
     std::signal(SIGABRT, &OnAbortSignal);
     // Keep abort() on the signal path instead of letting the CRT fast-fail
     // straight into Windows Error Reporting, and drop the modal abort message.
@@ -234,12 +251,18 @@ void InstallCrashLogger() {
     _set_purecall_handler(&OnPureCall);
 
     // Separates "the process crashed" from "the process exited on purpose":
-    // std::_Exit (used by the shutdown paths) skips this, a normal exit does
-    // not, and a crash reaches neither.
-    std::atexit([]() {
-        LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
-        FlushLogs();
-    });
+    // EndProcessNow (the shutdown watchdog and the crash paths above) skips this,
+    // a normal exit does not, and an unhandled exception reaches neither.
+    // The fast exit (exit_fast.h: the process ends right after the orderly shutdown, without the C runtime's exit) calls the same note itself.
+    larecomp::exitfast::SetNote(&NoteProcessExiting);
+    std::atexit([]() { NoteProcessExiting(); });
+}
+
+void NoteProcessExiting() {
+    static std::atomic<bool> noted{false};
+    if (noted.exchange(true)) return;  // once, whichever of the two ways of ending the process gets here
+    LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
+    FlushLogs();
 }
 
 std::filesystem::path ExeDir() {
@@ -261,23 +284,38 @@ std::filesystem::path ExeDir() {
 // nothing of the game or the SDK; this file is the glue: where the log is, how the runtime's own
 // fault handling is chained with, std::terminate, the exit marker and the crash test.
 //
-// How it chains with the runtime. The runtime handles SIGSEGV and SIGILL itself (write watches on
-// guest memory, MMIO): rex::arch::ExceptionHandler keeps a list of callbacks and calls them in the
-// order they were installed until one returns true. Its signal handler never chains and never
-// restores the default action, so a fault no callback takes would run again and fault again for
-// ever. InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the
-// runtime's own callback, so it is reached only for a fault that nothing consumed and then writes
-// the report, restores the default action and returns false (the instruction faults once more and
-// the process dies with the normal status and core dump), and (2) puts a wrapper on SIGSEGV and
-// SIGILL with SA_ONSTACK that calls the runtime's handler first (what makes the signal stack count)
-// and takes SIGBUS and SIGFPE, which the SDK's seh_initialize had taken from the early handlers.
-// A fault the runtime handles never reaches the report.
+// How it chains with the runtime (rexglue 0.11). The runtime handles SIGSEGV and SIGILL itself (write
+// watches on guest memory, MMIO): rex::platform::ExceptionHandler keeps a list of callbacks and calls them
+// in the order they were installed until one returns true. A fault that no callback takes is forwarded (ForwardSignal, src/base/exception_handler_posix.cpp) to the action that was installed
+// before the runtime's own, which here is our early FatalSignalHandler (crash_report_linux.h). With no such
+// handler (SIG_DFL or SIG_IGN), or when the same fault comes back too often, the SDK writes its own report,
+// restores the default action and re-raises. So the 0.10 trap is gone: there the handler never chained and
+// never restored the default action, and a fault nothing took ran again and faulted again for ever.
+//
+// The SDK's own crash reporter (rex::Init, src/base/crash_posix.cpp) puts its handler only on a signal that
+// still has the default action, and InstallCrashLogger() runs in the app constructor, before rex::Init:
+// on Linux our handlers already hold SIGSEGV, SIGBUS, SIGILL, SIGFPE and SIGABRT, so the SDK's reporter
+// leaves all five to us and a crash writes one report, ours. (On Windows it is the other way round for
+// SIGABRT: see InstallCrashLogger.) CHECK: not run on Linux yet: a deliberate crash of each kind
+// (mcla_test_crash) should give one report and the signal's normal exit status.
+//
+// InstallCrashLoggerAfterRuntime() therefore (1) registers OnUnconsumedFault AFTER the runtime's own
+// callback (the SDK adds that one when TitleRuntime::Load makes the guest memory, so the call belongs in
+// OnTitleLaunch, not OnInit: from OnInit the logger's callback came first and EVERY fault, a GPU write
+// watch included, was reported as a crash and ended the process; the 2026-11-21 Linux boot check died
+// that way on the first write to a watched guest page, and the guard in the function refuses an early
+// call), so it is reached only for a fault that nothing consumed; it writes the report (with the
+// operation and address the runtime's Exception carries), restores the default action and returns false,
+// and the runtime then forwards the fault to our early handler, which finds the report written and ends
+// the process with the normal status and core dump. CHECK: that forward also reaches FatalSignalHandler with
+// the signal's own ucontext, so this callback may be redundant now; it stays until a Linux run says so.
+// And (2) puts a wrapper on SIGSEGV and SIGILL with SA_ONSTACK that calls the runtime's handler first (what
+// makes the signal stack count) and takes SIGBUS and SIGFPE, which the SDK's seh_initialize had taken from
+// the early handlers. A fault the runtime handles never reaches the report.
 
-#include <spdlog/spdlog.h>
-
-#include <rex/cvar.h>
-#include <rex/exception_handler.h>
-#include <rex/platform/seh.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/exception_handler.h>
+#include <rex/ppc/seh.h>
 
 #include <chrono>
 #include <csignal>
@@ -297,28 +335,11 @@ std::filesystem::path ExeDir() {
 
 extern uint8_t* g_guest_mem;  // main.cpp; set once the runtime's memory exists
 
-REXCVAR_DEFINE_STRING(
-    mcla_test_crash, "", "MCLA/Debug",
-    "Crash test for the Linux crash logger: MODE or MODE:SECONDS (5 seconds by default), a few "
-    "seconds after the game has started. segv writes to address 0x10 on a worker thread; guest "
-    "reads the guest's null page (the runtime logs 'Unhandled guest access violation' first, as for "
-    "a real guest crash); stack runs a worker thread out of stack (it has a signal stack); abort "
-    "calls abort(); terminate throws an exception nobody catches; illegal runs an illegal "
-    "instruction; fpe divides by zero. The log must end with '!!! CRASH DETECTED !!!' (or '!!! "
-    "ABORT DETECTED !!!') and a stack trace, and the game dies with the signal's status. Only works "
-    "with the debug menu unlocked. Linux only.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart)
-    .debug_only();
-
 namespace {
 
 namespace lx = larecomp::crash::lx;
 
-void FlushLogs() {
-    spdlog::apply_all([](std::shared_ptr<spdlog::logger> logger) {
-        if (logger) logger->flush();
-    });
-}
+void FlushLogs() { rex::log::Flush(); }
 
 // A signal handler must never take the log sink's lock (the crashing thread may hold it), so the
 // flush runs on the reporter's helper thread, which the handler waits for at most 300 ms.
@@ -329,37 +350,37 @@ void FlushLogsOnHelperThread() {
 // The SDK's seh_initialize handlers for SIGBUS and SIGFPE belong to the code that asked for SEH
 // protection (nothing in the game does today): leave a fault inside such a region to it.
 bool SehRegionActive(int) {
-    return rex::platform::seh_active();
+    return rex::platform::GetSEHThreadState().top != nullptr;  // an open REX_SEH_TRY scope on this thread (POSIX)
 }
 
 // Registered after the runtime's own callbacks (see the top of the section): reached only when
 // every one of them declined this fault.
-bool OnUnconsumedFault(rex::arch::Exception* ex, void*) {
+bool OnUnconsumedFault(rex::platform::Exception* ex, void*) {
     lx::Fault f;
-    switch (ex->code()) {
-        case rex::arch::Exception::Code::kAccessViolation:
+    switch (ex->GetCode()) {
+        case rex::platform::Exception::Code::kAccessViolation:
             f.signo = SIGSEGV;
             f.has_addr = true;
-            f.addr = ex->fault_address();
-            switch (ex->access_violation_operation()) {
-                case rex::arch::Exception::AccessViolationOperation::kRead:
+            f.addr = ex->GetFaultAddress();
+            switch (ex->GetAccessViolationOperation()) {
+                case rex::platform::Exception::AccessViolationOperation::kRead:
                     f.op = 1;
                     break;
-                case rex::arch::Exception::AccessViolationOperation::kWrite:
+                case rex::platform::Exception::AccessViolationOperation::kWrite:
                     f.op = 2;
                     break;
                 default:
                     break;
             }
             break;
-        case rex::arch::Exception::Code::kIllegalInstruction:
+        case rex::platform::Exception::Code::kIllegalInstruction:
             f.signo = SIGILL;
             break;
         default:
             return false;
     }
 #if REX_ARCH_AMD64
-    if (const rex::arch::HostThreadContext* c = ex->thread_context()) {
+    if (const rex::platform::HostThreadContext* c = ex->GetThreadContext()) {
         f.has_pc = true;
         f.pc = c->rip;
         f.has_regs = true;
@@ -386,8 +407,9 @@ void OnTerminate() {
         }
     }
     lx::ReportAbortLike("std::terminate", detail);
-    // abort() raises SIGABRT; the report is written already, the handler only ends the process
-    // with the default action (status 134, core dump).
+    // abort() raises SIGABRT; the report is written already, the handler (ours: the SDK's reporter leaves
+    // SIGABRT to it, see the top of this section) only ends the process with the default action
+    // (status 134, core dump).
     std::abort();
 }
 
@@ -449,7 +471,7 @@ void RunCrashTest(const std::string& mode) {
 }
 
 void ArmCrashTest() {
-    std::string spec = REXCVAR_GET(mcla_test_crash);
+    std::string spec = larecomp::settings::mcla_test_crash.Get();
     if (spec.empty()) return;
     // The same gate as everything hidden: the answer was fixed at start, nothing unlocks a running game.
     if (!larecomp::DebugMenuUnlocked()) {
@@ -479,12 +501,12 @@ void InstallCrashLogger() {
     if (installed) return;
     installed = true;
 
-    // Where the log sink appends, as an absolute path: the report opens the file again by name.
+    // Where the log sink appends, as an absolute path: the report opens the file again by name. The SDK opens its file in
+    // App::Init, after this runs, so only an absolute log.file_name (LARECOMP_LOG_FILE) names it for certain here;
+    // otherwise the early reports go to stderr and NoteCrashLogFile() (OnInit) sets the path.
     std::string log_path;
-    if (const char* name = LarecompLogFilePath(); name && *name) {
-        std::error_code ec;
-        const auto absolute = std::filesystem::absolute(name, ec);
-        log_path = ec ? std::string(name) : absolute.string();
+    if (const std::filesystem::path named(rex::GetLogger().file_name.Get()); named.is_absolute()) {
+        log_path = named.string();
     }
     lx::InstallEarly(log_path.c_str(), lx::LocalUtcOffsetSeconds(), &FlushLogsOnHelperThread);
     lx::S().skip_signal = &SehRegionActive;
@@ -494,22 +516,46 @@ void InstallCrashLogger() {
 
     // Separates "the process crashed" from "the process exited on purpose": std::_Exit (used by
     // the shutdown paths) skips this, a normal exit does not, and a crash reaches neither.
-    std::atexit([]() {
-        LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
-        FlushLogs();
-    });
+    // The fast exit (exit_fast.h: the process ends right after the orderly shutdown, without the C runtime's exit) calls the same note itself.
+    larecomp::exitfast::SetNote(&NoteProcessExiting);
+    std::atexit([]() { NoteProcessExiting(); });
+}
+
+void NoteProcessExiting() {
+    static std::atomic<bool> noted{false};
+    if (noted.exchange(true)) return;  // once, whichever of the two ways of ending the process gets here
+    LARECOMP_CRASH_INFO("Process exiting normally (exit/return from main)");
+    FlushLogs();
+}
+
+// OnInit: the SDK has opened this run's log file by now, so LarecompLogFile() names it (the reports append to it by name). Kept apart
+// from InstallCrashLoggerAfterRuntime() so that a crash while TitleRuntime::Load runs still reaches the file.
+void NoteCrashLogFile() {
+    const std::filesystem::path log_file = LarecompLogFile();
+    if (!log_file.empty()) {
+        std::snprintf(lx::S().log_path, sizeof(lx::S().log_path), "%s", log_file.string().c_str());
+    }
 }
 
 void InstallCrashLoggerAfterRuntime() {
     static bool installed = false;
     if (installed) return;
+
+    // The runtime's own callback (GuestAddressSpace::Initialize, which TitleRuntime::Load calls) has to be on
+    // the ExceptionHandler list already: the list is called in the order installed and this callback ends the
+    // process for every fault it is given. g_guest_mem is set by OnTitleLaunch once that memory exists.
+    if (!g_guest_mem) {
+        LARECOMP_CRASH_ERROR("[crash] the Linux crash logger's second half was asked for before the guest memory exists: "
+                             "not installed (its callback would end the game at the first guest write watch)");
+        return;
+    }
     installed = true;
 
-    // After the runtime's own callback (MMIOHandler::Install, in Memory::Initialize, which
-    // Runtime::Setup has run by the time OnPostSetup calls this): called in the order installed.
-    rex::arch::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
+    // After the runtime's own callback: called in the order installed.
+    rex::platform::ExceptionHandler::Install(&OnUnconsumedFault, nullptr);
     lx::InstallLate();
-    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", LarecompLogFilePath());
+    NoteCrashLogFile();  // in case OnInit's call found no file yet
+    LARECOMP_CRASH_INFO("Linux crash logger active (log {})", LarecompLogFile().string());
 
     ArmCrashTest();
 }
@@ -517,7 +563,9 @@ void InstallCrashLoggerAfterRuntime() {
 #else  // another POSIX system: no crash logger
 
 void InstallCrashLogger() {}
+void NoteCrashLogFile() {}
 void InstallCrashLoggerAfterRuntime() {}
+void NoteProcessExiting() {}
 
 #endif  // __linux__
 

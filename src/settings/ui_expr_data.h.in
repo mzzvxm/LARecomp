@@ -1,0 +1,5 @@
+#pragma once
+
+inline constexpr char kPauseMenuRulesToml[] = R"lfg(
+@LARECOMP_PAUSE_MENU_RULES@
+)lfg";

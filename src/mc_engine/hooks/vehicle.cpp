@@ -3,44 +3,17 @@
 // player cars.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 
+#include "bound_node_guard.h"
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(break_pairwise_collision, false, "MCLA/Patches", "Disables pairwise collision resolution.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(unlock_ride_height, false, "MCLA/Patches", "Allow the full stock ride-height table in the shop (down to rh_800 / -8).")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(unlock_wheel_fit, false, "MCLA/Patches", "Allow every stock rim size, tire profile, tire width and ride height regardless of the car's clearance metrics.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// BadassBaboon's Recomp Adjustments: Vehicle chassis suspension damping & ground depth continuous filter
-REXCVAR_DEFINE_BOOL(smooth_chassis_depth, true, "MCLA/Physics",
-    "Fix: Smooth vehicle chassis suspension and ground depth damping at 60 FPS.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// BadassBaboon's Recomp Adjustments: Continuous-time vehicle physics filters at 60+ FPS
-REXCVAR_DEFINE_BOOL(smooth_vehicle_physics, true, "MCLA/Physics",
-    "Fix: Continuous-time tire slip filter at 60+ FPS.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(smooth_bike_gyro, true, "MCLA/Physics",
-    "Fix: Step the motorcycle gyro's smoothing in continuous time, so bikes lean and settle "
-    "the same at any frame rate.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 // Traffic (va_) vehicles turned into player cars: chassis-bound substitution.
 //
@@ -59,7 +32,7 @@ REXCVAR_DEFINE_BOOL(smooth_bike_gyro, true, "MCLA/Physics",
 // the traffic car's own 16-vertex hull. It is a no-op for every shipped player car,
 // which is why it is unconditional rather than cvar-gated.
 static void SubstituteChassisBound(uint32_t root, PPCRegister& child) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base || root == 0) return;
     if (base[root + 4] != 12) child.u64 = root;
 }
@@ -89,7 +62,7 @@ void MCLA_TrafficChassisBound_8232E274(PPCRegister& r3, PPCRegister& r31) {
 // true jumps to the epilogue at 0x8259AA90, which is exactly right: a non-composite
 // has no children to release.
 bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     const auto bound = static_cast<uint32_t>(r30.u64);
     if (!base) return false;
     return bound == 0 || base[bound + 4] != 12;
@@ -144,7 +117,7 @@ bool MCLA_ShaderGroupLookup_82193AF8(PPCRegister& r3) {
 // 0x82379548 in sub_823794E0, before `stb r9, 267(r31)` that clears the brake bind's
 // pending byte. r31 is the cache. True jumps to the epilogue at 0x8237954C.
 bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 256) != 0) return false;
     NoteShaderBindRace("brake variables");
     return true;
@@ -153,15 +126,36 @@ bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) {
 // 0x823794C8 in sub_823793E8, before `stb r11, 266(r31)` that clears the paint bind's
 // pending byte. r31 is the cache. True jumps to the epilogue at 0x823794CC.
 bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base || ReadGuestU32(base, static_cast<uint32_t>(r31.u64) + 252) != 0) return false;
     NoteShaderBindRace("paint variables");
     return true;
 }
 
+// The game's bound-node test sub_82574FF8(r3 = the query, r4 = a node of the bound pool, r5 = a mask): the query's box against the node's matrix (+16)
+// and bound (the pointer at +4, then the box through it). Its callers (sub_8256CF78, and sub_8256CEC8, which walks the node's chain until a test says
+// yes) take the node from the pool by index. A node whose bound pointer is 0 (dropped, or not filled yet) makes the first read land on guest 0xC: the
+// title died that way 3 s into a race load on a guest thread (vol3-race-vulkan, 2026-11-20; 1 of 318 logged race loads, with three game
+// instances running at once; a game-side race, the volumetric light's hook is not on that path). Such a node contains nothing: the test answers no
+// (r3 = 0, then a `blr`) and the callers take the next node. It fires only where the title would have died. See hooks/bound_node_guard.h.
+// CHECK: which thread drops the node was not seen (inferred from the race load's timing); the guard holds whichever it is.
+static std::atomic<uint32_t> g_bound_node_races{0};
+
+bool MCLA_BoundNodeTest_82574FF8(PPCRegister& r3, PPCRegister& r4) {
+    if (!mcla::hooks::BoundNodeIsDropped(larecomp::guest::Membase(), static_cast<uint32_t>(r4.u64))) return false;
+    r3.u64 = 0;
+    const uint32_t n = ++g_bound_node_races;
+    if (n <= 4) {
+        LARECOMP_APP_WARN("[bound-node] the bound test was given a node with no bound (0x{:08X}), "
+                          "probably one being dropped by another thread; it answers no ({} so far)",
+                          static_cast<uint32_t>(r4.u64), n);
+    }
+    return true;
+}
+
 // Returns 'true' to inject a 'blr' (return from collision function)
 bool Patch_PhysicsCollision() {
-    return REXCVAR_GET(break_pairwise_collision);
+    return larecomp::settings::break_pairwise_collision.Get();
 }
 
 // Ride height range. sub_82392F68 is the wheel-fit validator: with
@@ -176,7 +170,7 @@ bool Patch_PhysicsCollision() {
 // out of both comparisons while leaving the rim/tire size checks - which only
 // depend on f31 - exactly as shipped.
 void Patch_RideHeightFit(PPCRegister& f30) {
-    if (REXCVAR_GET(unlock_ride_height)) f30.f64 = 0.0;
+    if (larecomp::settings::unlock_ride_height.Get()) f30.f64 = 0.0;
 }
 
 // Wheel sizing range. The same validator gates all four wheel mods: the shop
@@ -189,11 +183,11 @@ void Patch_RideHeightFit(PPCRegister& f30) {
 // menus expose their full stock lists. Cosmetic only - no geometry is created,
 // the tires just clip the arches at the extremes.
 bool Patch_WheelFitBypass() {
-    return REXCVAR_GET(unlock_wheel_fit);
+    return larecomp::settings::unlock_wheel_fit.Get();
 }
 
 void Patch_BypassVehicleDLC(PPCRegister& r30) {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     uint32_t struct_addr = static_cast<uint32_t>(r30.u64);
@@ -220,9 +214,9 @@ void Patch_BypassVehicleDLC(PPCRegister& r30) {
 // 0x82563720: lis r11, flt_82001D14@ha in sub_82563298.
 // f0 is the chassis ground depth filter coefficient alpha (0.10 at 30 FPS, 0.05 at 60 FPS).
 void MCLAChassisDepthSmoothing(PPCRegister& f0) {
-    if (!REXCVAR_GET(smooth_chassis_depth)) return;
+    if (!larecomp::settings::smooth_chassis_depth.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -238,7 +232,7 @@ void MCLAChassisDepthSmoothing(PPCRegister& f0) {
 // Clamping to 2.5 m/s clips damping authority during high-G compression/rebound (sharp turns, burnouts),
 // starving the critically-damped PD solver of velocity damping and causing limit-cycle hopping.
 void MCLAChassisGroundPushbackDamper(PPCRegister& f0, PPCRegister& f3) {
-    if (!REXCVAR_GET(smooth_chassis_depth)) return;
+    if (!larecomp::settings::smooth_chassis_depth.Get()) return;
 
     const float unclamped_v = static_cast<float>(f0.f64);
     f3.f64 = std::clamp(unclamped_v, -12.0f, 12.0f);
@@ -252,9 +246,9 @@ void MCLAChassisGroundPushbackDamper(PPCRegister& f0, PPCRegister& f3) {
 // Scaling by min(1.0f, dt * 60.0f) ensures that the cumulative pushback impulse per second matches the 60 Hz reference
 // and prevents suspension over-stiffening or hopping at high frame rates.
 void MCLAChassisPushbackAccel(PPCRegister& f1) {
-    if (!REXCVAR_GET(smooth_chassis_depth)) return;
+    if (!larecomp::settings::smooth_chassis_depth.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     float dt_scale = 1.0f;
     if (base) {
         const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -277,9 +271,9 @@ void MCLAChassisPushbackAccel(PPCRegister& f1) {
 //   k(dt) = 1 - (1 - k30)^(30 dt),
 // gives exactly k30 at 30 FPS and the same response at any other rate.
 static void StepBikeGyroFilter(PPCRegister& factor, double k30) {
-    if (!REXCVAR_GET(smooth_bike_gyro)) return;
+    if (!larecomp::settings::smooth_bike_gyro.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -298,9 +292,9 @@ void MCLABikeGyroVelocityFilter(PPCRegister& f0) { StepBikeGyroFilter(f0, 0.30);
 // 0x82369E40: loc_82369E40 in sub_823688B8.
 // f0 is the tire slip filter coefficient alpha (0.30 at < 60 FPS, 0.15 at >= 60 FPS).
 void MCLATireSlipSmoothing(PPCRegister& f0) {
-    if (!REXCVAR_GET(smooth_vehicle_physics)) return;
+    if (!larecomp::settings::smooth_vehicle_physics.Get()) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const float dt = ReadGuestF32(base, kGuestFrameDelta);
@@ -331,4 +325,5 @@ bool MCLA_TrafficBoundRelease_8259AA40(PPCRegister& r30) { return false; }
 bool MCLA_ShaderGroupLookup_82193AF8(PPCRegister& r3) { return false; }
 bool MCLA_CarShaderBindDone_82379548(PPCRegister& r31) { return false; }
 bool MCLA_CarShaderBindDone_823794C8(PPCRegister& r31) { return false; }
+bool MCLA_BoundNodeTest_82574FF8(PPCRegister& r3, PPCRegister& r4) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

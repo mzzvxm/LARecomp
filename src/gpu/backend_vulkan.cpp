@@ -16,7 +16,7 @@
 #include <string>
 #include <vector>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include <plume_vulkan.h>
 
@@ -170,6 +170,81 @@ std::string RequirementProblem(plume::RenderDevice* device) {
   // one more (set 0 to 4); the Vulkan minimum is 4.
   lacks(limits.maxBoundDescriptorSets >= 5, "five bound descriptor sets (maxBoundDescriptorSets)");
   return missing.empty() ? std::string() : "it lacks " + missing;
+}
+
+std::string DescribeCapabilities(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceFeatures2) {
+    return {};
+  }
+  VkPhysicalDeviceDescriptorIndexingFeatures indexing = {};
+  indexing.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+  VkPhysicalDeviceBufferDeviceAddressFeatures address = {};
+  address.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+  indexing.pNext = &address;
+  VkPhysicalDeviceFeatures2 features = {};
+  features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features.pNext = &indexing;
+  vkGetPhysicalDeviceFeatures2(dev->physicalDevice, &features);
+  const VkPhysicalDeviceFeatures& core = features.features;
+  const VkPhysicalDeviceLimits& limits = dev->physicalDeviceProperties.limits;
+  const auto yes = [](VkBool32 value) { return value ? "yes" : "no"; };
+  // What Plume made of the ray query extensions (plume_vulkan.cpp: VK_KHR_ray_query with VK_KHR_acceleration_structure, buffer device addresses and a Vulkan 1.2 device,
+  // all or none) and, where it is on, the alignment a build's scratch buffer must keep: the car ray tracing's "[gpu] car ray tracing:" line says only that a driver
+  // has no ray queries, this says what Plume decided and the number the structures' builds depend on.
+  const std::string ray_query =
+      dev->capabilities.rayQuery
+          ? std::format("yes (scratch alignment {} bytes)",
+                        dev->accelerationStructureProperties.minAccelerationStructureScratchOffsetAlignment)
+          : std::string("no");
+  // The subgroup operations the ray traced car effects' compute shaders use (backend.h WaveOps): without all three the ray tracing stays off.
+  const WaveOps waves = QueryWaveOps(device);
+  const auto wave = [&waves](bool value) { return waves.known ? (waves.in_compute && value ? "yes" : "no") : "?"; };
+  return std::format(
+      "Vulkan 64-bit integers in shaders {}, buffer device address {}, descriptor indexing: partially "
+      "bound {}, variable count {}, runtime arrays {}, sampled image update after bind {}; BC textures "
+      "{}, bound descriptor sets {}, push constants {} bytes; ray queries {}, ray tracing pipelines {}; "
+      "compute subgroup operations: basic {}, ballot {}, arithmetic {}",
+      yes(core.shaderInt64), yes(address.bufferDeviceAddress),
+      yes(indexing.descriptorBindingPartiallyBound),
+      yes(indexing.descriptorBindingVariableDescriptorCount), yes(indexing.runtimeDescriptorArray),
+      yes(indexing.descriptorBindingSampledImageUpdateAfterBind), yes(core.textureCompressionBC),
+      limits.maxBoundDescriptorSets, limits.maxPushConstantsSize, ray_query,
+      yes(dev->capabilities.raytracing), wave(waves.basic), wave(waves.ballot),
+      wave(waves.arithmetic));
+}
+
+WaveOps QueryWaveOps(plume::RenderDevice* device) {
+  WaveOps out;
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->physicalDevice == VK_NULL_HANDLE || !vkGetPhysicalDeviceProperties2) {
+    return out;
+  }
+  // The core 1.1 structure (the instance asks for 1.2): what the physical device supports in each stage, which the device creation does not change.
+  // CHECK: not run (no build here): the three answers on this RTX and the Radeon iGPU are expected yes; Intel Arc and RADV were never run.
+  VkPhysicalDeviceSubgroupProperties subgroup = {};
+  subgroup.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SUBGROUP_PROPERTIES;
+  VkPhysicalDeviceProperties2 properties = {};
+  properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+  properties.pNext = &subgroup;
+  vkGetPhysicalDeviceProperties2(dev->physicalDevice, &properties);
+  out.known = true;
+  out.in_compute = (subgroup.supportedStages & VK_SHADER_STAGE_COMPUTE_BIT) != 0;
+  out.basic = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_BASIC_BIT) != 0;
+  out.ballot = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_BALLOT_BIT) != 0;
+  out.arithmetic = (subgroup.supportedOperations & VK_SUBGROUP_FEATURE_ARITHMETIC_BIT) != 0;
+  return out;
+}
+
+AdapterIds QueryAdapterIds(plume::RenderDevice* device) {
+  AdapterIds out;
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev) {
+    return out;
+  }
+  out.vendor_id = dev->physicalDeviceProperties.vendorID;
+  out.device_id = dev->physicalDeviceProperties.deviceID;
+  return out;
 }
 
 std::string DescribeDevice(plume::RenderDevice* device) {

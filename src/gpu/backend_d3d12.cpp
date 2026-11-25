@@ -8,7 +8,9 @@
 
 #include "backend_impl.h"
 
+#include "present_rules.h"
 #include "temporal_dlss.h"
+#include "thread_load.h"
 #include "uma_budget.h"
 
 #include <algorithm>
@@ -20,21 +22,14 @@
 #include <dxgi1_6.h>
 #include <wrl/client.h>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include <plume_d3d12.h>
 
 namespace plume {
 extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
 }  // namespace plume
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_gpu_based_validation, false, "MCLA/GPU",
-    "With mcla_gpu_debug_layer on D3D12, enable GPU-based validation before device creation. "
-    "Diagnostic; requires the matching D3D12SDKLayers.dll and a restart.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu::backend::d3d12 {
 
@@ -46,7 +41,7 @@ bool EnableDebugLayer() {
     return false;
   }
   debug->EnableDebugLayer();
-  if (REXCVAR_GET(mcla_gpu_gpu_based_validation)) {
+  if (larecomp::settings::mcla_gpu_gpu_based_validation.Get()) {
     ID3D12Debug1* debug1 = nullptr;
     const HRESULT hr = debug->QueryInterface(IID_PPV_ARGS(&debug1));
     if (FAILED(hr) || !debug1) {
@@ -331,6 +326,64 @@ std::string RequirementProblem(plume::RenderDevice* device) {
   return problem;
 }
 
+std::string DescribeCapabilities(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    return {};
+  }
+  // The highest shader model the driver takes: asked from the newest number this build can name (6.9)
+  // down, as a driver answers E_INVALIDARG for a model newer than it knows.
+  uint32_t shader_model = 0;
+  for (uint32_t model = 0x69; model >= 0x60 && shader_model == 0; --model) {
+    D3D12_FEATURE_DATA_SHADER_MODEL data = {};
+    data.HighestShaderModel = static_cast<D3D_SHADER_MODEL>(model);
+    if (SUCCEEDED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &data, sizeof(data)))) {
+      shader_model = static_cast<uint32_t>(data.HighestShaderModel);
+    }
+  }
+  const auto answer = [](bool known, bool value) { return known ? (value ? "yes" : "no") : "?"; };
+  D3D12_FEATURE_DATA_D3D12_OPTIONS options = {};
+  const bool have_options = SUCCEEDED(
+      dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS, &options, sizeof(options)));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1 = {};
+  const bool have_options1 = SUCCEEDED(
+      dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)));
+  D3D12_FEATURE_DATA_D3D12_OPTIONS4 options4 = {};
+  const bool have_options4 = SUCCEEDED(
+      dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS4, &options4, sizeof(options4)));
+  std::string tier = "?";
+  if (have_options) {
+    tier = std::to_string(static_cast<int>(options.ResourceBindingTier));
+  }
+  return std::format(
+      "D3D12 shader model {}.{}, resource binding tier {}, wave operations {}, 16-bit shader "
+      "operations {}, rasterizer ordered views {}, typed UAV loads of more formats {}",
+      shader_model >> 4, shader_model & 0xF, tier, answer(have_options1, options1.WaveOps),
+      answer(have_options4, options4.Native16BitShaderOpsSupported),
+      answer(have_options, options.ROVsSupported),
+      answer(have_options, options.TypedUAVLoadAdditionalFormats));
+}
+
+AdapterIds QueryAdapterIds(plume::RenderDevice* device) {
+  AdapterIds out;
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->adapter) {
+    return out;
+  }
+  IDXGIAdapter1* adapter = nullptr;
+  if (FAILED(dev->adapter->QueryInterface(IID_PPV_ARGS(&adapter))) || !adapter) {
+    return out;
+  }
+  DXGI_ADAPTER_DESC1 desc{};
+  if (SUCCEEDED(adapter->GetDesc1(&desc))) {
+    out.vendor_id = desc.VendorId;
+    out.device_id = desc.DeviceId;
+    out.revision = desc.Revision;
+  }
+  adapter->Release();
+  return out;
+}
+
 std::string DescribeDevice(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->d3d) {
@@ -483,6 +536,26 @@ bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistic
     out.sync_qpc = stats.SyncQPCTime.QuadPart;
   }
   return true;
+}
+
+PresentResult PresentNowait(plume::RenderSwapChain* swap_chain) {
+  auto* chain = static_cast<plume::D3D12SwapChain*>(swap_chain);
+  if (!chain || !chain->d3d) {
+    return PresentResult::kFailed;
+  }
+#if defined(LARECOMP_HAS_DLSS) && defined(LARECOMP_PLUME_D3D12_PRESENT_HOOK)
+  IDXGISwapChain1* current = chain->d3d;
+  UpgradeSwapChainAtPresent(nullptr, &current);
+  chain->d3d = static_cast<IDXGISwapChain3*>(current);
+#endif
+  // Match the pinned Plume's D3D12SwapChain::present sync interval and tearing flags.
+  const UINT interval = (chain->vsyncEnabled && !chain->desc.enablePresentWait) ? 1 : 0;
+  const bool tearing = !chain->vsyncEnabled &&
+                       (chain->swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
+  const UINT flags = DXGI_PRESENT_DO_NOT_WAIT | (tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
+  static_assert(kDxgiWasStillDrawing == DXGI_ERROR_WAS_STILL_DRAWING);
+  const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentCall);
+  return ClassifyDxgiPresentNowait(chain->d3d->Present(interval, flags));
 }
 
 namespace {
@@ -712,6 +785,23 @@ UpscalerSupport QueryUpscalerSupport(plume::RenderDevice* device) {
     return out;
   }
   out.ok = true;
+  return out;
+}
+
+WaveOps QueryWaveOps(plume::RenderDevice* device) {
+  WaveOps out;
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    return out;
+  }
+  // WaveOps is the one answer for the wave intrinsics of shader model 6.0 (basic, vote, ballot, reductions) in every stage; a query that fails says nothing.
+  // CHECK: not run (no build here); the "[gpu] capabilities:" line's "wave operations" already prints this same bit.
+  D3D12_FEATURE_DATA_D3D12_OPTIONS1 options1 = {};
+  if (FAILED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS1, &options1, sizeof(options1)))) {
+    return out;
+  }
+  out.known = true;
+  out.basic = out.ballot = out.arithmetic = out.in_compute = options1.WaveOps != FALSE;
   return out;
 }
 

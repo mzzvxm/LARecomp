@@ -9,10 +9,8 @@
 #include <d3d12.h>
 #include <set>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
-REXCVAR_DECLARE(int32_t, mcla_native_gfx_aniso);
-REXCVAR_DECLARE(bool, mcla_native_gfx_gen_mips);
 
 namespace mcla::native_gfx {
 
@@ -77,7 +75,7 @@ void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
   // anisotropy onto a point-sampled or base-map sampler would change what the
   // game asked for, not just how sharply it is filtered.
   uint32_t aniso_filter = s.aniso_filter;
-  const int32_t forced = REXCVAR_GET(mcla_native_gfx_aniso);
+  const int32_t forced = larecomp::settings::mcla_native_gfx_aniso.Get();
   // Override estilo driver: com mip gerado no host E anisotropia forcada, o
   // base-map deixa de ser barreira. Sozinho o kBaseMap e correto -- o jogo pede
   // "so o nivel base" porque a textura tem um nivel so -- mas depois de gerar a
@@ -85,7 +83,7 @@ void BuildD3D12SamplerDesc(const SamplerDescription& s, void* out) {
   // maior, que e o caso rasante da rua. Precisa dos DOIS cvars ligados de
   // proposito: e desvio do que o jogo pediu.
   const bool driver_override =
-      REXCVAR_GET(mcla_native_gfx_gen_mips) && REXCVAR_GET(mcla_native_gfx_aniso) >= 1;
+      larecomp::settings::mcla_native_gfx_gen_mips.Get() && larecomp::settings::mcla_native_gfx_aniso.Get() >= 1;
   const bool eligible = (s.mip_filter != 2u /* kBaseMap */ || driver_override) &&
                         FilterIsLinear(s.min_filter) &&
                         FilterIsLinear(s.mag_filter);

@@ -2,10 +2,9 @@
 #include "imgui_theme.h"
 #include "mc_engine/menus/menu_items.h"
 
-#include <rex/cvar.h>
-#include <rex/perf/counter.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/perf.h>
 #include <rex/version.h>
-#include <rex/ui/flags.h>
 #include <imgui.h>
 
 #include <algorithm>
@@ -22,11 +21,8 @@
 #include <psapi.h>
 #endif
 
-REXCVAR_DECLARE(double, video_mode_refresh_rate);
 
 namespace mcla::ui {
-
-static std::unique_ptr<MclaDebugOverlayDialog> g_debug_dialog;
 
 namespace {
 
@@ -45,8 +41,7 @@ void StatRow(const char* label, const char* value) {
 
 }  // namespace
 
-MclaDebugOverlayDialog::MclaDebugOverlayDialog(rex::ui::ImGuiDrawer* drawer)
-    : ImGuiDialog(drawer) {
+MclaDebugOverlayDialog::MclaDebugOverlayDialog(rex::ui::IUISystem& ui) : ui_(&ui) {
   frame_time_history_.fill(16.67f);
 }
 
@@ -55,16 +50,16 @@ MclaDebugOverlayDialog::~MclaDebugOverlayDialog() = default;
 void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
   ImGui::SetNextWindowPos(ImVec2(24.0f, 24.0f), ImGuiCond_FirstUseEver);
 
-  const std::string key = rex::cvar::GetFlagByName("bind_mcla_telemetry");
-  const Prompt prompts[] = {{"CLOSE", key.empty() ? "F3" : key.c_str(), kPromptBack}};
+  const std::string key = BindText("mcla_telemetry", "F3");
+  const Prompt prompts[] = {{"CLOSE", key.c_str(), kPromptBack}};
 
   bool close = false;
   if (BeginPanel("##mcla_telemetry", "TELEMETRY", PanelIcon::kInfo,
                  ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
                      ImGuiWindowFlags_NoFocusOnAppearing,
                  prompts)) {
-    int64_t ft_us = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFrameTimeUs);
-    int64_t fps = rex::perf::GetSnapshotCounter(rex::perf::CounterId::kFps);
+    int64_t ft_us = rex::platform::GetSnapshotCounter(rex::platform::CounterID::kFrameTimeUs);
+    int64_t fps = rex::platform::GetSnapshotCounter(rex::platform::CounterID::kFps);
     // Only the SDK's Xenia command processor sets these two counters (and only in a build with perf
     // counters), so on the native renderer they stay 0. There the card uses ImGui's own frame clock:
     // the time of the last frame the UI was drawn in and its rolling 60-frame rate (the UI is drawn
@@ -77,7 +72,7 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
     // 10000 FPS and pull the graph to the floor).
     const bool measured = ft_us > 0 || fps > 0;
 
-    const int refresh = static_cast<int>(REXCVAR_GET(video_mode_refresh_rate));
+    const int refresh = static_cast<int>(larecomp::settings::GetAs<double>("ui.video_mode_refresh_rate"));
     const int target_hz = refresh > 0 ? refresh : 60;
 
     // The headline reads like the GPS card's "ROOKIE - 3640 REP" line, with
@@ -112,15 +107,15 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
     ImGui::PopStyleColor();
     ImGui::Dummy(ImVec2(0.0f, 2.0f));
 
-    // The test the menus use to list a renderer's rows (NativeRendererRuns: the Plume renderer is
-    // mcla_gpu), with the names the menus and the docs give the two renderers.
+    // The test the menus use to list a renderer's rows (NativeRendererRuns: LARecomp's own Plume
+    // renderer runs, gpu.driver = larecomp), with the names the menus and the docs give the two renderers.
     const bool native = mcla_menu::NativeRendererRuns();
     StatRow("RENDERER", native ? "NATIVE" : "XENIA");
 
     // Each renderer's own switch: the native renderer's VSYNC row is mcla_gpu_vsync; with Xenia's,
     // `vsync` (the debug page's XENIA VSYNC).
     const bool vsync_on =
-        rex::cvar::GetFlagByName(native ? "mcla_gpu_vsync" : "vsync") == "true";
+        larecomp::cvar::GetFlagByName(native ? "mcla_gpu_vsync" : "vsync") == "true";
     std::snprintf(line, sizeof(line), "%s - %d HZ", vsync_on ? "ON" : "OFF", target_hz);
     StatRow("VSYNC", line);
 
@@ -137,42 +132,34 @@ void MclaDebugOverlayDialog::OnDraw(ImGuiIO& io) {
 
   // The build stamp the SDK's overlay carried, centered near the bottom.
   ImGui::PushFont(nullptr, kSmallSize);
-  const ImVec2 text_size = ImGui::CalcTextSize(REXGLUE_BUILD_STAMP);
+  const ImVec2 text_size = ImGui::CalcTextSize(rex::GetBuildStamp());
   ImGui::SetNextWindowPos(ImVec2((io.DisplaySize.x - text_size.x) * 0.5f,
                                  io.DisplaySize.y - text_size.y - io.DisplaySize.y * 0.03f));
   ImGui::SetNextWindowSize(ImVec2(0, 0));
   ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-  ImGui::PushStyleColor(ImGuiCol_Text, imgui_drawer()->style().debug.muted_text);
+  ImGui::PushStyleColor(ImGuiCol_Text, rex::ui::ToImVec4(ui_->GetStyle().debug.muted_text));
   if (ImGui::Begin("##mcla_watermark", nullptr,
                    ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground |
                        ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoNav |
                        ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize)) {
-    ImGui::TextUnformatted(REXGLUE_BUILD_STAMP);
+    ImGui::TextUnformatted(rex::GetBuildStamp());
   }
   ImGui::End();
   ImGui::PopStyleColor();
   ImGui::PopStyleVar();
   ImGui::PopFont();
 
+  // The overlay stays in the UI system's table: closing only takes it off the screen, the key shows it again.
   if (close) {
-    // ImGuiDialog::Draw deletes a closed dialog itself, so the owner lets go
-    // first; otherwise the next toggle would delete it a second time.
-    (void)g_debug_dialog.release();
     Close();
   }
 }
 
-void ToggleDebugOverlay(rex::ui::ImGuiDrawer* drawer) {
-  if (!drawer) return;
-  if (g_debug_dialog) {
-    g_debug_dialog.reset();
-  } else {
-    g_debug_dialog = std::make_unique<MclaDebugOverlayDialog>(drawer);
-  }
-}
-
-bool IsDebugOverlayOpen() {
-  return g_debug_dialog != nullptr;
+rex::ui::OverlayConfig DebugOverlayConfig() {
+  return {"mcla_telemetry", {rex::VirtualKey::kF3},
+          [](rex::ui::IUISystem& ui) -> std::unique_ptr<rex::ui::IDialog> {
+            return std::make_unique<MclaDebugOverlayDialog>(ui);
+          }};
 }
 
 } // namespace mcla::ui

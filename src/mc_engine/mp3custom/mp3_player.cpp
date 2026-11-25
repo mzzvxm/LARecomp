@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "mp3_player.h"
+#include "settings/immortal.h"
 
 #include "mc_engine/core/logging.h"
 
@@ -55,7 +56,7 @@ struct Player {
 };
 
 Player& P() {
-    static Player p;
+    static Player& p = larecomp::Leak<Player>();
     return p;
 }
 

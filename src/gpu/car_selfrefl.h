@@ -9,7 +9,7 @@
 // frame's depth), and this keeps that image and the numbers that take a point of this frame into it.
 //
 //   mcla_gpu_car_selfrefl        auto | off | on, a graphics setting like the contact shadows (the pause menu's CAR
-//                                SELF-REFLECTIONS row on GRAPHICS QUALITY, live, saved): on darkens the reflection where the
+//                                SELF-REFLECTIONS row on REFLECTIONS, shared with mcla_gpu_car_selfrefl_rt, live, saved): on darkens the reflection where the
 //                                ray passes just behind a part of the car (the specular occlusion) and reflects the car's own
 //                                colour there. `auto` is the class's cell (gpu_class.h): off on Low, on on Mid and High.
 //                                The setting has one level (the older low, the occlusion alone, cost the same as the full effect:
@@ -21,14 +21,20 @@
 //   mcla_gpu_car_selfrefl_view   a debug view in place of the paint's colour: 1 the hit weight, 2 the colour the ray
 //                                sees (the hit pixel's, or the paint's own in shade for a hidden face), 3 the baked vertex AO,
 //                                4 the state of the trace (yellow a hit, orange a hit that is probably the hidden face of a
-//                                part, brighter the heavier; green no hit; the other colours in the variant's text), 5 the ray
+//                                part of the march's, brighter the heavier; green no hit; the other colours in the variant's text), 5 the ray
 //                                traced image at the paint's pixel (car_rt_refl.h: purple no image, cyan no data there, green no
-//                                hit, yellow a hit on a visible part, orange on a hidden one)
+//                                hit, yellow a hit on the player's own part, orange on another car), 6 the clear coat's layer's
+//                                amount (written 64 times the target's unit so that a script can read it, RT-HIT-SHADING-6: it shows as about itself),
+//                                7 what it adds (version 8 of the variant; 2 is the ray traced reflection alone at full intensity)
 //   mcla_gpu_car_selfrefl_rt     auto | off: ray traced reflections of the car in its own paint where the device can (car_rt_refl.h);
 //                                the march of this file is the fallback and the other devices' version
+//   mcla_gpu_car_selfrefl_source a debug-only A/B of where the history pass takes the scene colour from: 0 (the default) the shared screen products' colour_post
+//                                where the frame has it at the picture's size (screen_shared.h: another effect made it), else the main colour target's planes
+//                                as before; 1 always the planes (the old path); 2 as 0 and this effect asks for colour_post itself, so that the two paths can be
+//                                compared without a reflections effect. Both make the same bytes: the capture's arithmetic is the pass's own
 //   mcla_gpu_car_selfrefl_length / _thickness / _strength / _steps / _gain    the tuning of the ray (car_selfrefl_rules.h)
-// With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp ChoosePackedVariant asks
-// Selected()), and no history is made. The compare key (F1, effect_compare.h) flips the setting like the others.
+// With the setting off the game's paint draws, bit for bit: the variant is not chosen (pipelines.cpp WantedFeatures asks
+// Selected()), and no history is made. The compare key (a developer tool, effect_compare.h) flips the setting like the others.
 //
 // WHERE IT RUNS (menu_world.h): in the game view, in the pause menu's and the race pause's world and in the garage (the 4x view
 // of the pause identities, which the host draws once for its three tiles, so the history at the first resolve is the whole
@@ -49,7 +55,8 @@
 // on (it is given back after 2 s without it).
 //
 // THE NUMBERS: the history's own camera (the view-projection of the frame it was made in, read from the game's motion blur
-// draw, the anchor, which comes after the trigger: ExtractCamera) and the vehicle's own motion (vehicle_motion.h: the game's
+// draw, the anchor, which comes after the trigger: since SS-1 the shared screen products read it, screen_shared.h Cameras(), and keep
+// the previous frame's with its lens test; this class asks) and the vehicle's own motion (vehicle_motion.h: the game's
 // c(69 + 4 ID) times the inverse of c69, taken at the last anchor and repeated for this frame as the ambient occlusion
 // does) make the one matrix a draw of the paint is given (CarSelfReflConstants::m): this frame's world position to the
 // history frame's clip space. The variant also tests that the shaded point finds itself in the history at the distance it
@@ -124,10 +131,13 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <plume_render_interface.h>
 
+#include "car_rt_parked_paint_rules.h"
 #include "car_selfrefl_rules.h"
+#include "city_refl.h"
 #include "constants.h"
 #include "draw_state.h"
 #include "edram.h"
@@ -145,6 +155,7 @@ namespace mcla::gpu {
 class CarDump;
 class CarRtRefl;
 class PassTiming;
+class ScreenShared;  // screen_shared.h: the camera history and the colour_post capture this class reads (SS-1)
 
 class CarSelfRefl {
  public:
@@ -155,9 +166,11 @@ class CarSelfRefl {
   static constexpr uint32_t kTriggerDestination = 0x078B0000;
 
   // True while the effect is on (the setting or the test override, and the history pass's pipelines made): the frame's own
-  // answer, latched at BeginFrame, so every draw of a frame picks the same shader. Pipelines::ChoosePackedVariant asks it
+  // answer, latched at BeginFrame, so every draw of a frame picks the same shader. pipelines.cpp WantedFeatures asks it
   // per draw of the car paint; a change of the setting shows at the next frame. Any thread.
   static bool Selected();
+  // The mode requested by the startup settings, before BeginFrame can latch the actual mode.
+  static bool WantedAtStartup();
 
   CarSelfRefl() = default;
   ~CarSelfRefl();
@@ -175,12 +188,22 @@ class CarSelfRefl {
   // The ray traced half (car_rt_refl.h): where its pass is wanted and can run it makes an image at the history trigger, right after the
   // history, that the paint variant (version 5) reads in place of the march. Null: the march everywhere.
   void SetCarRtRefl(CarRtRefl* rt) { rt_ = rt; }
+  // The shared screen products (screen_shared.h, SS-1): the frames' cameras (the previous frame's lens and camera for the history, whether this frame's lens agrees) and the colour_post capture
+  // the history pass reads where the frame has it. Not owned; null: no camera, so no history. Render thread, before the first frame; the renderer's Shutdown stops this class first.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
   // True when the effect was on at the start and its pipelines were listed with the host precache (Initialize): what CarRtRefl asks to
   // list its own pipeline the same way.
   bool ListedAtStart() const { return listed_; }
+  // The main colour target's exponent bias as the last paint draw saw it (RT0's color_exp_bias); the game's own (kMainTargetExpBias) until one has. The side mirrors' trace takes it.
+  int32_t exp_bias() const { return exp_bias_; }
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();
+  // RR-4b: DLSS Ray Reconstruction takes this frame and the ray traced reflection's switch is on (TemporalSystem::RawModes().CarRefl()): the ray traced pass (car_rt_refl.h) then runs RAW (no filter,
+  // its hit distance written). Set by the Scene before the trigger's history pass, every frame; forgotten at the frame's start (false with the plan not RR).
+  void SetRawMode(bool raw) { raw_ = raw; }
+  // RR-4b: the ray traced pass's hit distance image of this frame (R16_FLOAT, the picture's size, readable) when it ran raw, else null (car_rt_refl.h RawHitImage).
+  const HostImage* RawHitImage() const;
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return mode_ != Mode::kOff; }
 
@@ -197,9 +220,10 @@ class CarSelfRefl {
   // A guest present: the frame boundary.
   void OnPresent();
 
-  // The 112 bytes a draw of the paint variant reads (Scene::UploadCarSelfReflConstants): the game's paint (mode 0) when
+  // The 112 bytes a draw of the paint variant reads (Scene::FillVariantBlock): the game's paint (mode 0) when
   // there is no history for this frame. `upscaler_running` only turns the ray traced pass's cone pattern by the frame (the march has no noise, since version 3).
-  void FillConstants(const XenosState& state, bool upscaler_running, car_selfrefl::CarSelfReflConstants* out);
+  // `ps_identity` is the draw's pixel shader (the census of the traffic paint's draws with and without a vehicle stencil ID, RT-NEXT-DAY).
+  void FillConstants(const XenosState& state, bool upscaler_running, uint64_t ps_identity, car_selfrefl::CarSelfReflConstants* out);
 
   // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force ("off", "on", or
   // "occlusion" for the debug test level), for the scene's one line per change of world.
@@ -213,17 +237,27 @@ class CarSelfRefl {
   // The push block of the pass (hlsl/car_history_ps.hlsl CarHistoryPush), 64 bytes: the host pass layout's push range.
   struct Push {
     uint32_t slots[4];   // depth plane, colour plane, stencil plane (0xFFFFFFFF: none), host samples
-    uint32_t slots2[4];  // the host sample that is the guest's sample 0
+    uint32_t slots2[4];  // the host sample that is the guest's sample 0; 1: the mark draw of a parked car (RT-PARKED-PAINT); its near and far view distance as float bits
     float sizes[4];      // the picture in host pixels
     float lin[4];        // the projection's rows P22, P23, P32, P33 (ao_common.hlsli AoLinearDepth)
   };
   static_assert(sizeof(Push) == 64 && sizeof(Push) == HostPasses::kPushConstantBytes);
 
-  enum Pass : uint32_t { kPassPlain, kPassMs, kPassCount };
+  // The history pass's compilations (host_shaders.h CarHistoryPixelShader, hlsl/car_history_ps.hlsl CAR_HISTORY_MS): from plain planes, from multisampled planes, and from multisampled depth and
+  // stencil planes with the colour taken from the shared colour_post.
+  enum Pass : uint32_t { kPassPlain, kPassMs, kPassMsShared, kPassCount };
+  static const char* PassName(uint32_t pass);
 
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
+  // The shared colour_post when this frame's history pass may read it (the source setting allows, the frame has it, and it is the picture's size: pixel for pixel the pass's own colour); else null.
+  const HostImage* SharedColour(uint32_t render_width, uint32_t render_height) const;
+  // CITY-RT M2: the picture's products for the city's hits in the reflection pass's history info (car_rt_refl.h): lin_depth level 0 and colour_post's chain; invalid where the pass wants none or the frame has none.
+  void FillCityScreen(CityRefl::ScreenIn* out) const;
   EdramTargets::Target* ColourTarget(const EdramKey& key, plume::RenderCommandList* list);
   bool RecordHistory(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  // RT-PARKED-PAINT: after the history pass, one draw of the same pass per mark (the parked cars the opponents' pass will trace), scissored to the car's rectangle, writing the texels the stencil gives no ID
+  // that lie at the car's distance with the negated distance (hlsl/car_history_ps.hlsl, the mark mode; car_rt_parked_paint_rules.h).
+  void RecordMarks(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, const Push& base, const std::vector<car_rt_parked_paint::Mark>& marks);
   plume::RenderPipeline* Pipeline(uint32_t pass);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t pass);
   // The shaders, made where the setting is on at the start or when it is first switched on. False: they could not be made.
@@ -237,6 +271,7 @@ class CarSelfRefl {
 
   // Settings, read at the frame's start.
   Mode mode_ = Mode::kOff;
+  int source_ = 0;  // mcla_gpu_car_selfrefl_source
   car_selfrefl::Tuning tuning_;
   uint32_t off_frames_ = 0;
 
@@ -251,13 +286,10 @@ class CarSelfRefl {
   uint32_t frame_paint_draws_ = 0;  // draws of the paint through the variant so far this frame (the car is on the screen)
   bool history_pending_ = false;  // the pass was recorded this frame; the anchor says whose camera it goes with
 
-  // The camera of the last anchor (the previous frame's, for this frame's trigger), the kind of view it was of, and the lens
-  // the history was linearised with.
-  temporal::Camera previous_;
-  bool previous_pause_ = false;
-  bool have_previous_ = false;
-  uint64_t previous_frame_ = 0;
-  temporal::Camera lens_used_;
+  // The camera the trigger worked with: the previous frame's anchor camera, from the shared screen products' camera history (Previous), copied when the history pass is recorded. Its lens
+  // linearised the history's depth; whether this frame's own anchor agrees with it is the owner's LensAgrees.
+  temporal::Camera trigger_camera_;
+  ScreenShared* screen_ = nullptr;
   // The world the frame's trigger was in (menu_world.h): by the previous frame's camera of the same kind of view.
   menu_world::World trigger_world_ = menu_world::World::kNone;
 
@@ -278,6 +310,7 @@ class CarSelfRefl {
   CarDump* dump_ = nullptr;
   CarRtRefl* rt_ = nullptr;
   bool upscaler_running_ = false;  // FillConstants' flag of the frame's last paint draw (its draws come before the trigger)
+  bool raw_ = false;               // RR-4b: SetRawMode
   bool ready_ = false;            // the shaders exist
   bool shaders_failed_ = false;   // they could not be made: not tried again
   bool listed_ = false;           // the pipelines were listed at the start (or in the background after it)
@@ -292,10 +325,15 @@ class CarSelfRefl {
   bool no_stencil_logged_ = false;
   bool failed_logged_ = false;
   bool bias_logged_ = false;
+  bool coat_layer_logged_ = false;
+  // The main colour target's exponent bias as the last paint draw saw it (RT0's color_exp_bias): the ray traced pass multiplies the colours it makes up from a paint constant by
+  // 2^bias to be in the history's units. A paint draw comes after the trigger in a frame, so the pass uses the frame before's (the game keeps one bias); 4 until a draw has told.
+  int32_t exp_bias_ = car_selfrefl::kMainTargetExpBias;
   bool first_paint_logged_ = false;
   bool pause_paint_logged_ = false;
   uint32_t image_for_[2] = {};
   uint64_t passes_run_ = 0;
+  uint64_t passes_shared_ = 0;  // ... of them with the colour read from the shared colour_post
   uint64_t triggers_ = 0;
   uint64_t no_camera_ = 0;
   uint64_t lens_changed_ = 0;
@@ -304,6 +342,15 @@ class CarSelfRefl {
   uint64_t paint_draws_ = 0;
   uint64_t paint_with_history_ = 0;
   uint64_t paint_no_id_ = 0;
+  uint64_t paint_parked_ = 0;     // RT-PARKED-PAINT: traffic paint draws with no vehicle stencil ID given the constants of a still car ...
+  uint64_t paint_parked_rt_ = 0;  // ... of them with the ray traced image
+  uint64_t mark_frames_ = 0;      // frames the history pass made marks, the marks and the texels of their rectangles
+  uint64_t marks_made_ = 0;
+  uint64_t mark_texels_ = 0;
+  uint32_t marks_most_ = 0;
+  bool parked_logged_ = false;
+  uint64_t traffic_with_id_ = 0;  // RT-NEXT-DAY: draws of the TRAFFIC paint (car_rt_instances_rules.h kTrafficPaintPs) that reached the ID test, with a vehicle stencil ID ...
+  uint64_t traffic_no_id_ = 0;    // ... and without one: a parked car carries none, and the history image, the ray traced scene's draw path and this variant are all keyed on it
   uint64_t paint_motion_ = 0;
   uint64_t paint_pause_ = 0;  // paint draws with a history in the pause view's worlds (the car taken as still)
   uint64_t paint_with_rt_ = 0;  // paint draws given the ray traced image (car_rt_refl.h)

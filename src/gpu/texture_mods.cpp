@@ -9,13 +9,12 @@
 #include <format>
 #include <fstream>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/logging/log_category.h>
 
 #include "mc_engine/modloader/modloader.h"
 
-REXCVAR_DECLARE(bool, texture_mods);
 
 namespace mcla::gpu {
 
@@ -115,12 +114,12 @@ bool TextureMods::HashFromFileName(const std::string& stem, uint64_t* hash) {
 
 void TextureMods::Initialize() {
   files_.clear();
-  if (!REXCVAR_GET(texture_mods)) {
+  if (!larecomp::settings::texture_mods.Get()) {
     REXLOG_INFO("[gpu] texture mods: switched off; no replacements");
     return;
   }
   const std::filesystem::path mod_root =
-      mc::modloader::ModRootDir(rex::filesystem::GetExecutableFolder());
+      mc::modloader::ModRootDir(rex::platform::GetExecutableFolder());
   std::error_code ec;
   if (!std::filesystem::is_directory(mod_root, ec)) {
     REXLOG_INFO("[gpu] texture mods: no {} folder; no replacements", mod_root.string());
@@ -128,9 +127,12 @@ void TextureMods::Initialize() {
   }
   // The loose folder first, so it wins over every mod; then the mods in name
   // order.
+  // The folders' names are found whatever their case (mod_paths.h: a Linux file system tells "Textures_Replace" from
+  // "textures_replace", and a mod made on Windows may spell it either way).
   std::vector<std::filesystem::path> folders;
-  if (std::filesystem::is_directory(mod_root / kReplaceFolder, ec)) {
-    folders.push_back(mod_root / kReplaceFolder);
+  if (const std::filesystem::path loose = mc::modloader::FindDirNoCase(mod_root, kReplaceFolder);
+      std::filesystem::is_directory(loose, ec)) {
+    folders.push_back(loose);
   }
   std::vector<std::filesystem::path> mods;
   for (const auto& entry : std::filesystem::directory_iterator(mod_root, ec)) {
@@ -142,7 +144,8 @@ void TextureMods::Initialize() {
     // put them there, and the modloader ships that folder as raw game files,
     // which does nothing for a texture.
     for (const std::filesystem::path& folder :
-         {entry.path() / kReplaceFolder, entry.path() / "files" / kReplaceFolder}) {
+         {mc::modloader::FindDirNoCase(entry.path(), kReplaceFolder),
+          mc::modloader::FindDirNoCase(mc::modloader::FindDirNoCase(entry.path(), "files"), kReplaceFolder)}) {
       if (std::filesystem::is_directory(folder, ec)) {
         mods.push_back(folder);
       }

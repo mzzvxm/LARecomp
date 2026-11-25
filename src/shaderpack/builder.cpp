@@ -34,6 +34,7 @@
 #endif
 
 #include "native_gfx/shader_identity.h"
+#include "os/file_replace.h"
 #include "os/thread_priority.h"
 #include "shaderpack/contract_checks.h"
 #include "shaderpack/hash.h"
@@ -490,12 +491,10 @@ BuildResult BuildShaderPacks(const BuildRequest& request) {
     }
   }
   const std::filesystem::path pack_path = request.out_dir / kPackFileName;
-  const std::filesystem::path pack_temporary = request.out_dir / (std::string(kPackFileName) + ".tmp");
+  // A name of its own (os/file_replace.h): another game that starts now may build the same pack in this folder. The temporary files that killed builds left (2 hours old
+  // or more) are removed by TempPathFor; a younger one may be a live build's.
+  const std::filesystem::path pack_temporary = larecomp::os::TempPathFor(pack_path);
   const std::filesystem::path stamp_path = request.out_dir / kStampFileName;
-  {
-    std::error_code ec;
-    std::filesystem::remove(pack_temporary, ec);  // left by a build that was killed
-  }
 
   // ---- what is there
   const GameFilesQuick quick{request.game_root, request.dxc_dir};

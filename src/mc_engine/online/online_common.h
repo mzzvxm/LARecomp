@@ -10,21 +10,22 @@
 #include <string>
 
 #include <rex/ppc/context.h>  // PPCRegister
-#include <rex/runtime.h>      // rex::Runtime
+#include <rex/kernel/title_runtime.h>      // rex::Runtime
+#include <rex/kernel/heap.h>
 
 #include "larecomp_log.h"     // LARECOMP_APP_INFO
 
 namespace rex {
-namespace memory {
-class Memory;
+namespace kernel {
+class GuestAddressSpace;
 }
 }  // namespace rex
 
 // Guest-memory helpers (big-endian). Defined in mc_engine/hooks.cpp.
 bool IsGuestPtr(uint32_t ea);
-uint32_t GuestRead32(rex::memory::Memory* mem, uint32_t addr);
-uint16_t GuestRead16(rex::memory::Memory* mem, uint32_t addr);
-std::string GuestCStr(rex::memory::Memory* mem, uint32_t addr, uint32_t maxlen = 256);
-void GuestWrite32(rex::memory::Memory* mem, uint32_t addr, uint32_t v);
-void GuestWrite16(rex::memory::Memory* mem, uint32_t addr, uint16_t v);
-void GuestWrite8(rex::memory::Memory* mem, uint32_t addr, uint8_t v);
+uint32_t GuestRead32(rex::kernel::GuestAddressSpace* mem, uint32_t addr);
+uint16_t GuestRead16(rex::kernel::GuestAddressSpace* mem, uint32_t addr);
+std::string GuestCStr(rex::kernel::GuestAddressSpace* mem, uint32_t addr, uint32_t maxlen = 256);
+void GuestWrite32(rex::kernel::GuestAddressSpace* mem, uint32_t addr, uint32_t v);
+void GuestWrite16(rex::kernel::GuestAddressSpace* mem, uint32_t addr, uint16_t v);
+void GuestWrite8(rex::kernel::GuestAddressSpace* mem, uint32_t addr, uint8_t v);

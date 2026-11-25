@@ -41,6 +41,7 @@
 //
 
 #include "online_common.h"
+#include "settings/immortal.h"
 #include "race_props.h"
 
 #include <array>
@@ -51,20 +52,11 @@
 #include <string>
 #include <unordered_map>
 
-#include <rex/cvar.h>
-#include <rex/memory/utils.h>
-#include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(online_race_prop_guard, true, "MCLA/Multiplayer",
-                    "Skip the physics update of a prop whose owner is broken instead of "
-                    "crashing. Starting an online race re-syncs every race prop.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_STRING(online_race_prop_watch, "", "MCLA/Multiplayer",
-                      "Diagnostic: guest address (hex) of a prop inst. Its owner's inst word "
-                      "is polled every frame and every change is logged. Empty = off.")
-    .debug_only();
+#include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
+#include <rex/memory/virtual_memory.h>
+#include <rex/kernel/guest_memory.h>
+#include <format>
 
 namespace {
 
@@ -78,16 +70,16 @@ struct FreedOwner {
 };
 
 std::mutex g_mu;
-std::unordered_map<uint32_t, uint32_t> g_live;        // owner -> inst it was made for
-std::unordered_map<uint32_t, FreedOwner> g_freed;     // owner -> how it went
+std::unordered_map<uint32_t, uint32_t>& g_live = larecomp::Leak<std::unordered_map<uint32_t, uint32_t>>();  // owner -> inst it was made for
+std::unordered_map<uint32_t, FreedOwner>& g_freed = larecomp::Leak<std::unordered_map<uint32_t, FreedOwner>>();  // owner -> how it went
 std::atomic<uint32_t> g_bad{0};
 
-rex::memory::Memory* Mem() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->memory() : nullptr;
+rex::kernel::GuestAddressSpace* Mem() {
+    auto* rt = REX_RUNTIME();
+    return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
-bool Readable(rex::memory::Memory* mem, uint32_t addr, uint32_t len) {
+bool Readable(rex::kernel::GuestAddressSpace* mem, uint32_t addr, uint32_t len) {
     if (addr < 0x10000u || addr > 0xFFFFFFFFu - len) return false;
     auto* heap = mem->LookupHeap(addr);
     if (!heap) return false;
@@ -101,7 +93,7 @@ bool LooksLikeObject(uint32_t addr) { return addr >= 0x40000000u && addr < 0xFFF
 // Guest return addresses above the hook: r1 is the current function's frame
 // (after its stwu); each frame's back chain is at +0 and the caller's LR was
 // stored 8 bytes below the frame it points at.
-std::array<uint32_t, 8> GuestChain(rex::memory::Memory* mem, uint32_t sp) {
+std::array<uint32_t, 8> GuestChain(rex::kernel::GuestAddressSpace* mem, uint32_t sp) {
     std::array<uint32_t, 8> out{};
     uint32_t fp = sp;
     for (size_t i = 0; i < out.size(); ++i) {
@@ -119,31 +111,31 @@ std::string ChainText(const std::array<uint32_t, 8>& chain) {
     for (uint32_t lr : chain) {
         if (!lr) break;
         if (!s.empty()) s += " <- ";
-        s += fmt::format("{:08X}", lr);
+        s += std::format("{:08X}", lr);
     }
     return s.empty() ? std::string("?") : s;
 }
 
-std::string HexDump(rex::memory::Memory* mem, uint32_t from, uint32_t len) {
+std::string HexDump(rex::kernel::GuestAddressSpace* mem, uint32_t from, uint32_t len) {
     std::string out;
     for (uint32_t a = from; a < from + len; a += 16) {
-        out += fmt::format("\n    {:08X}:", a);
+        out += std::format("\n    {:08X}:", a);
         for (uint32_t k = 0; k < 16; k += 4) {
-            out += Readable(mem, a + k, 4) ? fmt::format(" {:08X}", GuestRead32(mem, a + k)) : std::string(" ????????");
+            out += Readable(mem, a + k, 4) ? std::format(" {:08X}", GuestRead32(mem, a + k)) : std::string(" ????????");
         }
     }
     return out;
 }
 
 // ── online_race_prop_watch ───────────────────────────────────────────────────
-std::string g_watch_text;
+std::string& g_watch_text = larecomp::Leak<std::string>();
 uint32_t g_watch_inst = 0;
 std::atomic<uint32_t> g_watch_word{0};   // owner + 16 of the watched inst, 0 = none
 uint32_t g_watch_last = 0;
 bool g_watch_last_valid = false;
 
 uint32_t WatchInst() {
-    const std::string text = REXCVAR_GET(online_race_prop_watch);
+    const std::string text = larecomp::settings::online_race_prop_watch.Get();
     if (text != g_watch_text) {
         g_watch_text = text;
         g_watch_inst = text.empty() ? 0u : static_cast<uint32_t>(std::strtoul(text.c_str(), nullptr, 16));
@@ -187,9 +179,9 @@ bool OwnerBroken(uint32_t inst, uint32_t owner, const char* site) {
         {
             std::lock_guard<std::mutex> lock(g_mu);
             if (auto it = g_live.find(owner); it != g_live.end()) {
-                state = fmt::format("live, made for inst {:08X}", it->second);
+                state = std::format("live, made for inst {:08X}", it->second);
             } else if (auto f = g_freed.find(owner); f != g_freed.end()) {
-                state = fmt::format("FREED (was inst {:08X}), freed via {}", f->second.inst,
+                state = std::format("FREED (was inst {:08X}), freed via {}", f->second.inst,
                                     ChainText(f->second.chain));
             }
         }
@@ -198,12 +190,12 @@ bool OwnerBroken(uint32_t inst, uint32_t owner, const char* site) {
             "(vtable {:08X}{}) owner+16 {:08X} -- {}{}; memory around the owner:{}",
             site, n, inst, inst_vt, owner, owner_vt, owner_vt == kOwnerVtable ? " = prop owner" : "",
             owner_inst, state,
-            REXCVAR_GET(online_race_prop_guard) ? "; physics update skipped" : "",
+            larecomp::settings::online_race_prop_guard.Get() ? "; physics update skipped" : "",
             Readable(mem, owner, 4) ? HexDump(mem, (owner & ~0xFu) - 0x40, 0xA0) : std::string(" (unreadable)"));
     } else if ((n & (n - 1)) == 0) {
         LARECOMP_APP_WARN("[race-props] {} broken owners so far", n);
     }
-    return REXCVAR_GET(online_race_prop_guard);
+    return larecomp::settings::online_race_prop_guard.Get();
 }
 
 }  // namespace
@@ -258,6 +250,8 @@ bool Patch_PropOwnerPoseGuard(PPCRegister& r31, PPCRegister& r4) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/heap.h>
 
 void TickRaceProps() {}
 void Hook_PropOwnerCreated(PPCRegister& r3, PPCRegister& r31) {}

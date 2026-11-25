@@ -12,8 +12,9 @@
 // format that was not built are zero (offset 0, size 0, fnv 0). ShaderStore::Validate only asks the
 // active backend's blobs to be there.
 //
-// The file is written under a temporary name; CommitFile moves it into place (replacing what was
-// there), so a build that dies never leaves a half written pack under the real name.
+// The file is written under a temporary name of its own (os/file_replace.h: TempPathFor); CommitFile moves it into place in one step (replacing what was
+// there; tried again while another process has the old file open, and the same bytes already there count as done), so a build that dies never leaves a half
+// written pack under the real name, and two builds at once (parallel games sharing the shader folder) never share a temporary file.
 //
 // PackFile reads a pack back into memory; ValidatePack is the renderer's Validate plus its
 // VerifyBlob (magic and FNV of every blob) in one function: it replaces native/tools/check_pack.py.
@@ -69,7 +70,7 @@ struct PackWriteResult {
 PackWriteResult WritePackFile(const std::filesystem::path& path, std::span<const PackEntryInput> entries,
                               uint32_t formats);
 
-// Moves `temporary` over `final_path` (which may exist). False with *error on failure.
+// Moves `temporary` over `final_path` (which may exist). False with *error on failure. The temporary file is removed either way.
 bool CommitFile(const std::filesystem::path& temporary, const std::filesystem::path& final_path,
                 std::string* error);
 

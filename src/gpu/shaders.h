@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 // ===========================================================================
 // MCLA GPU renderer -- the guest shader store (shader pack v8)
 // ===========================================================================
@@ -39,20 +39,29 @@
 // compiled, because the variants differ in their outputs, which a
 // specialization constant cannot change.
 //
-// Pixel shader variants: a second, optional file next to the pack (in the folder the main pack came
-// from, folder()), mcla_shaders_variants.v2.pack, built from the same HLSL tree (the layout is in
+// Shader variants: a second, optional file next to the pack (in the folder the main pack came
+// from, folder()), mcla_shaders_variants.v3.pack, built from the same HLSL tree (the layout is in
 // shaderpack/pack_format.h; the builder is src/shaderpack's variant step, variant_pack.h: it works on the
-// game's translated shaders, none of it is part of the game's content). It carries, for pixel shaders the
+// game's translated shaders, none of it is part of the game's content). It carries, for shaders the
 // renderer can draw with another version of their text, a blob per backend of that version, keyed by the
-// same identity and a variant id: the HDR scene's tone map (kHdrVariant, hdr_tonemap.h: its curve and its
-// encode changed for values above white, with the identity of the vertex shaders it is drawn with) and the
-// bloom's Gaussians at a render scale (kBloomVariant, pipelines.cpp), the environment map's level pass and
-// reduction at the map's scale (kEnvVariant, pipelines.cpp) and the sun shadow collector's soft lookup
-// (kShadowFilterVariant, pipelines.cpp, shadow_filter.h). A pipeline key names one with
-// ps_variant. The pack is not the main one's contract: the SharedConstants block stays 608 bytes and a
-// variant with constants of its own reads them after it (the HDR tone map: constants.h
+// same identity and a VARIANT WORD (shaderpack/variant_chain.h): bit 0 the main pack's spec variant, bits 1..31 the
+// set of features whose edits the text has. A shader can have the edits of several features at once (a
+// composed shader: the stages of the transform chain applied one after the other), vertex shaders can have
+// them too, and the word of a pixel shader that needs a vertex stage's export names the vertex features its
+// draw's vertex shader must have (Variant::vs_features). The features: the HDR scene's tone map (kHdrVariant,
+// hdr_tonemap.h: its curve and its encode changed for values above white, with the identity of the vertex
+// shaders it is drawn with), the bloom's Gaussians at a render scale (kBloomVariant, pipelines.cpp), the
+// environment map's level pass and reduction at the map's scale (kEnvVariant, pipelines.cpp), the sun shadow
+// collector's soft lookup (kShadowFilterVariant, pipelines.cpp, shadow_filter.h) ... A pipeline key names the
+// word with ps_variant (and vs_variant). The renderer picks per draw: pipelines.cpp turns the settings into the set of
+// WANTED features and ChooseVariant takes the best word of the shader that has only wanted features (the most of
+// them), else the game's own shader; a composition that the pack does not have costs a feature, never a draw. The
+// pack is not the main one's contract: the SharedConstants block stays 608 bytes and a
+// feature with constants of its own reads them after it, at the place the chain's layout gives
+// (chain::LayoutConstants: dense in feature order, a feature alone at byte 608; the HDR tone map: constants.h
 // HdrSceneConstants; the shadow filter: shadow_filter.h ShadowFilterConstants; uploaded only by the
-// draw that uses it). A missing, malformed or foreign file leaves
+// draw that uses it). A missing, malformed or foreign file (another version of the variant pack is refused
+// whole, with its version in the log) leaves
 // every draw with the game's own shader: the HDR output at stage 2 (the scene at paper white), the bloom
 // at the guest's taps. The renderer loads it right after the main pack is attached (LoadVariants), and
 // has_variants() / has_hdr_variants() say it is usable: one atomic flag, set last (release) and read
@@ -78,6 +87,7 @@
 #include <plume_render_interface.h>
 
 #include "shaderpack/pack_format.h"
+#include "shaderpack/variant_chain.h"
 
 namespace rex::memory {
 class MappedMemory;
@@ -97,28 +107,51 @@ class ShaderStore {
   static constexpr const char* kVariantPackFileName = larecomp::shaderpack::kVariantPackFileName;
   static constexpr uint32_t kVariantPackVersion = larecomp::shaderpack::kVariantPackVersion;
   static constexpr uint32_t kVariantContract = larecomp::shaderpack::kVariantContract;
-  // PipelineKey::ps_variant: 0 and 1 are the spec variants of the main pack (the shader entry's blobs),
-  // the ids from kFirstPackedVariant are the variant pack's, up to kVariantSlots - 1.
+  // PipelineKey::ps_variant (and vs_variant): the variant word. 0 and 1 are the spec variants of the main pack (the shader entry's
+  // blobs); from kFirstPackedVariant the variant pack's: bit 0 the spec variant, the other bits the features (kFeature* in
+  // shaderpack/pack_format.h, kFeatureBit below), a composed shader has several. Version 2 of the pack had one id per change (2..15,
+  // kVariantSlots): the names below are the WORD of each feature alone (spec variant 0), so a key that has only that one still
+  // compares equal to them; for a key that may have several use chain::HasFeature(word, feature).
   static constexpr uint32_t kFirstPackedVariant = larecomp::shaderpack::kFirstPackedVariant;
-  static constexpr uint32_t kVariantSlots = larecomp::shaderpack::kVariantSlots;
+  static constexpr uint32_t kMaxFeatures = larecomp::shaderpack::kMaxFeatures;
+  static constexpr uint32_t kMaxWordsPerShader = larecomp::shaderpack::chain::kMaxWordsPerShader;
+  // The bit of a feature in Entry::features and in the wanted set.
+  static constexpr uint32_t FeatureBit(uint32_t feature) { return larecomp::shaderpack::chain::FeatureBit(feature); }
   // A pixel shader's HDR scene variant, the bloom's Gaussians at a render scale, the environment map's mip
   // level pass and 64x32 reduction at the map's scale, and the sun shadow collector's soft lookup
   // (shadow_filter.h: its 16 bytes of constants follow the shared block).
-  static constexpr uint32_t kHdrVariant = larecomp::shaderpack::kVariantHdrScene;
-  static constexpr uint32_t kBloomVariant = larecomp::shaderpack::kVariantBloomGauss;
-  static constexpr uint32_t kEnvVariant = larecomp::shaderpack::kVariantEnvMap;
-  static constexpr uint32_t kShadowFilterVariant = larecomp::shaderpack::kVariantShadowFilter;
+  static constexpr uint32_t kHdrVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureHdrScene);
+  static constexpr uint32_t kBloomVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureBloomGauss);
+  static constexpr uint32_t kEnvVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureEnvMap);
+  static constexpr uint32_t kShadowFilterVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureShadowFilter);
   // The glow sprites' soft visibility: a share of depth taps in place of the one compare (pipelines.cpp).
-  static constexpr uint32_t kGlowVariant = larecomp::shaderpack::kVariantGlowSoft;
+  static constexpr uint32_t kGlowVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureGlowSoft);
   // The player's car paint with its environment reads occluded by, or replaced with, the car's own previous frame
   // (car_selfrefl.h: its 112 bytes of constants follow the shared block; a test prototype).
-  static constexpr uint32_t kCarSelfReflVariant = larecomp::shaderpack::kVariantCarSelfRefl;
+  static constexpr uint32_t kCarSelfReflVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureCarSelfRefl);
   // The car's chrome (xChrome::PS_Chrome: the tailpipes, rims, trim) with its reflection and sky ambient occluded by the car's own
   // parts: the same 112 bytes of constants as the paint's after the shared block (shaderpack/variants/car_chrome.h).
-  static constexpr uint32_t kCarChromeVariant = larecomp::shaderpack::kVariantCarChrome;
+  static constexpr uint32_t kCarChromeVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureCarChrome);
   // The auto-exposure's sample pass (PSSampleAverageLuminance) with its nine taps spread over the screen area
   // they cover at 1x, at a render scale above 1 (shaderpack/variants/luminance_scale.h).
-  static constexpr uint32_t kLuminanceVariant = larecomp::shaderpack::kVariantLuminanceScale;
+  static constexpr uint32_t kLuminanceVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureLuminanceScale);
+  // The Flash player's textured pixel shaders with every 2D fetch reconstructed sharper where the console's bitmaps are
+  // magnified (ui_sharp.h, shaderpack/variants/ui_sharp.h): chosen by the Scene for the UI phase's draws, not by pipelines.cpp;
+  // 16 bytes of constants follow the shared block. Its alpha test twin (the main pack's spec variant 1) is the same feature with the
+  // word's bit 0 set: kUiSharpAlphaVariant.
+  static constexpr uint32_t kUiSharpVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureUiSharp);
+  static constexpr uint32_t kUiSharpAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureUiSharp), 1);
+  // The city's lit pixel shaders (the PSMultiLight family and the traffic cars' body) with the cars' headlights as one more term of their light sum
+  // (shaderpack/variants/headlight.h; headlight_rig.h): chosen by pipelines.cpp while the rig has a light; 672 bytes of constants follow the shared block.
+  // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0).
+  static constexpr uint32_t kHeadlightVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureHeadlight);
+  static constexpr uint32_t kHeadlightAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureHeadlight), 1);
+  // The game's lit pixel shaders that also write the G-buffer's planes into the sidecar targets of the main view (shaderpack/variants/gbuffer.h; gbuffer.h of this
+  // folder): chosen by Scene::GBufferKey, never by pipelines.cpp WantedFeatures; 48 bytes of constants follow the shared block (gbuffer_types.h GBufferConstants).
+  // ... and the same text compiled with the alpha test, for the draws whose key is spec variant 1 (the word's bit 0). On a shader that has the headlight's stage too the
+  // draw takes the composed word (Scene::GBufferKey asks ChooseVariant for the draw's features plus this one).
+  static constexpr uint32_t kGBufferVariant = larecomp::shaderpack::chain::SoloWord(larecomp::shaderpack::kFeatureGBuffer);
+  static constexpr uint32_t kGBufferAlphaVariant = larecomp::shaderpack::chain::Word(larecomp::shaderpack::chain::FeatureBit(larecomp::shaderpack::kFeatureGBuffer), 1);
 
   enum class Stage : uint8_t { kVertex, kPixel };
 
@@ -156,21 +189,36 @@ class ShaderStore {
     uint32_t texture_fetch_mask = 0;  // bit i: a texture instruction reads fetch constant i
     Blob dxil[2];   // variant 0 (no spec bit) / variant 1 (spec_mask)
     Blob spirv[2];  // the same variants
-    // The variant pack's variants this pixel shader has (LoadVariants): bit n is set when the pack has one
-    // with id n (kHdrVariant, kBloomVariant...); 0 for the shaders that have none.
-    uint32_t variants = 0;
-    // Whether it has the HDR scene variant (bit kHdrVariant of `variants`).
+    // The variant pack's variants of this shader (LoadVariants), a pixel shader's or a vertex shader's: `features` is the union of the
+    // features of its words (bit n for the feature n: FeatureBit; 0 for the shaders that have none), `words` the variant words
+    // themselves, composed ones and spec variant 1 twins included (at most kMaxWordsPerShader), `needs[i]` the vertex features
+    // the pixel shader's word i wants its draw's vertex shader to have.
+    uint32_t features = 0;
+    uint8_t word_count = 0;
+    uint32_t words[larecomp::shaderpack::chain::kMaxWordsPerShader] = {};
+    uint32_t needs[larecomp::shaderpack::chain::kMaxWordsPerShader] = {};
+    // Whether it has the HDR scene variant (the feature kFeatureHdrScene alone, spec variant 0).
     bool hdr_variant = false;
+    // Whether the pack has the word `word` (a variant word from kFirstPackedVariant) of this shader.
+    bool HasWord(uint32_t word) const {
+      for (uint32_t i = 0; i < word_count; ++i) {
+        if (words[i] == word) {
+          return true;
+        }
+      }
+      return false;
+    }
   };
 
   // What the variant pack says of one shader's variant.
   static constexpr uint32_t kVariantVertexShaders = larecomp::shaderpack::kVariantVertexShaders;
   struct Variant {
-    uint64_t ps_key = 0;
-    uint32_t variant = 0;
+    uint64_t ps_key = 0;  // the shader's identity: a pixel shader's, or a vertex shader's when `vertex`
+    uint32_t variant = 0;  // the word
     // The vertex shaders the variant is drawn with (the ones whose outputs it reads: 0 = none).
     uint64_t vs_keys[kVariantVertexShaders] = {};
-    uint32_t reserved = 0;
+    uint32_t vs_features = 0;  // a pixel shader's: the vertex features its draw's vertex shader must have
+    bool vertex = false;
     Blob dxil;
     Blob spirv;
     bool DrawnWith(uint64_t vs_key) const {
@@ -265,15 +313,21 @@ class ShaderStore {
   // The variants are loaded and the pack has the HDR scene variant.
   bool has_hdr_variants() const { return has_variants() && hdr_variant_count_ != 0; }
   const std::filesystem::path& variants_path() const { return variants_path_; }
-  // The variant `variant` (kHdrVariant, kBloomVariant...) of pixel shader `identity`, null when it has none.
+  // The variant word `variant` (kHdrVariant, kBloomVariant, or a composed one) of shader `identity`, null when it has none.
   const Variant* FindVariant(uint64_t identity, uint32_t variant) const;
   // The HDR scene variant of pixel shader `identity`, null when it has none.
   const HdrVariant* FindHdrVariant(uint64_t identity) const { return FindVariant(identity, kHdrVariant); }
+  // The variant word a draw of pixel shader `ps` takes when the settings want the features in `wanted` (a mask of FeatureBit): the
+  // word of the pack with the most features, all wanted (shaderpack/variant_chain.h Pick), whose vertex needs the draw's vertex
+  // shader `vs` meets; `spec` is the draw's spec variant (0, or 1 for the alpha test: only a word with that bit and twin is taken).
+  // The game's own word (`spec`) when none fits. *vs_word is the vertex shader's word for the draw: its own spec variant `vs_spec`
+  // and, when the chosen word needs vertex features, those. Render thread (the draw path); no lock, no allocation.
+  uint32_t ChooseVariant(const Entry& ps, uint32_t wanted, uint32_t spec, const Entry* vs, uint32_t vs_spec,
+                         uint32_t* vs_word) const;
   // Appends the vertex shader's elements to `out` (cleared first).
   void GetVertexElements(const Entry& entry, std::vector<VertexElement>& out) const;
-  // The shader for `entry` with spec `variant` (0, or 1 = spec_mask applied, or a variant pack id,
-  // kHdrVariant, kBloomVariant..., for a pixel shader that has that variant), created on first use. Null
-  // with the reason in `result` otherwise.
+  // The shader for `entry` with `variant` (0, or 1 = spec_mask applied, or a variant pack word, kHdrVariant, kBloomVariant... or a
+  // composed one, for a shader that has that variant), created on first use. Null with the reason in `result` otherwise.
   plume::RenderShader* GetShader(const Entry& entry, uint32_t variant, ShaderResult* result);
 
  private:
@@ -294,12 +348,22 @@ class ShaderStore {
   std::filesystem::path folder_;  // its folder
   std::unique_ptr<rex::memory::MappedMemory> file_;
   std::unordered_map<uint64_t, Entry> entries_;
-  std::unordered_map<uint64_t, Slot> slots_[kVariantSlots];  // per variant id, by identity
+  // Created shaders: the main pack's two spec variants by identity, the variant pack's by (identity, word).
+  struct WordKey {
+    uint64_t key = 0;
+    uint32_t word = 0;
+    bool operator==(const WordKey& o) const { return key == o.key && word == o.word; }
+  };
+  struct WordKeyHash {
+    size_t operator()(const WordKey& k) const { return size_t(k.key * 0x9E3779B97F4A7C15ull) ^ (size_t(k.word) * 0xC2B2AE3D27D4EB4Full); }
+  };
+  std::unordered_map<uint64_t, Slot> slots_[2];
+  std::unordered_map<WordKey, Slot, WordKeyHash> packed_slots_;
   std::atomic<bool> variants_ready_{false};  // set last by LoadVariants
   uint32_t hdr_variant_count_ = 0;           // the pack's HDR scene variants (written before variants_ready_)
   std::filesystem::path variants_path_;
   std::unique_ptr<rex::memory::MappedMemory> variants_file_;
-  std::unordered_map<uint64_t, Variant> variants_[kVariantSlots];  // per variant id, by pixel shader identity
+  std::unordered_map<WordKey, Variant, WordKeyHash> variants_;  // by (identity, word)
   Stats stats_;
 };
 

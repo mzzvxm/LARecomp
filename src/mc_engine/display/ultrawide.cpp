@@ -2,9 +2,10 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "ultrawide.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
 
 #include <algorithm>
 #include <atomic>
@@ -25,8 +26,6 @@
 #include "gpu/gpu.h"
 #endif
 
-REXCVAR_DECLARE(std::string, aspect_ratio);  // hooks/graphics.cpp
-REXCVAR_DECLARE(int32_t, hud_width);         // hooks/graphics.cpp
 
 namespace mc::ultrawide {
 
@@ -55,7 +54,7 @@ bool g_logged_tall = false;
 // The setting's text, as the last change left it (a change callback is given the new value; reading
 // the cvar inside the callback is not safe, it may run with the registry locked).
 std::mutex g_ask_mutex;
-std::string g_ask;
+std::string& g_ask = larecomp::Leak<std::string>();
 bool g_ask_known = false;  // Init ran
 
 // The SDK presenter (the Xenia renderer) fits the 1280x720 picture into the window with black bars
@@ -95,7 +94,7 @@ std::string Ask() {
       return g_ask;
     }
   }
-  return REXCVAR_GET(aspect_ratio);
+  return larecomp::settings::aspect_ratio.Get();
 }
 
 // The choice in force, for a caller that has no setting text (no registry read once Recompute has run).
@@ -165,7 +164,7 @@ void SetWindowSize(uint32_t width, uint32_t height) {
     const int stretch = Active() ? 1 : 0;
     if (stretch != g_xenia_stretch) {
       g_xenia_stretch = stretch;
-      rex::cvar::SetFlagByName("present_letterbox", stretch ? "false" : "true");
+      larecomp::cvar::SetFlagByName("present_letterbox", stretch ? "false" : "true");
     }
   }
 }
@@ -380,8 +379,8 @@ const uint8_t* GuestBase() {
   static std::atomic<const uint8_t*> cached{nullptr};
   const uint8_t* base = cached.load(std::memory_order_relaxed);
   if (!base) {
-    if (rex::Runtime* runtime = rex::Runtime::instance()) {
-      base = runtime->virtual_membase();
+    if (rex::kernel::TitleRuntime* runtime = REX_RUNTIME()) {
+      base = runtime->GetMembase().GetBase();
       cached.store(base, std::memory_order_relaxed);
     }
   }
@@ -393,7 +392,7 @@ const uint8_t* GuestBase() {
 // pieces when the expanded map keeps them in the middle.
 std::atomic<uint32_t> g_pieces_logged{0};
 std::mutex g_kept_mutex;
-std::vector<std::string> g_kept_logged;
+std::vector<std::string>& g_kept_logged = larecomp::Leak<std::vector<std::string>>();
 std::atomic<bool> g_expanded_logged{false};
 constexpr size_t kMaxKeptLogged = 16;
 
@@ -559,11 +558,11 @@ void NoteUiPiece(uint32_t instance, bool begin) {
 void Init() {
   {
     std::lock_guard<std::mutex> lock(g_ask_mutex);
-    g_ask = REXCVAR_GET(aspect_ratio);
+    g_ask = larecomp::settings::aspect_ratio.Get();
     g_ask_known = true;
   }
-  g_hud_width.store(std::clamp<int32_t>(REXCVAR_GET(hud_width), 0, 100), std::memory_order_relaxed);
-  rex::cvar::RegisterChangeCallback("hud_width", [](std::string_view, std::string_view value) {
+  g_hud_width.store(std::clamp<int32_t>(larecomp::settings::hud_width.Get(), 0, 100), std::memory_order_relaxed);
+  larecomp::cvar::RegisterChangeCallback("hud_width", [](std::string_view, std::string_view value) {
     int32_t percent = 0;
     const char* end = value.data() + value.size();
     if (std::from_chars(value.data(), end, percent).ec != std::errc()) {
@@ -575,7 +574,7 @@ void Init() {
                         Active() ? "" : " (the picture is 16:9: nothing moves)");
     }
   });
-  rex::cvar::RegisterChangeCallback("aspect_ratio", [](std::string_view, std::string_view value) {
+  larecomp::cvar::RegisterChangeCallback("aspect_ratio", [](std::string_view, std::string_view value) {
     {
       std::lock_guard<std::mutex> lock(g_ask_mutex);
       g_ask = std::string(value);

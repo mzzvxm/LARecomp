@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <functional>
@@ -23,17 +24,17 @@
 
 #include <imgui.h>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/filesystem/devices/stfs_container_device.h>
-#include <rex/logging.h>
-#include <rex/system/xam/user_profile.h>
-#include <rex/system/xtypes.h>
-#include <rex/ui/imgui_dialog.h>
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/window.h>
-#include <rex/ui/windowed_app_context.h>
-#include <rex/ui/windowed_app_context_sdl.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/filesystem/file_system_factory.h>
+#include <rex/filesystem/stfs.h>
+#include <rex/logging/log_category.h>
+#include <rex/module.h>
+#include <rex/xam/user_profile.h>
+#include <rex/ui/ui_system.h>
+
+#include "larecomp_dialog.h"
+#include "os/file_pick.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -42,29 +43,15 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <windows.h>  // before commdlg.h: the SDK headers of 0.11 no longer pull windows.h in first
 #include <commdlg.h>
-#include <windows.h>
-
-#elif defined(__APPLE__)
-#else
-#include <gtk/gtk.h>
 #endif
-
-REXCVAR_DEFINE_BOOL(skip_save_import, false, "MCLA",
-    "Skip the save import wizard shown on first launch and start with no save. "
-    "The wizard is skipped automatically anyway when no Xenia or RPCS3 save is "
-    "found on the machine.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace larecomp {
 
 namespace {
 
 namespace fs = std::filesystem;
-
-// X_STATUS_SUCCESS expands to a bare X_STATUS cast; bring the type into scope.
-using rex::X_STATUS;
 
 // The XUID every profile shared before per-profile XUIDs (the fork's
 // UserProfile::kLegacyXuid; still the only one on the stock SDK). Names the
@@ -119,7 +106,7 @@ std::string ProfileDirNameFor() {
   }
 }
 
-std::string ProfileDirName() { return ProfileDirNameFor<rex::system::xam::UserProfile>(); }
+std::string ProfileDirName() { return ProfileDirNameFor<rex::xam::UserProfile>(); }
 
 bool ReadFileBytes(const fs::path& path, std::vector<uint8_t>& out) {
 #if defined(_WIN32)
@@ -295,71 +282,56 @@ void MigrateLegacyXuidDir(const fs::path& user_data_root) {
   }
 }
 
-// Reads all bytes of a mounted STFS entry into a vector.
-bool ReadEntryBytes(rex::filesystem::Entry* entry, std::vector<uint8_t>& out) {
-  rex::filesystem::File* file = nullptr;
-  if (entry->Open(rex::filesystem::FileAccess::kFileReadData, &file) != X_STATUS_SUCCESS ||
-      !file) {
-    return false;
-  }
-  out.resize(entry->size());
-  size_t off = 0;
-  while (off < out.size()) {
-    size_t got = 0;
-    file->ReadSync(std::span<uint8_t>(out.data() + off, out.size() - off), off, &got);
-    if (got == 0) {
-      break;
-    }
-    off += got;
-  }
-  file->Destroy();
-  return off == out.size();
-}
-
 // A real-console Xbox 360 save is an STFS package (magic CON/LIVE/PIRS) whose
 // outer file carries profile/console identity, wrapping the actual RAGE save as
 // an inner file. Xenia represents this as a folder named after the package with
-// the decrypted inner file inside. Mount the package and pull out the inner
-// save (the first entry that validates as a RAGE container).
+// the decrypted inner file inside. Open the package (rexglue 0.11: the file
+// system factory's OpenContainer gives an IContainerImage with the parsed tree)
+// and pull out the inner save (the first file that validates as a RAGE container).
+// CHECK: IFileSystemFactory is served by the rexfilesystem module, which is
+// connected before OnInit, so the wizard (Init to LaunchTitle) finds it.
 bool ExtractSaveFromStfs(const fs::path& package, std::vector<uint8_t>& out, SaveInfo& info,
                          std::string& err) {
-  if (!rex::filesystem::StfsContainerDevice::ReadPackageHeader(package)) {
-    err = "not an STFS package";
+  auto* factory = rex::AppInterfaces::Get<rex::filesystem::IFileSystemFactory>();
+  if (!factory) {
+    err = "the file system module is not available";
     return false;
   }
-  auto device = std::make_unique<rex::filesystem::StfsContainerDevice>("", package);
-  if (!device->Initialize()) {
+  auto opened = factory->OpenContainer(package);
+  if (!opened) {
     err = "the STFS package could not be opened (damaged or unsupported)";
     return false;
   }
-  auto* root = device->ResolvePath("");
-  if (!root) {
-    err = "the STFS package has no readable contents";
+  const rex::filesystem::IContainerImage& image = **opened;
+  if (image.GetType() != rex::filesystem::ContainerType::kSTFS) {
+    err = "not an STFS package";
     return false;
   }
 
-  std::queue<rex::filesystem::Entry*> queue;
-  queue.push(root);
-  while (!queue.empty()) {
-    auto* entry = queue.front();
-    queue.pop();
-    for (const auto& child : entry->children()) {
-      queue.push(child.get());
-    }
-    if (entry->attributes() & rex::filesystem::kFileAttributeDirectory) {
+  // Nodes are in the container's own order (the root first); every file is a candidate.
+  for (const rex::filesystem::ContainerNode& node : image.GetNodes()) {
+    if (rex::HasFlags(node.info.attributes, rex::filesystem::FileAttributes::kDirectory)) {
       continue;
     }
-    if (entry->size() < 12 || entry->size() > 8ull * 1024 * 1024) {
+    if (node.info.size < 12 || node.info.size > 8ull * 1024 * 1024) {
       continue;
     }
-    std::vector<uint8_t> bytes;
-    if (!ReadEntryBytes(entry, bytes)) {
+    std::vector<uint8_t> bytes(static_cast<size_t>(node.info.size));
+    size_t off = 0;
+    while (off < bytes.size()) {
+      auto got = image.Read(node, off, std::span<uint8_t>(bytes.data() + off, bytes.size() - off));
+      if (!got || *got == 0) {
+        break;
+      }
+      off += *got;
+    }
+    if (off != bytes.size()) {
       continue;
     }
     std::string ignored;
     if (ValidateSave(bytes, info, ignored)) {
       out = std::move(bytes);
-      REXLOG_INFO("Extracted inner save '{}' from STFS package", entry->name());
+      REXLOG_INFO("Extracted inner save '{}' from STFS package", node.info.name);
       return true;
     }
   }
@@ -544,53 +516,51 @@ fs::path PickSaveFile() {
   }
   return filename;
 }
-#elif defined(__APPLE__)
-fs::path PickSaveFile() { return {}; }
-#else
-fs::path PickSaveFile() {
-  GtkWidget* dialog = gtk_file_chooser_dialog_new(
-      "Select mc4.sav (Xenia) or RAGE.SAV (RPCS3)", nullptr, GTK_FILE_CHOOSER_ACTION_OPEN,
-      "_Cancel", GTK_RESPONSE_CANCEL, "_Open", GTK_RESPONSE_ACCEPT, nullptr);
-  if (!dialog) {
-    return {};
-  }
-  GtkFileFilter* sav = gtk_file_filter_new();
-  gtk_file_filter_set_name(sav, "Midnight Club save (mc4.sav, RAGE.SAV)");
-  gtk_file_filter_add_pattern(sav, "mc4.sav");
-  gtk_file_filter_add_pattern(sav, "RAGE.SAV");
-  gtk_file_filter_add_pattern(sav, "*.sav");
-  gtk_file_filter_add_pattern(sav, "*.SAV");
-  gtk_file_chooser_add_filter(GTK_FILE_CHOOSER(dialog), sav);
+#endif
 
-  fs::path result;
-  if (gtk_dialog_run(GTK_DIALOG(dialog)) == GTK_RESPONSE_ACCEPT) {
-    char* name = gtk_file_chooser_get_filename(GTK_FILE_CHOOSER(dialog));
-    if (name) {
-      result = name;
-      g_free(name);
-    }
+// The importer's file chooser. Windows keeps the system's own dialog above; macOS has none. Linux asks the SDK's file dialog (SDL3's: the xdg desktop
+// portal over D-Bus, then zenity), not GTK 3, which the game linked until 2026-11 (os/file_pick.h). Where neither answers it returns an error, which comes
+// back as `unavailable`: the dialog logs one line and shows a box to type the save's path in, so a save can still be imported.
+#if defined(_WIN32)
+os::FilePick PickSaveSource(rex::ui::IUISystem&) {
+  os::FilePick pick;
+  pick.path = PickSaveFile();
+  pick.cancelled = pick.path.empty();
+  return pick;
+}
+#elif defined(__APPLE__)
+os::FilePick PickSaveSource(rex::ui::IUISystem&) {
+  os::FilePick pick;
+  pick.cancelled = true;
+  return pick;
+}
+#else
+os::FilePick PickSaveSource(rex::ui::IUISystem& ui) {
+  rex::ui::FileDialogConfig config;
+  config.mode = rex::ui::FileDialogConfig::Mode::kOpenFile;
+  config.title = "Select mc4.sav (Xenia) or RAGE.SAV (RPCS3)";
+  config.filters = {{"Midnight Club save (mc4.sav, RAGE.SAV)", "sav;SAV"}, {"All files", "*"}};
+  const auto chosen = ui.ShowFileDialog(config);
+  if (!chosen) {
+    return os::FromDialogAnswer(false, {}, chosen.error().message);
   }
-  gtk_widget_destroy(dialog);
-  while (gtk_events_pending()) {
-    gtk_main_iteration_do(FALSE);
-  }
-  return result;
+  return os::FromDialogAnswer(true, *chosen, "");
 }
 #endif
 
 // ---- Dialog -----------------------------------------------------------------
 
-class SaveImportDialog final : public rex::ui::ImGuiDialog {
+class SaveImportDialog final : public ui::ImGuiDialog {
  public:
-  SaveImportDialog(rex::ui::ImGuiDrawer* drawer, fs::path user_data_root, fs::path xenia_found,
+  SaveImportDialog(rex::ui::IUISystem* ui, fs::path user_data_root, fs::path xenia_found,
                    fs::path rpcs3_found, std::function<void()> on_finished)
-      : ImGuiDialog(drawer),
+      : ui_(ui),
         user_data_root_(std::move(user_data_root)),
         xenia_found_(std::move(xenia_found)),
         rpcs3_found_(std::move(rpcs3_found)),
         on_finished_(std::move(on_finished)) {}
 
- protected:
+  // Runs once, after the draw that Close() ended: this is what tells the app's setup loop to go on.
   void OnClose() override {
     REXLOG_INFO("Save wizard: dialog closed");
     if (on_finished_) {
@@ -598,6 +568,8 @@ class SaveImportDialog final : public rex::ui::ImGuiDialog {
       on_finished_ = nullptr;
     }
   }
+
+ protected:
 
   void OnDraw(ImGuiIO& io) override {
     // Diagnostics: confirms the dialog is being drawn at a sane size and that
@@ -640,6 +612,18 @@ class SaveImportDialog final : public rex::ui::ImGuiDialog {
         // path auto-detects and handles both. No standard host path, so browse-only.
         DrawChoice("Import from a real Xbox 360 (STFS or extracted)", "mc4.sav", fs::path(),
                    "larecomp_import_real360");
+        // No file chooser could be opened (Linux without the xdg desktop portal or zenity): the player types the save's path.
+        if (!picker_unavailable_.empty()) {
+          ImGui::Dummy(ImVec2(0.0f, 8.0f));
+          ImGui::TextWrapped("%s", picker_unavailable_.c_str());
+          ImGui::InputText("Save path", typed_path_, sizeof(typed_path_));
+          if (!typed_error_.empty()) {
+            ImGui::TextColored(ImVec4(0.97f, 0.72f, 0.33f, 1.0f), "%s", typed_error_.c_str());
+          }
+          if (ImGui::Button("Import this file", ImVec2(-1.0f, 0.0f))) {
+            ImportTypedPath();
+          }
+        }
         ImGui::Dummy(ImVec2(0.0f, 10.0f));
         ImGui::Separator();
         ImGui::Dummy(ImVec2(0.0f, 6.0f));
@@ -678,12 +662,46 @@ class SaveImportDialog final : public rex::ui::ImGuiDialog {
     const std::string label = has ? (std::string(title) + "\n  found: " + found.string())
                                   : (std::string(title) + "\n  browse for " + expected + "...");
     if (ImGui::Button(label.c_str(), ImVec2(-1.0f, 0.0f))) {
-      fs::path source = has ? found : PickSaveFile();
+      fs::path source = has ? found : PickSave();
       if (!source.empty()) {
         DoImport(source);
       }
     }
     ImGui::PopID();
+  }
+
+  // Browses for a save with the file chooser. A path comes back only when the player chose one; when no chooser can be opened (os/file_pick.h) the
+  // line says so once in the log and the dialog shows a box to type the path in.
+  fs::path PickSave() {
+    if (!ui_) {
+      return {};
+    }
+    os::FilePick pick = PickSaveSource(*ui_);
+    if (!pick.unavailable.empty()) {
+      if (picker_unavailable_.empty()) {
+        REXLOG_WARN("Save wizard: no file chooser could be opened ({}); the path box is shown instead", pick.unavailable);
+      }
+      picker_unavailable_ = os::UnavailableText(pick.unavailable, "the save file (mc4.sav or RAGE.SAV)");
+      typed_error_.clear();
+      return {};
+    }
+    return std::move(pick.path);
+  }
+
+  void ImportTypedPath() {
+    std::string home;  // what `~` stands for; the path box only appears where no file chooser opens, which is Linux
+#ifndef _WIN32
+    if (const char* env_home = std::getenv("HOME")) {
+      home = env_home;
+    }
+#endif
+    os::TypedPath typed = os::ParseTypedPath(typed_path_, home);
+    if (!typed.error.empty()) {
+      typed_error_ = typed.error;
+      return;
+    }
+    typed_error_.clear();
+    DoImport(typed.path);
   }
 
   void DoImport(const fs::path& source) {
@@ -698,10 +716,14 @@ class SaveImportDialog final : public rex::ui::ImGuiDialog {
     }
   }
 
+  rex::ui::IUISystem* ui_ = nullptr;  // for the file chooser; the UI system owns this dialog, so it outlives it
   fs::path user_data_root_;
   fs::path xenia_found_;
   fs::path rpcs3_found_;
   std::function<void()> on_finished_;
+  std::string picker_unavailable_;  // set once no file chooser could be opened: the sentence over the path box
+  char typed_path_[4096] = {};      // the path box
+  std::string typed_error_;
   State state_ = State::kChoosing;
   std::string status_;
   bool logged_first_draw_ = false;
@@ -719,11 +741,11 @@ bool SaveAlreadyPresent(const fs::path& user_data_root) {
   return present;
 }
 
-bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& paths,
+bool ShowSaveImportWizard(rex::ui::IUISystem& ui, const Paths& paths,
                           std::function<void()> on_finished) {
-  const fs::path user_data_root = paths.user_data_root;
+  const fs::path user_data_root = paths.user_root;
 
-  if (REXCVAR_GET(skip_save_import)) {
+  if (larecomp::settings::skip_save_import.Get()) {
     REXLOG_INFO("Save import: skipped (skip_save_import)");
     return false;
   }
@@ -739,16 +761,15 @@ bool ShowSaveImportWizard(rex::ui::ImGuiDrawer* drawer, const rex::PathConfig& p
     REXLOG_INFO("Save import: nothing found to import, starting without a save");
     return false;
   }
-  if (!drawer) {
+  if (!ui.HasWindow()) {
     REXLOG_WARN("Save import: no UI to show the wizard on, starting without importing");
     return false;
   }
 
-  // Self-deletes on Close(), which is also what calls `on_finished`. No pump:
-  // while a dialog is open the ImGui drawer keeps requesting paints, so the
-  // app's own loop draws it (see the SDL note in larecomp_save_porter.h).
+  // The UI system destroys it after Close(), and OnClose is what calls `on_finished`. No pump here: the app's
+  // setup loop runs the frames that draw it (see larecomp_save_porter.h).
   REXLOG_INFO("Save import: showing the wizard");
-  new SaveImportDialog(drawer, user_data_root, xenia, rpcs3, std::move(on_finished));
+  ui::ShowDialog<SaveImportDialog>(ui, &ui, user_data_root, xenia, rpcs3, std::move(on_finished));
   return true;
 }
 

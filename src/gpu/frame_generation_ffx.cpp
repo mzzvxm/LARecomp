@@ -20,8 +20,8 @@
 #include <thread>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include <ffx_api.h>
 #include <ffx_api_types.h>

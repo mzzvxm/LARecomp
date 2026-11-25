@@ -154,11 +154,11 @@ VariantTransformResult TransformBloomGaussHlsl(const VariantShader& shader, std:
 
 VariantDef MakeBloomGaussVariant() {
   VariantDef def;
-  def.id = kVariantBloomGauss;
+  def.feature = kFeatureBloomGauss;
   def.name = "bloom_gauss";
   def.version = kBloomGaussVariantVersion;
   def.pixel_shaders = {kBloomGaussX, kBloomGaussY};
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) {
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext&) {
     return TransformBloomGaussHlsl(shader, hlsl);
   };
   return def;

@@ -14,7 +14,8 @@
 // it; only the bounce (yzw) is filtered.
 //
 // Push fields: slots.z the image to filter (RGBA16F: visibility, bounce), slots.w the linear depth image,
-// slots2.x the step in pixels, sizes.xy the size of both, lens the lens, extra.y the distance fade's end.
+// slots2.x the step in pixels, slots2.w the normal image's slot (0: none, the depth's normal; ao_common.hlsli AoNormalAt), sizes.xy the size of both, lens the lens, extra.y the
+// distance fade's end.
 // Output: RGBA16F, the same layout.
 
 #include "ao_common.hlsli"
@@ -40,7 +41,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float4 centre = g_textures[source_slot].Load(int3(pixel, 0));
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(g_push.slots2.w, depth_slot, pixel, isize, tc, pc);
   // The plane weight's reciprocal and the image's, made once for the pass: a division in each of the 24 taps otherwise.
   const float inv_plane_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
   const float2 clip_scale = 2.0f / size;

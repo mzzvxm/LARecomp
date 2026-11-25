@@ -13,19 +13,15 @@
 #include <cstdint>
 #include <cstdio>
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
 
 #include "mc_engine/core/logging.h"
 #include "mc_engine/hooks/hooks_internal.h"
 #include "mouse_look.h"
-
-REXCVAR_DEFINE_BOOL(mouse_drag_diag, false, "MCLA/Diagnostics",
-    "Log, once a second, which of the game's raw right-stick readers ran and what the game's pad records hold "
-    "(for the mouse drag in the garage and the menus).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_82251FD0);
 REX_EXTERN(__imp__rex_sub_8262A688);
@@ -72,7 +68,7 @@ void Report(const uint8_t* base) {
             calls[3], kReaderNames[4], calls[4], kReaderNames[5], calls[5], kReaderNames[6], calls[6], g, f1, f2);
 }
 
-inline bool On() { return REXCVAR_GET(mouse_drag_diag); }
+inline bool On() { return larecomp::settings::mouse_drag_diag.Get(); }
 
 }  // namespace
 
@@ -80,8 +76,7 @@ inline bool On() { return REXCVAR_GET(mouse_drag_diag); }
 namespace larecomp::mouselook {
 void MenuDragDiagTick() {
     if (!On()) return;
-    auto* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? reinterpret_cast<const uint8_t*>(rt->virtual_membase()) : nullptr;
+    const uint8_t* base = larecomp::guest::Membase();
     if (base) Report(base);
 }
 }  // namespace larecomp::mouselook

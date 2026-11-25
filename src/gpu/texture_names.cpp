@@ -3,11 +3,13 @@
 // ===========================================================================
 
 #include "texture_names.h"
+#include "settings/immortal.h"
 
+#include <atomic>
 #include <mutex>
 #include <unordered_map>
 
-#include <rex/logging.h>
+#include <rex/logging/log_category.h>
 
 #include "native_gfx/guest/guest_resources.h"
 #include "records.h"
@@ -32,10 +34,11 @@ struct Registry {
   std::unordered_map<uint32_t, uint32_t> page_of_grc;  // grcTexture -> base page
   uint64_t recorded = 0;
   bool first_dictionary_logged = false;
+  std::atomic<uint64_t> generation{0};  // bumped, under the mutex, by every change of by_page
 };
 
 Registry& registry() {
-  static Registry r;
+  static Registry& r = larecomp::Leak<Registry>();
   return r;
 }
 
@@ -106,6 +109,7 @@ void Record(const uint8_t* base, uint32_t grc_texture, std::string texture,
   r.by_page[page] = Name{std::move(texture), std::move(dictionary)};
   r.page_of_grc[grc_texture] = page;
   ++r.recorded;
+  r.generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 }  // namespace
@@ -153,6 +157,7 @@ void NoteDestroyed(const uint8_t* base, uint32_t grc_texture) {
   }
   r.by_page.erase(it->second);
   r.page_of_grc.erase(it);
+  r.generation.fetch_add(1, std::memory_order_relaxed);
 }
 
 bool Lookup(uint32_t base_page, Name* out) {
@@ -165,5 +170,7 @@ bool Lookup(uint32_t base_page, Name* out) {
   *out = it->second;
   return true;
 }
+
+uint64_t Generation() { return registry().generation.load(std::memory_order_relaxed); }
 
 }  // namespace mcla::gpu::texture_names

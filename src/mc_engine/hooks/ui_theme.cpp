@@ -28,9 +28,11 @@
 // instead of guessed. The theme cvars are empty (off) by default.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -47,35 +49,7 @@
 #include "hooks_internal.h"
 #include "mc_engine/core/logging.h"
 #include "mc_engine/menus/swf_dom.h"
-
-REXCVAR_DEFINE_STRING(ui_theme_accent, "", "MCLA/UI",
-    "Replaces the blue/teal that every menu uses (selection bar, highlights, "
-    "arrows) with this color, as RRGGBB hex. Empty keeps the game's own. "
-    "Shades of the original keep their brightness relative to it.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(ui_theme_title, "", "MCLA/UI",
-    "Replaces the yellow of the menu titles and the spinning globe, as RRGGBB "
-    "hex. Empty keeps the game's own.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(ui_theme_frame, "", "MCLA/UI",
-    "Replaces the gray of the menu frame, as RRGGBB hex. Empty keeps the "
-    "game's own.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(ui_theme_skip_movies, "HUDMOVIE", "MCLA/UI",
-    "Comma-separated Flash movie names the theme leaves alone. The HUD movie "
-    "shares the menus' teal and yellow in its speedometer; empty themes every "
-    "movie.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(ui_color_log, false, "MCLA/Diagnostics",
-    "Log every distinct Flash UI color (movie, draw site, ARGB, bound texture) "
-    "with a running count, to measure the families ui_theme_* recolors.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_82720908);  // 2D draw phase of one movie
 
@@ -135,11 +109,11 @@ void RefreshConfig() {
     t_cfg.frame = frame;
     Config n;
     n.frame = frame;
-    ParseHex(REXCVAR_GET(ui_theme_accent), n.accent);
-    ParseHex(REXCVAR_GET(ui_theme_title), n.title);
-    ParseHex(REXCVAR_GET(ui_theme_frame), n.frame_);
-    n.skip = REXCVAR_GET(ui_theme_skip_movies);
-    n.log = REXCVAR_GET(ui_color_log);
+    ParseHex(larecomp::settings::ui_theme_accent.Get(), n.accent);
+    ParseHex(larecomp::settings::ui_theme_title.Get(), n.title);
+    ParseHex(larecomp::settings::ui_theme_frame.Get(), n.frame_);
+    n.skip = larecomp::settings::ui_theme_skip_movies.Get();
+    n.log = larecomp::settings::ui_color_log.Get();
     const bool same = n.accent.on == t_cfg.accent.on && n.accent.r == t_cfg.accent.r &&
                       n.accent.g == t_cfg.accent.g && n.accent.b == t_cfg.accent.b &&
                       n.title.on == t_cfg.title.on && n.title.r == t_cfg.title.r &&
@@ -287,7 +261,7 @@ struct Seen {
 constexpr size_t kMaxSeen = 2000;
 uint32_t g_note_calls = 0;
 std::mutex g_log_mutex;
-std::unordered_map<std::string, Seen> g_seen;
+std::unordered_map<std::string, Seen>& g_seen = larecomp::Leak<std::unordered_map<std::string, Seen>>();
 int64_t g_next_dump_ns = 0;
 
 std::string GuestText(const uint8_t* base, uint32_t ea, size_t max) {
@@ -304,7 +278,7 @@ std::string GuestText(const uint8_t* base, uint32_t ea, size_t max) {
 
 const uint8_t* GuestBase() {
     static const uint8_t* base = nullptr;
-    if (!base) base = rex::Runtime::instance()->virtual_membase();
+    if (!base) base = larecomp::guest::Membase();
     return base;
 }
 

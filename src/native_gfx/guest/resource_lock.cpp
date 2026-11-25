@@ -9,7 +9,7 @@
 #include <cstring>
 #include <string>
 
-#include <rex/system/xmemory.h>
+#include <rex/memory/mapped_ptr.h>
 
 #include "d3d_structs.h"
 #include "guest_resources.h"

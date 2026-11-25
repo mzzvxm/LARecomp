@@ -62,8 +62,9 @@
 // its duration plus a few seconds before the same is done.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -71,29 +72,6 @@
 #include <string>
 
 #include "mc_engine/core/logging.h"
-
-REXCVAR_DEFINE_BOOL(warp_transition_fix, true, "MCLA/Patches",
-    "Finish a cinematic warp (pause menu -> garage from far away) whose camera "
-    "flight ended between two frames. Without it the game can sit on the garage "
-    "facade forever: the warper only notices the flight's end by predicting it one "
-    "frame early from a duration measured at a fixed 1/30 s step, and real, varying "
-    "frame times slip past that prediction.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(warp_transition_trace, false, "MCLA/Diagnostics",
-    "Log every frame the warper spends waiting on a cinematic warp transition: the "
-    "transition's time, duration, active flag and the frame delta.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(warp_transition_test_miss, false, "MCLA/Diagnostics",
-    "Testing aid: hide the running transition from the warper's own end check, so "
-    "every cinematic warp ends the way the stuck ones do -- the transition finishes "
-    "and reports it while the warper is not looking. With warp_transition_fix off "
-    "this reproduces the stuck garage facade on demand.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_8221BE98);  // mcWarper::Update
 REX_EXTERN(__imp__rex_sub_8221B790);  // mcWarper finalize
@@ -213,7 +191,7 @@ void WatchWarper(PPCContext& ctx, uint8_t* base, uint32_t warper, float dt) {
     const float dur = ReadGuestF32(base, transition + kTransitionDur);
     ++g_watch.frames;
     g_watch.waited += dt;
-    if (REXCVAR_GET(warp_transition_trace))
+    if (larecomp::settings::warp_transition_trace.Get())
         MC_INFO("[warper] frame {} dt {:.4f} active {} t {:.4f} / {:.4f}", g_watch.frames, dt, active ? 1 : 0,
                 time, dur);
     if (active) {
@@ -225,7 +203,7 @@ void WatchWarper(PPCContext& ctx, uint8_t* base, uint32_t warper, float dt) {
 
     const bool never_started = !g_watch.seen_active && g_watch.waited > std::max(dur, 0.0f) + kNeverStartedGrace;
     if (!g_watch.seen_active && !never_started) return;
-    if (!REXCVAR_GET(warp_transition_fix)) {
+    if (!larecomp::settings::warp_transition_fix.Get()) {
         if (g_watch.frames % 600 == 1)
             MC_WARN("[warper] stuck on '{}' (warp_transition_fix off)", TransitionName(base, transition));
         return;
@@ -242,7 +220,7 @@ extern "C" REX_FUNC(rex_sub_8221BE98) {
     const uint32_t warper = ctx.r3.u32;
     const float dt = static_cast<float>(ctx.f1.f64);
     uint32_t hidden = 0;
-    if (warper && REXCVAR_GET(warp_transition_test_miss) &&
+    if (warper && larecomp::settings::warp_transition_test_miss.Get() &&
         IsWaitState(ReadGuestU32(base, warper + kWarperState))) {
         const uint32_t transition = ReadGuestU32(base, warper + kWarperTransition);
         const uint32_t flags = transition ? ReadGuestU32(base, transition + kTransitionFlags) : 0;

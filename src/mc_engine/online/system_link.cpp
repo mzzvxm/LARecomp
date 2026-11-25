@@ -18,23 +18,9 @@
 #include <atomic>
 #include <cstring>
 
-#include <rex/cvar.h>
-#include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(online_ignore_content_check, true, "MCLA/Multiplayer",
-                    "Ignore the session DLC/content compatibility check when joining or hosting "
-                    "online. The check is symmetric and fails on any mask difference, so it "
-                    "wrongly demands DLC (South Central) even when nobody owns any. Turn off to "
-                    "restore the stock behaviour.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
-
-REXCVAR_DEFINE_BOOL(online_diag, false, "MCLA/Multiplayer",
-                    "Log online session content masks and the valid-vehicle count at the join "
-                    "content check. Used to confirm whether the host's session properties "
-                    "transported. Verbose; leave off for normal play.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
+#include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
+#include <rex/kernel/guest_memory.h>
 
 // Online session content (DLC) compatibility gate. sub_8238B7E0 runs a symmetric
 // "mine is a superset of theirs" mask test twice on join; any mask difference
@@ -47,9 +33,9 @@ REXCVAR_DEFINE_BOOL(online_diag, false, "MCLA/Multiplayer",
 // When online_diag is on we dump both masks plus the global content mask
 // (0x827E9170) and the valid-vehicle-profile count (obj 0x8288E920 +0x53C).
 bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    if (REXCVAR_GET(online_diag)) {
-        auto* rt = rex::Runtime::instance();
-        auto* mem = rt ? rt->memory() : nullptr;
+    if (larecomp::settings::online_diag.Get()) {
+        auto* rt = REX_RUNTIME();
+        auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
         if (mem) {
             uint32_t local_ptr = static_cast<uint32_t>(r3.u64);
             uint32_t local_mask = IsGuestPtr(local_ptr) ? GuestRead32(mem, local_ptr) : 0;
@@ -63,7 +49,7 @@ bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
                 mode, local_mask, other, global_mask, valid_count);
         }
     }
-    if (!REXCVAR_GET(online_ignore_content_check)) return false;
+    if (!larecomp::settings::online_ignore_content_check.Get()) return false;
     r3.u64 = 1;
     return true;  // jump to the blr at 0x823882E4
 }
@@ -75,9 +61,9 @@ bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5)
 // join fails (wrong MaxPlayers). This dumps the count word (blob[0]) and the
 // parsed key fields. Read-only; gated by online_diag.
 void Hook_DumpJoinBlob(PPCRegister& r4) {
-    if (!REXCVAR_GET(online_diag)) return;
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    if (!larecomp::settings::online_diag.Get()) return;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     if (!mem) return;
 
     uint32_t blob = static_cast<uint32_t>(r4.u64);
@@ -146,8 +132,8 @@ void Hook_InviteSendProbe(PPCRegister& r3, PPCRegister& r4) {
 // default xuid the invite target gets filtered out and nothing is sent. Log the
 // count and the first target xuid so we can see if a recipient survives.
 void Hook_InviteSendPrimitiveProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     uint32_t targets = static_cast<uint32_t>(r4.u64);
     uint32_t count = static_cast<uint32_t>(r5.u64);
     uint32_t xhi = 0, xlo = 0;
@@ -198,7 +184,7 @@ struct ChallengeTime {
     double value() const { return static_cast<double>(static_cast<int32_t>(sec)) + frac; }
 };
 
-bool ReadChallengeTime(rex::memory::Memory* mem, uint32_t ea, ChallengeTime& out) {
+bool ReadChallengeTime(rex::kernel::GuestAddressSpace* mem, uint32_t ea, ChallengeTime& out) {
     if (!mem || !IsGuestPtr(ea)) return false;
     out.sec = GuestRead32(mem, ea + 0);
     uint32_t raw = GuestRead32(mem, ea + 4);
@@ -216,7 +202,7 @@ struct ClockState {
     uint32_t high_ms = 0;    // +84: monotonic high-water mark of the reported time
 };
 
-ClockState ReadClock(rex::memory::Memory* mem) {
+ClockState ReadClock(rex::kernel::GuestAddressSpace* mem) {
     ClockState st;
     if (!mem) return st;
     uint32_t netmgr = GuestRead32(mem, 0x8286F1D8);
@@ -244,8 +230,8 @@ void Hook_ChallengeClockGate(PPCRegister& r3) {
     static int last_ok = -1;
     static uint32_t last_flags = 0xFFFFFFFFu;
     int ok = static_cast<int>(r3.u64 & 0xFF);
-    auto* rt = rex::Runtime::instance();
-    ClockState st = ReadClock(rt ? rt->memory() : nullptr);
+    auto* rt = REX_RUNTIME();
+    ClockState st = ReadClock(rt ? larecomp::guest::AddressSpace(rt) : nullptr);
     if (ok == last_ok && st.flags == last_flags) return;
     last_ok = ok;
     last_flags = st.flags;
@@ -273,8 +259,8 @@ void Hook_ChallengeProp3Gate(PPCRegister& r3) {
 // the challenge window (5..35s) means the two clocks are in different domains,
 // i.e. netTimeSync never aligned them.
 void Hook_ChallengeTimeGate(PPCRegister& r3, PPCRegister& r4) {
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     ChallengeTime deadline, now;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r3.u64), deadline)) return;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r4.u64), now)) return;
@@ -302,8 +288,8 @@ void Hook_ChallengeIsGroupHost(PPCRegister& r3) {
 // while the requester's own player state has already flipped to "challenging" -
 // the exact symptom being chased.
 void Hook_ChallengeHostPublishGate(PPCRegister& r3, PPCRegister& r4) {
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     ChallengeTime deadline, now;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r3.u64), deadline)) return;
     if (!ReadChallengeTime(mem, static_cast<uint32_t>(r4.u64), now)) return;
@@ -336,8 +322,8 @@ void Hook_ChallengeResolveChallenger(PPCRegister& r3) {
 void Hook_PromptEntryGate(PPCRegister& r11) {
     static uint32_t last_state = 0xFFFFFFFFu;
     static uint32_t last_pending = 0xFFFFFFFFu;
-    auto* rt = rex::Runtime::instance();
-    auto* mem = rt ? rt->memory() : nullptr;
+    auto* rt = REX_RUNTIME();
+    auto* mem = rt ? larecomp::guest::AddressSpace(rt) : nullptr;
     uint32_t state = static_cast<uint32_t>(r11.u64);
     uint32_t pending = mem ? (GuestRead32(mem, 0x82873D94) >> 24) : 0xFFFFFFFFu;
     if (state == last_state && pending == last_pending) return;
@@ -418,10 +404,24 @@ void Hook_PromptRaised() {
 // (sub_82282EB8) bails at its very first gate.
 // ---------------------------------------------------------------------------
 
+// The last answer of the game's "session up at all" (sub_8226BE68), as the net tick that asks it every frame saw it. Read by the server
+// browser's join (SystemLinkSessionUp): a join does not start from inside a session. Any thread.
+//
+// It cannot stay true after a session ends (checked in the generated code, 2026-11-22, for the online review). The hook below sits at
+// the first call of sub_8226D120, which runs unconditionally (no branch before it) in sub_8226FD30, the net manager's tick; that is
+// called from exactly one place, the game's main loop sub_82131508 (a straight line from the loop label: no condition skips it), and
+// the join's own tick (TickServerBrowserJoin, from sub_822C1FA8, called only from the same loop right after) runs on that same thread
+// in that same iteration. So every read the join makes sees the answer of the net tick of the same frame, and a session that ended
+// is seen as ended at the next frame. Before the first tick the value is false (no session), and nothing else reads it (the
+// status file and --join_server's end state go through the join's phase). Under REXGLUE_HAS_XEO3_TARGET the hook is not compiled
+// and the value stays false, which only means the join never refuses from "in a session" there.
+static std::atomic<bool> g_session_up{false};
+
 // 0x8226D134
 void Hook_ClockSessionReady(PPCRegister& r3) {
     static int last = -1;
     int v = static_cast<int>(r3.u64 & 0xFF);
+    g_session_up.store(v != 0, std::memory_order_relaxed);
     if (v == last) return;
     last = v;
     LARECOMP_APP_INFO("[clock-probe] session ready (sub_8226BE68) = {}", v);
@@ -559,16 +559,16 @@ std::atomic<int> g_link_applied{-1};
 // pause_menu.cpp does not take that for the player's own switch.
 thread_local bool t_setting_cvar = false;
 
-rex::memory::Memory* Mem() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->memory() : nullptr;
+rex::kernel::GuestAddressSpace* Mem() {
+    auto* rt = REX_RUNTIME();
+    return rt ? larecomp::guest::AddressSpace(rt) : nullptr;
 }
 
-bool OnlineLive() { return rex::cvar::GetFlagByName(kOnlineCvar) == "true"; }
+bool OnlineLive() { return larecomp::cvar::GetFlagByName(kOnlineCvar) == "true"; }
 
 void SetOnlineCvar(bool on) {
     t_setting_cvar = true;
-    rex::cvar::SetFlagByName(kOnlineCvar, on ? "true" : "false");
+    larecomp::cvar::SetFlagByName(kOnlineCvar, on ? "true" : "false");
     t_setting_cvar = false;
 }
 
@@ -586,7 +586,7 @@ int Applied() {
 
 // Drops the MAC cache and flags every signed-in player record for a rebuild,
 // which the presence manager does later in the same net update.
-void RefreshLocalPlayers(rex::memory::Memory* mem) {
+void RefreshLocalPlayers(rex::kernel::GuestAddressSpace* mem) {
     GuestWrite8(mem, kMacCachedFlag, 0);
     const uint32_t netmgr = GuestRead32(mem, kNetMgrGlobal);
     if (!IsGuestPtr(netmgr)) return;
@@ -624,6 +624,8 @@ int SystemLinkOnlinePending() {
 bool SystemLinkOnlineConnected() { return OnlineLive() && Applied() == 1; }
 
 bool SystemLinkOnlineSettingCvar() { return t_setting_cvar; }
+
+bool SystemLinkSessionUp() { return g_session_up.load(std::memory_order_relaxed); }
 
 // 0x82500FC8 in sub_82500F98, reached while the net hardware is up (state !=
 // 0), right after `bl sub_8244A680`: r3 is XNetGetEthernetLinkStatus. A zero
@@ -680,6 +682,8 @@ void Hook_NetLinkWhileDown(PPCRegister& r3) {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/heap.h>
 
 bool Patch_BypassContentCheck(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) { return false; }
 void Hook_DumpJoinBlob(PPCRegister& r4) {}

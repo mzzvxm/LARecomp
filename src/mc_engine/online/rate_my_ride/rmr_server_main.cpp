@@ -6,11 +6,16 @@
 // rate and buy each other's rides; players without a server fall back to a
 // local store on their own machine.
 //
-//   larecomp_rmr_server [--port 31002] [--data <dir>]
+//   larecomp_rmr_server [--port 31002] [--bind <ip>] [--data <dir>]
 //
 // <dir> (default: rmr_data next to the executable) holds rmr.db plus the
 // uploaded files, and survives restarts. Open TCP 31002 inbound on the host's
 // firewall, exactly like UDP 31000 for the relay.
+//
+// It listens on every interface unless --bind <ip> (or LARECOMP_BIND in the
+// environment) names one local IPv4 address: --bind 127.0.0.1 keeps it on this
+// machine (the local test trio; nothing reaches it from the network, Windows
+// Firewall stays quiet).
 //
 // GET  /rmr/v1  -> plain-text status (handy from a browser)
 // POST /rmr/v1  -> one game request (binary, see rmr_protocol.h)
@@ -29,6 +34,7 @@
 #include <filesystem>
 #include <string>
 
+#include "../bind_address.h"
 #include "../leaderboards/lb_protocol.h"
 #include "../leaderboards/lb_store.h"
 #include "rmr_net.h"
@@ -74,6 +80,7 @@ std::filesystem::path ExeDir(const char* argv0) {
 
 int main(int argc, char** argv) {
   uint16_t port = rmr::kDefaultPort;
+  const char* bind_option = nullptr;
   std::filesystem::path data = ExeDir(argv[0]) / "rmr_data";
 
   for (int i = 1; i < argc; ++i) {
@@ -85,10 +92,14 @@ int main(int argc, char** argv) {
         return 2;
       }
       port = static_cast<uint16_t>(p);
+    } else if (arg == "--bind" && i + 1 < argc) {
+      bind_option = argv[++i];
+    } else if (arg.rfind("--bind=", 0) == 0) {
+      bind_option = argv[i] + 7;
     } else if ((arg == "--data" || arg == "-d") && i + 1 < argc) {
       data = argv[++i];
     } else if (arg == "--help" || arg == "-h") {
-      std::printf("usage: %s [--port %u] [--data <dir>]\n", argv[0], rmr::kDefaultPort);
+      std::printf("usage: %s [--port %u] [--bind <ip>] [--data <dir>]\n", argv[0], rmr::kDefaultPort);
       return 0;
     } else {
       std::fprintf(stderr, "unknown argument '%s' (try --help)\n", arg.c_str());
@@ -96,11 +107,17 @@ int main(int argc, char** argv) {
     }
   }
 
+  larecomp::online::BindAddress bind_to;
+  std::string error;
+  if (!larecomp::online::ResolveBindAddress(bind_option, &bind_to, &error)) {
+    std::fprintf(stderr, "%s\n", error.c_str());
+    return 2;
+  }
+
   std::signal(SIGINT, OnSignal);
   std::signal(SIGTERM, OnSignal);
 
   rmr::Store store(data);
-  std::string error;
   if (!store.Open(&error)) {
     std::fprintf(stderr, "cannot open the ride database: %s\n", error.c_str());
     return 1;
@@ -112,6 +129,8 @@ int main(int argc, char** argv) {
   }
   store.AttachBoards(&boards);
   Log("Rate My Ride server on TCP " + std::to_string(port) + ", data in " + data.string());
+  Log("bind: " + bind_to.text + (bind_to.any ? " (every interface)" : bind_to.loopback ? " (this machine only)" : "") +
+      ", from " + bind_to.source);
   Log(store.Summary());
   Log(boards.Summary());
 
@@ -151,7 +170,7 @@ int main(int argc, char** argv) {
     Log(req.peer + "  " + line);
   };
 
-  if (!rmr::net::Serve(port, handler, g_stop, &error)) {
+  if (!rmr::net::Serve(port, handler, g_stop, &error, bind_to.host_order)) {
     std::fprintf(stderr, "%s\n", error.c_str());
     return 1;
   }

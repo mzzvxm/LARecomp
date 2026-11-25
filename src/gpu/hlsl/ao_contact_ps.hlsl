@@ -41,7 +41,8 @@
 // What it is not: a shadow of anything that is not on screen, and nothing thinner than the step
 // (the start of the ray is moved per pixel by interleaved gradient noise plus the frame's R2 shift;
 // there is no history for it, so the shift is 0 (a fixed pattern) unless a temporal upscaler
-// averages the frames).
+// averages the frames). On a car's own pixels that noise is a stipple a plate's shadow shows (THE VEHICLE
+// MARCH'S STIPPLE below); the filter takes it out.
 //
 // The apply pass (ao_apply_ps) puts it on the picture: only on the sun's share of the light, so it
 // cannot darken what the game already shadows (the game's mask says that) or the ambient.
@@ -53,6 +54,19 @@
 // them, a broad black band across the trunk under the wing, and a post hid the ray of the pixels 0.1 to 0.3 m behind it, the streaks and blobs
 // from the side. The game's own sun shadow map holds the player's car; what matters on a car's own surfaces is small (a mirror on its door).
 // The shadows on the road (a car's sills, its tyres) are not a car's pixels: those march as they did.
+//
+// THE VEHICLE MARCH'S STIPPLE (contact_trace.h has the story, the measurements and the check). A car's own pixel marches 12 steps of a thin ray from a start the
+// pixel's noise moves, and a thin plate over it (the wing over the trunk lid) is hit by some starts and missed by others: the pixel is 0 or 1 where the mean over
+// the noise is a fraction, and without the car's map (CAR SHADOWS = OFF) nothing else is there, no history either, in the pause view or in play. The filter
+// (ao_common.hlsli AoBilateralEdge, and the apply's folded copy) keeps a 0 and the 1 beside it apart, as it keeps a shadow's edge. A vehicle pixel that took steps
+// therefore stores its visibility MARKED (v - kVehicleMarkOffset, a value no other pixel stores) and the filter weighs two marked pixels by position and depth alone,
+// which averages the nine starts of a 3 x 3. The pixels the map covers take no steps and are not marked: the map's shadow keeps its crisp edge, and every other
+// pixel is filtered as it was. Nothing else reads this image.
+//
+// THE MARK AND THE RAY TRACED TERM (flag bit 31, below; contact_trace.h "the mark and the ray traced term"). A vehicle pixel the traced sun ray holds in a shadow
+// (traced_shadow at or above kRtUnmarkedShadow) has the ray's answer, exact and crisp, not the march's noise, and the filter must not average it with its neighbours:
+// it is stored plain, as the pixels the car's map covers are, so that the traced shadow's edge keeps its width (the 3 x 3 of marked pixels would make it as wide as
+// the map's was in the control of that check). The vehicle pixels the ray leaves lit still march and are marked, so the stipple of a false hit stays smoothed.
 //
 // THE GROUND UNDER A VEHICLE (the shadow starts as `Under` before the march). The game's sun shadow
 // map holds the player's car only, so the ground under a traffic car is as lit as an open road, and the
@@ -72,7 +86,7 @@
 // car_shadow_map.h draws the car again from the sun, depth only, at full detail, into a small square map fitted to the car; with a map in the
 // frame (bit 28) a pixel whose view position falls inside it gets the car's own shadow from it, exact for the wing, the mirrors, the sills and
 // the wheels on the car and on the road near it, and takes the DARKER of that and the march's. The apply pass multiplies by the sun's share
-// where the game's own mask says lit, so the map never darkens what the game's mask shadows already. The lookup is CarMapShadow below: a
+// where the game's own mask says lit (a vehicle's pixel takes the game's car sun image instead: THE GAME'S MASK IS NOT A CAR'S below), so the map never darkens what the game's mask shadows already on the world. The lookup is CarMapShadow below: a
 // receiver-plane bias (the pixel's normal gives the depth's gradient per texel, and every tap compares at its own place on the plane), a
 // normal offset, a blocker search and a filter whose half width is the sun's penumbra at the blocker's distance (blocker distance times
 // kCarMapSunRadius, between kCarMapMinFilterTexels and kCarMapMaxFilterTexels texels), the border fading out. A vehicle pixel whose four
@@ -80,11 +94,23 @@
 // the short vehicle march takes no steps (flag bit 30 keeps it, for the comparison). Without bit 28, and for a pixel the map does not reach,
 // the pass is as it was. Flag bit 29 is the debug view: the pass writes the map's term alone (1 minus the shadow, the facing weight included).
 //
+// THE RAY TRACED TERM (flag bit 31; car_rt_ao.h, car_rt_ao_rules.h). Where the device can trace rays against the player's car, a compute pass
+// (car_rt_ao_cs.hlsl) casts a ray toward the sun from every pixel near the car and its shadow, against the car's triangles, and leaves an image
+// (R8G8B8A8_UNORM, the size of the occlusion's traced image: the picture's, or half of it where the occlusion is traced at half size) whose g channel is
+// 1 where the sun reaches the pixel and 0 where the car's own parts are in its way. With bit 31 a pixel takes the DARKER of its shadow so far (the
+// march's, the car's shadow map's) and 1 - g, read with the linear sampler at the pixel's own place: exact for the wing's plate on the lid, a mirror on
+// the door, the car on the road, with no map resolution, bias or peter-panning (contact_trace.h "the player's car's own sun shadow map" is the same
+// kind of term). The apply pass still puts it on the sun's share where the game's own mask says lit. Flag bit 25 is the debug view of this term
+// alone (mcla_gpu_contact_shadows_view 7; bit 25 is the contact filter's in the passes that filter, not here). Without bit 31 the pass is as it was.
+//
 // Push block (ao_common.hlsli AoPush), this pass's fields:
-//   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit; slots.x, the statistics picture only: the mask's slot
+//   slots.z    the linear depth image (bindless slot); its lowest bit is the vehicle bit; slots.x, the statistics picture only: the mask's slot;
+//              with flag bit 31 the traced image's slot (the statistics picture's pass has no bit 31)
+//   slots.y    the normal image's bindless slot in the high 16 bits (0: none, the depth's normal; ao_common.hlsli AoNormalAt; the low bits are the host sample, not read here)
 //   slots.w    the car's shadow map (bit 28): its bindless slot, one float channel, the depth from the sun (0 nearest, 1 where no part of the car is)
 //   slots2.x   the car's shadow map (bit 28): the slot of its matrix, a 4 x 1 R32G32B32A32_FLOAT texture, texels 0 to 2 the rows that take a
-//              view position to (u, v, depth) (car_shadow_map.h), texel 3 (texel_m, depth_m, size, 1)
+//              view position to (u, v, depth) (car_shadow_map.h), texel 3 (texel_m, depth_m, size, the world's shadow filter: mode * 256 + the
+//              sun in sixteenths; mode 0 is the map's own ring, 1 the soft disk, 2 pcss; contact_trace.h "THE FILTER FOLLOWS THE WORLD'S")
 //   slots2.y   the frame number (the noise's shift); 0 while no temporal upscaler runs
 //   slots2.z   flags: bit 24 the skip under the game's own shadow (THE SKIP below); bit 27 a draw that is not the march: the skip's
 //              block pass, or with bit 26 the statistics picture (THE SKIP below); bits 28 to 30 the car's shadow map (above: a map is
@@ -154,9 +180,16 @@
 // histogram of v shows whether the game's shade stores 0, which the skip needs). Push: slots.x the mask's bindless slot, the rest as
 // the march's. The host counts the picture on the CPU. A pass of its own, so the march pays nothing for it.
 //
+// THE GAME'S MASK IS NOT A CAR'S (contact_trace.h has the measurements; ao_apply_ps.hlsl CarAwareSunVisibility). The game collects its sun
+// shadow mask before the cars are drawn, so at a car's pixel it holds the world behind the car (the iron fence's bars on the R34's trunk lid: the
+// comb under the wing), and a car's own shader does not use it. The apply takes a vehicle's sun visibility from the game's car sun image (1 where the frame has none), never from the mask, so the skip above, which
+// is exact only where the apply's weight is 0 where the mask is, is not allowed on a vehicle's pixel or on any of its 8 neighbours (VehicleInReach, asked
+// only for a pixel the mask test would skip): the image can be lit where the mask is 0.
+//
 // The constants below are contact_trace.h's: change them there first.
 
 #include "ao_common.hlsli"
+#include "cabin_shadow_rules.hlsli"
 #include "host_pass_samplers.hlsli"
 
 // The depth tolerance, as a floor in metres plus footprints (the world size of one pixel of the
@@ -203,6 +236,11 @@ static const float kSkipBlock = 4.0f;
 static const uint kCarMapFlag = 1u << 28;
 static const uint kCarMapViewFlag = 1u << 29;
 static const uint kCarMapKeepMarchFlag = 1u << 30;
+// The ray traced term (header comment; car_rt_ao_rules.h kContactFlag and kContactViewFlag).
+static const uint kRtContactFlag = 1u << 31;
+static const uint kRtContactViewFlag = 1u << 25;
+// THE MARK AND THE RAY TRACED TERM (header comment; contact_trace.h kRtUnmarkedShadow): a vehicle pixel whose traced sun term is at least this much shadow is stored plain.
+static const float kRtUnmarkedShadow = 0.5f;
 static const float kCarMapSunRadius = 0.0044f;
 static const float kCarMapMinFilterTexels = 0.75f;
 static const float kCarMapMaxFilterTexels = 6.0f;
@@ -216,6 +254,16 @@ static const float kCarMapProducerSlope = 2.0f;
 static const float kCarMapMaxTan = 8.0f;
 static const float kCarMapEdgeTexels = 4.0f;
 static const float kCarMapEmpty = 0.9999f;
+// The world's filter on the car's map (contact_trace.h "THE FILTER FOLLOWS THE WORLD'S"): the matrix texture's last component is mode * 256 + the sun in sixteenths.
+static const uint kCarMapFilterPcss = 2u;
+static const float kCarMapSoftRadiusMetres = 0.03f;
+static const float kCarMapSunTan = 0.0047123890f;
+static const float kCarMapFilterMaxRadii = 2.0f;
+static const int kCarMapFilterTaps = 16;
+static const int kCarMapSearchTaps = 8;
+static const float kCarMapFixedAngle = 2.399963f;
+static const float kCarMapGoldenCos = -0.7373688780783197f;
+static const float kCarMapGoldenSin = 0.6754902942615238f;
 
 // The ground under a vehicle (header comment). Two columns of two probes, one straight up from the pixel and one along the
 // sun's ray (the same heights up it, kUnderHeight times the share times a jitter of kUnderJitterLow + kUnderJitterSpan
@@ -336,6 +384,9 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
   const float texel_m = info.x;
   const float depth_m = info.y;
   const float size = info.z;
+  const uint filter_code = uint(info.w + 0.5f);
+  const uint filter_mode = filter_code >> 8;
+  const float sun_times = float(filter_code & 255u) * (1.0f / 16.0f);
   if (!(texel_m > 0.0f && depth_m > 0.0f && size >= 2.0f)) {
     return 0.0f;
   }
@@ -376,6 +427,41 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
   blocker_sum += dot(blocked, over);
   blocker_count += dot(blocked, 1.0f);
   float total = dot(blocked, weight);  // the centre's share; the filter's first tap
+  if (filter_mode != 0u) {
+    // The world's filter (soft: the disk of a fixed radius; pcss: at the penumbra's width): the search over the disk's reach (the centre is its first
+    // tap), then 16 taps on a Vogel disk, every one a bilinear gather. The disk keeps its angle unless a temporal upscaler runs (the push's frame is not 0).
+    const float soft = kCarMapSoftRadiusMetres / texel_m;
+    const float reach = filter_mode == kCarMapFilterPcss ? kCarMapFilterMaxRadii * soft : soft;
+    float2 direction;
+    sincos(((g_push.slots2.y & ~kAoNoiseBlueFlag) != 0u) ? noise * 6.28318530718f : kCarMapFixedAngle, direction.y, direction.x);
+    [unroll] for (int j = 0; j < kCarMapSearchTaps; ++j) {
+      const float at = (float(j) + 0.5f) * (1.0f / float(kCarMapSearchTaps));
+      CarMapGather(slot, centre + direction * (sqrt(at) * reach), centre, receiver_m, gradient, depth_m, inv_size, bias, occupied, blocked, over, weight);
+      blocker_sum += dot(blocked, over);
+      blocker_count += dot(blocked, 1.0f);
+      direction = float2(direction.x * kCarMapGoldenCos - direction.y * kCarMapGoldenSin,
+                         direction.x * kCarMapGoldenSin + direction.y * kCarMapGoldenCos);
+    }
+    if (blocker_count < 0.5f) {
+      return 0.0f;
+    }
+    float radius = soft;
+    if (filter_mode == kCarMapFilterPcss) {
+      radius = clamp(blocker_sum / blocker_count * kCarMapSunTan * sun_times / texel_m, kCarMapMinFilterTexels, reach);
+    }
+    float sum = 0.0f;
+    float weights = 0.0f;
+    [loop] for (int i = 0; i < kCarMapFilterTaps; ++i) {
+      const float at = (float(i) + 0.5f) * (1.0f / float(kCarMapFilterTaps));
+      const float w = 1.0f - 0.5f * at;
+      CarMapGather(slot, centre + direction * (sqrt(at) * radius), centre, receiver_m, gradient, depth_m, inv_size, bias, occupied, blocked, over, weight);
+      sum += w * dot(blocked, weight);
+      weights += w;
+      direction = float2(direction.x * kCarMapGoldenCos - direction.y * kCarMapGoldenSin,
+                         direction.x * kCarMapGoldenSin + direction.y * kCarMapGoldenCos);
+    }
+    return saturate(sum / weights) * saturate(edge / kCarMapEdgeTexels);
+  }
   const float r0 = clamp(kCarMapSearchMetres / texel_m, kCarMapSearchMinTexels, kCarMapMaxFilterTexels);
   const float2 ring[4] = {d0, d1, -d0, -d1};
   [unroll] for (int i = 0; i < 4; ++i) {
@@ -396,6 +482,25 @@ float CarMapShadow(float3 pc, float3 normal, float footprint, float noise, out b
     total += dot(blocked, weight);
   }
   return saturate(total * 0.2f) * saturate(edge / kCarMapEdgeTexels);
+}
+
+// True when the pixel or one of its 8 neighbours is a vehicle's (contact_trace.h VehicleInReach: the skip is not allowed there). The apply takes
+// a vehicle's sun visibility as 1 whatever the game's mask holds at it (THE GAME'S MASK IS NOT A CAR'S above), so the skip's proof (a weight of 0
+// where the mask is 0) does not hold for it, and the filter of a vehicle's pixel reads the 8 neighbours. Asked only after the mask test said
+// skip, so a pixel in the sun pays nothing. `tc` is the pixel's own level-0 depth (with its bit); `isize` the image's size.
+bool VehicleInReach(uint depth_slot, int2 pixel, int2 isize, float tc) {
+  if (AoIsVehicle(tc)) {
+    return true;
+  }
+  [unroll] for (int dy = -1; dy <= 1; ++dy) {
+    [unroll] for (int dx = -1; dx <= 1; ++dx) {
+      if ((dx != 0 || dy != 0) &&
+          AoIsVehicle(AoLoadLinear(depth_slot, clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1)))) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 // The skip's block pass: the block image's texel is 1 where any of the 4 x 4 mask texels at it (clamped into the mask) is above
@@ -452,11 +557,11 @@ float4 SkipStat(float2 position) {
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
     return float4(kStatFar, 0.0f, 0.0f, 0.0f);
   }
-  if ((g_push.slots2.z & kSkipFlag) != 0u && MaskCannotLight(position)) {
+  if ((g_push.slots2.z & kSkipFlag) != 0u && MaskCannotLight(position) && !VehicleInReach(depth_slot, pixel, int2(size), tc)) {
     return float4(kStatSkipped, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  float3 normal = AoNormalFromImage(depth_slot, pixel, int2(size), tc, pc);
+  float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, int2(size), tc, pc);
   if (dot(normal, pc) > 0.0f) {
     normal = -normal;
   }
@@ -480,11 +585,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   // Under the game's own shadow the apply cannot use the result (THE SKIP above): before the normal's four reads.
-  if ((flags & kSkipFlag) != 0u && MaskCannotLight(position.xy)) {
+  // A vehicle's pixel, and a pixel beside one, is marched whatever the mask says (THE GAME'S MASK IS NOT A CAR'S above).
+  if ((flags & kSkipFlag) != 0u && MaskCannotLight(position.xy) && !VehicleInReach(depth_slot, pixel, isize, tc)) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  float3 normal = AoNormalFromImage(depth_slot, pixel, isize, tc, pc);
+  float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   if (dot(normal, pc) > 0.0f) {
     normal = -normal;  // facing the camera
   }
@@ -513,11 +619,24 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // Interleaved gradient noise plus the frame's R2 shift (ao_main_ps): the start of the ray inside
   // its first step.
   const float frame = float(g_push.slots2.y & 1023u);
-  const float noise = frac(AoNoise(float2(pixel)) + frame * 0.75487766624669f);
+  const float noise = frac(AoSpatialNoise1(pixel) + frame * 0.75487766624669f);
+
+  // The ray traced term (THE RAY TRACED TERM above): 1 where the sun's ray from this pixel meets nothing of the car, 0 where it meets a part.
+  const bool traced = (flags & kRtContactFlag) != 0u;
+  float traced_shadow = 0.0f;
+  if (traced) {
+    traced_shadow = 1.0f - g_textures[g_push.slots.x].SampleLevel(g_samplers[kSamplerLinearClamp], (float2(pixel) + 0.5f) / size, 0).y;
+    if ((flags & kRtContactViewFlag) != 0u) {
+      // The debug view: the traced term alone.
+      return float4(1.0f - traced_shadow * smoothstep(kSunFacingLow, kSunFacingHigh, facing), 0.0f, 0.0f, 0.0f);
+    }
+  }
 
   // The car's own shadow map (THE CAR'S SHADOW MAP above): the shadow of the car's own parts, exact, and which pixels it is the truth for. A
   // surface this nearly edge-on to the sun gets no contact shadow whatever made it (the weight at the end is 0): the map is not read there.
-  const bool car_map = (flags & kCarMapFlag) != 0u;
+  const uint cabin_mode = g_push.slots.y & 0xFFFFu;
+  const bool skip_car_map = CabinSkipMap(cabin_mode, asuint(tc), (flags & kCarMapViewFlag) != 0u);
+  const bool car_map = (flags & kCarMapFlag) != 0u && !skip_car_map;
   float car_shadow = 0.0f;
   if (car_map) {
     bool covered = false;
@@ -548,7 +667,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   const float inv_steps = 1.0f / float(steps);
+  // A vehicle pixel that marches (the map did not take its steps) stores the marked value: THE VEHICLE MARCH'S STIPPLE above. Not one the traced sun ray holds in a
+  // shadow: that term is exact and its edge stays crisp (THE MARK AND THE RAY TRACED TERM above). traced_shadow is 0 without the term, so the test is false then.
+  const bool marked = AoIsVehicle(tc) && steps > 0u && traced_shadow < kRtUnmarkedShadow;
   // The ground under a vehicle is in its shadow before the ray looks (0 for everything else).
+  const bool skip_own_march = CabinCheckMarch(cabin_mode, asuint(tc));
   float shadow = Under(depth_slot, tc, pc, normal, to_sun, size, isize, footprint_unit, noise);
   for (uint i = 0u; i < steps; ++i) {
     if (shadow >= 0.99f) {
@@ -567,6 +690,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
       break;
     }
     const float td = AoLoadLinear(depth_slot, min(int2(uv * size), isize - 1));
+    if (skip_own_march && CabinMarkedDepth(asuint(td))) {
+      continue;
+    }
     // > 0: the surface at this pixel is in front of the step (it covers it from the camera).
     const float dz = p.z - td;
     const float footprint = footprint_unit * p.z;
@@ -585,6 +711,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (car_map) {
     shadow = max(shadow, car_shadow);  // the darker of the march and the car's map
   }
+  if (traced) {
+    shadow = max(shadow, traced_shadow);  // ... and of the car's triangles
+  }
   shadow *= smoothstep(kSunFacingLow, kSunFacingHigh, facing);
-  return float4(1.0f - shadow, 0.0f, 0.0f, 0.0f);
+  const float visibility = 1.0f - shadow;
+  return float4(marked ? visibility - kVehicleMarkOffset : visibility, 0.0f, 0.0f, 0.0f);
 }

@@ -1,4 +1,5 @@
 #include "achievement_metadata.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -8,8 +9,9 @@
 
 #include <toml++/toml.hpp>
 
-#include <rex/cvar.h>
-#include <rex/system/achievement_manager.h>
+#include "settings/larecomp_settings.h"
+#include <rex/title.h>
+#include <rex/xam/achievement_manager.h>
 
 #include "larecomp_log.h"
 
@@ -22,7 +24,7 @@ namespace {
 // A numeric value is the raw Xbox language id, so map it back to the name the
 // TOML uses (same table as the SDK's xam_user.cpp).
 std::string CurrentLanguageName() {
-  const std::string raw = rex::cvar::GetFlagByName("user_language");
+  const std::string raw = larecomp::cvar::GetFlagByName("user_language");
   if (raw.empty()) {
     return "English";
   }
@@ -32,7 +34,7 @@ std::string CurrentLanguageName() {
     return raw;
   }
 
-  static const std::map<uint32_t, std::string> kLanguageMap = {
+  static const std::map<uint32_t, std::string>& kLanguageMap = *new const std::map<uint32_t, std::string>{
       {1, "English"},    {2, "Japanese"},
       {3, "German"},     {4, "French"},
       {5, "Spanish"},    {6, "Italian"},
@@ -48,7 +50,7 @@ std::string CurrentLanguageName() {
 
 }  // namespace
 
-size_t LoadAchievementMetadata(rex::system::AchievementManager& manager,
+size_t LoadAchievementMetadata(rex::xam::IAchievementManager& manager,
                                std::string_view toml_text, std::string_view source_name) {
   toml::table table;
   try {
@@ -67,6 +69,12 @@ size_t LoadAchievementMetadata(rex::system::AchievementManager& manager,
 
   const std::string language = CurrentLanguageName();
 
+  // What the title's XDBF table already registered (IAchievementManager lists the catalog; it has no lookup by id).
+  std::map<uint32_t, rex::Achievement> registered;
+  for (rex::Achievement& existing : manager.ListAchievements()) {
+    registered.emplace(existing.id, std::move(existing));
+  }
+
   size_t loaded = 0;
   for (const auto& node : *entries) {
     const auto* entry = node.as_table();
@@ -74,12 +82,12 @@ size_t LoadAchievementMetadata(rex::system::AchievementManager& manager,
       continue;
     }
 
-    rex::system::AchievementInfo info;
+    rex::Achievement info;
     info.id = static_cast<uint32_t>((*entry)["id"].value_or<int64_t>(0));
 
     // Layer onto what the title's XDBF table already registered.
-    if (auto existing = manager.FindAchievement(info.id)) {
-      info = *existing;
+    if (auto existing = registered.find(info.id); existing != registered.end()) {
+      info = existing->second;
     }
 
     auto assign = [&](const toml::table& src) {

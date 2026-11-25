@@ -9,19 +9,15 @@
 //                 while it is on is a normal purchase and stays in the save.
 #include <cstdint>
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-
-REXCVAR_DEFINE_BOOL(garage_unlock_parts, false, "MCLA/Patches",
-    "For testing: every entry of the garage part menus can be picked, whatever "
-    "the career has unlocked. Parts bought with it on stay bought.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_826BCDD8);  // part category unlocked?
 
 extern "C" REX_FUNC(rex_sub_826BCDD8) {
-    if (REXCVAR_GET(garage_unlock_parts)) {
+    if (larecomp::settings::garage_unlock_parts.Get()) {
         ctx.r3.u64 = 1;
         return;
     }

@@ -2,10 +2,12 @@
 //
 // Canonicalization follows reblue's pipeline cache (BSD-3-Clause) in spirit;
 // the polygon offset conversion is ported from Xenia's draw_util
-// GetD3D10IntegerPolygonOffset (SDK rex/graphics/util/draw.h; Copyright Ben
+// GetD3D10IntegerPolygonOffset (rexglue 0.10's rex/graphics/util/draw.h, private
+// since 0.11; Copyright Ben
 // Vanik, the Xenia authors, BSD-3-Clause).
 
 #include "pipelines.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -19,22 +21,29 @@
 #include <sstream>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/hash.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include "xxhash_inline.h"
+#include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "cache_file_check.h"
 #include "car_selfrefl.h"
+#include "city_refl.h"
 #include "constants.h"
 #include "device.h"
 #include "edram.h"
 #include "effect_compare.h"
 #include "format.h"
+#include "headlight_rig.h"
 #include "layout.h"
+#include "mc_engine/core/threading.h"
+#include "os/file_replace.h"
 #include "os/thread_priority.h"
+#include "pipeline_wait.h"
 #include "shadow_filter.h"
 #include "side_views.h"
+#include "stencil_ref.h"
 #include "temporal_backend.h"
 
 #if defined(_WIN32)
@@ -47,23 +56,12 @@
 #include <windows.h>
 #endif
 
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_skip_shaders, "", "MCLA/GPU",
-    "Workaround for a driver that dies compiling one particular shader combination: a "
-    "comma-separated list of shader identities (the 16 hex digits of the pack's keys). A "
-    "guest pipeline that uses any of them is not built, and its draws are treated like those "
-    "of a pipeline that failed. Measured on Mesa's dzn (Vulkan over D3D12 in WSL2), which "
-    "overflows its stack in vkCreateGraphicsPipelines for the pair b000e9d48f010bd8 + "
-    "68387d4a0b431769 (each alone is fine).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
 namespace {
 // True when the pipeline uses a shader named by mcla_gpu_skip_shaders.
 bool SkipShaders(uint64_t vs, uint64_t ps) {
-  static const std::set<uint64_t> keys = [] {
+  static const std::set<uint64_t>& keys = larecomp::Leak<const std::set<uint64_t>>([] {
     std::set<uint64_t> out;
-    std::stringstream list(REXCVAR_GET(mcla_gpu_skip_shaders));
+    std::stringstream list(larecomp::settings::mcla_gpu_skip_shaders.Get());
     std::string item;
     while (std::getline(list, item, ',')) {
       if (!item.empty()) {
@@ -71,68 +69,10 @@ bool SkipShaders(uint64_t vs, uint64_t ps) {
       }
     }
     return out;
-  }();
+  }());
   return !keys.empty() && (keys.count(vs) != 0 || (ps != 0 && keys.count(ps) != 0));
 }
 }  // namespace
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_pipeline_cache, true, "MCLA/GPU",
-    "Keep the pipelines the game asked for across sessions ("
-    "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
-    "executable on exit, and are read back at start -- the other backend's file too, so what one "
-    "API saw is ready in the other (24.40 V2). Off: nothing is read, recorded or written.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_bloom_scale, true, "MCLA/GPU",
-    "Fix: the glow of lights (the bloom) keeps the size the game gives it at render scales above 1x "
-    "(a higher render resolution, or an upscaler to a 1080p or 4K output). The game blurs the bloom "
-    "with taps a fixed number of pixels apart; at 2x or 3x the same taps reach half or a third as far "
-    "on the screen, so a window's glow shrinks and the glow of a lamp or a tail light disappears. This "
-    "makes each tap cover the pixels it stands for, so the glow looks as it does at 1x. At a render "
-    "scale of 1x the picture is the same either way. Off: the game's own taps. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_glow_visibility, "soft", "MCLA/GPU",
-    "How the glow of street lamps (their halo and star) and the other glow sprites decide whether they are "
-    "hidden by the scene: game (the game's own: one depth test at the glow's centre, so a lamp beside a palm "
-    "trunk or a pole pops fully on and off as the wind or the camera moves it by a fraction of a pixel) or "
-    "soft (the share of 24 tests on a small disc round the centre scales the glow: a glow in the open is the "
-    "game's, one at an edge fades over about two pixels instead of popping; the disc is the same size at every "
-    "render scale). game leaves the game's own shaders, and the picture, as they are. Needs the shader pack's "
-    "variant file. Live; the first time soft shows, the graphics card builds its shaders (a short stutter).")
-    .debug_only()
-    .allowed({"game", "soft"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_luminance_scale_fix, true, "MCLA/GPU",
-    "Fix: the game's auto-exposure (how bright the picture is made, which adapts over time) measures the "
-    "same part of the screen at render scales above 1x as at 1x. The game averages the brightness of the "
-    "frame from a small set of taps a fixed number of pixels apart; at 2x or 3x the same taps cover a "
-    "half or a third of the area they covered at 1x (28% of the picture at 3x), so a small bright light "
-    "(a lamp, a lit window, a tail light) moving in and out of one of them can make the brightness pump "
-    "or flicker, most at night. This makes each tap average the pixels it stands for. At a render scale "
-    "of 1x the picture is the same either way. Off: the game's own taps. Live.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_car_chrome_occlusion, true, "MCLA/GPU",
-    "Fix: the chrome of the player's car (the tailpipes, the rims, the badges and trim) is not lit by what the car's own body covers. "
-    "The game's chrome shader looks up the sky in the environment map and adds the sky's ambient colour wherever the surface "
-    "points, and nothing in it knows the bumper over a tailpipe, so the tips, which sit 2 to 7 cm under and behind the parts "
-    "that cover them, glow as if lit from above. This marches two short rays from each chrome pixel through the picture of the "
-    "car from the frame before (the car self-reflection's image): one along the reflection, one towards the sky, and darkens the "
-    "reflection and the ambient where they hit a part of the car, by up to 90 percent. It runs wherever the car "
-    "self-reflection runs (mcla_gpu_car_selfrefl) and needs the shader pack's variant file. Off: the game's own chrome. Live; "
-    "the first time it shows, the graphics card builds its shader (a short stutter).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace mcla::gpu {
 
@@ -150,10 +90,10 @@ bool IsGameChoice(std::string_view text) {
 bool GlowSoftSelected() {
   static std::once_flag registered;
   std::call_once(registered, [] {
-    g_glow_soft.store(!IsGameChoice(REXCVAR_GET(mcla_gpu_glow_visibility)), std::memory_order_relaxed);
+    g_glow_soft.store(!IsGameChoice(larecomp::settings::mcla_gpu_glow_visibility.Get()), std::memory_order_relaxed);
     REXLOG_INFO("[gpu] glow visibility: {} (mcla_gpu_glow_visibility; live)",
                 g_glow_soft.load(std::memory_order_relaxed) ? "soft" : "the game's own");
-    rex::cvar::RegisterChangeCallback("mcla_gpu_glow_visibility", [](std::string_view, std::string_view value) {
+    larecomp::cvar::RegisterChangeCallback("mcla_gpu_glow_visibility", [](std::string_view, std::string_view value) {
       g_glow_soft.store(!IsGameChoice(value), std::memory_order_relaxed);
       REXLOG_INFO("[gpu] glow visibility: {} (mcla_gpu_glow_visibility; live)",
                   g_glow_soft.load(std::memory_order_relaxed) ? "soft" : "the game's own");
@@ -162,57 +102,86 @@ bool GlowSoftSelected() {
   return g_glow_soft.load(std::memory_order_relaxed);
 }
 
-// The variant of a pixel shader the settings ask for, from the variants the pack has for it (`ps.variants`,
-// not 0), or 0 for the game's own shader. The HDR scene's tone map (kHdrVariant) is not chosen here: the
-// HDR output draws it again itself (hdr_tonemap.cpp). One line a variant: the bloom's Gaussians follow
-// mcla_gpu_bloom_scale, the environment map's level pass and reduction (kEnvVariant), which are used while the
-// car reflections class is above the game's size (mcla_gpu_env_resolution, side_views.h), the sun shadow
-// collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart; auto resolved for the
-// GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects nothing), the car
-// paint's self-reflection mcla_gpu_car_selfrefl (kCarSelfReflVariant, car_selfrefl.h), the chrome's occlusion by the car's own parts
-// (kCarChromeVariant, shaderpack/variants/car_chrome.h: wherever the paint's is on, and mcla_gpu_car_chrome_occlusion) and the auto-exposure's sample pass
-// mcla_gpu_luminance_scale_fix (the same picture at render scale 1: the variant makes the game's own call there); each is read
-// at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders draw and the picture stays
-// the game's (the environment map's variant is the same arithmetic at the game's size, but that is not asked). A shader has one
-// of them at most.
-uint32_t ChoosePackedVariant(const ShaderStore::Entry& ps) {
+// The features of the variant pack that the settings want for a draw of pixel shader `ps`, from the features the pack has for
+// it (`ps.features`): a mask of FeatureBit, 0 for none (the game's own shader draws). ShaderStore::ChooseVariant then takes the
+// word of the pack with the most of them (a composed shader when the pack has one for the set, else a subset: shaderpack/
+// variant_chain.h), so two features that the chain composes are both on a shader that has both, and two that it does not
+// (every built-in feature today) are one at a time, the lowest feature first, which is the order the settings were asked in
+// before the chain. The HDR scene's tone map (kFeatureHdrScene) is not chosen here: the HDR output draws it again itself
+// (hdr_tonemap.cpp). One line a feature: the bloom's Gaussians follow mcla_gpu_bloom_scale, the environment map's level pass and
+// reduction (kFeatureEnvMap), which are used while the car reflections class is above the game's size (mcla_gpu_env_resolution,
+// side_views.h), the sun shadow collector's lookup mcla_gpu_shadow_filter (soft or pcss, one shader whose constants tell them apart;
+// auto resolved for the GPU class: shadow_filter.h), the glow sprites' soft visibility mcla_gpu_glow_visibility (`game` selects
+// nothing), the car paint's self-reflection mcla_gpu_car_selfrefl (kFeatureCarSelfRefl, car_selfrefl.h), the chrome's occlusion by the
+// car's own parts (kFeatureCarChrome, shaderpack/variants/car_chrome.h: wherever the paint's is on, and
+// mcla_gpu_car_chrome_occlusion) and, with it, while the city is in the reflections, its city stage (kFeatureCarChromeCity: CITY-RT M2 R3a) and the auto-exposure's sample pass mcla_gpu_luminance_scale_fix (the same picture at render scale 1:
+// the variant makes the game's own call there); the UI sharpening variant (kFeatureUiSharp, mcla_ui_sharp) is not chosen here: it
+// needs the draw (the UI phase, its target's scale and its textures' filters), so the Scene sets it on the key after this
+// (Scene::UiSharpDraw); each is read at each draw so a change of the setting shows at the next frame. At `game` the game's own shaders
+// draw and the picture stays the game's (the environment map's variant is the same arithmetic at the game's size, but that is not
+// asked). The cars' headlights (kFeatureHeadlight, headlight_rig.h) are wanted while the rig has a light this frame. A feature that
+// composes with another (variant_chain.h kFeatures composes_with) adds its line here like the others: it says whether ITS setting
+// is on, and nothing about the others. At startup, use the saved settings for self-reflection, before there is a
+// latched frame. The city stage needs a ready city scene and the headlight stage needs the frame's light rig.
+uint32_t WantedFeatures(const ShaderStore::Entry& ps, bool startup = false) {
+  namespace sp = larecomp::shaderpack;
+  uint32_t wanted = 0;
+  const auto has = [&](uint32_t feature) { return (ps.features & ShaderStore::FeatureBit(feature)) != 0; };
+  const auto want = [&](uint32_t feature) { wanted |= ShaderStore::FeatureBit(feature); };
   // (the compare key's flip, effect_compare.h, can force the bloom fix either way for a moment; the setting is not changed)
-  if ((ps.variants & (1u << ShaderStore::kBloomVariant)) != 0 &&
-      compare::Global().Apply(compare::Effect::kBloomFix, REXCVAR_GET(mcla_gpu_bloom_scale))) {
-    return ShaderStore::kBloomVariant;
+  if (has(sp::kFeatureBloomGauss) && compare::Global().Apply(compare::Effect::kBloomFix, larecomp::settings::mcla_gpu_bloom_scale.Get())) {
+    want(sp::kFeatureBloomGauss);
   }
-  if ((ps.variants & (1u << ShaderStore::kEnvVariant)) != 0 &&
-      side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
-    return ShaderStore::kEnvVariant;
+  if (has(sp::kFeatureEnvMap) && side_views::LevelOf(SideView::kEnv) != SideLevel::kGame) {
+    want(sp::kFeatureEnvMap);
   }
-  if ((ps.variants & (1u << ShaderStore::kShadowFilterVariant)) != 0 && shadow_filter::VariantSelected()) {
-    return ShaderStore::kShadowFilterVariant;
+  if (has(sp::kFeatureShadowFilter) && shadow_filter::VariantSelected()) {
+    want(sp::kFeatureShadowFilter);
   }
-  if ((ps.variants & (1u << ShaderStore::kGlowVariant)) != 0 && GlowSoftSelected()) {
-    return ShaderStore::kGlowVariant;
+  if (has(sp::kFeatureGlowSoft) && GlowSoftSelected()) {
+    want(sp::kFeatureGlowSoft);
   }
   // The car paint's self-reflection (car_selfrefl.h): while mcla_gpu_car_selfrefl is on (auto picks by the class), as the
-  // frame's BeginFrame decided. The paint is in this variant alone: the shadow filter's transform leaves it out (it reads no
-  // shadow atlas) and the others name other shaders; the pack step warns when a shader lands in two variants
-  // (variant_pack.cpp), because only the first of them here would ever draw.
-  if ((ps.variants & (1u << ShaderStore::kCarSelfReflVariant)) != 0 && CarSelfRefl::Selected()) {
-    return ShaderStore::kCarSelfReflVariant;
+  // frame's BeginFrame decided. The paint is in this feature alone: the shadow filter's transform leaves it out (it reads no
+  // shadow atlas) and the others name other shaders; the pack step warns when a shader lands in two features that the chain does
+  // not compose (variant_pack.cpp), because only one of them would ever draw.
+  const bool car_refl = (has(sp::kFeatureCarSelfRefl) || has(sp::kFeatureCarChrome)) &&
+                        (startup ? CarSelfRefl::WantedAtStartup() : CarSelfRefl::Selected());
+  if (has(sp::kFeatureCarSelfRefl) && car_refl) {
+    want(sp::kFeatureCarSelfRefl);
   }
   // The car's chrome (the tailpipes, the rims): the same history image and constants as the paint's, a shader of its own (the pack step
-  // warns when a shader lands in two variants, and the chrome is in this one alone). The debug-only switch is its A/B.
-  if ((ps.variants & (1u << ShaderStore::kCarChromeVariant)) != 0 && CarSelfRefl::Selected() &&
-      REXCVAR_GET(mcla_gpu_car_chrome_occlusion)) {
-    return ShaderStore::kCarChromeVariant;
+  // warns when a shader lands in two features that are not composed, and the chrome is in this one alone). The debug-only switch is its A/B.
+  if (has(sp::kFeatureCarChrome) && car_refl && larecomp::settings::mcla_gpu_car_chrome_occlusion.Get()) {
+    want(sp::kFeatureCarChrome);
+    // CITY-RT M2 R3a: the chrome's reflection of the city, a stage on top of the chrome's (kFeatureCarChromeCity, shaderpack/variants/car_chrome_city.h), wanted only with it and only while the city is in the
+    // reflections (city_refl.h CityReflChromeWanted: a level above off and mcla_gpu_city_refl_chrome). Not wanted, the chrome's own words draw: the stage never touched them.
+    if (has(sp::kFeatureCarChromeCity) && CityReflChromeWanted()) {
+      want(sp::kFeatureCarChromeCity);
+    }
   }
-  if ((ps.variants & (1u << ShaderStore::kLuminanceVariant)) != 0 && REXCVAR_GET(mcla_gpu_luminance_scale_fix)) {
-    return ShaderStore::kLuminanceVariant;
+  if (has(sp::kFeatureLuminanceScale) && larecomp::settings::mcla_gpu_luminance_scale_fix.Get()) {
+    want(sp::kFeatureLuminanceScale);
   }
-  return 0;
+  if (has(sp::kFeatureRoadMirrorBlur) && larecomp::settings::mcla_gpu_road_mirror_blur.Get()) {
+    want(sp::kFeatureRoadMirrorBlur);
+  }
+  // The cars' headlights in the city's lit shaders (headlight_rig.h): while the rig has a light this frame (at night, with the setting on). The shader
+  // takes the word of the headlight feature (or the pair with the G-buffer's, when that stage is wanted too: variant_chain.h kFeatures composes_with).
+  if (has(sp::kFeatureHeadlight) && headlight_rig::VariantSelected()) {
+    want(sp::kFeatureHeadlight);
+  }
+  if (startup) {
+    // Before the first frame there is no city scene and no light rig: those two stages stay with the draw-time choice.
+    wanted &= ~(ShaderStore::FeatureBit(sp::kFeatureCarChromeCity) | ShaderStore::FeatureBit(sp::kFeatureHeadlight));
+  }
+  return wanted;
 }
 
 // The pipeline cache file: a header, the layouts, the records.
 // Host byte order; any mismatch discards the whole file.
 constexpr char kCacheMagic[8] = {'M', 'C', 'L', 'A', 'P', 'S', 'O', '\0'};
+// Still 1 after the stencil reference left the key (stencil_ref.h): LoadFile clears it in an older file's records.
 constexpr uint32_t kCacheVersion = 1;
 constexpr uint32_t kMaxStoredElements = 64;
 constexpr uint32_t kMaxSemanticName = 64;
@@ -246,6 +215,7 @@ class Reader {
     return true;
   }
   bool Get32(uint32_t* v) { return Get(v, 4); }
+  size_t Remaining() const { return size_ - at_; }
 
  private:
   const uint8_t* data_;
@@ -359,11 +329,25 @@ int32_t IntegerPolygonOffset(xe::DepthRenderTargetFormat format, float offset) {
 // PackBlend and UnpackBlend (the blend words of a key) are in pipelines.h: the UI layer split reads
 // and changes them (frame_layers.h).
 
-// Boot mode (pipelines.h): the processor count below which it runs, the longest it lasts, and
-// how far the cursor must have to go for a claim to move it (a shorter jump gains nothing).
-constexpr uint32_t kBootBoostBelow = 8;
+// The most workers the precache starts: half the usable processors (steady_workers_), at most this many; boot
+// mode adds workers up to all the processors but one, at most this many too.
+constexpr uint32_t kMaxPrecacheWorkers = 6;
+// Boot mode (pipelines.h): the processor count below which it runs and the longest it lasts.
+// The count is where boot mode stops having workers to add: it starts clamp(usable - 1, steady,
+// kMaxPrecacheWorkers) of them against the steady clamp(usable / 2, 1, kMaxPrecacheWorkers), which is 2 more at
+// 8 and 9 usable processors, 1 more at 10 and 11, and the same number from 12 (then only the priority and the cursor
+// following the render thread differ, and those are not worth the guest's threads' time). It was 8, which left
+// a PC with 8 to 11 logical processors without boot mode: the STARTER-ROUND2 boot tour at 8 had the render
+// thread make 41 to 45 of the entries itself (550 to 600 ms in the title's first burst) against 17 to 24 at 4
+// with boot mode, and 0 at 16.
+constexpr uint32_t kBootBoostBelow = 2 * kMaxPrecacheWorkers;
+// The sample count of the main view's targets at the default MSAA setting (StartSampleCounts' level
+// when mcla_gpu_msaa is not set); a start at any other count has its precache queue ordered by it.
+constexpr uint32_t kDefaultStartSamples = 2;
 constexpr std::chrono::seconds kBootSeconds{40};
-constexpr size_t kFollowMinGap = 8;
+// The calling thread's index in workers_ while it is a precache worker (-1 on any other thread): the build it
+// begins is stamped with it, so that a render thread that waits for the build can raise this worker.
+thread_local int32_t t_worker_index = -1;
 
 }  // namespace
 
@@ -376,6 +360,8 @@ Pipelines::~Pipelines() {
 }
 
 void Pipelines::Initialize(Device& device, const GuestLayout& layout, ShaderStore& shaders) {
+  build_key_memo_.Clear();
+  pipeline_lookup_memo_.Clear();
   device_ = &device;
   layout_ = &layout;
   shaders_ = &shaders;
@@ -415,23 +401,17 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
   shaders_ = &shaders;
   // persist_ is set last: the render thread's Autosave (EndFrame) reads it first, and then finds
   // the records below in place.
-  const bool persist = REXCVAR_GET(mcla_gpu_pipeline_cache);
+  const bool persist = larecomp::settings::mcla_gpu_pipeline_cache.Get();
   if (persist) {
     LoadPersistent();
-    // The list holds each multisampled pipeline at the count it was recorded with; this start
-    // draws the images of the screen at its own (as the command line prebuild makes them).
-    // CHECK: written without a build or a run. Expected on a first start with --msaa 4 or off, or
-    // an upscaler: this line, the precache line after it with the copies counted, and far fewer
-    // "made at draw time" / pending pipelines than before; the copies nobody draws are held in
-    // memory like the unused part of the list (about 85 KB each on D3D12, more on Vulkan).
     const std::vector<uint32_t> samples = StartSampleCounts(*device_);
-    MakeLevelCopies(samples);
+    MakeStartupCopies(samples);
     std::string text;
     for (const uint32_t count : samples) {
       text += (text.empty() ? "" : ",") + std::to_string(count);
     }
     REXLOG_INFO("[gpu] pipelines: the start draws the multisampled images at {} sample(s): {} "
-                "copies of the {} listed pipelines at those counts are precached too",
+                "copies of the {} listed pipelines cover those counts and startup shader variants",
                 text, setup_copies_.size(), records_.size());
   }
   // The workers run without a cache file too: they make what the render
@@ -443,7 +423,7 @@ void Pipelines::StartPersistence(ShaderStore& shaders) {
 void Pipelines::LoadPersistent() {
   // The cache is <executable>/cache/mcla_gpu_pipelines_<api>.bin and the starter list
   // <executable>/assets/mcla_pipelines.bin, whichever folder the shader pack came from.
-  const std::filesystem::path exe_folder = rex::filesystem::GetExecutableFolder();
+  const std::filesystem::path exe_folder = rex::platform::GetExecutableFolder();
   std::string backend = BackendName();
   std::transform(backend.begin(), backend.end(), backend.begin(),
                  [](unsigned char ch) { return char(std::tolower(ch)); });
@@ -458,7 +438,7 @@ void Pipelines::LoadPersistent() {
 }
 
 uint64_t Pipelines::HashRecords() const {
-  // The persistent keys in list order, the level copies after them: the same files in the same
+  // The persistent keys in list order, the startup copies after them: the same files in the same
   // state give the same hash.
   std::vector<uint8_t> bytes;
   bytes.reserve((records_.size() + setup_copies_.size()) * sizeof(PipelineKey));
@@ -471,34 +451,37 @@ uint64_t Pipelines::HashRecords() const {
   return uint64_t(XXH3_64bits(bytes.data(), bytes.size()));
 }
 
-void Pipelines::MakeLevelCopies(const std::vector<uint32_t>& samples) {
-  // A pipeline whose key has more than one sample is one of a draw into a target the guest
-  // multisamples: the main view's (2 samples) and the pause menu's and the map's (4). Those
-  // targets are images of the screen and take the host's MSAA level (EdramTargets::HostSamplesAt),
-  // which is what the start draws with: the copy at the level's count is the pipeline the first
-  // draws ask for when it is not the count they were recorded at. (A multisampled target that is
-  // not an image of the screen would get a copy nobody asks for: it costs a compile, nothing else.)
-  setup_copies_.clear();
-  setup_copy_source_.clear();
-  std::unordered_set<PipelineKey, PipelineKeyHash> seen;
-  for (size_t source = 0; source < records_.size(); ++source) {
-    const Record& r = records_[source];
-    if (r.key.sample_count <= 1) {
-      continue;
-    }
-    for (const uint32_t count : samples) {
-      if (count == 0 || count == r.key.sample_count) {
-        continue;
-      }
-      Record copy = r;
-      copy.key.sample_count = count;
-      if (recorded_.count(copy.key) != 0 || !seen.insert(copy.key).second) {
-        continue;  // a record has it, or another record's copy is the same pipeline
-      }
-      setup_copies_.push_back(copy);
-      setup_copy_source_.push_back(uint32_t(source));
-    }
+void Pipelines::MakeStartupCopies(const std::vector<uint32_t>& samples) {
+  // Multisampled screen targets take the host's MSAA level (EdramTargets::HostSamplesAt).
+  // A base record also supplies the render state for the variant selected from the loaded pack.
+  // Scene-dependent choices (city reflections, headlights, UI and sidecar targets) still use
+  // the recorded keys or the draw-time paths that know the scene and targets.
+  start_samples_ = samples;
+  if (!shaders_) {
+    return;
   }
+  const ShaderStore& shaders = *shaders_;
+  const auto select_variant = [&shaders](PipelineKey& key) {
+    const ShaderStore::Entry* ps = shaders.Find(key.ps);
+    if (!ps) {
+      return;
+    }
+    const uint32_t wanted = WantedFeatures(*ps, true);
+    if (wanted == 0) {
+      return;
+    }
+    const ShaderStore::Entry* vs = shaders.Find(key.vs);
+    if (vs) {
+      uint32_t vs_word = key.vs_variant;
+      key.ps_variant = shaders.ChooseVariant(*ps, wanted, key.ps_variant, vs, key.vs_variant, &vs_word);
+      key.vs_variant = vs_word;
+    }
+  };
+  const size_t variants = precache_queue::MakeCopies(records_, recorded_, samples, select_variant,
+                                                      setup_copies_, setup_copy_source_);
+  // CHECK: cold D3D12 and Vulkan starts with traffic paint in the pack should take its 0x40
+  // key from precache without a sync build or a long wait at the first paint draw.
+  REXLOG_INFO("[gpu] pipelines: {} missing startup shader variants queued at their recorded sample counts", variants);
 }
 
 Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
@@ -510,12 +493,12 @@ Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
   }
   persistence_started_ = true;
   shaders_ = &shaders;
-  if (!REXCVAR_GET(mcla_gpu_pipeline_cache)) {
+  if (!larecomp::settings::mcla_gpu_pipeline_cache.Get()) {
     result.outcome = SetupOutcome::kDisabled;
     return result;
   }
   LoadPersistent();
-  MakeLevelCopies(options.level_samples);
+  MakeStartupCopies(options.level_samples);
   result.list.records = records_.size();
   result.list.copies = setup_copies_.size();
   result.list.hash = HashRecords();
@@ -584,9 +567,20 @@ Pipelines::SetupResult Pipelines::PrecacheForSetup(ShaderStore& shaders,
 void Pipelines::Shutdown() {
   StopPrecache();
   JoinAutosave();
+  if (sync_log_.builds != 0 || sync_log_.waits != 0) {
+    REXLOG_INFO("{}", sync_build_log::FormatSession(sync_log_));
+  }
+  if (handovers_ != 0) {
+    REXLOG_INFO("{}", sync_build_log::FormatHandoverSession(handovers_, made_here_too_));
+  }
+  handovers_ = 0;
+  made_here_too_ = 0;
+  sync_log_ = sync_build_log::Counters{};
   if (persist_ && shaders_) {
     SaveRecords();
   }
+  build_key_memo_.Clear();
+  pipeline_lookup_memo_.Clear();
   pipelines_.clear();
   level_dependent_.clear();
   level_dependent_index_.clear();
@@ -603,6 +597,7 @@ void Pipelines::Shutdown() {
   loaded_records_ = 0;
   own_file_records_ = 0;
   frame_ = 0;
+  vulkan_cache_after_precache_ = false;
   persist_ = false;
   persistence_started_ = false;
   device_ = nullptr;
@@ -712,6 +707,12 @@ uint32_t Pipelines::UsableProcessors() {
   if (GetProcessAffinityMask(GetCurrentProcess(), &process, &system) && process) {
     return uint32_t(__builtin_popcountll(process));
   }
+#else
+  // Linux: the calling thread's affinity mask (a game started with taskset, or inside a cgroup with a cpuset, has only those), as the
+  // decode pool and the audio and job workers count it (mc::UsableLogicalProcessors); std::thread::hardware_concurrency counts every online one.
+  if (const unsigned usable = ::mc::UsableLogicalProcessors(); usable != 0) {
+    return usable;
+  }
 #endif
   return std::max(1u, std::thread::hardware_concurrency());
 }
@@ -726,15 +727,28 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
     precached_by_key_.emplace(r.key, p.get());
     precached_.push_back(std::move(p));
   };
-  // The level copies (MakeLevelCopies) each follow the record they were made from, so the list
+  // The startup copies (MakeStartupCopies) each follow the record they were made from, so the list
   // stays in the order it was first needed in (the render thread's claims follow it, boot mode).
-  // A draw takes a copy like a record; no record has the key of a copy (MakeLevelCopies).
-  size_t next_copy = 0;
-  for (size_t i = 0; i < records_.size(); ++i) {
-    add(records_[i]);
-    for (; next_copy < setup_copies_.size() && setup_copy_source_[next_copy] == i; ++next_copy) {
-      add(setup_copies_[next_copy]);
-    }
+  // A draw takes a copy like a record; no record has the key of a copy.
+  //
+  // A start that draws the images of the screen at another count than the default 2 (a saved MSAA of
+  // 4 or off, an upscaler: start_samples_) never asks for the multisampled entries at the other
+  // counts first: its draws ask for the copies. Left between the entries the title's first frames
+  // ask for, they made the queue half as dense with them as the default start's, and the workers fell
+  // behind the render thread (2026-11-19 starter verify, D3D12 on 16 threads: 46 to 85 entries the
+  // render thread made itself at the start with MSAA off or DLSS saved, 0 at the default). Those
+  // entries now follow all the others, in their old order; the default start keeps the order above.
+  // What a draw does ask for from there is made as any list entry not reached yet: a draw that may
+  // be skipped makes the worker take it first, another is made by the render thread.
+  // CHECK: written without a build or a run; expected: "the render thread made N entries itself"
+  // (below) drops to a handful for a first start with MSAA off, 4x or DLSS saved, and the default
+  // start's precache line and time do not change.
+  // The order itself is precache_queue::Order (checked alone by precache_queue_test.cpp).
+  for (const Record* r : precache_queue::Order(records_, setup_copies_, setup_copy_source_,
+                                               precache_queue::DeferTarget(setup_threads != 0,
+                                                                           start_samples_,
+                                                                           kDefaultStartSamples))) {
+    add(*r);
   }
   // Half the processors, below normal priority: the guest boots meanwhile, and
   // a pipeline made here is one the render thread does not stop for later.
@@ -742,42 +756,59 @@ void Pipelines::StartPrecache(uint32_t setup_threads) {
   // make the pipelines the render thread hands them (background builds).
   // With fewer than kBootBoostBelow processors the first seconds are different
   // (boot mode, pipelines.h): up to all the processors but one, at normal priority.
+  // CHECK: written without a build or a run. Expected on the boot tour at 8 logical processors (affinity): the
+  // line "boot mode on 8 usable processors" with 6 threads (it said 4 threads and nothing about boot mode), the
+  // "boot mode over" line with the render thread's claims (41 to 45 entries before, expected near the 4
+  // processors' 17 to 24), the precache's time no longer than the 5.4 to 5.7 s it was, and no longer start of
+  // the title (the guest's load time at the same affinity). If the claims stay above 30 or the guest's start
+  // is slower by a second or more, put it back to 8.
   // The command line prebuild (setup_threads): no guest runs, so the workers are all there is.
   const uint32_t usable = UsableProcessors();
-  steady_workers_ = setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, 6u);
+  steady_workers_ =
+      setup_threads != 0 ? setup_threads : std::clamp(usable / 2, 1u, kMaxPrecacheWorkers);
+  seed_slots_ = level_seeds::Slots(steady_workers_);
   const bool boot = setup_threads == 0 && !precached_.empty() && usable < kBootBoostBelow;
   const uint32_t count =
-      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, 6u) : steady_workers_;
+      boot ? std::clamp(usable > 1 ? usable - 1 : 1u, steady_workers_, kMaxPrecacheWorkers)
+           : steady_workers_;
   precache_start_ = std::chrono::steady_clock::now();
   stop_precache_ = false;
-  list_cursor_ = 0;
-  list_end_ = precached_.size();
-  list_skipped_.clear();
+  list_.Reset(precached_.size());
   precache_ready_ = 0;
   precache_failed_ = 0;
   precache_finished_ = 0;
   boot_claims_ = 0;
   boot_waits_ = 0;
+  precache_claims_ = 0;
+  precache_first_claim_index_ = 0;
+  precache_last_claim_index_ = 0;
+  precache_first_claim_us_ = -1;
+  precache_last_claim_us_ = -1;
   boot_deadline_ = precache_start_ + kBootSeconds;
   boot_mode_ = boot;
+  // workers_ never reallocates while workers are added (the render thread reads the first workers_started_ of
+  // them to raise one that a draw waits for), and a worker's flag exists before it can be raised.
+  workers_started_.store(0, std::memory_order_release);
+  worker_raised_ = std::make_unique<std::atomic<bool>[]>(count);
+  workers_.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     workers_.emplace_back([this, i] { PrecacheWorker(i); });
+    workers_started_.store(i + 1, std::memory_order_release);
   }
   if (setup_threads != 0) {
     REXLOG_INFO("[gpu] pipelines: command line prebuild: precaching {} pipelines ({} of them copies "
-                "at other sample counts) on {} threads at normal priority ({} usable processors)",
+                "for startup settings) on {} threads at normal priority ({} usable processors)",
                 precached_.size(), setup_copies_.size(), count, usable);
   } else if (precached_.empty()) {
     REXLOG_INFO("[gpu] pipelines: nothing to precache; {} threads for background builds", count);
   } else if (boot) {
-    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies at other sample "
-                "counts) on {} threads; boot mode on {} usable processors: normal priority until "
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies for startup settings) "
+                "on {} threads; boot mode on {} usable processors: normal priority until "
                 "the list is done or {} s have passed, then {} threads at below normal",
                 precached_.size(), setup_copies_.size(), count, usable, kBootSeconds.count(),
                 steady_workers_);
   } else {
-    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies at other sample "
-                "counts) on {} threads",
+    REXLOG_INFO("[gpu] pipelines: precaching {} pipelines ({} of them copies for startup settings) on {} threads",
                 precached_.size(), setup_copies_.size(), count);
   }
 }
@@ -788,6 +819,7 @@ void Pipelines::StopPrecache() {
     stop_precache_ = true;
   }
   work_cv_.notify_all();
+  workers_started_.store(0, std::memory_order_release);
   for (std::thread& worker : workers_) {
     if (worker.joinable()) {
       worker.join();
@@ -801,15 +833,26 @@ void Pipelines::StopPrecache() {
   requests_.clear();
   urgent_.clear();
   low_.clear();
+  if (seed_book_.Active()) {
+    DropSeeds("the precache stopped");  // the line that says how the seeds were used
+  }
+  seeds_by_key_.clear();  // what DropSeeds kept: the seeds that draws took
+  seed_graveyard_.clear();  // the GPU is idle
+  seed_.clear();
+  seed_active_ = 0;
+  seed_level_ = 0;
+  seed_gen_ = 0;
   prebuild_requests_.clear();
   prebuild_precached_.clear();
-  list_skipped_.clear();
+  prebuild_seeds_.clear();
+  list_.Reset(0);
   precached_by_key_.clear();
   precached_.clear();  // the GPU is idle: unclaimed pipelines die here
   aliases_.clear();
 }
 
 void Pipelines::PrecacheWorker(uint32_t index) {
+  t_worker_index = int32_t(index);
   bool priority_set = false;
   bool priority_boosted = false;
   for (;;) {
@@ -819,18 +862,19 @@ void Pipelines::PrecacheWorker(uint32_t index) {
     Urgent urgent;
     size_t entry = 0;
     bool from_list = false;
+    bool from_seeds = false;
     {
       std::unique_lock<std::mutex> lock(work_mutex_);
       const auto leaves = [&] { return index >= steady_workers_ && !boot_mode_.load(); };
       work_cv_.wait(lock, [&] {
         return stop_precache_.load() || leaves() || !urgent_.empty() || !low_.empty() ||
-               HasListWork();
+               HasListWork() || HasSeedWork();
       });
       if (stop_precache_.load()) {
         return;
       }
       if (leaves()) {
-        if (!urgent_.empty() || !low_.empty() || HasListWork()) {
+        if (!urgent_.empty() || !low_.empty() || HasListWork() || HasSeedWork()) {
           work_cv_.notify_one();  // what woke this one goes to a worker that stays
         }
         return;
@@ -844,12 +888,25 @@ void Pipelines::PrecacheWorker(uint32_t index) {
         low_.pop_front();
       } else {
         from_list = NextListEntry(entry);
+        if (!from_list && HasSeedWork()) {
+          // The level seeds come last: nothing urgent, no copy for a switch, the list done (and not in
+          // boot mode, and not on every worker: level_seeds::MayStart).
+          urgent = std::move(seed_.front());
+          seed_.pop_front();
+          ++seed_active_;
+          from_seeds = true;
+        }
       }
     }
     // Normal priority in boot mode, below normal after: the guest's threads come first once
     // the render thread no longer waits for the list. The command line prebuild has no guest.
     // Below normal, not the background level: a draw that may not be skipped waits for the
     // build under way (Get), and on Linux the lower level could not be given back.
+    // The render thread may have given this worker normal priority for a draw that waited for the
+    // build it was making (WaitForBuild): that build is over, the worker takes its own level again.
+    if (worker_raised_ && worker_raised_[index].exchange(false, std::memory_order_acq_rel)) {
+      priority_set = false;
+    }
     const bool boosted = boot_mode_.load() || setup_mode_;
     if (!priority_set || boosted != priority_boosted) {
       larecomp::os::SetCurrentThreadIntent(boosted ? larecomp::os::ThreadIntent::kNormal
@@ -859,38 +916,47 @@ void Pipelines::PrecacheWorker(uint32_t index) {
     }
     if (urgent.request) {
       BuildRequest(*urgent.request);
+    } else if (urgent.seed) {
+      BuildPrecached(*urgent.seed);
     } else if (urgent.precached) {
       BuildPrecached(*urgent.precached);
     } else if (from_list) {
       BuildPrecached(*precached_[entry]);
     }
+    if (from_seeds) {
+      // The slot is free again; this worker goes round and takes the next seed if there is one.
+      std::lock_guard<std::mutex> lock(work_mutex_);
+      --seed_active_;
+    }
   }
 }
 
 bool Pipelines::HasListWork() const {
-  return list_cursor_ < list_end_ || !list_skipped_.empty();
+  return list_.HasWork();
+}
+
+bool Pipelines::HasSeedWork() const {
+  return level_seeds::MayStart(!seed_.empty(), boot_mode_.load(), seed_active_, seed_slots_);
 }
 
 bool Pipelines::NextListEntry(size_t& index) {
-  for (;;) {
-    while (list_cursor_ >= list_end_) {
-      if (list_skipped_.empty()) {
-        return false;
-      }
-      list_cursor_ = list_skipped_.front().begin;
-      list_end_ = list_skipped_.front().end;
-      list_skipped_.pop_front();
-    }
-    const size_t i = list_cursor_++;
-    // One the render thread made or a worker has is left alone.
-    if (precached_[i]->state.load() == kQueued) {
-      index = i;
-      return true;
-    }
-  }
+  // The windows of the render thread's claims, then the cursor (precache_queue.h). One the render
+  // thread made or a worker has is left alone.
+  return list_.Next(index, [this](size_t i) { return precached_[i]->state.load() == kQueued; });
 }
 
 void Pipelines::NoteClaim(size_t index) {
+  // Every claim, in any mode, for the line that ends the precache: which entries the render thread
+  // had to make and when, to tell the title's first burst from a queue the workers fall behind in.
+  const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(
+                         std::chrono::steady_clock::now() - precache_start_)
+                         .count();
+  if (precache_claims_.fetch_add(1, std::memory_order_relaxed) == 0) {
+    precache_first_claim_index_.store(uint32_t(index), std::memory_order_relaxed);
+    precache_first_claim_us_.store(us, std::memory_order_relaxed);
+  }
+  precache_last_claim_index_.store(uint32_t(index), std::memory_order_relaxed);
+  precache_last_claim_us_.store(us, std::memory_order_relaxed);
   if (!boot_mode_.load()) {
     return;
   }
@@ -899,17 +965,19 @@ void Pipelines::NoteClaim(size_t index) {
 }
 
 void Pipelines::FollowRenderThread(size_t index) {
-  // The render thread had to make entry `index` because no worker had reached it. It asks in
-  // about the order the list was recorded in, so the next entries are the ones it will want:
-  // the workers go on after it, and what lies between them and it (not asked for yet) waits
-  // until the run is over. A claim behind the cursor or beyond the run changes nothing.
+  // The render thread had to make entry `index` because no worker had reached it. It asks in about
+  // the order the list was recorded in within a block (the title's first frames ask for the next
+  // entries of the block they are in), so the workers make the entries after it first, a window of
+  // them. The cursor stays where it is: the render thread does not ask for the blocks in the list's
+  // order (a one-sample block at 1789 before the world's entries at 1347 to 1390: 44 claims when
+  // the cursor jumped to the first and parked the others, sr3v-boot-4), so what the cursor has
+  // still to make is the next place it asks.
+  // CHECK: written without a build or a run. Expected on the boot tour at 4 logical processors
+  // (chain-boot4.ps1): the "render thread made N of" line with a handful of claims (the old cursor: 17
+  // and 44 in two runs) and a precache time near 7.5 s; at 8 logical processors still 0 claims. The
+  // model in precache_queue_test.cpp reproduces the old 44 with a jump; it is not a measurement.
   std::lock_guard<std::mutex> lock(work_mutex_);
-  const size_t next = index + 1;
-  if (next <= list_cursor_ || next > list_end_ || next - list_cursor_ < kFollowMinGap) {
-    return;
-  }
-  list_skipped_.push_back(ListRange{list_cursor_, index});
-  list_cursor_ = next;
+  list_.Follow(index);
 }
 
 void Pipelines::EndBootMode(const char* why) {
@@ -939,6 +1007,7 @@ void Pipelines::BuildPrecached(Precached& p) {
   if (!p.state.compare_exchange_strong(expected, kBuilding)) {
     return;  // the render thread claimed it, or another worker has it
   }
+  p.builder.store(t_worker_index, std::memory_order_release);
   plume::RenderGraphicsPipelineDesc desc;
   ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
   ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
@@ -959,7 +1028,15 @@ void Pipelines::BuildPrecached(Precached& p) {
     // The render thread may take it the moment the state says so.
     std::lock_guard<std::mutex> lock(precache_mutex_);
     p.pipeline = std::move(pipeline);
+    p.vs_result = vs_result;
+    p.ps_result = ps_result;
     p.state = made ? kReady : kFailed;
+  }
+  if (p.seed) {
+    // Not an entry of the list: outside its counts and its "precache done" line.
+    precache_done_.notify_all();
+    seed_book_.Finished(p.seed_gen, made, std::chrono::steady_clock::now());
+    return;
   }
   ++(made ? precache_ready_ : precache_failed_);
   precache_done_.notify_all();
@@ -971,6 +1048,7 @@ void Pipelines::BuildRequest(Request& r) {
   if (!r.state.compare_exchange_strong(expected, kBuilding)) {
     return;  // the render thread made it itself
   }
+  r.builder.store(t_worker_index, std::memory_order_release);
   plume::RenderGraphicsPipelineDesc desc;
   ShaderStore::ShaderResult vs_result = ShaderStore::ShaderResult::kOk;
   ShaderStore::ShaderResult ps_result = ShaderStore::ShaderResult::kOk;
@@ -1001,6 +1079,17 @@ void Pipelines::NotePrecacheEntryDone() {
                            .count()) /
                     1000.0,
                 precache_ready_.load(), precache_failed_.load());
+    // A separate line: the one above is read by the run tools (run_misses.py, the starter chains).
+    if (const uint32_t claims = precache_claims_.load(std::memory_order_relaxed); claims != 0) {
+      REXLOG_INFO("[gpu] pipelines: the render thread made {} of the {} entries itself (they were "
+                  "not reached by a worker when a draw that may not be skipped asked): entries {} "
+                  "to {} of the queue, the first {:.0f} ms and the last {:.0f} ms after the start",
+                  claims, precached_.size(),
+                  precache_first_claim_index_.load(std::memory_order_relaxed),
+                  precache_last_claim_index_.load(std::memory_order_relaxed),
+                  double(precache_first_claim_us_.load(std::memory_order_relaxed)) / 1000.0,
+                  double(precache_last_claim_us_.load(std::memory_order_relaxed)) / 1000.0);
+    }
     EndBootMode("the list is done");
   }
 }
@@ -1026,18 +1115,18 @@ bool Pipelines::MaySkip(Miss& miss) {
 
 plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& miss,
                                                 const PipelineInputs& inputs) {
-  if (precached_by_key_.empty() || !inputs.input_layout) {
+  if ((precached_by_key_.empty() && seeds_by_key_.empty()) || !inputs.input_layout) {
     return nullptr;
   }
   const uint32_t stored = StoreLayout(*inputs.input_layout);
   if (stored == kNoLayout) {
     return nullptr;
   }
-  const auto found = precached_by_key_.find(PersistentKey(key, stored));
-  if (found == precached_by_key_.end()) {
+  Precached* const listed = FindListed(PersistentKey(key, stored));
+  if (!listed) {
     return nullptr;
   }
-  Precached& p = *found->second;
+  Precached& p = *listed;
   if (p.taken) {
     // Another session key with the same persistent key went first: its
     // pipeline is this one's too.
@@ -1060,7 +1149,11 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
       ++stats_.pending_keys;
       if (state == kQueued) {
         Urgent urgent;
-        urgent.precached = &p;
+        if (p.seed) {
+          urgent.seed = p.shared_from_this();  // it is still in seed_ too: the worker that finds it begun leaves it
+        } else {
+          urgent.precached = &p;
+        }
         PushUrgent(std::move(urgent));
       }
     }
@@ -1071,8 +1164,12 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   state = kQueued;
   if (p.state.compare_exchange_strong(state, kClaimed)) {
     miss.take = Take::kMakeHere;
-    NoteClaim(p.index);
-    NotePrecacheEntryDone();
+    if (p.seed) {
+      seed_book_.Claimed(p.seed_gen);  // not an entry of the start's queue: no claim of it, no count
+    } else {
+      NoteClaim(p.index);
+      NotePrecacheEntryDone();
+    }
     ++stats_.precache_claimed;  // no worker at it yet: the caller makes it now
     p.taken = true;
     p.taken_as = key;
@@ -1080,18 +1177,38 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   }
   if (state == kBuilding) {
     const auto t0 = std::chrono::steady_clock::now();
-    std::unique_lock<std::mutex> lock(precache_mutex_);
-    precache_done_.wait(lock, [&] { return p.state.load() != kBuilding; });
+    // A level seed's worker is not stolen from (its books count the seed made once); the rest may be.
+    bool raised = false;
+    const bool finished = WaitForBuild(p.state, p.builder, !p.seed, &raised);
     if (boot_mode_.load()) {
       ++boot_waits_;
     }
     ++stats_.precache_waits;
-    stats_.precache_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+    const uint64_t waited_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
                                             std::chrono::steady_clock::now() - t0)
                                             .count());
+    stats_.precache_wait_ns += waited_ns;
+    LogSyncWait(key, "list", waited_ns);
+    NoteHandover(key, "list", raised, !finished, waited_ns);
+    if (!finished) {
+      // The worker is still at it (starved, or a slow driver): this thread makes the pipeline too, as if
+      // no worker had begun it. The worker's result stays in the entry, unused, until the list is dropped.
+      miss.take = Take::kMakeHere;
+      p.taken = true;
+      p.taken_as = key;
+      return nullptr;
+    }
   }
   std::lock_guard<std::mutex> lock(precache_mutex_);
   if (p.state.load() != kReady) {
+    if (miss.deferral && miss.deferral->has_fallback) {
+      // Failed on a worker, and the draw has another pipeline to draw with: final for the key. Not made again here (the render thread would stall for a pipeline that
+      // fails the same), reported once like any failed build, and remembered as failed, as a build that failed on this thread would be.
+      LogFailure(key, p.vs_result, p.ps_result, true);
+      pipelines_.emplace(key, nullptr);
+      miss.take = Take::kReported;
+      return nullptr;
+    }
     miss.take = Take::kFailed;
     return nullptr;  // failed: made (and reported) on the caller's path
   }
@@ -1104,6 +1221,9 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   plume::RenderPipeline* raw = p.pipeline.get();
   pipelines_.emplace(key, std::move(p.pipeline));
   ++stats_.precache_taken;
+  if (p.seed) {
+    seed_book_.Taken(p.seed_gen);
+  }
   if (persist_) {
     // A record is known already (nothing happens); a level copy is the pipeline of a draw now.
     // CHECK: that the cache file then holds the copies the player drew with (the log's "records
@@ -1113,7 +1233,7 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   return raw;
 }
 
-bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& inputs) {
+bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& inputs, bool fallback) {
   if (workers_.empty() || stop_precache_.load() || !inputs.vs || !inputs.input_layout ||
       (key.ps != 0 && !inputs.ps)) {
     return false;
@@ -1131,6 +1251,7 @@ bool Pipelines::StartRequest(const PipelineKey& key, const PipelineInputs& input
   request->layout = stored_layouts_[stored].get();
   request->stored = stored;
   request->asked_frame = frame_;
+  request->fallback = fallback;
   requests_.emplace(key, request);
   Urgent urgent;
   urgent.request = std::move(request);
@@ -1146,6 +1267,9 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
     return nullptr;
   }
   Request& r = *found->second;
+  if (miss.deferral && miss.deferral->has_fallback) {
+    r.fallback = true;  // a copy made for an MSAA level or another asker: the draw that takes it has a fallback key, so a failure is final and logged for the key
+  }
   uint8_t state = r.state.load();
   if (state == kQueued || state == kBuilding) {
     if (MaySkip(miss)) {
@@ -1174,12 +1298,23 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
     }
     if (state == kBuilding) {
       const auto t0 = std::chrono::steady_clock::now();
-      std::unique_lock<std::mutex> lock(precache_mutex_);
-      precache_done_.wait(lock, [&] { return r.state.load() != kBuilding; });
+      bool raised = false;
+      const bool finished = WaitForBuild(r.state, r.builder, true, &raised);
       ++stats_.request_waits;
-      stats_.request_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                             std::chrono::steady_clock::now() - t0)
-                                             .count());
+      const uint64_t waited_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                              std::chrono::steady_clock::now() - t0)
+                                              .count());
+      stats_.request_wait_ns += waited_ns;
+      LogSyncWait(key, "request", waited_ns);
+      NoteHandover(key, "request", raised, !finished, waited_ns);
+      if (!finished) {
+        // Still being made by a starved worker or a slow driver: made here too (TakePrecached's way). The
+        // worker's request is let go with its own reference.
+        ++stats_.made_here_new;
+        requests_.erase(found);
+        miss.take = Take::kMakeHere;
+        return nullptr;
+      }
     }
   }
   plume::RenderPipeline* raw = AdoptRequest(key, r);
@@ -1209,7 +1344,7 @@ plume::RenderPipeline* Pipelines::AdoptRequest(const PipelineKey& key, Request& 
       RecordStored(key, r.stored);
     }
   } else {
-    LogFailure(key, vs_result, ps_result);
+    LogFailure(key, vs_result, ps_result, r.fallback);
   }
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));
@@ -1251,6 +1386,12 @@ void Pipelines::EndFrame() {
   }
   if (!requests_.empty()) {
     TakeFinishedRequests();
+  }
+  if (seed_level_ != 0) {
+    SeedFrame();
+  }
+  for (uint32_t i = 0; i < level_seeds::kReleasePerFrame && !seed_graveyard_.empty(); ++i) {
+    seed_graveyard_.pop_back();
   }
   Autosave();
 }
@@ -1344,6 +1485,10 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
     }
     layouts.push_back(std::move(s));
   }
+  // The count is checked against what is left of the file before a vector of that size is made: a damaged header must not ask for billions of records (cache_file_check.h).
+  if (!cache_file::RecordsFit(header.record_count, sizeof(PipelineKey) + sizeof(uint32_t), in.Remaining())) {
+    return discard("the record count does not fit the file");
+  }
   std::vector<Record> records(header.record_count);
   for (Record& r : records) {
     if (!in.Get(&r.key, sizeof(r.key)) || !in.Get32(&r.layout) || r.layout >= layouts.size()) {
@@ -1365,16 +1510,19 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   size_t added = 0;
   uint32_t dropped = 0;
   uint32_t zeroed = 0;
+  uint32_t refs_cleared = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
-    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant of the
-    // variant pack (the HDR scene's tone map, the bloom's Gaussians: ps_variant 2 and up) while that
-    // pack is not loaded or lacks the variant of that shader.
+    // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant word of the
+    // variant pack (the HDR scene's tone map, the bloom's Gaussians, a composed shader: ps_variant or vs_variant 2 and up)
+    // while that pack is not loaded or lacks that word of that shader. A record that an older build wrote has the
+    // ids of version 2 of the pack in those fields (2..13, one per change); as words they name features the
+    // shader does not have (except the HDR tone map's 2, which is the same), so they are dropped here, not misread.
+    const ShaderStore::Entry* record_vs = shaders_->Find(r.key.vs);
     const ShaderStore::Entry* record_ps = r.key.ps != 0 ? shaders_->Find(r.key.ps) : nullptr;
-    if (!shaders_->Find(r.key.vs) || (r.key.ps != 0 && !record_ps) ||
-        (r.key.ps_variant >= ShaderStore::kFirstPackedVariant &&
-         (!record_ps || r.key.ps_variant >= ShaderStore::kVariantSlots ||
-          (record_ps->variants & (1u << r.key.ps_variant)) == 0))) {
+    if (!record_vs || (r.key.ps != 0 && !record_ps) ||
+        (r.key.ps_variant >= ShaderStore::kFirstPackedVariant && (!record_ps || !record_ps->HasWord(r.key.ps_variant))) ||
+        (r.key.vs_variant >= ShaderStore::kFirstPackedVariant && !record_vs->HasWord(r.key.vs_variant))) {
       ++dropped;
       continue;
     }
@@ -1385,6 +1533,14 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
       r.key.depth_bias = 0;
       r.key.slope_scaled_depth_bias = 0.0f;
     }
+    // The stencil reference is on the command list now (stencil_ref.h): a record an earlier build wrote has its draw's in the key, and
+    // the records that differed only by it are one pipeline, the first of them kept below (recorded_ drops the others).
+    if (const uint32_t masks = stencil_ref::WithoutReference(r.key.stencil_masks); masks != r.key.stencil_masks) {
+      ++refs_cleared;
+      r.key.stencil_masks = masks;
+    }
+    // The bytes of a record are its identity: a -0.0 slope written by an earlier build is the +0.0 a draw asks for now.
+    r.key.slope_scaled_depth_bias = key_guard::CanonicalZero(r.key.slope_scaled_depth_bias);
     // A depth format this device has no target for (the other API's file holds D24).
     r.key.depth_format =
         uint32_t(format::HostDepthFormat(plume::RenderFormat(r.key.depth_format)));
@@ -1394,9 +1550,10 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
     }
   }
   REXLOG_INFO("[gpu] pipelines: {} records and {} layouts in {}: {} new here ({} dropped: a "
-              "shader the pack does not have{})",
+              "shader the pack does not have{}{})",
               header.record_count, header.layout_count, path.string(), added, dropped,
-              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string());
+              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string(),
+              refs_cleared ? std::format("; {} stencil references cleared (on the list now)", refs_cleared) : std::string());
   return added;
 }
 
@@ -1426,23 +1583,12 @@ std::vector<uint8_t> Pipelines::SerializeRecords() const {
 
 void Pipelines::WriteCacheFile(const std::vector<uint8_t>& bytes, size_t records,
                                size_t layouts) const {
-  std::error_code ec;
-  std::filesystem::create_directories(cache_path_.parent_path(), ec);
-  std::filesystem::path temp = cache_path_;
-  temp += ".tmp";
-  {
-    std::ofstream file(temp, std::ios::binary | std::ios::trunc);
-    file.write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
-    if (!file) {
-      REXLOG_ERROR("[gpu] pipelines: the cache {} could not be written",
-                   temp.string());
-      return;
-    }
-  }
-  std::filesystem::rename(temp, cache_path_, ec);
-  if (ec) {
-    REXLOG_ERROR("[gpu] pipelines: the cache {} could not replace the old one: {}",
-                 cache_path_.string(), ec.message());
+  // A temporary name of its own and one step over the old file (os/file_replace.h): the games of a test batch share this folder, and the autosave thread and the
+  // end-of-session save of one game must not share a temporary file either. The other game's file in place is replaced by this one's (its records were loaded
+  // into this session at the start, so nothing but what the other game found since is left out; the next start has it again).
+  std::string why;
+  if (!larecomp::os::Succeeded(larecomp::os::WriteFileReplacing(cache_path_, bytes.data(), bytes.size(), &why))) {
+    REXLOG_ERROR("[gpu] pipelines: the cache {} could not be written: {}", cache_path_.string(), why);
     return;
   }
   REXLOG_INFO("[gpu] pipelines: {} records ({} new this session, {} from the other API's file) "
@@ -1467,23 +1613,39 @@ void Pipelines::JoinAutosave() {
 }
 
 void Pipelines::Autosave() {
-  if (!persist_ || records_.size() == saved_records_ ||
-      autosave_running_.load(std::memory_order_acquire)) {
+  if (!persist_ || autosave_running_.load(std::memory_order_acquire)) {
     return;
   }
+  // A draw can claim the last entry before creating its pipeline. Check at EndFrame
+  // and do the snapshot and file I/O off the render thread.
+  const bool save_vulkan = !vulkan_cache_after_precache_ &&
+                           device_->HasPersistentVulkanPipelineCache() && !precached_.empty() &&
+                           precache_finished_.load() == precached_.size();
   constexpr auto kInterval = std::chrono::seconds(30);
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_save_ < kInterval) {
+  std::vector<uint8_t> bytes;
+  if (records_.size() != saved_records_) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_save_ >= kInterval) {
+      bytes = SerializeRecords();
+      last_save_ = now;
+      saved_records_ = records_.size();
+    }
+  }
+  if (!save_vulkan && bytes.empty()) {
     return;
   }
-  last_save_ = now;
-  saved_records_ = records_.size();
+  vulkan_cache_after_precache_ |= save_vulkan;
   JoinAutosave();  // finished: only the handle is left
   autosave_running_.store(true, std::memory_order_release);
   autosave_thread_ = std::thread(
-      [this, bytes = SerializeRecords(), records = records_.size(),
+      [this, save_vulkan, bytes = std::move(bytes), records = records_.size(),
        layouts = stored_layouts_.size()] {
-        WriteCacheFile(bytes, records, layouts);
+        if (save_vulkan) {
+          device_->SaveVulkanPipelineCache();
+        }
+        if (!bytes.empty()) {
+          WriteCacheFile(bytes, records, layouts);
+        }
         autosave_running_.store(false, std::memory_order_release);
       });
 }
@@ -1498,19 +1660,52 @@ void Pipelines::Report(uint32_t kind, const char* what) {
 
 KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inputs,
                               plume::RenderPrimitiveTopology topology, bool polygonal,
-                              const plume::RenderFormat color_formats[kColorTargetCount],
+                              const plume::RenderFormat (&color_formats)[kColorTargetCount],
                               plume::RenderFormat depth_format, PipelineKey& key,
                               DepthBias& bias) {
+  if (!draw_memo_enabled_) {
+    return BuildKeyUncached(state, inputs, topology, polygonal, color_formats, depth_format,
+                            key, bias, std::nullopt);
+  }
+  const ShaderStore::Entry* ps = inputs.ps;
+  const uint32_t wanted = ps && ps->features != 0 && state.mode.edram_mode == xe::EDRAMMode::kColorDepth
+                              ? WantedFeatures(*ps) : 0;
+  const auto signature = PipelineBuildSignature::From(state, inputs, topology, polygonal,
+                                                      color_formats, depth_format, wanted);
+  ++draw_memo_profile_.build_key.tries;
+  const BuiltKey* found = build_key_memo_.Find(signature);
+  if (!found) {
+    found = build_key_memo_.FindOther(signature);
+  }
+  if (found) {
+    ++draw_memo_profile_.build_key.hits;
+    key = found->key;
+    bias = found->bias;
+    return KeyResult::kOk;
+  }
+  const KeyResult result = BuildKeyUncached(state, inputs, topology, polygonal, color_formats,
+                                            depth_format, key, bias, wanted);
+  if (result == KeyResult::kOk) {
+    build_key_memo_.Put(signature, BuiltKey{key, bias});
+  }
+  return result;
+}
+
+KeyResult Pipelines::BuildKeyUncached(const XenosState& state, const PipelineInputs& inputs,
+                                      plume::RenderPrimitiveTopology topology, bool polygonal,
+                                      const plume::RenderFormat (&color_formats)[kColorTargetCount],
+                                      plume::RenderFormat depth_format, PipelineKey& key,
+                                      DepthBias& bias, std::optional<uint32_t> wanted_features) {
   key = PipelineKey{};
   bias = DepthBias{};
   const ShaderStore::Entry* vs = inputs.vs;
   const ShaderStore::Entry* ps = inputs.ps;
-  const xe::EdramMode mode = state.mode.edram_mode;
-  if (mode != xe::EdramMode::kColorDepth && mode != xe::EdramMode::kDepthOnly) {
+  const xe::EDRAMMode mode = state.mode.edram_mode;
+  if (mode != xe::EDRAMMode::kColorDepth && mode != xe::EDRAMMode::kDepthOnly) {
     Report(kReportEdramMode, "a draw with an EDRAM mode other than colour+depth or depth only");
     return KeyResult::kEdramMode;
   }
-  const bool depth_only = mode == xe::EdramMode::kDepthOnly;
+  const bool depth_only = mode == xe::EDRAMMode::kDepthOnly;
   // Xenia's reading of kDepthOnly: the pixel shader is not run. In MCLA every
   // such draw has no pixel shader bound anyway (frame census 10/10).
   if (depth_only) {
@@ -1541,10 +1736,16 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
       }
     }
   }
-  // A variant of the pixel shader from the variant pack, where the settings ask for one. They are built for
-  // spec variant 0, so a draw that needs the alpha test keeps the main pack's shader.
-  if (ps && key.ps_variant == 0 && ps->variants != 0) {
-    key.ps_variant = ChoosePackedVariant(*ps);
+  // A variant of the pixel shader from the variant pack, where the settings ask for one: the word with the most of the wanted
+  // features that the pack has for it (a composed shader, or a subset of the features), and the vertex shader's word when that one
+  // reads a vertex stage's export. A draw that needs the alpha test (spec variant 1) takes a variant that has the twin, else it keeps
+  // the main pack's shader.
+  if (ps && ps->features != 0 && shaders_) {
+    if (const uint32_t wanted = wanted_features ? *wanted_features : WantedFeatures(*ps)) {
+      uint32_t vs_word = key.vs_variant;
+      key.ps_variant = shaders_->ChooseVariant(*ps, wanted, key.ps_variant, vs, key.vs_variant, &vs_word);
+      key.vs_variant = vs_word;
+    }
   }
   key.input_layout = inputs.input_layout->id;
   key.topology = uint32_t(topology);
@@ -1599,7 +1800,7 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
   }
   if (constant_blend) {
     Report(kReportConstantBlend,
-           "a blend with the constant colour/alpha factor (Plume has no dynamic blend factor; the "
+           "a blend with the constant colour/alpha factor (nothing sets the host's blend factor; the "
            "host default factor is used)");
   }
 
@@ -1621,17 +1822,16 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
                     (uint32_t(StencilOp(dc.stencilzfail)) << 13) |
                     (uint32_t(Compare(func_bf)) << 17) | (uint32_t(StencilOp(fail_bf)) << 21) |
                     (uint32_t(StencilOp(zpass_bf)) << 25);
-      key.stencil_masks = uint32_t(state.stencil.stencilmask) |
-                          (uint32_t(state.stencil.stencilwritemask) << 8) |
-                          (uint32_t(state.stencil.stencilref) << 16) |
-                          (uint32_t(StencilOp(zfail_bf)) << 24);
+      // The reference is not in the key: the draw puts it on the list (stencil_ref.h).
+      key.stencil_masks = stencil_ref::PackMasks(state.stencil.stencilmask, state.stencil.stencilwritemask,
+                                                 uint32_t(StencilOp(zfail_bf)));
       if (dc.backface_enable && (state.stencil_bf.stencilmask != state.stencil.stencilmask ||
                                  state.stencil_bf.stencilwritemask !=
                                      state.stencil.stencilwritemask ||
                                  state.stencil_bf.stencilref != state.stencil.stencilref)) {
         Report(kReportStencilBackFace,
-               "back-face stencil masks or reference different from the front (one set in a "
-               "pipeline; the front ones are used)");
+               "back-face stencil masks or reference different from the front (one set of "
+               "masks in a pipeline and one reference on the list; the front ones are used)");
       }
     }
   }
@@ -1686,7 +1886,8 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
     bias.slope = poly_scale * xe::kPolygonOffsetScaleSubpixelUnit;
     if (!dynamic_depth_bias_) {
       key.depth_bias = bias.constant;
-      key.slope_scaled_depth_bias = bias.slope;
+      // A slope of -0.0 (a negative zero scale times the unit) is the same pipeline as +0.0 but other bytes of the key.
+      key.slope_scaled_depth_bias = key_guard::CanonicalZero(bias.slope);
     }
   }
   const bool depth_clip = !state.clip.clip_disable;
@@ -1742,8 +1943,11 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
     desc.stencilBackFace.depthFailOp = RenderStencilOp((key.stencil_masks >> 24) & 0xF);
     desc.stencilReadMask = key.stencil_masks & 0xFFu;
     desc.stencilWriteMask = (key.stencil_masks >> 8) & 0xFFu;
-    desc.stencilReference = (key.stencil_masks >> 16) & 0xFFu;
   }
+  // Every guest pipeline takes its stencil reference from the command list (Scene puts the draw's on it, stencil_ref.h), so draws that
+  // differ only by the reference are one pipeline. Also one with the stencil test off: a static reference would overwrite the list's at its
+  // bind (D3D12) or make it undefined for the next draw (Vulkan), and the list's own copy (stencil_ref::Held) would then be wrong.
+  desc.dynamicStencilReferenceEnabled = true;
   desc.cullMode = plume::RenderCullMode(key.raster & 0xF);
   desc.frontFace = ((key.raster >> 4) & 1u) ? plume::RenderFrontFace::COUNTER_CLOCKWISE
                                             : plume::RenderFrontFace::CLOCKWISE;
@@ -1757,9 +1961,19 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
 }
 
 void Pipelines::LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_result,
-                           ShaderStore::ShaderResult ps_result) {
+                           ShaderStore::ShaderResult ps_result, bool fallback) {
   ++stats_.failed;
-  if (stats_.failed <= 16) {
+  if (fallback) {
+    // A key with a fallback: one line for each (the key is remembered as failed and never built again), not counted against the cap below. Its draws take the game's
+    // own pipeline (Scene::Prepare, variant_wait::NextStep). "ok" for both shaders means the shaders were fine and the driver refused the pipeline.
+    ++stats_.variant_failed;
+    REXLOG_WARN("[gpu] pipeline variant for vs {:016X}/{} ps {:016X}/{} not created (vs shader {}, ps shader {}, {} colour targets, {} samples, depth format {}): "
+                "its draws use the game's own pipeline from now on",
+                key.vs, key.vs_variant, key.ps, key.ps_variant, ShaderStore::ResultName(vs_result), ShaderStore::ResultName(ps_result), key.color_count, key.sample_count,
+                key.depth_format);
+    return;
+  }
+  if (stats_.failed - stats_.variant_failed <= 16) {
     REXLOG_ERROR("[gpu] pipeline for vs {:016X}/{} ps {:016X}/{} not created (vs shader {}, ps "
                  "shader {}, {} colour targets, depth format {})",
                  key.vs, key.vs_variant, key.ps, key.ps_variant,
@@ -1775,9 +1989,25 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   } else {
     deferral = nullptr;  // nowhere to say "pending": the draw may not wait
   }
+  if (draw_memo_enabled_) {
+    ++draw_memo_profile_.get.tries;
+    const auto* found = pipeline_lookup_memo_.Find(key);
+    if (!found) {
+      found = pipeline_lookup_memo_.FindOther(key);
+    }
+    if (found) {
+      ++draw_memo_profile_.get.hits;
+      return *found;
+    }
+  }
   const auto it = pipelines_.find(key);
   if (it != pipelines_.end()) {
-    return it->second.get();
+    plume::RenderPipeline* got = it->second.get();
+    if (draw_memo_enabled_ && got) {
+      // Only the owning map has precedence for the entire pipeline lifetime.
+      pipeline_lookup_memo_.Put(key, got);
+    }
+    return got;
   }
   if (const auto alias = aliases_.find(key); alias != aliases_.end()) {
     return alias->second;
@@ -1802,7 +2032,17 @@ void Pipelines::NoteLevelDependent(const PipelineKey& key, const PipelineInputs&
   level_dependent_.push_back(LevelDependent{canonical, stored});
 }
 
-Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
+Pipelines::Precached* Pipelines::FindListed(const PipelineKey& persistent) const {
+  if (const auto it = precached_by_key_.find(persistent); it != precached_by_key_.end()) {
+    return it->second;
+  }
+  if (const auto it = seeds_by_key_.find(persistent); it != seeds_by_key_.end()) {
+    return it->second.get();
+  }
+  return nullptr;
+}
+
+Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level, uint32_t from_level) {
   // CHECK: that the copies are the pipelines the first draws after the switch ask for (the same key
   // but the sample count: the log's pipeline statistics for the minute after a switch should show
   // few or no pending draws and nothing made on the render thread; a missing one shows as a draw
@@ -1815,16 +2055,22 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
   LevelPrebuild result;
   prebuild_requests_.clear();
   prebuild_precached_.clear();
+  prebuild_seeds_.clear();
   result.known = uint32_t(level_dependent_.size());
-  if (level_dependent_.empty() || workers_.empty() || stop_precache_.load() || !shaders_) {
+  if (workers_.empty() || stop_precache_.load() || !shaders_) {
     return result;
   }
   std::vector<Urgent> items;
+  // The persistent keys at `level` of the drawn pipelines: the seeds (below) leave them to the first half.
+  std::unordered_set<PipelineKey, PipelineKeyHash> covered;
+  covered.reserve(level_dependent_.size());
   for (const LevelDependent& d : level_dependent_) {
     PipelineKey key = d.key;
     // EdramTargets::HostSamplesAt: the level, which may be fewer than the guest's samples (the
     // pause menu's and the map's world view, which the game draws with 4).
     key.sample_count = level;
+    const PipelineKey persistent = PersistentKey(key, d.stored);
+    covered.insert(persistent);
     if (pipelines_.count(key) != 0 || aliases_.count(key) != 0) {
       ++result.present;
       continue;
@@ -1838,14 +2084,25 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
       }
       continue;
     }
-    if (const auto listed = precached_by_key_.find(PersistentKey(key, d.stored));
-        listed != precached_by_key_.end()) {
-      // A record of the cache file or the starter list has it: that entry is made, the first draw
-      // takes it (TakePrecached).
-      Precached& p = *listed->second;
+    if (Precached* const listed = FindListed(persistent)) {
+      // A record of the cache file or the starter list has it (or a seed of an earlier call for this
+      // level): that entry is made, the first draw takes it (TakePrecached).
+      Precached& p = *listed;
       const uint8_t state = p.state.load();
       if (p.taken || state == kReady || state == kFailed || state == kClaimed) {
         ++result.present;
+        continue;
+      }
+      if (p.seed) {
+        // Queued behind everything (seed_): moved up to the copies for this switch, which it waits for.
+        std::shared_ptr<Precached> seed = p.shared_from_this();
+        prebuild_seeds_.push_back(seed);
+        if (state == kQueued) {
+          Urgent item;
+          item.seed = std::move(seed);
+          items.push_back(std::move(item));
+          ++result.queued;
+        }
         continue;
       }
       prebuild_precached_.push_back(&p);
@@ -1886,6 +2143,7 @@ Pipelines::LevelPrebuild Pipelines::PrebuildForLevel(uint32_t level) {
     }
     work_cv_.notify_all();
   }
+  SeedForLevel(level, from_level, covered, result);
   result.waiting = PrebuildWaiting();
   return result;
 }
@@ -1900,7 +2158,139 @@ uint32_t Pipelines::PrebuildWaiting() const {
     const uint8_t state = p->state.load();
     waiting += state == kQueued || state == kBuilding;
   }
+  for (const std::shared_ptr<Precached>& p : prebuild_seeds_) {
+    const uint8_t state = p->state.load();
+    waiting += state == kQueued || state == kBuilding;
+  }
   return waiting;
+}
+
+void Pipelines::SeedForLevel(uint32_t level, uint32_t from_level,
+                             const std::unordered_set<PipelineKey, PipelineKeyHash>& covered,
+                             LevelPrebuild& result) {
+  // CHECK: written without a build or a run. Expected on a live level change: the "msaa: live change"
+  // line says how many seeds were queued; one "level seeds for Nx" line follows within a few seconds
+  // (hundreds queued, nearly all ready, the time in ms); the first views at the new level that the
+  // session had not drawn (the map, a race) take seeds ("taken by draws" in the line that is written
+  // when they are let go: the next change, a shortage, the exit) and create nothing on the render thread;
+  // the frame times of the seconds after the switch do not show the builds (they run below normal
+  // priority on all the steady workers but one, and not at all in boot mode).
+  if (records_.empty()) {
+    return;  // no cache and no list were read (mcla_gpu_pipeline_cache is off)
+  }
+  const level_seeds::Retarget what = level_seeds::Decide(seed_level_, level);
+  if (what == level_seeds::Retarget::kRestart) {
+    DropSeeds("the level changed again");  // the untaken ones of the old level: queued ones cancelled, made ones freed
+  }
+  seed_level_ = level;
+  const backend::VideoMemory memory = device_ ? device_->QueryVideoMemory() : backend::VideoMemory{};
+  const uint32_t allowed = level_seeds::AllowedCount(memory.used, memory.budget, seed_book_.Live());
+  // What needs no seed: a record, a queue entry, a seed or a drawn pipeline's copy has the key at `level`.
+  const auto present = [&](const PipelineKey& copy) {
+    return recorded_.count(copy) != 0 || precached_by_key_.count(copy) != 0 ||
+           seeds_by_key_.count(copy) != 0 || covered.count(copy) != 0;
+  };
+  level_seeds::PlanCounts counts;
+  const std::vector<uint32_t> picks =
+      level_seeds::PlanSeeds<Record, PipelineKeyHash>(records_, level, from_level, allowed, present, counts);
+  result.seed_sources = counts.sources;
+  result.seed_present = counts.same_level + counts.duplicate + counts.present;
+  result.seed_limited = counts.limited;
+  result.seeds = counts.picked;
+  if (picks.empty()) {
+    return;
+  }
+  const uint32_t picked = uint32_t(picks.size());
+  if (what == level_seeds::Retarget::kKeep && seed_gen_ != 0 && seed_book_.Active()) {
+    seed_book_.Add(seed_gen_, picked);
+  } else {
+    seed_gen_ = seed_book_.Begin(level, picked, std::chrono::steady_clock::now());
+  }
+  std::vector<Urgent> queue;
+  queue.reserve(picks.size());
+  for (const uint32_t i : picks) {
+    const Record& r = records_[i];
+    auto seed = std::make_shared<Precached>();
+    seed->key = level_seeds::AtLevel(r.key, level);
+    seed->layout = stored_layouts_[r.layout].get();  // owned by a unique_ptr: stable
+    seed->seed = true;
+    seed->seed_gen = seed_gen_;
+    seeds_by_key_.emplace(seed->key, seed);
+    Urgent item;
+    item.seed = std::move(seed);
+    queue.push_back(std::move(item));
+  }
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    for (Urgent& item : queue) {
+      seed_.push_back(std::move(item));
+    }
+  }
+  work_cv_.notify_all();
+}
+
+void Pipelines::DropSeeds(const char* why) {
+  // Seeds nobody has taken go: the queue is emptied, a seed no worker began is marked claimed so that a worker
+  // that already popped it leaves it (the same compare-exchange a draw's claim uses), a made one is freed (no
+  // command list ever held it), and one being built is let finish: its worker drops the result with its
+  // reference. Seeds a draw took stay in seeds_by_key_ as the alias marker a precache entry is.
+  {
+    std::lock_guard<std::mutex> lock(work_mutex_);
+    seed_.clear();
+  }
+  uint32_t cancelled = 0;
+  uint32_t freed = 0;
+  for (auto it = seeds_by_key_.begin(); it != seeds_by_key_.end();) {
+    Precached& p = *it->second;
+    if (p.taken) {
+      ++it;
+      continue;
+    }
+    uint8_t state = kQueued;
+    if (p.state.compare_exchange_strong(state, kClaimed)) {
+      ++cancelled;
+    } else if (state == kReady) {
+      std::lock_guard<std::mutex> lock(precache_mutex_);
+      if (p.pipeline) {
+        seed_graveyard_.push_back(std::move(p.pipeline));  // destroyed a few a frame (EndFrame)
+        ++freed;
+      }
+    }
+    it = seeds_by_key_.erase(it);
+  }
+  if (seed_book_.Active()) {
+    seed_book_.Cancelled(seed_gen_, cancelled);
+    seed_book_.Freed(seed_gen_, freed);
+    const level_seeds::SeedBook::Report r = seed_book_.Snapshot();
+    REXLOG_INFO("[gpu] pipelines: level seeds for {}x let go ({}): {} queued, {} made, {} taken by draws "
+                "({} more made by the render thread), {} failed, {} dropped before a worker began them, "
+                "{} made and never asked for (freed, about {} MiB)",
+                r.level, why, r.queued, r.ready, r.taken, r.claimed, r.failed, r.cancelled, r.freed,
+                (uint64_t(r.freed) * level_seeds::kBytesEach) >> 20);
+    seed_book_.End();
+  }
+  seed_level_ = 0;
+  seed_gen_ = 0;
+}
+
+void Pipelines::SeedFrame() {
+  level_seeds::SeedBook::Report r;
+  if (seed_book_.TakeDone(r)) {
+    const uint32_t held = r.ready > r.taken + r.freed ? r.ready - r.taken - r.freed : 0;
+    REXLOG_INFO("[gpu] pipelines: level seeds for {}x: {} queued, {} ready, {} failed, {} taken by draws so far, "
+                "{} made by the render thread, in {:.0f} ms ({} worker(s), {} at a time); about {} MiB held",
+                r.level, r.queued, r.ready, r.failed, r.taken, r.claimed, r.build_ms, workers_.size(),
+                seed_slots_, (uint64_t(held) * level_seeds::kBytesEach) >> 20);
+  }
+  if (frame_ < seed_next_check_ || seed_book_.Live() == 0) {
+    return;
+  }
+  seed_next_check_ = frame_ + level_seeds::kCheckFrames;
+  const backend::VideoMemory memory = device_ ? device_->QueryVideoMemory() : backend::VideoMemory{};
+  if (level_seeds::ShortOfRoom(memory.used, memory.budget)) {
+    // The seeds are a luxury: they go before the caches' own response (90%) has to release anything.
+    DropSeeds("the video memory is short");
+  }
 }
 
 plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const PipelineInputs& inputs,
@@ -1929,8 +2319,99 @@ void Pipelines::NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
   }
 }
 
+namespace {
+
+sync_build_log::KeyWords WordsOf(const PipelineKey& key) {
+  sync_build_log::KeyWords w;
+  w.vs = key.vs;
+  w.ps = key.ps;
+  w.vs_variant = key.vs_variant;
+  w.ps_variant = key.ps_variant;
+  w.color_count = key.color_count;
+  w.sample_count = key.sample_count;
+  w.stencil = sync_build_log::StencilWrites(key.stencil, key.stencil_masks);
+  return w;
+}
+
+}  // namespace
+
+void Pipelines::LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t ns) {
+  const uint64_t n = sync_log_.NoteBuild(ns);
+  if (!sync_build_log::LogThis(n)) {
+    return;
+  }
+  const sync_build_log::Why why = miss.take == Take::kMakeHere ? sync_build_log::Why::kClaimed
+                                  : miss.take == Take::kFailed ? sync_build_log::Why::kAgain
+                                                               : sync_build_log::Why::kNew;
+  // Whether the draw's own rule would have let it wait for a builder thread (asked only for a line that is written).
+  const bool skippable = miss.deferral && miss.deferral->may_skip && miss.deferral->may_skip(miss.deferral->context);
+  REXLOG_INFO("{}", sync_build_log::FormatBuild(n, frame_, ns, why, WordsOf(key), skippable));
+}
+
+void Pipelines::LogSyncWait(const PipelineKey& key, const char* source, uint64_t ns) {
+  const uint64_t n = sync_log_.NoteWait(ns);
+  if (sync_build_log::LogThis(n)) {
+    REXLOG_INFO("{}", sync_build_log::FormatWait(n, frame_, ns, source, WordsOf(key)));
+  }
+}
+
+void Pipelines::NoteHandover(const PipelineKey& key, const char* source, bool raised, bool made_here,
+                             uint64_t waited_ns) {
+  if (!raised && !made_here) {
+    return;
+  }
+  const uint64_t n = ++handovers_;
+  made_here_too_ += made_here ? 1u : 0u;
+  if (sync_build_log::LogThis(n)) {
+    REXLOG_INFO("{}", sync_build_log::FormatHandover(n, frame_, waited_ns, source, raised, made_here,
+                                                     WordsOf(key)));
+  }
+}
+
+void Pipelines::RaiseWorker(int32_t index) {
+  const uint32_t started = workers_started_.load(std::memory_order_acquire);
+  if (index < 0 || uint32_t(index) >= started || !worker_raised_) {
+    return;
+  }
+  larecomp::os::SetThreadIntent(workers_[size_t(index)], larecomp::os::ThreadIntent::kNormal);
+  // After the raise, so that the worker's own re-lowering (at its next entry) cannot come before it.
+  worker_raised_[size_t(index)].store(true, std::memory_order_release);
+}
+
+bool Pipelines::WaitForBuild(const std::atomic<uint8_t>& state, const std::atomic<int32_t>& builder,
+                             bool may_make_here, bool* raised) {
+  const auto began = std::chrono::steady_clock::now();
+  pipeline_wait::Facts facts;
+  facts.may_make_here = may_make_here;
+  std::unique_lock<std::mutex> lock(precache_mutex_);
+  for (;;) {
+    if (state.load() != kBuilding) {
+      return true;
+    }
+    facts.waited_ms = uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::steady_clock::now() - began)
+                                   .count());
+    const int32_t who = builder.load(std::memory_order_acquire);
+    facts.builder_known = who >= 0;
+    switch (pipeline_wait::Next(facts)) {
+      case pipeline_wait::Step::kMakeHere:
+        return false;
+      case pipeline_wait::Step::kRaise:
+        facts.raised = true;
+        *raised = true;
+        RaiseWorker(who);
+        break;
+      case pipeline_wait::Step::kKeepWaiting:
+        break;
+    }
+    precache_done_.wait_for(lock, std::chrono::milliseconds(pipeline_wait::kSliceMs),
+                            [&] { return state.load() != kBuilding; });
+  }
+}
+
 plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const PipelineInputs& inputs,
                                               Miss& miss, bool* pending) {
+  const bool has_fallback = miss.deferral && miss.deferral->has_fallback;
   // A background build asked for earlier, then the precache list's entry.
   if (!requests_.empty()) {
     if (plume::RenderPipeline* requested = TakeRequested(key, miss)) {
@@ -1950,7 +2431,7 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       return nullptr;
     case Take::kNone:
       // Nobody has it: a worker makes it when the draw may wait for it.
-      if (MaySkip(miss) && StartRequest(key, inputs)) {
+      if (MaySkip(miss) && StartRequest(key, inputs, has_fallback)) {
         *pending = true;
         return nullptr;
       }
@@ -1976,16 +2457,18 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       pipeline = device_->CreateGraphicsPipeline(desc, "guest pipeline");
     }
   }
-  stats_.create_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now() - t0)
-                                   .count());
+  const uint64_t built_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                         std::chrono::steady_clock::now() - t0)
+                                         .count());
+  stats_.create_ns += built_ns;
   if (pipeline) {
     ++stats_.created;
+    LogSyncBuild(key, miss, built_ns);  // the same builds as the window lines' "+N created"
     if (persist_) {
       RecordPipeline(key, *inputs.input_layout);
     }
   } else {
-    LogFailure(key, vs_result, ps_result);
+    LogFailure(key, vs_result, ps_result, has_fallback);
   }
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));

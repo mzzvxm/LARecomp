@@ -2,137 +2,53 @@
 // renderer.h and gpu.h.
 
 #include "renderer.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <format>
 #include <memory>
+#include <mutex>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/runtime.h>
-#include <rex/system.h>
-#include <rex/ui/keybinds.h>
-#include <rex/ui/window.h>
+#include "settings/larecomp_settings.h"
+#include "render_wait_rules.h"
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/platform/native_window.h>
+#include <rex/platform/process.h>
+#include <rex/ui/ui_system.h>
 
 #include "backend.h"
 #include "device_fault_format.h"
+#include "display_refresh.h"
 #include "gpu.h"
+#include "gi_setting.h"
+#include "citypack/pack_format.h"
 #include "guest_capture.h"
 #include "hdr.h"
 #include "native_gfx/guest/guest_fence.h"
 #include "native_gfx/guest/occlusion.h"
 #include "native_gfx/guest/vblank_probe.h"
 #include "native_gfx/nocp/guest_gpu.h"
+#include "native_gfx/nocp/nocp_driver.h"
+#include "renderer_choice.h"
+#include "choice_box.h"
+#include "renderer_fallback.h"
+#include "rt_bench.h"
+#include "rt_tier.h"
+#include "shutdown_rules.h"
 #include "native_window.h"
+#include "ray_regen.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "latency.h"  // after the others: keeps this hunk apart from the neighbouring includes
+#include "mc_engine/display/display_mode.h"
 #include "mc_engine/display/ultrawide.h"
 #include "watch.h"
 
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu, true, "MCLA/GPU",
-    "Render with the Plume renderer (src/gpu) instead of the legacy D3D12 runtime. Needs "
-    "mcla_native_gfx_nocp = true and mcla_native_gfx = false: it owns the window's swap chain, so "
-    "neither the SDK presenter nor the legacy runtime can run beside it. Since milestone M4.6 it "
-    "draws the guest's frames: draws into the EDRAM targets, textures from guest memory and "
-    "from resolves, the front buffer through the display's gamma table. Not yet (logged when "
-    "met): resolves written back into guest memory for the CPU to read (photos, vinyls) and "
-    "memory read in another shape than it was resolved in -- milestone M5. "
-    "")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_vsync, false, "MCLA/GPU",
-                    "Present on vertical blank. Read every frame.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_pass_timing, false, "MCLA/GPU",
-    "Measure GPU time per pass: a timestamp at every pass boundary (target change, resolve, "
-    "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
-    "A measurement for the performance work, off by "
-    "default.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_wait, false, "MCLA/GPU",
-    "Pace presents with the swap chain's latency wait (DXGI waitable object / "
-    "VK_KHR_present_wait) when the device has it. On D3D12 Plume then presents with sync "
-    "interval 0 and the wait alone paces the frame, so measure before turning it on.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(mcla_gpu_adapter, "", "MCLA/GPU",
-                      "Adapter name to create the device on. Empty: on D3D12 the adapter Windows' "
-                      "graphics setting for this app names, else the high-performance GPU; on "
-                      "Vulkan Plume picks, or the GPU graphics_backend auto chose Vulkan for. The "
-                      "emulated GPU (RENDERER: XENIA) runs on the same one unless d3d12_adapter or "
-                      "vulkan_device is set.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_verify_constants, false, "MCLA/GPU",
-    "Compare every 64-byte block of both constant banks on every draw, not only the blocks the "
-    "guest's dirty masks name, and send (and count) any that changed without its dirty bit. "
-    "Costs guest CPU per draw. Off by default since M3 measured no block outside the masks; the "
-    "guest's XXH3 of both banks every 32 draws still checks the rebuilt banks "
-    ".")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_validate, false, "MCLA/GPU",
-    "Run the milestone M3 validator on every record besides the replay: per-record counters and "
-    "the mcla_gpu_validation_*.csv files next to the executable. Decodes every draw a second "
-    "time on the render thread (3.5-7 ms/frame measured in M3).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_batch_draws, 0, "MCLA/GPU",
-    "Submit the guest frame's command list to the GPU every this many prepared draws, unfenced, "
-    "and continue in a new list (0: one submission per guest frame, the default). For measuring "
-    "submission batching.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_release, true, "MCLA/GPU",
-    "Release the guest's Swap as soon as the render thread has read the last guest memory a "
-    "present needs (after the scene's end-of-frame work and the front buffer's texture), and "
-    "before it submits the frame and presents. Without it the guest waits for the whole present, "
-    "about 0.2 ms a frame at 240 FPS. Not used with mcla_gpu_vsync, nor when the previous present "
-    "took longer than 1 ms after that point (the GPU is behind): the guest then waits as before, "
-    "so it never runs more than that ahead.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_present_release_check, false, "MCLA/GPU",
-    "Diagnostic, with mcla_gpu_present_release: checks what that rests on. It releases the guest at "
-    "every guest present (also when the GPU is behind), and from the release to the end of the "
-    "present it counts, and logs the first 16, each read or write of guest memory by the render "
-    "thread. The count is in the '[gpu] present release:' line at shutdown; it must be 0.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(mcla_gpu_debug_layer, false, "MCLA/GPU",
-                    "Enable the D3D12 debug layer before the device exists and log its warnings "
-                    "and errors. Needs D3D12SDKLayers.dll from the same Agility SDK release as "
-                    "D3D12\\D3D12Core.dll, placed next to it (the system's copy belongs to the OS "
-                    "runtime). Vulkan validation is a property of a Debug build of Plume and "
-                    "cannot be switched on here.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DECLARE(bool, mcla_native_gfx);
-REXCVAR_DECLARE(bool, mcla_native_gfx_nocp);
-REXCVAR_DECLARE(bool, mcla_gpu_memory_census);
-REXCVAR_DECLARE(bool, mcla_gpu_scene_profile);
 
 namespace {
 
@@ -160,9 +76,79 @@ void PublishWindowSize(uint32_t width, uint32_t height) {
 }
 
 // The folder the app wants the shader packs in (gpu.h SetShaderPackFolder); empty: the default.
-std::filesystem::path g_shader_pack_folder;
+std::filesystem::path& g_shader_pack_folder = larecomp::Leak<std::filesystem::path>();
 // The app's say on attaching the packs that are in place at Startup (gpu.h SetShaderPackGate).
-std::function<bool()> g_shader_pack_gate;
+std::function<bool()>& g_shader_pack_gate = larecomp::Leak<std::function<bool()>>();
+// The app's say on the city pack (gpu.h SetCityPackHooks): set before Startup, read on the render thread. Never destroyed (EXIT-HARD), like the gate above.
+mcla::gpu::CityPackHooks& g_city_pack_hooks = larecomp::Leak<mcla::gpu::CityPackHooks>();
+
+// Names the renderer teardown's slow stages. About one test run in 90 took 2.7 to 4.7 s to get from "pipelines: ... written" to
+// "renderer shut down" (the 2026-11-21 stack runs: all of them with another game on the same GPU, none of 103 alone), and the 5 s close
+// watchdog (larecomp_app.cpp) ended two of them; no line said which stage waited. Stage(what) is called where a stage BEGINS: the stage
+// before it ends there and is logged when it took kSlowMs or more. Done() ends the last one. One thread uses it (Shutdown's).
+//
+// It also publishes where the shutdown is (gpu.h ReadShutdownProgress), for the close watchdog: a close whose renderer is moving, or is inside
+// the driver's own teardown call, is not hung (close_watchdog.h, VK-SLOW-CLOSE). The published values are plain atomics read by one other
+// thread; a read that catches a stage change half done names a neighbouring stage, which the watchdog's line can afford.
+constexpr int kShutdownNotStarted = 0;
+constexpr int kShutdownRunning = 1;
+constexpr int kShutdownFinished = 2;
+std::atomic<int> g_shutdown_state{kShutdownNotStarted};
+std::atomic<const char*> g_shutdown_stage{nullptr};  // static text
+std::atomic<bool> g_shutdown_driver_call{false};
+std::atomic<int64_t> g_shutdown_moved{0};  // steady_clock ticks of the last change of stage
+
+int64_t SteadyTicks() {
+  return std::chrono::steady_clock::now().time_since_epoch().count();
+}
+
+void WaitForPresentDeadline(int64_t due) {
+  if (mcla::gpu::render_wait::ShouldSpin(larecomp::settings::render_wait_mode.Get())) {
+    mcla::gpu::WaitUntilQpc(due);
+  } else {
+    mcla::gpu::BlockUntilQpc(due);
+  }
+}
+
+class ShutdownClock {
+ public:
+  ShutdownClock() { Publish(kShutdownRunning, nullptr, false); }
+
+  // `driver_call`: the stage is one call into the graphics driver, which returns by itself (the device's own release), so the close
+  // watchdog gives it more time than a stage of ours that may be waiting for something that never comes.
+  void Stage(const char* what, bool driver_call = false) {
+    End();
+    current_ = what;
+    Publish(kShutdownRunning, what, driver_call);
+  }
+
+  void Done() {
+    End();
+    current_ = nullptr;
+    Publish(kShutdownFinished, nullptr, false);
+  }
+
+ private:
+  void End() {
+    const auto now = std::chrono::steady_clock::now();
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now - last_).count();
+    if (current_ && ms >= kSlowMs) {
+      REXLOG_INFO("[gpu] shutdown: {} took {} ms", current_, ms);
+    }
+    last_ = now;
+  }
+
+  static void Publish(int state, const char* stage, bool driver_call) {
+    g_shutdown_stage.store(stage, std::memory_order_relaxed);
+    g_shutdown_driver_call.store(driver_call, std::memory_order_relaxed);
+    g_shutdown_moved.store(SteadyTicks(), std::memory_order_relaxed);
+    g_shutdown_state.store(state, std::memory_order_release);
+  }
+
+  static constexpr int64_t kSlowMs = 250;
+  const char* current_ = nullptr;
+  std::chrono::steady_clock::time_point last_ = std::chrono::steady_clock::now();
+};
 
 }  // namespace
 
@@ -176,7 +162,7 @@ Renderer::~Renderer() {
   Shutdown();
 }
 
-bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
+bool Renderer::Initialize(const rex::NativeWindow& window, const Options& options,
                           std::shared_ptr<OverlayChannel> overlay_channel,
                           std::shared_ptr<OverlayHost> overlay_host) {
   if (initialized_) {
@@ -235,8 +221,7 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     uint32_t width = swap_chain_.width();
     uint32_t height = swap_chain_.height();
     if (width == 0 || height == 0) {
-      width = window->GetActualPhysicalWidth();
-      height = window->GetActualPhysicalHeight();
+      GetWindowPixelSize(window, width, height);
       if (width == 0 || height == 0) {
         REXLOG_WARN("[gpu] the window has no size yet: a render scale taken from it measures it "
                     "as the game's {}x{}",
@@ -263,24 +248,86 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // The ambient occlusion lists its pipelines too (ao.h); it never fails the renderer.
     ao_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, resolve_);
     shafts_.Initialize(passes_, edram_, pass_timing_);  // the sun shafts too (shafts.h)
+    volumetrics_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the volumetric light (volumetrics.h)
+    volumetrics_.SetInputSource(&vol_inputs_);  // its street lamps and headlights are the producer's (volumetrics_inputs.h)
+#if __has_include("local_shadow.h")
+    vol_inputs_.SetLocalShadow(&local_shadow_);  // and the headlights are shadowed by the replay's maps (local_shadow.h)
+#endif
+    gbuffer_.Initialize(passes_, edram_, pass_timing_);  // and the G-buffer's sidecar (gbuffer.h): made on the first draw that carries it
+    screen_.Initialize(device_, heap_, passes_, edram_, pass_timing_);  // and the shared screen products (screen_shared.h): the AO's depth chain published, the Hi-Z, made only while wanted
+    screen_.ListChainAtStart(ao_.ChainKindsAtStart());  // the depth chain's and colour chain's pipelines the AO's start choices use: in the boot precache, as the AO's own table had them before SS-2 (SS-PRECACHE)
+    ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
+    rr_guides_.Initialize(device_, frames_, heap_, passes_, pass_timing_);  // and DLSS Ray Reconstruction's guide pass (rr_guides.h): the layouts and shaders; the pipelines only when it is first wanted
+    rr_guides_.SetGBuffer(&gbuffer_);
     car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
     car_frame_.Initialize(guest_memory_);  // and the player car's draws (car_frame.h), which the car effects ask for
+    mirror_glass_.Initialize(car_frame_);  // and the side mirrors' glass finder, a listener of the car's draws (mirror_glass.h; debug only, idle while mcla_gpu_mirror_glass is off)
+    headlights_.Initialize(guest_memory_);  // and the cars' headlights (headlight_rig.h), which the lit shaders' variant reads
     car_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the player car's sun shadow map (car_shadow_map.h)
     car_shadow_.SetCarFrame(&car_frame_);
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
+    mirror_view_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the shared rear view (mirror_view.h): nothing is made until mcla_gpu_mirror_view is on
+    mirror_overlay_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the side mirrors' glass overlay (mirror_overlay.h): its pipelines are listed with the precache where mcla_gpu_mirror_overlay is on
+    // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
+    local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
+    // The one shadow atlas (shadow_atlas.h): the replay is its first provider and the light manager reads its published form; both use it only with mcla_gpu_light_frame bit 8 (LU-5).
+    shadow_atlas_.Initialize(device_, frames_, heap_);
+    local_shadow_.SetShadowAtlas(&shadow_atlas_);
+    // The street lamps' shadows (lamp_shadows.h, perf/LAMP-SHADOWS-2.md): a second provider of the atlas, joined only while mcla_gpu_lamp_shadows is on and the game's lamp list has lamps (by night); the
+    // replay draws their passes and the deferred light pass reads their views. Nothing runs with the setting off (the default).
+    lamp_shadows_.SetShadowAtlas(&shadow_atlas_);
+    local_shadow_.SetLampShadows(&lamp_shadows_);
+    light_manager_.SetShadowAtlas(&shadow_atlas_);
+    // The passive light manager (light_manager.h): off unless mcla_gpu_lights_census is set; it reads the rig's lights, the replay's maps and the volume's inputs and changes none of them.
+    light_manager_.Initialize(upload_, headlights_, local_shadow_);
+    // The one picker of the lights (light_pick.h, LIGHT-UNIFY U3): the rig's four lights and the cars that get shadow views are picked by the manager's picker (mcla_gpu_light_pick).
+    headlights_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightPicker(&light_manager_.Pickers());
+    local_shadow_.SetLightManager(&light_manager_);  // the replay picks from the manager's frame of lights when mcla_gpu_light_frame bit 4 says so (LIGHT-UNIFY U4c)
+    vol_inputs_.SetLightManager(&light_manager_);
+    // The deferred local light pass (local_lights.h): makes nothing until mcla_gpu_local_lights is on; reads the G-buffer's planes, the shared products' camera, the AO's pose and the manager's frame.
+    local_lights_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    local_lights_.SetGBuffer(&gbuffer_);
+    local_lights_.SetScreenShared(&screen_);
+    local_lights_.SetAmbientOcclusion(&ao_);
+    local_lights_.SetLightManager(&light_manager_);
+    local_lights_.SetLampShadows(&lamp_shadows_);
+    // The probe field's apply (gi_apply.h, CITY-RT M3 G3): makes nothing until a probe field runs (SetGiField: the integration, G4, gives it); reads the G-buffer's RT1 and RT2, the shared products' depth
+    // and camera, and the AO's visibility, light and pose. The AO asks it for the screen-space bounce light's share (SetGiApply).
+    gi_apply_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);
+    gi_apply_.SetGBuffer(&gbuffer_);
+    gi_apply_.SetScreenShared(&screen_);
+    gi_apply_.SetAmbientOcclusion(&ao_);
+    gi_apply_.SetCarFrame(&car_frame_);  // the player's box, for the cabin term (gi_cabin_rules.h)
+    ao_.SetGiApply(&gi_apply_);
+    // The probe field (gi_field.h, CITY-RT M3 G1): its layouts and shaders now, its pipelines listed with the precache below when the setting is not off at the start, its textures made when a frame
+    // first wants them. The integration (gi_integration.h, G4) gives it the setting and the frame (its city scene is set below, with the city block); the apply reads it.
+    gi_field_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_setting::Current().level != gi::Level::kOff);
+    gi_apply_.SetGiField(&gi_field_);
     // The player's car as ray tracing structures (car_rt_scene.h), where the device can trace rays inline; it builds nothing until an effect
     // asks for it. Initialized before the effects that use it (the ray traced car reflections).
     {
       const bool vulkan = ActiveBackend() == Backend::kVulkan;
-      const std::string why = CarRtUnsupportedReason(device_.capabilities(), vulkan);
+      const std::string why = CarRtUnsupportedReason(device_.capabilities(), vulkan, device_.wave_ops());
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
-        REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
-                    "structures while an effect asks for them",
-                    device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+        if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) {
+          // The device can trace, but the ray tracing tier (rt_tier.h) is none: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the
+          // shaders, far too slowly) or the Low class (shared memory). The effects stay off and the pause row does not offer RAY TRACED (CarRtReflAvailable);
+          // the structures are still set up, so mcla_gpu_rt_tier can force a tier for a test. The launcher reads this line like the others.
+          REXLOG_INFO("[gpu] car ray tracing: not available: the ray tracing tier is none on this graphics card or class (see the '[gpu] ray tracing tier' line), "
+                      "so the ray traced car effects stay off");
+        } else if (vulkan) {
+          REXLOG_INFO("[gpu] car ray tracing: available (Vulkan ray queries, VK_KHR_ray_query): the player's car is built into ray tracing "
+                      "structures while an effect asks for them");
+        } else {
+          REXLOG_INFO("[gpu] car ray tracing: available (DirectX Raytracing 1.1, shader model {}.{}): the player's car is built into ray tracing "
+                      "structures while an effect asks for them",
+                      device_.capabilities().shaderModel >> 4, device_.capabilities().shaderModel & 0xF);
+        }
       } else {
         REXLOG_WARN("[gpu] car ray tracing: the device can trace rays but the structures could not be set up: not available");
       }
@@ -289,6 +336,78 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // and before the precache starts.
     car_rt_refl_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, car_refl_.ListedAtStart());
     car_refl_.SetCarRtRefl(&car_rt_refl_);
+    // The side mirrors, ray traced (car_mirror_rt.h): the same structures, listed with the start's precache where the pass is wanted at the start.
+    car_mirror_.Initialize(device_, frames_, heap_, passes_, pass_timing_, edram_, car_rt_);
+    // And the ray traced occlusion and sun term around the car (ao.h, car_rt_ao.h): the occlusion's own pass, with the same structures.
+    ao_.InitializeCarRt(&car_rt_, &car_frame_);
+    // === CITY-RT BLOCK (city_rt_scene.h, city_rt_shadow.h; CITY-RT M1): the city's geometry (the city pack the launcher builds, in the shader pack folder's `city` folder) as ray tracing
+    // structures that join the car scene's top level, and the sun's shadows traced against them, read by the contact march. Both make nothing until the setting asks (mcla_gpu_rt_shadows;
+    // auto is the High class), and nothing at all without ray queries.
+    {
+      city_rt_.Initialize(device_, frames_, upload_, pass_timing_, CityPackFolder() / larecomp::citypack::kPackFileName, gpu_class::Current());
+      if (g_city_pack_hooks.state) {
+        // The app decides whether the pack in place is the player's (stat only) and builds it in the background when it is not; without hooks (a build with no app) the pack is opened as it is.
+        city_rt_.SetPackProbe(g_city_pack_hooks.state, g_city_pack_hooks.request_build);
+      }
+      // CITY-RT M2 H3: the city's hit data (the file the hit data's builder writes beside the pack; nothing is made until a consumer wants it) and the scene service that every consumer asks for
+      // the top level, the structures and the hit data (rt_scene_service.h).
+      city_hit_.Initialize(device_, frames_, upload_, pass_timing_, heap_, CityPackFolder() / larecomp::citypack::kHitFileName, CityPackFolder() / larecomp::citypack::kTexFileName, gpu_class::Current());
+      if (g_city_pack_hooks.hit_state) {
+        // The app decides whether the hit data in place is the player's (stat only) and builds it in the background when it is not, once a consumer wants it and the pack is open.
+        city_hit_.SetFileProbe(g_city_pack_hooks.hit_state, g_city_pack_hooks.request_hit_build);
+      }
+      city_rt_.SetHitScene(&city_hit_);
+      rt_scene_.Initialize(&car_rt_, &city_rt_, &city_hit_);
+      ao_.InitializeRtAo(car_rt_, &city_rt_, rt_scene_);
+      car_rt_refl_.SetSceneService(&rt_scene_);  // CITY-RT M2 R1/R2: the city in the car paint's reflections asks the service for the structures, the hit data and the textures (city_refl.h)
+      // CITY-RT FRAME (rt_world_frame.h): the world's rows and the lamps of every frame that has a top level, car or no car, in t10 and t11 of the car scene's set (the scene's builder tells it the view and
+      // binds the buffers; the scene writes them at the trigger). The AO's draw hook gives it the light, the car frame the sky and the environment map, the shared products the exposure, the pack the lamps.
+      {
+        RtWorldFrame::Sources world_sources;
+        world_sources.ao = &ao_;
+        world_sources.cars = &car_frame_;
+        world_sources.screen = &screen_;
+        world_sources.city = &city_rt_;
+        world_sources.service = &rt_scene_;
+        world_sources.lights = &light_manager_;  // GI-BOUNCE-RT: the headlights of the frame and the cars' lamps, for the emitters
+        rt_world_.Initialize(device_, frames_, world_sources);
+        car_rt_.SetWorldFrame(&rt_world_);
+      }
+      car_rt_.SetCityScene(&city_rt_);
+      car_rt_.SetService(&rt_scene_, &city_hit_);
+      car_mirror_.SetService(&rt_scene_);  // MIRROR-CITY: the side mirrors' wants of the city (car_mirror_rt.h, Consumer::kCityMirror)
+      city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
+      ao_.SetCityRtShadow(&city_shadow_);
+      // CITY-RT R4: the screen-space reflections' ray traced fallback (ssr_rt.h): the SSR host pass layout with the output set and this scene's ray tracing set; nothing is made where the device cannot trace.
+      ssr_.InitializeRt(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &rt_scene_, &rt_world_);
+      // The probe field's integration (gi_integration.h): the field needs M1's structures for its safe range and (G2) its rays.
+      gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);
+      // The probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend, in the top level the car scene builds. Its pipelines are listed with the precache when the setting is not off at
+      // the start as it will be once the update is built in; given to the integration only where the device can trace and its layouts and shaders exist (else the row says NOT READY and no field is made).
+      {
+        const bool update_listed = gi_setting::Decide(gpu_class::Known() ? gpu_class::Current() : gpu_class::GpuClass::kLow, gpu_class::CurrentRtTier(), larecomp::settings::mcla_gpu_rt_gi.Get(), true).level !=
+                                   gi::Level::kOff;
+        gi_update_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_scene_, rt_world_, update_listed);
+        if (gi_update_.available()) {
+          gi_integration_.SetUpdate([this](plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame) { gi_update_.Record(list, frame_slot, update_frame); },
+                                    [this](gi::Level level) { gi_update_.OnWant(level); });
+        }
+        // The per-pixel detail pass (gi_pixel.h, CITY-RT M3 G5): the apply runs it, at ULTRA on a strong card only. Its pipelines are made in the background the first time it is wanted; nothing is made now.
+        gi_pixel_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_world_);
+        if (gi_pixel_.available()) {
+          gi_apply_.SetGiPixel(&gi_pixel_);
+        }
+        // RT-LIGHTS-D1 (rt_lights.h, debug only): the ray traced visibility of the top K lights, run by the deferred light pass; makes nothing until mcla_gpu_rt_lights asks (its pipelines are listed with the
+        // precache the first time it is wanted).
+        rt_lights_.Initialize(device_, frames_, heap_, passes_, pass_timing_, car_rt_, rt_world_, rt_scene_);
+        if (rt_lights_.available()) {
+          local_lights_.SetRtLights(&rt_lights_);
+        }
+      }
+    }
+    // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
+    // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
+    rt_bench::RunIfWanted(device_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
     // the renderer starts and the guest boots.
@@ -304,13 +423,36 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     scene_.SetOcclusion(&occlusion_);
     scene_.SetTemporal(&temporal_);
     scene_.SetAmbientOcclusion(&ao_);
+    ao_.SetCarFrame(&car_frame_);
     ao_.SetCarShadowMap(&car_shadow_);  // the contact shadows read the car shadow map (car_shadow_map.h)
+    ao_.SetGBuffer(&gbuffer_);  // the occlusion, the bounce light and the contact shadows ask for the G-buffer's normal plane and read it (ao.h, GB-E)
+    ao_.SetScreenShared(&screen_);  // ... and hand their depth chain to the shared screen products (ao.h, screen_shared.h)
+    car_refl_.SetScreenShared(&screen_);  // ... and the car self-reflection reads the frames' cameras and the colour capture from them (car_selfrefl.h, SS-1)
     scene_.SetSunShafts(&shafts_);
+    scene_.SetVolumetrics(&volumetrics_);
+    scene_.SetGBuffer(&gbuffer_);
+    scene_.SetScreenShared(&screen_);
+    ssr_.SetScreenShared(&screen_);  // the reflections read the Hi-Z, colour_post and the camera of the shared products, the G-buffer's planes and the AO's camera (ssr.h)
+    ssr_.SetGBuffer(&gbuffer_);
+    ssr_.SetAmbientOcclusion(&ao_);
+    scene_.SetScreenReflections(&ssr_);
     scene_.SetCarSelfRefl(&car_refl_);
     scene_.SetCarDump(&car_dump_);
     scene_.SetCarFrame(&car_frame_);
+    scene_.SetMirrorGlass(&mirror_glass_);
+    scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
+    scene_.SetMirrorView(&mirror_view_);
+    scene_.SetMirrorOverlay(&mirror_overlay_);
+    scene_.SetLocalShadow(&local_shadow_);
+    scene_.SetLightManager(&light_manager_);
+    scene_.SetLocalLights(&local_lights_);
+    scene_.SetGiApply(&gi_apply_);
+    scene_.SetGiIntegration(&gi_integration_);
+    scene_.SetRtWorldFrame(&rt_world_);
     scene_.SetCarRtScene(&car_rt_);
+    scene_.SetCarMirrorRt(&car_mirror_);
+    car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
                              swap_chain_.format(), swap_chain_.hdr()) &&
@@ -335,28 +477,57 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
     temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
                          edram_);
+    temporal_.SetRrGuidePass(&rr_guides_);  // the upscale runs the guide pass where Ray Reconstruction (or a guide view) wants it
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
     fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
                    &resize_requested_);
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    // The city's hit data pool (64 to 256 MiB) is not something the response can release (the structures built over it would be rebuilt): its line names it.
+    vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); });
+    // The headlight shadow maps' atlas (the replay's own or the shared one: local_shadow.h HeldBytes counts both) is memory the response cannot release either: the lines name it.
+    vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
+    // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
+    vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
+    vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
+    vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); });
+    vram_.AddHolder("rtao", [this] { return ao_.RtAoHeldBytes(); });
+    vram_.AddHolder("ray traced light visibility", [this] { return rt_lights_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
                       swap_chain_);
     timing_.Initialize(device_);
-    pass_timing_.Initialize(device_, REXCVAR_GET(mcla_gpu_pass_timing));
+    pass_timing_.Initialize(device_, larecomp::settings::mcla_gpu_pass_timing.Get());
     markers_.Initialize(device_);
     capture_.Initialize();
-    census_.SetEnabled(REXCVAR_GET(mcla_gpu_memory_census));
-    validate_ = REXCVAR_GET(mcla_gpu_validate);
-    batch_draws_ = REXCVAR_GET(mcla_gpu_batch_draws);
-    profile_records_ = REXCVAR_GET(mcla_gpu_scene_profile);
-    release_early_ = REXCVAR_GET(mcla_gpu_present_release);
+    census_.SetEnabled(larecomp::settings::mcla_gpu_memory_census.Get());
+    validate_ = larecomp::settings::mcla_gpu_validate.Get();
+#ifndef NDEBUG
+    teardown_diagnostics_ = true;  // Debug Plume builds request the graphics API's validation layer.
+#else
+    teardown_diagnostics_ = validate_ || options.device.debug_layer ||
+        (ActiveBackend() == Backend::kVulkan &&
+         (std::getenv("VK_INSTANCE_LAYERS") || std::getenv("VK_LOADER_LAYERS_ENABLE")));
+#endif
+    batch_draws_ = larecomp::settings::mcla_gpu_batch_draws.Get();
+    profile_records_ = larecomp::settings::mcla_gpu_scene_profile.Get();
+    if (larecomp::settings::debug_menu.Get() && larecomp::settings::mcla_test_present_nowait.Get()) {
+      present_nowait_ = ActiveBackend() == Backend::kD3D12;
+      REXLOG_INFO("[gpu] present nowait test: {}", present_nowait_ ? "enabled on D3D12" : "D3D12 only");
+    }
+    release_early_ = larecomp::settings::mcla_gpu_present_release.Get();
     // The swap chain exists and the render thread, which marks the frames, has not started.
     latency::Initialize(device_, swap_chain_);
-    check_release_ = release_early_ && REXCVAR_GET(mcla_gpu_present_release_check);
+    check_release_ = release_early_ && larecomp::settings::mcla_gpu_present_release_check.Get();
+#if defined(_WIN32)
+    const bool vulkan = ActiveBackend() == Backend::kVulkan;
+    const auto adapter = vulkan && device_.device() ? backend::QueryAdapterIds(device_.device())
+                                                    : backend::AdapterIds{};
+    may_use_composed_copy_ = render_wait::MayUseComposedCopy(true, vulkan, adapter.vendor_id);
+    UpdateComposedPresentCeiling();
+#endif
     ok = thread_.Start(*this, kIdlePeriod);
   }
   if (!ok) {
@@ -368,14 +539,40 @@ bool Renderer::Initialize(rex::ui::Window* window, const Options& options,
     fg_.Shutdown();
     dlssg_.Shutdown(swap_chain_);
     temporal_.Shutdown();
+    rt_lights_.Shutdown();  // RT-LIGHTS-D1: holds pointers to the car scene, the world frame and the scene service: before them
+    gi_pixel_.Shutdown();  // CITY-RT M3 G5: holds pointers to the field, the scenes, the world frame and the lights, and the apply holds it: before them
+    rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
+    ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+    rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
+    gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+    gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
+    gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+    gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
+    local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
     ao_.Shutdown();
+    screen_.Shutdown();  // the AO holds a pointer to it: after the AO
     shafts_.Shutdown();
+    volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
+    light_manager_.Shutdown();  // after the volume, whose inputs it looks at
+    lamp_shadows_.Reset();  // leaves the shadow atlas and the game's lamp list's hook before the replay (its owner) and the atlas go
+    local_shadow_.Shutdown();
+    shadow_atlas_.Shutdown();  // after the replay, its provider
+    gbuffer_.Shutdown();
+    mirror_overlay_.Shutdown();
+    mirror_view_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
     car_dump_.Shutdown();
+    city_shadow_.Shutdown();  // before the car scene it traces against and the pipelines' owner
+    rt_scene_.Shutdown();
+    city_rt_.Shutdown();
+    city_hit_.Shutdown();  // after the structures that evicted their blocks from it
     car_rt_refl_.Shutdown();
+    car_mirror_.Shutdown();  // after the host builder was stopped (CarRtRefl::Shutdown): its functions name this object's layout and shaders
     car_rt_.Shutdown();
+    mirror_glass_.Shutdown();
     car_frame_.Shutdown();
+    headlights_.Shutdown();
     flicker_probe_.Shutdown();
     capture_readback_.Shutdown();
     hdr_tone_.Shutdown();
@@ -477,22 +674,28 @@ void Renderer::BeginShutdown() {
   shutting_down_.store(true, std::memory_order_release);
 }
 
-void Renderer::Shutdown() {
+void Renderer::Shutdown(bool fast_exit) {
   BeginShutdown();
   if (!initialized_) {
     return;
   }
   initialized_ = false;
+  ShutdownClock clock;
   // 1. No more recording: the render thread finishes the command it is on and
   //    exits; producers and waiters are released. A thread that does not exit
   //    in time may still be inside any component, so nothing is destroyed.
+  clock.Stage("the render thread's stop");
   if (!thread_.Stop(kStopDeadline)) {
     REXLOG_ERROR("[gpu] renderer left alive after {} presents: its render thread is stuck",
                  presented_);
+    clock.Done();  // nothing more happens here: the close watchdog is not to wait for this shutdown
     return;
   }
   // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
+  clock.Stage("the frame generation pacer's stop");
   fg_.StopPacer();
+  clock.Stage("the final reports and the first idle wait");
+  ReportDroppedPresents(present_drops_.TakePending());
   if (release_early_) {
     REXLOG_INFO("[gpu] present release: {} of {} guest presents released the guest early{}",
                 early_releases_, guest_presents_,
@@ -530,6 +733,7 @@ void Renderer::Shutdown() {
   // 3. Reverse creation order; the GPU is idle, so components destroy their
   //    objects directly. Ordered teardown rather than reblue's deliberate leak:
   //    every Plume object here has a single owner destroyed before the device.
+  clock.Stage("the vendor calls, the captures, the timers and the frame generation");
   latency::Shutdown();  // the vendor's calls name the swap chain
   capture_.Shutdown();
   occlusion_.Shutdown();
@@ -538,16 +742,44 @@ void Renderer::Shutdown() {
   fg_.Shutdown();
   // DLSS frame generation: the proxy swap chain is destroyed and the plugin unloaded before
   // Streamline itself is shut down (temporal_.Shutdown below).
+  clock.Stage("DLSS frame generation and the upscaler (Streamline)");
   dlssg_.Shutdown(swap_chain_);
   temporal_.Shutdown();
+  clock.Stage("the effects, the targets and the memory");
+  rt_lights_.Shutdown();  // the same, RT-LIGHTS-D1 (rt_lights.h)
+  gi_pixel_.Shutdown();  // the same, CITY-RT M3 G5 (gi_pixel.h)
+  rr_guides_.Shutdown();  // it holds a pointer to the G-buffer: before it
+  ssr_.Shutdown();  // it holds pointers to the AO, the shared products and the G-buffer: before them
+  rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
+  gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
+  gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
+  gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
+  gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
+  local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
   ao_.Shutdown();
+  screen_.Shutdown();  // the AO holds a pointer to it: after the AO
   shafts_.Shutdown();
+  volumetrics_.Shutdown();  // before the headlight shadow maps it reads (volumetrics_inputs.h)
+  light_manager_.Shutdown();  // after the volume, whose inputs it looks at
+  lamp_shadows_.Reset();  // leaves the shadow atlas and the game's lamp list's hook before the replay (its owner) and the atlas go
+  local_shadow_.Shutdown();
+  shadow_atlas_.Shutdown();  // after the replay, its provider
+  gbuffer_.Shutdown();
+  mirror_overlay_.Shutdown();
+  mirror_view_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
   car_dump_.Shutdown();
+  city_shadow_.Shutdown();
+  rt_scene_.Shutdown();
+  city_rt_.Shutdown();
+  city_hit_.Shutdown();
   car_rt_refl_.Shutdown();
+  car_mirror_.Shutdown();  // after the host builder was stopped (CarRtRefl::Shutdown): its functions name this object's layout and shaders
   car_rt_.Shutdown();
+  mirror_glass_.Shutdown();
   car_frame_.Shutdown();
+  headlights_.Shutdown();
   flicker_probe_.Shutdown();
   capture_readback_.Shutdown();
   hdr_tone_.Shutdown();
@@ -560,24 +792,44 @@ void Renderer::Shutdown() {
   textures_.Shutdown();
   resolve_.Shutdown();
   resolve_memory_.Shutdown();
-  passes_.Shutdown();
+  clock.Stage("the host passes (the builders' join)");
+  passes_.Shutdown();  // the host pipeline builders are joined here: one in the middle of a driver compile is waited for
+  clock.Stage("the swap chain");
   edram_.Shutdown();
   swap_chain_.Shutdown();
+  clock.Stage("the pipelines (the precache's join, the cache file, the pipelines' release)");
   fg_.ReleaseQueue();  // the swap chain made on it is gone
   hdr::Stop();
   geometry_.Shutdown();
   upload_.Shutdown();
   pipelines_.Shutdown();
+  clock.Stage("the samplers, the shaders and the guest layout");
   samplers_.Shutdown();
   shaders_.Shutdown();
   guest_layout_.Shutdown();
-  // 4. A component shut down above can still retire a release, such as a bindless slot its
-  //    images held (DLSS frame generation's, while it was generating). The release writes the
-  //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
-  frames_.WaitIdle();
-  heap_.Shutdown();
-  frames_.Shutdown();
-  device_.Shutdown();
+  if (ShouldSkipDeviceTeardown(larecomp::settings::mcla_skip_gpu_teardown.Get(), fast_exit,
+                               teardown_diagnostics_,
+                               [this] { return device_.CheckLost("final teardown"); })) {
+    // The process-lifetime renderer still owns the frames, pending GPU retirements, heap and
+    // device. Leave them together for OS cleanup after the SDK shutdown and exit flushes.
+    // CHECK: exit status, saved data and close time with three games sharing the GPU on both APIs.
+    REXLOG_INFO("[gpu] shutdown: leaving the final GPU objects for process exit (mcla_skip_gpu_teardown)");
+  } else {
+    // 4. A component shut down above can still retire a release, such as a bindless slot its
+    //    images held (DLSS frame generation's, while it was generating). The release writes the
+    //    heap, so it runs here, before the heap goes; the GPU is idle, so nothing is waited for.
+    clock.Stage("the second idle wait");
+    frames_.WaitIdle();
+    clock.Stage("the bindless heap and the frames");
+    heap_.Shutdown();
+    frames_.Shutdown();
+    // The last stage is the driver's own: Device::Shutdown names its parts (the queue, the device with its memory allocator, the
+    // instance), each one call into the driver that returns by itself. It is where 1.4 to 4.7 s went in the slow closes of 11-20 to 11-22,
+    // with another game running (close_watchdog.h), so the close watchdog gives these calls more time than a stage of ours.
+    clock.Stage("the device (the driver's own teardown)", true);
+    device_.Shutdown([&clock](const char* part) { clock.Stage(part, true); });
+  }
+  clock.Done();
   overlay_host_.reset();
   REXLOG_INFO("[gpu] renderer shut down after {} presents ({} guest, {} idle, {} skipped)",
               presented_, guest_presents_, idle_presents_, skipped_);
@@ -718,6 +970,14 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       // the HUD, use the composite record as a one-way message to the render thread
       // (mc_engine/display/ultrawide.h, IsUiMessage): not a composition, no list to open.
       const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
+      if (mirror_view::IsMarker(bucket)) {
+        // The rear view mirror's phase (mirror_view.h): the markers need the open list (the view's pass, its resolve), unlike the UI messages below, which only set flags. They are on the
+        // same side channel (top byte 0x7F), so they are told first.
+        plume::RenderCommandList* list = OpenFrameList();
+        PerfScope label(markers_, list, mirror_view::IsBeginMarker(bucket) ? "MirrorViewBegin" : "MirrorViewEnd", PerfMarkers::kEvent);
+        scene_.OnMirrorMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, list);  // the begin's tag: the field this phase's camera was built with (MV-J2)
+        return;
+      }
       if (mc::ultrawide::IsUiMessage(bucket)) {
         scene_.OnUiMessage(bucket);
         return;
@@ -858,6 +1118,8 @@ void Renderer::SubmitFrameWithoutPresent() {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
+    gi_update_.OnSubmitted(slot);
+    gi_pixel_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
   frames_.Advance();
@@ -921,15 +1183,68 @@ bool Renderer::RebuildSwapChain() {
   return true;
 }
 
+#if defined(_WIN32)
+void Renderer::UpdateComposedPresentCeiling() {
+  if (!may_use_composed_copy_) {
+    return;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  if (now < composed_monitor_poll_) {
+    return;
+  }
+  const bool first = composed_monitor_poll_ == std::chrono::steady_clock::time_point{};
+  composed_monitor_poll_ = now + std::chrono::seconds(1);
+  // Win32 Vulkan present modes do not report DWM's composition path. Assume copy on this
+  // adapter/window combination, based on 78 of 78 RTX traces in VK-PRESENT-GDI.md.
+  const bool exclusive = mcla::display::WantedMode() == mcla::display::Mode::kExclusive;
+  const bool enabled = larecomp::settings::mcla_gpu_vk_present_pacing.Get();
+  const auto window = swap_chain_.window();
+  const uint32_t refresh_hz = enabled && !exclusive && window ? ReadDisplayRefreshHz(window) : 0;
+  const uint32_t ceiling = render_wait::ComposedPresentCeiling(exclusive, enabled, refresh_hz);
+  const uint32_t previous = composed_present_ceiling_.exchange(ceiling, std::memory_order_relaxed);
+  if (first || previous != ceiling) {
+    REXLOG_INFO("[gpu] Vulkan composed present ceiling: {} FPS (refresh {} Hz, exclusive {}, switch {})",
+                ceiling, refresh_hz, exclusive, enabled);
+  }
+}
+#endif
+
 void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
                           int64_t ready, uint64_t guest_present, uint64_t latency_frame) {
+  const bool nowait = present_nowait_ && !dlssg_.active();
+#if defined(_WIN32)
+  const uint32_t ceiling = composed_present_ceiling();
+  const bool pace_present = ceiling != 0 && !dlssg_.active();
+  if (pace_present) {
+    // The game clock normally sets the cadence. Guard late, unscheduled and idle presents at the
+    // actual call too, before acquiring the swap chain lock, so catch-up cannot bunch presents.
+    const int64_t earliest = render_wait::ComposedPresentDue(last_composed_present_, QpcFrequency(), ceiling);
+    if (QpcNow() < earliest) {
+      WaitForPresentDeadline(earliest);
+      due = earliest;
+    }
+  }
+#endif
   latency::OnPresentBegin(latency_frame);
-  const bool present_ok = swap_chain_.Present(image);
+#if defined(_WIN32)
+  if (pace_present) {
+    last_composed_present_ = QpcNow();
+  }
+#endif
+  const PresentResult result = swap_chain_.Present(image, nowait);
   latency::OnPresentEnd(latency_frame);
+  if (nowait) {
+    ReportDroppedPresents(present_drops_.OnPresent(result, PresentDrops::Clock::now()));
+  }
+  if (result == PresentResult::kDropped) {
+    // The render submission and its fence still live in the ring. No image was
+    // queued for display, so there are no present statistics for this frame.
+    return;
+  }
   if (dlssg_.active()) {
     dlssg_.AfterPresent();  // Streamline's status now and then
   }
-  if (!present_ok) {
+  if (result == PresentResult::kFailed) {
     // DXGI and Vulkan both report a chain that no longer matches the window
     // here; anything else that fails here is the device.
     if (!device_.CheckLost("swap chain present")) {
@@ -969,6 +1284,13 @@ void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, 
   }
 }
 
+void Renderer::ReportDroppedPresents(uint64_t count) const {
+  if (count != 0) {
+    REXLOG_INFO("[gpu] present nowait: dropped_present_count={} dropped_present_total={}",
+                count, present_drops_.total());
+  }
+}
+
 void Renderer::FlushDeferredPresent(bool wait) {
   if (!deferred_.pending) {
     return;
@@ -979,7 +1301,8 @@ void Renderer::FlushDeferredPresent(bool wait) {
     return;
   }
   if (wait) {
-    WaitUntilQpc(d.due);
+    // CHECK: verify presentation order when HDR or frame generation changes during a hold.
+    WaitForPresentDeadline(d.due);
   }
   PresentNow(d.image, PresentSource::kGuest, d.target, d.due, d.ready, d.guest_present,
              d.latency_frame);
@@ -1216,6 +1539,9 @@ void Renderer::ExecutePresent(PresentSource source) {
   } capture_scope{capture_readback_};
   // A held present goes first: its back buffer is the one ahead of this
   // frame's in the chain, and nothing else may touch the chain before it.
+#if defined(_WIN32)
+  UpdateComposedPresentCeiling();
+#endif
   FlushDeferredPresent(/*wait=*/true);
   tail_open_ = false;
   const latency::IdlePresentScope idle_scope(source == PresentSource::kIdle);
@@ -1247,7 +1573,7 @@ void Renderer::ExecutePresent(PresentSource source) {
   // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
   swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync()
                                     : (dlssg_.active() ? dlssg_.WantsVsync()
-                                                       : REXCVAR_GET(mcla_gpu_vsync)));
+                                                       : larecomp::settings::mcla_gpu_vsync.Get()));
   UpdateHdr();
   UpdateDisplayAspect();
 
@@ -1318,6 +1644,8 @@ void Renderer::ExecutePresent(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  gi_update_.OnSubmitted(slot);
+  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
 
   // A scheduled guest frame (gpu.h SetNextPresentTarget) goes to the screen at
@@ -1409,7 +1737,7 @@ bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, boo
     latency::SwapChainChange latency_change;
     swap_chain_.SetFactoryWrapper(on ? &dlss::UpgradeFactory : nullptr);
     result = swap_chain_.RecreateOn(nullptr, hdr,
-                                    on ? dlssg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync),
+                                    on ? dlssg_.WantsVsync() : larecomp::settings::mcla_gpu_vsync.Get(),
                                     on ? std::function<void()>{}
                                        : std::function<void()>([this] { dlssg_.BeforePlainChain(); }));
     latency_change.Replaced(swap_chain_);
@@ -1420,7 +1748,7 @@ bool Renderer::SwitchDlssFrameGeneration(DlssFrameGeneration::Change change, boo
     ok = false;
     latency::SwapChainChange latency_change;
     swap_chain_.SetFactoryWrapper(nullptr);
-    result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync),
+    result = swap_chain_.RecreateOn(nullptr, hdr, larecomp::settings::mcla_gpu_vsync.Get(),
                                     [this] { dlssg_.BeforePlainChain(); });
     latency_change.Replaced(swap_chain_);
   }
@@ -1479,7 +1807,7 @@ bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
     {
       latency::SwapChainChange latency_change;
       result = swap_chain_.RecreateOn(on ? fg_.present_queue() : nullptr, hdr,
-                                      on ? fg_.WantsVsync() : REXCVAR_GET(mcla_gpu_vsync));
+                                      on ? fg_.WantsVsync() : larecomp::settings::mcla_gpu_vsync.Get());
       latency_change.Replaced(swap_chain_);
     }
     dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
@@ -1488,7 +1816,7 @@ bool Renderer::SwitchFrameGeneration(FrameGeneration::Change change) {
       // generation is off for the session.
       ok = false;
       latency::SwapChainChange latency_change;
-      result = swap_chain_.RecreateOn(nullptr, hdr, REXCVAR_GET(mcla_gpu_vsync));
+      result = swap_chain_.RecreateOn(nullptr, hdr, larecomp::settings::mcla_gpu_vsync.Get());
       latency_change.Replaced(swap_chain_);
       dlss::SwapChainRecreated();
     }
@@ -1605,6 +1933,8 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
+  gi_update_.OnSubmitted(slot);
+  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
   // The present markers are the pacer's: it names the frame around the real image's present.
   const uint64_t latency_frame = latency::DetachRenderFrame();
@@ -1635,7 +1965,7 @@ void Renderer::ReleaseGuest() {
   tail_start_ = std::chrono::steady_clock::now();
   tail_open_ = true;
   if (release_sequence_ == 0 || !release_early_ || (!tail_short_ && !check_release_) ||
-      REXCVAR_GET(mcla_gpu_vsync)) {
+      larecomp::settings::mcla_gpu_vsync.Get()) {
     return;
   }
   thread_.stream().MarkExecuted(release_sequence_);
@@ -1699,7 +2029,22 @@ void Renderer::RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, 
   pass_timing_.CompleteFrame(list, slot);
 }
 
+void Renderer::ReportCityCensus() {
+  // The texts CityRtScene (with the hit data's pool inside it), CityRtShadow and RtSceneService define for a census line were never printed by anything: perf/scripts/city_rt_h3_report.py
+  // reads their fragments by name ("city hit data: pool ...", "ray tracing scene: wanted by ...") from a line like this one. Each text starts with "; " and is empty where it has nothing
+  // to say (no pack open, the shadows not ready, nobody wanting the scene).
+  constexpr uint64_t kCityCensusPresents = 600;  // as car_selfrefl.cpp's kCensusFrames
+  if (presented_ % kCityCensusPresents != 0) {
+    return;
+  }
+  const std::string text = city_rt_.CensusText() + city_shadow_.CensusText() + rt_scene_.CensusText() + rt_world_.CensusText() + ssr_.RtCensusText() + gi_update_.CensusText() + gi_pixel_.CensusText() + rt_lights_.CensusText();
+  if (!text.empty()) {
+    REXLOG_INFO("[city rt] census of present {}{}", presented_, text);
+  }
+}
+
 void Renderer::ReportFrameStats() {
+  ReportCityCensus();
   // Once a minute at 60 fps: enough to see VRAM creep or a frame ring that
   // stops reclaiming, without a line per frame.
   if (presented_ % 3600 != 0) {
@@ -1719,12 +2064,33 @@ void Renderer::ReportFrameStats() {
                                              : std::string()) +
                            ", ambient occlusion " + mib(ao_.HeldBytes()) +
                            ", sun shafts " + mib(shafts_.HeldBytes()) +
+                           (volumetrics_.HeldBytes() != 0 ? ", volumetric light " + mib(volumetrics_.HeldBytes()) : std::string()) +
+                           (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
+                           (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
+                           (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
+                           (gi_apply_.HeldBytes() != 0 ? ", ray traced bounce light's apply " + mib(gi_apply_.HeldBytes()) : std::string()) +
+                           (gi_field_.HeldBytes() != 0 ? ", probe field " + mib(gi_field_.HeldBytes()) : std::string()) +
+                           (rayregen::Current().context_bytes != 0 ? ", AMD FSR Ray Regeneration's context " + mib(rayregen::Current().context_bytes) : std::string()) +
                            (car_refl_.HeldBytes() != 0 ? ", car self-reflection " + mib(car_refl_.HeldBytes())
                                                        : std::string()) +
                            (car_shadow_.HeldBytes() != 0 ? ", car shadow map " + mib(car_shadow_.HeldBytes())
                                                          : std::string()) +
+                           (mirror_view_.HeldBytes() != 0 ? ", mirror view " + mib(mirror_view_.HeldBytes()) : std::string()) +
+                           (local_shadow_.HeldBytes() != 0 ? ", headlight shadow atlas " + mib(local_shadow_.HeldBytes())
+                                                           : std::string()) +
                            (car_rt_.HeldBytes() != 0 ? ", car ray tracing " + mib(car_rt_.HeldBytes())
                                                      : std::string()) +
+                           // CITY-RT BLOCK: the city's structures, their scratch and the traced shadow image (perf/CITY-RT-M1-RUNPLAN.md R4 reads this)
+                           (city_rt_.HeldBytes() + city_shadow_.HeldBytes() != 0
+                                ? ", city ray tracing " + mib(city_rt_.HeldBytes() + city_shadow_.HeldBytes())
+                                : std::string()) +
+                           // CITY-RT M2 H3: the hit data's pool, the tables and the material table
+                           (city_hit_.HeldBytes() - city_hit_.texture_set().HeldBytes() != 0 ? ", city hit data " + mib(city_hit_.HeldBytes() - city_hit_.texture_set().HeldBytes())
+                                                                                               : std::string()) +
+                           // CITY-RT M2 H2: the resident city textures, as the allocator counts them (city_texture_rules.h AllocationBytes; the census line "[city tex]" has the rest)
+                           (city_hit_.texture_set().HeldBytes() != 0 ? ", city textures " + mib(city_hit_.texture_set().HeldBytes()) : std::string()) +
+                           (car_mirror_.HeldBytes() != 0 ? ", side mirrors " + mib(car_mirror_.HeldBytes())
+                                                         : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())
@@ -1835,27 +2201,25 @@ std::atomic<GuestCapture*> g_capture_active{nullptr};
 // startup hand-over until Shutdown gives the write back to the vblank thread.
 std::atomic<bool> g_holds_retired_fence{false};
 
-// UI thread. The channel and drawer exist before the renderer: the SDK asks for
-// the drawer inside its SetupPresentation, before Startup runs.
-std::shared_ptr<OverlayChannel> g_overlay_channel;
-OverlayDrawer* g_overlay_drawer = nullptr;  // owned by the SDK (immediate_drawer_)
-std::shared_ptr<OverlayHost> g_overlay_host;
+// UI thread. Made by Startup, shared with the renderer; Shutdown switches the host off.
+std::shared_ptr<OverlayChannel>& g_overlay_channel = larecomp::Leak<std::shared_ptr<OverlayChannel>>();
+std::shared_ptr<OverlayHost>& g_overlay_host = larecomp::Leak<std::shared_ptr<OverlayHost>>();
 // What graphics_backend asks this renderer for (RequestedBackend), decided with
 // Enabled().
 Backend g_requested_backend = kDefaultBackend;
 // Set only when "auto" chose Vulkan: the GPU that choice was made on, which the Vulkan device is
 // created on. Empty otherwise.
-std::string g_auto_adapter;
+std::string& g_auto_adapter = larecomp::Leak<std::string>();
 
 // The SDK's graphics_backend -- the cvar that also picks the
 // emulated GPU's backend -- as a backend this build has.
 Backend RequestedBackend() {
-  if (!rex::cvar::GetFlagInfo("graphics_backend")) {
+  if (!larecomp::cvar::GetFlagInfo("graphics_backend")) {
     REXLOG_INFO("[gpu] this SDK has no graphics_backend cvar; {} runs",
                 BackendName(kDefaultBackend));
     return kDefaultBackend;
   }
-  const std::string text = rex::cvar::GetFlagByName("graphics_backend");
+  const std::string text = larecomp::cvar::GetFlagByName("graphics_backend");
   Backend backend = kDefaultBackend;
   if (!ParseBackend(text, backend)) {
     REXLOG_ERROR("[gpu] graphics_backend = \"{}\" is not auto, d3d12 or vulkan; {} runs", text,
@@ -1865,30 +2229,35 @@ Backend RequestedBackend() {
                  BackendName(backend), BackendName(kDefaultBackend));
     backend = kDefaultBackend;
   } else if (text == "auto") {
-    backend = ChooseAutoBackend(REXCVAR_GET(mcla_gpu_adapter), g_auto_adapter);
+    backend = ChooseAutoBackend(larecomp::settings::mcla_gpu_adapter.Get(), g_auto_adapter);
   }
   return backend;
 }
 
-bool ResolveEnabled() {
-  if (!REXCVAR_GET(mcla_gpu)) {
+static_assert(mcla::native_gfx::nocp::kDriverName == kLarecompDriverName,
+              "renderer_choice.h and the driver of nocp_driver.h name the same driver");
+
+// Which renderer runs is the SDK's gpu.driver (renderer_choice.h has the rule, and why the old mcla_gpu is not asked).
+bool ResolveEnabled(const std::string& driver) {
+  if (RendererChoiceOf(driver) != RendererChoice::kLarecomp) {
+    REXLOG_INFO("[gpu] gpu.driver = {}: the SDK's Xenia GPU renders (the compatibility renderer); the Plume renderer stays off. "
+                "The native renderer is back with gpu.driver = larecomp in larecomp.toml, or with the DEBUG menu's RENDERER row",
+                driver);
     return false;
   }
   const char* missing = nullptr;
-  if (!REXCVAR_GET(mcla_native_gfx_nocp)) {
-    missing = "mcla_native_gfx_nocp = true (no emulated GPU in the process)";
-  } else if (REXCVAR_GET(mcla_native_gfx)) {
+  if (larecomp::settings::mcla_native_gfx.Get()) {
     missing = "mcla_native_gfx = false (the legacy runtime would present into the same window)";
   }
   // No user_name is fine: the SDK's first-launch profile dialog is drawn by the
   // overlay drawer and presented by the idle tick before the guest exists
   // (tested on a scratch config).
   if (missing) {
-    REXLOG_ERROR("[gpu] mcla_gpu is set but needs {}; staying on the existing renderer", missing);
+    REXLOG_ERROR("[gpu] gpu.driver = {} but the Plume renderer needs {}; it stays off", driver, missing);
     return false;
   }
   g_requested_backend = RequestedBackend();
-  REXLOG_INFO("[gpu] mcla_gpu: the Plume renderer ({}) owns presentation",
+  REXLOG_INFO("[gpu] gpu.driver = {}: the Plume renderer ({}) owns presentation", driver,
               BackendName(g_requested_backend));
   return true;
 }
@@ -1896,18 +2265,34 @@ bool ResolveEnabled() {
 }  // namespace
 
 bool Enabled() {
-  static const bool enabled = ResolveEnabled();
+  // -1: not decided. Decided on the first call that finds gpu.driver, and fixed for the process; the answer is read at the rate of
+  // the guest's hooks, so the settled path is one load.
+  static std::atomic<int> state{-1};
+  if (const int known = state.load(std::memory_order_acquire); known >= 0) {
+    return known == 1;
+  }
+  static std::mutex decide;
+  std::lock_guard lock(decide);
+  if (const int known = state.load(std::memory_order_relaxed); known >= 0) {
+    return known == 1;
+  }
+  const std::string driver = larecomp::cvar::GetFlagByName("gpu.driver");
+  if (RendererChoiceOf(driver) == RendererChoice::kNotSet) {
+    return false;  // asked before the settings exist (not a decision: ask again later)
+  }
+  const bool enabled = ResolveEnabled(driver);
+  state.store(enabled ? 1 : 0, std::memory_order_release);
   return enabled;
 }
 
 Device::Options PlannedDeviceOptions(const Backend* forced) {
   Device::Options options;
-  options.preferred_adapter = REXCVAR_GET(mcla_gpu_adapter);
+  options.preferred_adapter = larecomp::settings::mcla_gpu_adapter.Get();
   if (options.preferred_adapter.empty() && (!forced || *forced == g_requested_backend)) {
     // "auto" chose Vulkan for one GPU: render on it, not on the one Plume's Vulkan rule takes.
     options.preferred_adapter = g_auto_adapter;
   }
-  options.debug_layer = REXCVAR_GET(mcla_gpu_debug_layer);
+  options.debug_layer = larecomp::settings::mcla_gpu_debug_layer.Get();
   options.backend = forced ? *forced : g_requested_backend;
   return options;
 }
@@ -1916,53 +2301,92 @@ std::vector<std::filesystem::path> ShaderPackSearchFolders() {
   return ShaderStore::SearchFolders(g_shader_pack_folder);
 }
 
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateOverlayDrawer() {
-  if (!Enabled()) {
-    return nullptr;
-  }
-  if (!g_overlay_channel) {
-    g_overlay_channel = std::make_shared<OverlayChannel>();
-  }
-  auto drawer = std::make_unique<OverlayDrawer>(g_overlay_channel);
-  g_overlay_drawer = drawer.get();
-  return drawer;
+// MF: use the live device's identity and caps without opening a second device.
+const Device* MachineFactsDevice() {
+  const Renderer* renderer = g_active.load(std::memory_order_acquire);
+  return renderer ? &renderer->device() : nullptr;
 }
 
-bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
-             rex::ui::ImGuiDrawer* imgui_drawer) {
+namespace {
+
+#if defined(_WIN32)
+constexpr bool kFallbackWindows = true;
+#else
+constexpr bool kFallbackWindows = false;
+#endif
+
+// Whether the player took the failure box's offer (StartupChoseCompatibilityRenderer). Set once, on the UI thread, before Startup returns.
+std::atomic<bool> g_compatibility_chosen{false};
+
+// The box for a native renderer that could not start: what each graphics API said, why the game needs what it needs, and one plain way on
+// (renderer_fallback.h): a button that starts the game with the compatibility renderer, or, where a button cannot do it (a launch option
+// sets gpu.driver and beats larecomp.toml; the box with buttons cannot be shown), the line to use instead. True when the player pressed
+// the button.
+bool ShowRefusalBox(rex::ui::IUISystem& ui, const std::string& refusals) {
+  namespace fb = fallback;
+  const larecomp::cvar::Source source = larecomp::cvar::GetFlagSource("gpu.driver");
+  const bool launch_sets_driver =
+      source == larecomp::cvar::Source::kCommandLine || source == larecomp::cvar::Source::kEnvironment;
+  const fb::Way way = fb::WayFor(launch_sets_driver, true);
+  if (way == fb::Way::kButton) {
+    // The first button is the default (Enter), the last the escape (Esc, the X). Windows: LARecomp's own box (choice_box.h), which
+    // sizes each button from its label and puts the action first; the SDK's box cut the long label and put it last.
+    fb::TwoButtonBox own;
+    own.icon = fb::BoxIcon::kError;
+    own.title = "LARecomp";
+    own.body = fb::RefusalText(refusals, way, kFallbackWindows);
+    own.action = std::string(fb::kButtonText);
+    own.way_out = "Close";
+    REXLOG_ERROR("{}: {}", own.title, own.body);
+    if (const std::optional<int> picked = fb::ShowTwoButtonBox(own)) {
+      REXLOG_INFO("[gpu] the box with the compatibility renderer button: {}", *picked == 0 ? own.action : own.way_out);
+      return *picked == 0;
+    }
+    rex::ui::ChoiceConfig box;  // no box of ours here (not Windows, or it could not be built): the SDK's
+    box.type = rex::MessageType::kError;
+    box.title = own.title;
+    box.body = own.body;
+    box.buttons = {own.action, own.way_out};  // the first is the default, the last the escape
+    const auto answer = ui.ShowChoice(box);
+    if (answer) {
+      return *answer == 0;
+    }
+    REXLOG_WARN("[gpu] the box with the compatibility renderer button could not be shown ({})", answer.error().message);
+  }
+  // No button: the same box, with the line to use (or the option to give) in its text.
+  const fb::Way plain = way == fb::Way::kButton ? fb::Way::kLine : way;
+  rex::ShowMessageBox(rex::MessageType::kError, fb::RefusalText(refusals, plain, kFallbackWindows));
+  return false;
+}
+
+}  // namespace
+
+bool StartupChoseCompatibilityRenderer() { return g_compatibility_chosen.load(std::memory_order_acquire); }
+
+bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
   if (!Enabled()) {
     return false;
   }
   if (g_renderer) {
     return g_active.load(std::memory_order_acquire) != nullptr;
   }
-  if (!window || !imgui_drawer || !g_overlay_drawer || !g_overlay_channel) {
-    REXLOG_ERROR(
-        "[gpu] startup needs the window, the SDK's ImGui drawer and the overlay drawer from "
-        "CreateOverlayDrawer (window={}, imgui={}, overlay={}); refusing to run without overlays",
-        window != nullptr, imgui_drawer != nullptr, g_overlay_drawer != nullptr);
-    return false;
-  }
-  g_overlay_host =
-      std::make_shared<OverlayHost>(app_context, *window, *imgui_drawer, *g_overlay_drawer);
+  // The renderer asks the UI system for an overlay frame (overlay.h), so the first-launch dialogs (profile name,
+  // ISO wizard, shader build) are drawn by it before the guest exists.
+  g_overlay_channel = std::make_shared<OverlayChannel>();
+  g_overlay_host = std::make_shared<OverlayHost>(ui, g_overlay_channel);
 
   Renderer::Options options;
   options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
-  options.swap_chain.vsync = REXCVAR_GET(mcla_gpu_vsync);
-  options.swap_chain.present_wait = REXCVAR_GET(mcla_gpu_present_wait);
+  options.device.force_refusal = larecomp::settings::mcla_gpu_force_refusal.Get();  // a test of the box below (not the prebuild's)
+  options.swap_chain.vsync = larecomp::settings::mcla_gpu_vsync.Get();
+  options.swap_chain.present_wait = larecomp::settings::mcla_gpu_present_wait.Get();
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");
     // The app closes next, with the log as the only word of why: say it here, in plain terms, with
     // what each backend said when it was refused (Device::refusals).
     const std::string& refusals = g_renderer->device().refusals();
-    rex::ShowSimpleMessageBox(
-        rex::SimpleMessageBoxType::Error,
-        "LARecomp could not start on this PC's graphics card.\n\n" +
-            (refusals.empty() ? std::string("The reason is in the log.\n\n") : refusals + "\n\n") +
-            "The game needs a graphics card and driver with Direct3D 12 (shader model 6.0 and "
-            "resource binding tier 2) or Vulkan (descriptor indexing and buffer device address). "
-            "Updating the graphics driver may help. The details are in the log.");
+    g_compatibility_chosen.store(ShowRefusalBox(ui, refusals), std::memory_order_release);
     g_overlay_host->Disconnect();
     return false;
   }
@@ -1974,12 +2398,12 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   } else if (g_renderer->device().fell_back()) {
     // The log has the reason; the player chose the API in the menu and would
     // otherwise never learn that another one runs.
-    rex::ShowSimpleMessageBox(
-        rex::SimpleMessageBoxType::Warning,
+    rex::ShowMessageBox(
+        rex::MessageType::kWarning,
         std::string(BackendName(g_renderer->device().requested_backend())) +
             " could not be started on this machine, so the game runs on " + BackendName() +
-            ". The reason is in the log. The API is chosen in the pause menu: RENDERER, "
-            "GRAPHICS API (graphics_backend in larecomp.toml).");
+            ". The reason is in the log. The API is chosen in the launcher (Graphics API) or with "
+            "graphics_backend in larecomp.toml.");
   }
   g_active.store(g_renderer, std::memory_order_release);
 
@@ -1990,13 +2414,13 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
   // (b). In the normal order the guest has no device yet and (c) is a no-op.
   mcla::native_gfx::nocp::AcquireFenceRetirement();
   g_holds_retired_fence.store(true, std::memory_order_release);
-  g_capture = new GuestCapture(g_renderer->stream(), REXCVAR_GET(mcla_gpu_verify_constants));
+  g_capture = new GuestCapture(g_renderer->stream(), larecomp::settings::mcla_gpu_verify_constants.Get());
   g_capture_active.store(g_capture, std::memory_order_release);
   REXLOG_INFO("[gpu] guest capture on (constant verification {})",
-              REXCVAR_GET(mcla_gpu_verify_constants) ? "on" : "off");
+              larecomp::settings::mcla_gpu_verify_constants.Get() ? "on" : "off");
   if (const uint32_t device = mcla::native_gfx::GraphicsDeviceVa()) {
-    auto* runtime = rex::Runtime::instance();
-    const uint8_t* base = runtime ? runtime->virtual_membase() : nullptr;
+    auto* runtime = REX_RUNTIME();
+    const uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
     if (base && g_capture->FenceCatchUp(base, device)) {
       REXLOG_WARN("[gpu] the guest's device {:#010x} existed before the capture; one fence "
                   "record covers the fences it inserted until now",
@@ -2004,35 +2428,6 @@ bool Startup(rex::ui::Window* window, rex::ui::WindowedAppContext& app_context,
     }
   }
 
-  // F11. The SDK's bind requests the capture from an IGraphicsSystem, which
-  // this mode does not have. A second bind on the same key would never fire
-  // (ProcessKeyEvent stops at the first match), so the SDK's is unregistered
-  // first, as the legacy runtime does.
-  rex::ui::UnregisterBind("bind_renderdoc_capture");
-  rex::ui::RegisterBind("bind_gpu_renderdoc_capture", "F11",
-                        "Capture the next frame with RenderDoc (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestCapture();
-                          }
-                        });
-  // F10: raw trace of the next guest frame (frame_trace.h), for any scene the
-  // frame counter cannot be aimed at (menus, pause, photo mode).
-  rex::ui::RegisterBind("bind_gpu_trace_next", "F10",
-                        "Write a raw trace of the next guest frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTrace();
-                            REXLOG_INFO("[gpu] trace: the frame after the next present will be "
-                                        "written");
-                          }
-                        });
-  // F2: every texture of the next frame to the dump folder, named after the
-  // game's texture and its dictionary, for texture mods (textures.h).
-  rex::ui::RegisterBind("bind_gpu_texture_dump", "F2",
-                        "Dump the textures of the next frame (Plume renderer)", [] {
-                          if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-                            r->RequestTextureDump();
-                          }
-                        });
   return true;
 }
 
@@ -2142,7 +2537,8 @@ void OnGuestFrameEnd(uint8_t* base) {
 }
 
 void OnGuestSwap(const uint8_t* base, uint32_t device, uint32_t front_buffer) {
-  const int64_t target = g_next_present_target.exchange(0, std::memory_order_relaxed);
+  fallback::Watch().NoteFrame();  // one load while nothing is armed; a start that presented its frames did not crash (renderer_fallback.h)
+  const int64_t target =g_next_present_target.exchange(0, std::memory_order_relaxed);
   const uint64_t tag = g_next_present_tag.exchange(0, std::memory_order_relaxed);  // capture mode
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
     c->Present(base, device, front_buffer, target, tag);
@@ -2166,11 +2562,26 @@ bool SchedulesPresents() {
   // Frame generation (FSR's or DLSS's) presents through a pacer of its own, which the game's
   // latency reducer paces: no frame is held to a target then.
   return g_capture_active.load(std::memory_order_acquire) != nullptr &&
-         !REXCVAR_GET(mcla_gpu_vsync) && !FrameGenerationRunning() &&
+         !larecomp::settings::mcla_gpu_vsync.Get() && !FrameGenerationRunning() &&
          !DlssFrameGenerationRunning();
 #else
   return false;
 #endif
+}
+
+int32_t LimitFrameRateForComposedPresents(int32_t limit) {
+#if defined(_WIN32)
+  const Renderer* renderer = g_active.load(std::memory_order_acquire);
+  const uint32_t ceiling = renderer ? renderer->composed_present_ceiling() : 0;
+  if (ceiling != 0) {
+    // The generation pacers issue extra presents outside PresentNow. Budget them in the
+    // rendered-frame limiter, using the active multiplier (FSR always generates one frame).
+    const uint32_t multiplier = DlssFrameGenerationRunning() ? DlssFrameGenerationMultiplier()
+                                : FrameGenerationRunning() ? 2u : 1u;
+    return render_wait::LimitRenderRateForPresents(limit, ceiling, multiplier);
+  }
+#endif
+  return limit;
 }
 
 void OnGuestFenceInserted(uint32_t device, uint32_t value) {
@@ -2188,9 +2599,9 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
   }
 }
 
-void OnGuestSceneComposited(uint32_t bucket) {
+void OnGuestSceneComposited(uint32_t bucket, uint32_t tag) {
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
-    c->Composite(bucket);
+    c->Composite(bucket, tag);
   }
 }
 
@@ -2254,6 +2665,31 @@ void RequestResize() {
   }
 }
 
+// The hotkeys (LarecompApp::StartOverlays binds F11 / F10 / F2 as ui.bind.gpu_renderdoc_capture, gpu_trace_next and
+// gpu_texture_dump). The SDK has no bind of its own on these keys any more, so nothing is unregistered first.
+void RequestRenderDocCapture() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestCapture();
+  }
+}
+
+// F10: raw trace of the next guest frame (frame_trace.h), for any scene the frame counter cannot be aimed at (menus,
+// pause, photo mode).
+void RequestFrameTrace() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestTrace();
+    REXLOG_INFO("[gpu] trace: the frame after the next present will be written");
+  }
+}
+
+// F2: every texture of the next frame to the dump folder, named after the game's texture and its dictionary, for
+// texture mods (textures.h).
+void RequestTextureDump() {
+  if (Renderer* r = g_active.load(std::memory_order_acquire)) {
+    r->RequestTextureDump();
+  }
+}
+
 void RequestTextureDumpAll() {
   if (Renderer* r = g_active.load(std::memory_order_acquire)) {
     r->RequestTextureDumpAll();
@@ -2296,6 +2732,14 @@ std::filesystem::path ShaderPackFolder() {
   return ShaderStore::BuildFolder(g_shader_pack_folder);
 }
 
+void SetCityPackHooks(CityPackHooks hooks) {
+  g_city_pack_hooks = std::move(hooks);
+}
+
+std::filesystem::path CityPackFolder() {
+  return ShaderPackFolder() / "city";
+}
+
 bool ShaderPacksAttached() {
   Renderer* r = g_active.load(std::memory_order_acquire);
   return r && r->shader_packs_attached();
@@ -2310,7 +2754,24 @@ bool AttachShaderPacks(const std::filesystem::path& folder) {
   return r->AttachShaderPacks(folder.empty() ? g_shader_pack_folder : folder);
 }
 
-void Shutdown() {
+ShutdownProgress ReadShutdownProgress() {
+  ShutdownProgress progress;
+  const int state = g_shutdown_state.load(std::memory_order_acquire);
+  if (state == kShutdownNotStarted) {
+    return progress;
+  }
+  progress.started = true;
+  progress.finished = state == kShutdownFinished;
+  progress.stage = g_shutdown_stage.load(std::memory_order_relaxed);
+  progress.driver_call = g_shutdown_driver_call.load(std::memory_order_relaxed);
+  const int64_t moved = g_shutdown_moved.load(std::memory_order_relaxed);
+  const int64_t ticks = SteadyTicks() - moved;
+  using Tick = std::chrono::steady_clock::duration;
+  progress.quiet_ms = ticks <= 0 ? 0 : std::chrono::duration_cast<std::chrono::milliseconds>(Tick(ticks)).count();
+  return progress;
+}
+
+void Shutdown(bool fast_exit) {
   // No new records; a guest thread inside a capture finishes against the
   // stream, which the render thread's Stop releases.
   if (GuestCapture* c = g_capture_active.exchange(nullptr, std::memory_order_acq_rel)) {
@@ -2323,7 +2784,7 @@ void Shutdown() {
   }
   Renderer* r = g_active.exchange(nullptr, std::memory_order_acq_rel);
   if (r) {
-    r->Shutdown();
+    r->Shutdown(fast_exit);
   }
   // After the render thread stopped (or was let go): the fence records still
   // queued were dropped with it, and a guest thread waiting on one of them is

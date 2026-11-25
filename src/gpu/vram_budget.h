@@ -57,7 +57,8 @@
 // in the use it reports, so they weigh on every check above. They are not trimmed. Instead what asks
 // for them first asks HasRoomFor: when they would take the use past kHighPercent, they are not made,
 // so that taking them never makes the response release the caches' resources (the textures, the
-// products, the EDRAM targets) to fit them. AddHolder lists such memory, so that the lines that say
+// products, the EDRAM targets) to fit them (the rule itself is vram_room.h, which the FidelityFX upscaler's contexts ask
+// too: temporal_ffx.cpp). AddHolder lists such memory, so that the lines that say
 // why memory is short and what was released say how much of it the response had no hand in.
 //
 // Threading: render thread only.
@@ -71,6 +72,7 @@
 
 #include "backend.h"
 #include "texture_bytes.h"
+#include "vram_room.h"
 
 namespace mcla::gpu {
 
@@ -87,6 +89,7 @@ class VideoMemoryBudget {
   // Releasing starts at this share of the budget in use, and aims at the lower one.
   static constexpr uint32_t kHighPercent = 90;
   static constexpr uint32_t kTargetPercent = 80;
+  static_assert(kHighPercent == vram_room::kHighPercent, "vram_room.h keeps the same line");
   // Idle frames, in the order the passes take them. The last is the shortest a
   // resource is ever released after: twice the TextureCache's refresh of its
   // memoized bindings (kRefreshFrames), which is how current their last use is.
@@ -110,7 +113,7 @@ class VideoMemoryBudget {
   // reports no budget: there is nothing to compare with, and a creation that fails is that adapter's
   // only sign. Any thread.
   static bool HasRoomFor(const backend::VideoMemory& memory, uint64_t extra) {
-    return memory.budget == 0 || (memory.used + extra) * 100 < memory.budget * kHighPercent;
+    return vram_room::HasRoom(memory.used, memory.budget, extra, kHighPercent);
   }
 
   void Initialize(Device& device, TextureCache& textures, ResolveCache& resolve,

@@ -9,9 +9,10 @@
 #include <format>
 #include <string>
 
-#include <rex/cvar.h>
-#include <rex/graphics/xenos.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/fetch.h>
+#include <rex/xenos/format.h>
+#include <rex/logging/log_category.h>
 
 #include "descriptors.h"
 #include "device.h"
@@ -66,7 +67,7 @@ uint32_t TemporalMotion::StencilChannel(const uint32_t fetch[6], uint32_t* host_
   // The very swizzle the texture cache gives the view the anchor binds (textures.cpp Bind2D).
   const uint16_t host = GuestToHostSwizzle(
       constant.swizzle,
-      format::TextureHost(uint32_t(rex::graphics::xenos::TextureFormat::k_8_8_8_8)).host_swizzle);
+      format::TextureHost(uint32_t(rex::xenos::TextureFormat::k_8_8_8_8)).host_swizzle);
   if (host_swizzle) {
     *host_swizzle = host;
   }

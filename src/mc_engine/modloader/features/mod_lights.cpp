@@ -54,9 +54,10 @@
 //   dword_82839704 +368      camera position (current viewport)
 //
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
+#include <rex/ppc/call.h>
 
 #include <algorithm>
 #include <array>
@@ -66,20 +67,18 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <vector>
 
+#include "gpu/light_id.h"
+#include "gpu/local_lights_rules.h"
+#include "gpu/mod_light_source.h"
 #include "mc_engine/core/logging.h"
+#include "larecomp_guest.h"
 #include "mod_data.h"
 
-REXCVAR_DEFINE_BOOL(mod_lights, true, "MCLA/World",
-    "Dynamic lights a mod adds to its part of the map (models/<mod>/lights.bin): its lamps "
-    "light the ground and the cars at night, on a light grid of its own. Built at city load.")
-    .debug_only();
-REXCVAR_DEFINE_DOUBLE(mod_light_intensity, 1.0, "MCLA/World",
-    "Mod light intensity multiplier, applied when the mod's light grid is built (city load).")
-    .debug_only();
 
 REX_EXTERN(__imp__rex_sub_822F87E8);
 REX_EXTERN(__imp__rex_sub_82302078);
@@ -135,11 +134,13 @@ struct ModGrid {
     uint32_t object = 0;  // guest grid object; its textures live for the session
     std::array<uint8_t, kStateBytes> state{};
     bool built = false;
+    // The lamps as the grid got them, for the light manager (gpu/mod_light_source.h): made when the grid is built, handed out while the camera is over it.
+    std::shared_ptr<const larecomp::gpu::mod_light_source::Set> published;
 };
 
 std::once_flag g_load_once;
 std::mutex g_mu;  // g_grids' state/built, g_globals, g_city_state, g_active
-std::vector<ModGrid> g_grids;
+std::vector<ModGrid>& g_grids = larecomp::Leak<std::vector<ModGrid>>();
 uint32_t g_globals = 0;
 std::array<uint8_t, kStateBytes> g_city_state{};
 int g_active = -1;  // grid the globals point at: -1 the city's
@@ -181,23 +182,49 @@ void WriteVec(uint8_t* base, uint32_t ea, float x, float y, float z, float w) {
     WriteF32(base, ea + 12, w);
 }
 
-// A guest function on a fresh context below the caller's frame (what
-// GuestToHostFunction does, plus the two float arguments).
-uint32_t Call(PPCFunc* fn, PPCContext& ctx, uint8_t* base, std::initializer_list<uint32_t> gpr,
+// A guest function on the thread's own register file (rexglue 0.11: the hook's ctx IS that file), cleared,
+// below the hook's r1, which comes back as it was (what guest::Call does, plus the two float arguments).
+uint32_t Call(PPCFunc* fn, PPCContext&, uint8_t* base, std::initializer_list<uint32_t> gpr,
               double f1 = 0.0, double f2 = 0.0) {
-    PPCContext c{};
-    c.r1 = ctx.r1;
+    larecomp::guest::ThreadFile file;
+    if (!file) return 0;
+    PPCContext& c = file.ctx();
     c.r1.u32 -= 0x70;
-    c.r13 = ctx.r13;
-    c.fpscr = ctx.fpscr;
     PPCRegister* regs[] = {&c.r3, &c.r4, &c.r5, &c.r6, &c.r7, &c.r8, &c.r9, &c.r10};
     size_t i = 0;
     for (uint32_t v : gpr) regs[i++]->u64 = v;
     c.f1.f64 = f1;
     c.f2.f64 = f2;
     fn(c, base);
-    ctx.fpscr = c.fpscr;
     return c.r3.u32;
+}
+
+// The grid's lamps for the light manager: each record as the game's grid got it (the intensity times the setting `mult`, the on flag).
+std::shared_ptr<const larecomp::gpu::mod_light_source::Set> MakeSet(const ModGrid& grid, float mult) {
+    namespace mls = larecomp::gpu::mod_light_source;
+    auto set = std::make_shared<mls::Set>();
+    set->mod = grid.mod;
+    set->mod_key = larecomp::gpu::light_id::ModKey(grid.mod);
+    set->rect[0] = grid.min_x;
+    set->rect[1] = grid.min_z;
+    set->rect[2] = grid.max_x;
+    set->rect[3] = grid.max_z;
+    set->intensity_mult = mult;
+    set->lamps.reserve(grid.lights.size());
+    for (const Light& l : grid.lights) {
+        mls::Record r;
+        r.pos[0] = l.x, r.pos[1] = l.y, r.pos[2] = l.z;
+        r.colour[0] = l.r, r.colour[1] = l.g, r.colour[2] = l.b;
+        r.dir[0] = l.dx, r.dir[1] = l.dy, r.dir[2] = l.dz;
+        r.intensity = l.intensity * mult;
+        r.cone_deg = l.type == kSpot ? l.cone : 360.0f;
+        r.spread_deg = l.spread;
+        r.id = l.id;
+        r.type = l.type == kSpot ? 1 : 0;
+        r.on = (l.flags & kOn) ? 1 : 0;
+        set->lamps.push_back(r);
+    }
+    return set;
 }
 
 void Load() {
@@ -235,26 +262,28 @@ void Load() {
     }
 }
 
-void WriteLight(PPCContext& ctx, uint8_t* base, uint32_t at, const Light& l, float mult) {
+// `withhold`: the lamp A/B (mcla_gpu_local_lights_ab 1 or 2, gpu/local_lights_rules.h): the lamp is written OFF, with no intensity, so the game's grid lights nothing with it (the deferred local
+// light pass adds it, or nothing does). The published set (MakeSet) keeps the real lamp either way.
+void WriteLight(PPCContext& ctx, uint8_t* base, uint32_t at, const Light& l, float mult, bool withhold) {
     std::memset(base + at, 0, kLightBytes);
     WriteVec(base, at + 0, l.x, l.y, l.z, 0.0f);
     WriteVec(base, at + 16, l.r, l.g, l.b, 0.0f);
     WriteVec(base, at + 32, l.dx, l.dy, l.dz, 0.0f);
     for (uint32_t k : {12u, 28u, 44u, 48u, 52u, 56u, 60u}) WriteBE32(base, at + k, kNaN);
-    WriteF32(base, at + 64, l.intensity * mult);
+    WriteF32(base, at + 64, withhold ? 0.0f : l.intensity * mult);
     WriteF32(base, at + 68, l.type == kSpot ? l.cone : 360.0f);
     WriteF32(base, at + 72, l.spread != 0.0f ? l.spread : 1.0f);
     WriteF32(base, at + 76, 0.0f);
     WriteF32(base, at + 80, 1.0f);
     base[at + 88] = l.type == kSpot ? kSpot : 0;
-    base[at + 89] = (l.flags & kOn) ? 1 : 0;
+    base[at + 89] = (!withhold && (l.flags & kOn)) ? 1 : 0;
     if (l.type == kSpot)
         Call(rex_sub_822FD2C8, ctx, base, {0, 0, at + 76, at + 80}, ReadF32(base, at + 68), ReadF32(base, at + 72));
 }
 
 // The mod's grid object (created once, in `object`) with its lights built into
 // it; `state` gets the globals as they read pointing at it.
-bool Build(PPCContext& ctx, uint8_t* base, const ModGrid& grid, uint32_t& object,
+bool Build(PPCContext& ctx, uint8_t* base, const ModGrid& grid, float mult, bool withhold, uint32_t& object,
            std::array<uint8_t, kStateBytes>& state) {
     if (!object) {
         const uint32_t raw = Call(rex_sub_82130528, ctx, base, {kGridBytes + 16});
@@ -283,10 +312,9 @@ bool Build(PPCContext& ctx, uint8_t* base, const ModGrid& grid, uint32_t& object
     const uint32_t vmin = sphere + 16, vmax = sphere + 32, scratch = sphere + 48, list = sphere + 128;
     const uint32_t ptrs = list + 16, lights = ptrs + ptr_bytes;
 
-    const float mult = float(REXCVAR_GET(mod_light_intensity));
     WriteBE32(base, ptrs, kNullLight);
     for (uint32_t i = 0; i < n; ++i) {
-        WriteLight(ctx, base, lights + kLightBytes * i, grid.lights[i], mult);
+        WriteLight(ctx, base, lights + kLightBytes * i, grid.lights[i], mult, withhold);
         WriteBE32(base, ptrs + 4 * (i + 1), lights + kLightBytes * i);
     }
     WriteBE32(base, list, ptrs);
@@ -326,19 +354,35 @@ void OnCityLights(PPCContext& ctx, uint8_t* base, uint32_t mgr) {
         std::memcpy(g_city_state.data(), base + globals, kStateBytes);
         g_active = -1;
     }
-    if (g_grids.empty() || !REXCVAR_GET(mod_lights)) return;
+    larecomp::gpu::mod_light_source::Global().Publish(nullptr);  // the city's grid again: SelectGrid hands a mod's out when the camera is over it
+    larecomp::gpu::mod_light_source::Global().PublishBuilt({});  // and no set is built until the grids below are (the deferred local light pass lights the sets the camera is not over)
+    if (g_grids.empty() || !larecomp::settings::mod_lights.Get()) return;
 
     std::array<uint8_t, kPackBytes> pack;
     std::memcpy(pack.data(), base + kPackBlock, kPackBytes);
+    const float mult = float(larecomp::settings::mod_light_intensity.Get());
+    // The lamp A/B of the deferred local light pass (mcla_gpu_local_lights_ab, restart): 1 and 2 build the grid with the lamps OFF, the pass (2) or nothing (1) lights with them.
+    const auto ab = larecomp::gpu::local_lights::AbOf(larecomp::settings::mcla_gpu_local_lights_ab.Get());
+    const bool withhold = larecomp::gpu::local_lights::AbWithholdsFromGrid(ab);
+    if (withhold) {
+        MC_INFO("[mod-lights] lamp A/B (mcla_gpu_local_lights_ab = {}): the mods' grids are built with their lamps OFF; {}", int(ab),
+                ab == larecomp::gpu::local_lights::Ab::kPass ? "the deferred local light pass adds them" : "nothing adds them (the control)");
+    }
+    std::vector<larecomp::gpu::mod_light_source::SetPtr> built_sets;
     for (ModGrid& grid : g_grids) {
         uint32_t object = grid.object;  // written by this thread only
         std::array<uint8_t, kStateBytes> state{};
-        const bool built = Build(ctx, base, grid, object, state);
+        const bool built = Build(ctx, base, grid, mult, withhold, object, state);
+        std::shared_ptr<const larecomp::gpu::mod_light_source::Set> published;
+        if (built) published = MakeSet(grid, mult);
         std::lock_guard lock(g_mu);
         grid.object = object;
         grid.state = state;
         grid.built = built;
+        grid.published = std::move(published);
+        if (grid.published) built_sets.push_back(grid.published);  // the same objects SelectGrid publishes: a reader tells the grid the camera is over by pointer
     }
+    larecomp::gpu::mod_light_source::Global().PublishBuilt(std::move(built_sets));
     std::memcpy(base + kPackBlock, pack.data(), kPackBytes);
 }
 
@@ -348,7 +392,7 @@ void SelectGrid(uint8_t* base, uint32_t globals) {
     if (globals != g_globals || g_grids.empty()) return;
     int want = -1;
     const uint32_t vp = ReadBE32(base, kViewportPtr);
-    if (vp && REXCVAR_GET(mod_lights)) {
+    if (vp && larecomp::settings::mod_lights.Get()) {
         const float cx = ReadF32(base, vp + kCameraPosAt + 0);
         const float cz = ReadF32(base, vp + kCameraPosAt + 8);
         for (size_t i = 0; i < g_grids.size(); ++i) {
@@ -361,6 +405,7 @@ void SelectGrid(uint8_t* base, uint32_t globals) {
     }
     if (want == g_active) return;
     std::memcpy(base + globals, want < 0 ? g_city_state.data() : g_grids[size_t(want)].state.data(), kStateBytes);
+    larecomp::gpu::mod_light_source::Global().Publish(want < 0 ? nullptr : g_grids[size_t(want)].published);
     if (want < 0)
         MC_INFO("[mod-lights] camera back over the city's light grid");
     else

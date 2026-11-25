@@ -1,0 +1,177 @@
+{
+  "schema": "larecomp.machine",
+  "schema_version": 1,
+  "min_reader": 1,
+  "source": "game",
+  "final": true,
+  "written_by": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "ffffffffffffffffffffffffffffffffffffffff"
+  },
+  "written_utc": "2026-11-24T12:00:00Z",
+  "hardware_id": "3348eb669386738094e607a1c78f92bb44d5fa4ad2f1ef76d8199c467cf94897",
+  "gpu": {
+    "name": "Intel(R) Arc(TM) A770 Graphics",
+    "vendor": "intel",
+    "vendor_id": 32902,
+    "device_id": 22176,
+    "vram_mb": 16256,
+    "software": false,
+    "driver_version": "32.0.101.6130",
+    "shared_memory": false,
+    "class": "high",
+    "class_why": "by memory: discrete GPU with 16256 MiB of dedicated memory, at least 5632 MiB",
+    "handheld": false,
+    "rtx": false,
+    "rx9000": false,
+    "class_forced": null,
+    "rt_tier": "weak",
+    "rt_rung": "weak",
+    "rt_tier_why": "by name: A770 -> weak (Arc A-series (Alchemist)); by chip: device id 0x56A0 -> weak (DG2 (Arc A-series: Alchemist))",
+    "rt_benchmarked": false,
+    "adapters": [
+      {
+        "name": "Intel(R) Arc(TM) A770 Graphics",
+        "vendor": "intel",
+        "vram_mb": 16256,
+        "software": false,
+        "selected": true,
+        "class": "high"
+      }
+    ]
+  },
+  "api": {
+    "name": "d3d12",
+    "version": "12_2",
+    "shader_model": "6.7",
+    "dxr_1_1": true,
+    "ray_query": true,
+    "car_rt": true,
+    "city_rt_shadows": true,
+    "by_api": {
+      "d3d12": {
+        "car_rt": true,
+        "rt_tier": "weak",
+        "ray_regen": "no"
+      },
+      "vulkan": {
+        "car_rt": null,
+        "rt_tier": null,
+        "ray_regen": "unsupported"
+      }
+    }
+  },
+  "features": {
+    "upscalers": {
+      "fsr1": true,
+      "fsr31": true,
+      "fsr4": false,
+      "dlss": "no",
+      "dlss_modes_refused": []
+    },
+    "frame_generation": {
+      "fsr31": true,
+      "dlss": false,
+      "dlss_card": false,
+      "dlss_multiplier_max": 0,
+      "dlss_after_restart": false
+    },
+    "latency": {
+      "kind": "none",
+      "auto_on": false
+    },
+    "denoiser": {
+      "vendor": "none",
+      "dlss_rr": "no",
+      "ray_regen": "no"
+    },
+    "hdr": {
+      "display_capable": false,
+      "windows_hdr_on": false,
+      "auto_paper_white_nits": 203,
+      "auto_peak_nits": 400
+    },
+    "pcss": true
+  },
+  "display": {
+    "primary": {
+      "name": "Primary display",
+      "width": 1920,
+      "height": 1080,
+      "size": "1920X1080",
+      "refresh_hz": 60,
+      "hdr": false
+    },
+    "list": [
+      {
+        "name": "Primary display",
+        "width": 1920,
+        "height": 1080,
+        "size": "1920X1080",
+        "refresh_hz": 60,
+        "hdr": false
+      }
+    ],
+    "windowed_sizes": [
+      [
+        1280,
+        720
+      ],
+      [
+        1920,
+        1080
+      ]
+    ],
+    "exclusive_sizes": [
+      [
+        1920,
+        1080,
+        60
+      ]
+    ]
+  },
+  "os": {
+    "name": "windows",
+    "build": 26300,
+    "exclusive_fullscreen": true,
+    "live_window_resize": true,
+    "window_size_fixed": false,
+    "hdr_output": true,
+    "real_weather": true,
+    "mouse_look": true,
+    "wheel_ffb": true,
+    "frame_pacing_wake": true
+  },
+  "cpu": {
+    "threads": 16,
+    "level": "x86-64-v3"
+  },
+  "build": {
+    "rt_gi_update_built": true
+  },
+  "install": {
+    "portuguese_text": false,
+    "fidelityfx_files": true,
+    "streamline_files": false,
+    "city_pack": "current",
+    "city_hit": "current",
+    "shader_pack": "current"
+  },
+  "paths": {
+    "game_folder": "C:/Games/Fleet/arc-a770",
+    "config_file": "C:/Games/Fleet/arc-a770/larecomp.toml",
+    "user_root": "C:/Users/player/Documents/LARecomp",
+    "saves_root": "C:/Users/player/Documents/LARecomp\\content",
+    "cache_root": "C:/Users/player/Documents/LARecomp\\cache",
+    "logs": "C:/Games/Fleet/arc-a770/logs",
+    "game_data_root": "C:/Games/Fleet/MCLA_Game_Files",
+    "mod_root": "C:/Games/Fleet/arc-a770/modloader",
+    "strings_replace": "C:/Games/Fleet/arc-a770/strings/replace",
+    "mod_roots_ignored": [],
+    "music": [
+      "C:/Games/Fleet/arc-a770/music"
+    ],
+    "title_id": "545407F8",
+    "profile_id": "B13EBABEBABEBABE"
+  }
+}

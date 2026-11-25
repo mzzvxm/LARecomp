@@ -1,8 +1,8 @@
 #include "shaderpack/hash.h"
 
-// Header only, as the SDK's rex/hash.h uses it: no xxhash library to link.
-// xxhash.h comes from the SDK's include folder in larecomp and from LAR-XenosRecomp's
-// thirdparty/xxHash in the standalone tool (src/shaderpack/CMakeLists.txt); both are 0.8.x.
+// Header only (XXH_INLINE_ALL): no xxhash library to link. xxhash.h comes from LAR-XenosRecomp's
+// thirdparty/xxHash, or the folder LARECOMP_XXHASH_INCLUDE_DIR names (src/shaderpack/CMakeLists.txt); the
+// renderer (src/gpu/xxhash_inline.h) uses the same folder, since rexglue 0.11's headers no longer carry xxhash.h.
 #ifndef XXH_INLINE_ALL
 #define XXH_INLINE_ALL
 #endif

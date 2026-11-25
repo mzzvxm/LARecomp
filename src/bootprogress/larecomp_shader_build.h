@@ -4,18 +4,19 @@
 // (src/shaderpack, shaderpack/PIPELINE-PLAN.md). This is the app's side of it: where it runs,
 // what the player sees, and what happens when it goes wrong.
 //
-//   OnConfigurePaths   ConfigurePackFolder       the packs follow a cache folder the player chose
+//   OnInit             ConfigurePackFolder       the packs follow a cache folder the player named (before the
+//                                                batch modes below return, so they use the same folder)
 //   SetupPresentation  InstallStartupGate        before the renderer starts: it attaches the packs
 //                                                that are in place only when their stamp is current
 //   LaunchModule       Phase                     behind the boot progress popup, before the guest
 //                                                starts: build both formats (DXIL and SPIR-V, so a
 //                                                switch of graphics API needs no build), attach
-//   SetupEnvironment   RunCommandLine            larecomp.exe --build_shader_packs: the same build
+//   OnInit             RunCommandLine            larecomp.exe --build_shader_packs: the same build
 //                                                with no window and no runtime (the launcher's setup
 //                                                runs it, so the first start has nothing to build),
 //                                                then the program ends
 //
-// Nothing here applies when the Xenia backend runs (mcla_gpu off): it needs no pack.
+// Nothing here applies when the XENIA renderer runs (gpu.driver = any / d3d12 / vulkan, mcla::gpu::Enabled() false): it needs no pack.
 
 #include <cstdint>
 #include <filesystem>
@@ -23,15 +24,16 @@
 #include <string>
 
 namespace rex::ui {
-class ImGuiDrawer;
-class WindowedAppContext;
+class IUISystem;
 }  // namespace rex::ui
 
 namespace larecomp::shaderbuild {
 
-// UI thread, from OnConfigurePaths (the paths are final enough: logging is not up yet). When the
-// player chose a cache folder (the cache_root setting) the packs go to <cache_root>/shaders; else
-// the renderer's default is used (next to the program, or the local application data folder).
+// UI thread, from OnInit before the batch modes (--build_shader_packs, --precache_pipelines) return,
+// so a batch run and a normal start look in the same folder. When the player NAMED a cache folder
+// (the cache_root setting from larecomp.toml, the environment or the command line; LARecomp's own
+// default for it does not count) the packs go to <cache_root>/shaders; else the renderer's default
+// is used (next to the program, or the local application data folder). shader_pack_dir replaces both.
 void ConfigurePackFolder(const std::filesystem::path& cache_root);
 
 // UI thread, from SetupPresentation, before mcla::gpu::Startup. A pack that is in place and
@@ -48,7 +50,7 @@ void InstallStartupGate(const std::filesystem::path& game_root);
 // renderer. Logs why.
 bool PacksCurrent(const std::filesystem::path& game_root);
 
-// UI thread, from SetupEnvironment (the paths and the config are final, logging is up, nothing else
+// UI thread, from OnInit (the paths and the config are final, logging is up, nothing else
 // has started): whether the program was asked to build the shader packs and close
 // (--build_shader_packs).
 bool CommandLineRequested();
@@ -89,9 +91,13 @@ class Phase {
   // UI thread, after Finish returned false: tells the player and offers Retry / Open log folder /
   // Quit (a cancelled build: Retry / Quit). `retry` is called on the UI thread with whether the
   // next build has to be forced; `quit` closes the app. Nothing is shown when the app is already
-  // closing. Without a drawer a plain message box says it and `quit` is called.
-  void ShowFailure(rex::ui::ImGuiDrawer* drawer, rex::ui::WindowedAppContext& app_context,
-                   std::function<void(bool force)> retry, std::function<void()> quit);
+  // closing. Without a window a plain message says it and `quit` is called.
+  // `use_compatibility`, when given, adds a fourth choice to a build that FAILED (not to one the player stopped): the compatibility
+  // renderer (the hidden XENIA fallback, gpu/renderer_fallback.h), which needs no packs. It is called on the UI thread instead of
+  // `retry` or `quit`; it sets the choice and starts the game again, and the caller then ends this start as `quit` does.
+  void ShowFailure(rex::ui::IUISystem& ui,
+                   std::function<void(bool force)> retry, std::function<void()> quit,
+                   std::function<void()> use_compatibility = {});
 
  private:
   enum class Kind { kNone, kBuilt, kCancelled, kClosing, kFailed };

@@ -41,9 +41,9 @@
 // line per 600 frames with the counts. TickRoadReflCars runs once a frame (Patch_DeltaTimePre).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <algorithm>
 #include <atomic>
@@ -54,18 +54,6 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "mc_engine/input/adaptive_triggers.h"
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_road_reflection_cars_test, 0, "MCLA/GPU",
-    "Debug test, live, never saved: lets the game's own code draw cars into the wet-road reflection. 0 = off "
-    "(the game as it is). 1 = the player's car. 2 = the player's car and the traffic. It opens the game's "
-    "phase-2 vehicle draw (a camera mirrored about the player's ground height) only while a car is driven, "
-    "not in a menu, the pause screen, the map or the garage. It may draw nothing (the car materials may "
-    "have no reflection pass) and may thin out the other reflections while on; the log (\"[road refl cars]\") "
-    "says how many vehicle draws went in.")
-    .debug_only()
-    .range(0, 2)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -182,7 +170,7 @@ void ResetCounts() {
 
 // Once a frame: the log of a change of the switch, and the 600-frame counts while it is on.
 void TickRoadReflCars() {
-    const int mode = std::clamp<int>(REXCVAR_GET(mcla_gpu_road_reflection_cars_test), 0, 2);
+    const int mode = std::clamp<int>(larecomp::settings::mcla_gpu_road_reflection_cars_test.Get(), 0, 2);
     static int s_mode = 0;
     static uint32_t s_frames = 0;
     if (mode != s_mode) {
@@ -202,10 +190,10 @@ void TickRoadReflCars() {
 // set). r30 = the vehicle, r28 = the phase, r13 = the guest's thread register.
 void Hook_RoadReflCarsEnter(PPCRegister& r30, PPCRegister& r28, PPCRegister& r13) {
     t_open = false;
-    if (REXCVAR_GET(mcla_gpu_road_reflection_cars_test) <= 0) return;
+    if (larecomp::settings::mcla_gpu_road_reflection_cars_test.Get() <= 0) return;
     if (r28.u32 != kReflectionPhase) return;
-    auto* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     const uint32_t vehicle = r30.u32;
     if (!base || !Plausible(vehicle)) return;
 
@@ -224,7 +212,7 @@ void Hook_RoadReflCarsEnter(PPCRegister& r30, PPCRegister& r28, PPCRegister& r13
         c.native_open.fetch_add(1, std::memory_order_relaxed);
         return;
     }
-    if (REXCVAR_GET(mcla_gpu_road_reflection_cars_test) == 1 && !is_player) {
+    if (larecomp::settings::mcla_gpu_road_reflection_cars_test.Get() == 1 && !is_player) {
         c.skipped_traffic.fetch_add(1, std::memory_order_relaxed);
         return;
     }

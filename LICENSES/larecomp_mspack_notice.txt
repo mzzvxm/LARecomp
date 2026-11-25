@@ -1,0 +1,25 @@
+libmspack (the LZX decoder) in LARecomp
+=======================================
+
+LARecomp reads the game's compressed files (the mod loader's XCompress streams) with
+the LZX decoder of libmspack, a library by Stuart Caie, copyright 2003-2023. libmspack
+is free software under the GNU Lesser General Public License, version 2.1 (LGPL-2.1).
+The licence text is in larecomp_mspack_license.txt, next to this file.
+
+What it is
+  Library:   libmspack 1.12 (git tag v1.12,
+             commit 3434c093c6d5b4ab0c95ad1247e7449271bd03d3)
+  Part used: mspack/lzxd.c with the library's own headers, built unchanged
+  The file:  larecomp_mspack.dll on Windows, liblarecomp_mspack.so on Linux, in the same
+             folder as the LARecomp executable (larecomp.exe, larecomp)
+
+Where the source is
+  https://github.com/kyz/libmspack (the commit above)
+  LARecomp's copy of it is the folder thirdparty/libmspack of the LARecomp repository,
+  https://github.com/mzzvxm/LARecomp (a git submodule at that same commit).
+
+You can replace it
+  The library is a separate file, not part of the executable. To use a build of your
+  own, build libmspack's lzxd.c as a shared library with the same file name and put it
+  in that folder in place of ours. The executable only calls lzxd_init,
+  lzxd_decompress and lzxd_free, as declared in libmspack's mspack.h and lzx.h.

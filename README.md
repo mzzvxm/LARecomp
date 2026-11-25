@@ -24,11 +24,11 @@ The game boots to the menu, free roam and races work, and saves load. On top of 
 
 **Ultrawide and tall windows.** A 21:9 or 32:9 window gets a wider view instead of black bars (the vertical field of view stays the game's), and a taller one (16:10 such as 1920x1200 or the Steam Deck's 1280x800, 4:3, 5:4, even a portrait window) shows more above and below instead (the width of the view stays the game's), with the HUD at 16:9 in the middle either way. HUD WIDTH (pause menu, INTERFACE > UI; `hud_width`, applies at once) moves the HUD's corner pieces (minimap, speedometer, race position, lap and time, the phone) out toward the screen edges (the sides of a wide picture, the top and bottom of a tall one): CENTERED (the default) keeps them in the middle, WIDER moves them halfway, FULL puts each as far from its edge as on a 16:9 screen. The file takes any number from 0 to 100 (50 and 100 are WIDER and FULL). ASPECT RATIO (pause menu, DISPLAY; `aspect_ratio`, applies at once) is AUTO by default, the window's own shape; 16:9, 16:10, 21:9 and 32:9 keep that shape whatever the window is and leave pure black bars where the window is not that shape (21:9 on a 16:9 monitor has bars above and below, 16:9 on an ultrawide one at the sides). The Xenia renderer keeps 16:9 with bars in a window taller than that.
 
-**A settings menu inside the game.** Press Start, open Options, and there are eight tabs: ReXGlue Settings, Recomp Settings, Performance, Fidelity FX, Debug Camera, Time of Day, Carbon Fiber and Languages. Changes apply immediately and save when you leave the submenu.
+**A settings menu inside the game.** Press Start or Escape and open the SETTINGS tab: RECOMP SETTINGS, GRAPHICS, GAMEPLAY, CONTROLLER, INTERFACE and EXTRAS ([documentation/RUNNING.md](documentation/RUNNING.md#pause-menu) lists what each holds). Changes apply immediately and save when you leave the submenu.
 
 **Quality of life.** An ISO install wizard on first launch, save import from Xenia and RPCS3, custom MP3 radio, Discord Rich Presence, a mod loader, a speedometer that switches between mph and km/h, and a language picker for the five translations on the disc: English, Spanish, French, German and Italian (Portuguese too, once a mod supplies its text).
 
-Under the hood there are 112 mid-asm hooks, 155 settings, and 24,927 named function hints driving codegen.
+Under the hood there are 304 mid-asm hooks, more than 700 settings, and 24,927 named function hints driving codegen.
 
 ## Known issues
 
@@ -58,7 +58,7 @@ Full write-up in [`TECHNICAL_NOTES.md`](documentation/TECHNICAL_NOTES.md).
 
 ### You need
 
-- ReXGlue SDK 0.10.0
+- ReXGlue SDK 0.11.0 (LAR-RXSDK, branch LARecomp)
 - CMake 3.25 or newer
 - Clang, from LLVM or Visual Studio. MSVC will not build this.
 - Ninja
@@ -111,6 +111,30 @@ Everything else is in the pause menu. It defaults to 60 FPS with real frame delt
 
 **The first start builds the shaders** from your game files, behind a progress popup: about 15 seconds on an 8-core CPU, up to a minute or two on slower ones. They go in `cache\shaders` next to the executable and are built again only when the game files, the shader compiler or LARecomp's builder change. The Xenia backend does not need them. `larecomp.exe --build_shader_packs` builds them without starting the game (no window; progress on the console, exit code 0 when they are in place): an installer can run it so the first start has nothing to build. After it, `larecomp.exe --precache_pipelines` does the pipelines the game would otherwise compile while the title starts, for your saved MSAA and upscaler choice: it fills your graphics driver's own cache for the game's API (add `--precache_pipelines_backend=vulkan` or `d3d12` for the other one) and, when nothing changed since (same driver, graphics card, settings and files), finishes in about a second.
 
+**Ray traced shadows** (RT SHADOWS, LIGHTING AND SHADOWS; a graphics card with ray queries, on by itself on a fast one) trace the sun's shadows from the city's own triangles, which are built from your game files as well: about 250 MB in `cache\shaders\city`, a few seconds of work once, started by the game in the background the first time they are wanted. `larecomp.exe --build_city_pack` builds it ahead (no window, progress on the console, exit code 0 when it is in place); an installer can run it after `--build_shader_packs`.
+
+### Linux and the Steam Deck
+
+LARecomp runs on Linux and the Steam Deck through Vulkan. Besides a Vulkan driver, a game installed with the LARecomp launcher needs nothing else: the launcher builds it with its own build kit, which brings its own C++ library (libc++). A build made with the system's compiler (by hand, or by the launcher where its kit cannot start) links the system's libstdc++ instead, and that must be **version 13 or newer**. These have it:
+
+- SteamOS 3.5 or newer (the Steam Deck)
+- Ubuntu 24.04 or newer
+- Fedora 39 or newer
+- Arch Linux, kept up to date (and distributions based on it)
+
+Older ones, such as Ubuntu 22.04 and Debian 12, do not. A build that links the system's library then refuses to start and the terminal says something like:
+
+```
+./larecomp: /lib/x86_64-linux-gnu/libstdc++.so.6: version `GLIBCXX_3.4.31' not found (required by ./larecomp)
+```
+
+The GLIBCXX number in that line can differ. Update the system to a version in the list above, or use a newer distribution.
+<!-- CHECK: the exact GLIBCXX number was not read from a Linux binary (none on this PC); on a Linux build, `objdump -T larecomp | grep -o 'GLIBCXX_[0-9.]*' | sort -V | tail -1` gives it. -->
+
+LARecomp needs no GTK. Where it asks for a file (the ISO of the first-run setup, a save to import) it opens the system's file chooser (the desktop portal, or zenity) and, on a system that has neither, shows a box to type the path in.
+
+Online play is not available on Linux yet. The ONLINE row of the SYSTEM LINK menu is greyed out and says so, the server browser (F6) does not open, and `mcla_online_enable` is ignored.
+
 ---
 
 ## Settings
@@ -132,10 +156,10 @@ These are the environment variables the build reads. Everything else moved to cv
 | `MCLA_VSYNC` | `false` | Leave off. On costs about 30% throughput. |
 | `MCLA_REFRESH_RATE` | `60` | Guest video mode refresh rate. |
 | `MCLA_ALLOW_INVALID_FETCH` | `true` | Set `false` if HUD or minimap glitches appear. |
-| `MCLA_NO_STUB_SWEEP` | `0` | `1` skips stubbing unmapped addresses at startup, saving about 400 ms. Only safe while `stubs.txt` stays empty. |
 | `LARECOMP_LOG_FILE` | auto | Log file path. |
+| `LARECOMP_NO_CRASH_DIALOG` | unset | `1` skips the "crashed" message box: a crash writes its report to the log and the game ends at once (exit status `0xC4A50001` for an access violation), for test runs nobody watches. |
 
-`logs/effective_config.txt` is written every launch and lists what actually took effect, including an `ok` or `FAIL` line for each GPU flag. Check it first when a setting seems to do nothing.
+A flag the game cannot use does not stop it: the log (`logs/larecomp_NNN.log`) says `[cli] --name=value ignored: ` and why, and near its start it lists the debug settings that are not at their default (`[settings] name = value (command line)`). Check the log first when a setting seems to do nothing.
 
 ---
 
@@ -156,7 +180,7 @@ The hook function takes only the registers named in `registers`, by reference, w
 After changing hooks or hints:
 
 ```powershell
-E:\MCLA\rexglue-sdk-0.10.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
+E:\MCLA\rexglue-sdk-0.11.0\out\install\win-amd64\bin\rexglue.exe codegen larecomp_manifest.toml
 cmake --build out/build/win-amd64-relwithdebinfo
 ```
 
@@ -230,5 +254,11 @@ Fixes made directly in LARecomp:
 **NVIDIA DLSS** and **NVIDIA Reflex**. LARecomp uses NVIDIA DLSS Super Resolution through NVIDIA Streamline, and NVIDIA Reflex, on NVIDIA RTX graphics cards. NVIDIA, NVIDIA RTX, DLSS and Reflex are trademarks and/or registered trademarks of NVIDIA Corporation in the U.S. and other countries. NVIDIA's files stay under NVIDIA's licences, which are copied next to the exe with them (`nvngx_dlss_license.txt`, `reflex_license.txt`, `streamline_license.txt`, `streamline_third_party_licenses.md`).
 
 **AMD FidelityFX** and **AMD Anti-Lag 2**. LARecomp uses FidelityFX Super Resolution (FSR 1, FSR 3.1, FSR 4) and CAS for upscaling and sharpening, and AMD Anti-Lag 2. The FidelityFX SDK is under the MIT licence, copied next to the exe with its files (`amd_fidelityfx_license.md`). AMD FidelityFX, FSR and Radeon are trademarks of Advanced Micro Devices, Inc.
+
+**libmspack**, by Stuart Caie (v1.12, [kyz/libmspack](https://github.com/kyz/libmspack)). LARecomp reads the game's compressed files with libmspack's LZX decoder. libmspack is under the GNU LGPL 2.1 and is a separate DLL, `larecomp_mspack.dll` (`liblarecomp_mspack.so` on Linux), next to the exe, so you can replace it with a build of your own. Its licence and a short notice are copied next to it (`larecomp_mspack_license.txt`, `larecomp_mspack_notice.txt`; the repository keeps them in `LICENSES/`), and the library's source is the submodule `thirdparty/libmspack`.
+
+**Zstandard (zstd)**, by Meta Platforms, Inc. and affiliates ([facebook/zstd](https://github.com/facebook/zstd), v1.5.7). LARecomp compresses the ray tracing data it builds on your PC from your game files with zstd, under its BSD 3-Clause licence (Copyright (c) Meta Platforms, Inc. and affiliates; the licence text is `thirdparty/LAR-XenosRecomp/thirdparty/zstd/LICENSE`, and the library is built into the exe).
+
+**ARC DTrade**, who made the LARecomp logo font for the project: the word mark and the LAR app icon.
 
 **Rockstar San Diego**, who made the game.

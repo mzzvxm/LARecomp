@@ -23,17 +23,8 @@
 #include "depth_msaa_resolve_dxil.inc"
 #include "depth_stencil_pack_dxil.inc"
 #include "stencil_msaa_resolve_dxil.inc"
+#include "settings/larecomp_settings.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_depth_cs);
-REXCVAR_DECLARE(bool, mcla_native_gfx_pack_depth_stencil);
-REXCVAR_DECLARE(bool, mcla_native_gfx_msaa_stencil);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_stencil_probe);
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_mrt);
-REXCVAR_DECLARE(bool, mcla_native_gfx_depth_reclear_infer);
-REXCVAR_DECLARE(bool, mcla_native_gfx_reclear_probe);
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
-REXCVAR_DECLARE(bool, mcla_native_gfx_resolve_variants);
-REXCVAR_DECLARE(bool, mcla_native_gfx_resolve_cpu_writes);
 
 namespace mcla::native_gfx {
 
@@ -53,7 +44,7 @@ uint64_t TargetAllocationBytes(ID3D12Device* device, ID3D12Resource* resource) {
 // running tally, so a frame's worth of cascade resolves does not drown the one
 // scene-sized arm that matters.
 void NoteReclearArmed(const char* site, uint32_t width, uint32_t height) {
-  if (!REXCVAR_GET(mcla_native_gfx_reclear_probe)) {
+  if (!larecomp::settings::mcla_native_gfx_reclear_probe.Get()) {
     return;
   }
   static std::map<std::string, uint64_t> seen;
@@ -407,7 +398,7 @@ RenderTargetPool::Census RenderTargetPool::TakeCensus(ID3D12Device* device) cons
 }
 
 void RenderTargetPool::StashResolvedVariant(uint32_t address, ResolvedCopy&& copy) {
-  const bool keep = REXCVAR_GET(mcla_native_gfx_resolve_variants) && copy.resource && copy.owned;
+  const bool keep = larecomp::settings::mcla_native_gfx_resolve_variants.Get() && copy.resource && copy.owned;
   if (!keep) {
     // Exactly the old retirement: an owned copy and any packed twin go to the
     // fence-gated release, a borrowed resource is just dropped with the entry.
@@ -444,7 +435,7 @@ void RenderTargetPool::StashResolvedVariant(uint32_t address, ResolvedCopy&& cop
 bool RenderTargetPool::TakeResolvedVariant(uint32_t address, uint32_t width, uint32_t height,
                                            uint32_t dxgi_format, bool from_depth,
                                            ResolvedCopy* out) {
-  if (!REXCVAR_GET(mcla_native_gfx_resolve_variants)) {
+  if (!larecomp::settings::mcla_native_gfx_resolve_variants.Get()) {
     return false;
   }
   for (auto it = resolved_spares_.begin(); it != resolved_spares_.end(); ++it) {
@@ -500,7 +491,7 @@ void RenderTargetPool::NoteDestination(uint32_t dest_address, uint32_t width,
   // frame. Only a write disarms it (the SDK unprotects the written pages), and
   // then the next resolve here arms it again.
   if (cpu_watch_handle_ && !e.watched && e.bytes &&
-      REXCVAR_GET(mcla_native_gfx_resolve_cpu_writes)) {
+      larecomp::settings::mcla_native_gfx_resolve_cpu_writes.Get()) {
     if (auto* memory = rex::Runtime::instance() ? rex::Runtime::instance()->memory() : nullptr) {
       memory->EnablePhysicalMemoryAccessCallbacks(address, e.bytes,
                                                   /*enable_invalidation_notifications=*/true,
@@ -570,7 +561,7 @@ void RenderTargetPool::ApplyCpuWrites() {
     cpu_write_overflow_ = false;
     cpu_write_pending_.store(false, std::memory_order_relaxed);
   }
-  if (!REXCVAR_GET(mcla_native_gfx_resolve_cpu_writes)) {
+  if (!larecomp::settings::mcla_native_gfx_resolve_cpu_writes.Get()) {
     return;
   }
   for (auto& [address, e] : gpu_produced_) {
@@ -725,7 +716,7 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
     char site[64];
     std::snprintf(site, sizeof(site), "inferido%s dest %ux%u",
                   into_atlas ? "" : "-ESTREITADO", dest_width, dest_height);
-    if (into_atlas && REXCVAR_GET(mcla_native_gfx_depth_reclear_infer)) {
+    if (into_atlas && larecomp::settings::mcla_native_gfx_depth_reclear_infer.Get()) {
       source.needs_depth_reclear = true;
     }
     NoteReclearArmed(site, source.key.width, source.key.height);
@@ -742,7 +733,7 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
   // k_8_8_8_8 input (0x06ACD000) reaches the composite as a guest-memory decode,
   // and only this list can say whether that is a missing resolve or a failed
   // registration.
-  if (REXCVAR_GET(mcla_native_gfx_diag)) {
+  if (larecomp::settings::mcla_native_gfx_diag.Get()) {
     static std::set<uint32_t> seen;
     if (seen.insert(dest_address).second) {
       if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
@@ -754,7 +745,7 @@ void RenderTargetPool::NoteResolve(RenderTarget& source, bool from_depth,
       }
     }
   }
-  if (REXCVAR_GET(mcla_native_gfx_diag) && dest_address == 0x02D6C000u) {
+  if (larecomp::settings::mcla_native_gfx_diag.Get() && dest_address == 0x02D6C000u) {
     if (FILE* f = std::fopen("native_gfx_diag.txt", "ab")) {
       std::fprintf(f, "NOTE_RESOLVE dest=0x%08X %ux%u from_depth=%d src=%p src_fmt=%u\n",
                    dest_address, dest_width, dest_height, from_depth ? 1 : 0, (void*)src,
@@ -1255,7 +1246,7 @@ ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
     // refuses this surface's format pairing, and going through a shader means
     // no format has to be negotiated at all.
     ID3D12Device* device = context.device();
-    if (!REXCVAR_GET(mcla_native_gfx_msaa_depth_cs)) {
+    if (!larecomp::settings::mcla_native_gfx_msaa_depth_cs.Get()) {
       // Diagnostic: skip the dispatch and leave the scratch as it was. This is
       // what shipped before -- an all-zero depth copy -- and it is how the fog,
       // the per-object contact shadow and the DoF circle of confusion can be
@@ -1305,7 +1296,7 @@ ID3D12Resource* RenderTargetPool::ResolveMsaaToScratch(D3D12Context& context,
 void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
                                                 ID3D12GraphicsCommandList* cl,
                                                 ResolvedCopy& dst) {
-  if (!cl || !dst.resource || !REXCVAR_GET(mcla_native_gfx_pack_depth_stencil)) {
+  if (!cl || !dst.resource || !larecomp::settings::mcla_native_gfx_pack_depth_stencil.Get()) {
     return;
   }
   const D3D12_RESOURCE_DESC rd = dst.resource->GetDesc();
@@ -1457,7 +1448,7 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
   // handed. Copies the depth-as-8888 copy to a readback buffer and reads it 60
   // packs later, by which point the in-flight slots guarantee the GPU is done.
   // R is the stencil byte (see depth_stencil_pack_cs.hlsl).
-  if (const uint32_t every = REXCVAR_GET(mcla_native_gfx_stencil_probe)) {
+  if (const uint32_t every = larecomp::settings::mcla_native_gfx_stencil_probe.Get()) {
     static Microsoft::WRL::ComPtr<ID3D12Resource> rb;
     static uint32_t calls = 0, wait = 0, rb_w = 0, rb_h = 0, rb_pitch = 0;
     ++calls;
@@ -1487,7 +1478,7 @@ void RenderTargetPool::PackResolvedDepthStencil(D3D12Context& context,
             std::fprintf(f,
                          "STENCILPROBE %ux%u msaa_stencil=%d nonzero=%.2f%% "
                          "bottom_centre_nonzero=%.2f%% ids:",
-                         rb_w, rb_h, REXCVAR_GET(mcla_native_gfx_msaa_stencil) ? 1 : 0,
+                         rb_w, rb_h, larecomp::settings::mcla_native_gfx_msaa_stencil.Get() ? 1 : 0,
                          total ? 100.0 * double(total - hist[0]) / double(total) : 0.0,
                          car_total ? 100.0 * double(car_nonzero) / double(car_total) : 0.0);
             for (uint32_t v = 1; v < 256; ++v) {
@@ -1599,7 +1590,7 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       continue;
     }
     const bool from_color1 = !pc.from_depth && pc.color_index == 1 && pc.source->color1 &&
-                             (REXCVAR_GET(mcla_native_gfx_mrt) & 0x10u);
+                             (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x10u);
     ID3D12Resource* src_res = pc.from_depth ? pc.source->depth.Get()
                                             : (from_color1 ? pc.source->color1.Get()
                                                            : pc.source->color.Get());
@@ -1753,7 +1744,7 @@ void RenderTargetPool::FlushPendingCopies(D3D12Context& context,
       sdst.SubresourceIndex = 1;
       ssrc.SubresourceIndex = 1;
       cl->CopyTextureRegion(&sdst, dx, dy, 0, &ssrc, &box);
-    } else if (pc.from_depth && used_scratch && REXCVAR_GET(mcla_native_gfx_msaa_stencil) &&
+    } else if (pc.from_depth && used_scratch && larecomp::settings::mcla_native_gfx_msaa_stencil.Get() &&
                HasStencilPlane(dst.resource->GetDesc().Format) && pc.source->depth &&
                HasStencilPlane(pc.source->depth->GetDesc().Format)) {
       // Multisampled: the depth came through the single-plane compute scratch,
@@ -1909,7 +1900,7 @@ void RenderTargetPool::PrepareForRendering(ID3D12GraphicsCommandList* cl, Render
   }
   // Target 1 is bound as an RTV in the same call as target 0, so it needs the
   // same state; a resolve leaves it in COPY_SOURCE.
-  if (target.color1 && (REXCVAR_GET(mcla_native_gfx_mrt) & 0x8u) &&
+  if (target.color1 && (larecomp::settings::mcla_native_gfx_mrt.Get() & 0x8u) &&
       target.color1_state != D3D12_RESOURCE_STATE_RENDER_TARGET) {
     batch.AddTexture(target.color1.Get(), target.color1_state, D3D12_RESOURCE_STATE_RENDER_TARGET);
     target.color1_state = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -2369,7 +2360,7 @@ ID3D12Resource* RenderTargetPool::FindResolvedTarget(uint32_t guest_address, uin
                                                      uint32_t height, bool want_depth,
                                                      D3D12_RESOURCE_STATES* out_state) {
   // TEMP DIAG (remove after): why the exposure input 0x02D6C000 misses.
-  if (REXCVAR_GET(mcla_native_gfx_diag) && guest_address == 0x02D6C000u) {
+  if (larecomp::settings::mcla_native_gfx_diag.Get() && guest_address == 0x02D6C000u) {
     static unsigned n = 0;
     ++n;
     // See the matching note in texture_cache.cpp: six samples only ever showed

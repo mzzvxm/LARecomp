@@ -1,13 +1,14 @@
 // Yoinked from https://github.com/twist84/halo3_cache_release_recomp/blob/06c7f0740d9bee47e2c0be047a5c7562fe9e1fa5/halo3/source/rex_macros.h
 
-#include <rex/rex_app.h>
-#include <rex/ppc/function.h>
-#include <rex/runtime.h>
-#include <rex/system/thread_state.h>
-#include <rex/system/xthread.h>
-#include <rex/hook.h>
+#include <rex/app/title_app.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/thread_state.h>
+#include <rex/kernel/object/kernel_thread.h>
+#include <rex/ppc/hook.h>
 
 #include <type_traits>
+#include "larecomp_guest.h"
 
 /* ---------- constants */
 
@@ -15,10 +16,10 @@
 	REX_EXTERN(__imp__rex_##function)
 
 #define REX_PPC_INVOKE(function, ...) \
-	rex::ppc::GuestToHostFunction<function_return_t<decltype(function)>>(__imp__rex_##function, __VA_ARGS__)
+	larecomp::guest::Call<function_return_t<decltype(function)>>(__imp__rex_##function, __VA_ARGS__)
 
 #define REX_PPC_INVOKE2(return_type, function, ...) \
-	rex::ppc::GuestToHostFunction<return_type>(__imp__rex_##function, __VA_ARGS__)
+	larecomp::guest::Call<return_type>(__imp__rex_##function, __VA_ARGS__)
 
 #define REX_PPC_HOOK(function) \
     REX_HOOK(rex_##function, function##_Hook)
@@ -30,16 +31,16 @@
 	type(&name)[count] = *reinterpret_cast<type(*)[count]>(0x100000000 + address)
 
 #define REX_PPC_CONTEXT_REF(name) \
-	auto current_thread = rex::system::XThread::GetCurrentThread(); \
-	assert(current_thread != nullptr); \
-	auto context = current_thread->thread_state()->context(); \
+	auto* current_thread_state = rex::kernel::ThreadState::Get(); \
+	assert(current_thread_state != nullptr); \
+	auto* context = current_thread_state->GetContext(); \
 	assert(context != nullptr); \
 	PPCContext& __restrict name = *context
 
 #define REX_PPC_MEMBASE_PTR(name) \
-auto* runtime = rex::Runtime::instance(); \
-auto* memory = runtime->memory(); \
-uint8_t* name = memory->virtual_membase()
+auto* runtime = REX_RUNTIME(); \
+auto* memory = larecomp::guest::AddressSpace(runtime); \
+uint8_t* name = memory->GetVirtualMembase()
 
 
 /* ---------- definitions */

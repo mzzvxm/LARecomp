@@ -28,7 +28,8 @@
 // the car's footprint but not a halo; the car's own body (a pixel that is a vehicle) sees everything at the
 // full radius as before.
 //
-// The pixel's own noise is interleaved gradient noise (a fixed spatial pattern) plus a shift that
+// The pixel's own noise is a BLUE noise tile (blue_noise.hlsli; a fixed spatial pattern with no lattice in it: interleaved gradient noise, the first version's, is
+// a diagonal lattice whose error the blur and the history leave as thin lines; mcla_gpu_ao_blue_noise false) plus a shift that
 // changes every frame through a lattice of 13 frames (ao_stable.h, AoNoiseShift: the Fibonacci lattice, 13 evenly
 // spaced rotations and step offsets, all visited by any 13 consecutive frames; the first version's additive
 // recurrence of the R2 sequence left gaps of 0.23 of the rotation in 12 frames), so the two noise values of one
@@ -73,6 +74,16 @@
 // from the near samples' mask alone (occupied_near), so the occlusion looks as it did. ssgi_light.h has the
 // same maths in C++.
 
+// THE TRACED TERM (both variants, the plain pass and the bounce light's; car_rt_ao.h, car_rt_ao_rules.h). Where the device can trace rays against the
+// cars of the top level (the player's and the ones beside it), a compute pass (car_rt_ao_cs.hlsl) has cast a few short rays from the pixels near them
+// before this pass and left an image the size of this one (R8G8B8A8_UNORM: r the open share of the pixel's hemisphere within the rays' reach, 1 where
+// nothing was traced). With the flag kRtOcclusionFlag in the flags (bit 31) the image's bindless slot is in lin.x, as a number (the main pass does
+// not read the projection rows lin holds for the depth pass, and every uint of the bounce light's push is taken by its chains), and the visibility
+// is the smaller of the screen-space one and the traced one raised to the same power with the same floor: what the camera does not see (the far
+// side of a wheel well, the body over a tyre, the road at the foot of a car, between two cars) darkens by the cars' own triangles. In the bounce
+// light's variant that is its x channel, the one the denoise and the history read; the bounce itself (yzw) is the screen's. The pass is the same
+// to the bit without the flag.
+//
 // COMPILE-TIME COUNTS. The same source is compiled for the counts of a quality (ao.cpp: 3 slices of 3 steps, or 2 of 2; the
 // bounce light adds the far ring's steps a side, 2 or 1): with AO_SLICES and AO_STEPS defined, and in the bounce light's
 // pass AO_FAR_STEPS, the loops run over constants: the loops over the steps (and the ring's) unroll and everything that is a
@@ -111,8 +122,10 @@
 #define AO_GI 0
 #endif
 
+#include "nan_guard.hlsli"
 #if AO_GI
 #include "ssgi_common.hlsli"
+#include "ao_gbuffer_normal.hlsli"
 #endif
 
 static const float kPi = 3.14159265358979f;
@@ -122,6 +135,14 @@ static const float kMinOffsetPixels = 1.3f;
 // The farthest a sample may reach on screen, as a share of the image height (a surface almost at
 // the camera would ask for the whole screen).
 static const float kMaxRadiusShare = 0.3f;
+// The traced term's flag (the flags word's bit 31, car_rt_ao_rules.h kMainFlag): lin.x is the traced image's slot, as a number.
+static const uint kRtOcclusionFlag = 1u << 31;
+
+// The traced term's visibility at `pixel` (the flag is set): the traced open share shaped as the visibility is (the final power and the floor).
+float AoTracedVisibility(int2 pixel) {
+  const float traced = g_textures[uint(g_push.lin.x)].Load(int3(pixel, 0)).x;
+  return max(pow(traced, g_push.shape.x), g_push.shape.y);
+}
 
 // The linear depth at the continuous pixel position `p` (level-0 pixels), from `level` of the
 // chain, nearest texel. Each level's slot comes straight from the push constants (never a computed
@@ -236,7 +257,8 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   if (!(all(p >= 0.0f) && all(p < size))) {
     return;  // off screen: nothing there, the sky share of the hemisphere stays the game's ambient
   }
-  const float3 sp = AoViewPosInv(floor(p) + 0.5f, clip_scale, ChainDepth(p, level));
+  const float t_sample = ChainDepth(p, level);
+  const float3 sp = AoViewPosInv(floor(p) + 0.5f, clip_scale, t_sample);
   const float3 delta = sp - pc;
   const float dist = length(delta);
   float w = saturate(dist * falloff_mul + falloff_add);
@@ -267,20 +289,32 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   // camera), and the weight is 0 for a surface that faces away (a roof seen from the ground, a wall
   // seen from behind), 1 from a quarter of the way to facing straight at the pixel, a ramp between.
   // No second depth (the sky, the image's edge): it is taken to face the pixel.
+  // With the normal image (GB-E; ao_common.hlsli AoNormalAt, ao_gbuffer_normal.hlsli) the second depth is not read: the surface's own normal at the sample's pixel, cut by the slice
+  // plane, is the same profile normal on a plane (ao_gbuffer_test.cpp compares them) and it is not another surface across a depth edge; a sample in the sky is taken to face the
+  // pixel as before. The image's pixel is the sample's own, at the traced size (the chain's coarser levels average the depth, not the normal).
   float facing = 1.0f;
   if (facing_weight > 0.0f) {
-    const float2 p2 = p + away * float(1u << level);
-    const float t2 = ChainDepth(p2, level);
-    const float3 tangent = AoViewPosInv(floor(p2) + 0.5f, clip_scale, t2) - sp;
-    if (t2 < kAoSky * 0.5f && dot(tangent, tangent) > 1e-10f) {
-      float3 normal_s = cross(tangent, axis);
-      const float length_n = length(normal_s);
-      if (length_n > 1e-6f) {
-        normal_s *= 1.0f / length_n;
-        if (dot(normal_s, sp) > 0.0f) {
-          normal_s = -normal_s;
+    const uint normal_slot = uint(g_push.lin.y);
+    if (normal_slot != 0u) {
+      if (t_sample < kAoSky * 0.5f) {
+        const int2 at = clamp(int2(floor(p)), int2(0, 0), int2(size) - 1);
+        const float3 normal_sample = GbOctDecode(g_textures[normal_slot].Load(int3(at, 0)).xy);
+        facing = lerp(1.0f, AoGbFacingFromNormal(normal_sample, axis, sp, dir), facing_weight);
+      }
+    } else {
+      const float2 p2 = p + away * float(1u << level);
+      const float t2 = ChainDepth(p2, level);
+      const float3 tangent = AoViewPosInv(floor(p2) + 0.5f, clip_scale, t2) - sp;
+      if (t2 < kAoSky * 0.5f && dot(tangent, tangent) > 1e-10f) {
+        float3 normal_s = cross(tangent, axis);
+        const float length_n = length(normal_s);
+        if (length_n > 1e-6f) {
+          normal_s *= 1.0f / length_n;
+          if (dot(normal_s, sp) > 0.0f) {
+            normal_s = -normal_s;
+          }
+          facing = lerp(1.0f, saturate(4.0f * dot(normal_s, -dir)), facing_weight);
         }
-        facing = lerp(1.0f, saturate(4.0f * dot(normal_s, -dir)), facing_weight);
       }
     }
   }
@@ -298,7 +332,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float2 centre = float2(pixel) + 0.5f;
   const float3 pc = AoViewPos(centre, size, tc);
-  const float3 normal = AoNormalFromImage(g_push.slots.z, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(uint(g_push.lin.y), g_push.slots.z, pixel, isize, tc, pc);
   const float3 view_vec = normalize(-pc);
 
   const float radius = g_push.lens.z;
@@ -325,8 +359,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
 #endif
   const float2 clip_scale = 2.0f / size;
-  const float2 noise_at = float2(pixel);
-  const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  const float2 spatial = AoSpatialNoise(pixel);
   const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;
 
@@ -414,10 +447,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The weighted mean over the slices (the plain pass's ratio): an open surface is 1 exactly, and a
   // surface that is all radiance gets that radiance, whatever the slices' angles are.
   const float inv_open = 1.0f / max(open_sum, 1e-3f);
-  visibility = saturate(visibility * inv_open);
+  visibility = saturate(NgNumberOr(visibility * inv_open, 1.0f));   // a NaN is no occlusion, decided by the bits (nan_guard.hlsli): saturate(NaN) is 0 on D3D12 and open on Vulkan
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
-  // A half float keeps 65504; the chain's colours are capped well under that, and a NaN counts as none.
-  bounce = min(max(bounce * inv_open, 0.0f), 60000.0f);
+  if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {
+    // THE TRACED TERM (above): the plain pass's rule on the visibility channel, the darker of the two.
+    visibility = min(visibility, AoTracedVisibility(pixel));
+  }
+  // A half float keeps 65504; the chain's colours are capped well under that, and a NaN is none (decided by the bits, nan_guard.hlsli: max(NaN, 0) is 0 on D3D12 only).
+  bounce = NgHeld3(bounce * inv_open, 60000.0f);
   return float4(visibility, bounce);
 }
 
@@ -459,7 +496,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float2 centre = float2(pixel) + 0.5f;
   const float3 pc = AoViewPos(centre, size, tc);
-  const float3 normal = AoNormalFromImage(g_push.slots.z, pixel, isize, tc, pc);
+  const float3 normal = AoNormalAt(uint(g_push.lin.y), g_push.slots.z, pixel, isize, tc, pc);
   const float3 view_vec = normalize(-pc);
 
   const float radius = g_push.lens.z;
@@ -485,8 +522,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint steps = max(AoSteps(), 1u);
 #endif
   const float2 clip_scale = 2.0f / size;
-  const float2 noise_at = float2(pixel);
-  const float2 spatial = float2(AoNoise(noise_at), AoNoise(noise_at.yx + float2(31.0f, 11.0f)));
+  const float2 spatial = AoSpatialNoise(pixel);
   // The frame's shift: a lattice of 13 frames (ao_common.hlsli AoNoiseShift, ao_stable.h).
   const float2 noise = frac(spatial + AoNoiseShift());
   const float min_offset = kMinOffsetPixels / radius_px;
@@ -541,8 +577,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
     // cos(n) + n sin(n).
     open_sum += projected_len * (cos_n + n * sin_n);
   }
-  visibility = saturate(visibility / max(open_sum, 1e-3f));
+  visibility = saturate(NgNumberOr(visibility / max(open_sum, 1e-3f), 1.0f));   // a NaN is no occlusion, decided by the bits (nan_guard.hlsli)
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
+  if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {
+    // THE TRACED TERM (above): the open share the rays found, shaped as the visibility is, the darker of the two.
+    visibility = min(visibility, AoTracedVisibility(pixel));
+  }
   return float4(visibility, 0.0f, 0.0f, 0.0f);
 }
 

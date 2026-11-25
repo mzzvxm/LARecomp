@@ -39,8 +39,22 @@ bool PauseMenuColorButtons(PauseMenuColorRows* out);
 // cutscene gallery calls this when it unpauses the game to play a scene, so no
 // menu of ours is left on the open-form stack holding the pad.
 void PauseMenuLeaveSubmenu();
+// Closes the pause menu the way its CONTINUE row does (the game's own PM_Continue, sub_8265F428: closes the pause form, goes
+// back to the in-game state, clears the menu flag; our menus first, as PauseMenuLeaveSubmenu). Guest thread. The game is
+// unpaused a few frames later, not on return. False, and nothing done, when the pause screen is not open (PM_Continue would move
+// the machine out of a state it knows nothing about) or when the game's function is not there. The server browser's join uses it:
+// a join must not drive the menu machine while the pause screen is up (online/server_browser/browser_join_core.h).
+bool PauseMenuClose();
+// The pause screen (mcPauseForm, form 71) is open. Not the game's paused flag: in an online session the pause menu is a local pause
+// and the flag stays 0 with the screen up; and the flag is also set by the full map or a toolkit pause with no pause screen at all.
+// Guest thread (it reads the form's open byte, which only the guest thread writes).
+bool PauseMenuOpen();
 // RESTART GAME (the QUIT form): save, start the game again, close this one.
 void PauseMenuRestartGame();
+// The game is ending (the window's close, a signal, the game's own exit): a setting changed in a pause-menu page and not written yet is written to
+// larecomp.toml now. The menu writes when a page is left and when QUIT is pressed, so closing the window inside a page lost the change. Nothing is
+// written when nothing moved. UI thread (the same call the menu makes from there).
+void PauseMenuSavePendingSettings();
 
 // Once per UI update (swf_dom.cpp), guest thread: closes our menus if the
 // pause screen they were opened over goes away under them.
@@ -51,6 +65,18 @@ bool Hook_EnablePMSave(PPCRegister& r3, PPCRegister& r4);
 bool Hook_EnablePMTeste(PPCRegister& r3, PPCRegister& r4);
 bool Hook_PMLodTrafficClick(PPCRegister& r3, PPCRegister& r31);
 bool Hook_PopulateRedirect(PPCRegister& r3);
+
+// What the game rendered last, for the mouse in the menus (input/menu_mouse.cpp): the ACTIVE mcListViewFixed Hook_ListViewPopulate saw last (one the renderer draws: the pause screen offers the
+// lists of its other tabs to the hook too) and the UIMenu Hook_PopulateRedirect saw last
+// (0 = none yet), each with a counter that says which of the two is the later (the larger number; 0 = never). Any thread; the objects are the guest's, read on the guest thread.
+uint32_t PauseMenuLastList();
+uint32_t PauseMenuLastListSeq();
+uint32_t PauseMenuLastUiMenu();
+uint32_t PauseMenuLastUiMenuSeq();
+// The list of the menu of ours that is on top of the pause screen (a settings page: its form's list, exact where the last one rendered may be older), 0 when the top form is not one of ours.
+uint32_t PauseMenuTopOurList();
+// Whether `list` is the list of one of our pages (they are 432 stage pixels wide from x 136, the game's own pages 316 from x 218: the mouse's model of a page).
+bool PauseMenuIsOurList(uint32_t list);
 bool MCLA_MenuListNullTableGuard(PPCRegister& r30);
 
 // Skip a vfunc call through a menu list whose vtable is null -- see the comment

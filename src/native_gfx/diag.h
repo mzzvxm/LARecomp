@@ -3,9 +3,8 @@
 #include <atomic>
 #include <cstdarg>
 #include <cstdio>
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 namespace mcla::native_gfx {
 
@@ -19,7 +18,7 @@ inline void HangMark(std::atomic<const char*>& slot, const char* where) {
 }
 
 inline void DiagLog(const char* fmt, ...) {
-  if (!REXCVAR_GET(mcla_native_gfx_diag)) {
+  if (!larecomp::settings::mcla_native_gfx_diag.Get()) {
     return;
   }
   FILE* f = std::fopen("native_gfx_diag.txt", "ab");

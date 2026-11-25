@@ -1,4 +1,5 @@
 #include "config_save.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -10,8 +11,8 @@
 #include <unordered_map>
 #include <unordered_set>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "profile/larecomp_profile_store.h"
 
@@ -108,30 +109,30 @@ bool IsValidUtf8(std::string_view s) {
 }  // namespace
 
 std::optional<std::string> CvarTomlValue(std::string_view name, std::string_view value) {
-  const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
+  const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
   bool bare = false;
   if (info) {
     switch (info->type) {
-      case rex::cvar::FlagType::String:
+      case larecomp::cvar::FlagType::String:
         break;
-      case rex::cvar::FlagType::Boolean:
+      case larecomp::cvar::FlagType::Boolean:
         bare = value == "true" || value == "false";
         if (!bare) {
           return std::nullopt;
         }
         break;
-      case rex::cvar::FlagType::Double:
+      case larecomp::cvar::FlagType::Double:
         bare = IsTomlNumber(value);
         if (!bare) {
           return std::nullopt;
         }
         break;
-      case rex::cvar::FlagType::Command:
+      case larecomp::cvar::FlagType::Command:
         return std::nullopt;
-      case rex::cvar::FlagType::Int32:
-      case rex::cvar::FlagType::Int64:
-      case rex::cvar::FlagType::Uint32:
-      case rex::cvar::FlagType::Uint64:
+      case larecomp::cvar::FlagType::Int32:
+      case larecomp::cvar::FlagType::Int64:
+      case larecomp::cvar::FlagType::Uint32:
+      case larecomp::cvar::FlagType::Uint64:
         bare = IsTomlInteger(value);
         if (!bare) {
           return std::nullopt;
@@ -162,13 +163,13 @@ using Edits = std::vector<pf::ConfigEdit>;
 // cvar's own getter prints it, so it compares with a later read of the same getter.
 std::mutex g_startup_mutex;
 std::unordered_map<std::string, std::string>& StartupValues() {
-  static std::unordered_map<std::string, std::string> values;
+  static std::unordered_map<std::string, std::string>& values = larecomp::Leak<std::unordered_map<std::string, std::string>>();
   return values;
 }
 
 // The cvars a save never writes (NoteSessionOnlyCvar).
 std::unordered_set<std::string>& SessionOnly() {
-  static std::unordered_set<std::string> names;
+  static std::unordered_set<std::string>& names = larecomp::Leak<std::unordered_set<std::string>>();
   return names;
 }
 
@@ -186,11 +187,11 @@ bool AtStartupValue(const std::string& name, const std::string& value) {
 // The cvars a scene holds right now (SetCvarForScene): the value each had before the scene took it and where that value came from.
 struct SceneHold {
   std::string value;
-  rex::cvar::Source source = rex::cvar::Source::kDefault;
+  larecomp::cvar::Source source = larecomp::cvar::Source::kDefault;
 };
 std::mutex g_scene_mutex;
 std::unordered_map<std::string, SceneHold>& SceneHolds() {
-  static std::unordered_map<std::string, SceneHold> holds;
+  static std::unordered_map<std::string, SceneHold>& holds = larecomp::Leak<std::unordered_map<std::string, SceneHold>>();
   return holds;
 }
 
@@ -241,17 +242,17 @@ void NoteSessionOnlyCvar(std::string_view name) {
 }
 
 void NoteStartupCvar(std::string_view name) {
-  std::string value = rex::cvar::GetFlagByName(name);
+  std::string value = larecomp::cvar::GetFlagByName(name);
   std::lock_guard<std::mutex> lock(g_startup_mutex);
   StartupValues()[std::string(name)] = std::move(value);
 }
 
 bool IsAtStartupValue(std::string_view name) {
-  return AtStartupValue(std::string(name), rex::cvar::GetFlagByName(name));
+  return AtStartupValue(std::string(name), larecomp::cvar::GetFlagByName(name));
 }
 
 bool SetCvarForScene(std::string_view name, std::string_view value) {
-  const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
+  const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
   if (!info) {
     return false;
   }
@@ -259,11 +260,11 @@ bool SetCvarForScene(std::string_view name, std::string_view value) {
   // The hold goes in before the value changes, so a save on another thread never sees the scene's value unheld.
   bool first = false;
   {
-    SceneHold before{rex::cvar::GetFlagByName(name), info->source};
+    SceneHold before{larecomp::cvar::GetFlagByName(name), info->source};
     std::lock_guard<std::mutex> lock(g_scene_mutex);
     first = SceneHolds().try_emplace(key, std::move(before)).second;  // a second `set` of the same cvar keeps the first hold
   }
-  if (!rex::cvar::SetFlagByName(name, value)) {
+  if (!larecomp::cvar::SetFlagByName(name, value)) {
     if (first) {
       std::lock_guard<std::mutex> lock(g_scene_mutex);
       SceneHolds().erase(key);
@@ -284,20 +285,19 @@ bool RestoreCvarForScene(std::string_view name) {
     }
     hold = it->second;
   }
-  // Still held while it is put back, so a save in between writes the old value, not the scene's.
-  const bool ok = rex::cvar::SetFlagByName(name, hold.value);
-  if (ok && hold.source != rex::cvar::Source::kRuntime) {
-    // SetFlagByName made the source "run time"; the SDK has no call that sets it back, but the registry entry is plain data.
-    for (rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-      if (entry.name == name) {
-        entry.source = hold.source;
-        break;
-      }
-    }
-  }
+  // Still held while it is put back, so a save in between writes the old value, not the scene's. The value goes back at the
+  // layer it came from (RestoreValue: the registry only raises a layer, so it is reset first and stored again; the 0.10 code
+  // wrote entry.source of the registry's own vector, which no longer exists).
+  const bool ok = larecomp::cvar::RestoreValue(name, hold.value, hold.source);
   std::lock_guard<std::mutex> lock(g_scene_mutex);
   SceneHolds().erase(key);
   return ok;
+}
+
+bool ReleaseCvarFromScene(std::string_view name) {
+  const std::string key(name);
+  std::lock_guard<std::mutex> lock(g_scene_mutex);
+  return SceneHolds().erase(key) != 0;
 }
 
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held) {
@@ -316,19 +316,19 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
   // A cvar a scene holds (the trailer toolkit's `set` key) is judged by what it was before the scene took it: the scene's value is not
   // the player's choice, so it is never written, and a value the player had changed earlier is written as the player left it.
   const std::unordered_map<std::string, SceneHold> scene_holds = SceneHoldsNow();
-  for (const std::string& name : rex::cvar::ListFlags()) {
-    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
+  for (const std::string& name : larecomp::cvar::ListFlags()) {
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
     if (!info) {
       continue;
     }
     const auto hold = scene_holds.find(name);
     CvarSaveFacts facts;
-    facts.is_command = info->type == rex::cvar::FlagType::Command;
+    facts.is_command = info->type == larecomp::cvar::FlagType::Command;
     facts.session_only = IsSessionOnly(name);
-    facts.changed_this_session = info->source == rex::cvar::Source::kRuntime;
+    facts.changed_this_session = info->source == larecomp::cvar::Source::kRuntime;
     facts.debug_only = info->is_debug_only;
     facts.held_by_scene = hold != scene_holds.end();
-    facts.changed_before_scene = facts.held_by_scene && hold->second.source == rex::cvar::Source::kRuntime;
+    facts.changed_before_scene = facts.held_by_scene && hold->second.source == larecomp::cvar::Source::kRuntime;
     const CvarSaveAction action = DecideCvarSave(facts);
     if (action == CvarSaveAction::kSkip) {
       continue;
@@ -340,7 +340,10 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
     }
     const std::string value =
         action == CvarSaveAction::kWriteBeforeScene ? hold->second.value : info->getter();
-    const bool unchanged = value == info->default_value || AtStartupValue(name, value);
+    // Save an explicit OFF even if this is the first write of the new toggle. A legacy "rr"
+    // line can still supply the startup value until the file contains the new key.
+    const bool unchanged = name != "mcla_gpu_vendor_denoiser" &&
+                           (value == info->default_value || AtStartupValue(name, value));
     Put(edits, name, CvarTomlValue(name, value), unchanged);
   }
   for (const auto& [name, value] : held) {

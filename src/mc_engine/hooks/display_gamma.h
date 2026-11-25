@@ -3,7 +3,7 @@
 
 #include <cstdint>
 
-#include <rex/ppc.h>
+#include <rex/ppc/context.h>
 
 // Called at the start of the D3DDevice_Swap hook, on the thread that owns the device, before
 // the original runs. If display_gamma changed since the game last built its ramp, it gives the

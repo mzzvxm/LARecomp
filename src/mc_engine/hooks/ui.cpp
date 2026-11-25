@@ -4,10 +4,12 @@
 // the menu cursor's auto-repeat.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/ppc/call.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -24,121 +26,11 @@
 #include "mc_engine/core/logging.h"
 #include "../online/online_common.h"  // IsGuestPtr
 #include "mc_engine/input/input_state.h"
+#include "larecomp_guest.h"
 
-REXCVAR_DECLARE(bool, ui_interpolate);  // ui_smooth.cpp
-
-REXCVAR_DEFINE_BOOL(skip_intro, false, "MCLA/Patches", "Skip the intro videos to prevent graphical issues.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(speed_units, "mph", "MCLA/HUD",
-    "Speedometer / distance units. Drives the game's own metric formatter "
-    "(sub_8238DDF0): game = console profile default (mph on NTSC), kmh = metric "
-    "(km/h, km, m), mph = imperial (mph, miles, ft). Converts both the number and "
-    "the unit label; the analog dial tick art stays as authored.\n"
-    "kmh also converts the live HUD speedometer, which does NOT go through that "
-    "formatter: the HUD movie multiplies m/s by 2.237 in its own ActionScript, so "
-    "hud_units.cpp rewrites that constant (and the per-glyph unit label) in guest "
-    "memory. The radar detector's speed-limit sign follows it too, through the game's "
-    "own km/h branch for it (rounded to the nearest 5), which the game never takes.")
-    .allowed({"game", "kmh", "mph"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(button_prompts, "auto", "MCLA/UI",
-    "On-screen button glyphs. auto = the glyphs of what you used last, on every screen at once: "
-    "PlayStation glyphs after a Sony controller, Xbox glyphs after any other, key caps after the "
-    "keyboard or the mouse (the menu's keys while a menu is open, the driving keys on the road). "
-    "xbox = A/B/X/Y + LB/RB/LT/RT, playstation = cross/circle/square/triangle + L1/R1/L2/R2, "
-    "keyboard = key caps, whatever you use. Every set is drawn into the same button bitmaps "
-    "(keyboard_native.cpp), so a change reaches a screen that is already open on the next frame; "
-    "the UI movies' own 'platform' flag stays on Xbox (see prompts_live).")
-    .allowed({"auto", "xbox", "playstation", "keyboard"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(prompts_live, true, "MCLA/UI",
-    "Button prompts follow the device in use on screens that are already open (the garage, a pop-up, the pause menu). The UI movies are told they run on an Xbox, "
-    "and the PlayStation set and the key caps are painted over the Xbox button bitmaps; a screen picks a changed 'platform' flag only when it is built again, "
-    "so the flag cannot do this alone (KBM-P0). Off = the older way: the flag shows the PlayStation set, screens already open keep their glyphs until reopened, "
-    "and only the keyboard's key caps are painted. A debug switch.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(language, "auto", "MCLA/Localization",
-    "UI text language. The disc has five full translations in its own "
-    "ui/mc4stringtable*.strtbl files: English, Spanish, French, German and Italian. "
-    "The game picks its language from the console's user language, which here is "
-    "the SDK's user_language setting (English unless it says otherwise); at start-up "
-    "LARecomp sets that from this choice (en, es, fr, de, it), so the game's own "
-    "language code, its achievement list and the Discord status all follow it. "
-    "The setting itself is not saved to larecomp.toml, only this one. auto leaves "
-    "user_language as it is.\n"
-    "Switching in-game reloads the text table at once and tells the game its new "
-    "language, but screens already drawn keep their old text until they are "
-    "reopened (the pause menu itself too: the game resolves a row's label once when "
-    "the row is built), and the few things the game reads only at start follow after "
-    "a restart.\n"
-    "pt (Portuguese) works only with a mod that supplies the text: the disc's string "
-    "tables carry an empty Portuguese block, and on the disc it starts where the "
-    "Japanese block does, so it would show Japanese text. A mod can fill it with its "
-    "own ui/mc4stringtable*.strtbl files (modloader/<mod>/files/ui/): every string "
-    "table the game loads from ui/ (mc4stringtable, _0001 to _0003, _tms) needs a "
-    "Portuguese block with text. Until then pt is used as auto, with a line in the "
-    "log, and the setting stays in larecomp.toml for when the mod is installed. pt "
-    "leaves user_language alone: only the text changes, the game's own language "
-    "code stays what auto gives.\n"
-    "Not offered: Japanese (its UI movies, jp_*.xsf, are not on the disc, and asking "
-    "for them is a hard crash).")
-    .allowed({"auto", "en", "es", "fr", "de", "it", "pt"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(ui_movie_pacing, "PHOTOALBUMMOVIE", "MCLA/UI",
-    "Flash movies advanced at the console's 30 frames a second instead of one frame "
-    "per rendered frame. The game steps every UI movie exactly one frame per update, "
-    "which on the 360 was 30 times a second; above 30 FPS those movies play faster "
-    "-- the photo album twice as fast at 60. Comma-separated movie names "
-    "(PHOTOALBUMMOVIE, POPUPMOVIE, PAUSEMOVIE, GARAGEMOVIE, NAVSYSMOVIE, ...), '*' "
-    "for every movie, empty for none. The HUD is two movies, HUDMAPMOVIE and "
-    "HUDGAUGE (needles, song ticker, race countdown); it is left out by default: "
-    "stepping 30 times a second it would visibly lag a 60 FPS world, unless the "
-    "frames between the steps are drawn (ui_interpolate, which paces every movie "
-    "and ignores this list). Only movies the game steps one frame per update are "
-    "paced.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(ui_countdown_fix, true, "MCLA/UI",
-    "Keep the race countdown (3, 2, 1, GO) in time when the HUD's gauge movie steps "
-    "less often than the game updates (HUDGAUGE or '*' in ui_movie_pacing, or "
-    "ui_interpolate on). The "
-    "movie's script adds the last update's time to the "
-    "countdown's clock on every step, so with 30 steps a second at 120 FPS the "
-    "countdown ran at a quarter of its speed and a race began on the 2 or the 3. "
-    "On, the clock is given the time of all the updates since the movie's last step.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(ui_input_repeat_30hz, true, "MCLA/UI",
-    "Menu cursor auto-repeat at the console's pace. The game repeats a held "
-    "direction or button by counting frames -- the first repeat after 7, then one "
-    "every 6 -- which on the 360 meant 233 ms and then 200 ms. Above 30 FPS it "
-    "repeats faster with every frame: at 144 FPS a quick tap moves a list or the "
-    "photo album's slot cursor two places, and holding it scrolls ~24 items a "
-    "second. On, the count advances once every 1/30 s.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(ui_advance_on_input, true, "MCLA/UI",
-    "Menus answer a key press on the update it arrives in. A menu movie paced to 30 "
-    "steps a second (ui_movie_pacing) would otherwise show the highlight moving up "
-    "to 33 ms after the press, 17 ms on average. On, a menu key event (a press, or a "
-    "repeat of a held direction) makes each menu, pop-up and map screen take one "
-    "extra step in the update it comes in, and its 30 Hz schedule starts again from "
-    "it, so the animations keep close to the console's speed. The HUD is not "
-    "stepped for it.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 bool SkipIntro() {
-    return REXCVAR_GET(skip_intro);
+    return larecomp::settings::skip_intro.Get();
 }
 
 // 0x821315E4 in sub_82131508, the branch taken when dword_82830B14 (the legals
@@ -162,7 +54,7 @@ bool SkipIntro() {
 // any way of reaching a null legals object, so it is independent of which
 // SkipIntro hook is active.
 void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {
-    if (REXCVAR_GET(skip_intro)) {
+    if (larecomp::settings::skip_intro.Get()) {
         r4.u32 = 0xFEFFFFFFu;
     }
 }
@@ -200,7 +92,7 @@ void MCLA_SkipIntroRenderPassMask(PPCRegister& r4) {
 // is null skip the block it feeds -- the hook jumps to 0x82725144, the `li r3, 1`
 // that closes the scope. A movie with no lights node has nothing to light.
 bool MCLA_UI_SkipMissingLights(PPCRegister& r3) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     const uint32_t node = static_cast<uint32_t>(r3.u32);
     if (base && node) {
         const uint8_t* p = base + node + 8;
@@ -225,7 +117,7 @@ bool MCLA_UI_SkipMissingLights(PPCRegister& r3) {
 // game's own metric path renders km/h — number and label both. "game" leaves
 // the console profile default in place (original lwz runs).
 bool Patch_SpeedUnits(PPCRegister& r11) {
-    std::string units = REXCVAR_GET(speed_units);
+    std::string units = larecomp::settings::speed_units.Get();
     if (units == "kmh") { r11.u64 = 1; return true; }
     if (units == "mph") { r11.u64 = 0; return true; }
     return false;  // "game": keep the profile/region default
@@ -238,10 +130,10 @@ bool Patch_SpeedUnits(PPCRegister& r11) {
 // returns 6, and it returns 0..4), so the sign was always mph. r8 is set here before the test:
 // kmh -> km/h, mph -> mph, game -> the game's metric flag, as the unit formatter reads it.
 void Patch_SpeedLimitUnits(PPCRegister& r8) {
-    const std::string units = REXCVAR_GET(speed_units);
+    const std::string units = larecomp::settings::speed_units.Get();
     bool metric = units == "kmh";
     if (units == "game") {
-        const uint8_t* base = rex::Runtime::instance()->virtual_membase();
+        const uint8_t* base = larecomp::guest::Membase();
         const uint8_t* p = base + 0x8288E5A0u;  // the formatter's metric flag (Patch_SpeedUnits)
         metric = (uint32_t(p[0]) << 24 | uint32_t(p[1]) << 16 | uint32_t(p[2]) << 8 | p[3]) != 0;
     }
@@ -284,7 +176,7 @@ static std::atomic<int> g_platform_applied{-1};
 // it is the older rule, the active-device state machine's strip (input_state.h): the strip of the controller used last, which does NOT flip when the keyboard and mouse
 // take over. An atomic read either way: cheap enough for the AVM hook below, which asks on every action buffer.
 static int WantedPlatformValue() {
-    if (REXCVAR_GET(prompts_live)) return 0;
+    if (larecomp::settings::prompts_live.Get()) return 0;
     return larecomp::input::PromptStrip() == larecomp::input::GlyphFamily::PlayStation ? 1 : 0;
 }
 
@@ -294,8 +186,8 @@ bool ButtonPromptsArePlayStation() { return larecomp::input::ActiveGlyphFamily()
 // +88 (0x58) is the int mcVariant::asInt returns for type 3, +92 (0x5C) the
 // plain "%d" char buffer sub_823DC018 formatted into for the string readers.
 static void WritePlatformVar(uint32_t entry, int value) {
-    auto* rt = rex::Runtime::instance();
-    uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base || !entry) return;
 
     base[entry + 88] = 0;
@@ -388,11 +280,11 @@ static int g_swf_ctx_count = 0;
 static bool g_swf_pushed_nonzero = false;
 
 static uint32_t CallGuestFn3(uint32_t fn_addr, uint32_t a0, uint32_t a1, uint32_t a2) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return 0;
-    PPCFunc* fn = rt->function_dispatcher()->GetFunction(fn_addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return 0;
+    PPCFunc* fn = rt->FindFunction(fn_addr).value_or(nullptr);
     if (!fn) return 0;
-    return rex::ppc::GuestToHostFunction<uint32_t>(fn, a0, a1, a2);
+    return larecomp::guest::Call<uint32_t>(fn, a0, a1, a2);
 }
 
 void Hook_SwfContextEnter(PPCRegister& r3) {
@@ -560,11 +452,11 @@ struct Movie {
 };
 
 std::mutex g_pacing_mutex;
-std::vector<Movie> g_movies;
-std::vector<Screen> g_screens;  // the manager's map, read once per game frame
-std::vector<std::string> g_paced_names;
+std::vector<Movie>& g_movies = larecomp::Leak<std::vector<Movie>>();
+std::vector<Screen>& g_screens = larecomp::Leak<std::vector<Screen>>();  // the manager's map, read once per game frame
+std::vector<std::string>& g_paced_names = larecomp::Leak<std::vector<std::string>>();
 bool g_paced_all = false;
-std::string g_paced_list;
+std::string& g_paced_list = larecomp::Leak<std::string>();
 bool g_paced_list_read = false;
 uint64_t g_resolved_frame = ~0ull;
 int64_t g_pacing_report_ns = 0;
@@ -579,7 +471,7 @@ void ResolveFrame(const uint8_t* base) {
     if (frame == g_resolved_frame) return;
     g_resolved_frame = frame;
 
-    const std::string list = REXCVAR_GET(ui_movie_pacing);
+    const std::string list = larecomp::settings::ui_movie_pacing.Get();
     if (!g_paced_list_read || list != g_paced_list) {
         g_paced_list_read = true;
         g_paced_list = list;
@@ -612,7 +504,7 @@ Movie* MovieFor(const uint8_t* base, uint32_t entry) {
     }
     const std::string_view name = screen ? std::string_view(screen->name) : std::string_view("HUDGAUGE");
     // Smooth UI steps every movie at 30 a second and draws the frames in between.
-    bool paced = g_paced_all || REXCVAR_GET(ui_interpolate);
+    bool paced = g_paced_all || larecomp::settings::ui_interpolate.Get();
     for (size_t i = 0; !paced && i < g_paced_names.size(); ++i) paced = g_paced_names[i] == name;
     if (!paced) return nullptr;
 
@@ -674,7 +566,7 @@ bool StepDue(Movie& m, int64_t now, int64_t& step_ns) {
         const uint32_t seq = g_ui_input_seq.load(std::memory_order_acquire);
         if (seq != m.input_seq) {
             m.input_seq = seq;
-            by_input = REXCVAR_GET(ui_advance_on_input) &&
+            by_input = larecomp::settings::ui_advance_on_input.Get() &&
                        now - g_ui_input_ns.load(std::memory_order_relaxed) <= kInputWindowNs &&
                        now - m.input_ns >= kInputGapNs;
         }
@@ -761,7 +653,7 @@ void Hook_UiCountdownDt(PPCRegister& r3, PPCRegister& f1) {
     }
     g_hud.total += dt;
     ++g_hud.since_step;
-    if (!REXCVAR_GET(ui_countdown_fix) || g_hud.since_step > kHudLiveWrites) return;
+    if (!larecomp::settings::ui_countdown_fix.Get() || g_hud.since_step > kHudLiveWrites) return;
     const double fed =
         std::max(dt, std::min(g_hud.total - g_hud.consumed, std::max(dt, kHudMaxFeedSeconds)));
     f1.f64 = static_cast<double>(static_cast<float>(fed));
@@ -872,8 +764,8 @@ constexpr int64_t kUiRepeatSlackNs   = 2'000'000;
 }  // namespace
 
 extern "C" REX_FUNC(rex_sub_82223CD8) {
-    const bool pace = REXCVAR_GET(ui_input_repeat_30hz);
-    if (!pace && !REXCVAR_GET(ui_advance_on_input)) {
+    const bool pace = larecomp::settings::ui_input_repeat_30hz.Get();
+    if (!pace && !larecomp::settings::ui_advance_on_input.Get()) {
         __imp__rex_sub_82223CD8(ctx, base);
         return;
     }

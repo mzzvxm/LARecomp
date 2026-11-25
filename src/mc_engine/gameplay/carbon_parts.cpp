@@ -7,8 +7,8 @@
 #include <cstdint>
 #include <cstring>
 
-#include <rex/cvar.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
 
 // ─────────────────────────────────────────────────────────────────────────
 // Extended carbon fiber parts
@@ -67,21 +67,6 @@
 //   (+2136). A mask set outside the garage would only reach the slot on the
 //   next commit, so the setter writes the slot itself too.
 // ─────────────────────────────────────────────────────────────────────────
-
-REXCVAR_DEFINE_BOOL(carbon_all_parts, true, "MCLA/Patches",
-    "Carbon fiber can be applied to any body part, not just the hood.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Menu instrumentation. Off by default because it is chatty, but it is what
-// mapped the garage UI in the first place: the state tree, the field dump that
-// found state+12, the activate/command stream. Keep it — turning it on again
-// beats rediscovering any of it.
-REXCVAR_DEFINE_BOOL(carbon_menu_diag, false, "MCLA/Carbon",
-    "Log the garage menu state tree, per-state field dumps and the "
-    "activate/command stream while the paint screen is open.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 // There is no cvar for the part selection on purpose. The mask is per car —
 // it lives in that car's own customization data and rides along in the save,
@@ -224,8 +209,8 @@ std::atomic<uint32_t> g_player_custom{0};
 std::atomic<uint32_t> g_player_car{0};   // model data of the player's car, for the log
 
 uint8_t* GetMembase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 bool IsPlausibleGuestPtr(uint32_t ea) {
@@ -313,7 +298,7 @@ bool SlotWantsCarbon(uint8_t* base, uint32_t sp, int slot, uint32_t veh) {
     const uint8_t mask = base[custom + kCustomCarbonMask];
     if (!mask) return false;
 
-    if (!REXCVAR_GET(carbon_all_parts))
+    if (!larecomp::settings::carbon_all_parts.Get())
         return (slot == 2 || slot == 40);  // vanilla behaviour
 
     return (kSlotGroup[slot] & mask) != 0;
@@ -438,7 +423,7 @@ bool Hook_CarbonPartPop(PPCRegister& r1, PPCRegister& r27, PPCRegister& r31) {
 // 0x826AE248 — garage action 147. Vanilla is `flag = !flag`; with the
 // extension on, walk the preset list instead. r11 = CustomData + 0x40.
 bool Hook_CarbonToggle(PPCRegister& r11) {
-    if (!REXCVAR_GET(carbon_all_parts)) return false;  // let vanilla run
+    if (!larecomp::settings::carbon_all_parts.Get()) return false;  // let vanilla run
 
     uint8_t* base = GetMembase();
     if (!base) return false;

@@ -3,6 +3,8 @@
 
 #include "contract_checks.h"
 
+#include "dxil_features.h"
+
 #include <format>
 #include <string>
 #include <unordered_map>
@@ -233,6 +235,16 @@ bool CheckBlobContract(const BlobContractInput& input, Problems* problems) {
     AddProblem(problems, prefix, "SPIR-V keeps a specialization constant");
   }
   return problems->size() == before;
+}
+
+bool CheckDxilNoDoubles(std::string_view name, int variant, std::span<const uint8_t> dxil, Problems* problems) {
+  if (!DxilUsesDoublePrecision(dxil)) {
+    return true;
+  }
+  AddProblem(problems, VariantPrefix(name, variant),
+             "the DXIL uses double precision (a ternary of bare literals such as `c ? 4.0 : 3.0` makes one: write 4.0f); an Intel iGPU "
+             "cannot create the pipeline");
+  return false;
 }
 
 // ---------------------------------------------------------------------------

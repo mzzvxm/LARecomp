@@ -38,9 +38,13 @@
 // the pipelines used, never asked for, and not listed. The line the builder
 // writes when it is done gives the time it took.
 //
-// Only closed sets are listed. A variant whose format a device may refuse to
-// render to (B5G5R5A1, an optional render target in Vulkan) stays with its
-// owner: a pipeline made for a format nobody used would log a failure.
+// Only closed sets are listed. The resolve copies' list is the conversion table's own
+// (resolve_variants.h), so every destination the pass can convert into is listed, B5G5R5A1
+// (k_1_5_5_5) included: its multisampled copy was once left out as a format a device may refuse
+// to render to, and two runs of the 2026-11-17 starter verify round made it on the render thread.
+// A device that does refuse it logs one failed entry from the builder; no copy ever asks for it
+// there (the product texture is not made). The decode (resolve_memory.h) still keeps B5G5R5A1
+// for itself: no log of a measured drive has a decode into it.
 //
 // The graphics settings' passes (ambient occlusion, contact shadows, sun shafts, bounce light) are listed
 // only when the settings in force at the start use them (host_plan.h says which), and each owner says
@@ -91,9 +95,26 @@ class HostPrecache {
     kResolveFused = 4,   // ResolveMemory::FusedPipeline: fractional << 9 | msaa << 8 | format
     kAmbientOcclusion = 5,  // AmbientOcclusion: its pass and variant (ao.h Variant)
     kSunShafts = 6,         // SunShafts: its pass and variant (shafts.h Variant)
+    kVolumetrics = 7,       // Volumetrics: its compute passes and the composite per sample count (volumetrics.h Variant)
     kCarSelfRefl = 12,      // CarSelfRefl: its history pass (car_selfrefl.h Pass); the numbers between are left for other owners
     kCarShadowMap = 13,     // CarShadowMap: its matrix pass and the depth-only pipelines of the car's vertex formats (car_shadow_map.h VariantKey)
-    kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h)
+    kCarRtRefl = 21,        // CarRtRefl: its ray traced compute pass (car_rt_refl.h), and the passes that share its layout of sets. Variants: 0 the player's trace, 1 the denoise, 2 the opponents' trace,
+                            // 3 the player's glass trace, 4 to 7 the glass apply (1, 2, 4, 8 samples), 8 the hit distance pass of Ray Reconstruction. A key listed twice is ONE entry: whoever asks second is handed
+                            // the first one's pipeline, so each owner's number is its own (car_rt_refl_rules_test.cpp checks that these files do not share one)
+    kLocalShadow = 22,      // LocalShadow: the depth-only pipelines of the headlight shadow replay, one per (vertex shader, layout, faces...) (local_shadow.h)
+    kGiField = 30,          // GiField: the probe field's reset and weights compute passes (gi_field.h Variant)
+    kScreenShared = 23,     // ScreenShared: its Hi-Z pass (screen_shared.h)
+    kScreenReflections = 24,  // ScreenReflections: its trace, accumulation and resolve passes (ssr.h)
+    kRrGuides = 31,           // RrGuides: its guide pass (single-sample and multisampled planes) and the debug view's pass (rr_guides.h); 25 to 30 are left for other packages' owners
+    kRtDenoise = 32,          // RtDenoise: a consumer's spatial and temporal compute passes, the consumer's number (0 to 15) << 4 | the stage (rt_denoise.h)
+    kGiUpdate = 33,           // GiUpdate: the probe update's trace and blend compute passes (gi_update.h Variant); 31 is the guide pass's and 32 RtDenoise's, which were free of it when the update was written
+    kGiPixel = 34,            // GiPixel: the per-pixel detail pass's trace compute passes (gi_pixel.h Variant: plain and multisampled planes); the denoiser is RtDenoise's (instance 1)
+    kRtLights = 35,           // RtLights: the ray traced visibility's trace compute pass (rt_lights.h); the denoisers are RtDenoise's (instances 2 to 4)
+    kRtAo = 36,              // trace, trace MS stencil, compose, compose with bounce
+    kRayRegenAo = 37,
+    kCarMirrorRt = 40,      // CarMirrorRt: the side mirrors' ray traced compute pass (0) and its apply pass per sample count (1 to 4: 1, 2, 4, 8 samples) (car_mirror_rt.h)
+    kMirrorView = 41,       // MirrorView: the average of the multisampled view (variant 0) and the HUD stamp per sample count of the main colour (1 to 4: 1, 2, 4, 8 samples) (mirror_view.h)
+    kMirrorOverlay = 42,    // MirrorOverlay: the side mirrors' glass overlay, one pipeline per vertex format, sample count and depth test (mirror_overlay_rules.h Variant) (mirror_overlay.h)
   };
   static constexpr uint64_t Key(Owner owner, uint32_t variant) {
     return (uint64_t(owner) << 32) | variant;

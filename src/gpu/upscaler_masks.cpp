@@ -1,30 +1,20 @@
 // MCLA GPU renderer -- the masks for the temporal upscalers. See upscaler_masks.h.
 
 #include "upscaler_masks.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <format>
 #include <unordered_map>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
+#include "backend.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "pipelines.h"
 #include "texture_bytes.h"
-
-REXCVAR_DEFINE_INT32(
-    mcla_gpu_upscaler_mask_test, 0, "MCLA/GPU",
-    "Diagnostic: tests whether the upscalers read their mask inputs. 1 gives the reactive mask (what "
-    "FSR calls reactive; DLSS's bias-current-colour and reactive hints) every pixel at 1, 2 gives the "
-    "transparency and composition mask every pixel at 1, 3 both. An upscaler that reads a mask then "
-    "stops trusting its history: the picture loses its smoothness over time (edges crawl, thin lines "
-    "flicker); one that does not read it looks as before. Only while FSR or DLSS runs. 0: the real "
-    "masks. Live.")
-    .range(0, 3)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload)
-    .debug_only();
 
 namespace mcla::gpu {
 
@@ -32,7 +22,11 @@ namespace {
 
 constexpr const char* kPrefix = "[gpu] upscaler masks:";
 constexpr plume::RenderFormat kCoverageFormat = plume::RenderFormat::R8G8B8A8_UNORM;
-constexpr plume::RenderFormat kMaskFormat = plume::RenderFormat::R8_UNORM;
+
+// The format of both masks, by the back end (upscaler_mask_plan.h Storage: Vulkan's Streamline has no format of its own for R8_UNORM). Fixed for the process, so the pipeline and the images agree.
+plume::RenderFormat MaskFormat() {
+  return upscaler_mask_plan::StorageFor(ActiveBackend() == Backend::kVulkan) == upscaler_mask_plan::Storage::kR16Float ? plume::RenderFormat::R16_FLOAT : plume::RenderFormat::R8_UNORM;
+}
 
 using Kind = UpscalerMasks::Kind;
 
@@ -126,13 +120,13 @@ constexpr Entry kEntries[] = {
 };
 
 const std::unordered_map<uint64_t, Entry>& Table() {
-  static const std::unordered_map<uint64_t, Entry> table = [] {
+  static const std::unordered_map<uint64_t, Entry>& table = larecomp::Leak<const std::unordered_map<uint64_t, Entry>>([] {
     std::unordered_map<uint64_t, Entry> t;
     for (const Entry& e : kEntries) {
       t.emplace(e.ps, e);
     }
     return t;
-  }();
+  }());
   return table;
 }
 
@@ -379,7 +373,7 @@ bool UpscalerMasks::Prepare(bool multisampled) {
   const HostShaderBlob blob = multisampled ? UpscalerMasksMsPixelShader() : UpscalerMasksPixelShader();
   shader = passes_->CreateShader(blob.data, blob.size, blob.name);
   if (shader) {
-    pipeline = passes_->CreatePipeline(*shader, kMaskFormat,
+    pipeline = passes_->CreatePipeline(*shader, MaskFormat(),
                                        multisampled ? "upscaler mask (multisampled)" : "upscaler mask");
   }
   if (!pipeline) {
@@ -394,7 +388,7 @@ bool UpscalerMasks::Prepare(bool multisampled) {
 
 bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_width,
                             uint32_t render_height) {
-  const uint32_t test = uint32_t(REXCVAR_GET(mcla_gpu_upscaler_mask_test));
+  const uint32_t test = uint32_t(larecomp::settings::mcla_gpu_upscaler_mask_test.Get());
   const bool ready = list && initialized_ && !failed_;
   bool any = false;
   for (size_t i = 0; i < kLayerCount; ++i) {
@@ -427,7 +421,7 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
     // its samples' masks when it has several. The all-ones diagnostic reads nothing.
     const uint32_t samples = ones ? 1u : std::max<uint32_t>(l.coverage.samples, 1u);
     if (!Prepare(samples > 1) ||
-        !passes_->EnsureImage(l.mask, render_width, render_height, kMaskFormat, name)) {
+        !passes_->EnsureImage(l.mask, render_width, render_height, MaskFormat(), name)) {
       ++stats_.image_failures;
       continue;
     }

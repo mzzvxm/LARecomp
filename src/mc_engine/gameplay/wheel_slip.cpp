@@ -37,9 +37,9 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "wheel_slip.h"
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -51,12 +51,6 @@
 
 #include "mc_engine/hooks/hooks_internal.h"
 #include "larecomp_log.h"
-
-REXCVAR_DEFINE_BOOL(trigger_slip_log, false, "MCLA/Input",
-    "Development: once a second while a car is driven, write each wheel's ground speed, slip speed "
-    "and the wheelspin and lock-up amounts the trigger effects use to the log.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 namespace {
 
@@ -119,8 +113,8 @@ WheelSlot g_slots[8];  // a car has four wheels, a bike two; the rest is room fo
 namespace larecomp::slip {
 
 void NotePlayer(uint32_t player) {
-    rex::Runtime* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base || !Plausible(player)) return;
     const uint32_t car = ReadGuestU32(base, player + 8);
     if (!Plausible(car)) return;
@@ -135,7 +129,7 @@ Amounts Current() {
     const int64_t player = g_player_ms.load(std::memory_order_relaxed);
     if (player == 0 || now - player > kPlayerFreshMs) return out;
     std::string line;
-    const bool log = REXCVAR_GET(trigger_slip_log);
+    const bool log = larecomp::settings::trigger_slip_log.Get();
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         for (const WheelSlot& slot : g_slots) {
@@ -168,8 +162,8 @@ Amounts Current() {
 void Hook_WheelSlip(PPCRegister& r31) {
     const uint32_t car = g_car.load(std::memory_order_relaxed);
     if (car == 0) return;
-    rex::Runtime* rt = rex::Runtime::instance();
-    const uint8_t* base = rt ? rt->virtual_membase() : nullptr;
+    rex::kernel::TitleRuntime* rt = REX_RUNTIME();
+    const uint8_t* base = rt ? rt->GetMembase().GetBase() : nullptr;
     if (!base) return;
     const uint32_t wheel = r31.u32;
     const uint32_t owner = ReadGuestU32(base, wheel + kOwner);

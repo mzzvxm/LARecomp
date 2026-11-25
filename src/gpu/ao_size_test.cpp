@@ -20,6 +20,7 @@
 
 #include "ao_size.h"
 #include "ao_stable.h"
+#include "setting_source.h"
 #include "ssgi_stable.h"
 
 namespace as = mcla::gpu::ao_size;
@@ -426,27 +427,22 @@ void CheckSources(const std::string& gpu) {
     Check(false, "the files of src/gpu could not be read (" + gpu + ")");
     return;
   }
-  Check(Has(cpp, "mcla_gpu_ao_half_above_1080, true") && Has(cpp, "mcla_gpu_ssgi_half, true"), "ao.cpp: the cvars mcla_gpu_ao_half_above_1080 and mcla_gpu_ssgi_half exist and default to true");
+  // The two settings (REX_SETTING rows of src/settings/generated; the REXCVAR_DEFINEs of ao.cpp before the conversion)
+  const setting_source::Info half_above = setting_source::Find(gpu, cpp, "mcla_gpu_ao_half_above_1080");
+  const setting_source::Info ssgi_half = setting_source::Find(gpu, cpp, "mcla_gpu_ssgi_half");
+  Check(setting_source::DefaultIsTrue(half_above) && setting_source::DefaultIsTrue(ssgi_half), "the settings mcla_gpu_ao_half_above_1080 and mcla_gpu_ssgi_half exist and default to true");
   // both are debug-only and live
-  const auto cvar_block = [&](const char* name) {
-    const size_t at = cpp.find(name);
-    return at == std::string::npos ? std::string() : cpp.substr(at, 2500);
-  };
-  for (const char* name : {"mcla_gpu_ao_half_above_1080, true", "mcla_gpu_ssgi_half, true"}) {
-    const std::string block = cvar_block(name);
-    const size_t end = block.find("lifecycle(rex::cvar::Lifecycle::kHotReload)");
-    Check(end != std::string::npos && block.substr(0, end).find(".debug_only()") != std::string::npos,
-          std::string("ao.cpp: ") + name + " is debug-only and hot-reloadable");
-  }
-  Check(Has(cpp, "REXCVAR_GET(mcla_gpu_ao_half_above_1080)") && Has(cpp, "REXCVAR_GET(mcla_gpu_ssgi_half)"), "ao.cpp: both cvars are read by the plan");
+  Check(half_above.debug_only && half_above.live, "mcla_gpu_ao_half_above_1080 is debug-only and hot-reloadable");
+  Check(ssgi_half.debug_only && ssgi_half.live, "mcla_gpu_ssgi_half is debug-only and hot-reloadable");
+  Check(Has(cpp, "larecomp::settings::mcla_gpu_ao_half_above_1080.Get()") && Has(cpp, "larecomp::settings::mcla_gpu_ssgi_half.Get()"), "ao.cpp: both cvars are read by the plan");
   Check(Has(cpp, "ao_size::Decide(in)") && Has(cpp, "ao_size::SizesOf(plan.render, choice)"), "ao.cpp: the plan takes the sizes from ao_size.h");
   Check(Has(cpp, "kApplyContactFullFlag = 1u << 21") && Has(apply, "g_push.slots2.z & (1u << 21)"), "the apply's contact-at-picture-size flag is bit 21 in ao.cpp and in the shader");
   Check(Has(cpp, "kColourOneSampleFlag = 1u << 21") && Has(color, "g_push.slots2.z & (1u << 21)"), "the colour chain's one-sample flag is bit 21 in ao.cpp and in the shader");
   Check(Has(cpp, "kApplyHighSlotShift = 16") && Has(apply, "g_push.slots2.y >> 16") && Has(apply, "g_push.slots2.y & 0xFFFFu"),
         "slots2.y of the apply: the colour slot in the low 16 bits, the contact depth's in the high 16, in ao.cpp and in the shader");
   Check(Has(cpp, "static_assert(kBindlessTextureCount <= (1u << kApplyHighSlotShift)"), "ao.cpp: two bindless slots are asserted to fit one word");
-  Check(Has(cpp, "push.slots2[1] |= colour_[0].slot;"), "ao.cpp: the colour slot is OR-ed beside the contact depth's");
-  Check(Has(cpp, "depth_full_.slot << kApplyHighSlotShift"), "ao.cpp: the contact depth slot is packed into the high bits");
+  Check(Has(cpp, "push.slots2[1] |= Colour(0).slot;"), "ao.cpp: the colour slot (the colour chain's level 0 from the screen owner, ScreenShared::ColourPre) is OR-ed beside the contact depth's");
+  Check(Has(cpp, "DepthFull().slot << kApplyHighSlotShift"), "ao.cpp: the contact depth slot (the screen owner's full size depth, SS-2) is packed into the high bits");
   // The bits the flags use must not overlap in the apply (limit 8-15 and cap 26-31 of the bounce light; 22-25 the apply's own).
   {
     const uint32_t limit_cap = 0xFFu << 8 | 0x3Fu << 26;
@@ -455,11 +451,11 @@ void CheckSources(const std::string& gpu) {
     const uint32_t radius_bits = 0x7u << 17;
     Check(((1u << 21) & radius_bits) == 0u, "bit 21 is clear in the pass flags FillPush builds (the radius is bits 17-19)");
   }
-  Check(Has(cpp, "plan.SplitContact()") && Has(cpp, "depth_full_") && Has(cpp, "contact_raw_"), "ao.cpp: the split has its own depth and contact images");
+  Check(Has(cpp, "plan.SplitContact()") && Has(cpp, "DepthFull()") && Has(cpp, "contact_raw_"), "ao.cpp: the split has its own depth (the screen owner's DepthFull) and contact images");
   Check(Has(cpp, "push.slots2[2] &= ~(1u << 16);"), "ao.cpp: the contact depth pass is drawn without the half size flag");
   Check(Has(header, "bool SplitContact() const") && Has(header, "bool OneSampleColour() const"), "ao.h: the plan has the split and the one sample rules");
-  Check(Has(header, "ContactFilterInApply() const { return ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
-        "ao.h: the contact filter in the apply follows ao_size.h (the picture's size, split or not)");
+  Check(Has(header, "ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
+        "ao.h: the contact filter in the apply follows ao_size.h (the picture's size, split or not) and is not used while the contact image has a history of its own (noise-all)");
   Check(Has(cpp, "FillPush") && Has(cpp, "ao_stable::DenoiseRadius(plan.ao[1])"), "ao.cpp: the blur's radius is taken from the traced image's height (plan.ao)");
   Check(Has(cpp, "AtrousIterations(int(plan.gi.atrous), plan.ao[1])"), "ao.cpp: the a-trous passes follow the traced image's height");
   Check(Has(cpp, "history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]"), "ao.cpp: a change of the traced size throws the history away (kSize)");
@@ -474,7 +470,7 @@ void CheckSources(const std::string& gpu) {
   Check(Has(cpp, "plan.OneSampleColour()") && Has(cpp, "push.slots2[0] = base.slots[1];"), "ao.cpp: the chain is told the depth's host sample");
   // The temporal pass follows the vehicle that the half size depth pass marked.
   Check(Has(temporal, "uint AoVehicleId(int2 pixel, float depth)") && Has(temporal, "if (!AoIsVehicle(depth))"), "ao_temporal_ps.hlsl: at half size a pixel is a vehicle where the depth pass marked it");
-  Check(Has(depth, "AoSetVehicleBit(t, IsVehiclePixel(source))"), "ao_depth_ps.hlsl: the mark is the chosen sample's");
+  Check(Has(depth, "const uint id = DepthVehicleId(source);\n  float marked = AoSetVehicleBit(t, id != 0u);"), "ao_depth_ps.hlsl: the mark is the chosen sample's");
   Check(Has(depth, "kHalfSurfaceShare = 0.04f") && Has(depth, "kHalfSurfaceFloor = 0.02f") && as::kHalfSurfaceShare == 0.04f && as::kHalfSurfaceFloor == 0.02f,
         "ao_depth_ps.hlsl: the half size depth's tolerance is the header's");
   Check(Has(depth, "if (spread <= kHalfSurfaceShare * mean + kHalfSurfaceFloor) {") && Has(depth, "t = mean;"), "ao_depth_ps.hlsl: one surface takes the mean");

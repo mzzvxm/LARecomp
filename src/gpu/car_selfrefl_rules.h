@@ -56,7 +56,7 @@ inline constexpr float kMinThickness = 0.02f;
 inline constexpr float kMaxThickness = 1.0f;
 inline constexpr int kMinSteps = 4;
 inline constexpr int kMaxSteps = 24;
-inline constexpr int kMaxView = 5;  // 5: the ray traced image (car_rt_refl.h), version 5 of the variant
+inline constexpr int kMaxView = 7;  // 5: the ray traced image (car_rt_refl.h), version 5 of the variant; 6 and 7: the clear coat's layer's amount and what it adds (version 8)
 inline constexpr float kMaxGain = 16.0f;
 inline constexpr float kMinFull = 0.05f;
 inline constexpr float kMaxFull = 1.0f;
@@ -80,6 +80,16 @@ inline Tuning Clamped(Tuning t) {
 inline float ExpBiasGain(int32_t exp_bias) {
   return std::ldexp(1.0f, -std::clamp<int32_t>(exp_bias, -24, 24));
 }
+
+// The inverse: what a colour in the paint's units (the shaders' output) is multiplied by to be in the history's, the target's own units. The ray traced reflection's image
+// is in the history's units (the paint multiplies it by ExpBiasGain), so a colour the pass makes up itself from a paint constant (another car's paint, the grey of a car
+// placed from memory: shader output units) must be multiplied by this first (RT-MODEL-CARS-4: it was not, and every such colour came out 16 times too dark at the game's
+// bias of 4, so a neighbour reflected as a dark silhouette instead of in its paint).
+inline float ExpBiasUnits(int32_t exp_bias) {
+  return std::ldexp(1.0f, std::clamp<int32_t>(exp_bias, -24, 24));
+}
+// The bias of the game's main colour target (RB_COLOR_INFO color_exp_bias, constants.cpp): the pass uses it until a paint draw has told it the target's own.
+inline constexpr int32_t kMainTargetExpBias = 4;
 
 // The matrix a vertex of the draw is taken into the history frame's clip space with: the vehicle's own motion (this
 // frame's world position to its world position one frame ago, vehicle_motion.h; null: the identity) and then the
@@ -116,7 +126,16 @@ constexpr uint32_t HistoryEdge(uint32_t render_edge, uint32_t divisor) {
 // made at the same trigger: the paint variant (version 5) reads it in place of the march where it has data. Without the bit the
 // variant does version 4's march and nothing else.
 inline constexpr uint32_t kRtImageFlag = 1u;
+// c[3] bit 1 (version 8, RT-HIT-SHADING-4): the paint adds the clear coat's layer over the reflection of another car (car_rt_hit_rules.h CoatLayerAmount; mcla_gpu_car_rt_coat_layer).
+inline constexpr uint32_t kCoatLayerFlag = 2u;
+// c[3] bit 2 (version 10, RT-PARKED-PAINT): the draw is a PARKED car's (a traffic paint draw with no vehicle stencil ID: car_rt_parked_paint_rules.h): the history holds its pixels with the NEGATED
+// distance (the history pass's marks), so the variant's self-test and its read of the ray traced image take the distance as abs(a) for this draw. Without the bit a negative alpha is no vehicle.
+inline constexpr uint32_t kParkedFlag = 4u;
 inline constexpr uint32_t kNoRtImage = 0xFFFFFFFFu;
+
+// The history's distance as the paint variant reads it (shaderpack/variants/car_selfrefl.cpp CarReflTrace and CarReflRtLookup, version 10): the alpha as it is, or its absolute value for a draw with the
+// parked flag. A value <= 0 after this is no vehicle (the variant's `a > 0` test).
+inline float PaintHistoryDistance(float alpha, uint32_t flags) { return (flags & kParkedFlag) != 0u ? std::fabs(alpha) : alpha; }
 
 // The constants of a draw that has no history: the game's paint (mode 0) and a slot that is never read.
 inline CarSelfReflConstants OffConstants() {
@@ -126,7 +145,7 @@ inline CarSelfReflConstants OffConstants() {
 
 inline CarSelfReflConstants MakeConstants(Mode mode, const Tuning& tuning, const float matrix[16],
                                           uint32_t history_slot, uint32_t sampler_slot, float exp_gain,
-                                          uint32_t rt_slot = kNoRtImage) {
+                                          uint32_t rt_slot = kNoRtImage, bool coat_layer = false, bool parked = false) {
   CarSelfReflConstants c = {};
   for (int i = 0; i < 16; ++i) {
     c.m[i] = matrix[i];
@@ -144,7 +163,10 @@ inline CarSelfReflConstants MakeConstants(Mode mode, const Tuning& tuning, const
   c.c[1] = sampler_slot;
   if (rt_slot != kNoRtImage) {
     c.c[2] = rt_slot;
-    c.c[3] = kRtImageFlag;
+    c.c[3] = kRtImageFlag | (coat_layer ? kCoatLayerFlag : 0u);
+  }
+  if (parked) {
+    c.c[3] |= kParkedFlag;
   }
   return c;
 }

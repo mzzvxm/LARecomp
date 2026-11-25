@@ -21,7 +21,7 @@
 // the callback and would not show; the settings here are only written through SetFlagByName (the pause
 // menu's CvarSet, the debug menu's reset), the way shadow_filter.cpp relies on already.
 //
-// The compare key (effect_compare.h) flips one of these settings without writing it: while its flip is on
+// The compare key (a developer tool, effect_compare.h) flips one of these settings without writing it: while its flip is on
 // the setting, Get() answers `off`, or the effect's on text, in place of the saved word.
 // ===========================================================================
 
@@ -32,7 +32,7 @@
 #include <string>
 #include <string_view>
 
-#include <rex/cvar.h>
+#include "settings/larecomp_settings.h"
 
 #include "effect_compare.h"
 
@@ -90,13 +90,13 @@ class LiveText {
   void Register() {
     std::call_once(once_, [this] {
       effect_.store(static_cast<uint8_t>(compare::EffectOfCvar(cvar_)), std::memory_order_relaxed);  // before any word
-      rex::cvar::RegisterChangeCallback(cvar_, [this](std::string_view, std::string_view value) {
+      larecomp::cvar::RegisterChangeCallback(cvar_, [this](std::string_view, std::string_view value) {
         word_.store(Pack(value), std::memory_order_release);
       });
       // After the callback is in: a change from here on is not missed. A change that came between the two
       // lines already stored its value, which is the newer one (compare-exchange from "not read yet").
       uint64_t expected = 0;
-      word_.compare_exchange_strong(expected, Pack(rex::cvar::GetFlagByName(cvar_)),
+      word_.compare_exchange_strong(expected, Pack(larecomp::cvar::GetFlagByName(cvar_)),
                                     std::memory_order_acq_rel);
     });
   }

@@ -4,12 +4,12 @@
 // the camera free look the addresses of its fields).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/input/input_system.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/hid/input_system.h>
 #include <thread>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -34,49 +34,17 @@
 #include "hooks.h"
 #include "larecomp_log.h"
 #include "mc_engine/camera/camera_look.h"
+#include "../sdk_access.h"
 #include "../online/online_common.h"  // shared guest-memory helpers (GuestRead32, ...)
-
-// Diagnostic: dumps every tune field as it registers. Off by default -- it fires for
-// every tune in the game (about 1100 unique names across ~28 classes) -- but it is the
-// only way to see a tune's live layout, so it stays.
-REXCVAR_DEFINE_BOOL(tune_field_probe, false, "MCLA/Diagnostics",
-                    "Log every tune field name as it registers.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(dbg_print, false, "MCLA/Patches", "Enable DbgPrint console outputs.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(lzx_stats, false, "MCLA/Debug",
-    "Measure pgStreamer LZX decompression (XMemDecompressStream): per-2s window stats "
-    "appended to <exe>/lzx_stats.txt. For diagnosing streaming stutter (South Central).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(stream_trace, "", "MCLA/Diag",
-    "Log every resource the streamer is asked for whose path contains this "
-    "text, and whether the file was found.\n"
-    "\n"
-    "The hook sits one instruction after pgStreamer::Open returns inside "
-    "sub_821E2940, where the resolved path is still on the stack at r1+0x60 and "
-    "r3 holds the handle -- minus one when the file was not found. That pair is "
-    "the only thing that separates \"the game never asked for it\" from \"the "
-    "game asked and the archive did not have it\", which is the question a car "
-    "that loads forever comes down to.\n"
-    "\n"
-    "Empty turns it off. `resources/vehicle` is the useful setting for a car; "
-    "`/` logs every file the game opens, which is thousands of lines.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 // Shared by the two open probes: read the path the call was handed off the
 // guest stack, hold it against the filter, and say whether it was found.
 static void TraceOpen(const char* kind, uint32_t stack, uint32_t offset, bool found) {
-    const std::string filter = REXCVAR_GET(stream_trace);
+    const std::string filter = larecomp::settings::stream_trace.Get();
     if (filter.empty()) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     char path[192];
@@ -108,7 +76,7 @@ static void TraceOpen(const char* kind, uint32_t stack, uint32_t offset, bool fo
 // spin -- the callers are written assuming this never returns -- it only says
 // what happened before the game stops.
 void MCLA_RageFatal(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     // Most of these messages take a plain integer -- "zlibInflater::InflateBegin
@@ -246,7 +214,7 @@ void MCLA_FileOpenResult(PPCRegister& r1, PPCRegister& r3) {
 // sub_8217D828) read it from different offsets, so the raw words go in the log
 // and the layout can be settled by looking at them rather than by guessing.
 void MCLA_ResourceFixupError(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     auto word = [&](uint32_t ea) {
@@ -309,41 +277,14 @@ void MCLA_ResourceFixupError(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5) 
                        virtual_total, physical_total);
 }
 
-REXCVAR_DEFINE_STRING(segment_trace, "", "MCLA/Diag",
-    "Dump the segment table of every resource whose file name contains this "
-    "text, as the streamer allocates it.\n"
-    "\n"
-    "A resource does not arrive in memory as one block. sub_821E58F0 walks a "
-    "table of twelve-byte entries -- destination, size, and the address the "
-    "resource was built for -- and either allocates them one by one (each landing "
-    "wherever the heap had room) or sums them into a single allocation, with "
-    "every size rounded up to 128 either way. Every pointer inside the resource "
-    "is then resolved by finding which entry's range it falls in (sub_8217D828) "
-    "and adding that entry's own delta.\n"
-    "\n"
-    "So a buffer that starts in one segment and runs past its end is read as if "
-    "the next segment followed it, and from the boundary on the GPU fetches "
-    "whatever the heap put there -- a mesh that is perfect on disk and blades on "
-    "screen. This prints the boundaries so a rebuilt drawable's buffers can be "
-    "held against them.\n"
-    "\n"
-    "Empty turns it off. `/` dumps every resource. `>N` dumps only the ones "
-    "whose segments total N bytes or more, which is the setting that works: a "
-    "resource read out of an archive has no name to match -- that is what the "
-    "fixup error means by 'Unknown file in an archive' -- and a rebuilt car body "
-    "is the only thing in the game past a megabyte. Anything else is matched "
-    "against the name.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 // 0x821E5908, just after sub_821E57B8 has filled the table. r31 is the table.
 // Pure observer -- it runs before the allocator, so the destination column is
 // still whatever was there last, and only the sizes and declared bases are real.
 void MCLA_ResourceSegments(PPCRegister& r31) {
-    const std::string filter = REXCVAR_GET(segment_trace);
+    const std::string filter = larecomp::settings::segment_trace.Get();
     if (filter.empty()) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const uint32_t table = static_cast<uint32_t>(r31.u64);
@@ -412,27 +353,14 @@ void MCLA_ResourceSegments(PPCRegister& r31) {
     }
 }
 
-REXCVAR_DEFINE_BOOL(inflate_trace, false, "MCLA/Diag",
-    "Log every call into zlibInflater's decode step, for the first few hundred.\n"
-    "\n"
-    "A repacked resource that never arrives leaves no other trace: the streamer "
-    "opens the file, reads it, and then either spins in sub_821BC140 or asserts "
-    "that the stream is not in XCompress format. Both of those follow from one "
-    "number -- how much input the decoder actually consumed on a call -- and "
-    "this prints it. Read consecutive lines: input left falling says it ate "
-    "something, output left falling says it produced something, and a pair of "
-    "identical lines is the decoder refusing to move.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 // Entry of zlibInflater's step. r4 is the context: +0 input left, +4 input
 // pointer, +8 input consumed, +12 stream length, +16 output space left,
 // +20 output pointer. Pure observer, capped so a healthy boot cannot drown the
 // log.
 void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4) {
-    if (!REXCVAR_GET(inflate_trace)) return;
+    if (!larecomp::settings::inflate_trace.Get()) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
     const uint32_t ctx = static_cast<uint32_t>(r4.u64);
     if (ctx < 0x1000 || ctx >= 0xC0000000) return;
@@ -537,7 +465,7 @@ void MCLA_InflateStep(PPCRegister& r3, PPCRegister& r4) {
 // and cop lights, and no vehicle physics class at all -- no SteeringLimit, TurnBias,
 // SlidingFric or OptSlipPercent. Do not spend another session looking for them here.
 void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegister& r6) {
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     const auto name_addr = static_cast<uint32_t>(r5.u64);
     if (!base || !name_addr) return;
 
@@ -559,9 +487,9 @@ void MCLA_TuneFieldProbe(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCR
     CameraLookOnTuneField(name, static_cast<uint32_t>(r3.u64),
                           static_cast<uint32_t>(r6.u64));
 
-    if (!REXCVAR_GET(tune_field_probe)) return;
+    if (!larecomp::settings::tune_field_probe.Get()) return;
 
-    static std::set<std::string> seen;
+    static std::set<std::string>& seen = larecomp::Leak<std::set<std::string>>();
     if (!seen.insert(name).second) return;
 
     LARECOMP_APP_INFO("[TuneField] {:<26} type={} owner={:#010x} field={:#010x}", name,
@@ -652,7 +580,7 @@ void LzxDump(int64_t now_ns, int64_t prev_dump_ns) {
 
 void Hook_LzxDecompressPre(PPCRegister& r1) {
     (void)r1;
-    if (!REXCVAR_GET(lzx_stats)) {
+    if (!larecomp::settings::lzx_stats.Get()) {
         tl_lzx_start_ns = 0;
         return;
     }
@@ -665,9 +593,9 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {
     uint64_t dur = uint64_t(now - tl_lzx_start_ns);
     tl_lzx_start_ns = 0;
 
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     uint32_t sp = static_cast<uint32_t>(r1.u64);
@@ -702,25 +630,15 @@ void Hook_LzxDecompressPost(PPCRegister& r1, PPCRegister& r3) {
     }
 }
 
-REXCVAR_DEFINE_BOOL(fxc_probe, false, "MCLA/Diag",
-    "Write the bytes of the two static rage streams' buffer (the effect loader's, at "
-    "0x82860C18 and 0x82860C40) to fxc_probe_<n>_<stream>_<count>.bin in the working "
-    "directory, once per distinct content, for the first two hundred.\n"
-    "\n"
-    "Compares what the effect (.fxc) parser is handed on two platforms: the same file should "
-    "give the same bytes. Observer only; off by default.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
 // sub_821BE250 entry (the rage stream's read): r3 is the stream. The buffer is the
 // pointer at +8, +24 is the read position and +28 the number of bytes the last refill put
 // in it, so a non-zero count means the buffer holds a file's bytes.
 void MCLA_StreamBufferProbe(PPCRegister& r3) {
-    if (!REXCVAR_GET(fxc_probe)) return;
+    if (!larecomp::settings::fxc_probe.Get()) return;
     const uint32_t stream = r3.u32;
     if (stream != 0x82860C18u && stream != 0x82860C40u) return;
 
-    const auto* base = rex::Runtime::instance()->virtual_membase();
+    const auto* base = larecomp::guest::Membase();
     if (!base) return;
     auto word = [&](uint32_t offset) {
         const uint8_t* p = base + stream + offset;
@@ -736,7 +654,7 @@ void MCLA_StreamBufferProbe(PPCRegister& r3) {
     hash ^= uint64_t(stream) << 1;
 
     static std::mutex mutex;
-    static std::set<uint64_t> seen;
+    static std::set<uint64_t>& seen = larecomp::Leak<std::set<uint64_t>>();
     std::lock_guard<std::mutex> lock(mutex);
     if (seen.size() >= 200 || !seen.insert(hash).second) return;
 
@@ -750,17 +668,9 @@ void MCLA_StreamBufferProbe(PPCRegister& r3) {
                       name, stream, buffer, count, hash);
 }
 
-REXCVAR_DEFINE_BOOL(input_probe, false, "MCLA/Diag",
-    "Log what the SDK's input system hands the game for users 0 to 3 whenever it changes: "
-    "the status, the packet number, the buttons and the sticks. Off by default. Polling it "
-    "pumps the same input path the game uses, so it can only make a pad look better, never worse; "
-    "if a pad shows nothing here, the game gets nothing either.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-// Started once the runtime exists. One thread asks the InputSystem for every user's state twice a second.
+// Started once the runtime exists. One thread asks the input system for every user's state four times a second.
 void MCLA_StartInputProbe() {
-    if (!REXCVAR_GET(input_probe)) return;
+    if (!larecomp::settings::input_probe.Get()) return;
     static std::atomic<bool> started{false};
     if (started.exchange(true)) return;
     std::thread([] {
@@ -772,25 +682,28 @@ void MCLA_StartInputProbe() {
         } seen[4];
         for (;;) {
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
-            auto* rt = rex::Runtime::instance();
-            auto* sys = rt ? static_cast<rex::input::InputSystem*>(rt->input_system()) : nullptr;
+            auto* sys = larecomp::sdk::Input();
             if (!sys) continue;
             for (uint32_t user = 0; user < 4; ++user) {
-                rex::input::X_INPUT_STATE state{};
-                const uint32_t status = uint32_t(sys->GetState(user, &state));
-                const uint16_t buttons = state.gamepad.buttons;
+                // 0.10 answered a Win32 status and filled an X_INPUT_STATE; 0.11 answers a Result (kNotFound for no pad). The status
+                // keeps its old meaning in the log: 0 a pad, 0x48F no pad (ERROR_DEVICE_NOT_CONNECTED).
+                const auto reading = sys->GetState(user);
+                const uint32_t status = reading ? 0u : 0x48Fu;
+                const rex::hid::PadState state = reading ? reading->state : rex::hid::PadState{};
+                const uint32_t packet = reading ? reading->packet : 0u;
+                const uint16_t buttons = state.buttons;
                 Seen& s = seen[user];
-                if (status != s.status || (status == 0 && (buttons != s.buttons || uint32_t(state.packet_number) != s.packet))) {
+                if (status != s.status || (status == 0 && (buttons != s.buttons || packet != s.packet))) {
                     if (status == 0 || s.any || user == 0) {
                         LARECOMP_APP_INFO("[input-probe] user {}: status {:#x} packet {} buttons {:#06x} triggers {}/{} left stick {},{} right stick {},{}",
-                                          user, status, uint32_t(state.packet_number), buttons,
-                                          state.gamepad.left_trigger, state.gamepad.right_trigger,
-                                          int16_t(state.gamepad.thumb_lx), int16_t(state.gamepad.thumb_ly),
-                                          int16_t(state.gamepad.thumb_rx), int16_t(state.gamepad.thumb_ry));
+                                          user, status, packet, buttons,
+                                          state.left_trigger, state.right_trigger,
+                                          int16_t(state.thumb_lx), int16_t(state.thumb_ly),
+                                          int16_t(state.thumb_rx), int16_t(state.thumb_ry));
                     }
                     s.status = status;
                     s.buttons = buttons;
-                    s.packet = uint32_t(state.packet_number);
+                    s.packet = packet;
                     s.any = s.any || status == 0;
                 }
             }

@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the GPU class and the `auto` value. See gpu_class.h.
 
 #include "gpu_class.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <atomic>
@@ -10,23 +11,8 @@
 
 #include <plume_render_interface.h>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_class, "auto", "MCLA/GPU",
-    "Diagnostic: forces the GPU class the graphics upgrades' auto values are chosen from (low: "
-    "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory or a "
-    "slower GPU family such as the GTX 10 and 16 series and the RX 400/500 series, high: the "
-    "rest). "
-    "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...' with "
-    "the rule that chose it (by adapter type, by memory or by name). Only "
-    "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
-    "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
-    "a choice of the player's own is never changed. Live.")
-    .allowed({"auto", "low", "mid", "high"})
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 namespace mcla::gpu::gpu_class {
 
@@ -36,11 +22,12 @@ constexpr int kNoOverride = -1;
 
 std::atomic<uint8_t> g_detected{static_cast<uint8_t>(GpuClass::kHigh)};
 std::atomic<bool> g_known{false};  // Initialize has run: g_detected is what the adapter said
+std::atomic<bool> g_handheld{false};  // the adapter is a handheld (a Steam Deck, Verdict::handheld): the cells of kHandheldCells, unless a class is forced
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
-std::string g_detected_why;  // why Initialize chose g_detected
-std::string g_adapter;       // "name (vendor)" for the log line
+std::string& g_detected_why = larecomp::Leak<std::string>();  // why Initialize chose g_detected
+std::string& g_adapter = larecomp::Leak<std::string>();  // "name (vendor)" for the log line
 
 bool ContainsNoCase(std::string_view text, std::string_view part) {
   const auto it = std::search(text.begin(), text.end(), part.begin(), part.end(),
@@ -87,7 +74,7 @@ void ApplyOverride(std::string_view text) {
 }
 
 // What `auto` comes to for every effect, in one line.
-std::string AutoSummary(GpuClass c) {
+std::string AutoSummary(GpuClass c, bool handheld) {
   std::string out;
   constexpr std::string_view kPrefix = "mcla_gpu_";
   for (int i = 0; i < kEffectCount; ++i) {
@@ -101,10 +88,16 @@ std::string AutoSummary(GpuClass c) {
     }
     out += name;
     out += '=';
-    out += Cell(effect, c);
+    out += CellFor(effect, c, handheld);
   }
-  out += ", lod_city_scale=";
-  out += CityLodScaleText(CityLodAutoFor(true, c));
+  // The numeric settings (the LOD scales, the traffic range and the densities): `auto` as the value the hooks apply.
+  for (int i = 0; i < kScaleCount; ++i) {
+    const auto scale = static_cast<Scale>(i);
+    out += ", ";
+    out += ScaleCvar(scale);
+    out += '=';
+    out += ScaleText(scale, ScaleCell(scale, c));
+  }
   // Not a setting's `auto`, but chosen by the class too: the sun shafts' ray steps.
   out += ", sun_shafts_steps=";
   out += std::to_string(SunShaftSteps(c));
@@ -121,19 +114,24 @@ void LogClass() {
   }
   const GpuClass detected = static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
   const GpuClass now = Current();
+  const bool handheld = Handheld();
   if (now == detected) {
     REXLOG_INFO("[gpu] class: {} ({}; {})", ClassName(now), why, adapter);
   } else {
     REXLOG_INFO("[gpu] class: {} (forced by mcla_gpu_class={}; the adapter alone says {}: {}; {})",
                 ClassName(now), ClassName(now), ClassName(detected), why, adapter);
   }
-  REXLOG_INFO("[gpu] class {}: auto is {}", ClassName(now), AutoSummary(now));
+  // A handheld says so, and says when a forced class has put its cells away (the line the launcher and a tester's log read).
+  REXLOG_INFO("[gpu] class {}{}: auto is {}", ClassName(now),
+              handheld ? " (handheld cells)"
+              : g_handheld.load(std::memory_order_relaxed) ? " (a handheld, its own cells off while the class is forced)" : "",
+              AutoSummary(now, handheld));
 }
 
 }  // namespace
 
-void Initialize(const plume::RenderDeviceDescription& description,
-                const plume::RenderDeviceCapabilities& caps) {
+AdapterFacts FactsFor(const plume::RenderDeviceDescription& description,
+                      const plume::RenderDeviceCapabilities& caps) {
   // CHECK: read from Plume's code, not yet seen on the test PC's adapters: D3D12 never fills
   // description.type, so an integrated GPU is known there only by caps.uma (DXGI's UMA flag); Vulkan
   // sets both (uma needs the integrated type and a host-visible device-local memory type). The log
@@ -145,11 +143,17 @@ void Initialize(const plume::RenderDeviceDescription& description,
                    description.type == plume::RenderDeviceType::CPU ||
                    IsSoftwareName(description.name);
   facts.dedicated_bytes = description.dedicatedVideoMemory;
-  facts.raytracing = caps.raytracing;
+  facts.raytracing = caps.raytracing || caps.rayQuery;  // a Vulkan driver with ray queries and no ray tracing pipelines traces too
   // The speed table reads the name and the PCI vendor id (Plume's RenderDeviceVendor holds the id; it
-  // does not carry the device id).
+  // does not carry the device id: the ray tracing tier asks the backend for that, rt_tier.h).
   facts.name = description.name;
   facts.vendor_id = static_cast<uint32_t>(description.vendor);
+  return facts;
+}
+
+void Initialize(const plume::RenderDeviceDescription& description,
+                const plume::RenderDeviceCapabilities& caps) {
+  const AdapterFacts facts = FactsFor(description, caps);
   const Verdict verdict = Classify(facts);
 
   {
@@ -159,14 +163,15 @@ void Initialize(const plume::RenderDeviceDescription& description,
                 (facts.raytracing ? ", ray tracing yes" : ", ray tracing no");
   }
   g_detected.store(static_cast<uint8_t>(verdict.cls), std::memory_order_relaxed);
+  g_handheld.store(verdict.handheld, std::memory_order_relaxed);
 
-  ApplyOverride(REXCVAR_GET(mcla_gpu_class));
+  ApplyOverride(larecomp::settings::mcla_gpu_class.Get());
   g_known.store(true, std::memory_order_release);
   // A change made while the game runs (the debug menu's F4 panel, the console) takes effect at once:
   // the callback has the new text, so no other thread reads the cvar's string.
   static std::once_flag registered;
   std::call_once(registered, [] {
-    rex::cvar::RegisterChangeCallback("mcla_gpu_class", [](std::string_view, std::string_view value) {
+    larecomp::cvar::RegisterChangeCallback("mcla_gpu_class", [](std::string_view, std::string_view value) {
       ApplyOverride(value);
       LogClass();
     });
@@ -182,16 +187,36 @@ GpuClass Current() {
   return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
 }
 
+bool ClassForced() {
+  return g_override.load(std::memory_order_relaxed) != kNoOverride;
+}
+
+GpuClass ClassDetected() {
+  return static_cast<GpuClass>(g_detected.load(std::memory_order_relaxed));
+}
+
 bool Known() {
   return g_known.load(std::memory_order_acquire);
 }
 
+bool Handheld() {
+  return g_handheld.load(std::memory_order_relaxed) && !ClassForced() && Known();
+}
+
 std::string Resolve(Effect effect, std::string_view user_value) {
-  return ResolveFor(Current(), effect, user_value);
+  return ResolveFor(Current(), Handheld(), effect, user_value);
 }
 
 std::string AutoLabel(Effect effect) {
-  return AutoLabelFor(Current(), effect);
+  return AutoLabelFor(Current(), Handheld(), effect);
+}
+
+double ScaleInForce(Scale scale, double user_value) {
+  return ScaleFor(scale, Known(), Current(), user_value);
+}
+
+std::string ScaleLabel(Scale scale, double user_value) {
+  return ScaleLabelFor(scale, Known(), Current(), user_value);
 }
 
 double CityLodScale(double user_value) {

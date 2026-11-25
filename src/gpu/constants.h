@@ -35,6 +35,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "guest_device.h"
+#include "render_cpu.h"
 #include "viewport.h"
 
 namespace mcla::gpu {
@@ -76,8 +77,10 @@ static_assert(offsetof(SharedConstants, inv_resolution_scale) == 592);
 // A variant of the variant pack (shaders.h) that needs constants of its own reads them after the
 // SharedConstants block, and only the draw that uses the variant uploads them (SharedConstants
 // followed by its block); every other draw, and the main pack's contract (v7 and v8, 608 bytes), is
-// as it was. Contract 1 of the variant pack. The bloom's Gaussians (kBloomVariant) have none: they
-// read g_InvResolutionScale, which is in the block above.
+// as it was. Contract 2 of the variant pack: the offsets named below are where a block is when its feature is ALONE in the shader (byte
+// 608, as in contract 1); in a composed shader the blocks of the features follow one another in feature order and the place of each comes
+// from shaderpack/variant_chain.h LayoutConstants (Scene::UploadVariantConstants asks the same function the pack builder used for the
+// text). The bloom's Gaussians (kBloomVariant) have no block: they read g_InvResolutionScale, which is in the block above.
 //
 // The HDR scene variant of the game's tone map (hdr_tonemap.h, shaders.h kHdrVariant) reads 16 bytes
 // after it: src/shaderpack/variants/hdr_scene.h declares them in the variant's HLSL as `float4
@@ -94,14 +97,31 @@ inline constexpr uint64_t kHdrSceneConstantsOffset = sizeof(SharedConstants);
 // The shadow filter variant (shadow_filter.h, shaders.h kShadowFilterVariant) reads its 16 bytes at the
 // same place: `float4 g_ShadowFilter` at byte 608 (c38 of the block), in the draws that use it (every
 // draw of the sun shadow collector whose shader has the variant), which upload SharedConstants followed by
-// shadow_filter::ShadowFilterConstants (Scene::UploadShadowFilterConstants).
+// shadow_filter::ShadowFilterConstants (Scene::FillVariantBlock).
 inline constexpr uint64_t kShadowFilterConstantsOffset = sizeof(SharedConstants);
 
 // The car self-reflection variant (car_selfrefl.h, shaders.h kCarSelfReflVariant; a test prototype, G8b) reads 112 bytes
 // at the same place, in every draw of the player's car paint: g_CarReflM0..M3 at byte 608, g_CarReflA at 672, g_CarReflB
 // at 688 and g_CarReflC at 704 (shaderpack/variants/car_selfrefl.h), the draw uploads SharedConstants followed by
-// car_selfrefl::CarSelfReflConstants (Scene::UploadCarSelfReflConstants).
+// car_selfrefl::CarSelfReflConstants (Scene::FillVariantBlock).
 inline constexpr uint64_t kCarSelfReflConstantsOffset = sizeof(SharedConstants);
+
+// The UI sharpening variant (ui_sharp.h, shaders.h kUiSharpVariant) reads 16 bytes at the same place: `float4
+// g_UiSharp` at byte 608 (c38 of the block), in the draws of the UI phase that take the variant, which upload
+// SharedConstants followed by ui_sharp::UiSharpConstants (Scene::FillVariantBlock).
+inline constexpr uint64_t kUiSharpConstantsOffset = sizeof(SharedConstants);
+
+// The headlight variant (headlight_rig.h, shaderpack/variants/headlight.h, shaders.h kHeadlightVariant and its alpha test twin) reads 1072 bytes (672 until
+// HL-PER-LAMP) at the same place when it is the draw's only feature, in the draws of the city's lit shaders that take it: headlight_rules::HeadlightConstants
+// (c38 to c104 of the block), uploaded after SharedConstants by Scene::FillVariantBlock. In a composed shader (with the G-buffer's stage) its block is at the place
+// shaderpack/variant_chain.h OffsetOf gives for the draw's feature set; this constant is for a draw with no other feature only.
+inline constexpr uint64_t kHeadlightConstantsOffset = sizeof(SharedConstants);
+// The G-buffer variants (gbuffer_types.h GBufferConstants, 48 bytes: c38 to c40 of the block; shaders.h kGBufferVariant and its alpha test twin) read their
+// block at the same place when it is the draw's only feature, in the draws that take one, which upload SharedConstants followed by it (Scene::FillVariantBlock).
+// Where another variant's block is in the same shader (the headlight's 1072 bytes) the chain's layout (shaderpack/variant_chain.h OffsetOf) puts it after that one, at
+// 1680 (608 + the headlight's size: no code names the number, the layout adds the table's sizes up); the variant's HLSL reads it through names the transform defines
+// at that offset (gbuffer_types.h).
+inline constexpr uint64_t kGBufferConstantsOffset = sizeof(SharedConstants);
 
 class ConstantBanks {
  public:
@@ -120,9 +140,13 @@ class ConstantBanks {
 
   // Applies the draw's blocks to its device's banks. Returns the banks.
   const Banks& Apply(const DrawView& view, Check* check = nullptr);
+  // render_cpu_mask bit 4: a draw's device is the previous draw's almost always, so the lookup keeps its last answer.
+  void SetDeviceCache(bool on) { cache_device_ = on; }
 
  private:
-  std::unordered_map<uint32_t, Banks> devices_;
+  std::unordered_map<uint32_t, Banks> devices_;  // never erased from: the cache below points into it
+  render_cpu::LastEntry<std::unordered_map<uint32_t, Banks>> last_device_;
+  bool cache_device_ = false;
 };
 
 // Swaps a big-endian bank into host floats (4096 bytes in, 4096 out), 16 bytes

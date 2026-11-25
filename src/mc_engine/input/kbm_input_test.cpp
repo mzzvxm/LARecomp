@@ -5,6 +5,8 @@
 #include <atomic>
 #include <cstdint>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <set>
 #include <string>
 #include <thread>
@@ -207,6 +209,96 @@ void TestMouseKeyNames() {
     CHECK(FindMouseKeyByName("") == nullptr && FindMouseKeyByName("LMB ") == nullptr && FindMouseKeyByName("Mouse") == nullptr);
 }
 
+// Every mouse key has its key cap, the picture the live button prompts paint when a binding names it (KBM-RULES (c)): src/keycaps/<name in lower case>.png, 64 x 64,
+// and <name>_w.png, 64 x 32 (the round Start / Back slots); the cap is found by the key's canonical name, which is also what the player's spellings map to (Mouse1 draws lmb.png).
+// The files are read from the source tree next to this test (a build that moved the test elsewhere skips the check and says so).
+bool PngSize(const std::filesystem::path& path, uint32_t* w, uint32_t* h) {
+    std::ifstream f(path, std::ios::binary);
+    unsigned char head[24] = {};
+    if (!f.read(reinterpret_cast<char*>(head), sizeof(head))) return false;
+    static const unsigned char kSig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; ++i)
+        if (head[i] != kSig[i]) return false;
+    if (head[12] != 'I' || head[13] != 'H' || head[14] != 'D' || head[15] != 'R') return false;
+    *w = (uint32_t(head[16]) << 24) | (uint32_t(head[17]) << 16) | (uint32_t(head[18]) << 8) | head[19];
+    *h = (uint32_t(head[20]) << 24) | (uint32_t(head[21]) << 16) | (uint32_t(head[22]) << 8) | head[23];
+    return true;
+}
+
+std::string LowerName(const char* name) {
+    std::string out;
+    for (const char* c = name; *c; ++c) out += (*c >= 'A' && *c <= 'Z') ? char(*c - 'A' + 'a') : *c;
+    return out;
+}
+
+void TestMouseKeyCaps() {
+    const std::filesystem::path dir = std::filesystem::path(__FILE__).parent_path() / ".." / ".." / "keycaps";
+    if (!std::filesystem::exists(dir / "a.png")) {
+        std::printf("kbm_input_test: the key caps folder %s was not found next to the test; the mouse cap check is skipped\n", dir.string().c_str());
+        return;
+    }
+    for (const MouseKey& m : kMouseKeys) {
+        const std::string stem = LowerName(m.name);
+        uint32_t w = 0, h = 0;
+        CHECK(PngSize(dir / (stem + ".png"), &w, &h) && w == 64 && h == 64);
+        w = h = 0;
+        CHECK(PngSize(dir / (stem + "_w.png"), &w, &h) && w == 64 && h == 32);
+    }
+    // The player's other spellings land on the canonical name, so the same cap is drawn.
+    const struct {
+        const char* spelling;
+        const char* stem;
+    } kSpellings[] = {{"Mouse1", "lmb"}, {"LButton", "lmb"}, {"Mouse2", "rmb"}, {"RButton", "rmb"}, {"Mouse3", "mmb"}, {"MButton", "mmb"}, {"Mouse4", "mb4"}, {"XButton1", "mb4"},
+                      {"X1", "mb4"},    {"Mouse5", "mb5"},   {"XButton2", "mb5"}, {"X2", "mb5"},      {"MouseWheelUp", "wheelup"}, {"MouseWheelDown", "wheeldown"}};
+    for (const auto& sp : kSpellings) {
+        const MouseKey* m = FindMouseKeyByName(sp.spelling);
+        CHECK(m != nullptr && LowerName(m->name) == sp.stem);
+    }
+}
+
+// The menu's buttons as keys (the mouse in the menus, KBM-DESIGN.md P6): ids and scancodes that nothing else uses, found both ways, and a press that reaches exactly one poll.
+void TestMenuKeys() {
+    CHECK(kMenuKeyCount == 6);
+    std::set<int> ids;
+    std::set<int> scancodes;
+    for (int i = 0; i < kMenuKeyCount; ++i) {
+        const MenuKeyDef& k = kMenuKeys[i];
+        CHECK(int(k.key) == i);  // the table is in enum order: MenuKeyId indexes it
+        CHECK(MenuKeyId(k.key) == k.id);
+        CHECK(FindMenuKeyById(k.id) == &k);
+        CHECK(ids.insert(k.id).second && scancodes.insert(k.scancode).second);
+        // Windows VK numbers nothing uses (0x97..0x9F); the SDK's VirtualKey has 0x88..0x8F as the gamepad navigation keys and 0xA0 as left shift.
+        CHECK(k.id >= 0x97 && k.id <= 0x9F);
+        // Right after the mouse keys' scancodes, inside the codes the probe found free (P0d: 67-9C), clear of the paddles (0x7B-0x7E), the camera (0x7F) and the mouse (0x80-0x86).
+        CHECK(k.scancode >= 0x87 && k.scancode <= 0x9C);
+        // not a mouse key
+        CHECK(FindMouseKeyById(k.id) == nullptr && FindMouseKeyByScancode(k.scancode) == nullptr);
+        CHECK(FindMouseKeyByName(k.name) == nullptr);
+    }
+    CHECK(FindMenuKeyById(0x01) == nullptr && FindMenuKeyById(0x0D) == nullptr && FindMenuKeyById(0x8E) == nullptr && FindMenuKeyById(0x96) == nullptr);
+    // A press is one poll: the latch's pulse, then nothing; two presses in the same poll are one.
+    KeyLatch latch;
+    latch.Pulse(MenuKeyId(MenuKey::Accept));
+    latch.Pulse(MenuKeyId(MenuKey::Accept));
+    KeySnapshot a = latch.Poll();
+    CHECK(a.Test(MenuKeyId(MenuKey::Accept)) && !a.Test(MenuKeyId(MenuKey::Back)));
+    KeySnapshot b = latch.Poll();
+    CHECK(!b.Test(MenuKeyId(MenuKey::Accept)));
+    // Different buttons in one poll are all there.
+    latch.Pulse(MenuKeyId(MenuKey::Down));
+    latch.Pulse(MenuKeyId(MenuKey::Right));
+    KeySnapshot c = latch.Poll();
+    CHECK(c.Test(MenuKeyId(MenuKey::Down)) && c.Test(MenuKeyId(MenuKey::Right)) && !c.Test(MenuKeyId(MenuKey::Up)));
+}
+
+// The mouse is the game's only when no overlay wants it and no panel holds the pointer (the Director panel's whole picture).
+void TestMouseGoesToGame() {
+    CHECK(MouseGoesToGame(false, false));   // the road: LMB is nitro, RMB the look back
+    CHECK(!MouseGoesToGame(true, false));   // the pointer is over an ImGui window (the dock's buttons, the F4 panel)
+    CHECK(!MouseGoesToGame(false, true));   // the Director panel shows: a click on the ground, a car dragged, the right button's look are the panel's
+    CHECK(!MouseGoesToGame(true, true));
+}
+
 }  // namespace
 
 int main() {
@@ -220,6 +312,9 @@ int main() {
     TestNoTapIsLostAcrossThreads();
     TestMouseKeyTable();
     TestMouseKeyNames();
+    TestMouseKeyCaps();
+    TestMenuKeys();
+    TestMouseGoesToGame();
     std::printf("kbm_input_test: %d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

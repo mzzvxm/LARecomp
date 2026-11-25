@@ -35,13 +35,14 @@
 // command and the key only file a request, since both arrive on the UI thread.
 //
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/platform/file.h>
+#include <rex/kernel/title_runtime.h>
 #include <rex/ppc/context.h>
-#include <rex/ppc/function.h>
-#include <rex/system/function_dispatcher.h>
-#include <rex/ui/keybinds.h>
+#include <rex/ppc/call.h>
+#include <rex/kernel/function_dispatcher.h>
+#include <rex/ui/ui_system.h>
 
 #include <atomic>
 #include <cmath>
@@ -60,26 +61,7 @@
 #include "map_warp.h"
 #include "profile/larecomp_profile_store.h"
 #include "mc_engine/modloader/features/mod_data.h"
-
-REXCVAR_DEFINE_STRING(warp_spot, "", "MCLA/World",
-    "Where F9 drops the car: \"x y z heading\" (heading in degrees, 0 = facing +Z). "
-    "Empty = the first point a mod names in models/<mod>/warps.txt. The car is "
-    "dropped onto whatever collision is below the point.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(start_garage_last, "hollywood", "MCLA/World",
-    "The garage nearest the car the last time it was driven (hollywood, beaches or sc); "
-    "start_garage = last starts the session there. The game keeps it up to date.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_STRING(start_garage, "hollywood", "MCLA/World",
-    "Which district garage the car starts the session at: hollywood (what the game "
-    "always does), beaches, sc, or last (the garage nearest the car when the game was "
-    "closed). The car is moved there once, when it first appears at Hollywood's door, so a "
-    "change is seen at the next start of the game.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+#include "larecomp_guest.h"
 
 namespace {
 
@@ -128,7 +110,7 @@ struct Request {
 };
 
 std::mutex g_mu;
-Request g_request;
+Request& g_request = larecomp::Leak<Request>();
 
 // Where the car was before its last warp out, so "back" returns there.
 bool g_have_back = false;
@@ -136,10 +118,9 @@ bool g_warped_out = false;
 float g_back[16] = {};
 
 bool g_spots_loaded = false;
-std::vector<NamedSpot> g_spots;
+std::vector<NamedSpot>& g_spots = larecomp::Leak<std::vector<NamedSpot>>();
 
 uint32_t g_scratch = 0;          // guest: matrix (64) + velocity (16) + angvel (16)
-std::atomic<bool> g_bind_registered{false};
 int g_watch_frames = -1;         // frames since the last warp, for the fall check
 float g_watch_y = 0.0f;
 
@@ -149,8 +130,8 @@ void File(const Request& r) {
 }
 
 uint8_t* Membase() {
-    auto* rt = rex::Runtime::instance();
-    return rt ? rt->virtual_membase() : nullptr;
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->GetMembase().GetBase() : nullptr;
 }
 
 uint32_t ReadBE32(uint32_t ea) {
@@ -179,9 +160,9 @@ void WriteF32(uint32_t ea, float f) {
 }
 
 PPCFunc* GuestFn(uint32_t addr) {
-    auto* rt = rex::Runtime::instance();
-    if (!rt || !rt->function_dispatcher()) return nullptr;
-    return rt->function_dispatcher()->GetFunction(addr);
+    auto* rt = REX_RUNTIME();
+    if (!rt) return nullptr;
+    return rt->FindFunction(addr).value_or(nullptr);
 }
 
 bool GameIsPaused() {
@@ -197,8 +178,8 @@ uint32_t PlayerRacer() {
     PPCFunc* racer_fn = GuestFn(kPlayerRacerFn);
     if (!mgr || !valid_fn || !racer_fn) return 0;
     for (uint32_t i = 0; i < kPlayerSweep; ++i) {
-        if (!(rex::ppc::GuestToHostFunction<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
-        if (const uint32_t r = rex::ppc::GuestToHostFunction<uint32_t>(racer_fn, mgr, i)) return r;
+        if (!(larecomp::guest::Call<uint32_t>(valid_fn, mgr, i) & 0xFF)) continue;
+        if (const uint32_t r = larecomp::guest::Call<uint32_t>(racer_fn, mgr, i)) return r;
     }
     return 0;
 }
@@ -231,7 +212,7 @@ bool EnsureScratch() {
     if (g_scratch) return true;
     PPCFunc* malloc_fn = GuestFn(kGuestMallocFn);
     // matrix 64 + velocity 16 + angular velocity 16, probe segment 32, result 96
-    const uint32_t raw = malloc_fn ? rex::ppc::GuestToHostFunction<uint32_t>(malloc_fn, 240u) : 0;
+    const uint32_t raw = malloc_fn ? larecomp::guest::Call<uint32_t>(malloc_fn, 240u) : 0;
     if (!raw) return false;
     g_scratch = (raw + 15) & ~15u;
     return true;
@@ -252,7 +233,7 @@ bool ProbeGround(float x, float y, float z, float len, float* ground) {
     std::memset(base + res, 0, 96);
     base[res + 76] = 0xFF;  // component: none
     base[res + 77] = 0xFF;
-    const uint32_t hit = rex::ppc::GuestToHostFunction<uint32_t>(fn, level, seg, res, 0u, 0x800u,
+    const uint32_t hit = larecomp::guest::Call<uint32_t>(fn, level, seg, res, 0u, 0x800u,
                                                                   0xFFFFFFFFu, 4u, 1u, 0u);
     if (!(hit & 0xFF)) return false;
     *ground = ReadF32(res + 20);
@@ -264,7 +245,7 @@ bool Teleport(uint32_t racer, const float m[16], bool snap) {
     if (!fn || !EnsureScratch()) return false;
     for (int i = 0; i < 16; ++i) WriteF32(g_scratch + 4 * i, m[i]);
     for (int i = 0; i < 8; ++i) WriteF32(g_scratch + 64 + 4 * i, 0.0f);
-    rex::ppc::GuestToHostFunction<uint32_t>(fn, racer, g_scratch, g_scratch + 64, g_scratch + 80,
+    larecomp::guest::Call<uint32_t>(fn, racer, g_scratch, g_scratch + 64, g_scratch + 80,
                                             snap ? 1u : 0u, kProbeUp, kProbeDown);
     return true;
 }
@@ -337,7 +318,7 @@ void LoadSpots() {
 
 // F9's destination: warp_spot, else the first mod warp point.
 bool DefaultSpot(Spot* out, std::string* name) {
-    const std::string text = REXCVAR_GET(warp_spot);
+    const std::string text = larecomp::settings::warp_spot.Get();
     float v[4];
     int n = 0;
     if (!text.empty() && ParseFloats(text, v, 4, &n) && n >= 3) {
@@ -361,13 +342,6 @@ bool FindSpot(const std::string& name, Spot* out) {
         }
     }
     return false;
-}
-
-void RegisterBindOnce() {
-    if (g_bind_registered.exchange(true)) return;
-    rex::ui::RegisterBind("bind_map_warp", "F9",
-                          "Warp the car to a mod's warp point, and back to where it was",
-                          [] { File({Kind::kToggle, {}, {}}); });
 }
 
 void Warp(const Request& r) {
@@ -534,14 +508,14 @@ int GarageByName(const std::string& name) {
     return -1;
 }
 
-int ReadLastGarage() { return GarageByName(REXCVAR_GET(start_garage_last)); }
+int ReadLastGarage() { return GarageByName(larecomp::settings::start_garage_last.Get()); }
 
 // The live cvar and its one line of larecomp.toml, the way the server browser
 // keeps its settings: the SDK only rewrites the whole file when a menu is left.
 void WriteLastGarage(int index) {
     const std::string name = kGarages[index].name;
-    rex::cvar::SetFlagByName("start_garage_last", name);
-    const std::filesystem::path toml = rex::filesystem::GetExecutableFolder() / "larecomp.toml";
+    larecomp::cvar::SetFlagByName("start_garage_last", name);
+    const std::filesystem::path toml = rex::platform::GetExecutableFolder() / "larecomp.toml";
     if (!larecomp::profiles::EditConfig(
             toml, {{"start_garage_last", larecomp::profiles::QuoteTomlString(name)}}))
         MC_WARN("[garage] could not write start_garage_last to larecomp.toml");
@@ -557,7 +531,7 @@ void TickStartGarage() {
     if (!g_start_done) {
         ++g_start_frames;
         if (g_start_frames < kStartSettleFrames) return;
-        const std::string want = REXCVAR_GET(start_garage);
+        const std::string want = larecomp::settings::start_garage.Get();
         int target = want == "last" ? ReadLastGarage() : GarageByName(want);
         if (target < 0) target = 0;
         const bool at_door = GarageDist(kGarages[0], cur[12], cur[14]) < kSpawnRadius;
@@ -601,14 +575,25 @@ void TickStartGarage() {
 
 }  // namespace
 
-REXCVAR_DEFINE_COMMAND_ARGS(warp, ConsoleWarp, "MCLA/World",
-                            "Warp the car: 'warp <point>' (a mod's warps.txt), 'warp back' (to "
+// Console command `warp` (was REXCVAR_DEFINE_COMMAND_ARGS in category "MCLA/World"; its .debug_only() has no equivalent).
+class LarecompCommand_warp final : public rex::SettingOwner {
+ public:
+  LarecompCommand_warp() : SettingOwner("larecomp") { larecomp::settings::RegisterExtraOwner(*this); }
+  REX_COMMAND(warp, "Warp the car: 'warp <point>' (a mod's warps.txt), 'warp back' (to "
                             "where it was), 'warp x y z [heading]', or 'warp' to list the points. "
-                            "The car is dropped onto whatever collision is below the point.")
-    .debug_only();
+                            "The car is dropped onto whatever collision is below the point.",
+              [](std::string_view args) -> rex::Result<void> {
+                (void)args;
+                (ConsoleWarp)(args);
+                return rex::Ok();
+              });
+};
+inline LarecompCommand_warp& g_larecomp_command_warp = larecomp::Leak<LarecompCommand_warp>();
+
+// The key (ui.bind.map_warp, F9): LarecompApp::StartOverlays binds it to this, through a hotkey overlay.
+void MapWarpKeyPressed() { File({Kind::kToggle, {}, {}}); }
 
 void TickMapWarp() {
-    RegisterBindOnce();
     WatchAfterWarp();
     TickStartGarage();
     Request r;

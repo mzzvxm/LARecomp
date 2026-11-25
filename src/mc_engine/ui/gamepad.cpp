@@ -1,7 +1,8 @@
 #include "gamepad.h"
+#include "settings/immortal.h"
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include <SDL3/SDL.h>
 
@@ -13,6 +14,7 @@
 #include <unordered_map>
 
 #include "mc_engine/input/device_watch.h"
+#include "mc_engine/input/own_sdl.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -239,7 +241,7 @@ class OverlayPadReader {
 };
 
 OverlayPadReader& Reader() {
-  static OverlayPadReader reader;
+  static OverlayPadReader& reader = larecomp::Leak<OverlayPadReader>();
   return reader;
 }
 
@@ -248,32 +250,27 @@ OverlayPadReader& Reader() {
 void EnsurePadLayer() {
   static std::once_flag once;
   std::call_once(once, [] {
-    // The wheel code's hints (wheel_input.cpp, WheelThread): this SDL must not
-    // open pads through the drivers that would take them from the SDK's SDL.
+    // Is this executable's SDL the SDK's? (mc_engine/input/sdl_instance.h.) With two SDLs (the 0.10 line on
+    // Windows: the SDK's is inside rexruntime.dll) this copy is nobody's but ours: it must not open pads through
+    // the drivers that would take them from the SDK's copy, nothing pumps its event queue, and its gamepad layer
+    // is started here, by the first dialog, and polled (SDL_UpdateGamepads). Same hints as the wheel thread's
+    // (wheel_input.cpp, WheelThread; whichever starts first sets them, once).
     //
-    // When the SDK's own driver is SDL (input_backend = "sdl", which is what Linux runs) this is
-    // the SAME SDL: HIDAPI stays on for it, and gamepad events stay on, because the driver is
-    // driven by exactly those events. Switching them off here left a detected pad that never
-    // sent a button.
-    const bool sdk_uses_sdl = rex::cvar::GetFlagByName("input_backend") == "sdl";
-    if (!sdk_uses_sdl) {
-      SDL_SetHint(SDL_HINT_JOYSTICK_HIDAPI, "0");
-      SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "0");
-      SDL_SetHint(SDL_HINT_JOYSTICK_WGI, "0");
-      SDL_SetHint(SDL_HINT_XINPUT_ENABLED, "0");
-    }
-    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+    // With one SDL (Linux, the 0.11 line) this is the SAME SDL as the SDK's driver: HIDAPI stays on for it, and
+    // gamepad events stay on, because the driver is driven by exactly those events. Switching them off here left
+    // a detected pad that never sent a button.
+    const std::string backend = larecomp::cvar::GetFlagByName("input_backend");
+    larecomp::sdlinst::ApplyOwnCopyHints(backend);
     g_layer_up = SDL_InitSubSystem(SDL_INIT_GAMEPAD);
     if (!g_layer_up) {
       REXLOG_WARN("[ui] Pad layer: SDL gamepad init failed: {}", SDL_GetError());
       return;
     }
-    // Nothing pumps this SDL's event queue; state is read by polling.
-    if (!sdk_uses_sdl) {
-      SDL_SetGamepadEventsEnabled(false);
-    }
+    // Nothing pumps this SDL's event queue (with two SDLs); state is read by polling.
+    larecomp::sdlinst::SilenceOwnCopyEvents(backend);
+    REXLOG_INFO("[ui] Pad layer up: {}", larecomp::sdlinst::DescribeOwnCopy(backend));
     // The mappings the SDK's driver loads, so a DirectInput pad maps the same.
-    const std::string mappings = rex::cvar::GetFlagByName("hid_mappings_file");
+    const std::string mappings = larecomp::cvar::GetFlagByName("hid_mappings_file");
     std::error_code ec;
     if (!mappings.empty() && std::filesystem::exists(mappings, ec)) {
       SDL_AddGamepadMappingsFromFile(mappings.c_str());

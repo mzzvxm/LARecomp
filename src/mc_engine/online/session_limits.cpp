@@ -11,23 +11,17 @@
 // sub_82661CC0 and depends on the net object's +0x10/+0x18, not on this).
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-
-REXCVAR_DEFINE_BOOL(net_lift_big_session_limits, false, "MCLA/Online",
-    "Sessions of more than 8 players keep damage, debris, world props and the "
-    "default session settings that MCLA turns off above 8. Applies to the next "
-    "session you host.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/context.h>
 
 // 0x8226BBE4, before the store: r11 is the "more than 8 players" flag.
 void Hook_NetBigSessionFlag(PPCRegister& r11) {
-    if (REXCVAR_GET(net_lift_big_session_limits)) r11.u64 = 0;
+    if (larecomp::settings::net_lift_big_session_limits.Get()) r11.u64 = 0;
 }
 
 // 0x8228A0F0, before cmpwi r11,8: r11 is the MaxPlayers value being compared.
 void Hook_NetBigSessionDefault(PPCRegister& r11) {
-    if (REXCVAR_GET(net_lift_big_session_limits)) r11.u64 = 0;
+    if (larecomp::settings::net_lift_big_session_limits.Get()) r11.u64 = 0;
 }
 #else
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.

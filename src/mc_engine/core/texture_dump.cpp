@@ -18,30 +18,24 @@
 #include <system_error>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/graphics/pipeline/texture/conversion.h>
-#include <rex/graphics/pipeline/texture/info.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include <rex/xenos/texture.h>
 
 #include "mc_engine/core/logging.h"
 #include "mc_engine/modloader/modloader.h"
 
-REXCVAR_DEFINE_STRING(larecomp_texture_folder, "", "Graphics",
-                      "Folder the texture dumps are written to. Empty: textures_dump/ in the "
-                      "mod folder (modloader/, mods/ or models/ beside the executable)")
-    .debug_only();
-
 namespace mcla {
 
-using rex::graphics::FormatInfo;
-using rex::graphics::FormatType;
-namespace texture_conversion = rex::graphics::texture_conversion;
+using rex::xenos::FormatInfo;
+using rex::xenos::FormatType;
+namespace texture_conversion = rex::xenos;  // 0.11: Untile and CopySwapBlock moved into rex::xenos (texture.h)
 
 // "textures" is the value this cvar had by default before the dumps moved
 // into the mod folder; a toml the game rewrote still carries it.
 std::filesystem::path TextureDumpDir() {
-  const std::filesystem::path exe = rex::filesystem::GetExecutableFolder();
-  const std::string folder = rex::cvar::GetFlagByName("larecomp_texture_folder");
+  const std::filesystem::path exe = rex::platform::GetExecutableFolder();
+  const std::string folder = larecomp::cvar::GetFlagByName("larecomp_texture_folder");
   if (folder.empty() || folder == "textures") {
     return mc::modloader::ModRootDir(exe) / "textures_dump";
   }
@@ -145,7 +139,7 @@ static_assert(sizeof(DdsHeaderDX10) == 20);
 // came from the caller, not from a guest-controlled fetch constant.
 static void UntileBlocks(const uint8_t* src, uint8_t* dst, uint32_t width_blocks,
                          uint32_t height_blocks, uint32_t pitch_blocks, const FormatInfo* fi) {
-  texture_conversion::UntileInfo info{};
+  texture_conversion::UntileRegion info{};
   info.offset_x = 0;
   info.offset_y = 0;
   info.width = width_blocks;
@@ -375,7 +369,7 @@ bool DumpGuestTextureTo(const std::filesystem::path& dest, uint32_t width, uint3
   if (!IsDumpableFormat(format))
     return false;
 
-  const uint32_t bpb = fi->bytes_per_block();
+  const uint32_t bpb = fi->GetBytesPerBlock();
   const uint32_t w_blocks = (width + fi->block_width - 1) / fi->block_width;
   const uint32_t h_blocks = (height + fi->block_height - 1) / fi->block_height;
   // pitch_blocks is in units of 32 texels, convert to block units

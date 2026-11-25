@@ -16,8 +16,12 @@
 // or an overlay opens or the setting is turned off; a controller's right stick then works as before. The state machine sees only real motion (relative events carry no
 // position change, and nothing is recentred).
 //
+// rexglue 0.11: the window is put in relative mode by IInputSystem::SetPointerMode(kLocked) (the pointer arbiter in sdk_access.h gives the input system the strongest wish of
+// mouse look, the map and the cursor hide; the UI system applies it on the UI thread), and the raw counts are IInputSystem::TakeMotion() (it sums the motion only while the
+// pointer is locked, applied and the window in front). No listener of ours is involved any more.
+//
 // Threads: Want / Tick / Take are called on the game thread (Tick once a frame from Patch_DeltaTimePre via TickCameraLook, Want from the camera code, Take once per camera
-// tick); the listener runs on the UI thread; SetRelativeMouseMode is posted to the UI thread (CallInUIThread) only when the wish changes.
+// tick); the pointer mode is applied by the UI system on the UI thread.
 //
 
 #include <cstdint>

@@ -28,15 +28,12 @@
 #include <string>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/function_dispatcher.h>
-
-REXCVAR_DEFINE_BOOL(garage_menu_fixes, true, "MCLA/Patches",
-    "Fix garage tune files the game ships broken: the low riders' side "
-    "exhausts, the CLK63 AMG's missing 3rd and 4th parts, and the city bus's "
-    "missing performance list.");
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/function_dispatcher.h>
 
 REX_EXTERN(__imp__rex_sub_821CA6A8);  // asset manager open
 
@@ -92,35 +89,26 @@ std::string WantedFix(const uint8_t* base, uint32_t name, uint32_t ext) {
     return {};
 }
 
-// Calls a guest function on a copy of the caller's context. We are at the
-// entry of a guest function, so the stack below r1 is free.
-uint32_t CallGuest(const PPCContext& ctx, uint8_t* base, uint32_t address,
-                   uint32_t a0, uint32_t a1 = 0, uint32_t a2 = 0) {
-    PPCFunc* fn = rex::Runtime::instance()->function_dispatcher()->GetFunction(address);
-    if (!fn) return 0;
-    PPCContext call = ctx;
-    call.r3.u64 = a0;
-    call.r4.u64 = a1;
-    call.r5.u64 = a2;
-    fn(call, base);
-    return call.r3.u32;
+// Calls a guest function on the thread's own register file, which comes back as
+// it was (larecomp_guest.h: a copy of the context is not safe on this SDK).
+PPCFunc* GuestFunction(uint32_t address) {
+    auto* rt = REX_RUNTIME();
+    return rt ? rt->FindFunction(address).value_or(nullptr) : nullptr;
+}
+
+uint32_t CallGuest(uint32_t address, uint32_t a0, uint32_t a1 = 0, uint32_t a2 = 0) {
+    return larecomp::guest::Call<uint32_t>(GuestFunction(address), a0, a1, a2);
 }
 
 // Reads a stream that was just opened, to its end, through its device.
-bool ReadAll(const PPCContext& ctx, uint8_t* base, uint32_t stream, std::string& out) {
+bool ReadAll(uint8_t* base, uint32_t stream, std::string& out) {
     const uint32_t device = Load32(base, stream);
     const uint32_t handle = Load32(base, stream + 4);
-    const uint32_t read = Load32(base, Load32(base, device) + kDeviceRead);
-    PPCFunc* fn = rex::Runtime::instance()->function_dispatcher()->GetFunction(read);
-    if (!fn) return false;
+    PPCFunc* read = GuestFunction(Load32(base, Load32(base, device) + kDeviceRead));
+    if (!read) return false;
     while (out.size() <= kMaxText) {
-        PPCContext call = ctx;
-        call.r3.u64 = device;
-        call.r4.u64 = handle;
-        call.r5.u64 = g_scratch;
-        call.r6.u64 = kChunk;
-        fn(call, base);
-        const int32_t got = call.r3.s32;
+        const int32_t got =
+            larecomp::guest::Call<int32_t>(read, device, handle, g_scratch, kChunk);
         if (got <= 0) return !out.empty();
         if (got > int32_t(kChunk)) return false;
         out.append(reinterpret_cast<const char*>(base + g_scratch), size_t(got));
@@ -130,7 +118,8 @@ bool ReadAll(const PPCContext& ctx, uint8_t* base, uint32_t stream, std::string&
 
 // Puts the amended text in guest memory and builds the path that opens it.
 bool Keep(uint8_t* base, const std::string& archive_path, const std::string& text) {
-    auto* memory = rex::Runtime::instance()->memory();
+    auto* memory = larecomp::guest::AddressSpace();
+    if (!memory) return false;
     const uint32_t block =
         memory->SystemHeapAlloc(kPathRoom + uint32_t(text.size()), 0x10);
     if (!block) return false;
@@ -143,15 +132,15 @@ bool Keep(uint8_t* base, const std::string& archive_path, const std::string& tex
     return true;
 }
 
-uint32_t OpenServed(const PPCContext& ctx, uint8_t* base, const Served& served) {
-    return CallGuest(ctx, base, kStreamOpen, served.path, 1 /* read only */);
+uint32_t OpenServed(const Served& served) {
+    return CallGuest(kStreamOpen, served.path, 1 /* read only */);
 }
 
 }  // namespace
 
 extern "C" REX_FUNC(rex_sub_821CA6A8) {
     const std::string path =
-        REXCVAR_GET(garage_menu_fixes) && (ctx.r7.u32 & 0xFF)
+        larecomp::settings::garage_menu_fixes.Get() && (ctx.r7.u32 & 0xFF)
             ? WantedFix(base, ctx.r4.u32, ctx.r5.u32)
             : std::string();
     // A file a mod ships is the mod's to keep.
@@ -162,7 +151,7 @@ extern "C" REX_FUNC(rex_sub_821CA6A8) {
 
     std::lock_guard<std::mutex> lock(g_mutex);
     if (const auto it = g_served.find(path); it != g_served.end()) {
-        ctx.r3.u64 = OpenServed(ctx, base, it->second);
+        ctx.r3.u64 = OpenServed(it->second);
         return;
     }
 
@@ -177,17 +166,17 @@ extern "C" REX_FUNC(rex_sub_821CA6A8) {
     if (new_file) {
         amended = mc::garage_fixes::Apply(path, text);
     } else {
-        if (!g_scratch)
-            g_scratch = rex::Runtime::instance()->memory()->SystemHeapAlloc(kChunk, 0x10);
+        if (auto* memory = larecomp::guest::AddressSpace(); !g_scratch && memory)
+            g_scratch = memory->SystemHeapAlloc(kChunk, 0x10);
         if (!g_scratch) return;  // the original is untouched, hand it over
-        amended = ReadAll(entry, base, original, text) &&
+        amended = ReadAll(base, original, text) &&
                   mc::garage_fixes::Apply(path, text);
         // Read or not, this stream has moved: it is not handed to the game.
-        CallGuest(entry, base, kStreamClose, original);
+        CallGuest(kStreamClose, original);
     }
 
     if (amended && Keep(base, path, text)) {
-        ctx.r3.u64 = OpenServed(entry, base, g_served[path]);
+        ctx.r3.u64 = OpenServed(g_served[path]);
         if (ctx.r3.u32) {
             LARECOMP_APP_INFO("[garage-fix] {} served amended ({} bytes)", path,
                               text.size());
@@ -200,9 +189,8 @@ extern "C" REX_FUNC(rex_sub_821CA6A8) {
     }
 
     if (!new_file) {  // give the game a fresh stream of its own file
-        PPCContext again = entry;
-        __imp__rex_sub_821CA6A8(again, base);
-        ctx = again;
+        ctx = entry;  // the same register file, with the caller's arguments again
+        __imp__rex_sub_821CA6A8(ctx, base);
     }
 }
 

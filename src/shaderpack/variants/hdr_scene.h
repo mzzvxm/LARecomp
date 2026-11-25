@@ -53,6 +53,7 @@ VariantDef MakeHdrSceneVariantFromText(std::string_view hlsli_text);
 // `include_text` the curve's file. Both are read the way the Python reads them (open(..., "r"): CRLF and
 // lone CR become LF), so the variant is the same text whatever line endings the translator's include
 // carries.
-VariantTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_view include_text);
+VariantTransformResult TransformToneMapHlsl(std::string_view hlsl, std::string_view include_text,
+                                            const StageContext& ctx = SoloContext(kFeatureHdrScene));
 
 }  // namespace larecomp::shaderpack

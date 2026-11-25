@@ -50,11 +50,14 @@
 // that a file holds stay out of the game but go into every file written after.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/kernel_state.h>
-#include <rex/system/xam/user_profile.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/xam/content_manager.h>
+#include <rex/xam/user_profile.h>
+#include <rex/path_settings.h>
 
 #include <algorithm>
 #include <array>
@@ -74,39 +77,6 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "owned_cars.h"
-
-REXCVAR_DEFINE_INT32(owned_cars_limit, 30, "MCLA/Patches",
-    "How many cars a save can own (30 to 255). 30 = the game's own limit and its own storage; "
-    "above 30 the cars past the 30th are kept in mc4_owned_cars.bin beside the save, "
-    "and a build without this option shows only the first 30. Saving while it is 30 (or with "
-    "a build without it) leaves the cars past the 30th out of that save; they stay on disk "
-    "and come back with owned_cars_recover_unmatched.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(owned_cars_recover_unmatched, false, "MCLA/Patches",
-    "For one start: when no owned-car file matches the save loaded and the save owns exactly 30 "
-    "cars, add the cars past the 30th from the newest such file beside it (for a save made "
-    "while owned_cars_limit was 30). Turn it off again afterwards.")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(owned_cars_keep_all_generations, false, "MCLA/Patches",
-    "Keep every set-aside owned-car file, also those a later load proved the save on disk "
-    "does not use.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(owned_cars_poison_static, false, "MCLA/Patches",
-    "Test: fill the profile's own 30 car slots with a pattern while the moved block "
-    "is in use, so a read that still goes to them shows at once.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_INT32(owned_cars_test_fill, 0, "MCLA/Patches",
-    "Test: after a load, copy the current car until the save owns this many cars.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DECLARE(bool, vehicle_records_relocate);  // vehicle_records.cpp
 
 namespace {
 
@@ -135,9 +105,9 @@ static_assert(kCars + kGameCap * kCarSize == kProfile + 246640,
 // loop of sub_8238C5A0): no slot may lie past its records. Moved by
 // vehicle_records.cpp it has room for at least 256; left in the profile, 77.
 uint32_t ComputeCap() {
-    const int32_t want = REXCVAR_GET(owned_cars_limit);
+    const int32_t want = larecomp::settings::owned_cars_limit.Get();
     if (want <= int32_t(kGameCap)) return kGameCap;
-    const uint32_t ceiling = REXCVAR_GET(vehicle_records_relocate) ? kMaxCap : kStaticPartsRecords;
+    const uint32_t ceiling = larecomp::settings::vehicle_records_relocate.Get() ? kMaxCap : kStaticPartsRecords;
     const uint32_t cap = std::min<uint32_t>(uint32_t(want), ceiling);
     if (cap < uint32_t(want))
         LARECOMP_APP_WARN("[owned-cars] owned_cars_limit {} held to {}", want, cap);
@@ -228,7 +198,7 @@ bool TakeBlank(const uint8_t* b, const char* why) {
 // image (the vtables of the slot and its parts) are kept, so the destructor at
 // exit still finds them.
 void PoisonMirror(uint8_t* b) {
-    if (!REXCVAR_GET(owned_cars_poison_static) || g_blank_car.size() != kCarSize) return;
+    if (!larecomp::settings::owned_cars_poison_static.Get() || g_blank_car.size() != kCarSize) return;
     for (uint32_t s = 0; s < kGameCap; ++s) {
         uint8_t* slot = b + kCars + s * kCarSize;
         for (uint32_t o = 0; o + 4 <= kCarSize; o += 4) {
@@ -269,11 +239,9 @@ bool EnsureBlock(uint8_t* b, const char* why, uint32_t parts_room) {
     const uint32_t cars_bytes = cap * kCarSize;
     const uint32_t damage_bytes = cap * kDamageSize;
     const uint32_t plates_bytes = (cap + 63) & ~63u;
-    auto* rt = rex::Runtime::instance();
+    auto* memory = larecomp::guest::AddressSpace();
     const uint32_t block =
-        rt && rt->memory()
-            ? rt->memory()->SystemHeapAlloc(cars_bytes + damage_bytes + plates_bytes, 0x1000)
-            : 0;
+        memory ? memory->SystemHeapAlloc(cars_bytes + damage_bytes + plates_bytes, 0x1000) : 0;
     if (!block) {
         LARECOMP_APP_ERROR("[owned-cars] no guest memory for {} owned cars ({}); the game keeps 30",
                            cap, why);
@@ -345,27 +313,18 @@ bool g_recovered = false;            // owned_cars_recover_unmatched used this s
 
 uint32_t OverCount() { return uint32_t(g_over_cars.size() / kCarSize); }
 
-// The directory the content store files this profile under: the configured
-// profile name when the SDK has one, the hex XUID otherwise (same rule as
-// mc4_vehicle_records.bin).
-template <typename Profile>
+// The directory the content store files the signed in profile under (the same
+// answer mc4_vehicle_records.bin uses): the content manager's own.
 std::string ProfileDirFor() {
-    if constexpr (requires { Profile::ConfiguredName(); }) {
-        std::string name = Profile::ConfiguredName();
-        if (!name.empty()) return name;
-    }
-    auto* ks = rex::system::kernel_state();
-    const Profile* profile = ks ? ks->user_profile() : nullptr;
-    if (!profile) return {};
-    char xuid[17];
-    std::snprintf(xuid, sizeof(xuid), "%016llX", static_cast<unsigned long long>(profile->xuid()));
-    return xuid;
+    auto* rt = REX_RUNTIME();
+    if (!rt) return {};
+    return rt->GetContentManager().ProfileDirName(rt->GetUserProfile().GetXUID());
 }
 
 fs::path SidecarPath() {
-    auto* rt = rex::Runtime::instance();
-    const fs::path root = rt ? rt->user_data_root() : fs::path{};
-    const std::string dir = ProfileDirFor<rex::system::xam::UserProfile>();
+    auto* rt = REX_RUNTIME();
+    const fs::path root = rt ? rex::GetPathSettings().user_root.Get() : fs::path{};
+    const std::string dir = ProfileDirFor();
     if (root.empty() || dir.empty()) return {};
     return root / dir / "545407F8" / kSidecarName;
 }
@@ -649,7 +608,7 @@ void PinLoaded(const fs::path& file, const Generation& g, const std::vector<uint
 // Once a load proved which file the save on disk uses, the files the same line
 // set aside are not used by it.
 void RemoveSetAside(const std::vector<Generation>& gens, const Generation& used) {
-    if (REXCVAR_GET(owned_cars_keep_all_generations) || !g_line.id) return;
+    if (larecomp::settings::owned_cars_keep_all_generations.Get() || !g_line.id) return;
     std::error_code ec;
     for (const Generation& g : gens) {
         if (g.rank != 3 || g.h.line != g_line.id || g.path == used.path) continue;
@@ -699,7 +658,7 @@ const Generation* Recoverable(const std::vector<Generation>& gens, uint32_t in_s
 // `adopt` makes its line this save's when the save matched none.
 bool TryRecover(uint8_t* b, uint32_t in_save, const Generation& best,
                 const std::vector<Generation>& gens, bool adopt) {
-    if (!REXCVAR_GET(owned_cars_recover_unmatched) || g_recovered) {
+    if (!larecomp::settings::owned_cars_recover_unmatched.Get() || g_recovered) {
         LARECOMP_APP_WARN("[owned-cars] {} holds {} cars past the 30th of another save (perhaps "
                           "this one, saved with the option off; it now owns {}). If they are this "
                           "save's, start once with owned_cars_recover_unmatched = true",
@@ -803,7 +762,7 @@ std::string LoadSidecar(uint8_t* b, uint32_t in_save, int32_t cur) {
 // Test help: copies the cars the save already owns, in turn, until it owns
 // `want` of them.
 void TestFill(uint8_t* b) {
-    const int32_t want_cvar = REXCVAR_GET(owned_cars_test_fill);
+    const int32_t want_cvar = larecomp::settings::owned_cars_test_fill.Get();
     if (want_cvar <= 0) return;
     const uint32_t want = std::min<uint32_t>(uint32_t(want_cvar), owned_cars::Cap());
     const uint32_t count = OwnedCount(b);

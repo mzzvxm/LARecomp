@@ -6,13 +6,15 @@
 
 #include <cstring>
 
-#include <rex/cvar.h>
+#include "gpu/render_cpu.h"
+#include "physical_alias.h"
+#include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
 
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 // Defined in native_gfx.cpp at global scope, like every cvar in this runtime.
-REXCVAR_DECLARE(uint32_t, mcla_native_gfx_fetch_size_unit);
 
 namespace mcla::native_gfx {
 
@@ -21,11 +23,11 @@ bool IsGuestRangeReadable(uint32_t guest_address, uint64_t size) {
       uint64_t(guest_address) + size > 0x100000000ull) {
     return false;
   }
-  auto* runtime = rex::Runtime::instance();
+  auto* runtime = REX_RUNTIME();
   if (!runtime) {
     return false;
   }
-  auto* memory = runtime->memory();
+  auto* memory = larecomp::guest::AddressSpace(runtime);
   if (!memory) {
     return false;
   }
@@ -47,20 +49,17 @@ bool IsGuestRangeReadable(uint32_t guest_address, uint64_t size) {
 }
 
 const uint8_t* TranslatePhysicalGuest(uint32_t physical_address) {
-  auto* runtime = rex::Runtime::instance();
+  auto* runtime = REX_RUNTIME();
   if (!runtime) {
     return nullptr;
   }
-  auto* memory = runtime->memory();
+  auto* memory = larecomp::guest::AddressSpace(runtime);
   return memory ? memory->TranslatePhysical<const uint8_t*>(physical_address) : nullptr;
 }
 
 bool IsPhysicalRangeReadable(uint32_t physical_address, uint64_t size) {
   // The physical space is 512 MiB; the range must fit inside it.
-  const uint32_t phys = physical_address & 0x1FFFFFFFu;
-  if (size == 0 || uint64_t(phys) + size > 0x20000000ull) {
-    return false;
-  }
+  //
   // Physical memory is reachable through THREE virtual aliases (0xA0, 0xC0,
   // 0xE0), and each heap keeps its own page table: an allocation made with
   // 64 KiB pages is committed in the 0xC0 heap and is NOT marked committed
@@ -75,16 +74,16 @@ bool IsPhysicalRangeReadable(uint32_t physical_address, uint64_t size) {
   // allocation read as unmapped: the second front buffer (0x08378000, virtual
   // 0xE8377000) refused its photo write-back, and a 128x72 album thumbnail
   // right after a photo fell back to the neutral texture.
-  if (phys >= 0x1000u && IsGuestRangeReadable(0xE0000000u + (phys - 0x1000u), size)) {
-    return true;
-  }
-  static constexpr uint32_t kOffsetFreeAliases[] = {0xC0000000u, 0xA0000000u};
-  for (uint32_t aliasBase : kOffsetFreeAliases) {
-    if (IsGuestRangeReadable(aliasBase | phys, size)) {
-      return true;
-    }
-  }
-  return false;
+  //
+  // The aliases and the walk are physical_alias.h's. A check takes the heap's
+  // lock and walks its page table, and the first alias asked answers no for
+  // vertex and index data (64 KiB pages), so the alias that answered yes last
+  // on this thread is asked first (render_cpu_mask bit 2; off: the table's
+  // order, as before). The answer is the same in any order.
+  static const bool use_hint = (larecomp::settings::render_cpu_mask.Get() & mcla::gpu::render_cpu::kAliasHint) != 0;
+  static thread_local uint32_t t_hint = 0;
+  return PhysicalRangeReadable(physical_address, size, use_hint ? &t_hint : nullptr,
+                               [](uint32_t virtual_address, uint64_t bytes) { return IsGuestRangeReadable(virtual_address, bytes); });
 }
 
 namespace {
@@ -103,7 +102,7 @@ inline uint32_t R32(const uint8_t* base, uint32_t ea) {
 }  // namespace
 
 uint32_t VertexFetchSizeUnit() {
-  const uint32_t unit = REXCVAR_GET(mcla_native_gfx_fetch_size_unit);
+  const uint32_t unit = larecomp::settings::mcla_native_gfx_fetch_size_unit.Get();
   return unit ? unit : 4u;
 }
 

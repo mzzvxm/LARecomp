@@ -59,8 +59,10 @@
 // finished (or without them) for the native decoder's cost.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
 
 #include <atomic>
 #include <chrono>
@@ -74,21 +76,6 @@
 
 REX_EXTERN(__imp__rex_sub_8244FF20);  // the recompiled XMemDecompressStream
 REX_EXTERN(__imp__rex_sub_8244FEF8);  // the recompiled XMemResetDecompressionContext
-
-REXCVAR_DEFINE_BOOL(lzx_native, true, "MCLA/Performance",
-    "Decompress the game's streamed resources (LZX) with native code instead of the recompiled "
-    "XMemDecompressStream.\n"
-    "\n"
-    "The first streams are decoded by both and compared; any difference switches the native decoder "
-    "off for the rest of the session. Read at start.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(lzx_native_check_all, false, "MCLA/Diagnostics",
-    "Run the recompiled LZX decoder next to the native one for every stream, not only the first few, "
-    "and compare every call. Slower than either alone: for validating a whole session. Read at start.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace {
 
@@ -139,7 +126,7 @@ struct Slot {
     bool clean = true;   // every checked call of the current stream matched
 };
 
-Slot g_slots[kSlots];
+Slot (&g_slots)[kSlots] = *new Slot[1][kSlots]();
 std::mutex g_slot_mutex;  // arming a context for the first time only
 
 std::atomic<bool> g_off{false};   // a mismatch was seen: no new stream runs natively
@@ -159,11 +146,11 @@ std::atomic<uint64_t> g_streams_checked{0};
 std::atomic<int64_t> g_last_stats_ns{0};
 
 bool Enabled() {
-    static const bool enabled = REXCVAR_GET(lzx_native);
+    static const bool enabled = larecomp::settings::lzx_native.Get();
     return enabled;
 }
 bool CheckAll() {
-    static const bool check_all = REXCVAR_GET(lzx_native_check_all);
+    static const bool check_all = larecomp::settings::lzx_native_check_all.Get();
     return check_all;
 }
 

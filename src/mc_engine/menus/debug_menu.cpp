@@ -3,47 +3,33 @@
 #include <algorithm>
 #include <atomic>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "mc_engine/core/config_save.h"
 
 namespace {
 
-// Set once by InitDebugMenu. After that the cvar can no longer change the answer: the validator
-// below refuses a write, and DebugMenuUnlocked() reads g_unlocked, not the cvar. (kInitOnly alone
-// does not do it: the SDK only enforces it after rex::cvar::FinalizeInit(), and nothing in the
-// SDK's app start or in LARecomp calls that. The settings panel does show it as read-only.)
+// Set once by InitDebugMenu, and DebugMenuUnlocked() reads g_unlocked, not the setting. The setting itself cannot change
+// any more by then either: it is kInitOnly, which the SDK closes just before OnInit (the 0.10 validator that refused a
+// write after InitDebugMenu is that freeze now: settings/larecomp_app_settings.h). The settings panel shows it read-only.
 std::atomic<bool> g_latched{false};
 std::atomic<bool> g_unlocked{false};
 std::atomic<const char*> g_source{""};
 
 }  // namespace
 
-REXCVAR_DEFINE_BOOL(debug_menu, false, "MCLA/Debug",
-    "Unlock the hidden DEBUG menu and the developer settings, for testing and for bug reports. "
-    "Turn it on with --debug_menu on the command line, REX_DEBUG_MENU=1 in the environment, or "
-    "debug_menu = true in larecomp.toml. It cannot be changed while the game runs, and the game "
-    "never writes it to the file. Settings changed in the DEBUG menu are not saved either.")
-    .lifecycle(rex::cvar::Lifecycle::kInitOnly)
-    .validator([](std::string_view) { return !g_latched.load(); })
-    .debug_only();
-
 namespace larecomp {
 
 namespace {
 
-// The SDK cvars that stand behind DEBUG rows, so they are not LARecomp's to tag in their own
-// definition. FIDELITY FX is the SDK presenter's effect and its FSR and CAS settings (the Xenia
-// path only); GRAPHICS API is the SDK's backend choice, a restart-only troubleshooting switch. A
-// name this SDK does not have is skipped.
+// The SDK settings that stand behind DEBUG rows, so they are not LARecomp's to tag in their own definition: the Xenia
+// renderer's vsync (the XENIA VSYNC row on the debug RENDERING page). The other two of the 0.10 list are gone: FIDELITY FX
+// (present_effect and its FSR and CAS settings) left with the Xenia presenter's effects, and GRAPHICS API is LARecomp's own
+// setting now, tagged kDebugOnly where it is declared. The SDK built its settings without the trait, so the mark is made
+// here (larecomp::cvar::MarkDebugOnly) instead of poking the registry's entries as 0.10 did.
 constexpr const char* kSdkDebugCvars[] = {
-    "present_effect",
-    "present_fsr_quality_mode",
-    "present_cas_additional_sharpness",
-    "present_fsr_sharpness_reduction",
-    "graphics_backend",
-    "vsync",  // the Xenia renderer's vsync: XENIA VSYNC on the debug RENDERING page
+    "gpu.vsync",
 };
 
 }  // namespace
@@ -52,60 +38,53 @@ bool DebugMenuUnlocked() {
   if (g_latched.load()) {
     return g_unlocked.load();
   }
-  return REXCVAR_GET(debug_menu);
+  return larecomp::settings::debug_menu.Get();
 }
 
 std::string_view DebugMenuUnlockSource() {
   return g_source.load();
 }
 
-const char* CvarSourceName(rex::cvar::Source source) {
+const char* CvarSourceName(larecomp::cvar::Source source) {
   switch (source) {
-    case rex::cvar::Source::kConfig:
+    case larecomp::cvar::Source::kConfig:
       return "larecomp.toml";
-    case rex::cvar::Source::kEnvironment:
+    case larecomp::cvar::Source::kEnvironment:
       return "environment";
-    case rex::cvar::Source::kCommandLine:
+    case larecomp::cvar::Source::kCommandLine:
       return "command line";
-    case rex::cvar::Source::kRuntime:
+    case larecomp::cvar::Source::kRuntime:
       return "this session";
-    case rex::cvar::Source::kDefault:
+    case larecomp::cvar::Source::kDefault:
       break;
   }
   return "default";
 }
 
 void MarkSdkDebugCvars() {
-  // GetRegistry hands out the entries themselves, and GetFlagInfo only a const view of them.
-  // Called while the program starts, before anything else walks the registry.
-  for (rex::cvar::FlagEntry& entry : rex::cvar::GetRegistry()) {
-    for (const char* name : kSdkDebugCvars) {
-      if (entry.name == name) {
-        entry.is_debug_only = true;
-        break;
-      }
-    }
+  for (const char* name : kSdkDebugCvars) {
+    larecomp::cvar::MarkDebugOnly(name);
   }
 }
 
 std::vector<DebugCvarChange> NonDefaultDebugCvars() {
   std::vector<DebugCvarChange> changes;
-  for (const std::string& name : rex::cvar::ListFlags()) {
-    const rex::cvar::FlagEntry* info = rex::cvar::GetFlagInfo(name);
-    if (!info || !info->is_debug_only || info->type == rex::cvar::FlagType::Command ||
+  for (const std::string& name : larecomp::cvar::ListFlags()) {
+    const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
+    if (!info || !info->is_debug_only || info->type == larecomp::cvar::FlagType::Command ||
         name == "debug_menu") {
       continue;
     }
     // Source kDefault with another value means code wrote the storage directly: not a setting
     // anybody chose.
-    if (info->source == rex::cvar::Source::kDefault) {
+    if (info->source == larecomp::cvar::Source::kDefault) {
       continue;
     }
     std::string value = info->getter();
     if (value == info->default_value) {
       continue;
     }
-    if (info->source == rex::cvar::Source::kRuntime && IsAtStartupValue(name)) {
+    if (info->source == larecomp::cvar::Source::kRuntime && IsAtStartupValue(name)) {
       continue;
     }
     changes.push_back({name, std::move(value), info->source});
@@ -115,17 +94,16 @@ std::vector<DebugCvarChange> NonDefaultDebugCvars() {
   return changes;
 }
 
-// CHECK: the call is in LarecompApp::OnPostInitLogging, after larecomp.toml is read and before
-// anything draws a menu. Unit-tested against the stock SDK's registry only (native/sdk-stock), not
-// run in the game, and not built as part of the full target.
+// The call is in LarecompApp::OnInit, after the SDK has read larecomp.toml, the environment and the command line (App::Init
+// runs OnInit last) and before anything draws a menu. CHECK: not built or run on 0.11 yet.
 void InitDebugMenu() {
   if (g_latched.load()) {
     return;
   }
   MarkSdkDebugCvars();
 
-  const bool unlocked = REXCVAR_GET(debug_menu);
-  const char* source = unlocked ? CvarSourceName(rex::cvar::GetFlagSource("debug_menu")) : "";
+  const bool unlocked = larecomp::settings::debug_menu.Get();
+  const char* source = unlocked ? CvarSourceName(larecomp::cvar::GetFlagSource("debug_menu")) : "";
   g_source.store(source);
   g_unlocked.store(unlocked);
   g_latched.store(true);

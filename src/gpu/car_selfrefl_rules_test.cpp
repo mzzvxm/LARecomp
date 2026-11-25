@@ -247,6 +247,13 @@ int main() {
   Check(cr::ExpBiasGain(4) == 0.0625f && cr::ExpBiasGain(0) == 1.0f && cr::ExpBiasGain(-1) == 2.0f,
         "2^-bias: the target's bias 4 is a gain of 1/16");
   Check(cr::ExpBiasGain(1000) == std::ldexp(1.0f, -24), "the bias is limited");
+  // the units go the other way (the ray traced reflection makes colours up from paint constants, in the paint's units, for an image in the history's)
+  Check(cr::ExpBiasUnits(4) == 16.0f && cr::ExpBiasUnits(0) == 1.0f && cr::ExpBiasUnits(-1) == 0.5f && cr::ExpBiasUnits(1000) == std::ldexp(1.0f, 24),
+        "2^bias: the target's bias 4 turns a colour of the paint's units into the history's by 16");
+  Check(cr::kMainTargetExpBias == 4, "the main target's bias");
+  for (int bias = -6; bias <= 6; ++bias) {
+    Check(cr::ExpBiasUnits(bias) * cr::ExpBiasGain(bias) == 1.0f, "the units and the gain are inverse");
+  }
 
   // the matrix: no motion is the view-projection itself; a motion is applied first
   tp::Mat4 vp = Perspective(0.45, 16.0 / 9.0, 0.5, 1000.0);

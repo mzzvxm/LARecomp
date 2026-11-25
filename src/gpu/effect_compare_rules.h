@@ -1,9 +1,10 @@
 #pragma once
 // ===========================================================================
-// MCLA GPU renderer -- the compare key's rules (pure)
+// MCLA GPU renderer -- the compare keys' rules (pure)
 // ===========================================================================
-// What a press of the compare key does and says, from the settings' texts: whether the chosen effect is
-// on now, which way the flip goes, whether anything could show it, the words of the label, how often a
+// What a press of the compare key (F1: flips the selected effect) and of the select key (F12: the next effect)
+// does and says, from the settings' texts: whether the chosen effect is
+// on now, which way the flip goes, whether anything could show it, which effect comes next, the words of the label, how often a
 // press counts and how the label fades. No renderer, no cvars, no clock: effect_compare_test.cpp checks
 // every effect against every value, and mc_engine/display/effect_compare.cpp only reads the settings and the
 // time and calls these. The flip itself (effect_compare.h) is read by the settings' own readers.
@@ -25,6 +26,7 @@ namespace mcla::gpu::compare {
 struct Saved {
   gpu_class::GpuClass cls = gpu_class::GpuClass::kLow;
   bool class_known = false;
+  bool handheld = false;  // gpu_class::Handheld(): the Steam Deck's cells (a soft shadow filter for `auto`)
   std::string occlusion;  // mcla_gpu_ao
   std::string contact;    // mcla_gpu_contact_shadows
   std::string shafts;     // mcla_gpu_sun_shafts
@@ -32,17 +34,31 @@ struct Saved {
   std::string filter;     // mcla_gpu_shadow_filter
   std::string car_refl = "off";  // mcla_gpu_car_selfrefl
   bool bloom = true;      // mcla_gpu_bloom_scale
+  gpu_class::RtTier rt_tier = gpu_class::RtTier::kNone;
+  bool rtao_built = false;
 };
 
 // What the saved settings come to for one effect.
 struct Standing {
   bool on = false;       // the saved setting shows the effect now
   bool blocked = false;  // a flip would show nothing: the bounce light is made from the occlusion's passes
+  std::string_view rt_ao_state;  // RAY TRACED or its ULTRA fallback when the RT level was selected
 };
 
 inline Standing StandingOf(Effect effect, const Saved& saved) {
+  if (effect == Effect::kAmbientOcclusion) {
+    const auto ao = rtao_setting::Decide(saved.cls, saved.class_known, saved.rt_tier,
+                                         rtao_setting::ParseChoice(saved.occlusion), saved.rtao_built);
+    Standing out;
+    out.on = ao.screen != host_plan::Level::kOff;
+    if (ao.chosen == rtao_setting::Choice::kRt) {
+      out.rt_ao_state = ao.rt ? "RAY TRACED" : "ULTRA";
+    }
+    return out;
+  }
   const host_plan::Plan plan = host_plan::Decide(saved.cls, saved.class_known, saved.occlusion,
-                                                 saved.contact, saved.shafts, saved.bounce, saved.car_refl);
+                                                 saved.contact, saved.shafts, saved.bounce, saved.car_refl,
+                                                 saved.rt_tier, saved.rtao_built);
   Standing out;
   switch (effect) {
     case Effect::kBounceLight:
@@ -56,13 +72,12 @@ inline Standing StandingOf(Effect effect, const Saved& saved) {
       out.on = plan.on(host_plan::Pass::kShafts);
       break;
     case Effect::kAmbientOcclusion:
-      out.on = plan.on(host_plan::Pass::kOcclusion);
       break;
     case Effect::kShadowFilter: {
       std::string text = host_plan::Lower(saved.filter);
       // On is the variant being drawn: soft or pcss (the game's own filter is the only off).
       out.on = shadow_filter::ModeFor(saved.class_known ? saved.cls : gpu_class::GpuClass::kLow,
-                                      shadow_filter::ParseChoice(text)) !=
+                                      shadow_filter::ParseChoice(text), saved.class_known && saved.handheld) !=
                shadow_filter::Mode::kGame;
       break;
     }
@@ -83,10 +98,11 @@ struct Press {
   Force force = Force::kNone;  // the flip to set; kNone puts the saved setting back
   bool shown_on = false;       // what the picture shows from now on
   bool blocked = false;        // nothing to flip (see Standing::blocked); the flip is left as it was
+  std::string_view rt_ao_state;
 };
 
-// A press flips the effect away from what the saved setting shows (off if it is on, on if it is off); the
-// next press puts the saved setting back.
+// For the ray traced AO level, the comparison arm uses the existing forced-on text, Ultra.
+// Other levels flip off or on as usual. The next press restores the saved setting.
 inline Press PressOf(Effect effect, Force current, const Saved& saved) {
   const Standing standing = StandingOf(effect, saved);
   Press out;
@@ -96,9 +112,24 @@ inline Press PressOf(Effect effect, Force current, const Saved& saved) {
     out.blocked = true;
     return out;
   }
+  if (!standing.rt_ao_state.empty()) {
+    out.force = current == Force::kNone ? Force::kOn : Force::kNone;
+    out.shown_on = true;
+    out.rt_ao_state = out.force == Force::kOn ? "ULTRA" : standing.rt_ao_state;
+    return out;
+  }
   out.force = current == Force::kNone ? (standing.on ? Force::kOff : Force::kOn) : Force::kNone;
   out.shown_on = out.force == Force::kOn ? true : out.force == Force::kOff ? false : standing.on;
   return out;
+}
+
+// The effects the select key walks, in the order of the list: the first six (the bounce light, the contact shadows, the
+// sun shafts, the ambient occlusion, the shadow filter, the car self-reflections). The bloom size fix is a fix, not an effect
+// to look at: only F4 or the command line select it, and the select key goes on from it to the first.
+inline constexpr int kSelectableCount = 6;
+constexpr Effect NextEffect(Effect current) {
+  const int index = static_cast<int>(current);
+  return current != Effect::kNone && index + 1 < kSelectableCount ? static_cast<Effect>(index + 1) : Effect::kBounceLight;
 }
 
 // The label's two parts: the effect ("BOUNCE LIGHT") and what it is doing ("OFF"), or what is missing.
@@ -108,20 +139,30 @@ struct Label {
   bool good = false;  // on: the label draws the state in the menu's teal, the rest in its yellow
 };
 
-inline Label LabelOf(Effect effect, bool shown_on, bool blocked) {
+inline Label LabelOf(Effect effect, bool shown_on, bool blocked, std::string_view rt_ao_state = {}) {
   Label label;
   if (effect == Effect::kNone) {
     return label;
   }
   label.name = std::string(Info(effect).label);
   label.state = blocked ? "NEEDS AMBIENT OCCLUSION" : shown_on ? "ON" : "OFF";
+  if (!rt_ao_state.empty()) label.state = rt_ao_state;
   label.good = !blocked && shown_on;
   return label;
 }
 
+// The note the select key shows: the effect now selected ("COMPARE: SUN SHAFTS") and what your setting shows of it ("ON").
+inline Label SelectedLabelOf(Effect effect, bool on, bool blocked, std::string_view rt_ao_state = {}) {
+  Label label = LabelOf(effect, on, blocked, rt_ao_state);
+  if (!label.name.empty()) {
+    label.name = "COMPARE: " + label.name;
+  }
+  return label;
+}
+
 // The same in one line, for the log: "BOUNCE LIGHT: OFF", "BOUNCE LIGHT NEEDS AMBIENT OCCLUSION".
-inline std::string LabelText(Effect effect, bool shown_on, bool blocked) {
-  const Label label = LabelOf(effect, shown_on, blocked);
+inline std::string LabelText(Effect effect, bool shown_on, bool blocked, std::string_view rt_ao_state = {}) {
+  const Label label = LabelOf(effect, shown_on, blocked, rt_ao_state);
   if (label.name.empty()) {
     return {};
   }

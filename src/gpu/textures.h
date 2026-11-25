@@ -97,6 +97,7 @@
 #include "descriptors.h"
 #include "format.h"
 #include "guest_memory.h"
+#include "key_guard.h"
 #include "region_index.h"
 #include "scale.h"
 #include "texture_bytes.h"
@@ -149,6 +150,9 @@ struct TextureKey {
   std::string Describe() const;
 };
 static_assert(sizeof(TextureKey) == 24);
+// Hashed (TextureKeyHash: XXH3 over the object) and compared (==: memcmp) as bytes: no padding, every member set (key_guard.h).
+static_assert(key_guard::kNoPadding<TextureKey>, "TextureKey is hashed and compared as bytes: it must have no padding (key_guard.h)");
+static_assert(key_guard::AllMembersSet<TextureKey>(), "every TextureKey member needs a default initializer (key_guard.h)");
 
 struct TextureKeyHash {
   size_t operator()(const TextureKey& key) const;
@@ -286,6 +290,15 @@ class TextureCache {
   Binding Bind2D(const TextureFetch& fetch, Scale reader_scale,
                  plume::RenderCommandList* list);
 
+  // The slot (kTextureGammaBit when the fetch asks) of the 2D texture `fetch` names IF it exists now, for a reader that does not draw: the ray traced car passes bind the
+  // textures of cars beside the player, some of which no draw names in this frame. A resolve product of the image (read as it is: no reduced copy, no recorded pass), or a
+  // texture decoded from guest memory that was uploaded and has no write pending, in a host texture of the cache. Nothing is created, decoded or uploaded and nothing is
+  // logged; the entry is marked used in this frame (the budget's Trim and the idle eviction leave it). kNullTexture2DSlot when there is nothing to hand out: a texture the
+  // cache never made or gave back, a replacement or a depth product it would not bind here, a dimension other than 2D. Render thread.
+  // CHECK: a resolve product is handed out in whatever layout the last draw that read it left it in (a compute pass reads it at the history trigger); a product that was written
+  // later in the frame than its last read would need a barrier this call cannot record. The first run's validation layer says.
+  uint32_t Peek2D(const TextureFetch& fetch);
+
   // The image that stands for a scene colour product for the rest of a frame (the temporal
   // upscaler's output, temporal.h): every fetch whose resolve product (ResolveCache::Find) is
   // `product` (or `other_product`) binds `texture` instead, through its own swizzle's view, as a
@@ -323,6 +336,12 @@ class TextureCache {
   // Takes the write notifications of textures and resolve products.
   void Sync();
   uint64_t epoch() const { return epoch_; }
+
+  // The content hash of the base level of the 2D texture `key`: XXH3-64 of its guest storage, the number the texture dumps (`<name>__<hash>.dds`) and the texture mods name a texture
+  // by. Taken once per texture and again when the guest writes it (the entry's version), only for a texture the cache holds (the draws that read it have bound it) and watches (a
+  // texture that is hashed every frame, a render target's contents, has none). 0 when the cache has no such entry yet (the texture's first draw is being prepared), no base level, or
+  // the memory cannot be read. Render thread. The G-buffer's per-texture materials (gbuffer_materials.h) key unnamed textures, most of the city's, by it.
+  uint64_t ContentHashOf(const TextureKey& key);
   // Every memoized binding goes.
   void BumpEpoch() { ++epoch_; }
 
@@ -422,6 +441,8 @@ class TextureCache {
     Mode mode = Mode::kWatched;
     bool armed = false;
     uint64_t version = 1;           // bumped by write notifications
+    uint64_t content_hash = 0;      // ContentHashOf: the base level's XXH3-64 as of content_version
+    uint64_t content_version = 0;   // the `version` it was taken at (0: not taken)
     uint64_t uploaded_version = 0;  // 0 = never uploaded
     uint64_t uploaded_hash = 0;     // hashed mode: the guest bytes uploaded
     uint64_t last_frame = 0;

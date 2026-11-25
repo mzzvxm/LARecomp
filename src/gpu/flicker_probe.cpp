@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- flicker probe. See flicker_probe.h.
 
 #include "flicker_probe.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -9,39 +10,13 @@
 #include <format>
 #include <fstream>
 
-#include <rex/cvar.h>
-#include <rex/filesystem.h>
-#include <rex/hash.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/platform/file.h>
+#include "xxhash_inline.h"
+#include <rex/logging/log_category.h>
 
 #include "device.h"
 #include "present.h"
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_flicker_probe, false, "MCLA/GPU",
-    "Diagnostic: read every guest frame back, as the window shows it, and log "
-    "the blocks of 16x16 pixels that change for 1-5 frames and come back to exactly their "
-    "old bytes (a flicker). Meant for a static scene such as the pause menu. Costs a copy of "
-    "the image per frame on the GPU and about a millisecond of render-thread CPU. Off: "
-    "nothing is made.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_UINT32(
-    mcla_gpu_flicker_probe_dumps, 12, "MCLA/GPU",
-    "With mcla_gpu_flicker_probe: how many flicker events also write the frame before, the "
-    "first frame of the blip and the frame after as mcla_flicker_<event>_<frame>_<what>.tga "
-    "next to the executable (3.7 MB each at 1280x720).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_STRING(
-    mcla_gpu_flicker_probe_shots, "", "MCLA/GPU",
-    "With mcla_gpu_flicker_probe: a comma-separated list of guest frame numbers, each written "
-    "as mcla_flicker_000_<frame>_shot.tga next to the executable whether or not it flickered. "
-    "For comparing what two platforms or builds put in the window at the same frame.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -49,8 +24,8 @@ void FlickerProbe::Initialize(Device& device, FrameRing& frames, plume::RenderFo
   device_ = &device;
   frames_ = &frames;
   format_ = format;
-  enabled_ = REXCVAR_GET(mcla_gpu_flicker_probe);
-  max_dumps_ = REXCVAR_GET(mcla_gpu_flicker_probe_dumps);
+  enabled_ = larecomp::settings::mcla_gpu_flicker_probe.Get();
+  max_dumps_ = larecomp::settings::mcla_gpu_flicker_probe_dumps.Get();
   if (!enabled_) {
     return;
   }
@@ -222,9 +197,9 @@ void FlickerProbe::Process(uint32_t readback, uint64_t frame, uint64_t generatio
   f.number = frame;
   f.valid = true;
   ++stats_.frames;
-  static const std::vector<uint64_t> shots = [] {
+  static const std::vector<uint64_t>& shots = larecomp::Leak<const std::vector<uint64_t>>([] {
     std::vector<uint64_t> out;
-    const std::string list = REXCVAR_GET(mcla_gpu_flicker_probe_shots);
+    const std::string list = larecomp::settings::mcla_gpu_flicker_probe_shots.Get();
     size_t at = 0;
     while (at < list.size()) {
       size_t end = list.find(',', at);
@@ -233,7 +208,7 @@ void FlickerProbe::Process(uint32_t readback, uint64_t frame, uint64_t generatio
       at = end + 1;
     }
     return out;
-  }();
+  }());
   if (std::find(shots.begin(), shots.end(), frame) != shots.end()) {
     Dump(0, frame, "shot", f);
   }
@@ -313,7 +288,7 @@ void FlickerProbe::Detect(uint64_t frame) {
 
 void FlickerProbe::Dump(uint64_t event, uint64_t frame, const char* what, const Frame& f) const {
   const std::filesystem::path path =
-      rex::filesystem::GetExecutableFolder() /
+      rex::platform::GetExecutableFolder() /
       std::format("mcla_flicker_{:03}_{:06}_{}.tga", event, frame, what);
   std::ofstream out(path, std::ios::binary);
   if (!out) {

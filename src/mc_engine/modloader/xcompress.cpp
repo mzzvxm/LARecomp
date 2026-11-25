@@ -1,10 +1,73 @@
 #include "xcompress.h"
 
-#include <rex/system/lzx.h>
+#include <algorithm>
+#include <climits>
+#include <cstdlib>
+#include <cstring>
+
+// libmspack's LZX decoder (thirdparty/libmspack, LGPL-2.1; lzxd.c is built as larecomp_mspack and this file alone sees its
+// headers: CMakeLists.txt). mspack.h first: lzx.h uses its types. Both are C headers with their own extern "C".
+#include <mspack.h>
+#include <lzx.h>
 
 namespace mc::modloader {
 
 namespace {
+
+// libmspack reads and writes through a table of callbacks; this one is a pair of memory buffers. The same job as the
+// SDK's rex::filesystem::detail::LZXDecompress (src/filesystem/lzx.cpp, BSD 3-Clause, Xenia Project / ReXGlue) and the
+// rex/system/lzx.h of rexglue 0.10 that this file used to call: neither is reachable from a program in 0.11.
+struct MemoryFile {
+    uint8_t* data = nullptr;
+    off_t size = 0;
+    off_t offset = 0;
+};
+
+int ReadMemory(mspack_file* file, void* buffer, int bytes) {
+    auto* mem = reinterpret_cast<MemoryFile*>(file);
+    const off_t total = std::min<off_t>(static_cast<off_t>(bytes), mem->size - mem->offset);
+    std::memcpy(buffer, mem->data + mem->offset, static_cast<size_t>(total));
+    mem->offset += total;
+    return static_cast<int>(total);
+}
+
+int WriteMemory(mspack_file* file, void* buffer, int bytes) {
+    auto* mem = reinterpret_cast<MemoryFile*>(file);
+    const off_t total = std::min<off_t>(static_cast<off_t>(bytes), mem->size - mem->offset);
+    std::memcpy(mem->data + mem->offset, buffer, static_cast<size_t>(total));
+    mem->offset += total;
+    return static_cast<int>(total);
+}
+
+void* AllocMemory(mspack_system*, size_t bytes) { return std::calloc(bytes, 1); }
+void FreeMemory(void* ptr) { std::free(ptr); }
+void CopyBytes(void* src, void* dst, size_t bytes) { std::memcpy(dst, src, bytes); }
+
+// One LZX bitstream (the chunk headers already removed) of one resource, decoded in one call with a fresh decoder.
+// `window_size` is a power of two. 0 on success, else libmspack's error code (or 1 for a call that cannot start).
+int DecodeBitstream(const uint8_t* src, size_t src_len, uint8_t* dst, size_t dst_len, uint32_t window_size) {
+    if (window_size == 0 || (window_size & (window_size - 1)) != 0) return 1;
+    if (src_len >= INT_MAX || dst_len >= INT_MAX) return 1;  // libmspack's off_t is 32 bits on Windows
+    int window_bits = 0;
+    while ((1u << window_bits) < window_size) ++window_bits;
+
+    mspack_system sys{};
+    sys.read = ReadMemory;
+    sys.write = WriteMemory;
+    sys.alloc = AllocMemory;
+    sys.free = FreeMemory;
+    sys.copy = CopyBytes;
+
+    // The handles are the MemoryFile themselves (libmspack never looks inside one).
+    MemoryFile input{const_cast<uint8_t*>(src), static_cast<off_t>(src_len), 0};
+    MemoryFile output{dst, static_cast<off_t>(dst_len), 0};
+    lzxd_stream* lzxd = lzxd_init(&sys, reinterpret_cast<mspack_file*>(&input), reinterpret_cast<mspack_file*>(&output),
+                                  window_bits, 0, 0x8000, static_cast<off_t>(dst_len), 0);
+    if (!lzxd) return 1;
+    const int result = lzxd_decompress(lzxd, static_cast<off_t>(dst_len));
+    lzxd_free(lzxd);
+    return result;
+}
 
 // XMemCreateDecompressionContext in the game (sub_8244FF98) asks for a
 // 128 KiB window; every chunk but the last decodes to one 32 KiB LZX frame.
@@ -55,8 +118,7 @@ bool LzxDecompress(const uint8_t* src, size_t src_len, std::vector<uint8_t>& dst
     if (!StripChunkHeaders(src, src_len, dst_len, bitstream)) return false;
 
     dst.assign(dst_len, 0);
-    return lzx_decompress(bitstream.data(), bitstream.size(), dst.data(), dst_len, kWindowSize,
-                          nullptr, 0) == 0;
+    return DecodeBitstream(bitstream.data(), bitstream.size(), dst.data(), dst_len, kWindowSize) == 0;
 }
 
 }  // namespace mc::modloader

@@ -16,6 +16,7 @@
 #include <sstream>
 #include <string>
 
+#include "setting_source.h"
 #include "ssgi_stable.h"
 
 using namespace mcla::gpu::ssgi_stable;
@@ -166,8 +167,10 @@ void CheckShaders(const std::string& gpu_dir) {
   Check(has(common, "const float spatial_sigma = AoBlurSigma(radius);") && !has(common, "radius >= 2 ? 1.4f : 0.9f"), "ao_common.hlsli: the blur over four channels takes its sigma from AoBlurSigma");
   // The bounce light's main pass takes its noise from the same shift as the occlusion's.
   Check(!has(main_ps, "frame * float2("), "ao_main_ps.hlsl: the bounce light's main pass keeps no copy of the recurrence");
-  // ao.cpp: the cvar's default, the first version's values for the switch, the passes, the share's bits.
-  Check(has(cpp, Num("mcla_gpu_ssgi_test_history_clamp, %.1f,", double(kClipWidth))), "ao.cpp: the cvar's default is kClipWidth");
+  // The setting's default (a REX_SETTING row of src/settings/generated; the REXCVAR_DEFINE of ao.cpp before the conversion), then ao.cpp: the first
+  // version's values for the switch, the passes, the share's bits.
+  const setting_source::Info clamp = setting_source::Find(gpu_dir, cpp, "mcla_gpu_ssgi_test_history_clamp");
+  Check(setting_source::DefaultIs(clamp, double(kClipWidth)), "mcla_gpu_ssgi_test_history_clamp: the setting's default is kClipWidth");
   Check(has(cpp, "ssgi_stable::kFirstClipWidth") && has(cpp, "ssgi_stable::kFirstClipHistoryShare") && has(cpp, "ssgi_stable::kClipHistoryShare"),
         "ao.cpp: the switch and the plan use the header's widths and shares");
   Check(has(cpp, "ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1])"), "ao.cpp: the a-trous passes follow the image's height");

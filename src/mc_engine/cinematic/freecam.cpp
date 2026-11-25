@@ -46,7 +46,8 @@ Pad PadFromGuest(const uint8_t* s) {
 }
 
 void ClearGuestPad(uint8_t* s) {
-    const uint16_t buttons = static_cast<uint16_t>(((s[4] << 8) | s[5]) & kBtnStart);
+    const uint16_t held = static_cast<uint16_t>((s[4] << 8) | s[5]);
+    const uint16_t buttons = (held & kBtnBack) ? uint16_t(0) : static_cast<uint16_t>(held & kBtnStart);
     s[4] = static_cast<uint8_t>(buttons >> 8);
     s[5] = static_cast<uint8_t>(buttons);
     s[6] = 0;
@@ -138,6 +139,12 @@ Events Flyer::Step(const Pad& pad, double dt, const Params& p) {
         ev.toggle_record = (pressed & kBtnA) != 0;
         ev.home = (pressed & kBtnX) != 0;
         ev.mark_cut = (pressed & kBtnY) != 0;
+        ev.add_key = (pressed & kBtnB) != 0;
+        ev.next_key = (pressed & kBtnRb) != 0;
+        ev.prev_key = (pressed & kBtnLb) != 0;
+        ev.play_pause = (pressed & kBtnStart) != 0;
+        ev.step_frame = (pressed & kBtnDpadRight) != 0;
+        ev.render_take = (pressed & kBtnDpadUp) != 0;
     } else {
         if (pressed & kBtnY) {
             ev.reset_view = true;
@@ -150,12 +157,18 @@ Events Flyer::Step(const Pad& pad, double dt, const Params& p) {
         if (pressed & kBtnDpadRight) speed_mult_ = std::min(kMaxSpeedMult, speed_mult_ * kSpeedStep);
     }
 
+    // the wheel of the panel: steps of the speed, as the D-pad's (one at a time at most: a step is x1.25)
+    for (int n = std::clamp(pad.speed_steps, -40, 40); n != 0; n += (n > 0 ? -1 : 1)) {
+        speed_mult_ = n > 0 ? std::min(kMaxSpeedMult, speed_mult_ * kSpeedStep) : std::max(kMinSpeedMult, speed_mult_ / kSpeedStep);
+    }
+
     // what the controls ask for now
     double strafe = 0.0, forward = 0.0, yaw_in = 0.0, pitch_in = 0.0;
     StickResponse(pad.lx, pad.ly, p.deadzone, &strafe, &forward);
     StickResponse(pad.rx, pad.ry, p.deadzone, &yaw_in, &pitch_in);
     const double rise = TriggerResponse(pad.rt) - TriggerResponse(pad.lt);
-    const double roll_in = ((pad.buttons & kBtnLb) ? 1.0 : 0.0) - ((pad.buttons & kBtnRb) ? 1.0 : 0.0);  // LB tilts left: + lifts the right side
+    // LB tilts left: + lifts the right side (not while Back is held: then they are the chords that go to the previous / next key)
+    const double roll_in = back ? 0.0 : ((pad.buttons & kBtnLb) ? 1.0 : 0.0) - ((pad.buttons & kBtnRb) ? 1.0 : 0.0);
     const double zoom_in = ((pad.buttons & kBtnDpadUp) ? 1.0 : 0.0) - ((pad.buttons & kBtnDpadDown) ? 1.0 : 0.0);
 
     // The smoothed inputs and their mean over this update. A one-pole smoothing has the exact mean s = target + (before - target) * (tau / dt)
@@ -181,8 +194,8 @@ Events Flyer::Step(const Pad& pad, double dt, const Params& p) {
 
     // look, roll, zoom. The game's world is right-handed (x east, z south) and a growing yaw goes from +Z to +X, which is a turn to the LEFT: the stick to the right
     // (yaw_in > 0) lowers the yaw.
-    pose_.yaw -= yaw_mean * dt;
-    pose_.pitch = std::clamp(pose_.pitch + pitch_mean * dt, -kMaxPitch, kMaxPitch);
+    pose_.yaw -= yaw_mean * dt + pad.look_right;  // the mouse's look (the panel): degrees, applied as they are
+    pose_.pitch = std::clamp(pose_.pitch + pitch_mean * dt + pad.look_up, -kMaxPitch, kMaxPitch);
     pose_.roll += roll_mean * dt;
     if (zoom_mean != 0.0) {
         const double focal = cam::FocalFromFov(pose_.fov) * std::exp(p.zoom_rate * zoom_mean * dt);

@@ -3,10 +3,9 @@
 // shadows, and the traffic and city LOD scales.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include <rex/kernel/title_runtime.h>
+#include <rex/kernel/guest_memory.h>
 #include <cstdint>
 #include <cstring>
 #include <string>
@@ -15,120 +14,26 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "larecomp_log.h"
+#include "mc_engine/core/world_detail.h"
 #include "mc_engine/display/ultrawide.h"
+#include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
 #endif
 
-// Live: Patch_DisableMotionBlur reads this at the two sites that load the blur's enable flag, on
-// every pass through them (nothing keeps a copy), and the pause menu's MOTION BLUR row flips it
-// without a restart. It was tagged kRequiresRestart, which made the F4 panel and the launcher show
-// it as a restart setting.
-REXCVAR_DEFINE_BOOL(disable_motion_blur, false, "MCLA/Patches", "Disable Motion Blur completely.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Live: Patch_DisableImposterShadows reads this on every pass through its site in the imposter
-// shadow submission (sub_8230C860) and nothing keeps a copy; the same hook is a plain, switchable
-// toggle in the fork (its FOLIAGE SHADOWS row has no restart mark and was measured switching during
-// play). It was tagged kRequiresRestart, and its pause row said "(RESTART)".
-// CHECK: in daylight, FOLIAGE SHADOWS flipped in the pause menu shows after resuming, no restart.
-REXCVAR_DEFINE_BOOL(disable_imposter_shadows, true, "MCLA/Patches", "Performance Mode: Foliage won't cast shadows.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(disable_msaa, false, "MCLA/Patches", "Disable Anti-Aliasing (MSAA).")
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(disable_dof, true, "MCLA/Patches", "Disable Depth of Field (DoF) completely.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_DOUBLE(lod_traffic_scale, 1.0, "MCLA/LOD",
-    "How far away traffic cars keep their detailed models. 1.0 is the original distance; higher "
-    "keeps the detail longer and costs speed, lower switches to simpler models sooner (0.1 to 10).")
-    .range(0.1, 10.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// 0 is auto (gpu/gpu_class.h): 2.0 on a mid-range or high-end graphics card, the game's own 1.0 on
-// integrated graphics and until the card is known. A city sector is drawn in detail when it is loaded
-// and nearer than 300 m times this scale times a camera factor (up to 1.5), and the city is loaded up to
-// 600 m out, so 2.0 already shows every loaded sector in detail and more adds nothing.
-REXCVAR_DEFINE_DOUBLE(lod_city_scale, 0.0, "MCLA/LOD",
-    "How far away buildings and other city scenery keep their detail, as a multiple of the original "
-    "distance. 0 (auto, the default) is 2.0 on a mid-range or high-end graphics card and 1.0 (the "
-    "original) on integrated graphics. 2.0 shows every loaded part of the city in full detail, so "
-    "higher adds nothing and costs memory and speed; lower simplifies it sooner (0.1 to 10; the menu "
-    "has auto, 0.5, 1, 1.5 and 2).")
-    .range(0.0, 10.0)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// "auto" is the window's own shape, whatever it is (mc_engine/display/ultrawide.h): wider than 16:9 widens the
-// view and keeps the HUD 16:9 in the middle (hud_width, below, moves its corner pieces out); taller than
-// 16:9 (16:10 such as 1920x1200 or the Steam Deck's 1280x800, 4:3, 5:4, a portrait window) keeps the
-// game's width and shows more above and below, the HUD again 16:9 in the middle. The others pick a shape
-// whatever the window is: the picture lies in the largest frame of that shape in the window, centred,
-// with pure black bars where the window is not that shape (mc_engine/display/frame_fit.h). Live: the pause
-// menu's DISPLAY > ASPECT RATIO and the launcher write it while the game runs. The Xenia renderer
-// always follows the window, and keeps 16:9 with bars in a window taller than that.
-REXCVAR_DEFINE_STRING(aspect_ratio, "auto", "MCLA/Patches",
-    "Shape of the picture: auto fills the window at any shape (a 21:9 or 32:9 window gets a wider view, "
-    "a 16:10, 4:3 or taller one more above and below; the HUD stays 16:9 in the middle), or 16:9, "
-    "16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is "
-    "narrower than that shape and at the sides where it is wider.")
-    .allowed({"auto", "16:9", "16:10", "21:9", "32:9"})
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Live, and only on a picture wider than 16:9 (mc_engine/display/ultrawide.h, "the HUD's corner pieces"): the
-// guest hooks read it when a piece is drawn and the renderer when it squeezes the piece's draws.
-// The pause menu (INTERFACE > UI, HUD WIDTH) and the launcher name three steps: CENTERED 0, WIDER 50,
-// FULL 100.
-REXCVAR_DEFINE_INT32(hud_width, 0, "MCLA/Patches",
-    "On a wide picture, how far the HUD's corner pieces (the minimap, speedometer, race position, lap "
-    "and time, and the phone) move out toward the screen edges, in percent: 0 (Centered) keeps the whole HUD in the "
-    "middle 16:9, 50 (Wider) is halfway, 100 (Full) puts each piece as far from its edge as on a 16:9 "
-    "screen.")
-    .range(0, 100)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(single_tile, false, "MCLA/Performance",
-    "Render the scene in a single predicated-tiling tile instead of two. Halves draw calls "
-    "and state traffic with MSAA on. Requires the enlarged virtual EDRAM (SDK >= this build).")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Off, because it was measured off. e0d9e94 turned the SDK flag on for the
-// overlap it is supposed to buy, but on the bench (menu_cam slot 8, 40-116 s,
-// three interleaved pairs against a build of ac2453d - the commit before that
-// batch - with the same SDK DLLs) it costs about 7%:
-//
-//   pre-batch build                40.26 fps  (40.47 / 40.25 / 40.07)
-//   this build, flag off           40.88 fps  (40.75 / 40.68 / 41.20)
-//   this build, flag on            38.04 fps  (37.72 / 38.25 / 38.15)
-//
-// Ending a submission at every PM4 primary buffer end trades one batched
-// submit per frame for many small ones; the driver overhead of the extra
-// ExecuteCommandLists and fence signals outweighs the overlap here. It may
-// still win on a faster GPU, which is why this stays a cvar instead of a
-// deletion - set it true in larecomp.toml to measure that.
-REXCVAR_DEFINE_BOOL(submit_on_primary_buffer_end, false, "MCLA/Performance",
-    "Drive the SDK's d3d12_submit_on_primary_buffer_end. Ends a D3D12 submission at every PM4 "
-    "primary buffer end instead of batching the frame. Measured ~7% slower on a GTX 1650. "
-    "With graphics_backend = vulkan the SDK's own vulkan_submit_on_primary_buffer_end (on by "
-    "default) applies instead; not measured here, so it is left alone.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
 // The aspect ratio constant the game's cameras load (16:9, 0x3FE38E39) takes the aspect ratio in
 // force (mc_engine/display/ultrawide.h). Called at startup and whenever it changes.
 void ApplyAspectRatioPatch() {
-    auto* rt = rex::Runtime::instance();
+    auto* rt = REX_RUNTIME();
     if (!rt) return;
-    auto* mem = rt->memory();
+    auto* mem = larecomp::guest::AddressSpace(rt);
     if (!mem) return;
 
     constexpr uint32_t addr = 0x8201E7EC;
     if (auto* heap = mem->LookupHeap(addr)) {
         heap->Protect(addr, sizeof(uint32_t),
-                      rex::memory::kMemoryProtectRead | rex::memory::kMemoryProtectWrite);
+                      rex::kernel::kMemoryProtectRead | rex::kernel::kMemoryProtectWrite);
     }
 
     auto* patch_ptr = mem->TranslateVirtual<uint8_t*>(addr);
@@ -211,7 +116,7 @@ bool Patch_AspectRatio_8223E5E0(PPCRegister& f13) {
 // resolve/end path that reads the global. Needs the SDK's enlarged virtual
 // EDRAM (720p 2xMSAA color+depth = 2880 tiles > the real 2048).
 void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCRegister& r25, PPCRegister& r28) {
-    if (!REXCVAR_GET(single_tile)) return;
+    if (!larecomp::settings::single_tile.Get()) return;
 
     // BadassBaboon: ONLY apply single_tile forcing to the main screen scene (a1 == nullptr / 0)!
     // In sub_8217A470, r17 preserves a1 (grcRenderTarget*). When r17 != 0, an offscreen
@@ -219,7 +124,7 @@ void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCReg
     // Forcing 1280x720 single tile onto offscreen targets breaks their layout and EDRAM allocation.
     if (r17.u64 != 0) return;
 
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     r7.u64 = r28.u64;  // tile width  = screen width
@@ -241,7 +146,7 @@ void Patch_SingleTile(PPCRegister& r7, PPCRegister& r8, PPCRegister& r17, PPCReg
 // fields (max 4095), so allocations up to 4096 are safe. r11 = base + size;
 // returning true jumps to the success branch (0x82410E48).
 bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
-    if (!REXCVAR_GET(single_tile)) return false;
+    if (!larecomp::settings::single_tile.Get()) return false;
     const uint32_t base = static_cast<uint32_t>(r3.u32);
     const uint32_t size = static_cast<uint32_t>(r30.u32);
     const uint32_t end  = static_cast<uint32_t>(r11.u32);
@@ -252,7 +157,7 @@ bool Patch_EdramLimit(PPCRegister& r3, PPCRegister& r30, PPCRegister& r11) {
 
 // The same hook works for both Motion Blur instructions!
 bool Patch_DisableMotionBlur(PPCRegister& r3) {
-    if (REXCVAR_GET(disable_motion_blur)) {
+    if (larecomp::settings::disable_motion_blur.Get()) {
         r3.u64 = 0; // li r3, 0
         return true;
     }
@@ -270,13 +175,15 @@ bool Patch_DisableMotionBlur(PPCRegister& r3) {
 // a moment for the upscaler probe): this hook runs once, when the game makes
 // its renderer, so that wait is the game thread's and not the renderer's.
 static bool MsaaOff() {
-    if (rex::cvar::GetFlagByName("mcla_gpu") == "true") {
 #if defined(LARECOMP_HAS_GPU)
+    // Whether the native renderer runs is the SDK's gpu.driver (gpu.h Enabled); the old mcla_gpu
+    // setting is gone on rexglue 0.11 (it was true under the XENIA renderer too and said nothing).
+    if (mcla::gpu::Enabled()) {
         (void)mcla::gpu::GetStartUpscale();
-#endif
         return false;
     }
-    return REXCVAR_GET(disable_msaa);
+#endif
+    return larecomp::settings::disable_msaa.Get();
 }
 
 bool Patch_DisableMSAA(PPCRegister& r11) {
@@ -289,7 +196,7 @@ bool Patch_DisableMSAA(PPCRegister& r11) {
 
 // BadassBaboon's Recomp Adjustments: Foliage imposter shadow bypass
 bool Patch_DisableImposterShadows(PPCRegister& r11) {
-    if (REXCVAR_GET(disable_imposter_shadows)) {
+    if (larecomp::settings::disable_imposter_shadows.Get()) {
         r11.u64 = 0; // li r11, 0
         return true;
     }
@@ -297,7 +204,7 @@ bool Patch_DisableImposterShadows(PPCRegister& r11) {
 }
 
 bool Patch_DisableDoF() {
-    return REXCVAR_GET(disable_dof);
+    return larecomp::settings::disable_dof.Get();
 }
 
 // Disable DoF at the composite. Hooked at sub_8260EBB8 entry where r3 = dofObj
@@ -308,16 +215,20 @@ bool Patch_DisableDoF() {
 // menu). The other composite inputs (+0x158/+0x128/+0x138/+0x1B0) are NOT safe to
 // zero — they white-out / desaturate the frame — so only +0xF0 is touched.
 void Patch_DofComposite(PPCRegister& r3) {
-    if (!REXCVAR_GET(disable_dof)) return;
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    if (!larecomp::settings::disable_dof.Get()) return;
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     uint32_t o = static_cast<uint32_t>(r3.u64);  // dofObj guest address
     if (!o) return;
     for (int i = 0; i < 16; ++i) base[o + 0xF0 + i] = 0;  // CoC vector = 0 -> no blur
 }
 
+// The traffic car's LOD pick (sub_827902F0) multiplies the car's own LOD distances by f0 at this site, so f0 times the scale is the
+// scale in force: the player's own value, or, for 0 (auto), what the GPU class gives (gpu/gpu_class.h kScales: 3 on High, 2 on Mid, 1.5
+// on Low and until the class is known). Called for every traffic car of every frame: one atomic read of the class and no string.
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {
-    f0.f64 = f0.f64 * REXCVAR_GET(lod_traffic_scale);
+    f0.f64 = f0.f64 * mcla::world_detail::InForce(mcla::gpu::gpu_class::Scale::kTrafficLod,
+                                                  larecomp::settings::lod_traffic_scale.Get());
 }
 
 // The scale in force for the cvar's value: the player's own when it is above 0, else what auto comes
@@ -336,10 +247,10 @@ static double CityLodInForce(double user_value) {
 // A second hook at 0x822D5BC4 (Patch_ScaleCityLOD) ran after the multiply it targets and changed
 // nothing; it is removed.
 void UpdateCityLODMemory() {
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
 
-    const double user_value = REXCVAR_GET(lod_city_scale);
+    const double user_value = larecomp::settings::lod_city_scale.Get();
     const float scale = static_cast<float>(CityLodInForce(user_value));
     float final_lod = scale * 300.0f;
 
@@ -370,6 +281,7 @@ void UpdateCityLODMemory() {
 // XEO3 stubs: empty implementations so the linker resolves codegen calls.
 
 #include <rex/ppc/context.h>
+#include <rex/kernel/heap.h>
 
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0) { return false; }
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10) { return false; }

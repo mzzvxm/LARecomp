@@ -62,6 +62,7 @@
 #endif
 
 #include "mcla_gfx_probe.h"
+#include "settings/immortal.h"
 
 #include <atomic>
 #include <cstdint>
@@ -73,25 +74,13 @@
 #include <unordered_map>
 #include <vector>
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/logging.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
-#include <rex/system/xmemory.h>
-
-REXCVAR_DEFINE_BOOL(mcla_gfx_probe, false, "MCLA/Debug",
-                    "Milestone 0: passive D3D9-Xenon probe. Renders nothing, changes nothing. "
-                    "Writes mcla_gfx_probe_*.csv next to the executable.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_INT32(mcla_gfx_probe_frames, 900, "MCLA/Debug",
-                     "Milestone 0: number of guest frames to capture before the probe dumps its "
-                     "report and goes idle (0 = never stop).")
-    .debug_only()
-    .range(0, 100000)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/hook.h>
+#include <rex/logging/log_category.h>
+#include <rex/ppc/context.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/kernel/title_runtime.h>
+#include <rex/memory/mapped_ptr.h>
 
 namespace mcla::gfx_probe {
 namespace {
@@ -284,12 +273,12 @@ struct RawDraw {
   uint64_t vs_hash, ps_hash;
 };
 constexpr size_t kRawDrawMax = 128;
-std::vector<RawDraw> g_raw;
+std::vector<RawDraw>& g_raw = larecomp::Leak<std::vector<RawDraw>>();
 
-std::unordered_map<DrawKey, DrawAgg, DrawKeyHash> g_draws;
-std::unordered_map<uint64_t, ShaderAgg> g_shaders;
-std::unordered_map<uint32_t, uint64_t> g_prim_hist;
-std::vector<TileBracket> g_brackets;
+std::unordered_map<DrawKey, DrawAgg, DrawKeyHash>& g_draws = larecomp::Leak<std::unordered_map<DrawKey, DrawAgg, DrawKeyHash>>();
+std::unordered_map<uint64_t, ShaderAgg>& g_shaders = larecomp::Leak<std::unordered_map<uint64_t, ShaderAgg>>();
+std::unordered_map<uint32_t, uint64_t>& g_prim_hist = larecomp::Leak<std::unordered_map<uint32_t, uint64_t>>();
+std::vector<TileBracket>& g_brackets = larecomp::Leak<std::vector<TileBracket>>();
 TileBracket g_open_bracket;
 bool g_bracket_open = false;
 uint64_t g_msaa_seen = 0;
@@ -300,7 +289,7 @@ uint32_t g_last_surface_info = 0;
 // External linkage from here on: these are the capture entry points called
 // by the graphics hooks in native_gfx/hooks.cpp (declared in the header).
 
-bool Enabled() { return REXCVAR_GET(mcla_gfx_probe) && !g_done.load(std::memory_order_relaxed); }
+bool Enabled() { return larecomp::settings::mcla_gfx_probe.Get() && !g_done.load(std::memory_order_relaxed); }
 
 void RecordShader(const uint8_t* base, const UcodeRef& u, uint32_t is_pixel) {
   if (!u.hash) {
@@ -401,8 +390,8 @@ void WriteReport() {
     }
     FILE* f = std::fopen((dir / "mcla_gfx_probe_xex_shaders.bin").string().c_str(), "wb");
     if (f) {
-      auto* runtime = rex::Runtime::instance();
-      const uint8_t* base = runtime->memory()->virtual_membase();
+      auto* runtime = REX_RUNTIME();
+      const uint8_t* base = runtime->GetMembase().GetBase();
       std::fwrite(HostPtr(base, kXexShaderLo), 1, kXexShaderHi - kXexShaderLo, f);
       std::fclose(f);
     }
@@ -563,19 +552,19 @@ void OnFrameEnd() {
     g_max_draws_frame = g_draws_this_frame;
   }
   g_draws_this_frame = 0;
-  const int32_t limit = REXCVAR_GET(mcla_gfx_probe_frames);
+  const int32_t limit = larecomp::settings::mcla_gfx_probe_frames.Get();
   if (limit > 0 && g_frame >= uint32_t(limit) && !g_done.load(std::memory_order_relaxed)) {
     g_done.store(true, std::memory_order_relaxed);
   }
 }
 
 void Install() {
-  if (!REXCVAR_GET(mcla_gfx_probe)) {
+  if (!larecomp::settings::mcla_gfx_probe.Get()) {
     return;
   }
   g_active.store(true, std::memory_order_relaxed);
   REXLOG_INFO("[mcla_gfx_probe] active — passive capture for {} frames",
-              REXCVAR_GET(mcla_gfx_probe_frames));
+              larecomp::settings::mcla_gfx_probe_frames.Get());
 }
 
 void OpenBracket(uint32_t caller_marker, uint32_t surface_info) {

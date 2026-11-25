@@ -6,10 +6,13 @@
 #include "install_wizard_dialog.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 #include <utility>
 
 #include <imgui.h>
+
+#include <rex/logging/log_category.h>
 
 namespace larecomp {
 
@@ -22,15 +25,15 @@ std::string PathUtf8(const std::filesystem::path& p) {
 }
 }  // namespace
 
-InstallWizardDialog::InstallWizardDialog(rex::ui::ImGuiDrawer* drawer, std::string title,
+InstallWizardDialog::InstallWizardDialog(std::string title,
                                          std::string intro, std::string install_directory,
                                          PickSourceCallback pick_source, InstallCallback install,
                                          CompleteCallback complete)
-    : ImGuiDialog(drawer),
-      title_(std::move(title)),
+    : title_(std::move(title)),
       intro_(std::move(intro)),
       install_directory_(std::move(install_directory)),
       install_directory_input_(32768, '\0'),
+      source_input_(32768, '\0'),
       pick_source_(std::move(pick_source)),
       install_(std::move(install)),
       complete_(std::move(complete)),
@@ -45,22 +48,56 @@ void InstallWizardDialog::OnClose() {
   }
 }
 
-void InstallWizardDialog::PickSourceAndInstall() {
+bool InstallWizardDialog::CheckInstallDirectory() {
   install_directory_ = install_directory_input_.data();
   if (install_directory_.empty()) {
     state_ = State::kFailed;
     status_ = "Installation failed.";
     error_ = "Choose an install directory.";
+    return false;
+  }
+  return true;
+}
+
+void InstallWizardDialog::PickSourceAndInstall() {
+  if (!CheckInstallDirectory()) {
     return;
   }
   if (!pick_source_) {
     return;
   }
-  auto source_path = pick_source_();
-  if (source_path.empty()) {
+  os::FilePick pick = pick_source_();
+  if (!pick.unavailable.empty()) {
+    // No file chooser on this system (Linux without the xdg desktop portal or zenity): say so once in the log and give the player a box for the
+    // path, so the install can still go on.
+    REXLOG_WARN("ISO install: no file chooser could be opened ({}); the path box is shown instead", pick.unavailable);
+    picker_unavailable_ = os::UnavailableText(pick.unavailable, "the Xbox 360 ISO");
+    source_error_.clear();
     return;
   }
-  StartInstall(std::move(source_path));
+  if (pick.path.empty()) {
+    return;
+  }
+  StartInstall(std::move(pick.path));
+}
+
+void InstallWizardDialog::InstallFromTypedPath() {
+  if (!CheckInstallDirectory()) {
+    return;
+  }
+  std::string home;  // what `~` stands for; the path box only appears where no file chooser opens, which is Linux
+#ifndef _WIN32
+  if (const char* env_home = std::getenv("HOME")) {
+    home = env_home;
+  }
+#endif
+  os::TypedPath typed = os::ParseTypedPath(source_input_.data(), home);
+  if (!typed.error.empty()) {
+    source_error_ = typed.error;
+    return;
+  }
+  source_error_.clear();
+  StartInstall(std::move(typed.path));
 }
 
 void InstallWizardDialog::StartInstall(std::filesystem::path source_path) {
@@ -143,6 +180,18 @@ void InstallWizardDialog::OnDraw(ImGuiIO& io) {
 
     if (!source_path_.empty()) {
       ImGui::TextWrapped("Source: %s", PathUtf8(source_path_).c_str());
+    }
+
+    // The file chooser could not be opened: the player types (or pastes) the ISO's path.
+    if (!picker_unavailable_.empty() && (state_ == State::kWaitingForSource || state_ == State::kFailed)) {
+      ImGui::TextWrapped("%s", picker_unavailable_.c_str());
+      ImGui::InputText("ISO path", source_input_.data(), source_input_.size());
+      if (!source_error_.empty()) {
+        ImGui::TextColored(ImVec4(0.95f, 0.28f, 0.24f, 1.0f), "%s", source_error_.c_str());
+      }
+      if (ImGui::Button("Install from this path", ImVec2(260.0f, 42.0f))) {
+        InstallFromTypedPath();
+      }
     }
 
     if (state_ == State::kInstalling) {

@@ -7,7 +7,8 @@
 //   input    the image to filter (bindless slot): rgb the colour of the hits, alpha the code (0 no data, 1 a miss, 1 + w a hit of weight w, -(1 + w)
 //            a hit on a part the camera does not see)
 //   history  the history image's alpha: the view distance of the vehicle pixel (0 elsewhere)
-//   aux      the trace's second output: x the hit distance, y the instance, z N.V, w 1 (car_rt_refl_cs.hlsl)
+//   aux      the trace's second output: x the hit distance, y the instance, z N.V, w 1 (down to 0.51: 1 - 0.49 the share of the texel's weight that is the clear coat's mirror ray,
+//            car_rt_hit_rules.h EncodeAuxSharp; car_rt_refl_cs.hlsl)
 //   output   the image's codes again; a texel with no data is copied as it is (alpha 0: the paint's march answers there)
 //
 // A 3x3 kernel of 1 2 1 / 2 4 2 / 1 2 1 over the taps that (1) hold data (a miss counts, as a weight of 0), (2) are the same instance, (3) are the
@@ -16,7 +17,18 @@
 // the texel's own value by a strength that follows the cone: the width in texels of the cone at the hit (2 distance tan(half angle) / the texel's
 // metres), the largest among the taps that count. Under a texel's half the texel is left exactly as it was (the penumbra is narrower than a texel:
 // a binary edge, no noise to take out); the first pass is in full from 2.5 texels, the second (the wider kernel) from 10, which keeps the glossy
-// edge: a ramp grows by at most a fifth. Everything here is car_rt_refl_rules.h's DenoiseTexel in HLSL; change one, change the other.
+// edge: a ramp grows by at most a fifth. The strength is multiplied by what the texel's clear-coat share leaves (car_rt_hit_rules.h DenoiseScale): the cone's grain is taken out,
+// the mirror ray's sharp reflection is not blurred. Everything here is car_rt_refl_rules.h's DenoiseTexel in HLSL (and car_rt_hit_rules.h for that scale); change one, change the other.
+//
+// THE THIRD PASS (the push's pass 2; NOISE-RESOLVE, noise_resolve.h, mcla_gpu_noise_resolve_no_upscaler). With no temporal upscaler the cone's turn changes every frame (the pattern is the blue tile stepped by the
+// frame) and nothing averaged it but the two passes above, whose residual is under 1% of the weight. The third pass averages the finished image F (the passes' result, input slot y) with the last
+// frame's result S (the bindless slot in image.w, written by this same pass a frame ago, in the same texel: no reprojection) and writes the next S, which the paint reads. It is texel for texel, so it
+// holds only where the car's picture stands where it stood; the rest is the clamp's: the history's weight, hidden share and premultiplied colour are each clamped to the range of F's 3 x 3 neighbourhood
+// (the texels that hold data) plus a margin, so a reflection that moved (the cone's penumbra moves with the view: car_rt_refl_rules.h "NOT TEMPORAL" weighed 0.5 degrees a frame against a 2.5 degree cone)
+// leaves a ghost only inside the neighbourhood's own range: about a texel of the ramp, a fifth of the cone's width. A texel with no data in F or in S, or a texel whose clear coat's sharp share (the
+// aux image's w) is the whole of it, is F's own. A history that differs from F by 0.05 (of the weight, or of the colour's range) or more is dropped: it is stale, not noisy (what the two passes leave of the noise is
+// a few hundredths), and from 0.02 its weight falls smoothly: a ramp that moved is held to the difference at which the history stops counting, about a third of a texel of it. The weight is image.z (0: the pass
+// copies F: the first frame, a gap, a new size). Nothing is read from the history image or written to a second image.
 //
 // Shader Model 6.0. The layout (car_rt_refl.cpp): set 0 the bindless Texture2D<float4> set (space 0), set 1 the output (u0, space 1), the push
 // block (b0, space 2).
@@ -24,13 +36,17 @@
 #include "car_rt_refl_common.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
+#ifdef __spirv__
+// Vulkan takes the format of a storage image from the shader (DXC would say rgba32f for a float4): the images are R16G16B16A16_FLOAT.
+[[vk::image_format("rgba16f")]]
+#endif
 RWTexture2D<float4> g_output : register(u0, space1);
 
 struct CarRtDenoisePush
 {
     // x the history image's bindless slot, y the image to filter's, z the aux image's, w the pass (0: the taps one texel apart, 1: two)
     uint4 slots;
-    // xy the image's size in texels
+    // xy the image's size in texels; pass 2: z the weight the history keeps, w the last result's bindless slot
     float4 image;
     // x tan of half the vertical field of view of the history's lens, y the reflection ray's reach (m), z the tangent of the cone's half angle
     float4 lens;
@@ -38,10 +54,105 @@ struct CarRtDenoisePush
     float4 tune;
 };
 
+#ifdef __spirv__
+[[vk::push_constant]] ConstantBuffer<CarRtDenoisePush> g_push;
+#else
 ConstantBuffer<CarRtDenoisePush> g_push : register(b0, space2);
+#endif
 
 static const float kMinCode = 0.5;
+static const float kAuxSharpScale = 0.49;
 static const float kMinWeight = 1.0 / 512.0;
+// NOISE-RESOLVE, pass 2: the margin the history may lie outside the neighbourhood's range, in weight and, of the premultiplied colour, as a share of the range's top (noise_resolve.h kConeClampMargin), and how far the history may differ from the finished image (in the same units) before it is dropped: it is blended in full under kStaleFrom, not at all from kStaleTo
+// (noise_resolve.h kConeStaleFrom, kConeStaleTo): the noise left after the two passes is a few hundredths of the weight, a reflection that moved is a ramp's change over the move, a tenth and more
+static const float kTemporalMargin = 0.05;
+static const float kStaleFrom = 0.02;
+static const float kStaleTo = 0.05;
+
+// One texel's decoded value: the weight, the part of it that is on another car's parts, and the weight-premultiplied colour (a miss is weight 0).
+struct Decoded
+{
+    float weight;
+    float hidden;
+    float3 colour;
+};
+
+Decoded Decode(float4 texel)
+{
+    Decoded d;
+    d.weight = saturate(abs(texel.a) - 1.0);
+    d.hidden = texel.a < 0.0 ? d.weight : 0.0;
+    d.colour = d.weight * texel.rgb;
+    return d;
+}
+
+// The pass's third mode: the finished image averaged with the last frame's result, texel for texel.
+void Temporal(int2 centre, int2 size)
+{
+    Texture2D<float4> input = g_textures[g_push.slots.y];
+    const float4 own = input.Load(int3(centre, 0));
+    const float strength = g_push.image.z;
+    if (!(abs(own.a) >= kMinCode) || !(strength > 0.0))
+    {
+        g_output[centre] = own;
+        return;
+    }
+    const float4 last = g_textures[uint(g_push.image.w + 0.5)].Load(int3(centre, 0));
+    if (!(abs(last.a) >= kMinCode))
+    {
+        g_output[centre] = own;  // the history holds no car here
+        return;
+    }
+    // the clear coat's mirror share (the aux image's w, EncodeAuxSharp) is not noise: left as it is
+    const float4 ownAux = g_textures[g_push.slots.z].Load(int3(centre, 0));
+    const float sharp = ownAux.w > 0.5 ? saturate((1.0 - ownAux.w) / kAuxSharpScale) : 0.0;
+    const float keep = strength * (1.0 - sharp);
+    // the range of the neighbourhood's decoded values, the texels that hold data
+    Decoded now = Decode(own);
+    Decoded lo = now;
+    Decoded hi = now;
+    [unroll]
+    for (int k = 0; k < 9; ++k)
+    {
+        const int2 at = centre + int2(k % 3 - 1, k / 3 - 1);
+        if (any(at < int2(0, 0)) || any(at >= size))
+        {
+            continue;
+        }
+        const float4 tap = input.Load(int3(at, 0));
+        if (!(abs(tap.a) >= kMinCode))
+        {
+            continue;
+        }
+        const Decoded d = Decode(tap);
+        lo.weight = min(lo.weight, d.weight);
+        hi.weight = max(hi.weight, d.weight);
+        lo.hidden = min(lo.hidden, d.hidden);
+        hi.hidden = max(hi.hidden, d.hidden);
+        lo.colour = min(lo.colour, d.colour);
+        hi.colour = max(hi.colour, d.colour);
+    }
+    const Decoded raw = Decode(last);
+    Decoded before = raw;
+    before.weight = clamp(before.weight, lo.weight - kTemporalMargin, hi.weight + kTemporalMargin);
+    before.hidden = clamp(before.hidden, lo.hidden - kTemporalMargin, hi.hidden + kTemporalMargin);
+    const float3 colourMargin = kTemporalMargin * (hi.colour + 0.01);
+    before.colour = clamp(before.colour, lo.colour - colourMargin, hi.colour + colourMargin);
+    // how far the history is from the finished image: the noise left is a few hundredths of the weight, a reflection that moved by a part of a texel of its ramp differs by a tenth: that history is stale and is not blended
+    // (the clamp alone would let it trail the ramp by up to a texel: the neighbourhood's own range)
+    const float3 colourDiff = abs(raw.colour - now.colour) / (hi.colour + 0.01);
+    const float stale = max(max(abs(raw.weight - now.weight), abs(raw.hidden - now.hidden)), max(colourDiff.x, max(colourDiff.y, colourDiff.z)));
+    const float kept = keep * (1.0 - smoothstep(kStaleFrom, kStaleTo, stale));
+    const float mixedWeight = lerp(now.weight, before.weight, kept);
+    const float mixedHidden = lerp(now.hidden, before.hidden, kept);
+    const float3 mixedColour = lerp(now.colour, before.colour, kept);
+    float4 result = float4(0.0, 0.0, 0.0, 1.0);  // a miss
+    if (mixedWeight >= kMinWeight)
+    {
+        result = float4(mixedColour / mixedWeight, (mixedHidden > 0.5 * mixedWeight ? -1.0 : 1.0) * (1.0 + min(mixedWeight, 1.0)));
+    }
+    g_output[centre] = result;
+}
 
 [numthreads(8, 8, 1)]
 void main(uint3 id : SV_DispatchThreadID)
@@ -50,6 +161,11 @@ void main(uint3 id : SV_DispatchThreadID)
     const int2 centre = int2(id.xy);
     if (any(centre >= size))
     {
+        return;
+    }
+    if (g_push.slots.w == 2u)
+    {
+        Temporal(centre, size);
         return;
     }
     Texture2D<float4> input = g_textures[g_push.slots.y];
@@ -62,7 +178,7 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     Texture2D<float4> history = g_textures[g_push.slots.x];
     Texture2D<float4> aux = g_textures[g_push.slots.z];
-    const float t = history.Load(int3(centre, 0)).a;
+    const float t = HistoryDistance(history.Load(int3(centre, 0)).a);  // RT-PARKED-PAINT: a parked car's texel holds the negated distance
     const float4 ownAux = aux.Load(int3(centre, 0));
     if (!(t > 0.0) || !(ownAux.w > 0.5))
     {
@@ -102,7 +218,7 @@ void main(uint3 id : SV_DispatchThreadID)
         {
             continue;
         }
-        const float tapT = history.Load(int3(at, 0)).a;
+        const float tapT = HistoryDistance(history.Load(int3(at, 0)).a);
         const float apart = float(step) * sqrt(float(offset.x * offset.x + offset.y * offset.y));
         const float kernel = (offset.x == 0 ? 2.0 : 1.0) * (offset.y == 0 ? 2.0 : 1.0) * MatchWeight(tapT, t, Tolerance(t, texelMeters, apart, nv));
         if (!(kernel > 0.0))
@@ -122,7 +238,9 @@ void main(uint3 id : SV_DispatchThreadID)
         }
     }
 
-    const float strength = pass == 0u ? smoothstep(g_push.tune.x, g_push.tune.y, footprint) : smoothstep(g_push.tune.z, g_push.tune.w, footprint);
+    // the part of the texel's weight that is the clear coat's mirror (the aux's w, EncodeAuxSharp) is left as it is
+    const float sharp = saturate((1.0 - ownAux.w) / kAuxSharpScale);
+    const float strength = (pass == 0u ? smoothstep(g_push.tune.x, g_push.tune.y, footprint) : smoothstep(g_push.tune.z, g_push.tune.w, footprint)) * (1.0 - sharp);
     if (!(strength > 0.0))
     {
         g_output[centre] = own;  // no cone wide enough around to have noise: as the trace made it

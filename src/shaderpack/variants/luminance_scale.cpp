@@ -153,11 +153,11 @@ VariantTransformResult TransformLuminanceScaleHlsl(const VariantShader& shader, 
 
 VariantDef MakeLuminanceScaleVariant() {
   VariantDef def;
-  def.id = kVariantLuminanceScale;
+  def.feature = kFeatureLuminanceScale;
   def.name = "luminance_scale";
   def.version = kLuminanceScaleVariantVersion;
   def.pixel_shaders = {kLuminanceSample};
-  def.transform = [](const VariantShader& shader, std::string_view hlsl) {
+  def.transform = [](const VariantShader& shader, std::string_view hlsl, const StageContext&) {
     return TransformLuminanceScaleHlsl(shader, hlsl);
   };
   return def;

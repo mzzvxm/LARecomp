@@ -1,0 +1,688 @@
+{
+  "schema": "larecomp.settings-ui",
+  "schema_version": 1,
+  "min_reader": 1,
+  "expr_version": 1,
+  "generated": {
+    "game_version": "PATCH 11 - PREVIEW 1",
+    "commit": "0000000000000000000000000000000000000000",
+    "tool": "larecomp.exe --dump_settings_ui",
+    "settings_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "exe_id": "example"
+  },
+  "config": {"file": "larecomp.toml", "style": "flat"},
+  "value_sets": {
+    "side_view_levels": [
+      {"id": "auto", "label": "AUTO", "title": "Auto", "auto_label": true},
+      {"id": "game", "label": "GAME", "title": "Game's own"},
+      {"id": "high", "label": "HIGH", "title": "High"},
+      {"id": "ultra", "label": "ULTRA", "title": "Ultra"}
+    ],
+    "rt_levels": [
+      {"id": "auto", "label": "AUTO", "title": "Auto", "auto_label": true},
+      {"id": "off", "label": "OFF", "title": "Off"},
+      {"id": "high", "label": "HIGH", "title": "High"},
+      {"id": "ultra", "label": "ULTRA", "title": "Ultra"}
+    ],
+    "fsr_modes": [
+      {"id": "native_aa", "label": "NATIVE AA (100%)", "title": "Native AA (100%)"},
+      {"id": "quality", "label": "QUALITY (67%)", "title": "Quality (67%)"},
+      {"id": "balanced", "label": "BALANCED (59%)", "title": "Balanced (59%)"},
+      {"id": "performance", "label": "PERFORMANCE (50%)", "title": "Performance (50%)"},
+      {"id": "ultra_performance", "label": "ULTRA PERF. (33%)", "title": "Ultra Performance (33%)"}
+    ],
+    "dlss_modes": [
+      {"id": "dlaa", "label": "DLAA (100%)", "title": "DLAA (100%)"},
+      {
+        "id": "quality",
+        "label": "QUALITY (67%)",
+        "title": "Quality (67%)",
+        "label_rules": [{"when": "contains(features.upscalers.dlss_modes_refused, 'quality')", "label": "QUALITY (N/A)"}]
+      },
+      {
+        "id": "balanced",
+        "label": "BALANCED (58%)",
+        "title": "Balanced (58%)",
+        "label_rules": [{"when": "contains(features.upscalers.dlss_modes_refused, 'balanced')", "label": "BALANCED (N/A)"}]
+      },
+      {
+        "id": "performance",
+        "label": "PERFORMANCE (50%)",
+        "title": "Performance (50%)",
+        "label_rules": [{"when": "contains(features.upscalers.dlss_modes_refused, 'performance')", "label": "PERFORMANCE (N/A)"}]
+      },
+      {
+        "id": "ultra_performance",
+        "label": "ULTRA PERF. (33%)",
+        "title": "Ultra Performance (33%)",
+        "label_rules": [{"when": "contains(features.upscalers.dlss_modes_refused, 'ultra_performance')", "label": "ULTRA PERF. (N/A)"}]
+      }
+    ],
+    "fsr1_modes": [
+      {"id": "custom", "label": "CUSTOM", "title": "Custom", "when": "s.mcla_gpu_fsr_preset == 'custom'"},
+      {"id": "ultra_quality", "label": "ULTRA QUAL. (77%)", "title": "Ultra Quality (77%)"},
+      {"id": "quality", "label": "QUALITY (67%)", "title": "Quality (67%)"},
+      {"id": "balanced", "label": "BALANCED (59%)", "title": "Balanced (59%)"},
+      {"id": "performance", "label": "PERFORMANCE (50%)", "title": "Performance (50%)"},
+      {
+        "id": "ultra_performance",
+        "label": "ULTRA PERF. (33%)",
+        "title": "Ultra Performance (33%)",
+        "when": "s.mcla_gpu_fsr_preset == 'ultra_performance'"
+      }
+    ]
+  },
+  "defs": {
+    "frame_gen_on": "live.frame_generation_running ?? ((s.mcla_gpu_frame_generation == 'fsr31' && features.frame_generation.fsr31) || (s.mcla_gpu_frame_generation == 'dlss' && features.frame_generation.dlss))",
+    "shown_upscaler": {
+      "cases": [
+        {"when": "s.mcla_gpu_upscaler == 'fsr31' && features.upscalers.fsr31", "value": "fsr31"},
+        {"when": "s.mcla_gpu_upscaler == 'fsr4' && features.upscalers.fsr4", "value": "fsr4"},
+        {"when": "s.mcla_gpu_upscaler == 'dlss' && features.upscalers.dlss != 'no'", "value": "dlss"},
+        {"when": "s.mcla_gpu_fsr", "value": "fsr1"},
+        {"value": "off"}
+      ]
+    },
+    "car_selfrefl_choice": {
+      "cases": [
+        {"when": "s.mcla_gpu_car_selfrefl == 'off'", "value": "off"},
+        {"when": "s.mcla_gpu_car_selfrefl == 'on' && (s.mcla_gpu_car_selfrefl_rt == 'off' || !api.car_rt)", "value": "on"},
+        {"when": "s.mcla_gpu_car_selfrefl == 'on'", "value": "ray_traced"},
+        {"when": "s.mcla_gpu_car_selfrefl_rt != 'off'", "value": "auto"},
+        {"when": "auto_of('mcla_gpu_car_selfrefl') == 'on'", "value": "on"},
+        {"value": "off"}
+      ]
+    },
+    "car_rt_runs": "api.car_rt && (d.car_selfrefl_choice == 'ray_traced' || (d.car_selfrefl_choice == 'auto' && auto_of('mcla_gpu_car_selfrefl') == 'on'))",
+    "rt_city_wanted": "resolved(s.mcla_gpu_rt_reflections) != 'off'",
+    "denoiser_vendor": { "cases": [
+      {"when": "features.denoiser.vendor == 'amd' && (gpu.rx9000 ?? true) && (os.name ?? 'windows') == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", "value": "amd"},
+      {"when": "features.denoiser.vendor == 'nvidia' && (gpu.rtx ?? true)", "value": "nvidia"},
+      {"when": "known(features.denoiser.vendor)", "value": "none"},
+      {"when": "gpu.vendor == 'amd' && gpu.rx9000 && os.name == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", "value": "amd"},
+      {"when": "gpu.vendor == 'nvidia' && gpu.rtx", "value": "nvidia"},
+      {"value": "none"}
+    ] },
+    "denoiser_fallback": { "cases": [
+      {"when": "d.denoiser_vendor == 'amd' && api.name == 'vulkan'", "value": "needs_d3d12"},
+      {"when": "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'unsupported'", "value": "unsupported"},
+      {"when": "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'no' || features.denoiser.dlss_rr == 'unsupported')", "value": "unsupported"},
+      {"when": "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_upscaler != 'dlss'", "value": "needs_dlss"},
+      {"when": "d.denoiser_vendor == 'nvidia' && (features.upscalers.dlss == 'needs_setup' || features.denoiser.dlss_rr == 'needs_setup')", "value": "needs_setup"},
+      {"when": "d.denoiser_vendor == 'amd' && features.denoiser.ray_regen == 'needs_setup'", "value": "needs_setup"},
+      {"when": "d.denoiser_vendor == 'nvidia' && s.mcla_gpu_vendor_denoiser && (features.upscalers.dlss == 'after_restart' || features.denoiser.dlss_rr == 'after_restart')", "value": "restart"},
+      {"value": "ok"}
+    ] },
+    "denoiser_state": "live.denoiser_gate ?? d.denoiser_fallback"
+  },
+  "settings": {
+    "perf_no_shadows": {"full": "larecomp.perf_no_shadows", "type": "bool", "default": "false", "life": "live", "debug": false},
+    "mcla_gpu_shadow_resolution": {
+      "full": "larecomp.mcla_gpu_shadow_resolution",
+      "type": "string",
+      "default": "auto",
+      "life": "live",
+      "debug": false,
+      "allowed": ["auto", "game", "high", "ultra"],
+      "auto": {
+        "by": "class",
+        "cells": {"low": "game", "mid": "high", "high": "high"},
+        "handheld": {"low": "high"}
+      }
+    },
+    "mcla_gpu_rt_reflections": {
+      "full": "larecomp.mcla_gpu_rt_reflections",
+      "type": "string",
+      "default": "auto",
+      "life": "live",
+      "debug": false,
+      "allowed": ["auto", "off", "high", "ultra"],
+      "auto": {"by": "rt_rung", "cells": {"none": "off", "weak": "off", "strong": "high"}}
+    },
+    "mcla_gpu_car_selfrefl": {
+      "full": "larecomp.mcla_gpu_car_selfrefl",
+      "type": "string",
+      "default": "auto",
+      "life": "live",
+      "debug": false,
+      "allowed": ["auto", "off", "on"],
+      "auto": {"by": "class", "cells": {"low": "off", "mid": "on", "high": "on"}}
+    },
+    "mcla_gpu_car_selfrefl_rt": {"full": "larecomp.mcla_gpu_car_selfrefl_rt", "type": "string", "default": "auto", "life": "live", "debug": false, "allowed": ["auto", "off"]},
+    "mcla_gpu_upscaler": {
+      "full": "larecomp.mcla_gpu_upscaler",
+      "type": "string",
+      "default": "off",
+      "life": "live",
+      "debug": false,
+      "allowed": ["off", "fsr31", "fsr4", "dlss"]
+    },
+    "mcla_gpu_fsr": {"full": "larecomp.mcla_gpu_fsr", "type": "bool", "default": "false", "life": "live", "debug": false},
+    "mcla_gpu_fsr_preset": {
+      "full": "larecomp.mcla_gpu_fsr_preset",
+      "type": "string",
+      "default": "quality",
+      "life": "live",
+      "debug": false,
+      "allowed": ["custom", "ultra_quality", "quality", "balanced", "performance", "ultra_performance"]
+    },
+    "mcla_gpu_fsr31_mode": {
+      "full": "larecomp.mcla_gpu_fsr31_mode",
+      "type": "string",
+      "default": "quality",
+      "life": "live",
+      "debug": false,
+      "allowed": ["native_aa", "quality", "balanced", "performance", "ultra_performance"]
+    },
+    "mcla_gpu_fsr4_mode": {
+      "full": "larecomp.mcla_gpu_fsr4_mode",
+      "type": "string",
+      "default": "quality",
+      "life": "live",
+      "debug": false,
+      "allowed": ["native_aa", "quality", "balanced", "performance", "ultra_performance"]
+    },
+    "mcla_gpu_dlss_mode": {
+      "full": "larecomp.mcla_gpu_dlss_mode",
+      "type": "string",
+      "default": "quality",
+      "life": "live",
+      "debug": false,
+      "allowed": ["dlaa", "quality", "balanced", "performance", "ultra_performance"]
+    },
+    "mcla_gpu_resolution_scale": {"full": "larecomp.mcla_gpu_resolution_scale", "type": "number", "default": "0", "life": "live", "debug": false, "range": [0, 4]},
+    "resolution_scale": {"full": "larecomp.resolution_scale", "type": "int", "default": "1", "life": "restart", "debug": false, "range": [1, 3]},
+    "mcla_gpu_frame_generation": {
+      "full": "larecomp.mcla_gpu_frame_generation",
+      "type": "string",
+      "default": "off",
+      "life": "live",
+      "debug": false,
+      "allowed": ["off", "fsr31", "dlss"]
+    },
+    "fps_limit": {"full": "larecomp.fps_limit", "type": "int", "default": "60", "life": "live", "debug": false, "range": [0, 360]},
+    "fullscreen": {"full": "ui.fullscreen", "type": "bool", "default": "true", "life": "live", "debug": false},
+    "fullscreen_exclusive": {"full": "larecomp.fullscreen_exclusive", "type": "bool", "default": "false", "life": "live", "debug": false},
+    "mcla_gpu_vendor_denoiser": {
+      "full": "larecomp.mcla_gpu_vendor_denoiser",
+      "type": "bool",
+      "default": "false",
+      "life": "live",
+      "debug": false,
+      "legacy_from": {
+        "setting": "mcla_gpu_denoiser",
+        "map": {"rr": true, "auto": false, "ours": false}
+      }
+    },
+    "mcla_gpu_denoiser": {"full": "larecomp.mcla_gpu_denoiser", "type": "string", "default": "row", "life": "live", "debug": true, "allowed": ["row", "auto", "rr", "ours"]},
+    "mcla_gpu_rt_bounce_light": {
+      "full": "larecomp.mcla_gpu_rt_bounce_light",
+      "type": "string",
+      "default": "auto",
+      "life": "live",
+      "debug": false,
+      "allowed": ["auto", "off", "high", "ultra"],
+      "auto": {"by": "rt_rung", "cells": {"none": "off", "weak": "off", "strong": "high"}}
+    },
+    "mcla_gpu_preset": {
+      "full": "larecomp.mcla_gpu_preset",
+      "type": "string",
+      "default": "vanilla",
+      "life": "live",
+      "debug": false,
+      "allowed": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"]
+    },
+    "mcla_gpu_preset_from": {
+      "full": "larecomp.mcla_gpu_preset_from",
+      "type": "string",
+      "default": "vanilla",
+      "life": "live",
+      "debug": true,
+      "allowed": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra"]
+    }
+  },
+  "tabs": [
+    {
+      "id": "gfx",
+      "label": "GRAPHICS",
+      "title": "Graphics",
+      "sections": [
+        {
+          "id": "preset",
+          "label": "PRESET",
+          "title": "Preset",
+          "source_menu": "RxPresetMenu",
+          "rows": [
+            {
+              "id": "PM_RxGpuPreset",
+              "label": "PRESET",
+              "title": "Preset",
+              "kind": "choice",
+              "setting": "mcla_gpu_preset",
+              "apply": "live",
+              "values": [
+                {"id": "vanilla", "label": "VANILLA", "title": "Vanilla"},
+                {"id": "enhanced", "label": "ENHANCED", "title": "Enhanced"},
+                {"id": "enhanced_ultra", "label": "ENHANCED ULTRA", "title": "Enhanced Ultra"},
+                {"id": "enhanced_rt", "label": "ENHANCED RT", "title": "Enhanced RT", "when": "gpu.rt_tier != 'none'"},
+                {"id": "enhanced_rt_ultra", "label": "ENHANCED RT ULTRA", "title": "Enhanced RT Ultra", "when": "gpu.rt_tier != 'none'"},
+                {"id": "custom", "label": "CUSTOM", "title": "Custom"}
+              ],
+              "help": "One choice for the look of the effect pages. Changing a single effect afterwards switches this to Custom."
+            }
+          ]
+        },
+        {
+          "id": "display",
+          "label": "DISPLAY",
+          "title": "Display",
+          "source_menu": "RxVideoMenu",
+          "rows": [
+            {
+              "id": "PM_RxDisplayMode",
+              "label": "DISPLAY MODE",
+              "title": "Display Mode",
+              "kind": "choice",
+              "setting": null,
+              "reads": ["fullscreen", "fullscreen_exclusive"],
+              "apply": "live",
+              "decode": {
+                "cases": [
+                  {"when": "!s.fullscreen", "value": "windowed"},
+                  {"when": "s.fullscreen_exclusive && os.exclusive_fullscreen", "value": "fullscreen"},
+                  {"value": "borderless"}
+                ]
+              },
+              "values": [
+                {"id": "windowed", "label": "WINDOWED", "title": "Windowed", "writes": [{"setting": "fullscreen", "value": "false"}]},
+                {
+                  "id": "borderless",
+                  "label": "BORDERLESS",
+                  "title": "Borderless",
+                  "writes": [{"setting": "fullscreen_exclusive", "value": "false"}, {"setting": "fullscreen", "value": "true"}]
+                },
+                {
+                  "id": "fullscreen",
+                  "label": "FULLSCREEN",
+                  "title": "Fullscreen",
+                  "when": "os.exclusive_fullscreen",
+                  "writes": [{"setting": "fullscreen_exclusive", "value": "true"}, {"setting": "fullscreen", "value": "true"}]
+                }
+              ],
+              "help": "Windowed is a normal window. Borderless fills the screen with a window that has no frame and leaves the display as it is. Fullscreen can also switch the display to the size chosen in Resolution."
+            },
+            {
+              "id": "PM_RxFpsCap",
+              "label": "FPS LIMIT",
+              "title": "FPS Limit",
+              "kind": "number",
+              "setting": "fps_limit",
+              "format": "%.0f",
+              "apply": "live",
+              "values": [
+                {"id": "30", "label": "30"},
+                {"id": "40", "label": "40"},
+                {"id": "45", "label": "45"},
+                {"id": "50", "label": "50"},
+                {"id": "60", "label": "60"},
+                {"id": "120", "label": "120"},
+                {"id": "144", "label": "144"},
+                {"id": "0", "label": "UNCAPPED", "title": "Unlimited"}
+              ],
+              "states": [
+                {
+                  "when": "d.frame_gen_on",
+                  "enabled": false,
+                  "suffix": " (FRAME GEN)",
+                  "tag": "Frame gen on",
+                  "reason": "Frame generation has its own limit (Frame Gen FPS Limit) while it runs, so this one waits."
+                }
+              ],
+              "help": "Caps how many frames the game draws a second. Unlimited removes the cap."
+            },
+            {
+              "id": "PM_RxGpuUpscMode",
+              "label": "RENDER SCALE",
+              "title": "Render Scale",
+              "kind": "choice",
+              "setting": "mcla_gpu_resolution_scale",
+              "apply": "live",
+              "variants": [
+                {
+                  "when": "renderer == 'xenia'",
+                  "label": "RENDER SCALE",
+                  "setting": "resolution_scale",
+                  "apply": "restart",
+                  "values_from": {"generator": "render_scale.shares", "args": {"renderer": "xenia"}},
+                  "fallback_values": [
+                    {"id": "1", "label": "1X (720P)", "title": "1x (720p)"},
+                    {"id": "2", "label": "2X (1440P)", "title": "2x (1440p)"},
+                    {"id": "3", "label": "3X (4K)", "title": "3x (4K)"}
+                  ]
+                },
+                {
+                  "when": "d.shown_upscaler == 'fsr1'",
+                  "label": "FSR 1 MODE",
+                  "title": "FSR 1 Mode",
+                  "setting": "mcla_gpu_fsr_preset",
+                  "values_ref": "fsr1_modes"
+                },
+                {
+                  "when": "d.shown_upscaler == 'fsr31'",
+                  "label": "FSR 3.1 MODE",
+                  "title": "FSR 3.1 Mode",
+                  "setting": "mcla_gpu_fsr31_mode",
+                  "values_ref": "fsr_modes"
+                },
+                {
+                  "when": "d.shown_upscaler == 'fsr4'",
+                  "label": "FSR 4 MODE",
+                  "title": "FSR 4 Mode",
+                  "setting": "mcla_gpu_fsr4_mode",
+                  "values_ref": "fsr_modes"
+                },
+                {
+                  "when": "d.shown_upscaler == 'dlss'",
+                  "label": "DLSS MODE",
+                  "title": "DLSS Mode",
+                  "setting": "mcla_gpu_dlss_mode",
+                  "values_ref": "dlss_modes",
+                  "states": [
+                    {
+                      "when": "features.upscalers.dlss == 'needs_setup'",
+                      "enabled": false,
+                      "suffix": " (SETUP)",
+                      "tag": "Needs setup",
+                      "reason": "DLSS needs its files first: this install does not have them yet."
+                    },
+                    {
+                      "when": "features.upscalers.dlss == 'after_restart'",
+                      "enabled": false,
+                      "suffix": " (RESTART)",
+                      "needs_restart": true,
+                      "tag": "Restart needed"
+                    }
+                  ]
+                },
+                {
+                  "when": "true",
+                  "label": "RENDER SCALE",
+                  "setting": "mcla_gpu_resolution_scale",
+                  "values_from": {"generator": "render_scale.shares", "args": {"renderer": "native"}},
+                  "fallback_values": [
+                    {"id": "0", "label": "100%", "title": "100% (window size)"},
+                    {"id": "1.5", "label": "150%"},
+                    {"id": "2", "label": "200%"},
+                    {"id": "3", "label": "300%"}
+                  ]
+                }
+              ],
+              "help": "How small the game draws the 3D scene before it is built back up to the window's size: the share is in brackets."
+            },
+            {
+              "id": "PM_RxGpuDenoiser",
+              "label": "DLSS RAY RECONSTRUCTION",
+              "title": "DLSS Ray Reconstruction",
+              "kind": "bool",
+              "setting": "mcla_gpu_vendor_denoiser",
+              "default": "false",
+              "apply": "live",
+              "renderers": ["native"],
+              "hidden_unless": "renderer == 'native' && d.denoiser_vendor in ['amd','nvidia']",
+              "states": [
+                { "when": "d.denoiser_state == 'hidden'", "enabled": false, "reason": "This GPU cannot run DLSS Ray Reconstruction." },
+                { "when": "d.denoiser_state == 'needs_d3d12'", "enabled": false, "suffix": " (D3D12 ONLY)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'unsupported'", "enabled": false, "suffix": " (N/A)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'needs_dlss'", "enabled": false, "suffix": " (NEEDS DLSS)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'failed'", "enabled": false, "suffix": " (FAILED)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'not_needed'", "enabled": false, "suffix": " (NOT NEEDED)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'making'", "enabled": true, "suffix": " (APPLYING)", "label": "DLSS RR" },
+                { "when": "d.denoiser_state == 'restart'", "enabled": true, "suffix": " (RESTART)", "label": "DLSS RR", "needs_restart": true }
+              ],
+              "variants": [
+                {
+                  "when": "d.denoiser_vendor == 'amd'",
+                  "label": "AMD FSR RAY REGENERATION",
+                  "states": [
+                    { "when": "d.denoiser_state == 'hidden'", "enabled": false, "reason": "This GPU cannot run AMD FSR Ray Regeneration." },
+                    { "when": "d.denoiser_state == 'needs_d3d12'", "enabled": false, "suffix": " (D3D12 ONLY)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'unsupported'", "enabled": false, "suffix": " (N/A)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'needs_dlss'", "enabled": false, "suffix": " (NEEDS DLSS)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'needs_setup'", "enabled": false, "suffix": " (SETUP)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'failed'", "enabled": false, "suffix": " (FAILED)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'not_needed'", "enabled": false, "suffix": " (NOT NEEDED)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'making'", "enabled": true, "suffix": " (APPLYING)", "label": "RAY REGEN" },
+                    { "when": "d.denoiser_state == 'restart'", "enabled": true, "suffix": " (RESTART)", "label": "RAY REGEN", "needs_restart": true }
+                  ]
+                }
+              ],
+              "help": "On uses the GPU's denoiser for supported effects. Off uses LARecomp's denoisers."
+            }
+          ]
+        },
+        {
+          "id": "lighting",
+          "label": "LIGHTING AND SHADOWS",
+          "title": "Lighting and Shadows",
+          "source_menu": "RxLightingMenu",
+          "rows": [
+            {
+              "id": "PM_RxNoShadows",
+              "label": "SHADOWS",
+              "title": "Shadows",
+              "kind": "bool",
+              "setting": "perf_no_shadows",
+              "inverted": true,
+              "apply": "live",
+              "help": "Draws the game's real-time shadows. Off is the biggest speed-up, and the world loses its cast shadows."
+            },
+            {
+              "id": "PM_RxGpuShadowDetail",
+              "label": "SHADOW DETAIL",
+              "title": "Shadow Detail",
+              "kind": "choice",
+              "setting": "mcla_gpu_shadow_resolution",
+              "renderers": ["native"],
+              "values_ref": "side_view_levels",
+              "apply": "live",
+              "states": [
+                {
+                  "when": "s.perf_no_shadows",
+                  "enabled": false,
+                  "suffix": " (NO SHADOW)",
+                  "tag": "Shadows off",
+                  "reason": "Does nothing while Shadows are off. Your choice is kept."
+                }
+              ],
+              "help": "How sharp the edges of the sun's shadows can get. High draws them twice as big and Ultra three times, which costs a little speed and video memory."
+            }
+          ]
+        },
+        {
+          "id": "reflections",
+          "label": "REFLECTIONS",
+          "title": "Reflections",
+          "source_menu": "RxReflectionsMenu",
+          "renderers": ["native"],
+          "rows": [
+            {
+              "id": "PM_RxGpuRtCityRefl",
+              "label": "RT CITY REFLECTIONS",
+              "title": "RT City Reflections",
+              "kind": "choice",
+              "setting": "mcla_gpu_rt_reflections",
+              "renderers": ["native"],
+              "values_ref": "rt_levels",
+              "apply": "live",
+              "states": [
+                {
+                  "when": "gpu.rt_tier == 'none'",
+                  "label": "RT CITY",
+                  "suffix": " (NO RT GPU)",
+                  "enabled": false,
+                  "tag": "No ray tracing card",
+                  "reason": "Needs a graphics card that can ray trace."
+                },
+                {
+                  "when": "gpu.class == 'low'",
+                  "label": "RT CITY",
+                  "suffix": " (TOO SLOW)",
+                  "enabled": false,
+                  "tag": "Too slow",
+                  "reason": "This graphics card is too slow for ray traced reflections."
+                },
+                {
+                  "when": "!d.car_rt_runs",
+                  "label": "RT CITY",
+                  "suffix": " (NEEDS CAR RT)",
+                  "enabled": false,
+                  "tag": "Needs ray traced car reflections",
+                  "reason": "Set Car Self-Reflections to Ray Traced first: this rides on it."
+                },
+                {
+                  "when": "d.rt_city_wanted && live.city_data == 'unavailable'",
+                  "live_only": true,
+                  "label": "RT CITY",
+                  "suffix": " (NOT READY)",
+                  "enabled": false,
+                  "tag": "Not ready",
+                  "reason": "The city's data cannot be had this session."
+                },
+                {
+                  "when": "d.rt_city_wanted && live.city_data == 'building'",
+                  "live_only": true,
+                  "label": "RT CITY",
+                  "suffix": " (BUILDING DATA)",
+                  "tag": "Building city data",
+                  "reason": "The game is building the city's data in the background. The setting is kept and takes hold by itself."
+                }
+              ],
+              "help": "The car paint reflects the real street, found by rays in the city's own triangles: the building across the road, the lamp posts, signs, the car beside you."
+            },
+            {
+              "id": "PM_RxGpuCarSelfRefl",
+              "label": "CAR SELF-REFLECTIONS",
+              "title": "Car Self-Reflections",
+              "kind": "choice",
+              "setting": null,
+              "reads": ["mcla_gpu_car_selfrefl", "mcla_gpu_car_selfrefl_rt"],
+              "renderers": ["native"],
+              "apply": "live",
+              "decode": "d.car_selfrefl_choice",
+              "values": [
+                {
+                  "id": "auto",
+                  "label": "AUTO",
+                  "title": "Auto",
+                  "auto_label": true,
+                  "label_rules": [
+                    {"when": "auto_of('mcla_gpu_car_selfrefl') != 'on'", "label": "AUTO (OFF)"},
+                    {"when": "api.car_rt", "label": "AUTO (RAY TRACED)"},
+                    {"when": "api.car_rt == false", "label": "AUTO (ON)"}
+                  ],
+                  "writes": [{"setting": "mcla_gpu_car_selfrefl", "value": "auto"}, {"setting": "mcla_gpu_car_selfrefl_rt", "value": "auto"}]
+                },
+                {"id": "off", "label": "OFF", "title": "Off", "writes": [{"setting": "mcla_gpu_car_selfrefl", "value": "off"}]},
+                {
+                  "id": "on",
+                  "label": "ON",
+                  "title": "On",
+                  "writes": [{"setting": "mcla_gpu_car_selfrefl", "value": "on"}, {"setting": "mcla_gpu_car_selfrefl_rt", "value": "off"}]
+                },
+                {
+                  "id": "ray_traced",
+                  "label": "RAY TRACED",
+                  "title": "Ray Traced",
+                  "when": "api.car_rt",
+                  "writes": [{"setting": "mcla_gpu_car_selfrefl", "value": "on"}, {"setting": "mcla_gpu_car_selfrefl_rt", "value": "auto"}]
+                }
+              ],
+              "help": "Your car's paint reflects the car itself. On works from the picture on the screen; Ray Traced from the car's own shape, so a part the camera cannot see shows in the paint too."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "facts_used": [
+    "api.car_rt",
+    "api.name",
+    "features.denoiser.dlss_rr",
+    "features.denoiser.ray_regen",
+    "features.denoiser.vendor",
+    "features.frame_generation.dlss",
+    "features.frame_generation.fsr31",
+    "features.upscalers.dlss",
+    "features.upscalers.dlss_modes_refused",
+    "features.upscalers.fsr31",
+    "features.upscalers.fsr4",
+    "gpu.class",
+    "gpu.rt_tier",
+    "gpu.rtx",
+    "gpu.rx9000",
+    "gpu.vendor",
+    "live.city_data",
+    "live.denoiser_gate",
+    "live.frame_generation_running",
+    "os.build",
+    "os.exclusive_fullscreen",
+    "os.name"
+  ],
+  "presets": {
+    "setting": "mcla_gpu_preset",
+    "order": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"],
+    "first_start": "vanilla",
+    "legacy_file_preset": "custom",
+    "scope": ["lighting", "reflections"],
+    "items": {
+      "vanilla": {
+        "label": "VANILLA",
+        "title": "Vanilla",
+        "help": "The game as it shipped: none of the new effects.",
+        "needs": null,
+        "values": {"mcla_gpu_shadow_resolution": "game", "mcla_gpu_rt_reflections": "off"}
+      },
+      "enhanced": {
+        "label": "ENHANCED",
+        "title": "Enhanced",
+        "help": "Better shadows, no ray tracing.",
+        "needs": null,
+        "values": {"mcla_gpu_shadow_resolution": "high", "mcla_gpu_rt_reflections": "off"}
+      },
+      "enhanced_ultra": {
+        "label": "ENHANCED ULTRA",
+        "title": "Enhanced Ultra",
+        "help": "The best shadows, no ray tracing.",
+        "needs": null,
+        "values": {"mcla_gpu_shadow_resolution": "ultra", "mcla_gpu_rt_reflections": "off"}
+      },
+      "enhanced_rt": {
+        "label": "ENHANCED RT",
+        "title": "Enhanced RT",
+        "help": "Better shadows and ray traced reflections.",
+        "needs": "gpu.rt_tier != 'none'",
+        "needs_reason": "Needs a graphics card that can ray trace.",
+        "values": {"mcla_gpu_shadow_resolution": "high", "mcla_gpu_rt_reflections": "high"}
+      },
+      "enhanced_rt_ultra": {
+        "label": "ENHANCED RT ULTRA",
+        "title": "Enhanced RT Ultra",
+        "help": "The best shadows and ray traced reflections.",
+        "needs": "gpu.rt_tier != 'none'",
+        "needs_reason": "Needs a graphics card that can ray trace.",
+        "values": {"mcla_gpu_shadow_resolution": "ultra", "mcla_gpu_rt_reflections": "ultra"}
+      },
+      "custom": {"label": "CUSTOM", "title": "Custom", "help": "Your own choices on the effect pages.", "needs": null}
+    },
+    "class_to_preset": [
+      {"when": "gpu.class == 'high' && gpu.rt_tier == 'strong'", "preset": "enhanced_rt_ultra"},
+      {"when": "gpu.class == 'high'", "preset": "enhanced_ultra"},
+      {"when": "gpu.class == 'mid' && gpu.rt_tier != 'none'", "preset": "enhanced_rt"},
+      {"when": "gpu.class == 'mid'", "preset": "enhanced"},
+      {"when": "true", "preset": "vanilla"}
+    ],
+    "covers": ["mcla_gpu_rt_reflections", "mcla_gpu_shadow_resolution"],
+    "flip": {"to": "custom", "writes": [{"setting": "mcla_gpu_preset_from", "value": "$previous"}]}
+  }
+}

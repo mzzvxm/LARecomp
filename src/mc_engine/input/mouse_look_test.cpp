@@ -463,7 +463,9 @@ void TestSteerRamp() {
         CHECK(Run(0.0f, +1, 2.0f, dt, p) == 1.0f);   // never past full lock
         CHECK(Run(0.0f, -1, 2.0f, dt, p) == -1.0f);
         // Let go at full lock: back to centre in 0.25 s, and it stays there.
-        CHECK(Near(Run(1.0f, 0, 0.125f, dt, p), 0.5, 0.02));
+        // 0.125 s is not a whole number of frames at 30 and 60 FPS: Run steps lround(0.125 / dt) frames, so the expected
+        // value is the linear return over the frames actually run (0.5 at 144 and 240 FPS).
+        CHECK(Near(Run(1.0f, 0, 0.125f, dt, p), 1.0 - double(std::lround(0.125 / dt)) * dt / p.return_s, 0.02));
         CHECK(Run(1.0f, 0, 0.3f, dt, p) == 0.0f);
         CHECK(Run(-1.0f, 0, 0.3f, dt, p) == 0.0f);
         CHECK(Run(0.0f, 0, 1.0f, dt, p) == 0.0f);    // at rest it stays at rest

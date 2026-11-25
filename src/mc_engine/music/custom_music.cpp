@@ -1,4 +1,5 @@
 #include "mc_engine/music/custom_music.h"
+#include "settings/immortal.h"
 
 #include <algorithm>
 #include <cctype>
@@ -15,9 +16,9 @@
 #include "mc_engine/music/audio_dat.h"
 #include "mc_engine/music/wave_bank.h"
 
-// stb_image carries a raw-deflate decoder and its implementation is already
-// compiled into modloader/texture.cpp; the archive stores plain files deflated.
-#include "mc_engine/modloader/stb_image.h"
+// The archive stores plain files deflated: modloader's InflateRaw (texture.h) inflates them with the stb_image
+// decoder compiled into modloader/texture.cpp (rexglue 0.11 no longer exports the SDK's own copy).
+#include "mc_engine/modloader/texture.h"
 
 namespace fs = std::filesystem;
 
@@ -61,9 +62,9 @@ constexpr int kGroupCapacity = 255;
 constexpr uint64_t kVerifiedSlotPoolBytes = 21540864;
 constexpr int kMusicSlotCount = 4;
 
-std::vector<std::pair<std::string, std::string>> g_titles;
-std::vector<std::string> g_claimed;
-std::vector<uint32_t> g_cues;
+std::vector<std::pair<std::string, std::string>>& g_titles = larecomp::Leak<std::vector<std::pair<std::string, std::string>>>();
+std::vector<std::string>& g_claimed = larecomp::Leak<std::vector<std::string>>();
+std::vector<uint32_t>& g_cues = larecomp::Leak<std::vector<uint32_t>>();
 
 // ------------------------------------------------------------------- helpers
 
@@ -178,15 +179,12 @@ bool ReadArchiveFile(const modloader::Rpf3Reader& archive, const std::string& pa
         return false;
     }
     if (entry.flag & 0x40000000u) {
-        int out_length = 0;
-        char* inflated = stbi_zlib_decode_noheader_malloc(
-            reinterpret_cast<const char*>(out.data()), static_cast<int>(out.size()), &out_length);
-        if (!inflated || out_length <= 0) {
+        std::vector<uint8_t> inflated;
+        if (!modloader::InflateRaw(out.data(), out.size(), entry.size, inflated) || inflated.empty()) {
             LARECOMP_APP_ERROR("[music] cannot inflate {}", path);
             return false;
         }
-        out.assign(inflated, inflated + out_length);
-        std::free(inflated);
+        out = std::move(inflated);
     }
     return true;
 }
@@ -633,7 +631,8 @@ Song SongFromFile(const fs::path& path, const Override& defaults, const Override
 }
 
 std::vector<fs::path> MusicFolders(const fs::path& exe_dir) {
-    std::vector<fs::path> folders{exe_dir / "music"};
+    // The folder's name is found whatever its case (a Linux file system tells "Music" from "music").
+    std::vector<fs::path> folders{mc::modloader::FindDirNoCase(exe_dir, "music")};
 #if defined(_WIN32)
     if (const char* home = std::getenv("USERPROFILE")) {
         folders.push_back(fs::path(home) / "Documents" / "Rockstar Games" / "LARecomp" /

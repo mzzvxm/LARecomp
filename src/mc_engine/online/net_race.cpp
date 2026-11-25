@@ -43,8 +43,10 @@
 #include "max_players.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
 #include <cstdint>
@@ -81,7 +83,7 @@ std::atomic<bool> g_count_logged{false};
 uint32_t g_launch_local = 0;
 uint32_t g_launch_table = 0;
 
-inline const uint8_t* Base() { return rex::Runtime::instance()->virtual_membase(); }
+inline const uint8_t* Base() { return larecomp::guest::Membase(); }
 
 inline uint32_t Rd32(const uint8_t* b, uint32_t a) {
     return (uint32_t(b[a]) << 24) | (uint32_t(b[a + 1]) << 16) | (uint32_t(b[a + 2]) << 8) |

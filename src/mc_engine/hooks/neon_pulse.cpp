@@ -26,7 +26,8 @@
 // what it would have seen at 30.
 //
 // mcla_fix_neon_30hz turns it off (the FIXES page of the debug menu), for a tester who wants the pulse
-// at the display's rate.
+// at the display's rate. mcla_fix_neon_pulse_pin (a debug setting, not on a page: a launch argument) gives
+// both pulses one value from 0 to 1 at every update, so that two runs of a test scene show the same underglow.
 //
 // CHECK: the addresses are read from the generated code (native\tree-k1\generated, sub_82353E38 and
 // sub_823DBBC8), not seen in a running game; the feature-parity probe measured the game's pulse at up to
@@ -35,25 +36,20 @@
 // arithmetic, and the check chain (perf\scripts\chain-neonfix.ps1) reads the visible result.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/hook.h>
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include <rex/kernel/title_runtime.h>
 
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "neon_pulse.h"
-
-REXCVAR_DEFINE_BOOL(mcla_fix_neon_30hz, true, "MCLA/Patches",
-    "Fix: the neon underglow's pulse follows the console's 30 Hz clock, not every frame. A fast flash "
-    "rate is a wave of about 30 Hz; the console sampled it 30 times a second and showed a slow throb, "
-    "and at 60 FPS or more the same wave blinks about 11 times a second (a strobe). On: every frame "
-    "rate shows the console's throb. Off: the pulse is worked out at every frame.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+#include "larecomp_guest.h"
 
 REX_EXTERN(__imp__rex_sub_82353E38);  // the car effect object's update (the pulse is its last step)
 REX_EXTERN(rex_sub_823DBBC8);         // the game's sine: f1 in (a double), f1 out
@@ -69,11 +65,15 @@ constexpr uint32_t kThis_IntPulse = 408;
 
 std::atomic<bool> g_logged{false};
 
-// The guest's sine of a float, rounded to a float as the game rounds it (frsp). It runs in a context of
-// its own, so nothing of the caller's registers is touched.
-float GuestSine(PPCContext& ctx, uint8_t* base, float x) {
-    rex::CallFrame frame(ctx);
-    PPCContext& call = frame;
+// The guest's sine of a float, rounded to a float as the game rounds it (frsp). It runs on the thread's own
+// register file (the hook's ctx is that file), which comes back as it was, so nothing of the caller's
+// registers is touched.
+float GuestSine(uint8_t* base, float x) {
+    larecomp::guest::ThreadFile file;
+    if (!file) {
+        return static_cast<float>(std::sin(static_cast<double>(x)));  // not a guest thread: cannot happen from the hook
+    }
+    PPCContext& call = file.ctx();
     call.f1.f64 = static_cast<double>(x);
     rex_sub_823DBBC8(call, base);
     return static_cast<float>(call.f1.f64);
@@ -97,19 +97,26 @@ extern "C" REX_FUNC(rex_sub_82353E38) {
     // A steady neon (rate 0) is 0.5 at any clock: nothing to hold.
     if (rate_ext == 0 && rate_int == 0) return;
 
-    const bool fix_on = REXCVAR_GET(mcla_fix_neon_30hz);
+    const bool fix_on = larecomp::settings::mcla_fix_neon_30hz.Get();
     if (!g_logged.exchange(true, std::memory_order_relaxed)) {
         LARECOMP_APP_INFO("[NeonPulse] first car with a neon flash: flash rate {} exterior, {} interior (a wave of "
                           "{:.1f} Hz and {:.1f} Hz); the pulse is held on the console's 30 Hz clock: {}",
                           static_cast<int>(rate_ext), static_cast<int>(rate_int), mcla::neon::HzOf(rate_ext),
                           mcla::neon::HzOf(rate_int), fix_on ? "yes" : "no (mcla_fix_neon_30hz is off)");
     }
+    // The test pin: the same pulse in every run (neon_pulse.h PinnedPulse), not the game's and not held.
+    if (const double pin = larecomp::settings::mcla_fix_neon_pulse_pin.Get(); mcla::neon::PulsePinned(pin)) {
+        const float pinned = mcla::neon::PinnedPulse(pin);
+        if (rate_ext != 0) WriteGuestF32(base, self + kThis_ExtPulse, pinned);
+        if (rate_int != 0) WriteGuestF32(base, self + kThis_IntPulse, pinned);
+        return;
+    }
     if (!fix_on) return;
 
     // The clock the update just read (the same float, 0x827D7518). CHECK: that nothing advances it between
     // the update's read and this one; both run on the thread that updates the car, right after each other.
     const float clock = ReadGuestF32(base, kGuestAccumB);
-    auto sine = [&](float x) { return GuestSine(ctx, base, x); };
+    auto sine = [&](float x) { return GuestSine(base, x); };
     if (rate_ext != 0) WriteGuestF32(base, self + kThis_ExtPulse, mcla::neon::HeldPulseOf(rate_ext, clock, sine));
     if (rate_int != 0) WriteGuestF32(base, self + kThis_IntPulse, mcla::neon::HeldPulseOf(rate_int, clock, sine));
 }

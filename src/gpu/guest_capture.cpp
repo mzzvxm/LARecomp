@@ -13,11 +13,11 @@
 #include <format>
 #include <new>
 
-#include <rex/cvar.h>
-#include <rex/graphics/format/ucode.h>
-#include <rex/hash.h>
-#include <rex/logging.h>
-#include <rex/system/xmemory.h>
+#include "settings/larecomp_settings.h"
+#include <rex/xenos/ucode.h>
+#include "xxhash_inline.h"
+#include <rex/logging/log_category.h>
+#include <rex/memory/mapped_ptr.h>
 
 #if defined(_M_X64) || defined(__x86_64__)
 #include <emmintrin.h>
@@ -32,37 +32,6 @@
 #include "native_gfx/guest/guest_resources.h"
 #include "native_gfx/shader_identity.h"
 
-REXCVAR_DECLARE(bool, mcla_gpu_edram_aliasing);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_readable_cache, true, "MCLA/GPU",
-    "Ask the guest heap whether a guest range is readable once a guest frame per 4 KiB page "
-    "instead of once a draw: the capture checks about ten ranges a draw, and each check takes "
-    "the heap's lock (about 0.2 ms a frame at 2,600 draws). The pages found readable are "
-    "forgotten at every present. A page the guest unmaps within the frame and that a later draw "
-    "still points at would be read as before the unmapping (the memory stays mapped, so it "
-    "cannot fault); off asks the heap at every check, as before.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_readable_cache_check, false, "MCLA/GPU",
-    "Diagnostic, with mcla_gpu_readable_cache: also ask the heap at every check the cache answers, "
-    "and count and log (the first 16) the answers that differ. The count is in the "
-    "'[gpu] readable cache:' line at shutdown; it must be 0. The heap is asked as often as without "
-    "the cache.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_gpu_shader_memo_check, false, "MCLA/GPU",
-    "Diagnostic: no draw takes its shaders from the frame's identity memo; every draw reads the "
-    "guest's shader objects and looks the identity up in full, and the memo's answer, address, "
-    "size and variant are compared with it. The differences are counted and logged (the first 16); "
-    "the count is in the '[gpu] shader memo:' line at shutdown and must be 0. The lookups cost as "
-    "much as without the memo.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
 
 namespace mcla::gpu {
 
@@ -79,7 +48,7 @@ namespace {
 // beyond the microcode counts as killing: the EDRAM detector may report too
 // much, never too little.
 bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
-  namespace ucode = rex::graphics::ucode;
+  namespace ucode = rex::xenos::ucode;
   const uint32_t dword_count = size / 4;
   const auto load = [&](uint32_t first, uint32_t* out) {
     for (uint32_t k = 0; k < 3; ++k) {
@@ -96,26 +65,26 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
       uint32_t address = 0;
       uint32_t count = 0;
       uint32_t sequence = 0;
-      switch (c.opcode()) {
+      switch (c.GetOpcode()) {
         case ucode::ControlFlowOpcode::kExec:
         case ucode::ControlFlowOpcode::kExecEnd:
-          address = c.exec.address();
-          count = c.exec.count();
-          sequence = c.exec.sequence();
+          address = c.exec.GetAddress();
+          count = c.exec.GetCount();
+          sequence = c.exec.GetSequence();
           break;
         case ucode::ControlFlowOpcode::kCondExec:
         case ucode::ControlFlowOpcode::kCondExecEnd:
         case ucode::ControlFlowOpcode::kCondExecPredClean:
         case ucode::ControlFlowOpcode::kCondExecPredCleanEnd:
-          address = c.cond_exec.address();
-          count = c.cond_exec.count();
-          sequence = c.cond_exec.sequence();
+          address = c.cond_exec.GetAddress();
+          count = c.cond_exec.GetCount();
+          sequence = c.cond_exec.GetSequence();
           break;
         case ucode::ControlFlowOpcode::kCondExecPred:
         case ucode::ControlFlowOpcode::kCondExecPredEnd:
-          address = c.cond_exec_pred.address();
-          count = c.cond_exec_pred.count();
-          sequence = c.cond_exec_pred.sequence();
+          address = c.cond_exec_pred.GetAddress();
+          count = c.cond_exec_pred.GetCount();
+          sequence = c.cond_exec_pred.GetSequence();
           break;
         default:
           continue;
@@ -133,7 +102,7 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
         ucode::AluInstruction alu;
         static_assert(sizeof(alu) == sizeof(alu_dwords));
         std::memcpy(&alu, alu_dwords, sizeof(alu));
-        switch (alu.vector_opcode()) {
+        switch (alu.GetVectorOpcode()) {
           case ucode::AluVectorOpcode::kKillEq:
           case ucode::AluVectorOpcode::kKillGt:
           case ucode::AluVectorOpcode::kKillGe:
@@ -142,7 +111,7 @@ bool ProbePixelKill(const uint8_t* bytes, uint32_t size) {
           default:
             break;
         }
-        switch (alu.scalar_opcode()) {
+        switch (alu.GetScalarOpcode()) {
           case ucode::AluScalarOpcode::kKillsEq:
           case ucode::AluScalarOpcode::kKillsGt:
           case ucode::AluScalarOpcode::kKillsGe:
@@ -294,10 +263,10 @@ void CollectDeltas(const uint8_t* bank, const uint8_t* shadow, bool shadow_valid
 GuestCapture::GuestCapture(CommandStream& stream, bool verify_constants)
     : stream_(stream),
       verify_constants_(verify_constants),
-      page_cache_(REXCVAR_GET(mcla_gpu_readable_cache)),
-      page_cache_check_(REXCVAR_GET(mcla_gpu_readable_cache) &&
-                        REXCVAR_GET(mcla_gpu_readable_cache_check)),
-      memo_check_(REXCVAR_GET(mcla_gpu_shader_memo_check)) {
+      page_cache_(larecomp::settings::mcla_gpu_readable_cache.Get()),
+      page_cache_check_(larecomp::settings::mcla_gpu_readable_cache.Get() &&
+                        larecomp::settings::mcla_gpu_readable_cache_check.Get()),
+      memo_check_(larecomp::settings::mcla_gpu_shader_memo_check.Get()) {
   scratch_.reserve(nfx::kMaxUcodeBytes);
 }
 
@@ -665,7 +634,7 @@ void GuestCapture::ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, 
   e.identity = nfx::Fnv1a64(scratch_.data(), scratch_.size());
   e.computed_fetch_index = vertex && nfx::ProbeComputedVertexFetchIndex(ucode, shader.size);
   // Only the EDRAM detector asks.
-  e.kills_pixels = !vertex && REXCVAR_GET(mcla_gpu_edram_aliasing) &&
+  e.kills_pixels = !vertex && larecomp::settings::mcla_gpu_edram_aliasing.Get() &&
                    ProbePixelKill(ucode, shader.size);
   shader.identity = e.identity;
   shader.computed_fetch_index = e.computed_fetch_index;
@@ -1501,7 +1470,7 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
 // the scene's composition (M6c.0)
 // ---------------------------------------------------------------------------
 
-void GuestCapture::Composite(uint32_t bucket) {
+void GuestCapture::Composite(uint32_t bucket, uint32_t tag) {
   if (!enabled()) {
     return;
   }
@@ -1515,6 +1484,7 @@ void GuestCapture::Composite(uint32_t bucket) {
   }
   auto* r = new (payload) CompositeRecord();
   r->bucket = bucket;
+  r->tag = tag;
   CountRecord(sizeof(CompositeRecord));
   frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kBatched);

@@ -5,14 +5,13 @@
 #include <atomic>
 #include <chrono>
 
-#include <rex/cvar.h>
-#include <rex/logging.h>
+#include "settings/larecomp_settings.h"
+#include <rex/logging/log_category.h>
 
 #include "gpu.h"
 #include "renderer.h"
 
 // Defined with the scene's HUD track (mc_engine/cinematic/hud.cpp), in the same executable.
-REXCVAR_DECLARE(double, mcla_cin_hud_alpha);
 
 namespace mcla::gpu {
 
@@ -44,7 +43,7 @@ float UiAlpha() {
 }
 
 bool Renderer::ApplyUiFade() {
-  const float asked = ClampUiAlpha(REXCVAR_GET(mcla_cin_hud_alpha));
+  const float asked = ClampUiAlpha(larecomp::settings::mcla_cin_hud_alpha.Get());
   const bool armed = g_armed.load(std::memory_order_relaxed);
   if (ui_fade_.AtRest(asked, armed, ui_fade_layers_)) {
     return false;  // at rest at 1: the game's frame, nothing asked for

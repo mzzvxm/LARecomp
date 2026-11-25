@@ -49,8 +49,10 @@
 // Vector shapes (IsVector) have no streaming and are left alone.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/cvar.h>
-#include <rex/ppc.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/recompiled_code.h>
+#include <rex/ppc/context.h>
+#include "larecomp_guest.h"
 
 #include <algorithm>
 #include <atomic>
@@ -60,22 +62,6 @@
 #include <vector>
 
 #include "hooks_internal.h"
-
-REXCVAR_DEFINE_INT32(vinyl_layers_per_frame, 32, "MCLA/Garage",
-    "How many car vinyl layers the garage may draw in one frame while it builds "
-    "a car's vinyl (MANAGE VEHICLES, Vinyl Editor). The game draws one a frame, "
-    "so a car with 200+ layers takes several seconds to show its vinyl; with 32 "
-    "it takes a handful of frames. 1 = the game's own pace.")
-    .range(1, 224)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_INT32(vinyl_shape_prefetch, 16, "MCLA/Garage",
-    "While a car's vinyl is being built, keep this many of the vinyl shapes the "
-    "remaining layers use loaded ahead of time, so each shape is loaded once "
-    "instead of every time the layers come back to it. Each shape is ~0.4 MB of "
-    "streaming memory. 0 = the game's own loading (one shape at a time).")
-    .range(0, 64)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
 
 REX_EXTERN(__imp__rex_sub_8236F910);  // the recompiled regen step
 REX_EXTERN(__imp__rex_sub_8236D0A0);  // shape library: zero every reference count
@@ -250,7 +236,7 @@ void SyncPrefetch(uint8_t* base, uint32_t wa) {
 
     // The next `want` distinct bitmap shapes, in the game's layer order
     // (sub_8236D200: surface by surface, index by index), from the current one.
-    const int32_t want = g_pf.given_up ? 0 : REXCVAR_GET(vinyl_shape_prefetch);
+    const int32_t want = g_pf.given_up ? 0 : larecomp::settings::vinyl_shape_prefetch.Get();
     std::vector<uint16_t> desired;
     desired.reserve(size_t(std::max(want, 0)));
     const uint32_t surfaces = std::min<uint32_t>(ReadGuestU32(base, wa + kWaSurfaces), 5);
@@ -292,7 +278,7 @@ extern "C" REX_FUNC(rex_sub_8236F910) {
     __imp__rex_sub_8236F910(ctx, base);
     SyncPrefetch(base, wa);
 
-    const int32_t budget = REXCVAR_GET(vinyl_layers_per_frame);
+    const int32_t budget = larecomp::settings::vinyl_layers_per_frame.Get();
     for (int32_t n = 1; n < budget && NextLayerDrawable(base, wa); ++n) {
         ctx.r1.u32 = sp;
         ctx.lr = lr;

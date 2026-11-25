@@ -137,11 +137,10 @@ void CheckText() {
   no_main.replace(no_main.find("void main("), 10, "void other(");
   Check(!sp::TransformLuminanceScaleHlsl(shader, no_main).ok, "a text without the shader's main is refused");
   const sp::VariantDef def = sp::MakeLuminanceScaleVariant();
-  Check(def.id == sp::kVariantLuminanceScale && def.name == "luminance_scale" && def.pixel_shaders.size() == 1 &&
+  Check(def.feature == sp::kFeatureLuminanceScale && def.name == "luminance_scale" && def.pixel_shaders.size() == 1 &&
             def.pixel_shaders[0].key == 0x3CEC0BB4CCD2BBBEull,
-        "the variant is declared for the shader 3CEC0BB4CCD2BBBE under id 8");
-  Check(sp::kVariantLuminanceScale >= sp::kFirstPackedVariant && sp::kVariantLuminanceScale < sp::kVariantSlots,
-        "its id is one of the variant pack's");
+        "the variant is declared for the shader 3CEC0BB4CCD2BBBE under feature 6 (the old id 8)");
+  Check(sp::kFeatureLuminanceScale < sp::kMaxFeatures, "its feature is one of the variant word's");
 }
 
 // ---------------------------------------------------------------------------

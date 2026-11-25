@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "logging.h"
+#include "os/appimage_env.h"
 
 #if defined(_WIN32)
 #ifndef NOMINMAX
@@ -178,15 +179,28 @@ std::vector<std::string> OwnArguments() {
   return args;
 }
 
-// The file to run again. An AppImage mounts itself for as long as it runs, so the executable's own
-// path (/proc/self/exe) is gone once this game has closed; the AppImage file (APPIMAGE) is not.
+// The file to run again: the game itself. When the game is an AppImage (its own file is inside its own
+// $APPDIR) the mount goes away when this game closes, so the executable's own path (/proc/self/exe) is
+// gone by then and the AppImage file is what to start. A game the launcher started is not that: the
+// launcher's AppImage runtime left its APPIMAGE in the environment, which names the LAUNCHER, so it is
+// not read here (os/appimage_env.h; the app removes those variables at start as well).
 std::string OwnExecutable() {
-  if (const char* image = std::getenv("APPIMAGE"); image && *image) {
+  if (std::string image = larecomp::os::OwnAppImageFile(); !image.empty()) {
     return image;
   }
   char path[4096];
   const ssize_t length = readlink("/proc/self/exe", path, sizeof(path) - 1);
-  return length > 0 ? std::string(path, size_t(length)) : std::string();
+  if (length <= 0) {
+    return {};
+  }
+  std::string exe(path, size_t(length));
+  // The kernel adds " (deleted)" to the path of a file that was replaced while it ran (the launcher's
+  // update): the game to start again is whatever stands at that path now.
+  constexpr std::string_view kDeleted = " (deleted)";
+  if (std::string_view(exe).ends_with(kDeleted)) {
+    exe.resize(exe.size() - kDeleted.size());
+  }
+  return exe;
 }
 
 // Whether the process still runs. One that has ended but not been collected by its parent yet (a

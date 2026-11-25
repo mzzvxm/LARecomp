@@ -58,9 +58,9 @@
 #include <chrono>
 #include <cstdint>
 
-#include <rex/cvar.h>
-#include <rex/hook.h>
-#include <rex/ppc.h>
+#include "settings/larecomp_settings.h"
+#include <rex/ppc/hook.h>
+#include <rex/ppc/recompiled_code.h>
 
 #include "../native_probe/mcla_gfx_probe.h"
 #include <cstdio>
@@ -85,8 +85,6 @@
 // Defined in native_gfx.cpp at global scope, so the declaration goes here at
 // global scope too. Read directly rather than through Active(), which latches
 // its failure and would be the wrong thing to touch this early.
-REXCVAR_DECLARE(bool, mcla_native_gfx);
-REXCVAR_DECLARE(bool, mcla_native_gfx_diag);
 
 REX_EXTERN(__imp__D3DDevice_DrawIndexedVertices);
 REX_EXTERN(__imp__D3DDevice_DrawVertices);
@@ -131,7 +129,7 @@ REX_EXTERN(__imp__grcTextureXenon_dtor);
 // and only they can tell whether that draw is on the surface being cleared.
 extern "C" REX_FUNC(rex_sub_824195E8) {
   mcla::native_gfx::nocp::NoteHook("rex_sub_824195E8");
-  if (REXCVAR_GET(mcla_native_gfx)) {
+  if (larecomp::settings::mcla_native_gfx.Get()) {
     const mcla::native_gfx::BoundSurfaces bound =
         mcla::native_gfx::ReadBoundSurfaces(base, ctx.r3.u32);
     mcla::native_gfx::NoteGuestClear(ctx.r6.u32, ctx.r7.u32, static_cast<float>(ctx.f1.f64),
@@ -452,7 +450,7 @@ extern "C" REX_FUNC(rex_sub_8241E088) {
 extern "C" REX_FUNC(D3DDevice_CreateTexture) {
   mcla::native_gfx::nocp::NoteHook("D3DDevice_CreateTexture");
   __imp__D3DDevice_CreateTexture(ctx, base);
-  if (REXCVAR_GET(mcla_native_gfx)) {
+  if (larecomp::settings::mcla_native_gfx.Get()) {
     mcla::native_gfx::NoteD3DTextureCreated(base, ctx.r3.u32);
   }
 }
@@ -467,7 +465,7 @@ extern "C" REX_FUNC(D3DDevice_CreateTexture) {
 // take over before it can serve a lock itself.
 extern "C" REX_FUNC(D3DResource_Lock) {
   mcla::native_gfx::nocp::NoteHook("D3DResource_Lock");
-  if (REXCVAR_GET(mcla_native_gfx)) {
+  if (larecomp::settings::mcla_native_gfx.Get()) {
     mcla::native_gfx::NoteResourceLocked(base, ctx.r3.u32, ctx.r6.u32, ctx.r9.u32,
                                          ctx.r10.u32);
     // TEMP DIAG (LOCKADDR): which guest addresses the CPU actually locks. The
@@ -475,7 +473,7 @@ extern "C" REX_FUNC(D3DResource_Lock) {
     // never writes the pixels back into guest memory, the way the emulated path
     // does through SharedMemory::RangeWrittenByGpu. That difference only bites
     // if the guest READS the resolved surface, so this says whether it does.
-    if (REXCVAR_GET(mcla_native_gfx_diag)) {
+    if (larecomp::settings::mcla_native_gfx_diag.Get()) {
       const uint32_t res = ctx.r3.u32;
       if (res >= 0x1000u) {
         uint32_t raw;
@@ -534,7 +532,7 @@ extern "C" REX_FUNC(D3DResource_Lock) {
 // flush words and decrements the lock count this reads.
 extern "C" REX_FUNC(rex_sub_82421F38) {
   mcla::native_gfx::nocp::NoteHook("rex_sub_82421F38");
-  if (REXCVAR_GET(mcla_native_gfx)) {
+  if (larecomp::settings::mcla_native_gfx.Get()) {
     mcla::native_gfx::NoteResourceUnlocked(base, ctx.r3.u32, ctx.r4.u32, ctx.r5.u32);
   }
   __imp__rex_sub_82421F38(ctx, base);
@@ -795,7 +793,7 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
   // 0x074AA000 never appears among them.
   {
     static uint32_t tick = 0;
-    if (REXCVAR_GET(mcla_native_gfx_diag) && (tick++ % 600u) == 0u) {
+    if (larecomp::settings::mcla_native_gfx_diag.Get() && (tick++ % 600u) == 0u) {
       // Two candidates, because the first conclusion was drawn from the wrong
       // one. 0x074AA000 (32x32) reads 100% 0xFF on BOTH paths, yet the emulated
       // path clips the circle correctly -- so that texture is a white

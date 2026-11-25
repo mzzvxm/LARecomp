@@ -1,106 +1,18 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
-// MCLA Native Graphics Runtime — application bring-up with no emulated GPU.
-// See nocp_app.h for exactly what is and is not in the process in this mode.
+// MCLA Native Graphics Runtime — what is left of the app bring-up with no emulated GPU.
+// See nocp_app.h, and nocp_driver.h for the driver that replaced the rest.
 
 #include "nocp_app.h"
 
 #include <atomic>
 
-#include <rex/chrono/clock.h>
-#include <rex/cvar.h>
-#include <rex/perf/counter.h>
-#include <rex/logging.h>
-#if defined(_WIN32)
-#include <rex/ui/d3d12/d3d12_provider.h>
-#endif
-#include <rex/ui/imgui_drawer.h>
-#include <rex/ui/immediate_drawer.h>
-#include <rex/ui/overlay/debug_overlay.h>
-#include <rex/ui/presenter.h>
-#include <rex/ui/window.h>
-#include <rex/ui/window_listener.h>
+#include <rex/chrono.h>
 
-#include "guest_gpu.h"
-#include "../native_gfx.h"
-
-REXCVAR_DECLARE(bool, mcla_native_gfx_own_swapchain);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_nocp, true, "MCLA/NativeGfx",
-    "Run with NO emulated GPU in the process. Leaves gpu_plugin empty, so ReXApp never calls "
-    "LoadGpuPlugin and rexgpu-xenos is never loaded: no command processor, no PM4 parser, no "
-    "register file, no EDRAM render-target cache, no shader translator. The app then supplies "
-    "what the guest still needs and what none of that was: the GPU register window, the vblank "
-    "source, and a swapchain to present on. "
-    "Decided once at startup -- whether the emulator is in the process is not a runtime setting.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(
-    mcla_native_gfx_nocp_vsync, false, "MCLA/NativeGfx",
-    "Frame pacing for the no-command-processor mode: on = the guest video mode's refresh rate, "
-    "off = 1000 Hz, matching what the emulated path does with vsync off. "
-    "This exists because the SDK's `vsync` cvar is defined in "
-    "src/graphics/command_processor.cpp, so it lives in the GPU plugin and is simply ABSENT once "
-    "that plugin is not loaded -- a `vsync` line in larecomp.toml is an unknown key in this mode, "
-    "and querying it by name would silently answer false whatever it was set to.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// The fork's SDK also takes the swap timing into rex::perf, for the counter
-// half of its overlay; the stock SDK has no such call and gets the numbers
-// through GuestFrameStats() alone. The template below loses overload
-// resolution to a real rex::perf::SetFrameStats taking the same arguments, so
-// it is only ever picked when the SDK has none.
-//
-// Both, and the call, sit at global scope on purpose. A using-directive makes
-// names visible as if declared in the nearest namespace enclosing both the
-// directive and the nominated namespace -- the global one for rex::perf -- and
-// unqualified lookup stops at the first scope that has the name at all. With
-// the fallback inside mcla::native_gfx::nocp, lookup found it there and never
-// reached rex::perf: the fork's counters stayed at 0.
-namespace larecomp_sdk_compat {
-template <typename... Args>
-void SetFrameStats(Args&&...) {}
-}  // namespace larecomp_sdk_compat
-
-static void PublishPerfFrameStats(int64_t frame_us, int64_t fps) {
-  using namespace larecomp_sdk_compat;
-  using namespace rex::perf;
-  SetFrameStats(frame_us, fps);
-}
+#include "nocp_driver.h"
 
 namespace mcla::native_gfx::nocp {
 
-namespace {
-
-// Outlives the presenter it backs, so it is deliberately never freed: the
-// window and the overlays hold raw pointers into both for the life of the
-// process, and tearing them down in the right order at exit buys nothing on a
-// path that ends in _Exit.
-#if defined(_WIN32)
-std::unique_ptr<rex::ui::d3d12::D3D12Provider> g_provider;
-#endif
-std::unique_ptr<rex::ui::Presenter> g_presenter;
-
-// OnClosing is too late: the app listener can already have called _Exit.
-// Close requests reach every listener before that path -- unless the app
-// listener, which is first, vetoes the request. LarecompApp does (it closes
-// the window itself, from the main loop: FinishWindowClose), and calls
-// NotifyWindowCloseRequested there. Registration happens on the UI thread in
-// AttachPresentation; this object outlives the window.
-class PipelineCacheCloseListener final : public rex::ui::WindowListener {
- public:
-  bool OnCloseRequested(rex::ui::UIEvent&) override {
-    NotifyWindowCloseRequested();
-    return true;
-  }
-};
-PipelineCacheCloseListener g_pipeline_close_listener;
-
-}  // namespace
-
-bool WantNoCommandProcessor() { return REXCVAR_GET(mcla_native_gfx_nocp); }
+bool WantNoCommandProcessor() { return DriverSelected(); }
 
 namespace {
 std::atomic<const char*> g_last_hook{nullptr};
@@ -131,123 +43,35 @@ const char* LastHookName() {
 
 uint64_t HookCallCount() { return g_hook_calls.load(std::memory_order_relaxed); }
 
-#if defined(_WIN32)
-rex::ui::d3d12::D3D12Provider* Provider() { return g_provider.get(); }
-#else
-rex::ui::d3d12::D3D12Provider* Provider() { return nullptr; }
-#endif
-rex::ui::Presenter* PresenterPtr() { return g_presenter.get(); }
-
 void NoteFrameEnd() { g_frame_ends.fetch_add(1, std::memory_order_relaxed); }
+
 void NoteSwapCall() {
   g_swaps.fetch_add(1, std::memory_order_relaxed);
+  NotifyGuestSwap();
 
-  // Publish the frame timing the F3 "Debug Frames" overlay reads.
-  //
-  // The SDK measures it on the command processor's swap packet. That is the
-  // emulator, so in this mode nothing publishes and the overlay shows nothing
-  // -- the numbers left with the command processor. The swap is still the
-  // frame boundary though, and this hook is on it, so the numbers can simply
-  // come from here instead: GuestFrameStats() hands them to the overlay through
-  // ReXApp::SetGuestFrameStats.
+  // The frame timing the F3 "Debug Frames" overlay reads. The swap is the frame boundary and this hook is on it.
   static uint64_t last_tick = 0;
-  const uint64_t freq = rex::chrono::Clock::QueryHostTickFrequency();
-  const uint64_t now = rex::chrono::Clock::QueryHostTickCount();
+  const uint64_t freq = rex::Clock::GetHostTickFrequency();
+  const uint64_t now = rex::Clock::GetHostTickCount();
   if (last_tick && now > last_tick && freq) {
     const uint64_t delta = now - last_tick;
-    const int64_t frame_us = int64_t(delta * 1000000ull / freq);
-    const int64_t fps = int64_t(freq / delta);
     g_frame_time_ms.store(double(delta) * 1000.0 / double(freq), std::memory_order_relaxed);
     g_fps.store(double(freq) / double(delta), std::memory_order_relaxed);
     g_timed_frames.fetch_add(1, std::memory_order_relaxed);
-    PublishPerfFrameStats(frame_us, fps);
   }
   last_tick = now;
 }
 
-rex::ui::FrameStats GuestFrameStats() {
-  rex::ui::FrameStats stats;
+rex::gpu::FrameStats GuestFrameStats() {
+  rex::gpu::FrameStats stats;
   stats.frame_time_ms = g_frame_time_ms.load(std::memory_order_relaxed);
   stats.fps = g_fps.load(std::memory_order_relaxed);
   stats.frame_count = g_timed_frames.load(std::memory_order_relaxed);
   return stats;
 }
+
 uint64_t FrameEndCount() { return g_frame_ends.load(std::memory_order_relaxed); }
 uint64_t SwapCount() { return g_swaps.load(std::memory_order_relaxed); }
-
-#if !defined(_WIN32)
-// No D3D12 provider here: Plume supplies the overlay drawer and owns the window.
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateImmediateDrawer() { return nullptr; }
-
-bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer*,
-                        rex::ui::ImmediateDrawer*) {
-  if (window) {
-    window->AddListener(&g_pipeline_close_listener);
-  }
-  return true;
-}
-#else
-std::unique_ptr<rex::ui::ImmediateDrawer> CreateImmediateDrawer() {
-  if (!g_provider) {
-    g_provider = rex::ui::d3d12::D3D12Provider::Create();
-    if (!g_provider) {
-      REXLOG_ERROR("[nocp] D3D12Provider::Create failed; the app cannot present");
-      return nullptr;
-    }
-    REXLOG_INFO("[nocp] D3D12 provider created without a graphics system");
-  }
-  return g_provider->CreateImmediateDrawer();
-}
-
-bool AttachPresentation(rex::ui::Window* window, rex::ui::ImGuiDrawer* imgui_drawer,
-                        rex::ui::ImmediateDrawer* immediate_drawer) {
-  if (window) {
-    window->AddListener(&g_pipeline_close_listener);
-  }
-  if (REXCVAR_GET(mcla_native_gfx_own_swapchain)) {
-    REXLOG_INFO("[nocp] native swapchain owns presentation; skipping D3D12Presenter swapchain creation");
-    return true;
-  }
-  if (!g_provider) {
-    REXLOG_ERROR("[nocp] no D3D12 provider; OnCreateImmediateDrawer must run first");
-    return false;
-  }
-  g_presenter = g_provider->CreatePresenter();
-  if (!g_presenter) {
-    REXLOG_ERROR("[nocp] CreatePresenter failed; the app cannot present");
-    return false;
-  }
-  // The detached branch wired the overlays with a null presenter because in
-  // that mode the app owns the surface. Now that one exists, hand it to
-  // everything that paints.
-  if (window) {
-    window->SetPresenter(g_presenter.get());
-  }
-  if (immediate_drawer) {
-    immediate_drawer->SetPresenter(g_presenter.get());
-  }
-  if (imgui_drawer) {
-    imgui_drawer->SetPresenterAndImmediateDrawer(g_presenter.get(), immediate_drawer);
-  }
-
-  REXLOG_INFO("[nocp] presentation attached with no emulated GPU in the process");
-  return true;
-}
-
-#endif  // _WIN32
-
-bool InstallGuestGpu() {
-  // Only now, with no graphics system to have claimed it, can the guest's GPU
-  // register window be taken over. Install() refuses if something already
-  // mapped it, which is the check that this is a whole-path switch.
-  if (!Install()) {
-    REXLOG_ERROR(
-        "[nocp] the guest GPU could not be installed; the game will run without a vblank and "
-        "will not get past its first frame pace");
-    return false;
-  }
-  return true;
-}
 
 }  // namespace mcla::native_gfx::nocp
 

@@ -3,11 +3,11 @@
 // swap interval and the guest's D3D fence spin.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
-#include <rex/chrono/clock.h>
-#include <rex/cvar.h>
-#include <rex/logging.h>
-#include <rex/ppc.h>
-#include <rex/runtime.h>
+#include <rex/chrono.h>
+#include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
+#include <rex/logging/log_category.h>
+#include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
 #include <cctype>
@@ -34,110 +34,22 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "mc_engine/camera/camera_trace.h"
+#include "settings/step_cap.h"
 #include "../cinematic/capture_mode.h"
 #include "mc_engine/core/guest_profiler.h"
+#include "larecomp_guest.h"
+#include "fence_spin.h"
+#include "os/thread_yield.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
 #include "gpu/latency.h"
+#include "gpu/scene_noise.h"
 #endif
 
-// BadassBaboon's Recomp Adjustments: Enable 60 FPS by default
-REXCVAR_DEFINE_BOOL(real_frame_delta, true, "MCLA/Patches",
-    "Feeds the simulation the measured frame time instead of the engine's fixed "
-    "30 Hz timestep, and unlocks presentation from every-other-vblank. Required "
-    "for correct physics, camera and traffic above 30 FPS. This is NOT a frame "
-    "rate cap - see fps_limit for that.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// A number of milliseconds as written in frame_step_cap or MCLA_MAX_FRAME_MS: plain digits, a
-// positive finite number, blanks around it allowed. Not clamped here (see kStepCapMinFixedMs).
-static bool ParseStepCapMs(std::string_view text, double& ms) {
-    const std::string copy(text);
-    char* end = nullptr;
-    const double v = std::strtod(copy.c_str(), &end);
-    if (end == copy.c_str()) return false;
-    while (*end == ' ' || *end == '\t') ++end;
-    if (*end != '\0') return false;
-    if (!std::isfinite(v) || !(v > 0.0)) return false;
-    ms = v;
-    return true;
-}
-
-static bool IsAdaptiveStepCap(std::string_view text) {
-    constexpr std::string_view kWord = "adaptive";
-    while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) text.remove_prefix(1);
-    while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) text.remove_suffix(1);
-    if (text.size() != kWord.size()) return false;
-    for (size_t i = 0; i < kWord.size(); ++i) {
-        if (std::tolower(static_cast<unsigned char>(text[i])) != kWord[i]) return false;
-    }
-    return true;
-}
-
-// How far one frame may advance the game's clock. See the step cap block below for the rule.
-REXCVAR_DEFINE_STRING(frame_step_cap, "adaptive", "MCLA/Patches",
-    "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
-    "long load): the step is cut to this and the game plays that instant in slow motion, as the "
-    "console did, instead of jumping ahead. adaptive (the default) is 1.5 times "
-    "the recent median frame time, never below 34 ms or above 125 ms: about 34 ms at 60 FPS, 50 ms "
-    "at a steady 30 FPS (so a slow PC never runs in slow motion). Or a number of milliseconds for a "
-    "fixed cap, 16 to 1000 (125 was the old fixed cap). The cap cannot be turned off, and the "
-    "MCLA_MAX_FRAME_MS environment variable, when set, wins (as a fixed number).")
-    .validator([](std::string_view v) {
-        double ms = 0.0;
-        return IsAdaptiveStepCap(v) || ParseStepCapMs(v, ms);
-    })
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Default to 60 FPS: with vsync=false for low input lag and fast pacing,
-// the precision frame limiter caps to 60 FPS out-of-the-box.
-REXCVAR_DEFINE_INT32(fps_limit, 60, "MCLA/Performance",
-    "Frame rate cap in FPS (0 = uncapped). The pause menu offers 30, 40, 45, 50, 60, 120 and 144. "
-    "While frame generation runs the cap counts the frames the game renders (twice as many are "
-    "shown) and mcla_gpu_frame_generation_fps_limit is the cap instead.")
-    .range(0, 360)
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(frame_limit_spin, true, "MCLA/Performance",
-    "Hit the frame-limit deadline with a PAUSE spin. Off restores the sleep-then-yield wait, "
-    "which gives the core back instead of burning it.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(vsync_fast_poll, true, "MCLA/Performance",
-    "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
-    "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
-
-REXCVAR_DEFINE_BOOL(intro_original_speed, true, "MCLA/Patches",
-    "Present the start-up legal screens and logos 30 times a second, as the console does. "
-    "They are drawn by a loop that never runs the engine timer, so fps_limit never reached "
-    "them and they played as fast as the host could present. The screens play before the "
-    "pause menu can be opened, so a change made there is seen at the next start.")
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-// Where the frame limiter waits. The game updates on its main loop
-// (sub_82131508) and presents from "[MC] Render Thread" (sub_82306238), one
-// frame behind. Waiting before the update leaves the present wherever the
-// render work ends it, so frames reach the screen at uneven intervals; waiting
-// just before the swap presents them evenly, and the queue between the two
-// threads holds the update back to the same interval. The cost is latency: the
-// update then runs up to a frame ahead of what is on screen.
-REXCVAR_DEFINE_BOOL(pace_at_swap, true, "MCLA/Performance",
-    "Hold each frame to the FPS limit right before it is presented instead of before the "
-    "game's update: even present intervals (best on a variable refresh display), at the cost "
-    "of up to one more frame of input latency.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
-
-REXCVAR_DEFINE_BOOL(fence_spin_throttle, true, "MCLA/Performance",
-    "Yield the host CPU inside the guest's D3D fence poll (sub_82412F98) instead of running "
-    "its 32 pipeline-throttle NOPs. Off restores the stock guest spin.")
-    .debug_only()
-    .lifecycle(rex::cvar::Lifecycle::kHotReload);
+// frame_step_cap and MCLA_MAX_FRAME_MS: "adaptive" or a number of milliseconds. The parsing is shared with the setting's
+// validator (settings/step_cap.h), so what the setting accepts is what this reads. Not clamped here (kStepCapMinFixedMs).
+using larecomp::settings::IsAdaptiveStepCap;
+using larecomp::settings::ParseStepCapMs;
 
 // BadassBaboon's Recomp Adjustments: Throttle the D3D poll predicate / fence spin-wait.
 //
@@ -151,6 +63,9 @@ REXCVAR_DEFINE_BOOL(fence_spin_throttle, true, "MCLA/Performance",
 // - Low spin counts: YieldProcessor() (x86 PAUSE) to keep wake latency minimal.
 // - Extended spin: SwitchToThread() yields the CPU quantum directly to GPU Commands.
 // Returning true jumps to 0x82412FD8, bypassing the 32 NOP instructions.
+// Linux has the same two steps (the x86 PAUSE, and sched_yield on every 16th poll, fence_spin.h): without them the hook would
+// only skip the NOPs and leave the guest's poll loop hammering the fence flag with no pause at all, which on the Steam Deck's
+// four cores (and one power budget shared with the GPU) is worse than the loop it replaces.
 // Instrumentation for the claim above. The hook sits INSIDE the 4-iteration NOP
 // loop, so "how often does the guest reach this fence poll" and "how much wall
 // time does the yield itself cost" are the only two numbers that decide whether
@@ -170,7 +85,7 @@ bool Patch_FenceSpinThrottle() {
         const char* e = std::getenv("MCLA_SPIN_COUNTERS");
         return e && *e == '1';
     }();
-    if (!REXCVAR_GET(fence_spin_throttle)) {
+    if (!larecomp::settings::fence_spin_throttle.Get()) {
         // Still count the reaches, so the OFF run reports the same call rate
         // and the two runs are comparable.
         if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
@@ -180,7 +95,7 @@ bool Patch_FenceSpinThrottle() {
     static thread_local uint32_t s_spin_count = 0;
     if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
     YieldProcessor();
-    if (++s_spin_count >= 16) {
+    if (mcla::hooks::FencePollYieldDue(s_spin_count)) {
         LARGE_INTEGER a, b;
         if (kCount) QueryPerformanceCounter(&a);
         SwitchToThread();
@@ -194,7 +109,24 @@ bool Patch_FenceSpinThrottle() {
             g_fence_switch_us.fetch_add(
                 uint64_t((b.QuadPart - a.QuadPart) * kUsPerTick), std::memory_order_relaxed);
         }
-        s_spin_count = 0;
+    }
+#elif defined(__linux__)
+    // CHECK: written on Windows and run only as a unit test of the rule (fence_spin_test) and a compile; not measured on a Linux GPU run. On the Steam Deck compare the
+    // render thread's CPU use and the package power at 45 and 60 FPS with fence_spin_throttle on and off (MCLA_SPIN_COUNTERS=1 counts the polls and the yields).
+    static thread_local uint32_t s_spin_count = 0;
+    if (kCount) g_fence_hook_calls.fetch_add(1, std::memory_order_relaxed);
+#if defined(__x86_64__)
+    _mm_pause();
+#endif
+    if (mcla::hooks::FencePollYieldDue(s_spin_count)) {
+        const auto began = kCount ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+        larecomp::os::YieldThread();
+        if (kCount) {
+            g_fence_switches.fetch_add(1, std::memory_order_relaxed);
+            g_fence_switch_us.fetch_add(
+                uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - began).count()),
+                std::memory_order_relaxed);
+        }
     }
 #endif
     return true;
@@ -219,7 +151,7 @@ static void HoldUntimedSwap(bool timed) {
     static bool last_untimed = false;
 
     const bool untimed = !timed;
-    if (untimed && last_untimed && REXCVAR_GET(intro_original_speed) &&
+    if (untimed && last_untimed && larecomp::settings::intro_original_speed.Get() &&
         last_swap != Clock::time_point{}) {
         const Clock::time_point due = last_swap + kPeriod;
         // Sleep to a millisecond short of it, then yield the rest away: the
@@ -251,7 +183,7 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
     // frame_pacing: the renderer holds the frame to its planned time instead,
     // which keeps the FPS limit too.
     const bool paced = mc::pacing::Active();
-    if (timed && REXCVAR_GET(pace_at_swap) && !paced && !mc::cinematic::FixedStepActive()) {
+    if (timed && larecomp::settings::pace_at_swap.Get() && !paced && !mc::cinematic::FixedStepActive()) {
         // A game frame: held to the FPS limit here instead of before its update.
         // Bound to the first thread that presents one, the render thread.
         static const std::thread::id owner = std::this_thread::get_id();
@@ -264,13 +196,15 @@ bool Patch_60FPS_Byte(PPCRegister& r11) {
     // limiter's wait above. Every swap, timed or not: the reducer pairs swaps with the passes
     // through the engine timer itself, and a swap it has no pass for is not marked.
     mcla::gpu::latency::OnGuestSwap();
+    // A scene's repeatable noise: the frame this swap closes is tagged with the scene update it shows (gpu/scene_noise.h).
+    mcla::gpu::scene_noise::OnGuestSwap();
 #endif
     // Capture mode: gives the frame's present record the stamp its hand-over made (the update it shows, whether it is the take's).
     mc::cinematic::CaptureOnSwap();
     HoldUntimedSwap(timed);
     mc::pacing::OnGuestSwap(timed);
     mc::camtrace::OnGuestSwap(timed);
-    if (REXCVAR_GET(real_frame_delta)) {
+    if (larecomp::settings::real_frame_delta.Get()) {
         r11.u64 = 1; // Replaces the original value with 1 (li r11, 1)
         return true; // Skips the original instruction
     }
@@ -296,16 +230,17 @@ static void EnforceFrameLimit() {
     // stale value is load-bearing; clearing it here keeps the invariant simple.
     static uint64_t next_us = 0;
 
-    int32_t limit = (env_limit >= 0) ? env_limit : REXCVAR_GET(fps_limit);
+    int32_t limit = (env_limit >= 0) ? env_limit : larecomp::settings::fps_limit.Get();
 #if defined(LARECOMP_HAS_GPU)
     // With frame generation running the cap is its own, in rendered frames (the frames shown are twice
-    // as many): HALF DISPLAY by default. MCLA_FPS_CAP stays the override of everything.
+    // as many): HALF DISPLAY by default. MCLA_FPS_CAP overrides the chosen rendered-frame limit.
     if (env_limit < 0) {
         limit = mcla::gpu::FrameGenerationFpsLimit(limit);
         // DLSS frame generation's cap (the same setting; HALF DISPLAY is the display's rate over its
         // multiplier). Only one of the two runs.
         limit = mcla::gpu::DlssFrameGenerationFpsLimit(limit);
     }
+    limit = mcla::gpu::LimitFrameRateForComposedPresents(limit);
 #endif
     if (limit <= 0) {
         next_us = 0;
@@ -360,12 +295,12 @@ static void EnforceFrameLimit() {
 #if defined(_WIN32)
             // The 1 ms system timer wakes sleep_for up to 1.5 ms late: sleep to well before the
             // deadline and finish on the spin below.
-            const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 1200 : 1500;
+            const uint64_t slack_us = larecomp::settings::frame_limit_spin.Get() ? 1200 : 1500;
 #else
             // nanosleep wakes within about 0.1 ms of its time, so the sleep goes to 0.3 ms before
             // the deadline (0.6 without the spin) and the core is only burned for the last stretch.
             // CHECK: not run on Linux (frame times at a 60 FPS cap, and the CPU use, against 1.2 ms).
-            const uint64_t slack_us = REXCVAR_GET(frame_limit_spin) ? 300 : 600;
+            const uint64_t slack_us = larecomp::settings::frame_limit_spin.Get() ? 300 : 600;
 #endif
             if (remaining > slack_us + 500) {
                 std::this_thread::sleep_for(std::chrono::microseconds(remaining - slack_us));
@@ -375,7 +310,7 @@ static void EnforceFrameLimit() {
         // microsecond deadline. Replacing std::this_thread::yield() eliminates
         // Windows scheduler stalls that cause 1-2 ms wake-up jitter.
         const uint64_t spin_from = now_us();
-        const bool spin = REXCVAR_GET(frame_limit_spin);
+        const bool spin = larecomp::settings::frame_limit_spin.Get();
         while (now_us() < next_us) {
 #if defined(_WIN32)
             if (spin) { YieldProcessor(); continue; }
@@ -431,7 +366,7 @@ constexpr double kStepCapMaxFixedMs = 1000.0;
 
 static double GuestTicksPerMs() {
     static const double per_ms = [] {
-        uint64_t hz = rex::chrono::Clock::guest_tick_frequency();
+        uint64_t hz = rex::Clock::GetGuestTickFrequency();
         if (hz == 0) hz = 50000000;
         return static_cast<double>(hz) * 0.001;
     }();
@@ -462,11 +397,11 @@ static uint64_t StepCapForFrame(uint64_t measured) {
 
     // The mode, worked out again whenever the cvar's text changes (and logged then).
     static bool mode_known = false;
-    static std::string mode_text;
+    static std::string& mode_text = larecomp::Leak<std::string>();
     static bool adaptive = true;
     static double fixed_ms = kStepCapCeilingMs;
 
-    const std::string& text = REXCVAR_GET(frame_step_cap);
+    const std::string& text = larecomp::settings::frame_step_cap.Get();
     if (!mode_known || text != mode_text) {
         mode_known = true;
         mode_text = text;
@@ -479,7 +414,7 @@ static uint64_t StepCapForFrame(uint64_t measured) {
         } else if (ParseStepCapMs(text, requested_ms)) {
             adaptive = false;
         } else {
-            // The validator keeps this out of the cvar; a value that got in anyway is not a reason
+            // The setting's validator (ValidatedString) keeps this out; a value that got in anyway is not a reason
             // to run without a cap.
             adaptive = true;
             REXLOG_WARN("Frame step cap: '{}' is neither adaptive nor a number of ms, using adaptive",
@@ -641,7 +576,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
     // is the cross-setting confusion this option was renamed to avoid. The
     // midnightclub fork calls both unconditionally for the same reason.
     // With pace_at_swap the limiter waits at the swap instead (Patch_60FPS_Byte).
-    if (!REXCVAR_GET(pace_at_swap) && !mc::pacing::Active() && game_thread && fixed_step == 0) {
+    if (!larecomp::settings::pace_at_swap.Get() && !mc::pacing::Active() && game_thread && fixed_step == 0) {
         EnforceFrameLimit();
     }
     g_timer_since_swap.store(true, std::memory_order_relaxed);  // see HoldUntimedSwap
@@ -668,11 +603,10 @@ void MCLAFrameDelta(PPCRegister& r8) {
 //                 flow. Does the same substitution out of f11, so f11 is
 //                 rewritten with the real delta instead.
 //
-// Returns true to take the jump. Baboon's build jumped unconditionally; gating
-// it on real_frame_delta is the only change, and it makes the cvar actually turn the whole
-// thing off instead of leaving half of it live.
+// Returns true to take the jump. A capture or an explicit fixed step also needs to keep the
+// delta installed by MCLAFrameDelta.
 bool MCLAUseRealDelta() {
-    return REXCVAR_GET(real_frame_delta);
+    return larecomp::settings::real_frame_delta.Get() || mc::cinematic::FixedStepActive();
 }
 
 // 0x821BDB90, after `lfs f11, 0x20(r3)` has loaded the fixed timestep. f11 feeds
@@ -680,10 +614,10 @@ bool MCLAUseRealDelta() {
 // replacing it with [r3+0x58] (the measured unscaled delta stored at 0x821BDAF8)
 // publishes the real frame time down this path too.
 void MCLAFixedStepPath(PPCRegister& r3, PPCRegister& f11) {
-    if (!REXCVAR_GET(real_frame_delta)) return;
+    if (!MCLAUseRealDelta()) return;
     if (TimingLogEnabled())
         g_fixedstep_hits.fetch_add(1, std::memory_order_relaxed);
-    auto* base = rex::Runtime::instance()->virtual_membase();
+    auto* base = larecomp::guest::Membase();
     if (!base) return;
     f11.f64 = static_cast<double>(ReadGuestF32(base, static_cast<uint32_t>(r3.u64) + 0x58));
 }

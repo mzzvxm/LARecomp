@@ -64,19 +64,29 @@
 
 #include "constants.h"
 #include "draw_census.h"
+#include "draw_target_memo.h"
 #include "edram.h"
 #include "frame_layers.h"
+#include "frame_order.h"
+#include "gbuffer_material.h"
+#include "gbuffer_materials.h"
+#include "gbuffer_rules.h"
+#include "gbuffer_types.h"
 #include "geometry.h"
 #include "hdr_tonemap.h"
 #include "input_layout.h"
 #include "menu_world.h"
+#include "mirror_draws.h"
 #include "msaa_level.h"
 #include "pipelines.h"
 #include "thread_load.h"
 #include "records.h"
+#include "render_cpu.h"
 #include "shaders.h"
 #include "shadow_filter.h"
+#include "stencil_ref.h"
 #include "topology.h"
+#include "ui_sharp.h"
 #include "upload.h"
 #include "upscaler_masks.h"
 #include "viewport.h"
@@ -89,11 +99,26 @@ class GuestLayout;
 class GuestOcclusion;
 class PassTiming;
 class SunShafts;
+class GiApply;
+class GiIntegration;
+class RtWorldFrame;
+class LocalLights;
+class ScreenReflections;
+class ScreenShared;
+class Volumetrics;
 class CarSelfRefl;
 class CarDump;
 class CarFrame;
+class HeadlightRig;
 class CarShadowMap;
+class MirrorView;
+class MirrorOverlay;
+class LocalShadow;
+class LightManager;
 class CarRtScene;
+class CarMirrorRt;
+class MirrorGlass;
+class GBuffer;
 class PostAa;
 class ResolveCache;
 class Samplers;
@@ -131,6 +156,9 @@ class Scene {
   // the mid-scene depth resolve (the sky) and before the end-of-scene copy of the colour (the light).
   // Null: none.
   void SetSunShafts(SunShafts* shafts) { shafts_ = shafts; }
+  // The volumetric light (volumetrics.h): told of the shadow collector's and the main view's draws, the camera and the resolves, run at the game's
+  // mid-scene depth copy (the volume) and at its end-of-scene copy (the composite), and it has the game's lamp cones left out of a frame it made.
+  void SetVolumetrics(Volumetrics* volumetrics) { vol_ = volumetrics; }
   // The car self-reflection prototype (car_selfrefl.h): told of the main view's draws, the camera and the mid-scene depth
   // copy, and asked for the constants of the car paint variant's draws. Null: none (the variant then draws as the game's).
   void SetCarSelfRefl(CarSelfRefl* car_refl) { car_refl_ = car_refl; }
@@ -140,12 +168,53 @@ class Scene {
   // The player car's draws (car_frame.h): told of the main view's draws that write a vehicle ID in the frames a car effect asks for them,
   // and of the frame's start and its present. Null: none.
   void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }
+  // The side mirrors' glass finder (mirror_glass.h, MIRROR-VIEW MV3): told of the frame's start (it asks CarFrame for the draws) and the present (it evaluates before the frame is cleared). Null: none.
+  void SetMirrorGlass(MirrorGlass* mirror_glass) { mirror_glass_ = mirror_glass; }
+  // The cars' headlights (headlight_rig.h): told of the main view's lens draws, of the frame's start and its present; the draws of the lit shaders' headlight
+  // variant (ShaderStore::kHeadlightVariant) take its block of lights as constants (Scene::FillVariantBlock). Null: none (the variant then is never chosen).
+  void SetHeadlightRig(HeadlightRig* headlights) { headlights_ = headlights; }
   // The player car's sun shadow map (car_shadow_map.h): told of the frame boundary, the anchor, the composite marker and the mid-scene
   // depth copy, where it records its map BEFORE the ambient occlusion's passes. Null: none.
   void SetCarShadowMap(CarShadowMap* car_shadow) { car_shadow_ = car_shadow; }
+  // The shared rear view (mirror_view.h): told of the frame boundary and of the guest's two markers around the mirror's phase (OnMirrorMarker); while a phase redirects, the draws and the clear of the
+  // phase go into its image instead of the main target (RecordMirrorDraw, OnClear), and its picture is stamped into the HUD's rectangle at the first copy of the main colour after the phase (OnResolve).
+  // Null: none.
+  void SetMirrorView(MirrorView* mirror_view) { mirror_view_ = mirror_view; }
+  // The side mirrors' glass overlay (mirror_overlay.h, MIRROR-VIEW MV4): told of the frame's start and of the end marker of a phase that drew a fresh picture (the camera the picture was drawn from), and run at the
+  // first copy of the main colour after the phase's end, right after the HUD stamp: the car's mirror glasses drawn again with a lookup into the view's picture. Null: none.
+  void SetMirrorOverlay(MirrorOverlay* mirror_overlay) { mirror_overlay_ = mirror_overlay; }
+  // The headlight shadow maps (local_shadow.h): offered the main view's colour pass draws while they are on, told of the frame boundary, the
+  // anchor and the composite marker, and run at the mid-scene depth copy (before the ambient occlusion's passes, as the car shadow map is). Null: none.
+  void SetLocalShadow(LocalShadow* local_shadow) { local_shadow_ = local_shadow; }
+  // The passive light manager (light_manager.h): told of the frame start, of every resolve after the headlight shadow maps' and of the present (before the rig makes the next
+  // frame's set). It only reads; nothing reads it. Null: none.
+  void SetLightManager(LightManager* light_manager) { light_manager_ = light_manager; }
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
+  // The player's side mirrors, ray traced (car_mirror_rt.h): told of the frame's start and the present, and run at the same mid-scene depth copy, after the top level is built and the car
+  // self-reflection's own pass has recorded. Null: none.
+  void SetCarMirrorRt(CarMirrorRt* car_mirror) { car_mirror_ = car_mirror; }
+  // The G-buffer's sidecar (gbuffer.h): the main view's lit draws carry a second colour target and, for the shaders that have the variant, write the
+  // normal into it; told of the frame's start, the guest's clears of the main colour and the mid-scene depth copy. Null: none (no draw is touched).
+  void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
+  // The shared screen products (screen_shared.h): told of the frame's start (before the ambient occlusion's, which declares its wants after it) and asked to draw their debug view
+  // at the mid-scene depth copy, after the other effects. Their frame is published by the ambient occlusion's depth chain. Null: none.
+  void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  // The deferred local light pass (local_lights.h): told of the frame's start (before the G-buffer's and the shared products', which read the wants it makes), fed the main view's colour
+  // draws' constants (the units' vote) while it is on, and run at the mid-scene depth copy right after the ambient occlusion's apply. Null: none.
+  void SetLocalLights(LocalLights* local_lights) { local_lights_ = local_lights; }
+  // The screen-space reflections (ssr.h; null: none). Not owned.
+  void SetScreenReflections(ScreenReflections* ssr) { ssr_ = ssr; }
+  // The probe field's apply (gi_apply.h; CITY-RT M3 G3): told of the frame's start (before the G-buffer's and the shared products', which read the wants it makes) and run at the mid-scene depth copy
+  // right after the ambient occlusion's apply and before the deferred lights. Null: none. Not owned.
+  void SetGiApply(GiApply* gi_apply) { gi_apply_ = gi_apply; }
+  // The probe field's integration (gi_integration.h; CITY-RT M3 G4): told of the frame's start BEFORE the apply (the field's frame starts there) and run at the mid-scene depth copy BEFORE the occlusion's
+  // OnResolve (the field's maintenance, the probe update and the weights: the occlusion asks whether the screen-space bounce light may be skipped while it plans). Null: none. Not owned.
+  void SetGiIntegration(GiIntegration* gi_integration) { gi_integration_ = gi_integration; }
+  // The ray tracing world frame (rt_world_frame.h; CITY-RT FRAME): told of the frame's start, given the volumetric light's sun cascades and, at the mid-scene depth copy right after the car scene's
+  // OnResolve (which builds the top level and tells it the view), made: the world's rows and the lamps of the frame, car or no car. Null: none. Not owned.
+  void SetRtWorldFrame(RtWorldFrame* rt_world) { rt_world_ = rt_world; }
 
   // The Renderer opened the frame's first list (frame slot `slot`).
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -181,6 +250,10 @@ class Scene {
   // (NoteUiPiece): its draws are moved toward the left or the right screen edge (the top or the bottom one
   // in a tall picture), all by the same amount, by the setting hud_width (UiShiftOf). Render thread.
   void OnUiMessage(uint32_t bucket);
+  // The guest's begin or end marker of the rear view mirror's phase (mirror_view_link.h kMarkerBegin / kMarkerEnd), in order with the draws around it. Unlike the UI messages it needs the open list: the
+  // begin moves the frame to the view's pass, the end closes it and resolves the picture. Render thread. `tag`: the begin's second word, the field the phase's camera was built with (mirror_view_link.h
+  // PhaseField, MV-J2); the end's is 0.
+  void OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list);
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
@@ -235,11 +308,16 @@ class Scene {
     UploadSpan vs_constants;
     UploadSpan ps_constants;
     UploadSpan shared_constants;
+    // The UI sharpening: the fetch slots of the draw's pixel shader the variant sharpens (ui_sharp.h UiSharpConstants::slots), for the draws that
+    // took it.
+    uint32_t ui_sharp_slots = 0;
     Scale scale;  // the resolution scale its targets are (or are made) at
     // The declared size of the surface its targets are bound through (DrawRecord::target_size_bits, as
     // SizeBits; 0 when not known): what tells a class's use of an identity from another pass's
     // (EdramTargets::DepthLayer), so every place that makes the draw's depth key needs it.
     uint32_t target_size_bits = 0;
+    EdramKey memo_depth_key;
+    uint64_t memo_depth_serial = 0;
     // The UI layer split: what OnDraw does before recording the draw (the key's alpha blend was
     // already changed in Prepare when the draw joins the layer).
     FrameLayers::DrawAction ui_layer = FrameLayers::DrawAction::kNone;
@@ -275,19 +353,33 @@ class Scene {
     // by this share of the screen's height, downwards when positive.
     float ui_shift = 0.0f;
     bool scene = false;  // it draws into the scene's identity, which is made at a scale of its own
+    // The G-buffer (gbuffer.h): the draw carries the sidecar's planes as colour targets after the guest's (the pipeline's key has them; `key` stays the guest's) and, when
+    // `gbuffer_variant` is not 0, its pixel shader is that variant of the pack (ShaderStore::kGBufferVariant or its alpha test twin, or a word composed with another
+    // feature) and writes them: `gbuffer_mode` says what the draw does to them (gbuffer_rules.h PlaneMode: write, clear what it covers, or leave them). Where the backend has
+    // no blend state per colour target (gbuffer_rules.h kD3d12PerTargetBlend) only the writers are attached.
+    bool gbuffer_attached = false;
+    uint32_t gbuffer_variant = 0;
+    uint32_t gbuffer_planes = 0;  // the planes the key carries (PlaneCount: the colour slots after the guest's)
+    gbuffer::PlaneMode gbuffer_mode = gbuffer::PlaneMode::kNone;
+    // The per-texture material row of the texture the draw reads in its pixel shader's diffuse slot (gbuffer_materials.h): found in Prepare for a draw that writes the planes, applied to the
+    // draw's material word in FillVariantBlock. Empty when there is no table, no census, or no such texture.
+    gbuffer::TextureMaterials::Hit gbuffer_texture;
   };
 
   // kCount = prepared; otherwise why not. `no_effect` is set instead for a
   // draw that changes nothing.
   Skip Prepare(const DrawView& view, const ConstantBanks::Banks& banks, PreparedDraw& d,
                bool* no_effect, NoEffect* no_effect_reason, std::string* detail);
+  EdramKey DepthKey(const PreparedDraw& d) const;
   // The frames in a row a target must have been drawn into for a draw into it
   // to wait for a pipeline (~0.5 s at 60 FPS: past a loading screen, a menu or
   // a one-shot render to texture).
   static constexpr uint32_t kPipelineSkipFrames = 30;
   // What Pipelines::Get asks on a miss (Deferral): may the draw be left out?
   // Only when every target the draw renders into was drawn into in each of the
-  // last kPipelineSkipFrames frames.
+  // last kPipelineSkipFrames frames. (A draw whose key carries the headlight's
+  // word or the G-buffer's planes is not asked this: its fallback, the game's
+  // own pipeline, draws instead, so it waits whatever this says: variant_wait.h.)
   struct SkipAsk {
     const Scene* scene;
     const PreparedDraw* draw;
@@ -310,6 +402,20 @@ class Scene {
   // not; *no_effect for an empty scissor.
   Skip Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
               bool* no_effect, std::string* detail);
+  // The same for a draw of the rear view mirror's phase while it redirects (MirrorView): into the view's framebuffer with the viewport and the scissor mapped into it, no EDRAM bookkeeping, no
+  // coverage check. kTarget when the draw cannot go into the view (it is left out, never drawn into the main target).
+  Skip RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list, bool* no_effect, std::string* detail);
+  // The guest's clear of the phase's rectangle while the phase redirects: into the view (the main target is not cleared, whatever happens here). `flags`, `color`, `z` and `stencil` as OnClear read them, the
+  // rectangle in guest pixels of the main target, the keys of the two surfaces the clear named (their EDRAM targets say the formats and the host samples), RT0's exponent bias.
+  void ClearMirrorView(plume::RenderCommandList* list, uint32_t flags, const float color[4], float z, uint32_t stencil, int32_t x0, int32_t y0, int32_t x1, int32_t y1, const EdramKey& color_key,
+                       int32_t color_exp_bias, const EdramKey& depth_key);
+  // The first copy of the main colour after the end marker: the stamp of the view's picture into the HUD's rectangle, before the copy reads the colour. True when it recorded.
+  bool RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list);
+  // The main colour target a copy of the game view's colour reads (the stamp's and the glass overlay's target): null with *other_copy true when the copy is not the game view's (the reader waits for the one that
+  // is), null with it false when the target is not there; `key` is the colour's identity (the depth's samples). Creates nothing but a grown copy of the target (EdramTargets::Get).
+  EdramTargets::Target* MirrorCopyColour(const ResolveRecord& record, plume::RenderCommandList* list, bool* other_copy, EdramKey* key);
+  // The same copy, after the stamp: the side mirrors' glass drawn again into the main colour with the main depth bound (mirror_overlay.h). True when it recorded.
+  bool RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandList* list);
   // EDRAM ownership (M5.2d): how the draw treats what its
   // targets' tiles held, noted in EdramTargets' tile map, and reported when
   // it depends on another identity's bytes.
@@ -361,18 +467,39 @@ class Scene {
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);
-  // A draw of the shadow filter variant (ShaderStore::kShadowFilterVariant) reads 16 bytes after the shared
-  // constants (shadow_filter.h): the draw's own copy of them and the block, in one span that replaces
-  // `shared_constants`; the last one is kept for the next draw when neither changed.
-  bool UploadShadowFilterConstants(const SharedConstants& shared, PreparedDraw& d);
-  // A draw of the car self-reflection variant (ShaderStore::kCarSelfReflVariant) reads 112 bytes after the shared
-  // constants (car_selfrefl.h): the draw's own copy of them and the block, in one span that replaces `shared_constants`.
-  bool UploadCarSelfReflConstants(const SharedConstants& shared, PreparedDraw& d);
+  // A draw whose key has variant pack features that read constants after the shared block (shaderpack/variant_chain.h kFeatures:
+  // the shadow filter 16 bytes (shadow_filter.h), the car paint and chrome 112 (car_selfrefl.h), the UI sharpening 16 (ui_sharp.h) ...)
+  // uploads its own copy of the shared constants and the blocks of its features, in one span that replaces `shared_constants`. Each block
+  // is at the place the chain's layout gives it for the draw's feature set (chain::LayoutConstants: dense in feature order, a feature alone
+  // at byte 608), the same function the pack builder used for the text, so the blocks of a composed shader never overlap. The last
+  // few uploads are kept for the next draws when nothing changed.
+  // `ps_word` is the variant word of the pipeline the draw is recorded with: d.key.ps_variant, or the G-buffer's composed one (d.key stays the guest's).
+  bool UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d, uint32_t ps_word);
+  // The `size` bytes of the block of `feature` for the draw `d` and its constant banks (the table's constants_bytes). A feature that is added
+  // to the chain with a block adds its case here (scene.cpp), next to its table row.
+  void FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks, const PreparedDraw& d, uint8_t* out, uint32_t size);
+  // The G-buffer (gbuffer.h): asks the rules (gbuffer_rules.h Decide) whether the draw carries the sidecar and what it does to it, sets d.gbuffer_attached, d.gbuffer_mode
+  // and d.gbuffer_variant (the variant word of the pipeline: the G-buffer's alone, or composed with the features the draw has, the alpha test twin for an alpha test
+  // draw), and returns the key the pipeline is made with: the guest's key widened by the planes' colour targets (each with the blend state of the draw's mode) and
+  // with that word. The block of constants the variant reads is Scene::FillVariantBlock's, with the other features' (UploadVariantConstants).
+  PipelineKey GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d);
+  // The camera rows of the G-buffer's constants (view_ray and camera_to_world: for the derivative normal), from the previous frame's camera; false when there is none.
+  bool FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDraw& d) const;
+  // The UI sharpening (ui_sharp.h): the variant word the draw in the UI phase takes (kUiSharpVariant, or kUiSharpAlphaVariant for a draw whose key
+  // is the alpha test spec variant; 0: none, the key stays the game's), with the fetch slots it sharpens left in d.ui_sharp_slots, and the census of
+  // what the UI phase reads and why each draw did or did not take it when mcla_ui_sharp_census is on.
+  uint32_t UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale);
+  // Where the draw stands as far as the UI sharpening goes (ui_sharp.h Context): after the marker, into one of the menus' render-to-texture views
+  // (the UI map views side view), an inline draw of a frame with no scene, or not a UI draw at all.
+  ui_sharp::Context UiSharpContext(const DrawView& view, const XenosState& state) const;
   void CountSkip(Skip skip, const DrawRecord& r, const std::string& detail);
   // The ambient occlusion and the sun shafts: a prepared draw, before it is recorded (only main view
   // draws are told), with the shaders' identities (the sky's draws tell the shafts where the sun is).
   void NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const PreparedDraw& d,
                             uint64_t vs_identity, uint64_t ps_identity, const DrawView& view);
+  // The headlight shadow maps' collector: a prepared draw, before it is recorded (only draws of the main view's colour pass are kept). `shared` is
+  // the draw's shared constants as Prepare made them (the span in `d` is write-combined memory and is not read).
+  void NoteLocalShadow(const ConstantBanks::Banks& banks, const SharedConstants& shared, const PreparedDraw& d);
   // A temporal upscaler works on this frame (it jitters it and will replace its colour): the
   // occlusion's noise then rotates from frame to frame, which the upscaler averages out.
   bool UpscalerRunning() const;
@@ -430,12 +557,33 @@ class Scene {
   TemporalSystem* temporal_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
   SunShafts* shafts_ = nullptr;
+  Volumetrics* vol_ = nullptr;
   menu_world::Announcer menu_world_;  // the one line per change of world
   CarSelfRefl* car_refl_ = nullptr;
   CarDump* car_dump_ = nullptr;
   CarFrame* car_frame_ = nullptr;
+  MirrorGlass* mirror_glass_ = nullptr;
+  HeadlightRig* headlights_ = nullptr;
   CarShadowMap* car_shadow_ = nullptr;
+  MirrorView* mirror_view_ = nullptr;
+  MirrorOverlay* mirror_overlay_ = nullptr;
+  LocalShadow* local_shadow_ = nullptr;
+  LightManager* light_manager_ = nullptr;
+  GBuffer* gbuffer_ = nullptr;
+  ScreenShared* screen_ = nullptr;
+  LocalLights* local_lights_ = nullptr;
+  ScreenReflections* ssr_ = nullptr;
+  // The order the frame's passes ran in at the trigger and the end-of-scene copy, held to frame_order.h's table at each guest present (LIGHT-UNIFY U9).
+  frame_order::Recorder order_;
+  GiApply* gi_apply_ = nullptr;
+  GiIntegration* gi_integration_ = nullptr;
+  RtWorldFrame* rt_world_ = nullptr;
+  // The draws' material words (gbuffer_material.h): the table the shader pack build wrote beside the variant pack, read once, on the first G-buffer draw after the pack is attached.
+  gbuffer::MaterialTable gbuffer_materials_;
+  // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).
+  gbuffer::TextureMaterials gbuffer_texmat_;
   CarRtScene* car_rt_ = nullptr;
+  CarMirrorRt* car_mirror_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in
@@ -457,11 +605,28 @@ class Scene {
     UploadSpan ps;
   };
   std::unordered_map<uint32_t, DeviceUpload> device_uploads_;
+  // render_cpu_mask bit 4: the last device's entry of device_uploads_ (UploadConstants). Every clear of the map goes through
+  // ForgetDeviceUploads, which also drops this.
+  render_cpu::LastEntry<std::unordered_map<uint32_t, DeviceUpload>> last_device_upload_;
+  bool device_cache_ = false;
+  void ForgetDeviceUploads() {
+    device_uploads_.clear();
+    last_device_upload_.Forget();
+  }
   SharedConstants last_shared_{};
   UploadSpan last_shared_span_;
-  SharedConstants last_shadow_shared_{};
-  shadow_filter::ShadowFilterConstants last_shadow_block_{};
-  UploadSpan last_shadow_span_;
+  // The last uploads of UploadVariantConstants, one per feature set (round robin over four): the shadow collector's draws and the UI's
+  // repeat their constants for hundreds of draws.
+  struct VariantUpload {
+    uint32_t features = 0;
+    uint32_t block_bytes = 0;
+    SharedConstants shared{};
+    std::array<uint8_t, larecomp::shaderpack::chain::MaxConstantsBytes() - sizeof(SharedConstants)> block{};
+    UploadSpan span;
+  };
+  std::array<VariantUpload, 4> variant_uploads_{};
+  uint32_t variant_upload_next_ = 0;
+  ui_sharp::Census ui_sharp_census_;
   uint64_t draws_since_flush_ = 0;
   // What the open list has bound (ResetListState forgets it).
   struct ListState {
@@ -472,6 +637,8 @@ class Scene {
     bool constants_bound = false;
     bool depth_bias_bound = false;
     DepthBias depth_bias;
+    // The stencil reference the list holds (every guest pipeline takes it from the list: stencil_ref.h).
+    stencil_ref::Held stencil_reference;
     // Rasterizer and input state as last set (reblue's
     // dirtyStates): a draw sets only what differs.
     bool viewport_bound = false;
@@ -571,6 +738,13 @@ class Scene {
     uint64_t tiling_begins = 0;
     uint64_t tiling_ends = 0;
     uint64_t prepare_cycles = 0;  // TSC cycles (cycles.h)
+    // The rear view mirror's draws (mirror_draws.h): prepared draws whose viewport is the mirror's rectangle, the ones of them recorded, the frames that had any,
+    // the TSC cycles they took to prepare and record, and the ones kept from the main view's per-draw consumers (mcla_gpu_mirror_class).
+    uint64_t mirror_prepared = 0;
+    uint64_t mirror_recorded = 0;
+    uint64_t mirror_frames = 0;
+    uint64_t mirror_cycles = 0;
+    uint64_t mirror_class_skips = 0;
     uint64_t pipelines_created = 0;
     uint64_t pipelines_failed = 0;
     uint64_t pipeline_create_ns = 0;
@@ -642,8 +816,12 @@ class Scene {
     EdramTargets::Target* colors[kColorTargetCount] = {};
     EdramTargets::Target* depth = nullptr;
     plume::RenderFramebuffer* framebuffer = nullptr;
+    uint32_t gbuffer_generation = 0;  // the sidecar the framebuffer has (GBuffer::generation), 0: none
   };
   TargetsMemo targets_memo_;
+  DrawTargetMemo draw_target_memo_;
+  bool target_sig_ = false;
+  bool layout_two_way_ = false;
   // The last draw's Xenos state and what Prepare made from it (
   // M6a.7). Three draws in four repeat the previous draw's window R and
   // surfaces byte for byte -- the bytes stand in for the dirty states reblue
@@ -674,10 +852,7 @@ class Scene {
     uint64_t draw_scale_serial = 0;
     uint32_t draw_scale_colors = 0;
     uint32_t draw_scale_depth_format = 0;
-    Scale draw_scale;
-    uint32_t draw_samples = 1;  // the targets' samples on the host (M6d.2)
-    uint32_t draw_msaa_guest = 0;  // the guest's, when they take the host's MSAA level (else 0)
-    bool draw_scene = false;    // the first target is the scene's, drawn at a scale of its own
+    DrawTargetScale draw_scale;
     bool constants_valid = false;
     bool ps_writes_depth = false;
     Scale scale;  // the targets' resolution scale the viewport was made for (24.45)
@@ -721,15 +896,25 @@ class Scene {
   };
   void LapStart();
   void Lap(Stage stage);
+  // render_cpu_mask (read at start) and ab::B(): which of the render thread's small CPU savings run in this statistics window
+  // (render_cpu.h). Called at the start and at each window's end, where ab::NextWindow() may have changed the variant.
+  void ApplyRenderCpu();
+  int32_t render_cpu_mask_ = 0;
+  render_cpu::DrawSampler draw_sampler_;  // the timers of OnDraw's prepare statistic (window_.prepare_cycles)
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame
+  // The rear view mirror's rectangle in guest pixels (mirror_draws.h, published by the guest every frame the mirror is up) and mcla_gpu_mirror_class, read each frame;
+  // mirror_frame_seen_: the frame in progress has had a mirror draw.
+  mirror_draws::Rect mirror_rect_;
+  bool mirror_class_ = false;
+  bool mirror_frame_seen_ = false;
   bool census_scale_ = false;     // mcla_gpu_census_scale, read at start
   std::unordered_set<uint64_t> census_scale_logged_;  // NoteScaleRead's cases (the first 64)
   uint64_t lap_ = 0;
   std::array<uint64_t, size_t(Stage::kCount)> stage_cycles_{};
   // How often each memo of the last draw answered (M6a.3), for the profile.
-  enum class Memo : uint8_t { kTargets, kPipeline, kVertexShader, kPixelShader, kState, kCount };
+  enum class Memo : uint8_t { kTargets, kPipeline, kVertexShader, kPixelShader, kState, kTargetSig, kCount };
   std::array<uint64_t, size_t(Memo::kCount)> memo_hits_{};
   std::array<uint64_t, size_t(Memo::kCount)> memo_tries_{};
   // mcla_gpu_ab_interleave (ab.h): each variant's prepare ns/draw summed

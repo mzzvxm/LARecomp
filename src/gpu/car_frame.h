@@ -23,6 +23,14 @@
 //   - for a draw of the player's car with triangles the Draw is made (the matrix of its recipe from the constants, the host
 //     geometry, the host position element, the mesh key) and the listeners get OnPlayerDraw inside the draw's own call. Draws seen
 //     before the ID is known are held (at most a few dozen) and join the Frame once it is.
+// OTHER CARS (car_rt_instances_rules.h): the ray traced scene also holds the cars driving alongside, so a consumer that wants them calls
+// RequestOtherCars(limits) (the ray traced scene, in every frame it is asked for structures: nobody else asks, and where no device can trace rays
+// nobody does, so nothing below runs there). Then the draws of every ID that is not the player's go through the CarSelector: the cars within the
+// radius of the player's vehicle, the nearest few; a kept car's draws get the same treatment as the player's (the recipe, the matrix, the mesh
+// key) into Frame::other_draws, without the host geometry and without boxes, and the listeners get OnOtherCarDraw inside the draw's call, so
+// that the scene reads the triangles of a model it has not seen. The skinned parts (the drivers) and the parts under Limits::min_indices
+// are left out. A car that is new costs little in any one frame: the fingerprints of its meshes are made within Limits::content_bytes a frame
+// (a draw whose mesh has no fingerprint yet waits for the next frame) and the scene reads the triangles within Limits::stage_triangles.
 // Guest memory is read in MeshReader::ReadTriangles (by a listener) and once per new mesh_key for its model-space box (a few
 // per frame at most, then cached by key and dropped when the key has not been seen for a long while). The mesh_key itself is made
 // from a fingerprint of the mesh's own indices and vertices (car_frame_rules.h): those bytes are read again only when the geometry
@@ -42,17 +50,24 @@
 #include "car_dump_rules.h"
 #include "car_frame_rules.h"
 #include "car_mesh_read.h"
+#include "car_model_walk.h"
+#include "car_rt_instances_rules.h"
 #include "constants.h"
 #include "geometry.h"
 #include "input_layout.h"
 #include "shaders.h"
 #include "temporal_math.h"
+#include "viewport.h"
 
 namespace mcla::gpu {
 
 class GuestMemory;
 
 namespace car_frame {
+
+// Another car's draw and the car (car_rt_instances_rules.h).
+using OtherDraw = car_rt_instances::OtherDraw;
+using OtherCar = car_rt_instances::OtherCar;
 
 enum class Part : uint8_t {
   kBody,     // a rigid part: ONE matrix (a palette bone then gWorld, or gWorld alone: the tyres)
@@ -80,6 +95,9 @@ struct Draw {
   // makes next to it, or over it with the same bytes, is not. 0: not known (inline vertices; and always for kSkinned, whose
   // vertices are blended afresh in every frame).
   uint64_t mesh_key = 0;
+  // What the surface is made of (car_rt_material_rules.h): the shader's class, its colours, its diffuse texture's fetch. Made only while the ray traced scene asks for the
+  // other cars (RT-HIT-SHADING); class kNone otherwise and for a shader the table does not know.
+  car_rt_material::Material material;
   // kBody: the model-space box of the draw's mesh (the vertices its triangles name; read once per mesh_key, kept while it is
   // seen). has_box false: not known; box_deferred: it will be known in a frame or two (a frame reads a few boxes at most).
   bool has_box = false;
@@ -95,6 +113,11 @@ struct Draw {
   uint32_t position_offset = 0;  // bytes into a vertex of that view
   uint32_t position_stride = 0;  // bytes
   plume::RenderFormat position_format = plume::RenderFormat::UNKNOWN;  // R32G32B32(A32)_FLOAT, R32G32_FLOAT, R16G16B16A16_FLOAT, ...
+  // For a host replay that must land where the draw did (mirror_overlay.h, MIRROR-VIEW MV4): the viewport and the NDC transform the draw was issued with (ViewportInfo: the host viewport with its depth range, and
+  // the scale and offset the vertex shader's epilogue applies) and its pipeline key's depth word (enable | write << 1 | the comparison function << 2, plume's values). viewport_known false: not recorded.
+  ViewportInfo viewport;
+  uint32_t depth_word = 0;
+  bool viewport_known = false;
   // kSkinned only, for a host replay of the blend: the elements and the palette. May be empty (then a replay leaves the
   // driver out, or uses MeshReader's blended triangles).
   uint32_t blend_indices_slot = 0, blend_indices_offset = 0;
@@ -123,6 +146,24 @@ struct Frame {
   double bounds_min[3] = {};
   double bounds_max[3] = {};
   std::vector<Draw> draws;        // the player's car only, in draw order
+  // The other cars the selection kept (RequestOtherCars), with their draws in draw order: the nearest few within the radius of the player's
+  // vehicle, each draw with a mesh key. Empty where nobody asks for them. Valid together with the player's: the distances are from the vehicle.
+  std::vector<OtherCar> other_cars;
+  std::vector<OtherDraw> other_draws;
+  // The frame's lighting as the cars' own draws saw it, and the environment map's slots (car_rt_material_rules.h FrameLight): read from the first vehicle draw's pixel constants
+  // (c26 ambient, c39 sun colour, c57 sky) and from a draw of a shader that reads the map (fetch slots 0 and 1). Only while the other cars are asked for.
+  car_rt_material::FrameLight light;
+  // For the cars the camera does not see (car_rt_memory_rules.h): read in the frame when the other cars are asked for, from the first vehicle draw on.
+  //   - `vehicles`: the game's own vehicles (the opponent manager's racers, the ambient manager's live cars) within the scan radius of the player's vehicle,
+  //     the player's own left out, each with its world matrix; `vehicles_valid`: the lists were read (an empty list then says nobody is near).
+  //   - `player_vehicle`: the player's vehicle position (the distance the other cars are ranked by).
+  //   - `seen_cars`: every stencil ID of another car the frame drew (kept or not) with the sum of its draws' gWorld translations, so that a car the selection
+  //     did not keep still covers its vehicle.
+  bool vehicles_valid = false;
+  bool player_vehicle_known = false;
+  double player_vehicle[3] = {};
+  std::vector<car_rt_memory::VehicleRead> vehicles;
+  std::vector<car_rt_memory::SeenCar> seen_cars;
 };
 
 // Reads one draw's triangles out of guest memory. Usable ONLY inside Listener::OnPlayerDraw (the guest is held back then).
@@ -135,6 +176,14 @@ class MeshReader {
   // the triangles). False: unreadable (logged once per mesh), the vectors are then empty.
   virtual bool ReadTriangles(std::vector<float>* positions, std::vector<uint32_t>* indices,
                              std::vector<float>* normals) const = 0;
+  // After a successful ReadTriangles of the same draw: the TEXCOORD0 of the draw's declaration for the vertices ReadTriangles returned (u v a vertex, in the same order). False
+  // (and `uvs` empty): the draw has none, or in a format that is not read (a half2 or a float2 is).
+  virtual bool ReadTexcoords(std::vector<float>* uvs) const {
+    if (uvs) {
+      uvs->clear();
+    }
+    return false;
+  }
 };
 
 class Listener {
@@ -143,6 +192,14 @@ class Listener {
   // A draw known to be the player's car, inside the draw's own call. The ID is the one this frame confirmed, else the previous
   // frame's: a draw before the frame's first confirmed draw may be missed here (it is in the trigger's Frame all the same).
   virtual void OnPlayerDraw(const Draw& draw, const MeshReader& reader) = 0;
+  // A draw of another car that the selection kept (a listener that wants them asked with RequestOtherCars), inside the draw's own call; the
+  // reader reads its triangles (model space). The car may be given up later in the frame by a nearer one (its draws leave the Frame; a mesh
+  // read for it stays in the listener's cache by key).
+  virtual void OnOtherCarDraw(const OtherDraw& /*draw*/, const MeshReader& /*reader*/) {}
+  // The cars of the model walk (car_model_walk.h Production, asked for with RequestOtherCars' model mode): in the first vehicle draw's call of a frame that
+  // collects them (the guest is held back), the cars near the player walked from their own model data. The listener stages the meshes of the cars marked
+  // `staging` through `source`.
+  virtual void OnWalkedCars(const std::vector<car_model_walk::WalkedCar>& /*cars*/, const car_model_walk::MeshSource& /*source*/) {}
 };
 
 }  // namespace car_frame
@@ -164,6 +221,12 @@ class CarFrame {
     // For the mesh key: its stamp of the guest ranges (GeometryCache::RangeStamp), which says when a range MAY have changed and so
     // when its bytes are fingerprinted again; may be null (the key then has no fingerprints).
     const GeometryCache* cache = nullptr;
+    // The draw's SharedConstants as the scene uploaded them (the bindless slot of every fetch constant's texture: texture_2d[i]): the environment map's slots are read from a draw
+    // that binds it. Null: none (a caller that has none).
+    const SharedConstants* shared = nullptr;
+    // The draw's viewport info and its pipeline key's depth word (Draw::viewport, Draw::depth_word). Null: not known.
+    const ViewportInfo* viewport = nullptr;
+    uint32_t depth_word = 0;
   };
 
   CarFrame() = default;
@@ -177,10 +240,26 @@ class CarFrame {
   // A user wants the frames: call it in every frame it needs one (any time in the frame); a request in frame N makes frame N+1
   // collect. Nobody asks: the per-draw call is one flag read.
   void Request() { requested_ = true; }
+  // As Request, and the draws of the other cars too, within `limits` (Limits::On() false: no other cars). Call it in every frame it is wanted.
+  // `model`: the cars the camera does not draw are also walked from their own model data (car_model_walk.h Production; Mode::kOff: not).
+  // `traffic`: how many traffic and parked cars the walk takes besides the racers (car_model_walk.h Production::traffic_cars; 0: none), `wheels`: the racers' wheels are walked.
+  void RequestOtherCars(const car_rt_instances::Limits& limits, car_model_rt::Mode model = car_model_rt::Mode::kOff, uint32_t traffic = 0, bool wheels = true) {
+    requested_ = true;
+    others_requested_ = limits.On();
+    other_limits_next_ = limits;
+    model_mode_next_ = model;
+    traffic_cars_next_ = traffic;
+    wheels_next_ = wheels;
+  }
+  // The walker of the cars' model data: the production walk's results (walked(), Resolve at the history trigger) and the debug log.
+  car_model_walk::Walker& walker() { return walk_; }
   // Listeners get OnPlayerDraw while the frames are collected (at most a few; null entries are ignored).
   void AddListener(car_frame::Listener* listener);
 
   bool wants_draws() const { return collecting_; }
+  // The other cars are collected in this frame (and under which limits).
+  bool others_on() const { return others_on_; }
+  const car_rt_instances::Limits& other_limits() const { return other_limits_; }
   // The Scene opened a frame's first list.
   void BeginFrame();
   // A prepared main-view draw (temporal_identities.h MatchMainView).
@@ -229,6 +308,7 @@ class CarFrame {
     bool valid = false;
     uint32_t id = 0;
     uint32_t draws = 0, body = 0, skinned = 0;
+    uint32_t other_cars = 0, other_draws = 0;
     bool operator==(const Summary&) const = default;
   };
   // The numbers of the frame being collected, for the log.
@@ -249,6 +329,17 @@ class CarFrame {
     uint32_t content_changed = 0;  // ... made again because the stamp moved, and the bytes had changed: another key
     uint32_t content_same = 0;     // ... made again because the stamp moved, and the bytes were the same: the key stayed
     uint64_t content_bytes = 0;    // guest bytes hashed or scanned for them
+    // The other cars (RequestOtherCars): draws of IDs that are not the player's, while they are collected, and what became of them.
+    uint32_t others_seen = 0;
+    uint32_t others_far = 0;          // ... of a car that is not kept: beyond the radius, or more cars nearer than the limit
+    uint32_t others_listed = 0;
+    uint32_t others_small = 0;        // ... under Limits::min_indices
+    uint32_t others_skinned = 0;      // ... a driver (not in the scene)
+    uint32_t others_no_triangles = 0; // ... lines, a computed fetch, no POSITION
+    uint32_t others_not_finite = 0;
+    uint32_t others_deferred = 0;     // ... whose mesh has no fingerprint yet and the frame's budget for them was spent: it joins in a later frame
+    uint32_t others_no_key = 0;       // ... with no mesh key at all (inline vertices, a stream that cannot be resolved)
+    uint32_t others_evicted = 0;      // cars given up for a nearer one
   };
   // What the keys did since the last [car frame] keys line.
   struct KeyWindow {
@@ -276,6 +367,7 @@ class CarFrame {
   class Reader final : public car_frame::MeshReader {
    public:
     bool ReadTriangles(std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals) const override;
+    bool ReadTexcoords(std::vector<float>* uvs) const override;
     CarFrame* owner = nullptr;
   };
 
@@ -283,6 +375,9 @@ class CarFrame {
   void FinishFrame();
   void OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id);
   void HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id);
+  // A draw of another car (not the player's ID): the selection, then the recipe, the matrix and the key as the player's draws get them.
+  void HandleOtherDraw(const MainDraw& d, uint32_t order, uint32_t id, double distance, const uint8_t* bank);
+  void DropOtherCar(uint32_t id);
   void OnConfirmed(uint32_t id, bool switched);
   void SyncPlayer();
   bool HasTriangles(const MainDraw& d) const;
@@ -297,12 +392,17 @@ class CarFrame {
   uint64_t StreamContent(const MainDraw& d, const car_mesh::StreamRef& stream, const car_frame_rules::VertexSpan& span);
   void NoteOutcome(car_frame_rules::ContentCache::Outcome outcome);
   void LogKeys();
+  std::string OthersText() const;
   void NoteBox(car_frame::Draw* out);
   void NoteCamera(const uint8_t* vs_bank, const temporal::Mat4& world);
   void AddToBounds(const car_frame::Draw& draw);
   void CallListeners();
   bool LoadMesh();
   bool ReadForListener(std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals);
+  bool ReadTexcoordsForListener(std::vector<float>* uvs);
+  // RT-HIT-SHADING: the material of a vehicle draw (its shader's class, constants and diffuse fetch) and the frame's light and environment map slots from it.
+  car_rt_material::Material MaterialOf(const MainDraw& d) const;
+  void NoteLight(const MainDraw& d, const car_rt_material::Material& material);
   void LogUnreadable(const char* what);
   void ReleaseDraws(std::vector<car_frame::Draw>& draws);
   std::vector<float> TakePalette();
@@ -310,6 +410,11 @@ class CarFrame {
   bool requested_ = false;
   bool collecting_ = false;
   car_frame::Frame frame_;
+  // The debug walk of the cars' own model data against this frame's draws (car_model_walk.h, mcla_gpu_car_model_walk): reads only, idle while the setting is 0.
+  car_model_walk::Walker walk_;
+  car_model_rt::Mode model_mode_next_ = car_model_rt::Mode::kOff;  // asked for in the frame before (RequestOtherCars)
+  uint32_t traffic_cars_next_ = 0;   // RT-MODEL-PARTS: asked for with RequestOtherCars
+  bool wheels_next_ = true;
 
   GuestMemory* memory_ = nullptr;
   std::vector<car_frame::Listener*> listeners_;
@@ -321,6 +426,18 @@ class CarFrame {
   uint32_t previous_id_ = 0;           // the player's ID in the frame before (0: none)
   bool player_read_ = false;           // the player's vehicle was read in this frame
   car_mesh::PlayerVehicle player_;
+  bool vehicles_read_ = false;         // the game's other vehicles were read in this frame (others_on_ only)
+  car_mesh::VehicleScan vehicle_scan_;
+  // The other cars (RequestOtherCars): asked for in a frame, collected in the next, under the limits of the request.
+  bool others_requested_ = false;
+  car_rt_instances::Limits other_limits_next_;
+  car_rt_instances::Limits other_limits_;
+  bool others_on_ = false;
+  car_rt_instances::CarSelector selector_;
+  uint64_t content_limit_ = 0;   // the bytes of fingerprints the draw being handled may make for a new mesh (0: no limit: the player's draws)
+  uint64_t content_spent_ = 0;   // ... what the frame's other cars' draws have made so far
+  bool content_blocked_ = false; // a fingerprint was wanted that the budget did not allow: the draw's key is not made (it waits)
+  car_frame::Draw scratch_draw_; // the draw the MeshReader works for while another car's draw is handled (its part, its keys, its shaders)
   uint32_t main_draws_ = 0;            // main-view draws so far in this frame
   uint32_t world_draws_ = 0;           // ... that wrote no vehicle ID
   std::vector<car_frame::Draw> pending_;  // draws held before the player's ID is known (the ones of every ID, to be sorted out)
