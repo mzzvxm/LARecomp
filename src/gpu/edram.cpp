@@ -55,14 +55,6 @@ uint32_t BytesPerPixel(plume::RenderFormat format) {
 
 }  // namespace
 
-uint32_t FoldColorFormat(uint32_t color_format) {
-  switch (color_format) {
-    case 10: return 2;  // k_2_10_10_10_AS_10_10_10_10
-    case 12: return 3;  // k_2_10_10_10_FLOAT_AS_16_16_16_16
-    default: return color_format;
-  }
-}
-
 bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height, bool quiet) {
   if (screen_width_ == 0) {
     rex::kernel::TitleRuntime* runtime = REX_RUNTIME();

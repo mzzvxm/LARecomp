@@ -1345,6 +1345,10 @@ class GPUSettings final : public rex::SettingOwner {
     "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
     "draw), one line per window of 600 frames. Off: nothing is timed.", rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(bool, mcla_gpu_target_sig, false, "Debug A/B: memoize draw target scale, samples and depth layer using the target signature. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_layout_two_way, false, "Debug A/B: keep two recent input layouts, pipeline keys and ready pipelines. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_shader_memo_check, false, "Diagnostic: no draw takes its shaders from the frame's identity memo; every draw reads the "
     "guest's shader objects and looks the identity up in full, and the memo's answer, address, "
     "size and variant are compared with it. The differences are counted and logged (the first 16); "
@@ -2197,6 +2201,8 @@ inline auto& mcla_gpu_road_reflection_cars_test = g_gpu.mcla_gpu_road_reflection
 inline auto& mcla_gpu_scale_depth_bias = g_gpu.mcla_gpu_scale_depth_bias;
 inline auto& mcla_gpu_scene_extra_bias = g_gpu.mcla_gpu_scene_extra_bias;
 inline auto& mcla_gpu_scene_profile = g_gpu.mcla_gpu_scene_profile;
+inline auto& mcla_gpu_target_sig = g_gpu.mcla_gpu_target_sig;
+inline auto& mcla_gpu_layout_two_way = g_gpu.mcla_gpu_layout_two_way;
 inline auto& mcla_gpu_shader_memo_check = g_gpu.mcla_gpu_shader_memo_check;
 inline auto& mcla_gpu_shadow_filter = g_gpu.mcla_gpu_shadow_filter;
 inline auto& mcla_gpu_shadow_filter_pcf = g_gpu.mcla_gpu_shadow_filter_pcf;

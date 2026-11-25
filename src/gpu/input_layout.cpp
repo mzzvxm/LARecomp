@@ -98,20 +98,27 @@ size_t InputLayouts::KeyHash::operator()(const Key& k) const {
 }
 
 const InputLayout* InputLayouts::Get(const ShaderStore::Entry& vs, const uint8_t* decl,
-                                     uint32_t decl_count, const uint8_t* stream_strides) {
-  const size_t decl_bytes = size_t(decl_count) * guest::kDeclElementBytes;
-  ++memo_stats_.tries;
-  if (last_layout_ && last_vs_ == vs.key && last_decl_.size() == decl_bytes &&
-      std::memcmp(last_decl_.data(), decl, decl_bytes) == 0 &&
-      std::memcmp(last_strides_.data(), stream_strides, last_strides_.size()) == 0) {
-    ++memo_stats_.hits;
-    return last_layout_;
+                                     uint32_t decl_count, const uint8_t* stream_strides,
+                                     bool two_way) {
+  if (!decl || !stream_strides) {
+    return nullptr;
+  }
+  const std::span<const uint8_t, guest::kStreamCount> strides(stream_strides, guest::kStreamCount);
+  const InputLayoutMemoView key{vs.key, {decl, size_t(decl_count) * guest::kDeclElementBytes}, strides};
+  ++memo_stats_.first.tries;
+  if (const auto* found = memo_.Find(key)) {
+    ++memo_stats_.first.hits;
+    return *found;
+  }
+  if (two_way) {
+    ++memo_stats_.second.tries;
+    if (const auto* found = memo_.FindOther(key)) {
+      ++memo_stats_.second.hits;
+      return *found;
+    }
   }
   const InputLayout* layout = Lookup(vs, decl, decl_count, stream_strides);
-  last_layout_ = layout;
-  last_vs_ = vs.key;
-  last_decl_.assign(decl, decl + decl_bytes);
-  std::memcpy(last_strides_.data(), stream_strides, last_strides_.size());
+  memo_.Put(key, layout, two_way);
   return layout;
 }
 

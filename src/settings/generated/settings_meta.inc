@@ -471,6 +471,8 @@
 {"mcla_gpu_scale_depth_bias", "MCLA/GPU"},
 {"mcla_gpu_scene_extra_bias", "MCLA/GPU"},
 {"mcla_gpu_scene_profile", "MCLA/GPU"},
+{"mcla_gpu_target_sig", "MCLA/GPU"},
+{"mcla_gpu_layout_two_way", "MCLA/GPU"},
 {"mcla_gpu_shader_memo_check", "MCLA/GPU"},
 {"mcla_gpu_shadow_filter", "MCLA/GPU"},
 {"mcla_gpu_shadow_filter_pcf", "MCLA/GPU"},

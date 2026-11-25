@@ -113,7 +113,13 @@ static_assert(key_guard::AllMembersSet<EdramKey>(), "every EdramKey member needs
 
 // The colour format a target is stored as: the _AS_ variants share the
 // storage of their base format (24.12).
-uint32_t FoldColorFormat(uint32_t color_format);
+inline uint32_t FoldColorFormat(uint32_t color_format) {
+  switch (color_format) {
+    case 10: return 2;  // k_2_10_10_10_AS_10_10_10_10
+    case 12: return 3;  // k_2_10_10_10_FLOAT_AS_16_16_16_16
+    default: return color_format;
+  }
+}
 
 // "colour k_8_8_8_8@224 pitch 160 4x", for logs.
 std::string DescribeEdramKey(const EdramKey& key);
@@ -448,6 +454,10 @@ class EdramTargets {
   // side_views::kForeignUseLayer, a host target of its own, so that its colour and depth are one
   // scale. Every place that makes the depth key of a use passes the size it classifies by.
   uint8_t DepthLayer(const EdramKey& depth, const EdramKey* color0, uint32_t size_bits = 0);
+  bool scene_phase() const { return scene_phase_; }
+  // Before these are known, DrawScale can discover the screen or choose the
+  // startup scene scale and MSAA level. Let those reads run on every draw.
+  bool DrawTargetMemoReady() const { return scene_decided_ && screen_width_ != 0; }
   // The frame's scene phase: open from a guest frame's start, closed by the anchor draw and by the
   // composite marker (Scene), reopened by the guest's present. Moving it changes what a depth-only
   // use means, so what was memoized from the targets is dropped.
