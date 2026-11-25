@@ -758,6 +758,10 @@ if(Threads_FOUND)
     target_link_libraries(larecomp_input_state_test PRIVATE Threads::Threads)
 endif()
 
+# The held-hour sources and the guest hooks that apply them before fog.
+add_executable(larecomp_time_of_day_test EXCLUDE_FROM_ALL
+    src/mc_engine/gameplay/time_of_day_test.cpp)
+
 # The scene file's parser, timeline, clock and reload rule (src/mc_engine/cinematic/scene.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_scene_test, then run <build dir>/larecomp_scene_test (exit 0 = passed).
 add_executable(larecomp_scene_test EXCLUDE_FROM_ALL

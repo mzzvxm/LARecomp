@@ -26307,11 +26307,17 @@ address = 0x822C0868
 name = "Hook_MenuCameraFinal"
 registers = ["r1", "r24"]
 
-# Live time of day. sub_822F1DB0 is mcLightingManager's per-frame time-of-day
+# Live time of day. Sample and apply a pin before sub_822BF018 evaluates fog.
+# The scene tick and menu camera have supplied their requests by this point.
+[[midasm_hook]]
+address = 0x822C2858
+name = "Hook_TimeOfDayBeforeFog"
+
+# sub_822F1DB0 is mcLightingManager's per-frame time-of-day
 # update (r3 = manager). Fields: +14540 current hour, +14545 auto-advance byte,
 # +14548 rate (hours/sec), +14552 warp-in-progress byte, +14556 warp target.
-# The hook sets them and lets the original body publish the hour, so lighting,
-# sky and shadows all follow the game's own path.
+# Reuse the pin sampled before fog and let the original body publish the hour
+# to the render slot, so lighting, sky and shadows follow the game's own path.
 [[midasm_hook]]
 address = 0x822F1DB0
 name = "Hook_TimeOfDay"

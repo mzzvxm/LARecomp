@@ -15,8 +15,8 @@
 // leaves the scene's own clock alone; it holds while the game is paused. Every update, from Patch_DeltaTimePre on the game thread:
 //
 //   hour        TimeOfDay_SceneHour (time_of_day.cpp: the scene's own channel, which outranks a menu shot's request,
-//               time_of_day_realtime and time_of_day_hold, and which menu_camera.cpp never touches; Hook_TimeOfDay pins the
-//               hour at the next lighting update). Released with a negative hour. The shared TimeOfDay_RequestHour pair was
+//               time_of_day_realtime and time_of_day_hold, and which menu_camera.cpp never touches; the hour is pinned before
+//               that update's fog is evaluated). Released with a negative hour. The shared TimeOfDay_RequestHour pair was
 //               what the first version used: menu_camera.cpp clears it on every gameplay frame, so no hour ever applied.
 //   weather     Weather_SceneIndex, the same contract. Released with a negative index.
 //   traffic, peds, parked cars
