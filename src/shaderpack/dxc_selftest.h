@@ -39,7 +39,7 @@ struct SelfTestFile {
 };
 
 struct SelfTestOptions {
-  std::filesystem::path dxc_dir;  // dxcompiler.dll + dxil.dll of the pinned dxc (1.8.2407.7)
+  std::filesystem::path dxc_dir;  // dxcompiler.dll + dxil.dll of the pinned dxc (assets/D3D12, 1.9.2609.5)
   std::filesystem::path pack;     // the existing mcla_shaders.v8.pack
   std::vector<SelfTestFile> files;
   unsigned threads = 1;           // files in parallel, one DxcWorker each (0 or 1: the calling thread only)

@@ -4,7 +4,8 @@
 // ===========================================================================
 // The shader packs are built on the player's PC from the translated HLSL. The
 // blobs have to be the ones the Python v8 builder (native/tools/
-// build_shader_pack_v8.py, written by mzzvxm) gets from dxc.exe 1.8.2407.7, so
+// build_shader_pack_v8.py, written by mzzvxm) gets from the same compiler
+// (dxc.exe of DXC 1.9.2609.5, the release in assets/D3D12: SOURCE-dxc.txt), so
 // the arguments below are copied from its compile_dxil / compile_spirv
 // one for one, as separate tokens:
 //

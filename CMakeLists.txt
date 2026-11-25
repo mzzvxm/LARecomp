@@ -1076,7 +1076,7 @@ else()
     endif()
     target_link_libraries(larecomp PRIVATE larecomp_sdl3)
 
-    # libmspack (LGPL-2.1, https://github.com/kyz/libmspack, v1.11): lzxd.c only, the LZX decoder of the modloader's
+    # libmspack (LGPL-2.1, https://github.com/kyz/libmspack, v1.12): lzxd.c only, the LZX decoder of the modloader's
     # xcompress.cpp (the game's XCompress streams). It was reached as rex/system/lzx.h up to 0.10; in 0.11 the SDK's LZX
     # code (src/filesystem/lzx.cpp) is private to rexfilesystem, so LARecomp builds the decoder itself, as the SDK does
     # (-w: third-party C). The headers (mspack.h, lzx.h) are visible to xcompress.cpp alone: their names are too generic for

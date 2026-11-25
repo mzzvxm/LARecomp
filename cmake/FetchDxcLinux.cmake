@@ -12,9 +12,11 @@
 # LARECOMP_DXC_LINUX_ARCHIVE a local copy of the .tar.gz, for a build without network. When neither
 # works, the older dxc of the thirdparty/dxc-bin submodule (v1.8.2407) is used with a warning.
 #
-# CHECK: not run (written on Windows, 2026-11-07). The archive name is the release's own, spelled
-# "x86_x64" there (checked against the GitHub release API); the SHA-256 values were taken from the
-# archive downloaded that day.
+# Written on Windows (2026-11-07); the fetch, the hash check and the shader pack builds with this
+# library have run since in the WSL builds (perf/out/LINUXCHECK-land7.txt: dxc-linux-1.9.2609,
+# SPIR-V packs built and validated). The archive name is the release's own, spelled "x86_x64" there
+# (checked against the GitHub release API); the SHA-256 values were taken from the archive downloaded
+# on 2026-11-07.
 
 set(LARECOMP_DXC_LINUX_LIB "")
 set(LARECOMP_DXC_LINUX_LICENCE "")

@@ -7,8 +7,8 @@ is free software under the GNU Lesser General Public License, version 2.1 (LGPL-
 The licence text is in larecomp_mspack_license.txt, next to this file.
 
 What it is
-  Library:   libmspack 1.11 (git tag v1.11,
-             commit 305907723a4e7ab2018e58040059ffb5e77db837)
+  Library:   libmspack 1.12 (git tag v1.12,
+             commit 3434c093c6d5b4ab0c95ad1247e7449271bd03d3)
   Part used: mspack/lzxd.c with the library's own headers, built unchanged
   The file:  larecomp_mspack.dll on Windows, liblarecomp_mspack.so on Linux, in the same
              folder as the LARecomp executable (larecomp.exe, larecomp)

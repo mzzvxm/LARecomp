@@ -18,7 +18,7 @@
 #if defined(_WIN32)
 // Direct3D 12 Agility SDK exports.
 // The D3D12 runtime checks these exported symbols in the main executable.
-// 619 corresponds to D3D12Core.dll version 1.619.3.0 shipped in assets/D3D12.
+// 619 corresponds to D3D12Core.dll version 1.619.6.0 shipped in assets/D3D12 (every 1.619.x release keeps 619).
 extern "C" {
 __declspec(dllexport) extern const uint32_t D3D12SDKVersion = 619;
 __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\";
