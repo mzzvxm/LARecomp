@@ -127,8 +127,8 @@ void RowChecks() {
   }
   Check(cs::RowEnabled(cs::Gate::kRuns) && !cs::RowEnabled(cs::Gate::kNoRt) && !cs::RowEnabled(cs::Gate::kTooSlow), "only the open gate is not grey");
   Check(std::string(cs::RowLabel(cs::Gate::kRuns)) == "RT SIDE MIRRORS" && std::string(cs::RowSuffix(cs::Gate::kRuns)).empty(), "on: the whole name, no suffix");
-  Check(std::string(cs::RowLabel(cs::Gate::kNoRt)) == "MIRRORS" && std::string(cs::RowSuffix(cs::Gate::kNoRt)) == " (NO RT GPU)", "no ray tracing: the short name and ' (NO RT GPU)'");
-  Check(std::string(cs::RowLabel(cs::Gate::kTooSlow)) == "MIRRORS" && std::string(cs::RowSuffix(cs::Gate::kTooSlow)) == " (TOO SLOW)", "the Low class: the short name and ' (TOO SLOW)'");
+  Check(std::string(cs::RowLabel(cs::Gate::kNoRt)) == "RT MIRRORS" && std::string(cs::RowSuffix(cs::Gate::kNoRt)) == " (NO RT GPU)", "no ray tracing: the short name and ' (NO RT GPU)'");
+  Check(std::string(cs::RowLabel(cs::Gate::kTooSlow)) == "RT MIRRORS" && std::string(cs::RowSuffix(cs::Gate::kTooSlow)) == " (TOO SLOW)", "the Low class: the short name and ' (TOO SLOW)'");
   Check(std::string(cs::kFullLabel) + ": " == "RT SIDE MIRRORS: ", "the row's prefix is the header's whole label");
   // the page: the longest label of any state with the widest value; the REFLECTIONS page's own widest label is 23
   size_t widest = 0;
@@ -138,7 +138,7 @@ void RowChecks() {
     Check(label.size() + cs::kWidestValue <= cs::kPageChars, "the state '" + label + "' fits the page");
     Check(label.size() <= cs::kWidestOtherLabel, "the state '" + label + "' is no wider than the page's own widest label");
   }
-  Check(widest == 19, "the widest label of the row is 'MIRRORS (NO RT GPU)', 19");
+  Check(widest == 22, "the widest label of the row is 'RT MIRRORS (NO RT GPU)', 22");
   Check(std::string("RT SIDE MIRRORS (NO RT GPU)").size() + cs::kWidestValue > cs::kPageChars, "the whole name with a reason would not fit (why the label is short while grey)");
   Check(cs::kWidestValue == std::string("AUTO (RAY TRACED)").size() && cs::kWidestOtherLabel == std::string("REFLECTIONS ON SURFACES").size() && cs::kPageChars == 41, "the page's numbers are CAR SELF-REFLECTIONS', REFLECTIONS ON SURFACES' and the movie's");
   // AUTO's label and the launcher's line
@@ -205,7 +205,7 @@ void MenuChecks(const std::string& dir) {
   Check(!init.empty() && !Has(init, "NeedsShadows") && !Has(init, "AoOn") && !Has(init, "ContactShadowsOn") && !Has(init, "CarRtReflRunsNow"), "RT SIDE MIRRORS has nothing to do with the car row, the shadows or the occlusion");
   Check(Before(menu, "constexpr RowDynamics kRtCityDynamics", "constexpr RowDynamics kMirrorRtDynamics") && Before(menu, "constexpr RowDynamics kMirrorRtDynamics", "const ItemDef kReflectionItems[] = {"), "the helpers come after the city row's and before the page's table");
   Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\"") && std::strlen("Road, car, city, mirrors and surfaces.") <= 40, "the tab's line names the mirrors (at most 40 characters, the longest of the other tabs' lines)");
-  Check(Has(menu, "RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)") && Has(menu, "REFLECTIONS (kReflectionItems, 6 rows)"), "the page's comments name the sixth row");
+  Check(Has(menu, "RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)") && Has(menu, "REFLECTIONS (kReflectionItems, 7 rows)"), "the page's comments name the row (the seventh is SIDE MIRRORS, before this one)");
 }
 
 void SettingsChecks(const std::string& dir) {

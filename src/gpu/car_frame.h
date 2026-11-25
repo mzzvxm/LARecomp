@@ -57,6 +57,7 @@
 #include "input_layout.h"
 #include "shaders.h"
 #include "temporal_math.h"
+#include "viewport.h"
 
 namespace mcla::gpu {
 
@@ -112,6 +113,11 @@ struct Draw {
   uint32_t position_offset = 0;  // bytes into a vertex of that view
   uint32_t position_stride = 0;  // bytes
   plume::RenderFormat position_format = plume::RenderFormat::UNKNOWN;  // R32G32B32(A32)_FLOAT, R32G32_FLOAT, R16G16B16A16_FLOAT, ...
+  // For a host replay that must land where the draw did (mirror_overlay.h, MIRROR-VIEW MV4): the viewport and the NDC transform the draw was issued with (ViewportInfo: the host viewport with its depth range, and
+  // the scale and offset the vertex shader's epilogue applies) and its pipeline key's depth word (enable | write << 1 | the comparison function << 2, plume's values). viewport_known false: not recorded.
+  ViewportInfo viewport;
+  uint32_t depth_word = 0;
+  bool viewport_known = false;
   // kSkinned only, for a host replay of the blend: the elements and the palette. May be empty (then a replay leaves the
   // driver out, or uses MeshReader's blended triangles).
   uint32_t blend_indices_slot = 0, blend_indices_offset = 0;
@@ -218,6 +224,9 @@ class CarFrame {
     // The draw's SharedConstants as the scene uploaded them (the bindless slot of every fetch constant's texture: texture_2d[i]): the environment map's slots are read from a draw
     // that binds it. Null: none (a caller that has none).
     const SharedConstants* shared = nullptr;
+    // The draw's viewport info and its pipeline key's depth word (Draw::viewport, Draw::depth_word). Null: not known.
+    const ViewportInfo* viewport = nullptr;
+    uint32_t depth_word = 0;
   };
 
   CarFrame() = default;

@@ -15,7 +15,8 @@
 // THE PHASE (mirror_view_rules.h PhaseTracker): BeginPhase from the begin marker, Use at the first draw or clear (barriers, the begin clear of the colour), the draws and the guest's clear land in the
 // framebuffer through the Scene (scene.cpp RecordMirrorDraw, OnClear), EndPhase from the end marker: the colour to the readable layout, the resolve, the picture whole. A phase never outlives its frame.
 // THE READER (this package): the HUD stamp, one quad into the rectangle of the main colour at the first copy of the main colour after the end marker (a held frame sends an empty phase: the stamp is
-// drawn from the held picture). The glass overlay of the side mirrors is package MV4.
+// drawn from the held picture). The second reader, the side mirrors' glass overlay (mirror_overlay.h, package MV4), takes the same picture (CurrentPicture, OverlayArmed). The two pipelines (the average of the
+// samples, the stamp) are the host precache's (host_precache.h kMirrorView).
 // LIFETIME: the images are made when a redirected phase needs them and given back after about 3 s without one; the sizes are the class's (Low 384 wide, Mid 512, High 768; Low is the game's own
 // mirror by default: AutoWanted), 0.3 to 12 MiB at 1 to 8 samples (HeldBytes, counted in the log's held list).
 //
@@ -28,6 +29,8 @@
 #include <cstdint>
 #include <memory>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 #include <plume_render_interface.h>
 
@@ -55,16 +58,18 @@ class MirrorView {
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
 
-  // Scene::BeginFrame: reads mcla_gpu_mirror_view, publishes the request to the guest half (mirror_view_link.h: redirect, and the side mirrors' need), closes a phase the last frame left open, gives the
-  // images back after the idle time, writes the census line.
-  void BeginFrame();
+  // Scene::BeginFrame: reads mcla_gpu_mirror_view, publishes the request to the guest half (mirror_view_link.h: redirect, the side mirrors' need and the wider field they want, mirror_view_rules.h
+  // RequestFor), closes a phase the last frame left open, gives the images back after the idle time, writes the census line. `rt_side_mirrors`: the ray traced side mirrors are on (CarMirrorRt::active(),
+  // as of the last frame's start): they win, and the request does not ask for a side-only phase nobody would read.
+  void BeginFrame(bool rt_side_mirrors);
   bool enabled() const { return mode_ != 0; }
   // The images or the shaders could not be made lately: no phase is redirected, and the request to the guest says so (mirror_view_rules.h RequestFor).
   bool Blocked() const { return frame_ < blocked_until_ || shaders_failed_; }
 
   // ---- the phase --------------------------------------------------------------------------------------------------------------------
-  // The begin marker, with the rectangle the guest published (guest pixels of the main target). True when the phase's draws and clear are redirected.
-  bool BeginPhase(const mirror_draws::Rect& rect);
+  // The begin marker, with the rectangle the guest published (guest pixels of the main target) and the field the camera of THIS phase was built with (the marker's tag: mirror_view_link.h PhaseField, MV-J2:
+  // the view's size, the stamp's crop and the overlay's lookup follow it, never the guest's latest camera build, which can be a later phase's). True when the phase's draws and clear are redirected.
+  bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field);
   bool redirecting() const { return phase_.redirecting(); }
   const mirror_draws::Rect& rect() const { return rect_; }
   // Where a prepared draw goes, and the count that says why a drop happened. The first draw that is a kView names the formats of the phase (Use).
@@ -93,10 +98,27 @@ class MirrorView {
   // ---- the reader --------------------------------------------------------------------------------------------------------------------
   // A whole picture and a rectangle are up and the end marker of this frame has come: the first copy of the main colour stamps it.
   bool StampArmed() const { return stamp_armed_; }
-  // The stamp into `colour` (the main colour target, its host samples as the pipeline needs them) over `host` (the rectangle in the target's host pixels). True when drawn: the list state is gone.
+  // The stamp into `colour` (the main colour target, its host samples as the pipeline needs them) over `host` (the rectangle in the target's host pixels), cut to the HUD's own field when the view is wider
+  // (mirror_view::HudCrop: the side mirrors made it so). True when drawn: the list state is gone.
   bool RecordStamp(plume::RenderCommandList* list, EdramTargets::Target& colour, const mirror_view::IRect& host);
   // Said by the Scene when the first copy came and a stamp was not possible: the frame's stamp is given up.
   void DisarmStamp() { stamp_armed_ = false; }
+
+  // The side mirrors' glass overlay (mirror_overlay.h, package MV4) reads the same picture: whole, with the bindless slot of its single sample image and its age in frames (0: drawn this frame; a held
+  // frame sends an empty phase and the picture of the last one stands). Armed, like the stamp, by the end marker of a phase and consumed by the first copy of the main colour after it; unlike the stamp
+  // it does not care whether the HUD mirror is up.
+  struct Picture {
+    bool whole = false;
+    uint32_t slot = 0xFFFFFFFFu;  // kInvalidBindlessSlot
+    uint32_t age = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+  };
+  Picture CurrentPicture() const;
+  // The field (degrees across and up) of the picture the readers hold: the tag of the phase that drew it. False = no tag (no camera had been built when it began). The glass overlay's lookup needs exactly this.
+  bool PictureField(float* hfov_deg, float* vfov_deg) const;
+  bool OverlayArmed() const { return overlay_armed_; }
+  void DisarmOverlay() { overlay_armed_ = false; }
 
   // The video memory the images hold.
   uint64_t HeldBytes() const;
@@ -119,8 +141,16 @@ class MirrorView {
   bool MakeShaders();
   bool EnsureImages(plume::RenderFormat color, plume::RenderFormat depth, uint32_t samples);
   void ReleaseImages();
-  plume::RenderPipeline* ResolvePipeline(plume::RenderFormat format);
-  plume::RenderPipeline* StampPipeline(plume::RenderFormat format, uint32_t host_samples);
+  // The pipelines are the host precache's (host_precache.h kMirrorView): listed at the start where the switch is on, made in the background otherwise (AddLive); null while one is being made (the readers
+  // try again in the next frame: the render thread never waits for a compile) or when it failed.
+  plume::RenderPipeline* ResolvePipeline(plume::RenderFormat format, bool* pending);
+  plume::RenderPipeline* StampPipeline(plume::RenderFormat format, uint32_t host_samples, bool* pending);
+  plume::RenderPipeline* Pipeline(uint32_t variant, bool* pending);
+  std::unique_ptr<plume::RenderPipeline> MakeVariant(uint32_t variant);
+  static uint32_t ResolveVariant(plume::RenderFormat format);
+  static uint32_t StampVariant(plume::RenderFormat format, uint32_t host_samples);
+  void ListBase();
+  void ListLive(plume::RenderFormat color, uint32_t samples);
   uint32_t PictureSlot() const;
   mirror_view::Class SizeClass() const;
   void Census(bool force);
@@ -134,9 +164,10 @@ class MirrorView {
   std::unique_ptr<plume::RenderShader> resolve_shader_;
   std::unique_ptr<plume::RenderShader> stamp_shader_;
   bool shaders_failed_ = false;
-  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> resolve_pipelines_;  // by the colour format
-  std::unordered_map<uint64_t, std::unique_ptr<plume::RenderPipeline>> stamp_pipelines_;    // by format and host samples
-  std::unordered_map<uint64_t, bool> pipeline_failed_;
+  std::unordered_map<uint32_t, std::unique_ptr<plume::RenderPipeline>> pipelines_;  // by variant (ResolveVariant, StampVariant): the colour format and, for the stamp, the host samples
+  std::unordered_set<uint32_t> listed_;                                           // with the host precache (at the start, or in the background)
+  std::unordered_set<uint32_t> failed_;
+  bool base_listed_ = false;
 
   // The setting as BeginFrame read it: 0 off, 1 the card's class, 2 to 4 the Low, Mid or High size.
   int32_t mode_ = 0;
@@ -147,6 +178,10 @@ class MirrorView {
   mirror_view::PhaseTracker phase_;
   mirror_view::ViewFormats formats_;
   mirror_view::Plan plan_;
+  mirror_view::Plan picture_plan_;   // the plan of the picture the readers hold (plan_ of the phase that finished it): its field decides the stamp's crop
+  mirror_view::PhaseField phase_field_;    // the field the open phase's camera was built with (its begin marker's tag)
+  mirror_view::PhaseField picture_field_;  // the same for the picture the readers hold (phase_field_ of the phase that finished it)
+  mirror_view::PhaseField logged_field_;   // the last tag the log line named
   mirror_draws::Rect rect_;
   bool used_ = false;            // Use has made the images ready in this phase
   bool failed_phase_ = false;    // the images could not be made: the rest of the phase is dropped
@@ -165,6 +200,7 @@ class MirrorView {
   bool whole_ = false;           // a finished picture exists
   uint64_t picture_frame_ = 0;   // the frame it was finished in
   bool stamp_armed_ = false;
+  bool overlay_armed_ = false;   // the end marker of this frame came with a whole picture and the overlay's copy has not (MV4)
   mirror_view::Lifetime life_;
 
   Stats stats_;

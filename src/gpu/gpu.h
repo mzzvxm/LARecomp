@@ -260,8 +260,8 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
 // draw), AFTER the original: the scene's image is composed, nothing has copied
 // it yet, and what the frame draws after it is screen-space. `bucket`: the
 // bucket's bit. Becomes a composite record when the capture is on. Guest
-// render thread.
-void OnGuestSceneComposited(uint32_t bucket);
+// render thread. `tag` is the record's second word: 0 except for the rear view mirror's begin marker, which carries the phase's field (mirror_view_link.h PhaseField).
+void OnGuestSceneComposited(uint32_t bucket, uint32_t tag = 0);
 
 // --- the shared rear view (mirror_view.h, perf/MIRROR-VIEW.md) -----------------
 
@@ -270,10 +270,15 @@ void OnGuestSceneComposited(uint32_t bucket);
 // Patch_RearViewPhaseEnd, r30 = 0x1000000). Becomes a marker on the composite record's side channel
 // (mirror_view_link.h kMarkerBegin / kMarkerEnd) while mcla_gpu_mirror_view is on, in order with the
 // draws; an end is sent only for a begin that was. On a frame whose phase is held (the cadence) send
-// the two back to back: the host then stamps the held picture. Publish the rectangle first
+// the two back to back: the host then stamps the held picture. The begin carries the field the phase's camera was built with (mirror_view_link.h PhaseField, from the latest CameraFacts: the camera step runs
+// just before the begin, on this thread). Publish the rectangle first
 // (mirror_draws::Publish), also for a phase no HUD mirror asked for; mirror_view::SetStampWanted says whether the HUD mirror
 // is up. Guest render thread.
 void NoteMirrorPhase(bool begin);
+
+// What mcla_gpu_mirror_view alone used to say, now with the SIDE MIRRORS row under it (mirror_setting.h Resolve): 0 the game's own mirror (nothing is marked, redirected or stamped), 1 to 4 the shared view is
+// on (1 at the card's class size, 2 to 4 at the Low, Mid or High size; the row gives 3 for HIGH and 4 for ULTRA). The guest half is on exactly while this is not 0 (rear_view.cpp SharedViewOn). Any thread, cheap.
+int MirrorViewMode();
 
 // --- occlusion queries (occlusion.h) --------------------------------------
 

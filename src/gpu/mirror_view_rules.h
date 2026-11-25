@@ -184,6 +184,31 @@ inline Plan PlanView(Class c, double side_hfov_deg, double side_vfov_deg, double
   return p;
 }
 
+// WHAT THE SIDE MIRRORS NEED (perf/MIRROR-VIEW.md 14.2): the field, across and up, centred on straight back, that holds the lookups of BOTH glasses from a cockpit eye (ExtentOf on the design's assumed
+// geometry: the left glass looks 3.5 degrees right of straight back and 10.9 down, the right one 22.9 right and 6.3 down; half angles 29.3 across and 16.9 up, so 58.6 x 33.8 degrees, rounded up).
+// PlanView adds kSideMargin to each side: 69 x 44 degrees for the side mirrors alone. The game's own HUD field (about 100 x 26: CHECK 11) reaches only 13 degrees below straight back: too little for
+// the left glass's 10.9 down plus half its own height. mirror_view_rules_test.cpp holds these two numbers to the extent the assumed geometry gives (a change of the geometry fails it).
+inline constexpr double kSideMirrorsHfovDeg = 59.0;
+inline constexpr double kSideMirrorsVfovDeg = 34.0;
+
+// The size of a view drawn with a requested field (the side mirrors' wider view, `Request::hfov_deg` / `vfov_deg`): the class's pixels per degree and width cap (as PlanView), the height from the field's
+// own aspect, tan(h/2) / tan(v/2), which is the aspect the guest's camera is built with (rear_view_shared.h SharedCamera), to an even number. The viewport the phase's draws carry is the HUD rectangle,
+// which the host maps to the WHOLE view (MapViewport), so the picture is the camera's whatever the rectangle's own aspect is. The plan keeps the field: the stamp's crop and the lookups read it.
+inline Plan PlanForField(Class c, double hfov_deg, double vfov_deg) {
+  Plan p;
+  constexpr double kPi = 3.14159265358979323846;
+  if (!(hfov_deg > 1.0 && hfov_deg < 179.0) || !(vfov_deg > 1.0 && vfov_deg < 179.0)) {
+    return p;
+  }
+  p.hfov_deg = hfov_deg;
+  p.vfov_deg = vfov_deg;
+  p.width = RoundUp16(std::min(double(MaxWidth(c)), PixelsPerDegree(c) * hfov_deg));
+  const double h = double(p.width) * std::tan(vfov_deg * 0.5 * kPi / 180.0) / std::tan(hfov_deg * 0.5 * kPi / 180.0);
+  p.height = std::max(2u, uint32_t(std::lround(h / 2.0)) * 2u);
+  p.every = Cadence(c);
+  return p;
+}
+
 // The memory the view holds: the multisampled colour and depth it is drawn into, and the single sample colour the readers sample (and, for the depth aware lookup of package MV5, a single sample
 // depth). Bytes a pixel are the host's formats' (CHECK: the main colour's host format).
 inline uint64_t HeldBytes(const Plan& p, uint32_t samples, uint32_t colour_bytes, uint32_t depth_bytes, bool resolved_depth) {
@@ -234,13 +259,15 @@ inline Rect RemapToView(const Rect& mirror, const Rect& in, uint32_t view_w, uin
 }
 
 // The part of the shared view (u0, v0, u1, v1) the HUD stamp shows when the view's field is wider than the stamp wants: the central crop that has the wanted horizontal field and the stamp's
-// aspect. The crop is never larger than the view.
+// aspect. The crop is never larger than the view. A view with no field of its own (a plan made from the HUD rectangle: PlanForRect, the game's own field) is the HUD's picture already: all of it.
+// A perspective picture cut to the part inside a narrower frustum of the same eye and axes IS the narrower frustum's picture (tan of the half field is the picture's coordinate), so the HUD mirror
+// looks as it did, at the view's resolution, however much wider the side mirrors made the view.
 struct Crop {
   double u0 = 0.0, v0 = 0.0, u1 = 1.0, v1 = 1.0;
 };
 inline Crop HudCrop(const Plan& view, double hud_hfov_deg, double stamp_aspect) {
   Crop c;
-  if (!view.valid() || !(hud_hfov_deg > 0.0) || !(stamp_aspect > 0.0)) {
+  if (!view.valid() || !(view.hfov_deg > 0.0) || !(view.vfov_deg > 0.0) || !(hud_hfov_deg > 0.0) || !(stamp_aspect > 0.0)) {
     return c;
   }
   const double pi = 3.14159265358979323846;
@@ -276,15 +303,53 @@ struct RequestFacts {
   bool enabled = false;    // mcla_gpu_mirror_view is on (MirrorView::enabled)
   bool blocked = false;    // the shaders failed or the images could not be made in the last attempts: the same word as BeginFacts::blocked
   bool side_need = false;  // MV3's flag: the glass pair found and wide enough on the picture (mirror_glass::SideNeed())
+  // JOIN2:
+  bool rt_side_mirrors = false;   // the ray traced side mirrors are on (CarMirrorRt::active()): they win, nobody reads the view for the glass (the overlay's own hand-off, mirror_overlay_rules.h Decide)
+  bool hud_stamp = true;          // the HUD mirror's stamp is drawn from this view (the guest's flag, StampWanted(): the HUD mirror on and its form visible; true is its default)
+  Class cls = Class::kHigh;       // the card's class: the view's pixels per degree and width cap
+  double retail_hfov_deg = 0.0;   // the field the HUD mirror shows across without any request (CameraFacts::retail_hfov_deg); 0 = no camera built yet
+  double stamp_aspect = 0.0;      // the HUD rectangle's width over height (mirror_draws::Current()); 0 = no rectangle
+  // MV6:
+  uint32_t every = 1;      // the cadence of the SIDE MIRRORS level (mirror_setting.h: HIGH 2, ULTRA 1; a debug force 1): the view is redrawn every Nth frame
 };
 
+// The field the guest builds the view's camera with for the side mirrors (what Request::hfov_deg / vfov_deg carry), or none (0, 0): the guest keeps the game's own.
+//  - side mirrors alone (no stamp): PlanView's field for kSideMirrorsHfovDeg x kSideMirrorsVfovDeg and the margin: 69 x 44 degrees;
+//  - with the HUD stamp: the larger of that and the HUD's own field (the retail one, CameraFacts), so the stamp can cut its picture out (HudCrop) and the HUD mirror looks exactly as it did. That needs the
+//    retail field and the rectangle's aspect (the guest reports the first at its first camera build: until then nothing is asked for and the game's own field serves both), and a HUD field the view can
+//    hold (at most kMaxHorizontalFov across and kMaxVerticalFov up): a wider or taller retail picture is never cut down, the game's own field stays and the HUD mirror is untouched.
+struct Field {
+  double hfov_deg = 0.0;
+  double vfov_deg = 0.0;
+  bool asked() const { return hfov_deg > 0.0 && vfov_deg > 0.0; }
+};
+inline Field SideMirrorsField(Class c, bool hud_stamp, double retail_hfov_deg, double stamp_aspect) {
+  double hud_hfov = 0.0;
+  if (hud_stamp) {
+    if (!(retail_hfov_deg > 0.0) || !(stamp_aspect > 0.0) || retail_hfov_deg > kMaxHorizontalFov || StampVerticalFov(retail_hfov_deg, stamp_aspect) > kMaxVerticalFov) {
+      return Field{};
+    }
+    hud_hfov = retail_hfov_deg;
+  }
+  const Plan p = PlanView(c, kSideMirrorsHfovDeg, kSideMirrorsVfovDeg, hud_hfov, stamp_aspect > 0.0 ? stamp_aspect : 229.0 / 44.0);
+  return Field{p.hfov_deg, p.vfov_deg};
+}
+
 // What the host says to the guest this frame. `redirect` is the host's promise that a phase the guest marks goes into the view: without it the guest runs no side-only phase and keeps the game's own
-// camera-step clear (a phase nobody catches would draw an unframed mirror into the main picture). The side mirrors' need counts only with it (the guest ignores it otherwise too). The field and the
-// cadence are left at "none asked for" until the glass overlay (MV4) and the class table (MV6) want them: the game's own field stays, the view is redrawn every frame.
+// camera-step clear (a phase nobody catches would draw an unframed mirror into the main picture). The side mirrors' need counts only with it (the guest ignores it otherwise too), and NOT where the ray
+// traced side mirrors win: MV3's finder does not know about them, and a side-only phase nobody reads would cost its draws for nothing (with the HUD mirror on the phase runs for the stamp as it always
+// did, with no field asked for and no racers added). The field is SideMirrorsField's. The cadence is the SIDE MIRRORS level's (MV6: HIGH every 2nd frame, ULTRA and a debug force every frame), asked only
+// while the phase is redirected (a request nobody follows asks for nothing).
 inline Request RequestFor(const RequestFacts& f) {
   Request r;
   r.redirect = f.enabled && !f.blocked;
-  r.side_need = r.redirect && f.side_need;
+  r.side_need = r.redirect && f.side_need && !f.rt_side_mirrors;
+  r.every = r.redirect ? std::clamp<uint32_t>(f.every, 1, kMaxEvery) : 1;
+  if (r.side_need) {
+    const Field field = SideMirrorsField(f.cls, f.hud_stamp, f.retail_hfov_deg, f.stamp_aspect);
+    r.hfov_deg = float(field.hfov_deg);
+    r.vfov_deg = float(field.vfov_deg);
+  }
   return r;
 }
 
@@ -398,6 +463,17 @@ inline Plan PlanForRect(Class c, double rect_w, double rect_h) {
   p.height = std::max(2u, uint32_t(std::lround(h / 2.0)) * 2u);
   p.every = Cadence(c);
   return p;
+}
+
+// The size of the view for the phase that begins now, by the field its OWN camera was built with (MV-J2, the begin marker's tag: mirror_view_link.h PhaseField): the requested field where the guest applied
+// it (the side mirrors' wider view), else the rectangle's aspect at the game's own field (the HUD mirror as it always was). The tag is what the guest's camera of THIS phase used, so the plan and the
+// phase's draws always agree on the aspect: the old rule compared the host's request with the guest's LATEST camera build and fell back to the rectangle's plan when the two disagreed, which a guest
+// running one to three frames ahead of the render thread made happen at every change of the field (a vertically stretched picture for a frame or two, MIRROR-VIEW.md 15.3 J2).
+inline Plan PlanForPhase(Class c, double rect_w, double rect_h, const PhaseField& field) {
+  if (field.requested && field.known()) {
+    return PlanForField(c, double(field.hfov_deg), double(field.vfov_deg));
+  }
+  return PlanForRect(c, rect_w, rect_h);
 }
 
 // `auto` per class (MIRROR-VIEW.md 2.7): Low keeps the game's own mirrors until the numbers are in. The debug switch of MV1 forces the view on, whatever the class says.

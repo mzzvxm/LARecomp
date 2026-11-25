@@ -212,8 +212,8 @@ void FrameTrace::OnRecord(uint64_t frames, const RecordHeader& header, const uin
     }
     case RecordType::kComposite: {
       const auto& r = *reinterpret_cast<const CompositeRecord*>(payload);
-      Printf("CM seq=%" PRIu64 " bucket=%08x after_draws=%" PRIu64 "\n", header.sequence,
-             r.bucket, draws_);
+      Printf("CM seq=%" PRIu64 " bucket=%08x tag=%08x after_draws=%" PRIu64 "\n", header.sequence,
+             r.bucket, r.tag, draws_);
       break;
     }
     case RecordType::kOcclusion: {

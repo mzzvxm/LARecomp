@@ -22,8 +22,9 @@
 //                                          there is no pair.
 //   Result::glass[k] k = 0 the glass on the left of the picture, 1 on the right.
 //
-// SETTING mcla_gpu_mirror_glass (debug only, live, default off): while it is off nothing is asked of CarFrame, nothing is read and nothing is published (the guest reads "no need"). It is NOT an
-// effect switch for players: the shared view's own setting (MV6) will say when the finder runs; the debug switch is how the first runs and the tests turn it on, on any card.
+// WHEN IT RUNS (mirror_setting.h, MV6): while the SIDE MIRRORS row's view runs (never where RT SIDE MIRRORS replaces it, never on the Low class under AUTO), or while the debug setting mcla_gpu_mirror_glass
+// (live, default off) says so, on any card. While it is not running nothing is asked of CarFrame, nothing is read and nothing is published (the guest reads "no need"). It is not an effect switch for
+// players: the row is.
 //
 // LOG ("[mirror glass]"): the first pair and every change of it (keys, areas, normals, separation, height, the widths on the picture: the CHECK of car_mirror_patch_rules.h for other cars), and a window
 // every kLogEveryFrames frames (frames with a pair, with a need, why not, reads, skips, cache size).

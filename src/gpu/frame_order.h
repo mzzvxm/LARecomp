@@ -229,6 +229,7 @@ enum class Step : uint8_t {
   kVolumeComposite,
   kShaftsComposite,
   kMirrorStamp,
+  kMirrorGlass,
   // the anchor (TemporalSystem::RecordUpscale, called from Scene::NoteTemporal at the game's motion blur draw)
   kRrGuides,
   kUpscale,
@@ -324,7 +325,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .reads = data::kLights, .reads_previous = data::kShadowAtlas,
      .note = "the block is this frame's lights, the maps are the LAST frame's (HP3 in local_lights.h: a moving car's shadow edge differs by a frame's motion from the light pass's); runs before the "
              "AO's apply, so the occlusion darkens it (HP11) and the bounce light's colour chain sees it"},
-    {.step = Step::kDrawMirrorView, .phase = Phase::kDraws, .kind = Kind::kScanned, .name = "the rear view mirror's phase draws into the view (mcla_gpu_mirror_view)", .call = "mirror_view_->BeginPhase(mirror_draws::Current())",
+    {.step = Step::kDrawMirrorView, .phase = Phase::kDraws, .kind = Kind::kScanned, .name = "the rear view mirror's phase draws into the view (mcla_gpu_mirror_view)", .call = "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag))",
      .label_file = "mirror_view.cpp", .label = "mirror view", .more_labels = {{"mirror view resolve"}}, .closing_label = "after mirror view", .makes = data::kMirrorView,
      .note = "MIRROR-VIEW MV1 (mirror_view.h, perf/MIRROR-VIEW.md): between the guest's two markers (Scene::OnMirrorMarker) the draws and the begin clear of the mirror's phase go into the view's own colour and depth, "
              "never into the main target: no G-buffer planes, none of the main view's effects hear of them (Scene::RecordMirrorDraw, OnClear). The end marker closes the pass and averages the samples into the picture. "
@@ -487,6 +488,15 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "MIRROR-VIEW MV1: one quad into the rectangle of the main colour at the first copy of the main colour after the phase's end marker (Scene::RecordMirrorStamp), before that copy reads the colour; a held frame "
              "(the guest's every-Nth-frame cadence sends the two markers with no draws between) stamps the held picture. Scanned, not noted: it runs only while the view is on and a picture is whole. "
              "CHECK (run): that the first copy of the main colour after the end marker is the end-of-scene copy (the effects of the trigger have run by then), CHECK 4 of the design"},
+    {.step = Step::kMirrorGlass, .phase = Phase::kEndOfScene, .kind = Kind::kScanned, .name = "the car's side mirror glass drawn again with a lookup into the rear view's picture", .call = "RecordMirrorGlass(record, list)",
+     .label_file = "mirror_overlay.cpp", .label = "mirror glass", .closing_label = "after mirror glass", .reads = data::kMirrorView,
+     .deps = {{{Step::kMirrorStamp, "the glass is drawn after the HUD stamp: the two readers of the view's picture, the stamp first, then the side mirrors' glass over the main colour"},
+               {Step::kShaftsComposite, "the haze and the shafts' light are composited first: they do not lie over the mirror's picture"}}},
+     .note = "MIRROR-VIEW MV4 (mirror_overlay.h, perf/MIRROR-VIEW.md): at the same copy, the glass patches of the player's car (MirrorGlass::Current: the pair found by shape, a glass on the picture and wide enough) are drawn again "
+             "from their own host geometry into the main colour with the main depth bound (the glass draw's own depth test with the equal case allowed, nothing written, a few millimetres towards the eye along the view "
+             "ray), the pixel shader reflecting the eye's ray off the glass plane and reading the shared view's picture where the reflected ray goes (the planar lookup, the assumed distance beyond the glass), blended with "
+             "the edge fade. Where the ray traced side mirrors are on they win and this is not recorded. Scanned, not noted: it runs only while mcla_gpu_mirror_overlay is on, with a picture, a pair and a pose. "
+             "CHECK (run): that the overlay lands on the glass the game drew (the depth bias), and the main depth is still there at this copy"},
     // ======================================================== the anchor (TemporalSystem::RecordUpscale) ===========================================
     {.step = Step::kRrGuides, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide pass (diffuse and specular albedo, normals + roughness, hit distance, responsivity)",
      .file = "temporal.cpp", .call = "RecordRrGuides(list, kept, width, height)", .label_file = "rr_guides.cpp", .label = "rr guides", .closing_label = "after rr guides",

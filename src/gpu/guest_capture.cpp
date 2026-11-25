@@ -1470,7 +1470,7 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
 // the scene's composition (M6c.0)
 // ---------------------------------------------------------------------------
 
-void GuestCapture::Composite(uint32_t bucket) {
+void GuestCapture::Composite(uint32_t bucket, uint32_t tag) {
   if (!enabled()) {
     return;
   }
@@ -1484,6 +1484,7 @@ void GuestCapture::Composite(uint32_t bucket) {
   }
   auto* r = new (payload) CompositeRecord();
   r->bucket = bucket;
+  r->tag = tag;
   CountRecord(sizeof(CompositeRecord));
   frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kBatched);

@@ -68,6 +68,7 @@
 #include "rt_scene_service.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
+#include "mirror_overlay.h"
 #include "mirror_view.h"
 #include "lamp_shadows.h"
 #include "local_shadow.h"
@@ -338,6 +339,7 @@ class Renderer final : public RenderThread::Executor {
   LightManager light_manager_;  // render thread; the passive light manager (light_manager.h, mcla_gpu_lights_census): one frame of the lights, checked against the consumers'
   CarShadowMap car_shadow_;   // render thread; the player car's sun shadow map, recorded at the history trigger before the AO's passes (car_shadow_map.h)
   MirrorView mirror_view_;    // render thread; the shared rear view (mirror_view.h, mcla_gpu_mirror_view, debug): the mirror phase's draws drawn into a small image of its own, stamped into the HUD's rectangle
+  MirrorOverlay mirror_overlay_;  // render thread; the side mirrors' glass drawn again with a lookup into the view's picture (mirror_overlay.h, mcla_gpu_mirror_overlay, debug): reads mirror_view_, mirror_glass_ and car_frame_
   CarRtScene car_rt_;         // render thread; the player's car as ray tracing structures (car_rt_scene.h), where the device has them
   CarRtRefl car_rt_refl_;     // render thread; the player car's ray traced self-reflection pass (car_rt_refl.h), reads car_rt_ (car_rt_scene.h)
   CityRtScene city_rt_;       // render thread; the city's geometry as ray tracing structures (city_rt_scene.h; CITY-RT M1), joins car_rt_'s top level

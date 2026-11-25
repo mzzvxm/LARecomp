@@ -7,12 +7,17 @@
 //      exist only while the request says redirect; the stamp follows the guest's one stamp flag.
 //   3. THE RACERS join the side mirrors' view (the main session's decision of 2026-11-22, MIRROR-VIEW.md 11.5).
 //   4. THE FILES: one link header, no second definition, one publisher of the request, one switch (the setting the guest read before, rearview_shared_view, is gone), the wiring lines.
+//   5. JOIN2 (section 14): where the ray traced side mirrors win the request carries no need and no field (no side-only phase nobody reads); the side mirrors' wider field makes the round trip
+//      host request -> guest camera -> CameraFacts -> host plan -> the stamp's crop, and the HUD mirror alone is bit for bit what it was.
 // A program of its own: it needs no game, no ReXGlue and no renderer, and exits 0 when every check holds.
 //
 //   cmake --build <dir> --target larecomp_mirror_view_join_test, then run src/gpu/larecomp_mirror_view_join_test [<src dir>] (exit 0 = passed).
 //   by hand (from the repo root): clang++ -std=c++23 -I src src/gpu/mirror_view_join_test.cpp -o mirror_view_join_test.exe
 
+#include <algorithm>
+#include <cmath>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -88,6 +93,14 @@ struct Frame {
   bool stamp_armed = false;
 };
 
+// What MirrorView::BeginFrame reads besides the switch, the blocked state and the finder's flag (JOIN2).
+struct HostFacts {
+  bool rt_side_mirrors = false;  // CarMirrorRt::active() as of the last frame's start (Scene passes it in)
+  double retail_hfov_deg = 0.0;  // CameraFacts::retail_hfov_deg
+  double stamp_aspect = 0.0;     // the HUD rectangle's width over height
+  mv::Class cls = mv::Class::kMid;
+};
+
 // A host with the state it keeps between frames: the phase tracker, whether a picture is whole and how old it is. It receives the markers the way Renderer -> Scene -> MirrorView does.
 struct Host {
   mv::PhaseTracker phase;
@@ -99,13 +112,18 @@ struct Host {
   bool armed = false;  // MirrorView::stamp_armed_: set by an end marker, cleared at the frame's start
 
   // Scene::BeginFrame -> MirrorView::BeginFrame
-  void BeginFrame(int view_at_frame, bool is_blocked, bool glass_need) {
+  void BeginFrame(int view_at_frame, bool is_blocked, bool glass_need, const HostFacts& x = HostFacts{}) {
     enabled = view_at_frame != 0;
     blocked = is_blocked;
     mv::RequestFacts f;
     f.enabled = enabled;
     f.blocked = blocked;
     f.side_need = glass_need;
+    f.rt_side_mirrors = x.rt_side_mirrors;
+    f.hud_stamp = mv::StampWanted();
+    f.cls = x.cls;
+    f.retail_hfov_deg = x.retail_hfov_deg;
+    f.stamp_aspect = x.stamp_aspect;
     mv::PublishRequest(mv::RequestFor(f));
     phase.FrameStart();
     armed = false;
@@ -156,11 +174,11 @@ struct Notes {
 
 // One whole frame: the host's BeginFrame, then the guest's tick, the cadence, the phase's begin and end, the end-of-scene stamp. `flip_to` >= 0 turns the switch to that value between the guest tracker's
 // read and NoteMirrorPhase's (the worst place for it).
-Frame RunFrame(Host& host, Notes& notes, rs::MarkerTracker& tracker, const World& w, bool glass_need, int flip_to = -1) {
+Frame RunFrame(Host& host, Notes& notes, rs::MarkerTracker& tracker, const World& w, bool glass_need, int flip_to = -1, const HostFacts& hf = HostFacts{}) {
   Frame out;
   // host: the render thread's frame start. The side mirrors' need is MV3's flag, read through the real atomic.
   mg::PublishNeed(mg::NeedState{glass_need, uint8_t(glass_need ? 1 : 0), uint16_t(glass_need ? 240 : 0)});
-  host.BeginFrame(w.view_at_frame, w.blocked, mg::SideNeed());
+  host.BeginFrame(w.view_at_frame, w.blocked, mg::SideNeed(), hf);
 
   // guest: TickRearView
   const bool shared = w.view != 0;
@@ -467,6 +485,374 @@ void TestRacersJoin() {
 }
 
 // ---------------------------------------------------------------------------
+// 5. JOIN2: the ray traced side mirrors win; the field's round trip; the HUD mirror as it was
+// ---------------------------------------------------------------------------
+
+bool SameFrame(const Frame& a, const Frame& b) {
+  return a.request == b.request && a.mode.shared == b.mode.shared && a.mode.hud == b.mode.hud && a.mode.side_need == b.mode.side_need && a.phase_asked == b.phase_asked && a.visible == b.visible &&
+         a.side_only == b.side_only && a.camera_clear_skipped == b.camera_clear_skipped && a.racers == b.racers && a.markers == b.markers && a.host_redirected == b.host_redirected &&
+         a.stamp_armed == b.stamp_armed;
+}
+
+void TestRayTracedMirrorsWin() {
+  // Where CarMirrorRt is active the glass finder's need is nobody's: the request says no need (and no field), so the guest runs no side-only phase, adds no racers and changes nothing the HUD mirror's
+  // own phase did. Every combination of the world: the frame with the finder up is the frame with the finder down.
+  int compared = 0, controls = 0;
+  for (int view : {1, 3}) {
+    for (int bits = 0; bits < 128; ++bits) {
+      World w;
+      w.view = view;
+      w.view_at_frame = view;
+      w.hud = (bits & 1) != 0;
+      w.blocked = (bits & 2) != 0;
+      w.game_visible = (bits & 4) != 0;
+      w.form_visible = (bits & 8) != 0;
+      w.consumer_active = (bits & 16) != 0;
+      w.held = (bits & 32) != 0;
+      const bool prior_whole = (bits & 64) != 0;
+      HostFacts rt;
+      rt.rt_side_mirrors = true;
+      rt.retail_hfov_deg = 100.0;
+      rt.stamp_aspect = 229.0 / 44.0;
+      Frame frames[2];
+      for (int glass = 0; glass < 2; ++glass) {
+        ResetLink();
+        Host host;
+        host.whole = prior_whole;
+        host.age = prior_whole ? 1 : 0;
+        Notes notes;
+        rs::MarkerTracker tracker;
+        frames[glass] = RunFrame(host, notes, tracker, w, glass != 0, -1, rt);
+      }
+      const std::string tag = " [view " + std::to_string(view) + " hud " + std::to_string(w.hud) + " blocked " + std::to_string(w.blocked) + " game " + std::to_string(w.game_visible) + " form " +
+                              std::to_string(w.form_visible) + " active " + std::to_string(w.consumer_active) + " held " + std::to_string(w.held) + " prior " + std::to_string(prior_whole) + "]";
+      Check(SameFrame(frames[0], frames[1]), "RT mirrors win: a frame with the finder's need up is the frame with it down, in everything the guest and the host do" + tag);
+      const Frame& f = frames[1];
+      Check(!f.request.side_need && !f.request.has_field() && f.request.redirect == !w.blocked, "the request: redirect as ever, no need, no field" + tag);
+      Check(!f.mode.side_need && !f.side_only && !f.racers, "no side-only phase, no racers added" + tag);
+      if (!w.hud) {
+        Check(!f.phase_asked && f.markers.empty() && !f.host_redirected && !f.stamp_armed, "the HUD mirror off: the guest asks for no phase nobody reads, no marker, no redirect" + tag);
+      }
+      ++compared;
+      // the control: the same frame with the RT mirrors off does ask for the side-only phase (the test is not vacuous)
+      if (!w.hud && !w.blocked && w.consumer_active && !w.held) {
+        ResetLink();
+        Host host;
+        Notes notes;
+        rs::MarkerTracker tracker;
+        const Frame c = RunFrame(host, notes, tracker, w, true, -1, HostFacts{});
+        Check(c.request.side_need && c.side_only && c.phase_asked && c.markers.size() == 2 && c.host_redirected && !c.stamp_armed, "control: without the RT mirrors the side-only phase runs, bracketed and redirected" + tag);
+        ++controls;
+      }
+    }
+  }
+  Check(compared == 256 && controls == 16, "all combinations ran, and the 16 that can are controls (" + std::to_string(compared) + ", controls " + std::to_string(controls) + ")");
+  ResetLink();
+}
+
+void TestRayTracedMirrorsComeAndGo() {
+  // The RT side mirrors are switched on and off live: the request follows at the next frame, the guest's side-only phase starts and stops with it.
+  ResetLink();
+  Host host;
+  Notes notes;
+  rs::MarkerTracker tracker;
+  World w;
+  w.view = 1;
+  w.view_at_frame = 1;
+  w.hud = false;
+  w.game_visible = false;
+  HostFacts rt;
+  int phases_without = 0, phases_with = 0;
+  for (int frame = 0; frame < 30; ++frame) {
+    rt.rt_side_mirrors = frame >= 10 && frame < 20;
+    const Frame f = RunFrame(host, notes, tracker, w, true, -1, rt);
+    const bool ran = f.markers.size() == 2;
+    (rt.rt_side_mirrors ? phases_with : phases_without) += ran ? 1 : 0;
+    Check(ran == !rt.rt_side_mirrors, "frame " + std::to_string(frame) + ": the side-only phase runs exactly while the RT mirrors are off");
+  }
+  Check(phases_with == 0 && phases_without == 20, "20 phases with the RT mirrors off, none with them on");
+  ResetLink();
+}
+
+// The camera the guest's hook reports for a request (Patch_RearViewCamera): what BuildCamera builds, and the facts it publishes (the 'from the host's request' bit included, MV-J2).
+mv::CameraFacts GuestCamera(float game_fov_deg, float game_aspect, const mv::Request& req, double fov_scale = 1.0) {
+  const rs::CameraBuild cam = rs::BuildCamera(game_fov_deg, game_aspect, 1500.0f, true, req, fov_scale, 0.0);
+  mv::CameraFacts facts;
+  facts.retail_hfov_deg = rs::HudFieldDeg(game_fov_deg, game_aspect, fov_scale);
+  facts.used_hfov_deg = rs::HorizontalFovDeg(cam.fov_deg, cam.aspect);
+  facts.used_vfov_deg = cam.fov_deg;
+  facts.from_request = cam.applied;
+  facts.seq = 1;
+  mv::PublishCamera(facts);  // through the link, as the hook does: packed to the centidegree
+  return mv::CurrentCamera();
+}
+
+// What the phase's begin marker carries for a camera (NoteMirrorPhase(true)): the field of that camera, through the composite record's second word.
+mv::PhaseField TagOf(const mv::CameraFacts& cam) { return mv::UnpackPhaseField(mv::PackPhaseField(mv::PhaseFieldOf(cam))); }
+
+mv::Rig RigOf(double hfov_deg, double vfov_deg) {
+  mv::Rig r;
+  r.tan_half_h = std::tan(hfov_deg * 0.5 * 3.14159265358979323846 / 180.0);
+  r.tan_half_v = std::tan(vfov_deg * 0.5 * 3.14159265358979323846 / 180.0);
+  return r;
+}
+
+void TestFieldRoundTrip() {
+  const float game_aspect = 229.0f / 44.0f;
+  const float game_fov = 26.0f;  // the design's guess for the retail field: about 100 across the 229x44 stamp (CHECK 11)
+  // 1. the side mirrors alone: the field is asked for at once (no retail field is needed), the guest builds it, the begin marker tags the phase with it, the host sizes the view by it
+  for (mv::Class c : {mv::Class::kLow, mv::Class::kMid, mv::Class::kHigh}) {
+    ResetLink();
+    mv::WithdrawCamera();
+    Host host;
+    HostFacts hf;
+    hf.cls = c;
+    hf.stamp_aspect = game_aspect;
+    mv::SetStampWanted(false);  // the HUD form is hidden: the guest's flag
+    host.BeginFrame(1, false, true, hf);
+    const mv::Request asked = mv::CurrentRequest();
+    Check(asked.redirect && asked.side_need && asked.has_field() && std::fabs(asked.hfov_deg - 69.0f) < 1e-3f && std::fabs(asked.vfov_deg - 44.0f) < 1e-3f, "side mirrors alone: 69 x 44 asked at once");
+    const mv::CameraFacts cam = GuestCamera(game_fov, game_aspect, asked);
+    const mv::PhaseField tag = TagOf(cam);
+    Check(tag.requested && tag.known() && std::fabs(tag.hfov_deg - asked.hfov_deg) < 0.0151f && std::fabs(tag.vfov_deg - asked.vfov_deg) < 0.0151f, "the guest built it and the begin marker says so, with the field it asked for");
+    const mv::Plan plan = mv::PlanForPhase(c, 229.0, 44.0, tag);
+    const mv::Plan field = mv::PlanForField(c, double(asked.hfov_deg), double(asked.vfov_deg));
+    Check(plan.width == field.width && plan.height == field.height && plan.hfov_deg > 60.0, "the view is sized by the field");
+    const double camera_aspect = std::tan(double(cam.used_hfov_deg) * 0.5 * 3.14159265358979323846 / 180.0) / std::tan(double(cam.used_vfov_deg) * 0.5 * 3.14159265358979323846 / 180.0);
+    Check(std::fabs(double(plan.width) / double(plan.height) - camera_aspect) / camera_aspect < 0.01, "and its pixels' aspect is the camera's, not the 229 by 44 rectangle's (" + std::to_string(plan.width) + "x" + std::to_string(plan.height) + ")");
+  }
+  // 2. the side mirrors with the HUD stamp: frame 1 has no retail field (nothing asked, the game's own serves both), frame 2 asks 100 x 44, the HUD's crop of it is the game's own picture
+  for (mv::Class c : {mv::Class::kLow, mv::Class::kMid, mv::Class::kHigh}) {
+    ResetLink();
+    mv::WithdrawCamera();
+    Host host;
+    HostFacts hf;
+    hf.cls = c;
+    hf.stamp_aspect = game_aspect;
+    mv::SetStampWanted(true);
+    host.BeginFrame(1, false, true, hf);  // no camera built yet
+    const mv::Request first = mv::CurrentRequest();
+    Check(first.redirect && first.side_need && !first.has_field(), "frame 1, the HUD stamp on and no retail field yet: the need, no field");
+    mv::CameraFacts cam = GuestCamera(game_fov, game_aspect, first);
+    const mv::PhaseField tag1 = TagOf(cam);
+    Check(tag1.known() && !tag1.requested && cam.retail_hfov_deg > 90.0f, "the guest built the game's own field and reported the retail one: the phase's tag is known, not requested");
+    const mv::Plan plan1 = mv::PlanForPhase(c, 229.0, 44.0, tag1);
+    const mv::Plan rect_plan = mv::PlanForRect(c, 229.0, 44.0);
+    Check(plan1.width == rect_plan.width && plan1.height == rect_plan.height && plan1.hfov_deg == 0.0, "so the view is the rectangle's, as the HUD mirror always had");
+    Check(mv::HudCrop(plan1, double(cam.retail_hfov_deg), double(game_aspect)).u1 == 1.0 && mv::HudCrop(plan1, double(cam.retail_hfov_deg), double(game_aspect)).v0 == 0.0, "and the stamp shows all of it");
+    hf.retail_hfov_deg = double(cam.retail_hfov_deg);
+    host.BeginFrame(1, false, true, hf);  // the next frame: the retail field is known
+    const mv::Request second = mv::CurrentRequest();
+    Check(second.has_field() && second.hfov_deg >= cam.retail_hfov_deg - 0.01f && std::fabs(second.vfov_deg - 44.0f) < 1e-3f, "frame 2: a field that holds the retail HUD field across and 44 up");
+    // the guest has not built a camera with it yet: a phase of the old camera is still the rectangle's plan (no stretched picture), whatever the host has asked for since
+    Check(mv::PlanForPhase(c, 229.0, 44.0, TagOf(cam)).hfov_deg == 0.0, "until the guest builds a camera with it, the phases' tags and plans stay the rectangle's");
+    cam = GuestCamera(game_fov, game_aspect, second);
+    const mv::PhaseField tag2 = TagOf(cam);
+    Check(tag2.requested, "the guest builds it: the phase's tag says requested");
+    const mv::Plan plan2 = mv::PlanForPhase(c, 229.0, 44.0, tag2);
+    Check(plan2.hfov_deg > 90.0 && plan2.width == mv::PlanForField(c, double(second.hfov_deg), double(second.vfov_deg)).width, "the view is sized by the field");
+    // the stamp: the crop of the wider view is the game's own picture: for directions inside the retail frustum, the picture coordinate in the crop equals the one the game's own camera gives
+    const double retail = double(cam.retail_hfov_deg);
+    const mv::Crop crop = mv::HudCrop(plan2, retail, double(game_aspect));
+    const mv::Rig view_rig = RigOf(double(cam.used_hfov_deg), double(cam.used_vfov_deg));
+    const mv::Rig hud_rig = RigOf(retail, mv::StampVerticalFov(retail, double(game_aspect)));
+    bool exact = true;
+    for (int i = -4; i <= 4; ++i) {
+      for (int j = -4; j <= 4; ++j) {
+        const mv::V3 dir = mv::Normalize(mv::V3{-1.0, 0.25 * i * hud_rig.tan_half_h, 0.25 * j * hud_rig.tan_half_v});
+        const mv::Uv a = mv::ProjectDirection(view_rig, dir), b = mv::ProjectDirection(hud_rig, dir);
+        const double lu = (a.u - crop.u0) / (crop.u1 - crop.u0), lv = (a.v - crop.v0) / (crop.v1 - crop.v0);
+        exact = exact && a.ok && b.ok && std::fabs(lu - b.u) < 2e-3 && std::fabs(lv - b.v) < 2e-3;  // the link carries the field to a centidegree
+      }
+    }
+    Check(exact, "the HUD stamp's crop of the wider view shows what the game's own camera showed (class " + std::to_string(int(c)) + ")");
+    // the need goes: the request has no field, the guest goes back to the game's own camera, the plan is the rectangle's again
+    host.BeginFrame(1, false, false, hf);
+    const mv::Request gone = mv::CurrentRequest();
+    Check(gone.redirect && !gone.side_need && !gone.has_field(), "the need gone: no field");
+    cam = GuestCamera(game_fov, game_aspect, gone);
+    const mv::Plan back = mv::PlanForPhase(c, 229.0, 44.0, TagOf(cam));
+    Check(back.width == rect_plan.width && back.height == rect_plan.height && back.hfov_deg == 0.0, "the view is the rectangle's again");
+  }
+  // 3. the HUD mirror alone: nothing is ever asked, the camera is the game's own, the plan the rectangle's, the stamp whole: bit for bit what it was
+  for (mv::Class c : {mv::Class::kLow, mv::Class::kMid, mv::Class::kHigh}) {
+    ResetLink();
+    mv::WithdrawCamera();
+    Host host;
+    HostFacts hf;
+    hf.cls = c;
+    hf.stamp_aspect = game_aspect;
+    mv::SetStampWanted(true);
+    for (int frame = 0; frame < 3; ++frame) {
+      host.BeginFrame(1, false, false, hf);
+      const mv::Request r = mv::CurrentRequest();
+      Check(r.redirect && !r.side_need && !r.has_field() && r.every == 1, "HUD mirror alone: a redirect and nothing else");
+      const mv::CameraFacts cam = GuestCamera(game_fov, game_aspect, r);
+      hf.retail_hfov_deg = double(cam.retail_hfov_deg);
+      const mv::PhaseField tag = TagOf(cam);
+      Check(tag.known() && !tag.requested, "the game's own field, known, not requested");
+      const mv::Plan plan = mv::PlanForPhase(c, 229.0, 44.0, tag);
+      const mv::Plan rect_plan = mv::PlanForRect(c, 229.0, 44.0);
+      Check(plan.width == rect_plan.width && plan.height == rect_plan.height && plan.hfov_deg == 0.0 && plan.vfov_deg == 0.0 && plan.every == rect_plan.every, "the view is PlanForRect's, bit for bit");
+      const mv::Crop crop = mv::HudCrop(plan, double(cam.retail_hfov_deg), double(game_aspect));
+      Check(crop.u0 == 0.0 && crop.v0 == 0.0 && crop.u1 == 1.0 && crop.v1 == 1.0, "the stamp shows the whole picture");
+    }
+  }
+  // 4. every request the host can make is one the guest applies and tags (the handshake never stalls): the guest believes the field, the link carries it with the phase's begin marker, the host plans by it
+  int asked = 0;
+  bool all_applied = true, all_tagged = true, all_planned = true;
+  for (mv::Class c : {mv::Class::kLow, mv::Class::kMid, mv::Class::kHigh}) {
+    for (bool hud : {false, true}) {
+      for (double retail = 20.0; retail <= 130.0; retail += 1.5) {
+        for (double aspect : {5.2045, 4.0, 3.5, 6.5, 2.0}) {
+          mv::RequestFacts f;
+          f.enabled = true;
+          f.side_need = true;
+          f.hud_stamp = hud;
+          f.cls = c;
+          f.retail_hfov_deg = retail;
+          f.stamp_aspect = aspect;
+          const mv::Request r = mv::UnpackRequest(mv::Pack(mv::RequestFor(f)));  // the link
+          if (!r.has_field()) continue;
+          ++asked;
+          const rs::Camera cam = rs::SharedCamera(26.0f, game_aspect, r);
+          all_applied = all_applied && cam.applied;
+          mv::CameraFacts facts;
+          facts.used_hfov_deg = rs::HorizontalFovDeg(cam.fov_deg, cam.aspect);
+          facts.used_vfov_deg = cam.fov_deg;
+          facts.from_request = cam.applied;
+          const mv::PhaseField tag = TagOf(mv::UnpackCamera(mv::Pack(facts)));
+          all_tagged = all_tagged && tag.requested && std::fabs(tag.hfov_deg - r.hfov_deg) <= 0.0151f && std::fabs(tag.vfov_deg - r.vfov_deg) <= 0.0151f;
+          const mv::Plan plan = mv::PlanForPhase(c, 229.0, 44.0, tag);
+          const mv::Plan want = mv::PlanForField(c, double(r.hfov_deg), double(r.vfov_deg));
+          all_planned = all_planned && plan.valid() && plan.width == want.width && std::abs(int(plan.height) - int(want.height)) <= 2;
+        }
+      }
+    }
+  }
+  Check(asked > 300, "the sweep made many requests with a field (" + std::to_string(asked) + ")");
+  Check(all_applied, "the guest applies every field the host asks for");
+  Check(all_tagged, "and its begin marker names every one of them as the field asked for, after the camera facts' and the tag's round trips through the link");
+  Check(all_planned, "and the host's plan by the tag is the plan by the request (the same width, the height to the pixel pair)");
+  ResetLink();
+  mv::WithdrawCamera();
+}
+
+// ---------------------------------------------------------------------------
+// 3b. MV-J2: the guest runs ahead of the render thread; a phase's size, its stamp's crop and the overlay's lookup follow the field of ITS camera
+// ---------------------------------------------------------------------------
+
+// The old rule (MIRROR-VIEW.md 15.1: PlanForView / FieldApplied, removed with MV-J2), kept here as a model of what the tag replaced: the host's request of this host frame against the guest's LATEST
+// camera facts. Where the two disagreed the plan fell back to the rectangle's. The test counts how often that was wrong for a guest `lag` frames ahead.
+mv::Plan OldPlanForView(mv::Class c, double rect_w, double rect_h, const mv::Request& req, const mv::CameraFacts& cam) {
+  const bool applied = req.has_field() && cam.valid() && std::fabs(double(req.hfov_deg) - double(cam.used_hfov_deg)) <= 0.05 && std::fabs(double(req.vfov_deg) - double(cam.used_vfov_deg)) <= 0.05;
+  return applied ? mv::PlanForField(c, double(req.hfov_deg), double(req.vfov_deg)) : mv::PlanForRect(c, rect_w, rect_h);
+}
+
+double CameraAspect(const mv::CameraFacts& cam) {
+  return std::tan(double(cam.used_hfov_deg) * 0.5 * 3.14159265358979323846 / 180.0) / std::tan(double(cam.used_vfov_deg) * 0.5 * 3.14159265358979323846 / 180.0);
+}
+
+// Frames of a session: the finder's need and the HUD stamp come and go (random runs of frames); the guest builds one camera and sends one tagged begin per frame, `lag` frames before the host handles that
+// phase; the host's request of frame j is published at its start. For every phase the host handles, the picture's truth is the camera that phase was built with.
+void TestFieldLag() {
+  const float game_aspect = 229.0f / 44.0f;
+  const float game_fov = 26.0f;
+  struct Lcg {
+    uint64_t s;
+    uint32_t Next() {
+      s = s * 6364136223846793005ull + 1442695040888963407ull;
+      return uint32_t(s >> 33);
+    }
+  };
+  int phases = 0, changes = 0;
+  int new_wrong_plan = 0, new_wrong_field = 0, old_wrong_plan = 0, old_wrong_field = 0, old_wrong_at_lag0 = 0;
+  for (mv::Class c : {mv::Class::kLow, mv::Class::kMid, mv::Class::kHigh}) {
+    for (int lag = 0; lag <= 3; ++lag) {
+      for (uint64_t seed = 1; seed <= 6; ++seed) {
+        Lcg rng{seed * 7919u + uint64_t(lag) * 104729u + uint64_t(c) * 31u};
+        const int frames = 400;
+        // the world per guest frame: the finder's need (held in runs) and the HUD stamp flag (the guest's own)
+        std::vector<bool> need(size_t(frames + 8)), hud(size_t(frames + 8));
+        bool n = false, h = true;
+        for (int i = 0; i < frames + 8; ++i) {
+          if (rng.Next() % 23 == 0) n = !n;
+          if (rng.Next() % 31 == 0) h = !h;
+          need[size_t(i)] = n;
+          hud[size_t(i)] = h;
+        }
+        // the host's request at each host frame j (RequestFor, as MirrorView::BeginFrame): it follows the need of j and the guest's flag as of when the host looks (the guest is `lag` frames ahead)
+        std::vector<mv::Request> request(size_t(frames + 8));
+        std::vector<mv::CameraFacts> camera(size_t(frames + 8));
+        std::vector<uint32_t> tag(size_t(frames + 8));
+        // the guest's camera build for guest frame i reads the request of the host frame the render thread has reached when the guest is at i: host frame i - lag
+        // (the host processes guest frame i's phase at host frame i)
+        double retail = 0.0;
+        for (int j = 0; j < frames; ++j) {
+          mv::SetStampWanted(hud[size_t(std::min(j + lag, frames + 7))]);
+          mv::RequestFacts f;
+          f.enabled = true;
+          f.side_need = need[size_t(j)];
+          f.hud_stamp = mv::StampWanted();
+          f.cls = c;
+          f.retail_hfov_deg = retail;
+          f.stamp_aspect = double(game_aspect);
+          request[size_t(j)] = mv::UnpackRequest(mv::Pack(mv::RequestFor(f)));
+          // the guest's frame j + lag has not been built yet for the host at j, but guest frames up to j + lag already are: build them in order here, each from the request the host had published when the guest
+          // reached it (host frame i - lag)
+          const int i = j + lag;
+          if (i < frames) {
+            const mv::Request seen = request[size_t(std::max(0, i - lag))];
+            const rs::CameraBuild b = rs::BuildCamera(game_fov, game_aspect, 1500.0f, true, seen, 1.0, 0.0);
+            mv::CameraFacts facts;
+            facts.retail_hfov_deg = rs::HudFieldDeg(game_fov, game_aspect, 1.0);
+            facts.used_hfov_deg = rs::HorizontalFovDeg(b.fov_deg, b.aspect);
+            facts.used_vfov_deg = b.fov_deg;
+            facts.from_request = b.applied;
+            facts.seq = uint32_t(i & 0xFF);
+            mv::PublishCamera(facts);
+            camera[size_t(i)] = mv::CurrentCamera();
+            tag[size_t(i)] = mv::PackPhaseField(mv::PhaseFieldOf(camera[size_t(i)]));  // NoteMirrorPhase(true) at guest frame i
+            retail = double(facts.retail_hfov_deg);
+          }
+          // the host handles the phase of guest frame j now (its begin marker, then its end): the camera facts that are published at this moment are guest frame j + lag's
+          if (j < frames && camera[size_t(j)].valid()) {
+            ++phases;
+            const mv::CameraFacts truth = camera[size_t(j)];
+            const mv::Plan by_tag = mv::PlanForPhase(c, 229.0, 44.0, mv::UnpackPhaseField(tag[size_t(j)]));
+            const mv::Plan by_old = OldPlanForView(c, 229.0, 44.0, request[size_t(j)], mv::CurrentCamera());
+            const double want = CameraAspect(truth);
+            const bool new_ok = by_tag.valid() && std::fabs(double(by_tag.width) / double(by_tag.height) - want) / want < 0.02;
+            const bool old_ok = by_old.valid() && std::fabs(double(by_old.width) / double(by_old.height) - want) / want < 0.02;
+            new_wrong_plan += new_ok ? 0 : 1;
+            old_wrong_plan += old_ok ? 0 : 1;
+            if (lag == 0) old_wrong_at_lag0 += old_ok ? 0 : 1;
+            // the overlay's lookup field: the picture's own, against the guest's latest facts
+            const mv::PhaseField t = mv::UnpackPhaseField(tag[size_t(j)]);
+            const bool new_field_ok = t.known() && std::fabs(t.hfov_deg - truth.used_hfov_deg) < 0.0151f && std::fabs(t.vfov_deg - truth.used_vfov_deg) < 0.0151f;
+            const mv::CameraFacts latest = mv::CurrentCamera();
+            const bool old_field_ok = std::fabs(latest.used_hfov_deg - truth.used_hfov_deg) < 0.0151f && std::fabs(latest.used_vfov_deg - truth.used_vfov_deg) < 0.0151f;
+            new_wrong_field += new_field_ok ? 0 : 1;
+            old_wrong_field += old_field_ok ? 0 : 1;
+            if (j > 0 && camera[size_t(j - 1)].valid() && std::fabs(camera[size_t(j)].used_hfov_deg - camera[size_t(j - 1)].used_hfov_deg) > 0.5f) ++changes;
+          }
+        }
+      }
+    }
+  }
+  Check(phases > 20000 && changes > 100, "the lag sessions have many phases and many changes of the field (" + std::to_string(phases) + " phases, " + std::to_string(changes) + " changes)");
+  Check(new_wrong_plan == 0, "by the tag, every phase's view has its own camera's aspect, for every class and a guest 0 to 3 frames ahead (" + std::to_string(new_wrong_plan) + " wrong)");
+  Check(new_wrong_field == 0, "by the tag, every picture's lookup field is its own camera's (" + std::to_string(new_wrong_field) + " wrong)");
+  Check(old_wrong_at_lag0 == 0, "the old rule is right with no lag (the model is faithful)");
+  Check(old_wrong_plan > 100 && old_wrong_field > 100, "the old rule (the request against the latest camera facts) is wrong at every change when the guest is ahead: the lag is what this test catches (" + std::to_string(old_wrong_plan) +
+                                                          " stretched plans, " + std::to_string(old_wrong_field) + " wrong lookup fields)");
+  std::printf("lag model: %d phases, %d changes of the field; wrong by the tag: %d plans, %d fields; wrong by the old rule: %d plans, %d fields (%d with no lag)\n", phases, changes, new_wrong_plan,
+              new_wrong_field, old_wrong_plan, old_wrong_field, old_wrong_at_lag0);
+  ResetLink();
+  mv::WithdrawCamera();
+}
+
+// ---------------------------------------------------------------------------
 // 4. the files
 // ---------------------------------------------------------------------------
 
@@ -557,7 +943,8 @@ void TestFiles(const std::string& src) {
     const size_t at = rv.find("static bool SharedViewOn() {");
     const size_t end = rv.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : rv.substr(at, end - at);
-    Check(Has(body, "larecomp::settings::mcla_gpu_mirror_view.Get() != 0") && Has(body, "mcla::gpu::Enabled()") && !Has(body, "rearview_shared"), "the guest half is on exactly while the host's switch is on, with the Plume renderer");
+    Check(Has(body, "mcla::gpu::MirrorViewMode() != 0") && Has(body, "mcla::gpu::Enabled()") && !Has(body, "rearview_shared") && !Has(body, "mcla_gpu_mirror_view.Get()"),
+          "the guest half is on exactly while the host's answer (the SIDE MIRRORS row under the debug switch, gpu.h MirrorViewMode) is not 0, with the Plume renderer");
   }
   {
     const size_t at = rv.find("static void SendMirrorMarker(uint32_t marker) {");
@@ -569,21 +956,28 @@ void TestFiles(const std::string& src) {
     const size_t at = host.find("void NoteMirrorPhase(bool begin) {");
     const size_t end = host.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
-    Check(Has(body, "mcla_gpu_mirror_view.Get() == 0") && Has(body, "g_open.exchange(false") && Has(body, "mirror_view::kMarkerBegin") && Has(body, "mirror_view::kMarkerEnd"),
-          "NoteMirrorPhase tests the switch and sends an end only for a begin it sent");
+    Check(Has(body, "MirrorViewMode() == 0") && !Has(body, "mcla_gpu_mirror_view.Get()") && Has(body, "g_open.exchange(false") && Has(body, "mirror_view::kMarkerBegin") && Has(body, "mirror_view::kMarkerEnd"),
+          "NoteMirrorPhase tests the same answer as the guest's hooks and sends an end only for a begin it sent");
   }
-  Check(Has(gpu_h, "void NoteMirrorPhase(bool begin);"), "gpu.h declares NoteMirrorPhase");
+  Check(Has(gpu_h, "void NoteMirrorPhase(bool begin);") && Has(gpu_h, "int MirrorViewMode();"), "gpu.h declares NoteMirrorPhase and MirrorViewMode");
 
   // ---- the request, once a frame, from one place, before anything can return
   {
-    const size_t at = host.find("void MirrorView::BeginFrame() {");
+    const size_t at = host.find("void MirrorView::BeginFrame(bool rt_side_mirrors) {");
     const size_t end = host.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
     const size_t publish = body.find("mirror_view::PublishRequest(mirror_view::RequestFor(request));");
     Check(publish != std::string::npos && (body.find("return") == std::string::npos || body.find("return") > publish), "MirrorView::BeginFrame publishes the request, and no early return comes before it");
+    Check(Count(body, "PublishRequest(") == 1 && Has(body, "mirror_view::PublishRequest(mirror_view::RequestFor(request));") && !Has(body, "request_"), "the request is the pure rule's answer (RequestFor), published (MV-J2: the plan no longer follows it, so it is not kept)");
     Check(Has(body, "request.enabled = enabled();") && Has(body, "request.blocked = Blocked();") && Has(body, "request.side_need = mirror_glass::SideNeed();"),
           "from the switch, the blocked state and MV3's flag (mirror_glass::SideNeed())");
-    Check(body.find("mode_ = larecomp::settings::mcla_gpu_mirror_view.Get();") < publish, "after the switch is read for the frame");
+    Check(Has(body, "request.rt_side_mirrors = rt_side_mirrors;") && Has(body, "request.hud_stamp = mirror_view::StampWanted();") && Has(body, "request.cls = SizeClass();") &&
+              Has(body, "request.retail_hfov_deg = double(mirror_view::CurrentCamera().retail_hfov_deg);") && Has(body, "request.stamp_aspect = hud.valid() ? double(hud.w) / double(hud.h) : 0.0;"),
+          "JOIN2: and from the RT mirrors' flag, the guest's stamp flag, the class, the HUD's retail field and the rectangle's aspect");
+    Check(body.find("mode_ = setting.mode;") != std::string::npos && body.find("mode_ = setting.mode;") < publish && body.find("mirror_setting::Current()") < body.find("mode_ = setting.mode;"),
+          "after the row and the switch under it are read for the frame (mirror_setting.h Current)");
+    Check(Has(body, "request.every = setting.every;") && body.find("request.every = setting.every;") < publish && body.find("request.every = setting.every;") < body.find("mirror_view::RequestFor(request)"),
+          "MV6: the request carries the level's cadence, set before the pure rule answers");
   }
   {
     const size_t at = host.find("void MirrorView::Shutdown() {");
@@ -593,7 +987,54 @@ void TestFiles(const std::string& src) {
   }
   Check(Has(host, "facts.blocked = Blocked();") && Has(host_h, "bool Blocked() const { return frame_ < blocked_until_ || shaders_failed_; }"), "the phase and the request ask the same Blocked()");
   Check(Has(host, "#include \"mirror_glass_need.h\"") && Has(rules, "inline Request RequestFor(const RequestFacts& f)"), "the request's rule is the pure RequestFor, the finder's flag is the atomic header");
-  Check(Count(scene, "mirror_view_->BeginFrame();") == 1, "Scene::BeginFrame calls MirrorView::BeginFrame once");
+  Check(Count(scene, "mirror_view_->BeginFrame(car_mirror_ && car_mirror_->active());") == 1 && Count(scene, "mirror_view_->BeginFrame(") == 1,
+        "Scene::BeginFrame calls MirrorView::BeginFrame once, with CarMirrorRt::active() (the ray traced side mirrors win)");
+  Check(Has(host_h, "void BeginFrame(bool rt_side_mirrors);") && !Has(host_h, "mirror_view::Request request_;") && Has(host_h, "mirror_view::Plan picture_plan_;"), "JOIN2: the view keeps the plan of its picture (MV-J2: not the request it published)");
+  // ---- MV-J2: the per-phase field tag
+  Check(Has(host_h, "bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field);") && Has(host, "bool MirrorView::BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field) {") &&
+            Has(host, "plan_ = mirror_view::PlanForPhase(SizeClass(), double(rect.w), double(rect.h), field);") && !Has(host, "PlanForView(") && !Has(host, "PlanForRect(") && !Has(rules, "PlanForView(") && !Has(rules, "FieldApplied("),
+        "MV-J2: a phase's size follows the field of its own camera (PlanForPhase, from the begin marker's tag), not the request against the latest camera build (PlanForView and FieldApplied are gone)");
+  Check(Has(host, "picture_field_ = phase_field_;") && Has(host, "phase_field_ = field;") && Has(host, "picture_field_ = mirror_view::PhaseField{};") && Has(host_h, "mirror_view::PhaseField phase_field_;") && Has(host_h, "mirror_view::PhaseField picture_field_;") &&
+            Has(host_h, "bool PictureField(float* hfov_deg, float* vfov_deg) const;") && Has(host, "if (!whole_ || !picture_field_.known()) {"),
+        "MV-J2: the view keeps the field of the phase that drew the picture it holds, and says it only while the picture is whole");
+  {
+    const size_t at = host.find("void NoteMirrorPhase(bool begin) {");
+    const size_t end = host.find("\n}\n", at);
+    const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
+    Check(Has(body, "OnGuestSceneComposited(mirror_view::kMarkerBegin, mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));") && Has(body, "OnGuestSceneComposited(mirror_view::kMarkerEnd);"),
+          "MV-J2: the begin marker carries the field of the phase's camera (the latest facts, read on the guest's own thread), the end carries nothing");
+  }
+  Check(Has(gpu_h, "void OnGuestSceneComposited(uint32_t bucket, uint32_t tag = 0);"), "MV-J2: gpu.h's composite entry takes the record's second word");
+  {
+    const std::string records = ReadFile(src + "/gpu/records.h");
+    const std::string capture = ReadFile(src + "/gpu/guest_capture.cpp");
+    const std::string renderer = ReadFile(src + "/gpu/renderer.cpp");
+    const std::string trace = ReadFile(src + "/gpu/frame_trace.cpp");
+    const size_t rec = records.find("struct CompositeRecord {");
+    const std::string rec_body = rec == std::string::npos ? std::string() : records.substr(rec, records.find("};", rec) - rec);
+    Check(Has(rec_body, "uint32_t bucket = 0;") && Has(rec_body, "uint32_t tag = 0;") && !Has(rec_body, "reserved"), "MV-J2: the composite record's second word is the tag");
+    Check(Has(capture, "void GuestCapture::Composite(uint32_t bucket, uint32_t tag) {") && Has(capture, "  r->bucket = bucket;\n  r->tag = tag;\n  CountRecord(sizeof(CompositeRecord));"), "... the capture writes it");
+    Check(Has(renderer, "void OnGuestSceneComposited(uint32_t bucket, uint32_t tag) {") && Has(renderer, "c->Composite(bucket, tag);") &&
+              Has(renderer, "scene_.OnMirrorMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, list);"),
+          "... the renderer passes it to the scene with the marker");
+    Check(Has(trace, "r.bucket, r.tag, draws_);"), "... and the frame trace prints it");
+  }
+  Check(Has(scene, "void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list) {") && Has(scene, "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag))") &&
+            Has(scene, "const bool field_known = mirror_view_->PictureField(&field_h, &field_v);") && Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);"),
+        "MV-J2: the scene hands the begin's tag to the view and the picture's own field to the overlay");
+  {
+    // nothing sizes, crops or places a picture by the guest's LATEST camera build any more: the host reads it in three places (the guest's own tag at NoteMirrorPhase, the request's retail field, the stamp's
+    // retail field), and the overlay and the scene not at all
+    const std::string overlay = ReadFile(src + "/gpu/mirror_overlay.cpp");
+    Check(Count(host, "CurrentCamera()") == 3 && !Has(overlay, "CurrentCamera()") && !Has(overlay, "ReadViewField") && !Has(scene, "CurrentCamera()"),
+          "MV-J2: the latest camera facts are read by NoteMirrorPhase (the tag), the request's retail field and the stamp's retail field, and by nothing that sizes or places a picture");
+  }
+  Check(Has(rv, "facts.from_request = cam.applied;"), "MV-J2: the guest's camera hook says whether the host's request was applied");
+  Check(Has(host, "mirror_view::HudCrop(picture_plan_, double(mirror_view::CurrentCamera().retail_hfov_deg), stamp_aspect)") && Has(host, "{float(crop.u0), float(crop.v0), float(crop.u1), float(crop.v1)}") &&
+            !Has(host, "{0.0f, 0.0f, 1.0f, 1.0f}") && Has(host, "const double stamp_aspect = rect_.valid() ? double(rect_.w) / double(rect_.h) : 0.0;") && Has(host, "picture_plan_ = plan_;") && Has(host, "picture_plan_ = mirror_view::Plan{};"),
+        "JOIN2: the stamp cuts the HUD's field out of the picture it draws from (the plan the picture was made with)");
+  Check(Has(rv, "facts.retail_hfov_deg = shared::HudFieldDeg(fov_was, aspect_was, fov_scale);") && Has(shared_h, "inline float HudFieldDeg(float game_fov_deg, float game_aspect, double fov_scale)"),
+        "JOIN2: the guest reports the HUD's own field (the game's, narrowed by the debug scale) beside the one it used");
   // the guest reads the need only through the request
   {
     const size_t at = rv.find("static shared::Mode CurrentMode() {");
@@ -630,6 +1071,10 @@ int main(int argc, char** argv) {
   TestRequestEveryFrame();
   TestSideOnlyEndToEnd();
   TestRacersJoin();
+  TestRayTracedMirrorsWin();
+  TestRayTracedMirrorsComeAndGo();
+  TestFieldRoundTrip();
+  TestFieldLag();
   TestFiles(src);
   ResetLink();
   std::printf("mirror_view_join_test: %d checks, %d failed\n", g_checks, g_failed);

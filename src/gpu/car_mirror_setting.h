@@ -23,8 +23,9 @@
 //
 // THE WORDS (RowLabel, RowSuffix) and THE PAGE WIDTH. The pause movie sizes a page to its widest label (suffix included) plus its widest value over every row and every state (pause_menu.cpp
 // "Page width"): at most 41 characters. REFLECTIONS' widest value is "AUTO (RAY TRACED)" (17, CAR SELF-REFLECTIONS) and its widest label "REFLECTIONS ON SURFACES" (23): 40. "RT SIDE MIRRORS" is 15,
-// so a reason after it would make the page wider (15 + 12 + 17 = 44): while the row is not on, its label is the short "MIRRORS" and the reason follows ("MIRRORS (NO RT GPU)" is 19, the
-// longest). Every state is held to the page's budget by a static_assert below.
+// so a reason after it would make the page wider (15 + 12 + 17 = 44): while the row is not on, its label is the short "RT MIRRORS" (as "RT CITY" is the city row's) and the reason follows
+// ("RT MIRRORS (NO RT GPU)" is 22, the longest; it was "MIRRORS" until the plain SIDE MIRRORS row (mirror_setting.h) came before this one, whose label would then have read like it). Every state is
+// held to the page's budget by a static_assert below.
 //
 // Header only; includes nothing of Plume or ReXGlue.
 //
@@ -74,7 +75,7 @@ constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier) {
 
 // The row's label in each state: the whole name while it is on, a short one with the reason after it otherwise (see THE PAGE WIDTH).
 inline constexpr const char kFullLabel[] = "RT SIDE MIRRORS";
-inline constexpr const char kShortLabel[] = "MIRRORS";
+inline constexpr const char kShortLabel[] = "RT MIRRORS";
 constexpr const char* RowLabel(Gate gate) { return gate == Gate::kRuns ? kFullLabel : kShortLabel; }
 constexpr const char* RowSuffix(Gate gate) {
   switch (gate) {

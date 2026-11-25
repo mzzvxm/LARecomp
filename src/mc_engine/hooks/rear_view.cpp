@@ -332,12 +332,12 @@ static bool MainEye(const uint8_t* base, uint32_t renderer, float eye[3]) {
 namespace shared = larecomp::rearview_shared;
 namespace vlink = mcla::gpu::mirror_view;  // the link header's namespace; not `link`: unistd.h declares a function of that name
 
-// The guest half runs only while the host's switch is on and with the Plume renderer (the markers go through its capture; the Xenia renderer has no host half). It is the host's own setting,
-// mcla_gpu_mirror_view, read live here: there is no second guest switch, so the guest cannot send markers to a host that is off (NoteMirrorPhase tests it again, gpu/mirror_view.cpp), and the host
-// does not redirect a phase the guest did not mark (it needs the markers).
+// The guest half runs only while the host's switch is on and with the Plume renderer (the markers go through its capture; the Xenia renderer has no host half). The switch is the host's own answer,
+// read live here (gpu.h MirrorViewMode: the SIDE MIRRORS row, with the debug setting mcla_gpu_mirror_view forcing it on): there is no second guest switch, so the guest cannot send markers to a host that
+// is off (NoteMirrorPhase tests it again, gpu/mirror_view.cpp), and the host does not redirect a phase the guest did not mark (it needs the markers).
 static bool SharedViewOn() {
 #if defined(LARECOMP_HAS_GPU)
-    return larecomp::settings::mcla_gpu_mirror_view.Get() != 0 && mcla::gpu::Enabled();
+    return mcla::gpu::MirrorViewMode() != 0 && mcla::gpu::Enabled();
 #else
     return false;
 #endif
@@ -695,7 +695,9 @@ void Patch_RearViewDiag() {
 //
 // With the guest half on (mcla_gpu_mirror_view) the hook sets f1 and f2 to the field the host asks for (gpu/mirror_view_link.h Request: its view is drawn with that field, and the
 // host's lookup and crop math assume it) and publishes the game's own field first (CameraFacts::retail_hfov_deg: what the retail HUD mirror shows across, 2 atan(tan(f1/2) x f2), which
-// the host's HUD stamp keeps), then the field used. Without a request the game's own field stays (the retail look). rearview_fov_scale is then NOT applied to a field the host asked for
+// the host's HUD stamp keeps), then the field used: the facts of THIS build go to the host with the begin marker of the phase it is for (gpu NoteMirrorPhase reads them: vlink::PhaseField, MV-J2),
+// so the host never mistakes a later camera for the one a queued phase was drawn with. CHECK (MV-J2): the camera step runs before the begin step in the same frame, on this thread (the facts of the
+// begin's tag are then this phase's); the host logs "[mirror view] phase field" at every change of the tag, which must follow the "[RearView] camera" line one to three frames later. Without a request the game's own field stays (the retail look). rearview_fov_scale is then NOT applied to a field the host asked for
 // (it would break the host's math); rearview_far still is (it changes what is drawn, not the picture's geometry).
 // Without the guest half: rearview_fov_scale narrows f1 and rearview_far pulls in f4 (rear_view_cheap.h), and both leave the registers alone while off.
 //
@@ -717,9 +719,10 @@ void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {
         ++g_shared_stats.camera_builds;
         if (cam.applied) ++g_shared_stats.camera_applied;
         vlink::CameraFacts facts;
-        facts.retail_hfov_deg = shared::HorizontalFovDeg(fov_was, aspect_was);
+        facts.retail_hfov_deg = shared::HudFieldDeg(fov_was, aspect_was, fov_scale);  // the HUD mirror's field without a request (the host's stamp cuts it out of a wider view)
         facts.used_hfov_deg = shared::HorizontalFovDeg(cam.fov_deg, cam.aspect);
         facts.used_vfov_deg = cam.fov_deg;
+        facts.from_request = cam.applied;  // the host's plan follows a requested field, the rectangle otherwise: it rides on this phase's begin marker (NoteMirrorPhase, vlink::PhaseField)
         facts.seq = uint32_t(g_shared_stats.camera_builds & 0xFFu);
         vlink::PublishCamera(facts);
         static float logged_fov = -1.0f, logged_aspect = -1.0f, logged_used = -1.0f;
@@ -728,7 +731,7 @@ void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {
             logged_aspect = aspect_was;
             logged_used = cam.fov_deg;
             LARECOMP_APP_INFO("[RearView] camera: the game's own field {:.2f} deg up, aspect {:.3f} ({:.1f} deg across); built with {:.2f} deg up, {:.1f} deg across{}", fov_was, aspect_was,
-                              facts.retail_hfov_deg, cam.fov_deg, facts.used_hfov_deg, cam.applied ? " (the host's request)" : " (the game's own)");
+                              shared::HorizontalFovDeg(fov_was, aspect_was), cam.fov_deg, facts.used_hfov_deg, cam.applied ? " (the host's request)" : " (the game's own)");
         }
     }
     f1.f64 = double(cam.fov_deg);

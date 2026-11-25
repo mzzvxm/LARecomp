@@ -13,7 +13,11 @@
 //      mcla::gpu::NoteMirrorPhase(false)             at its end (Patch_RearViewPhaseEnd, r30 = 0x1000000)
 //      (declared in gpu/gpu.h, defined in gpu/mirror_view.cpp: it sends the marker below only while mcla_gpu_mirror_view is on, and an end only for a begin it sent). On a frame whose phase is held (the
 //      every-Nth-frame cadence) call the two back to back, with no draw between, where the phase would have run: the host then stamps the held picture.
-//   4. PublishGuest(GuestFacts) once a frame from the frame tick, PublishCamera(CameraFacts) at each camera build (facts for the host: nothing in the host needs them to work yet).
+//      THE BEGIN MARKER CARRIES THE PHASE'S FIELD (MV-J2, PhaseField below): the field the camera of THAT phase was built with, in the composite record's second word, in order with the draws. The guest
+//      runs one to three frames ahead of the render thread, so what the host reads from the latest camera build (CurrentCamera) can belong to a later phase than the draws it is sizing; the tag
+//      cannot: the host's plan, its stamp's crop and the overlay's lookup all take their field from the marker of the phase they belong to.
+//   4. PublishGuest(GuestFacts) once a frame from the frame tick, PublishCamera(CameraFacts) at each camera build (facts for the host: the retail field for the request, the log; the phase's own field
+//      goes with its marker).
 // The markers go through the composite record's bucket, the side channel of the UI messages (mc_engine/display/ultrawide.h: kUiWorldBegin is 0x7F000001; IsUiMessage tests the top byte 0x7F).
 // They are NOT UI messages: the renderer tests IsMarker first and hands them to the view, which needs the open command list.
 //
@@ -140,10 +144,12 @@ inline void PublishGuest(const GuestFacts& g) { g_guest.store(Pack(g), std::memo
 inline GuestFacts CurrentGuest() { return UnpackGuest(g_guest.load(std::memory_order_relaxed)); }
 
 struct CameraFacts {
-  float retail_hfov_deg = 0.0f;  // what the game's own camera call asked for, across: the HUD mirror's retail field (2 atan(tan(f1 / 2) * f2), f1 the vertical field, f2 the aspect)
+  float retail_hfov_deg = 0.0f;  // the field the HUD mirror shows across WITHOUT a request from the host: the game's own camera call (2 atan(tan(f1 / 2) * f2), f1 the vertical field, f2 the aspect), narrowed by the
+                                 // debug option rearview_fov_scale where it is set. The host asks for a wider view only if it can cut this field out of it (mirror_view_rules.h SideMirrorsField, HudCrop)
   float used_hfov_deg = 0.0f;    // what the camera was built with (the same as the request's when the guest applied it, else the game's own)
   float used_vfov_deg = 0.0f;
   uint32_t seq = 0;              // counts camera builds, modulo 256: a host that sees it change knows a new camera was built
+  bool from_request = false;     // the field used is the host's request (the guest applied it), not the game's own: the host's plan follows a requested field, the rectangle otherwise (MV-J2)
   bool valid() const { return used_hfov_deg > 0.0f && used_vfov_deg > 0.0f; }
   bool operator==(const CameraFacts&) const = default;
 };
@@ -152,6 +158,7 @@ inline uint64_t Pack(const CameraFacts& c) {
   uint64_t v = uint64_t(ToCenti(c.retail_hfov_deg));
   v |= uint64_t(ToCenti(c.used_hfov_deg)) << 16;
   v |= uint64_t(ToCenti(c.used_vfov_deg)) << 32;
+  v |= uint64_t(c.from_request ? 1u : 0u) << 48;
   v |= uint64_t(c.seq & 0xFFu) << 56;
   return v;
 }
@@ -160,6 +167,7 @@ inline CameraFacts UnpackCamera(uint64_t v) {
   c.retail_hfov_deg = FromCenti(uint32_t(v & 0xFFFFu));
   c.used_hfov_deg = FromCenti(uint32_t((v >> 16) & 0xFFFFu));
   c.used_vfov_deg = FromCenti(uint32_t((v >> 32) & 0xFFFFu));
+  c.from_request = ((v >> 48) & 1u) != 0;
   c.seq = uint32_t((v >> 56) & 0xFFu);
   return c;
 }
@@ -171,5 +179,56 @@ inline void PublishCamera(const CameraFacts& c) { g_camera.store(Pack(c), std::m
 inline void WithdrawCamera() { g_camera.store(0, std::memory_order_relaxed); }
 // The host.
 inline CameraFacts CurrentCamera() { return UnpackCamera(g_camera.load(std::memory_order_relaxed)); }
+
+// ---------------------------------------------------------------------------
+// guest -> host: the phase's own field (MV-J2: the tag of the begin marker)
+// ---------------------------------------------------------------------------
+
+// The field the camera of ONE phase was built with, sent with that phase's begin marker (the composite record's second word) so that the host sizes the view, crops the stamp and places the glass lookup by
+// the field of the draws it is handling, not by the guest's latest camera build, which can be a later phase's (the guest is one to three frames ahead of the render thread): a mirror coming into view or
+// going out of it, or the HUD stamp coming and going, changes the field from one phase to the next, and the facts of a later camera on an earlier phase's picture stretch it. 0 = no tag: no camera was
+// built yet (the overlay then says "field unknown", as before).
+//   hfov_deg, vfov_deg  the field the camera was built with (the game's own for the HUD mirror's phase, the host's request when the guest applied it): the overlay's lookup reads these
+//   requested           the field is the host's request, applied: the view is sized by it (mirror_view_rules.h PlanForPhase); false = the game's own field: the view is the rectangle's (PlanForRect)
+struct PhaseField {
+  float hfov_deg = 0.0f;
+  float vfov_deg = 0.0f;
+  bool requested = false;
+  bool known() const { return hfov_deg > 0.0f && vfov_deg > 0.0f; }
+  bool operator==(const PhaseField&) const = default;
+};
+
+// Centidegrees again: across in 16 bits, up in 15 (0 to 327.67 degrees: the view's vertical field never passes 45), the top bit says `requested`. A field with a missing half is no field (0).
+inline uint32_t PackPhaseField(const PhaseField& f) {
+  const uint32_t h = ToCenti(f.hfov_deg);
+  const uint32_t v = std::min<uint32_t>(ToCenti(f.vfov_deg), 0x7FFFu);
+  if (h == 0 || v == 0) {
+    return 0;
+  }
+  return h | (v << 16) | (f.requested ? 0x80000000u : 0u);
+}
+inline PhaseField UnpackPhaseField(uint32_t tag) {
+  PhaseField f;
+  const uint32_t h = tag & 0xFFFFu;
+  const uint32_t v = (tag >> 16) & 0x7FFFu;
+  if (h == 0 || v == 0) {
+    return f;
+  }
+  f.hfov_deg = FromCenti(h);
+  f.vfov_deg = FromCenti(v);
+  f.requested = (tag & 0x80000000u) != 0;
+  return f;
+}
+// What the guest tags a phase with: the field of the camera it built for it (the facts it published at that build). No camera built yet = no tag.
+inline PhaseField PhaseFieldOf(const CameraFacts& c) {
+  PhaseField f;
+  if (!c.valid()) {
+    return f;
+  }
+  f.hfov_deg = c.used_hfov_deg;
+  f.vfov_deg = c.used_vfov_deg;
+  f.requested = c.from_request;
+  return f;
+}
 
 }  // namespace mcla::gpu::mirror_view

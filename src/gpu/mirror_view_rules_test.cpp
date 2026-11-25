@@ -212,6 +212,257 @@ void TestCrop() {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+// JOIN2: the side mirrors' wider field, the plan that follows it, the HUD's crop of it, and the request that carries it (perf/MIRROR-VIEW.md section 14)
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+constexpr double kRetailHfov = 100.0;  // the design's guess of the HUD mirror's retail field across (CHECK 11): 100 across the 229x44 stamp is 26 up
+constexpr double kStampAspect = 229.0 / 44.0;
+
+void TestSideMirrorsNumbers() {
+  // The two constants are what the assumed geometry needs (both glasses' lookups at the assumed distance, centred on straight back), rounded UP to a whole degree: a change of the geometry or of
+  // the constants fails here.
+  const Glass left = LeftMirror(), right = RightMirror();
+  const Rig rig = MakeRig(kEye, 70.0, 40.0);
+  V3 dl[5], dr[5], all[10];
+  LookupDirections(rig, kEye, left, kAssumedDistance, dl);
+  LookupDirections(rig, kEye, right, kAssumedDistance, dr);
+  for (int i = 0; i < 5; ++i) {
+    all[i] = dl[i];
+    all[5 + i] = dr[i];
+  }
+  const Extent both = ExtentOf(rig, all, 10);
+  const Extent el = ExtentOf(rig, dl, 5);
+  const double need_h = 2.0 * Deg(both.half_h), need_v = 2.0 * Deg(both.half_v);
+  Check(kSideMirrorsHfovDeg >= need_h && kSideMirrorsHfovDeg < need_h + 1.0, "the side mirrors' field across is the extent both glasses need, rounded up to a degree (" + std::to_string(need_h) + ")");
+  Check(kSideMirrorsVfovDeg >= need_v && kSideMirrorsVfovDeg < need_v + 1.0, "... and up (" + std::to_string(need_v) + ")");
+  Check(Near(kSideMirrorsHfovDeg, 59.0) && Near(kSideMirrorsVfovDeg, 34.0), "the numbers the design and the report quote: 59 x 34 degrees");
+  const Plan side = PlanView(Class::kMid, kSideMirrorsHfovDeg, kSideMirrorsVfovDeg, 0.0);
+  Check(Near(side.hfov_deg, 69.0) && Near(side.vfov_deg, 44.0), "with the margin of 5 degrees a side: 69 x 44 degrees");
+  // what the game's own HUD field cannot do: 26 degrees up reaches 13 below straight back, the left glass's lookups go to 16.9 below
+  const double retail_v = StampVerticalFov(kRetailHfov, kStampAspect);
+  Check(0.5 * retail_v < 13.5 && 0.5 * retail_v < Deg(el.half_v) - 3.0, "the retail HUD field reaches only about 13 degrees below straight back: short of the left glass's " + std::to_string(Deg(el.half_v)));
+  Check(0.5 * side.vfov_deg >= Deg(el.half_v) + 5.0 - 1e-9 && 0.5 * side.hfov_deg >= Deg(both.half_h) + 5.0 - 1e-9, "the side mirrors' field holds both glasses with the margin");
+  // every lookup of both glasses lands inside the picture of the side mirrors' field, centred on straight back
+  const Rig wide = MakeRig(kEye, side.hfov_deg, side.vfov_deg);
+  bool inside = true;
+  for (const Glass& g : {left, right}) {
+    V3 d[5];
+    LookupDirections(wide, kEye, g, kAssumedDistance, d);
+    for (const V3& v : d) inside = inside && Inside(ProjectDirection(wide, v));
+  }
+  Check(inside, "the lookups of both glasses' corners and middles land inside the 69 x 44 picture");
+  bool retail_inside = true;
+  const Rig retail = MakeRig(kEye, kRetailHfov, retail_v);
+  for (const Glass& g : {left, right}) {
+    V3 d[5];
+    LookupDirections(retail, kEye, g, kAssumedDistance, d);
+    for (const V3& v : d) retail_inside = retail_inside && Inside(ProjectDirection(retail, v));
+  }
+  Check(!retail_inside, "... while some of them fall outside the retail HUD field");
+}
+
+void TestPlanForField() {
+  struct F {
+    double h, v;
+  };
+  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+    for (const F f : {F{69.0, 44.0}, F{100.0, 44.0}, F{100.0, 26.0}, F{45.0, 25.0}, F{110.0, 45.0}}) {
+      const Plan p = PlanForField(c, f.h, f.v);
+      const std::string tag = " [class " + std::to_string(int(c)) + " " + std::to_string(f.h) + "x" + std::to_string(f.v) + "]";
+      Check(p.valid() && Near(p.hfov_deg, f.h) && Near(p.vfov_deg, f.v), "the plan keeps the field it was made for" + tag);
+      Check(p.width % 16 == 0 && p.width <= MaxWidth(c) && p.height % 2 == 0 && p.height >= 2, "a width of whole 16s within the class's cap, an even height" + tag);
+      const double exact = double(p.width) * std::tan(Rad(f.v) * 0.5) / std::tan(Rad(f.h) * 0.5);
+      Check(std::fabs(double(p.height) - exact) <= 1.0, "the height follows the field's own aspect (the camera's): within a pixel" + tag);
+      Check(p.every == Cadence(c), "the class's cadence" + tag);
+      Check(double(p.width) <= PixelsPerDegree(c) * f.h + 16.0, "no more pixels per degree than the class's (the cap aside)" + tag);
+    }
+  }
+  // the numbers the report quotes
+  const Plan mid = PlanForField(Class::kMid, 69.0, 44.0), high = PlanForField(Class::kHigh, 100.0, 44.0), low = PlanForField(Class::kLow, 69.0, 44.0);
+  Check(mid.width == 496 && mid.height == 292, "Mid, 69 x 44: 496 x 292 (" + std::to_string(mid.width) + "x" + std::to_string(mid.height) + ")");
+  Check(low.width == 352 && low.height == 206, "Low, 69 x 44: 352 x 206 (" + std::to_string(low.width) + "x" + std::to_string(low.height) + ")");
+  Check(high.width == 768 && high.height == 260, "High, 100 x 44: 768 x 260 (" + std::to_string(high.width) + "x" + std::to_string(high.height) + ")");
+  // the size of PlanView (the design's tables) and this one differ only by the rounding of the height: the same width, and a height within 16
+  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+    const Plan a = PlanView(c, kSideMirrorsHfovDeg, kSideMirrorsVfovDeg, 0.0), b = PlanForField(c, a.hfov_deg, a.vfov_deg);
+    Check(a.width == b.width && std::abs(int(a.height) - int(b.height)) <= 16, "the same width as the design's table, a height within 16 of it");
+  }
+  Check(!PlanForField(Class::kMid, 0.0, 44.0).valid() && !PlanForField(Class::kMid, 69.0, 0.0).valid() && !PlanForField(Class::kMid, -5.0, 44.0).valid(), "no field, no view");
+  Check(!PlanForField(Class::kMid, 180.0, 44.0).valid() && !PlanForField(Class::kMid, 69.0, 200.0).valid() && !PlanForField(Class::kMid, std::nan(""), 44.0).valid(), "a field of 180 or more, or NaN: no view");
+}
+
+void TestSideMirrorsField() {
+  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+    const Field alone = SideMirrorsField(c, false, 0.0, 0.0);
+    Check(alone.asked() && Near(alone.hfov_deg, 69.0) && Near(alone.vfov_deg, 44.0), "the side mirrors alone: 69 x 44 degrees, whatever the retail field and the rectangle are");
+    const Field alone2 = SideMirrorsField(c, false, 120.0, 2.0);
+    Check(alone2.asked() && Near(alone2.hfov_deg, 69.0) && Near(alone2.vfov_deg, 44.0), "... even where a stamp could not be cut out (no stamp is drawn)");
+    const Field both = SideMirrorsField(c, true, kRetailHfov, kStampAspect);
+    Check(both.asked() && Near(both.hfov_deg, 100.0) && Near(both.vfov_deg, 44.0), "with the HUD stamp (retail 100 across, 26 up): 100 x 44, the larger of the two in each direction");
+    const Field narrow = SideMirrorsField(c, true, 60.0, kStampAspect);
+    Check(narrow.asked() && Near(narrow.hfov_deg, 69.0) && Near(narrow.vfov_deg, 44.0), "a narrower retail HUD field: the side mirrors' own field holds it");
+    const Field top = SideMirrorsField(c, true, 110.0, kStampAspect);
+    Check(top.asked() && Near(top.hfov_deg, 110.0), "a retail field at the view's limit (110) is held");
+    Check(!SideMirrorsField(c, true, 0.0, kStampAspect).asked(), "no camera built yet (retail field 0): nothing asked, the game's own field serves both until it reports");
+    Check(!SideMirrorsField(c, true, kRetailHfov, 0.0).asked(), "no rectangle: nothing asked");
+    Check(!SideMirrorsField(c, true, 110.5, kStampAspect).asked() && !SideMirrorsField(c, true, 140.0, kStampAspect).asked(), "a retail field wider than the view can be is never cut down: nothing asked");
+    Check(!SideMirrorsField(c, true, kRetailHfov, 2.0).asked(), "a retail picture taller than the view can be (100 across a 2:1 stamp is 62 up): nothing asked");
+  }
+  // whenever a field is asked, the view holds the HUD's whole retail frustum: the crop is the HUD's picture exactly
+  bool held = true, exact = true;
+  int asked = 0;
+  uint32_t seed = 7u;
+  auto rnd = [&seed]() {
+    seed = seed * 1664525u + 1013904223u;
+    return double((seed >> 8) & 0xFFFFu) / 65535.0;
+  };
+  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+    for (double retail = 30.0; retail <= 112.0; retail += 2.5) {
+      for (double aspect : {5.2045, 4.0, 3.5, 6.5}) {
+        const Field f = SideMirrorsField(c, true, retail, aspect);
+        if (!f.asked()) continue;
+        ++asked;
+        const Plan view = PlanForField(c, f.hfov_deg, f.vfov_deg);
+        const Crop crop = HudCrop(view, retail, aspect);
+        const double tan_hud_h = std::tan(Rad(retail) * 0.5), tan_hud_v = tan_hud_h / aspect;
+        held = held && std::tan(Rad(f.hfov_deg) * 0.5) >= tan_hud_h - 1e-12 && std::tan(Rad(f.vfov_deg) * 0.5) >= tan_hud_v - 1e-12;
+        const Rig view_rig = MakeRig(kEye, f.hfov_deg, f.vfov_deg);
+        const Rig hud_rig = MakeRig(kEye, retail, StampVerticalFov(retail, aspect));
+        for (int i = 0; i < 40; ++i) {
+          const double tx = 2.0 * rnd() - 1.0, ty = 2.0 * rnd() - 1.0;
+          const V3 dir = Normalize(V3{-1.0, tx * tan_hud_h, ty * tan_hud_v});
+          const Uv a = ProjectDirection(view_rig, dir), b = ProjectDirection(hud_rig, dir);
+          const double lu = (a.u - crop.u0) / (crop.u1 - crop.u0), lv = (a.v - crop.v0) / (crop.v1 - crop.v0);
+          exact = exact && a.ok && b.ok && Near(lu, b.u, 1e-9) && Near(lv, b.v, 1e-9);
+        }
+      }
+    }
+  }
+  Check(asked > 100, "the sweep asked for a field in many cases (" + std::to_string(asked) + ")");
+  Check(held, "whenever a field is requested for the HUD stamp too, the view's frustum holds the HUD's retail frustum whole");
+  Check(exact, "and the stamp's crop of it lands every direction of the retail frustum on the same picture coordinate the game's own camera gave (the HUD mirror looks exactly as before)");
+}
+
+void TestRequestField() {
+  const auto facts = [](bool need, bool rt, bool hud, double retail, double aspect, Class c) {
+    RequestFacts f;
+    f.enabled = true;
+    f.side_need = need;
+    f.rt_side_mirrors = rt;
+    f.hud_stamp = hud;
+    f.retail_hfov_deg = retail;
+    f.stamp_aspect = aspect;
+    f.cls = c;
+    return f;
+  };
+  // side mirrors only: the wider field and the need, redirect on
+  const Request alone = RequestFor(facts(true, false, false, kRetailHfov, kStampAspect, Class::kMid));
+  Check(alone.redirect && alone.side_need && alone.hfov_deg == 69.0f && alone.vfov_deg == 44.0f && alone.every == 1, "side mirrors only: redirect, need, 69 x 44, no cadence");
+  const Request both = RequestFor(facts(true, false, true, kRetailHfov, kStampAspect, Class::kMid));
+  Check(both.redirect && both.side_need && both.hfov_deg == 100.0f && both.vfov_deg == 44.0f, "side mirrors and the HUD stamp: 100 x 44");
+  const Request unknown = RequestFor(facts(true, false, true, 0.0, kStampAspect, Class::kMid));
+  Check(unknown.redirect && unknown.side_need && !unknown.has_field(), "the retail field not reported yet: the need, no field");
+  const Request hud_only = RequestFor(facts(false, false, true, kRetailHfov, kStampAspect, Class::kMid));
+  Check(hud_only.redirect && !hud_only.side_need && !hud_only.has_field(), "no need (the HUD mirror alone): no field, the game's own, the HUD mirror as it always was");
+  // the ray traced side mirrors win: no need, no field, no side-only phase nobody reads; the HUD mirror's own phase is untouched
+  const Request rt_alone = RequestFor(facts(true, true, false, kRetailHfov, kStampAspect, Class::kHigh));
+  Check(rt_alone.redirect && !rt_alone.side_need && !rt_alone.has_field() && rt_alone.every == 1, "RT side mirrors win, HUD stamp off: the redirect stays, the need and the field do not (the guest asks for no phase)");
+  const Request rt_hud = RequestFor(facts(true, true, true, kRetailHfov, kStampAspect, Class::kHigh));
+  Check(rt_hud.redirect && !rt_hud.side_need && !rt_hud.has_field(), "RT side mirrors win, HUD stamp on: the HUD mirror from the view at the game's own field, as without a finder");
+  Check(RequestFor(facts(true, false, false, kRetailHfov, kStampAspect, Class::kMid)) != RequestFor(facts(true, true, false, kRetailHfov, kStampAspect, Class::kMid)), "the RT flag changes the request");
+  // exhaustive over the inputs: what a request may say
+  int fields = 0;
+  for (int bits = 0; bits < 128; ++bits) {
+    RequestFacts f;
+    f.enabled = (bits & 1) != 0;
+    f.blocked = (bits & 2) != 0;
+    f.side_need = (bits & 4) != 0;
+    f.rt_side_mirrors = (bits & 8) != 0;
+    f.hud_stamp = (bits & 16) != 0;
+    f.retail_hfov_deg = (bits & 32) != 0 ? kRetailHfov : 0.0;
+    f.stamp_aspect = (bits & 64) != 0 ? kStampAspect : 0.0;
+    for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+      f.cls = c;
+      const Request r = RequestFor(f);
+      const std::string tag = " [bits " + std::to_string(bits) + " class " + std::to_string(int(c)) + "]";
+      Check(r.redirect == (f.enabled && !f.blocked), "redirect: the switch on and not blocked" + tag);
+      Check(r.side_need == (r.redirect && f.side_need && !f.rt_side_mirrors), "need: a redirect, the finder's flag, and the RT mirrors not winning" + tag);
+      Check(!r.has_field() || r.side_need, "a field is asked for only together with the need" + tag);
+      Check(r.every == 1, "no cadence" + tag);
+      if (r.has_field()) {
+        ++fields;
+        Check(r.hfov_deg >= kMinHorizontalFov && r.hfov_deg <= kMaxHorizontalFov && r.vfov_deg >= kMinVerticalFov && r.vfov_deg <= kMaxVerticalFov, "the field is within the view's limits" + tag);
+        const Request back = UnpackRequest(Pack(r));
+        Check(back == r, "and the guest reads the same field from the link" + tag);
+      }
+    }
+  }
+  Check(fields == 15, "the sweep carried a field in exactly the 15 requests that can (side only: 4 retail / rectangle combinations x 3 classes; with the stamp: only when both are known, x 3: " + std::to_string(fields) + ")");
+  // published and read as the guest reads it
+  PublishRequest(alone);
+  Check(CurrentRequest() == alone && CurrentRequest().has_field(), "published: the guest reads redirect, need and the field");
+  PublishRequest(RequestFor(facts(true, true, false, kRetailHfov, kStampAspect, Class::kMid)));
+  Check(!CurrentRequest().side_need && !CurrentRequest().has_field(), "the next frame with the RT mirrors on: need and field are gone at once");
+  WithdrawRequest();
+  Check(CurrentRequest() == Request{}, "withdrawn");
+}
+
+// MV-J2: the view's size follows the field the camera of THIS phase was built with (the begin marker's tag), nothing else.
+void TestPlanForPhase() {
+  const PhaseField none;
+  PhaseField req;
+  req.hfov_deg = 69.0f;
+  req.vfov_deg = 44.0f;
+  req.requested = true;
+  PhaseField own;  // the game's own camera: its field, not a request
+  own.hfov_deg = 100.0f;
+  own.vfov_deg = 25.8f;
+  own.requested = false;
+  Check(req.known() && own.known() && !none.known(), "a tag with both halves is a known field");
+  // the plan: the rectangle's where the camera was the game's own (the HUD mirror as it always was, bit for bit), the field's where it was the host's
+  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+    const Plan rect_plan = PlanForRect(c, 229.0, 44.0);
+    const Plan a = PlanForPhase(c, 229.0, 44.0, none);
+    Check(a.width == rect_plan.width && a.height == rect_plan.height && a.hfov_deg == 0.0 && a.vfov_deg == 0.0 && a.every == rect_plan.every, "no tag (no camera yet): PlanForRect, bit for bit");
+    const Plan b = PlanForPhase(c, 229.0, 44.0, own);
+    Check(b.width == rect_plan.width && b.height == rect_plan.height && b.hfov_deg == 0.0 && b.vfov_deg == 0.0 && b.every == rect_plan.every,
+          "the game's own camera, known but not requested: PlanForRect, bit for bit (the HUD mirror's view is unchanged)");
+    const Plan d = PlanForPhase(c, 229.0, 44.0, req);
+    const Plan e = PlanForField(c, 69.0, 44.0);
+    Check(d.width == e.width && d.height == e.height && Near(d.hfov_deg, 69.0) && Near(d.vfov_deg, 44.0) && d.every == e.every, "the host's field applied: the field's plan, whatever the rectangle's aspect is");
+    const Plan g = PlanForPhase(c, 100.0, 100.0, req);
+    Check(g.width == e.width && g.height == e.height, "... the rectangle's size does not enter");
+    // the picture's pixels are the camera's aspect (no stretch): the camera is built with tan(h/2) / tan(v/2) (rear_view_shared.h SharedCamera)
+    const double camera_aspect = std::tan(Rad(69.0) * 0.5) / std::tan(Rad(44.0) * 0.5);
+    Check(Near(double(d.width) / double(d.height), camera_aspect, camera_aspect * 0.01), "the plan's pixel aspect is the tag's camera's");
+    // a requested tag with a half missing is no field: the rectangle's plan
+    PhaseField broken = req;
+    broken.vfov_deg = 0.0f;
+    const Plan h = PlanForPhase(c, 229.0, 44.0, broken);
+    Check(h.width == rect_plan.width && h.height == rect_plan.height && h.hfov_deg == 0.0, "a requested field with a half missing: the rectangle's plan");
+  }
+  // THE LAG (J2): the plan of a phase is a function of its own tag, so a phase that was built before a change is sized by the old field however many frames the guest has moved on; the old rule
+  // (the host's request against the guest's latest camera facts) sized it by whichever they agreed on at the moment the host looked, which a guest running ahead made the rectangle's plan: a picture
+  // drawn with a 69 x 44 camera into a 229 x 44 aspect.
+  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
+    PhaseField queue[3] = {own, req, own};  // phases the guest built camera 1 (game's own), 2 (requested), 3 (game's own again) for, queued before the host handled any
+    const double want_aspect[3] = {229.0 / 44.0, std::tan(Rad(69.0) * 0.5) / std::tan(Rad(44.0) * 0.5), 229.0 / 44.0};
+    for (int i = 0; i < 3; ++i) {
+      const Plan p = PlanForPhase(c, 229.0, 44.0, queue[i]);
+      const double got = double(p.width) / double(p.height);
+      Check(Near(got, want_aspect[i], want_aspect[i] * 0.02), "a queued phase is sized by its own camera's aspect, whatever the guest built after it (class " + std::to_string(int(c)) + ", phase " + std::to_string(i) + ")");
+    }
+  }
+  // the HUD's crop of a plan with no field of its own is everything (the picture is the HUD's already)
+  const Crop whole = HudCrop(PlanForRect(Class::kMid, 229.0, 44.0), 100.0, kStampAspect);
+  Check(Near(whole.u0, 0.0) && Near(whole.u1, 1.0) && Near(whole.v0, 0.0) && Near(whole.v1, 1.0), "the HUD mirror's own view (PlanForRect) is shown whole");
+  // the crop of the side mirrors' view for the retail HUD field: the whole width, the middle 26/44 (by tangents) of the height
+  const Crop both = HudCrop(PlanForField(Class::kHigh, 100.0, 44.0), 100.0, kStampAspect);
+  const double hv = std::tan(Rad(StampVerticalFov(100.0, kStampAspect)) * 0.5) / std::tan(Rad(44.0) * 0.5);
+  Check(Near(both.u0, 0.0, 1e-9) && Near(both.u1, 1.0, 1e-9) && Near(both.v0, 0.5 - 0.5 * hv, 1e-9) && Near(both.v1, 0.5 + 0.5 * hv, 1e-9) && hv > 0.5 && hv < 0.7, "100 x 44 view, retail HUD 100 x 26: the whole width, the middle " + std::to_string(hv) + " of the height");
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 // MV1: the host view's rules (the markers, the phase, the route of a draw, the view's size for the rectangle, its life, the maps into it)
 // ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
@@ -245,21 +496,34 @@ void TestMarkers() {
   Check((kMarkerBegin & 0xFF000000u) == 0x7F000000u && (kMarkerEnd & 0xFF000000u) == 0x7F000000u && kMarkerBegin > 0x7F00000Au && kMarkerEnd != kMarkerBegin, "on the side channel, clear of the UI messages");
 }
 
-// The host's per frame request to the guest (RequestFor): redirect only with the switch on and the view not blocked, the side mirrors' need only with the redirect, nothing else asked for.
+// The host's per frame request to the guest (RequestFor): redirect only with the switch on and the view not blocked, the side mirrors' need only with the redirect, the cadence the SIDE MIRRORS level's (MV6)
+// and only with the redirect, no field until MV4 asks for one.
 void TestRequest() {
   for (int bits = 0; bits < 8; ++bits) {
+    for (const uint32_t every : {1u, 2u}) {
+      RequestFacts f;
+      f.enabled = (bits & 1) != 0;
+      f.blocked = (bits & 2) != 0;
+      f.side_need = (bits & 4) != 0;
+      f.every = every;
+      const std::string tag = " [enabled " + std::to_string(f.enabled) + " blocked " + std::to_string(f.blocked) + " need " + std::to_string(f.side_need) + " every " + std::to_string(every) + "]";
+      const Request r = RequestFor(f);
+      Check(r.redirect == (f.enabled && !f.blocked), "redirect only with the switch on and the view not blocked" + tag);
+      Check(r.side_need == (r.redirect && f.side_need), "the need counts only with a redirect" + tag);
+      Check(r.every == (r.redirect ? every : 1u) && !r.has_field(), "the cadence is the level's, only while the phase is redirected, and no field is asked for until MV4" + tag);
+      // it survives the link's packing, which is what the guest reads
+      const Request back = UnpackRequest(Pack(r));
+      Check(back.redirect == r.redirect && back.side_need == r.side_need && back.every == r.every && !back.has_field(), "and the guest reads the same" + tag);
+    }
+  }
+  {
+    // a cadence out of the link's range is held in it (1 to 8), never 0
     RequestFacts f;
-    f.enabled = (bits & 1) != 0;
-    f.blocked = (bits & 2) != 0;
-    f.side_need = (bits & 4) != 0;
-    const std::string tag = " [enabled " + std::to_string(f.enabled) + " blocked " + std::to_string(f.blocked) + " need " + std::to_string(f.side_need) + "]";
-    const Request r = RequestFor(f);
-    Check(r.redirect == (f.enabled && !f.blocked), "redirect only with the switch on and the view not blocked" + tag);
-    Check(r.side_need == (r.redirect && f.side_need), "the need counts only with a redirect" + tag);
-    Check(r.every == 1 && !r.has_field(), "no cadence and no field asked for until MV4 and MV6" + tag);
-    // it survives the link's packing, which is what the guest reads
-    const Request back = UnpackRequest(Pack(r));
-    Check(back.redirect == r.redirect && back.side_need == r.side_need && back.every == 1 && !back.has_field(), "and the guest reads the same" + tag);
+    f.enabled = true;
+    f.every = 0;
+    Check(RequestFor(f).every == 1, "a cadence of 0 is every frame");
+    f.every = 100;
+    Check(RequestFor(f).every == kMaxEvery, "a cadence over the range is held at the top");
   }
   Check(!RequestFor(RequestFacts{}).redirect && RequestFor(RequestFacts{}) == Request{}, "all off: the same as a withdrawn request");
   // the host publishes it and withdraws it; the guest's Current follows
@@ -497,6 +761,11 @@ int main(int argc, char** argv) {
   TestPlan();
   TestRemap();
   TestCrop();
+  TestSideMirrorsNumbers();
+  TestPlanForField();
+  TestSideMirrorsField();
+  TestRequestField();
+  TestPlanForPhase();
   TestMarkers();
   TestRequest();
   TestPhase();

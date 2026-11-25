@@ -165,7 +165,12 @@ void TestCameraPacking() {
   c.used_hfov_deg = 69.0f;
   c.used_vfov_deg = 44.0f;
   c.seq = 7;
+  c.from_request = true;
   const vlink::CameraFacts back = vlink::UnpackCamera(vlink::Pack(c));
+  Check(back.from_request, "the 'built with the host's request' bit survives (MV-J2)");
+  c.from_request = false;
+  Check(!vlink::UnpackCamera(vlink::Pack(c)).from_request && vlink::UnpackCamera(vlink::Pack(c)).seq == 7, "and it does not touch the sequence number or the fields");
+  c.from_request = true;
   CheckNum(back.retail_hfov_deg, 100.4, "retail hfov survives");
   CheckNum(back.used_hfov_deg, 69.0, "used hfov survives");
   CheckNum(back.used_vfov_deg, 44.0, "used vfov survives");
@@ -180,6 +185,118 @@ void TestCameraPacking() {
   Check(vlink::CurrentCamera().valid(), "Publish is read back by Current");
   vlink::WithdrawCamera();
   Check(!vlink::CurrentCamera().valid(), "Withdraw clears it");
+}
+
+// MV-J2: the field of ONE phase rides on its begin marker (the composite record's second word): the round trip, what the guest tags a phase with, and that a begin of one phase cannot carry the field of a
+// later camera build.
+void TestPhaseField() {
+  // the packing: centidegrees across (16 bits), up (15 bits), the top bit for 'the host's request'
+  vlink::PhaseField f;
+  f.hfov_deg = 69.0f;
+  f.vfov_deg = 44.0f;
+  f.requested = true;
+  const uint32_t tag = vlink::PackPhaseField(f);
+  Check(tag == (6900u | (4400u << 16) | 0x80000000u), "the tag is 6900 centidegrees across, 4400 up and the top bit");
+  const vlink::PhaseField back = vlink::UnpackPhaseField(tag);
+  Check(back == f && back.known(), "69 x 44, requested: the round trip");
+  f.requested = false;
+  Check(vlink::UnpackPhaseField(vlink::PackPhaseField(f)) == f && !vlink::UnpackPhaseField(vlink::PackPhaseField(f)).requested, "the game's own field: the bit is clear");
+  Check(vlink::PackPhaseField(vlink::PhaseField{}) == 0 && !vlink::UnpackPhaseField(0).known() && !vlink::UnpackPhaseField(0).requested, "no tag is 0 and reads as no field");
+  // a missing half is no field; junk is no field
+  Check(vlink::PackPhaseField(vlink::PhaseField{69.0f, 0.0f, true}) == 0 && vlink::PackPhaseField(vlink::PhaseField{0.0f, 44.0f, true}) == 0, "a field with a missing half is no field");
+  Check(vlink::PackPhaseField(vlink::PhaseField{kNaN, 44.0f, true}) == 0 && vlink::PackPhaseField(vlink::PhaseField{69.0f, -3.0f, false}) == 0 && vlink::PackPhaseField(vlink::PhaseField{kInf, 44.0f, true}) == 0,
+        "NaN, negative and infinite input never make a tag");
+  Check(!vlink::UnpackPhaseField(0x80000000u).known() && !vlink::UnpackPhaseField(0x80000000u).requested, "the bit alone is no field either (and is not 'requested')");
+  Check(!vlink::UnpackPhaseField(0x80001ADCu).known() && !vlink::UnpackPhaseField(0x80001ADCu).requested && !vlink::UnpackPhaseField(0x801A0000u).known() && !vlink::UnpackPhaseField(0x801A0000u).requested,
+        "a tag with one half missing (and the bit set) is no field and is not 'requested' either");
+  {
+    // the field across has all 16 bits, up to 655.35 degrees (the vertical field has 15 and is capped to them: the view's never passes 45)
+    const vlink::PhaseField wide = vlink::UnpackPhaseField(vlink::PackPhaseField(vlink::PhaseField{400.0f, 44.0f, true}));
+    CheckNum(wide.hfov_deg, 400.0, "the field across keeps all 16 bits of its centidegrees (400 degrees survives)", 0.0051);
+    Check(wide.requested && std::fabs(wide.vfov_deg - 44.0f) < 0.0051f, "and the other half and the bit are untouched by it");
+    const vlink::PhaseField tall = vlink::UnpackPhaseField(vlink::PackPhaseField(vlink::PhaseField{100.0f, 500.0f, false}));
+    CheckNum(tall.vfov_deg, 327.67, "the field up is capped to its 15 bits (327.67 degrees) and cannot touch the bit", 0.0051);
+    Check(!tall.requested, "an over tall field does not set 'requested'");
+  }
+  // every field in the range the host can ask for (and the game's own) survives to the centidegree, with and without the bit
+  bool exact = true;
+  for (int h = 500; h <= 17000; h += 37) {
+    for (int v = 500; v <= 17000; v += 211) {
+      for (bool req : {false, true}) {
+        const vlink::PhaseField in{float(h) * 0.01f, float(v) * 0.01f, req};
+        const vlink::PhaseField out = vlink::UnpackPhaseField(vlink::PackPhaseField(in));
+        exact = exact && out.requested == req && std::fabs(out.hfov_deg - in.hfov_deg) < 0.0051f && std::fabs(out.vfov_deg - in.vfov_deg) < 0.0051f;
+      }
+    }
+  }
+  Check(exact, "every field from 5 to 170 degrees survives the tag to the centidegree");
+  // what the guest tags a phase with: the facts of its camera
+  vlink::CameraFacts cam;
+  Check(vlink::PackPhaseField(vlink::PhaseFieldOf(cam)) == 0, "no camera built yet: no tag");
+  cam.used_hfov_deg = 100.0f;
+  cam.used_vfov_deg = 25.8f;
+  cam.retail_hfov_deg = 100.0f;
+  const vlink::PhaseField own = vlink::PhaseFieldOf(cam);
+  Check(own.known() && !own.requested && own.hfov_deg == 100.0f && own.vfov_deg == 25.8f, "the game's own camera: its field, not requested");
+  cam.used_hfov_deg = 69.0f;
+  cam.used_vfov_deg = 44.0f;
+  cam.from_request = true;
+  const vlink::PhaseField req = vlink::PhaseFieldOf(cam);
+  Check(req.known() && req.requested && req.hfov_deg == 69.0f && req.vfov_deg == 44.0f, "a camera built with the host's request: that field, requested");
+  // the guest's real build -> facts -> tag for every request the host can make: the tag says 'requested' exactly when the guest applied it, with the field the request asked for
+  int asked = 0;
+  bool all = true;
+  for (float h : {45.0f, 59.0f, 69.0f, 80.0f, 100.0f, 110.0f}) {
+    for (float v : {20.0f, 34.0f, 44.0f, 45.0f}) {
+      vlink::Request r;
+      r.redirect = true;
+      r.side_need = true;
+      r.hfov_deg = h;
+      r.vfov_deg = v;
+      const vlink::Request wire = vlink::UnpackRequest(vlink::Pack(r));
+      const rs::CameraBuild build = rs::BuildCamera(26.0f, 229.0f / 44.0f, 1500.0f, true, wire, 1.0, 0.0);
+      vlink::CameraFacts facts;
+      facts.used_hfov_deg = rs::HorizontalFovDeg(build.fov_deg, build.aspect);
+      facts.used_vfov_deg = build.fov_deg;
+      facts.from_request = build.applied;
+      const vlink::PhaseField tag2 = vlink::UnpackPhaseField(vlink::PackPhaseField(vlink::PhaseFieldOf(vlink::UnpackCamera(vlink::Pack(facts)))));
+      ++asked;
+      all = all && build.applied && tag2.requested && std::fabs(tag2.hfov_deg - wire.hfov_deg) < 0.0151f && std::fabs(tag2.vfov_deg - wire.vfov_deg) < 0.0151f;
+    }
+  }
+  Check(asked == 24 && all, "the request -> the guest's camera -> its facts -> the tag: the field asked for, marked requested");
+  // a request the guest refuses (outside what it believes) leaves the game's own camera: the tag is not 'requested'
+  vlink::Request bad;
+  bad.redirect = true;
+  bad.side_need = true;
+  bad.hfov_deg = 3.0f;
+  bad.vfov_deg = 44.0f;
+  const rs::CameraBuild refused = rs::BuildCamera(26.0f, 229.0f / 44.0f, 1500.0f, true, bad, 1.0, 0.0);
+  vlink::CameraFacts rf;
+  rf.used_hfov_deg = rs::HorizontalFovDeg(refused.fov_deg, refused.aspect);
+  rf.used_vfov_deg = refused.fov_deg;
+  rf.from_request = refused.applied;
+  Check(!refused.applied && !vlink::PhaseFieldOf(rf).requested && vlink::PhaseFieldOf(rf).known(), "a request the guest refuses: the game's own field, not requested");
+  // THE LAG: a begin marker carries the field of ITS camera. The guest builds camera A, sends begin A, builds camera B, sends begin B; the host handles both later: each tag is its own camera's, whatever
+  // was published since. (The latest-facts read the tag replaces gave B for both.)
+  vlink::WithdrawCamera();
+  std::vector<uint32_t> sent;
+  for (int i = 0; i < 6; ++i) {
+    vlink::CameraFacts f2;
+    f2.used_hfov_deg = 60.0f + 10.0f * float(i);
+    f2.used_vfov_deg = 30.0f + 2.0f * float(i);
+    f2.from_request = (i % 2) == 0;
+    f2.seq = uint32_t(i);
+    vlink::PublishCamera(f2);
+    sent.push_back(vlink::PackPhaseField(vlink::PhaseFieldOf(vlink::CurrentCamera())));  // what NoteMirrorPhase(true) sends at this phase's begin
+  }
+  bool own_fields = true;
+  for (int i = 0; i < 6; ++i) {
+    const vlink::PhaseField t = vlink::UnpackPhaseField(sent[size_t(i)]);
+    own_fields = own_fields && std::fabs(t.hfov_deg - (60.0f + 10.0f * float(i))) < 0.0151f && std::fabs(t.vfov_deg - (30.0f + 2.0f * float(i))) < 0.0151f && t.requested == ((i % 2) == 0);
+  }
+  Check(own_fields, "six phases queued before the host looks: each begin marker holds its own camera's field, not the latest one's");
+  vlink::WithdrawCamera();
 }
 
 // The stamp's flag is the ONE channel of "the HUD mirror is up" (the guest's facts do not repeat it): true until the guest says otherwise.
@@ -481,6 +598,38 @@ void TestBuildCamera() {
   }
 }
 
+// JOIN2: the HUD mirror's own field (what the host's stamp cuts out of a wider view) and the cameras the host's two field requests build.
+void TestHudField() {
+  const float fov = 25.0f, aspect = 229.0f / 44.0f, far_m = 1500.0f;
+  const vlink::Request none;
+  // the HUD's field is what the camera hook builds when the host asks for nothing, with and without the debug field scale
+  for (double scale : {1.0, 0.8, 0.5}) {
+    const rs::CameraBuild b = rs::BuildCamera(fov, aspect, far_m, true, none, scale, 0.0);
+    CheckNum(rs::HudFieldDeg(fov, aspect, scale), rs::HorizontalFovDeg(b.fov_deg, b.aspect), "the HUD field is the field of the camera built without a request, scale " + std::to_string(scale), 1e-3);
+  }
+  CheckNum(rs::HudFieldDeg(fov, aspect, 1.0), rs::HorizontalFovDeg(fov, aspect), "no scale: the game's own field across");
+  Check(rs::HudFieldDeg(fov, aspect, 0.5) < rs::HudFieldDeg(fov, aspect, 1.0), "the debug scale narrows it");
+  Check(rs::HudFieldDeg(0.0f, aspect, 1.0) == 0.0f, "no field, no HUD field");
+  // the requests the host makes (mirror_view_rules.h SideMirrorsField: 69 x 44 for the side mirrors alone, 100 x 44 with the HUD stamp) build cameras with exactly that field, to the link's centidegree
+  for (const float h : {69.0f, 100.0f, 110.0f}) {
+    vlink::Request req;
+    req.hfov_deg = h;
+    req.vfov_deg = 44.0f;
+    const rs::CameraBuild b = rs::BuildCamera(fov, aspect, far_m, true, req, 1.0, 0.0);
+    Check(b.applied, "the request for " + std::to_string(h) + " x 44 is believed");
+    CheckNum(b.fov_deg, 44.0, "its vertical field is f1");
+    CheckNum(rs::HorizontalFovDeg(b.fov_deg, b.aspect), double(h), "the field across it builds", 0.02);
+    // what the hook reports (CameraFacts): the used field, which the host compares with its request to the centidegree
+    vlink::CameraFacts facts;
+    facts.retail_hfov_deg = rs::HudFieldDeg(fov, aspect, 1.0);
+    facts.used_hfov_deg = rs::HorizontalFovDeg(b.fov_deg, b.aspect);
+    facts.used_vfov_deg = b.fov_deg;
+    const vlink::CameraFacts back = vlink::UnpackCamera(vlink::Pack(facts));
+    CheckNum(back.used_hfov_deg, double(h), "and the link carries it back within a centidegree and a half", 0.015);
+    CheckNum(back.retail_hfov_deg, rs::HorizontalFovDeg(fov, aspect), "the HUD field is reported beside it, unchanged by the request", 0.01);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // the cadence
 // ---------------------------------------------------------------------------
@@ -508,6 +657,7 @@ int main() {
   TestRequestPacking();
   TestGuestPacking();
   TestCameraPacking();
+  TestPhaseField();
   TestStampFlag();
   TestStates();
   TestRedirectGate();
@@ -515,6 +665,7 @@ int main() {
   TestHorizontalFov();
   TestSharedCamera();
   TestBuildCamera();
+  TestHudField();
   TestEffectiveEvery();
   std::printf("rear_view_shared_test: %d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

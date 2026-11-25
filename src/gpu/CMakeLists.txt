@@ -33,6 +33,7 @@ add_library(larecomp_gpu OBJECT
     car_selfrefl.cpp
     car_shadow_map.cpp
     mirror_view.cpp
+    mirror_overlay.cpp
     local_shadow.cpp
     car_rt_refl.cpp
     car_rt_glass_refl.cpp
@@ -66,6 +67,7 @@ add_library(larecomp_gpu OBJECT
     gi_integration.cpp
     gi_update.cpp
     gi_setting.cpp
+    mirror_setting.cpp
     gbuffer_material.cpp
     gbuffer_materials.cpp
     geometry.cpp
@@ -714,6 +716,13 @@ target_compile_features(larecomp_car_mirror_city_rules_test PRIVATE cxx_std_23)
 add_executable(larecomp_car_mirror_setting_test EXCLUDE_FROM_ALL car_mirror_setting_test.cpp)
 target_include_directories(larecomp_car_mirror_setting_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 target_compile_features(larecomp_car_mirror_setting_test PRIVATE cxx_std_23)
+# The plain side mirrors' setting and its pause row (mirror_setting.h, MIRROR-VIEW.md MV6: what each word of mcla_gpu_side_mirrors comes to on every class, handheld flag and ray tracing tier next to every
+# word of the traced mirrors' setting and every value of the two debug switches under it, that the traced mirrors win exactly where the pass's own Wanted says, the class table's cells, the levels' size and rate,
+# the row's words and page width; it also reads pause_menu.cpp, the settings, gpu_class.h, the readers and the CMake lines for the wiring) likewise:
+#   cmake --build <dir> --target larecomp_mirror_setting_test, then run src/gpu/larecomp_mirror_setting_test [-v] [--table] [<src/gpu dir>] (exit 0 = passed; the folder defaults to the test's own, src/gpu).
+add_executable(larecomp_mirror_setting_test EXCLUDE_FROM_ALL mirror_setting_test.cpp)
+target_include_directories(larecomp_mirror_setting_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_mirror_setting_test PRIVATE cxx_std_23)
 # The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
 # sequences recorded from the game's logs and made up:
 #   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test
@@ -788,6 +797,11 @@ add_executable(larecomp_mirror_glass_rules_test EXCLUDE_FROM_ALL mirror_glass_ru
 #   cmake --build <dir> --target larecomp_mirror_view_join_test, then run src/gpu/larecomp_mirror_view_join_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_mirror_view_join_test EXCLUDE_FROM_ALL mirror_view_join_test.cpp)
 target_include_directories(larecomp_mirror_view_join_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # mc_engine/hooks/rear_view_shared.h
+# The side mirrors' glass overlay (mirror_overlay_rules.h: the hand-off with the ray traced side mirrors and the rest of the frame's decision, the camera and the pose of the view, the quaternion, the depth test, the pipeline
+# variants, the 128 byte push block; hlsl/mirror_overlay.hlsli compiled as C++ through hlsl_cpp_shim.h and held against the design's UvForMirrorPixel; and that the shaders, the setting, the scene's calls, the precache and these
+# build lines are there; perf/MIRROR-VIEW.md MV4) likewise:
+#   cmake --build <dir> --target larecomp_mirror_overlay_rules_test, then run src/gpu/larecomp_mirror_overlay_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_mirror_overlay_rules_test EXCLUDE_FROM_ALL mirror_overlay_rules_test.cpp)
 # The HUD fade's alpha clamp and ramp (ui_fade.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ui_fade_test, then run src/gpu/larecomp_ui_fade_test (exit 0 = passed).
 add_executable(larecomp_ui_fade_test EXCLUDE_FROM_ALL ui_fade_test.cpp)
@@ -1291,6 +1305,9 @@ larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
 # The shared rear view (mirror_view.h, perf/MIRROR-VIEW.md): the average of the multisampled view's samples into the picture the readers sample, and the HUD stamp's quad into the main colour.
 larecomp_gpu_host_shader(mirror_view_resolve_ps ps_6_0 SOURCE mirror_view_ps DEFINES MIRROR_RESOLVE=1)
 larecomp_gpu_host_shader(mirror_view_stamp_ps ps_6_0 SOURCE mirror_view_ps DEFINES MIRROR_RESOLVE=0)
+# The side mirrors' glass overlay (mirror_overlay.h, package MV4): the glass patch's triangles drawn again with a lookup into that picture; one vertex stage, one pixel stage, the arithmetic in hlsl/mirror_overlay.hlsli.
+larecomp_gpu_host_shader(mirror_overlay_vs vs_6_0)
+larecomp_gpu_host_shader(mirror_overlay_ps ps_6_0)
 # The headlight shadow atlas's debug view (local_shadow.h): the atlas in a rectangle of the picture. The replay itself uses the game's own shaders.
 larecomp_gpu_host_shader(local_shadow_view_ps ps_6_0)
 # The player's car as ray tracing structures (car_rt_scene.h): the check pass (inline ray queries, Shader Model 6.5; SPIR-V 1.5 on Vulkan) and

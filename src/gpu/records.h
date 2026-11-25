@@ -362,7 +362,7 @@ struct LockRecord {
 // draws around it.
 struct CompositeRecord {
   uint32_t bucket = 0;  // the bucket's bit (bucket 28: 0x10000000)
-  uint32_t reserved = 0;
+  uint32_t tag = 0;     // a message's payload: the rear view mirror's begin marker carries the field its camera was built with (mirror_view_link.h PhaseField, packed); 0 for everything else
 };
 
 // --- occlusion ---------------------------------------------------------------------

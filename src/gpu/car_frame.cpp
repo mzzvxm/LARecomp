@@ -715,6 +715,11 @@ void CarFrame::FillDraw(const MainDraw& d, uint32_t order, uint32_t id, const Re
   out->after_world = world_draws_ != 0;
   out->model_to_world = model.model;  // a skinned draw: gWorld alone (DecodeModel)
   out->geometry = *d.geometry;
+  if (d.viewport) {
+    out->viewport = *d.viewport;
+    out->depth_word = d.depth_word;
+    out->viewport_known = true;
+  }
   if (others_on_ && !skinned) {
     out->material = MaterialOf(d);  // RT-HIT-SHADING: the shader's class, colours and diffuse fetch (the opponents' reflections of this car's hits)
     NoteLight(d, out->material);

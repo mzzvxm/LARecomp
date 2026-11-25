@@ -302,19 +302,20 @@ void PageWidthOfLighting(const std::vector<Row>& rows) {
 void PageWidthOfReflections(const std::vector<Row>& rows) {
   const char* const labels[] = {"ROAD REFLECTIONS",        "CAR REFLECTIONS",        "CAR SELF-REFLECTIONS",       "RT CITY REFLECTIONS", "RT CITY (NO RT GPU)", "RT CITY (TOO SLOW)",
                                 "RT CITY (NEEDS CAR RT)",  "RT CITY (NOT READY)",    "RT CITY (BUILDING DATA)",    "REFLECTIONS ON SURFACES",
-                                "RT SIDE MIRRORS",         "MIRRORS (NO RT GPU)",    "MIRRORS (TOO SLOW)"};
+                                "RT SIDE MIRRORS",         "RT MIRRORS (NO RT GPU)", "RT MIRRORS (TOO SLOW)",  "SIDE MIRRORS",         "SIDE MIRRORS (REPLACED)"};
   size_t widest_label = 0;
   for (const char* label : labels) widest_label = std::max(widest_label, std::strlen(label));
   const size_t widest_value = std::strlen("AUTO (RAY TRACED)");
   Check(widest_label + widest_value <= 41, "REFLECTIONS stays within 41 characters in every state of RT CITY REFLECTIONS: " + std::to_string(widest_label + widest_value));
   Check(std::strlen("RT CITY REFLECTIONS (BUILDING DATA)") + widest_value > 41, "the whole name with the longest reason would not fit the page");
   Check(std::strlen("RT SIDE MIRRORS (NO RT GPU)") + widest_value > 41, "the whole name of the mirrors' row with a reason would not fit the page");
-  const std::vector<std::string> expected = {"PM_RxGpuRoadRefl", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl", "PM_RxGpuRtCityRefl", "PM_RxGpuRtMirror", "PM_RxGpuSsr"};
-  Check(Keys(rows) == expected, "REFLECTIONS has its six rows in order, the city's right after the car's own ray traced reflection it rides on, then the side mirrors");
+  const std::vector<std::string> expected = {"PM_RxGpuRoadRefl", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl", "PM_RxGpuRtCityRefl", "PM_RxGpuSideMirrors", "PM_RxGpuRtMirror", "PM_RxGpuSsr"};
+  Check(Keys(rows) == expected, "REFLECTIONS has its seven rows in order, the city's right after the car's own ray traced reflection it rides on, then the side mirrors and the traced ones that replace them");
   for (const Row& r : rows) {
     Check(r.native_only, r.key + " is a native renderer row");
     if (r.key == "PM_RxGpuRtCityRefl") Check(r.dynamics == "kRtCityDynamics", "RT CITY REFLECTIONS names its own dynamics (grey with a reason, by state)");
     if (r.key == "PM_RxGpuRtMirror") Check(r.dynamics == "kMirrorRtDynamics", "RT SIDE MIRRORS names its own dynamics (grey with a reason, by state)");
+    if (r.key == "PM_RxGpuSideMirrors") Check(r.dynamics == "kSideMirrorsDynamics", "SIDE MIRRORS names its own dynamics (' (REPLACED)' while the traced mirrors run, never grey)");
   }
   Check(rows.size() <= 24, "REFLECTIONS has at most 24 rows");
 }

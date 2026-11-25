@@ -37,6 +37,7 @@
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
+#include "mirror_overlay.h"
 #include "mirror_view.h"
 #include "cut_request.h"
 #include "cycles.h"
@@ -793,7 +794,10 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
   if (mirror_view_) {
-    mirror_view_->BeginFrame();  // reads mcla_gpu_mirror_view, closes a phase the last frame left open, gives the view's images back after their idle time (mirror_view.h)
+    mirror_view_->BeginFrame(car_mirror_ && car_mirror_->active());  // reads mcla_gpu_mirror_view, publishes the request (where the ray traced side mirrors win: no side-only phase), closes a phase the last frame left open, gives the view's images back after their idle time (mirror_view.h)
+  }
+  if (mirror_overlay_) {
+    mirror_overlay_->BeginFrame();  // reads mcla_gpu_mirror_overlay and the assumed distance; the census line (mirror_overlay.h)
   }
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
@@ -2132,6 +2136,8 @@ void Scene::NoteAmbientOcclusion(const ConstantBanks::Banks& banks, const Prepar
     frame.stencil_ids = draw.stencil_ids;
     frame.cache = geometry_;
     frame.shared = &last_shared_;  // the draw's texture slots (the environment map's, for the ray traced cars' light): Prepare uploaded them for this draw
+    frame.viewport = &d.viewport;  // where the draw landed (the glass overlay repeats it: mirror_overlay.h)
+    frame.depth_word = d.key.depth;
     car_frame_->OnMainDraw(frame);
   }
   if (headlights_ && headlights_->wants_draws()) {
@@ -3433,13 +3439,13 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
 // the rear view mirror's phase (mirror_view.h, perf/MIRROR-VIEW.md)
 // ---------------------------------------------------------------------------
 
-void Scene::OnMirrorMarker(uint32_t bucket, plume::RenderCommandList* list) {
+void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list) {
   if (!mirror_view_) {
     return;
   }
   if (bucket == mirror_view::kMarkerBegin) {
     // The rectangle is the one the guest published (TickRearView) before the phase ran.
-    if (mirror_view_->BeginPhase(mirror_draws::Current()) && list) {
+    if (mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag)) && list) {
       // The phase's draws leave the main pass: nothing the frame has bound is the view's.
       if (bound_.framebuffer) {
         list->setFramebuffer(nullptr);
@@ -3452,6 +3458,13 @@ void Scene::OnMirrorMarker(uint32_t bucket, plume::RenderCommandList* list) {
       // The view's resolve bound its own layout, pipeline, viewport and scissor and left no framebuffer: the next draw binds everything again, the main target's pass starts anew.
       ResetListState();
       marked_framebuffer_ = nullptr;
+      if (mirror_overlay_ && car_frame_) {
+        // The camera this fresh picture was drawn from and the field of THAT phase's camera (the begin's tag, MirrorView::PictureField): a held picture's lookup needs both (mirror_overlay.h).
+        float field_h = 0.0f;
+        float field_v = 0.0f;
+        const bool field_known = mirror_view_->PictureField(&field_h, &field_v);
+        mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);
+      }
     }
   }
 }
@@ -3602,15 +3615,16 @@ void Scene::ClearMirrorView(plume::RenderCommandList* list, uint32_t flags, cons
   ++window_.clears_color;
 }
 
-bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list) {
+EdramTargets::Target* Scene::MirrorCopyColour(const ResolveRecord& record, plume::RenderCommandList* list, bool* other_copy, EdramKey* key_out) {
   // The first copy of the main colour at the play view's samples (as the volumetric light finds its second point): colour 0, not a clear alone.
   // CHECK: that this first copy after the end marker is the end-of-scene copy, i.e. that the trigger's host effects (AO, lights, SSR) have run on the main colour already (CHECK 4 of perf/MIRROR-VIEW.md).
   EdramKey key;
+  *other_copy = true;
   if (record.flags & (kEventSurfaceUnreadable | kEventStackUnreadable)) {
-    return false;
+    return nullptr;
   }
   if ((record.resolve_flags & 7) != 0 || (record.resolve_flags & 0x2000u) != 0) {
-    return false;
+    return nullptr;
   }
   const RegisterWindow pre(record.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
   const bool bound = pre.DeviceDword(guest::kDevColorSurfaces) != 0;
@@ -3624,21 +3638,67 @@ bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandL
   key.depth = 0;
   key.format = uint8_t(FoldColorFormat(uint32_t(color_info.color_format)));
   if (temporal::MainColorSamples(key) == 0 || temporal::ViewOfSamples(key.samples) != temporal::View::kPlay) {
-    return false;  // not a copy of the game view's colour: the stamp waits for the one that is
+    return nullptr;  // not a copy of the game view's colour: the readers wait for the one that is
   }
+  *other_copy = false;
   const EdramTargets::Target* found = edram_->Find(key);
   if (!found || !found->texture) {
-    mirror_view_->DisarmStamp();
-    return false;
+    return nullptr;
   }
   bool unset = false;
   EdramTargets::Target* colour = edram_->Get(key, found->height, found->scale, 0, list, &unset);
+  if (key_out) {
+    *key_out = key;
+  }
+  return colour;
+}
+
+bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list) {
+  bool other_copy = false;
+  EdramTargets::Target* colour = MirrorCopyColour(record, list, &other_copy, nullptr);
   if (!colour) {
-    mirror_view_->DisarmStamp();
+    if (!other_copy) {
+      mirror_view_->DisarmStamp();
+    }
     return false;
   }
   const mirror_view::IRect host = mirror_view::HostRectOf(mirror_draws::Current(), colour->scale.n);
   return mirror_view_->RecordStamp(list, *colour, host);
+}
+
+bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandList* list) {
+  bool other_copy = false;
+  EdramKey colour_key;
+  EdramTargets::Target* colour = MirrorCopyColour(record, list, &other_copy, &colour_key);
+  if (other_copy) {
+    return false;  // not the game view's copy: the overlay waits for the one that is (it stays armed)
+  }
+  mirror_view_->DisarmOverlay();  // once a frame: the first copy of the game view's colour after the end marker is the overlay's
+  // The main depth at the same samples (the identity of the draws that wrote it: temporal_identities.h), as the copy finds it; the glass's own pixels are in it.
+  EdramTargets::Target* depth = nullptr;
+  if (colour) {
+    EdramKey depth_key;
+    depth_key.base_tiles = temporal::kMainDepthBase;
+    depth_key.pitch = temporal::kMainPitch;
+    depth_key.depth = 1;
+    depth_key.format = uint8_t(xe::DepthRenderTargetFormat::kD24FS8);
+    depth_key.samples = colour_key.samples;
+    const EdramTargets::Target* found = edram_->Find(depth_key);
+    if (found && found->texture) {
+      bool unset = false;
+      depth = edram_->Get(depth_key, found->height, found->scale, 0, list, &unset);
+    }
+  }
+  MirrorOverlay::Inputs in;
+  in.frame = car_frame_ ? &car_frame_->Current() : nullptr;
+  in.glass = mirror_glass_;
+  in.view = mirror_view_;
+  in.rt_mirrors_on = car_mirror_ && car_mirror_->active();  // where the ray traced side mirrors are on they win (mirror_overlay_rules.h Decide)
+  in.play_view = true;
+  if (temporal_) {
+    temporal_->FrameJitter(in.jitter);  // the sub-pixel offset the frame's gated draws were moved by: the overlay lands on the glass the game drew
+  }
+  return mirror_overlay_->Record(list, in, colour, depth);
 }
 
 void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
@@ -3969,6 +4029,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   if (mirror_view_ && mirror_view_->StampArmed() && list && RecordMirrorStamp(record, list)) {
     // The rear view mirror's picture (mirror_view.h) is stamped into the HUD's rectangle of the main colour at the first copy of it after the phase's end: after the volumetric light and the sun shafts
     // have composited (the haze does not lie over the stamp) and before the copy reads the colour. Its own layout, pipeline, viewport and framebuffer: the list state is gone.
+    ResetListState();
+    marked_framebuffer_ = nullptr;
+  }
+  if (mirror_overlay_ && mirror_overlay_->wanted() && mirror_view_ && mirror_view_->OverlayArmed() && list && RecordMirrorGlass(record, list)) {
+    // The car's side mirror glasses are drawn again into the main colour with the lookup into the view's picture (mirror_overlay.h), right after the stamp: its own layout, pipeline, viewport and framebuffer, the
+    // list state is gone.
     ResetListState();
     marked_framebuffer_ = nullptr;
   }

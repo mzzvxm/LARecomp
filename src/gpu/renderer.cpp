@@ -259,6 +259,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     car_shadow_.SetCarFrame(&car_frame_);
     car_shadow_.SetAmbientOcclusion(&ao_);  // the world's sun direction
     mirror_view_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the shared rear view (mirror_view.h): nothing is made until mcla_gpu_mirror_view is on
+    mirror_overlay_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);  // and the side mirrors' glass overlay (mirror_overlay.h): its pipelines are listed with the precache where mcla_gpu_mirror_overlay is on
     // The headlight shadow maps (local_shadow.h): a second pass over the main view's opaque draws from the cars' lamps; makes nothing until a draw is seen.
     local_shadow_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, upload_, shaders_, guest_layout_);
     // The one shadow atlas (shadow_atlas.h): the replay is its first provider and the light manager reads its published form; both use it only with mcla_gpu_light_frame bit 8 (LU-5).
@@ -430,6 +431,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetHeadlightRig(&headlights_);
     scene_.SetCarShadowMap(&car_shadow_);
     scene_.SetMirrorView(&mirror_view_);
+    scene_.SetMirrorOverlay(&mirror_overlay_);
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
@@ -532,6 +534,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     local_shadow_.Shutdown();
     shadow_atlas_.Shutdown();  // after the replay, its provider
     gbuffer_.Shutdown();
+    mirror_overlay_.Shutdown();
     mirror_view_.Shutdown();
     car_shadow_.Shutdown();
     car_refl_.Shutdown();
@@ -737,6 +740,7 @@ void Renderer::Shutdown(bool fast_exit) {
   local_shadow_.Shutdown();
   shadow_atlas_.Shutdown();  // after the replay, its provider
   gbuffer_.Shutdown();
+  mirror_overlay_.Shutdown();
   mirror_view_.Shutdown();
   car_shadow_.Shutdown();
   car_refl_.Shutdown();
@@ -946,7 +950,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
         // same side channel (top byte 0x7F), so they are told first.
         plume::RenderCommandList* list = OpenFrameList();
         PerfScope label(markers_, list, bucket == mirror_view::kMarkerBegin ? "MirrorViewBegin" : "MirrorViewEnd", PerfMarkers::kEvent);
-        scene_.OnMirrorMarker(bucket, list);
+        scene_.OnMirrorMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, list);  // the begin's tag: the field this phase's camera was built with (MV-J2)
         return;
       }
       if (mc::ultrawide::IsUiMessage(bucket)) {
@@ -2490,9 +2494,9 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
   }
 }
 
-void OnGuestSceneComposited(uint32_t bucket) {
+void OnGuestSceneComposited(uint32_t bucket, uint32_t tag) {
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
-    c->Composite(bucket);
+    c->Composite(bucket, tag);
   }
 }
 

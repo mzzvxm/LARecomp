@@ -171,6 +171,12 @@ inline float HorizontalFovDeg(float vfov_deg, float aspect) {
   return float(2.0 * std::atan(std::tan(half_v) * double(aspect)) * 180.0 / kPi);
 }
 
+// The field (degrees across) the HUD mirror shows WITHOUT any request from the host: the game's own camera call, narrowed by the debug option rearview_fov_scale (the cheap mirror's B) as the build
+// below does when the host asks for nothing. The host's HUD stamp cuts exactly this field out of a wider view (CameraFacts::retail_hfov_deg, mirror_view::HudCrop), so the HUD mirror looks as it did.
+inline float HudFieldDeg(float game_fov_deg, float game_aspect, double fov_scale) {
+  return HorizontalFovDeg(larecomp::rearview_cheap::FieldOfView(game_fov_deg, fov_scale), game_aspect);
+}
+
 struct Camera {
   float fov_deg;     // sub_8217D460's f1: the vertical field in degrees
   float aspect;      // its f2: width over height
