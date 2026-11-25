@@ -6844,6 +6844,19 @@
   "comments": [],
   "pp_depth": 0
  },
+ "thread_qos": {
+  "type": "i32",
+  "default": "0",
+  "category": "MCLA/Performance",
+  "help": "\"Windows 10 1709 or later. 0 = off (default). 1 = requests HighQoS for the game process \"\n    \"(execution speed throttling off) while its window has focus. Windows manages process \"\n    \"throttling again when focus is lost and always chooses which cores run the threads. \"\n    \"2 = also requests HighQoS for the render thread, audio threads and frame generation pacer \"\n    \"for the whole session. On hybrid CPUs, level 2 selects Pro Audio when audio_mixer_priority \"\n    \"is automatic (-1). An explicit audio_mixer_priority overrides the Pro Audio choice. \"\n    \"-1 = automatic (level 1). The log's [qos] lines say what was applied. \"\n    \"Takes effect at the next start. See perf/HYBRID-QOS.md.\"",
+  "traits": [
+   "rex::Range{-1, 2}",
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "pump_wake_on_demand": {
   "type": "bool",
   "default": "true",

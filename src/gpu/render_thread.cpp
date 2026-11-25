@@ -6,10 +6,13 @@
 
 #include "render_thread.h"
 
+#include <string>
+
 #include <rex/logging/log_category.h>
 #include <rex/platform/thread.h>
 
 #include "cycles.h"
+#include "os/thread_qos.h"
 #include "present_schedule.h"
 #include "os/thread_name.h"
 #include "thread_load.h"
@@ -62,6 +65,10 @@ bool RenderThread::Stop(std::chrono::milliseconds deadline) {
 void RenderThread::Main() {
   // Linux keeps 15 bytes of a thread name (os/thread_name.h): the long name stays on Windows, where the profilers look for it.
   rex::platform::SetCurrentThreadName(larecomp::os::ThreadNameFor("larecomp gpu render"));
+  // thread_qos 2: the render thread stays HighQoS when the window is out of focus (os/thread_qos.h; nothing when the setting is lower).
+  if (const std::string qos_line = larecomp::os::TagCurrentThreadHighQos("larecomp gpu render"); !qos_line.empty()) {
+    REXLOG_INFO("{}", qos_line);
+  }
   using Clock = std::chrono::steady_clock;
   auto next_idle = Clock::now() + idle_period_;
   // While records keep coming the idle deadline is checked every

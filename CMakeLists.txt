@@ -101,6 +101,8 @@ set(LARECOMP_SOURCES
     # Thread priorities for every OS (os/thread_priority.h). The shader pack library and its tool
     # expect this file from whoever links them.
     src/os/thread_priority.cpp
+    # Thread QoS: the process and the critical threads are marked as the foreground work on Windows (os/thread_qos.h, perf/HYBRID-QOS.md).
+    src/os/thread_qos.cpp
     # The launcher's AppImage variables are removed from the game's environment at start (os/appimage_env.h).
     src/os/appimage_env.cpp
     # The guest's Sleep on Linux: a yield and a sleep that signals do not cut short (os/thread_yield.h).
@@ -1608,6 +1610,15 @@ else()
     if(WIN32)
         target_compile_definitions(larecomp_file_replace_test PRIVATE _CRT_SECURE_NO_WARNINGS NOMINMAX)
     endif()
+    # The thread QoS decision and its call sequences (src/os/thread_qos.h) have a check that needs no game:
+    #   cmake --build <dir> --target larecomp_thread_qos_test, then run it (exit 0 = passed).
+    add_executable(larecomp_thread_qos_test EXCLUDE_FROM_ALL
+        src/os/thread_qos_test.cpp
+        src/os/thread_qos.cpp
+    )
+    target_include_directories(larecomp_thread_qos_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_compile_features(larecomp_thread_qos_test PRIVATE cxx_std_23)
+    target_link_libraries(larecomp_thread_qos_test PRIVATE Threads::Threads)
     # The AppImage variable rule (src/os/appimage_env.h) has a check that needs no game:
     #   cmake --build <dir> --target larecomp_appimage_env_test, then run it (exit 0 = passed).
     add_executable(larecomp_appimage_env_test EXCLUDE_FROM_ALL

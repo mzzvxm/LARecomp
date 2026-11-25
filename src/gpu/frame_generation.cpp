@@ -52,6 +52,7 @@
 #include "vram_budget.h"
 
 #include "os/thread_priority.h"
+#include "os/thread_qos.h"
 
 
 namespace mcla::gpu {
@@ -1108,6 +1109,10 @@ void FrameGeneration::PacerMain() {
   // Linux this is a raise, which needs RLIMIT_NICE or CAP_SYS_NICE and is skipped without
   // (os/thread_priority.h); frame generation is not offered there yet.
   larecomp::os::SetCurrentThreadIntent(larecomp::os::ThreadIntent::kHigh);
+  // thread_qos 2: HighQoS too (os/thread_qos.h; nothing when the setting is lower).
+  if (const std::string qos_line = larecomp::os::TagCurrentThreadHighQos("frame generation pacer"); !qos_line.empty()) {
+    REXLOG_INFO("{}", qos_line);
+  }
 #if defined(_WIN32)
   timer_ = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
                                   TIMER_ALL_ACCESS);

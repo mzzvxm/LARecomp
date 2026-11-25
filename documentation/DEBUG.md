@@ -176,7 +176,7 @@ The same text works in the launcher's **More game options**, and as `mcla_gpu_pa
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. `break_pairwise_collision` is not here either: its hook reads it at every call, so it is live (a setting in F4 and a launch argument that also works while the game runs; it has no row). The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 129 names in 15 groups (the number in brackets is the group's size):
+The list, 130 names in 15 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
@@ -204,8 +204,12 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Legacy native D3D12 runtime (Windows, experimental)** (11)
 `mcla_native_gfx_present`, `mcla_native_gfx_aniso`, `mcla_native_gfx_gen_mips`, `mcla_native_gfx_mrt`, `mcla_native_gfx_msaa`, `mcla_native_gfx_own_device`, `mcla_native_gfx_own_heap_kb`, `mcla_native_gfx_own_swapchain`, `mcla_native_gfx_surface_key`, `mcla_native_gfx_upload_mb`, `mcla_gfx_probe`
 
-**Speed experiments read at start** (11)
-`perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`, `host_helpers_mask`, `race_line_native_mask`, `race_line_check_calls`
+**Speed experiments read at start** (12)
+`perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`, `host_helpers_mask`, `race_line_native_mask`, `race_line_check_calls`, `thread_qos`
+
+`thread_qos` (Windows 10 1709 or later, restart, `0` off by default) is for testing whether Windows power throttling affects the game. `1` requests HighQoS for the process while focused. `-1` (automatic) selects `1`. `2` also tags the render and audio threads and the frame generation pacer for the whole session. On hybrid CPUs, `2` selects Pro Audio when `audio_mixer_priority` is automatic. The `[qos]` log lines say what was applied (see `perf/HYBRID-QOS.md`).
+
+On the plugged-in i9-13980HX in Silent mode, automatic showed no measurable gain (8.311 ms median frame time vs 8.315 ms off, six runs each), and level `2` took about 1% longer per frame in three runs (`perf/HYBRID-QOS-AB.md`).
 
 **Render-thread CPU savings read at start** (1)
 `render_cpu_mask`

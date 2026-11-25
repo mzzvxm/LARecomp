@@ -60,6 +60,7 @@
 #include "mc_engine/cinematic/capture_audio.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "os/thread_priority.h"
+#include "os/thread_qos.h"
 
 REX_EXTERN(__imp__rex_sub_823EC8C8);  // the mixer thread's body
 REX_EXTERN(__imp__sub_823F56D0);      // the game's audio callback, run by the SDK's audio worker
@@ -74,7 +75,9 @@ int AudioLevel(unsigned logical) {
     if (setting >= 0) {
         return setting;
     }
-    return logical <= kSmallPcLogicalProcessors ? 3 : 0;
+    // A hybrid CPU at thread_qos 2 (os/thread_qos.h): the multimedia scheduler tags the audio threads for deadlines, which keeps
+    // them off a busy efficiency core, whatever the number of logical processors.
+    return logical <= kSmallPcLogicalProcessors || larecomp::os::WantsAudioScheduler() ? 3 : 0;
 }
 
 // Applies the setting to the calling thread and logs one line about it; `who` starts the line.
@@ -83,6 +86,11 @@ void ApplyToThisThread(const char* who) {
     const int level = AudioLevel(logical);
     // The name the SDK gave the thread, if any: it shows that the right thread was found.
     const std::string name = larecomp::os::CurrentThreadName();
+    // thread_qos 2: HighQoS for the thread whatever the priority level below does (empty when it is not asked for).
+    const std::string qos_line = larecomp::os::TagCurrentThreadHighQos(name.c_str());
+    if (!qos_line.empty()) {
+        LARECOMP_APP_INFO("{}: {}", who, qos_line);
+    }
     if (level == 0) {
         LARECOMP_APP_INFO("{}, priority left alone (audio_mixer_priority {}, {} logical "
                           "processors); thread \"{}\"",
