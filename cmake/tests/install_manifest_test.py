@@ -211,9 +211,12 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
 
 def check_fetchers(cmake, source, out, deps):
     # The two readers use their normal cache validation with synthetic bytes.
+    readers = {'fidelityfx': 'fidelityfx-sdk', 'streamline': 'streamline'}
     for kit_id, kit in deps['kits'].items():
+        if kit_id not in readers:
+            continue  # a kit with no CMake reader in this tree (dxc_host: cmake/FetchDxcHost.cmake comes with deps/dxc-unify)
         kit['url'] = (source / 'offline').as_uri()
-        folder = {'fidelityfx': 'fidelityfx-sdk', 'streamline': 'streamline'}[kit_id]
+        folder = readers[kit_id]
         for member in kit['files']:
             path = out / '_deps' / f'{folder}-{kit["version"]}' / member['path']
             write(path)
