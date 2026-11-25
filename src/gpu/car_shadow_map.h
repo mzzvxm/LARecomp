@@ -36,9 +36,11 @@
 
 #include <cstdint>
 #include <memory>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -126,6 +128,20 @@ class CarShadowMap {
   // The depth map: a D32 float + S8 target (the format the renderer's own depth targets use, whose depth plane Plume views as one float
   // on both backends), a view in a bindless slot, a framebuffer of the depth alone.
   struct Map {
+    // Release order matters as in HostImage (host_passes.h): the view reads its texture when it is destroyed (Vulkan), and the defaulted
+    // move assignment (`map_ = Map{}`) freed the texture first. Assignment destroys this map (the destructor's order: framebuffer, view,
+    // texture), then move-constructs in place.
+    Map() = default;
+    Map(Map&&) noexcept = default;
+    Map& operator=(Map&& other) noexcept {
+      if (this != &other) {
+        this->~Map();
+        new (this) Map(std::move(other));
+      }
+      return *this;
+    }
+    ~Map() = default;
+
     std::unique_ptr<plume::RenderTexture> texture;
     std::unique_ptr<plume::RenderTextureView> view;
     std::unique_ptr<plume::RenderFramebuffer> framebuffer;
