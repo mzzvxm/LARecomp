@@ -753,6 +753,7 @@ def lint_settings_ui(doc, rep, facts, strict=False):
     all_fact_paths = set()
 
     # -- settings catalog
+    legacy_types = {'bool': 'boolean', 'int': 'integer', 'number': 'number', 'string': 'string', 'path': 'string'}
     for name, s in settings.items():
         w = f'settings.{name}'
         if not re.fullmatch(r'[a-z][a-z0-9_]*', name):
@@ -760,6 +761,17 @@ def lint_settings_ui(doc, rep, facts, strict=False):
         reason = value_ok_for_setting(s['default'], s) if isinstance(s.get('default'), str) else None
         if reason:
             rep.error(w, f'the default {s["default"]!r} is invalid: {reason}')
+        if legacy := s.get('legacy_from'):
+            if legacy['setting'] == name:
+                rep.error(f'{w}.legacy_from.setting', 'the legacy key must differ from the destination setting')
+            for old, value in legacy['map'].items():
+                path = f'{w}.legacy_from.map.{old}'
+                if not _type_ok(value, legacy_types[s['type']]):
+                    rep.error(path, f'the mapped value must use the destination type {s["type"]}')
+                    continue
+                text = value if isinstance(value, str) else json.dumps(value)
+                if reason := value_ok_for_setting(text, s):
+                    rep.error(path, f'the mapped value {value!r} is invalid: {reason}')
         au = s.get('auto')
         if au:
             by, cells = au.get('by'), au.get('cells', {})
@@ -1386,6 +1398,17 @@ def selftest():
     expect('a launcher-only row without the L_ prefix', lambda d: row(d, 'PM_RxFpsCap').update(surfaces=['launcher']), 'L_<setting>')
     expect('a schema error: schema_version 0', lambda d: d.update(schema_version=0), 'below 1')
     expect('a setting default that is not valid', lambda d: d['settings']['fps_limit'].update(default='fast'), 'default')
+    expect('an empty legacy value map',
+           lambda d: d['settings']['mcla_gpu_vendor_denoiser']['legacy_from'].update(map={}), 'needs 1')
+    expect('a legacy map points to its destination',
+           lambda d: d['settings']['mcla_gpu_vendor_denoiser']['legacy_from'].update(setting='mcla_gpu_vendor_denoiser'),
+           'legacy key must differ')
+    expect('a legacy map returns a string for a bool',
+           lambda d: d['settings']['mcla_gpu_vendor_denoiser']['legacy_from']['map'].update(rr='true'),
+           'mapped value must use the destination type')
+    expect('a legacy map returns a number outside the setting range',
+           lambda d: d['settings']['fps_limit'].update(legacy_from={'setting': 'old_fps_limit', 'map': {'fast': 361}}),
+           'mapped value 361 is invalid')
     # the other kinds
     mdoc = load_json(os.path.join(ex_dir, 'machine.example.json'))
     for name, fn, fragment in [

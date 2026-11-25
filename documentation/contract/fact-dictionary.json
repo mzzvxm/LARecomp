@@ -5,6 +5,12 @@
   "types": ["bool", "int", "number", "string", "list"],
   "open_prefixes": ["install."],
   "not_readable": ["gpu.adapters", "display.list", "display.windowed_sizes", "display.exclusive_sizes", "paths"],
+  "setting_metadata": {
+    "legacy_from": {
+      "source": "settings-ui settings catalog. The vendor denoiser uses LegacyVendorPreference in gpu/denoiser_setting.h.",
+      "resolution": "Use a valid explicit value for the destination setting first. Otherwise look up the saved legacy key's value in the map. Use the setting default for a missing or unmapped legacy value. When removing a legacy key while preserving its preference, save the mapped value to the destination first if the destination has no valid explicit value."
+    }
+  },
   "facts": {
     "gpu.name": { "type": "string", "l0": true, "source": "DXGI + Plume description (gpu/device.cpp)", "used_by": "Graphics Card row, support text" },
     "gpu.vendor": { "type": "string", "enum": ["nvidia", "amd", "intel", "apple", "qualcomm", "microsoft", "other"], "l0": true, "source": "the adapter's PCI vendor id", "used_by": "denoiser rows, vendor rows" },

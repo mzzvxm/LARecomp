@@ -153,6 +153,19 @@ fallback_values = [{id = "1", label = "100%"}]
           std::string_view("rt_rung"), "RT overrides class descriptor");
     check(doc["settings"]["traffic_unspawn_dist"]["auto"]["cells"]["low"].value_or(0.0) == 250.0,
           "numeric auto cells");
+    check(!doc["settings"]["mcla_gpu_vendor_denoiser"], "a catalog without the toggle stays unchanged");
+    auto denoiser_catalog = catalog;
+    denoiser_catalog.insert("mcla_gpu_vendor_denoiser", metadata("bool", "false"));
+    const auto denoiser_doc = BuildDocument(denoiser_catalog, menus, input);
+    const auto vendor = denoiser_doc["settings"]["mcla_gpu_vendor_denoiser"];
+    const auto legacy = vendor["legacy_from"];
+    check(vendor["default"].value_or("") == std::string_view("false"), "legacy lookup keeps the catalog default");
+    check(legacy["setting"].value_or("") == std::string_view("mcla_gpu_denoiser"), "identify the saved legacy key");
+    const auto* map = legacy["map"].as_table();
+    check(map && map->size() == 3, "export exactly the three recognized legacy values");
+    check(legacy["map"]["rr"].value<bool>() == true, "the old NVIDIA and AMD choices both use rr and map to true");
+    check(legacy["map"]["auto"].value<bool>() == false, "auto maps to false");
+    check(legacy["map"]["ours"].value<bool>() == false, "ours maps to false");
     constexpr std::string_view paths[]{"api.car_rt", "features.pcss", "gpu.class", "live.hdr_active"};
     const auto* facts = doc["facts_used"].as_array();
     check(facts->size() == std::size(paths), "unique fact count");
