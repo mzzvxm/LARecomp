@@ -237,8 +237,7 @@ class FrameGeneration {
   // render thread starts): makes the backend and probes it on a worker thread. Never fails the
   // renderer; the setting simply is not offered when nothing can run.
   void Initialize(Device& device, FrameRing& frames, HostPasses& passes, PassTiming& pass_timing,
-                  FrameLayers& layers, TemporalSystem& temporal, SwapChain& swap_chain,
-                  std::atomic<bool>* resize_flag);
+                  FrameLayers& layers, TemporalSystem& temporal, SwapChain& swap_chain);
   // GPU idle, after the pacer was stopped.
   void Shutdown();
   // After the render thread stopped, before anything waits the GPU idle or goes: the pacer drains
@@ -391,7 +390,6 @@ class FrameGeneration {
   FrameLayers* layers_ = nullptr;
   TemporalSystem* temporal_ = nullptr;
   SwapChain* swap_chain_ = nullptr;
-  std::atomic<bool>* resize_flag_ = nullptr;
   std::unique_ptr<FrameGenerationBackend> backend_;
 
   // The setting's state (render thread).

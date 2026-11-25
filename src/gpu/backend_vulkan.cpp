@@ -21,6 +21,7 @@
 #include <plume_vulkan.h>
 
 #include "device_fault_format.h"
+#include "swap_chain_rules.h"
 #include "temporal_dlss.h"
 #include "uma_budget.h"
 
@@ -512,6 +513,34 @@ std::string DescribeLossReporting(plume::RenderDevice* device, void* probe) {
       probe ? "a fence status call after every submit, wait and present"
             : "nothing (the probe fence could not be made: a loss will go unnoticed)",
       fault);
+}
+
+bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_recovery) {
+  const auto& chain = static_cast<const plume::VulkanSwapChain&>(swap_chain);
+  const SwapChainState current{chain.getWidth(), chain.getHeight(),
+                               static_cast<uint32_t>(chain.pickedSurfaceFormat.format),
+                               static_cast<uint32_t>(chain.pickedSurfaceFormat.colorSpace),
+                               chain.getTextureCount(), static_cast<uint32_t>(chain.createdPresentMode),
+                               chain.createInfo.flags};
+  // Plume reuses the selected format, color space, flags and actual image count on resize.
+  SwapChainState requested = current;
+  requested.present_mode = static_cast<uint32_t>(chain.requiredPresentMode);
+  chain.getWindowSize(requested.width, requested.height);
+  // VulkanSwapChain::resize clamps the window size before creating its images. Compare that
+  // extent when the two sizes differ, so a compositor clamp cannot trigger a resize every frame.
+  if (!needs_recovery && requested.width && requested.height &&
+      (requested.width != current.width || requested.height != current.height) &&
+      chain.surface && chain.commandQueue && chain.commandQueue->device) {
+    VkSurfaceCapabilitiesKHR caps{};
+    if (vkGetPhysicalDeviceSurfaceCapabilitiesKHR(chain.commandQueue->device->physicalDevice,
+                                                  chain.surface, &caps) == VK_SUCCESS) {
+      requested.width =
+          std::clamp(requested.width, caps.minImageExtent.width, caps.maxImageExtent.width);
+      requested.height =
+          std::clamp(requested.height, caps.minImageExtent.height, caps.maxImageExtent.height);
+    }
+  }
+  return ShouldRebuildSwapChain(current, requested, needs_recovery);
 }
 
 bool QueryPresentStatistics(plume::RenderSwapChain*, PresentStatistics&) {

@@ -494,6 +494,8 @@ add_executable(larecomp_nan_guard_test EXCLUDE_FROM_ALL nan_guard_test.cpp)
 #   cmake --build <dir> --target larecomp_frame_order_test, then run src/gpu/larecomp_frame_order_test [<src/gpu dir>] [--print] (exit 0 = passed).
 add_executable(larecomp_frame_order_test EXCLUDE_FROM_ALL frame_order_test.cpp)
 add_executable(larecomp_present_rules_test EXCLUDE_FROM_ALL present_rules_test.cpp)
+add_executable(larecomp_swap_chain_rules_test EXCLUDE_FROM_ALL swap_chain_rules_test.cpp)
+target_compile_features(larecomp_swap_chain_rules_test PRIVATE cxx_std_20)
 
 # RTAO-R4 begin
 # Compile the test, then run src/gpu/larecomp_rtao_integration_test [<src/gpu dir>] against the merged renderer sources.

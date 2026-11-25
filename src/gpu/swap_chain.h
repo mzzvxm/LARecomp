@@ -41,6 +41,7 @@
 // Rebuild, Recreate and RecreateOn are called with the pacer paused.
 // ===========================================================================
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -93,13 +94,13 @@ class SwapChain {
     kLost,     // no chain could be made; Recreate is asked again later (lost())
   };
   // Makes the chain again, in the HDR10 colour space (`hdr10`) or the SDR one, at the window's size,
-  // with the vsync it had: the old chain is destroyed first (a window has one flip-model chain, and
+  // with the requested vsync: the old chain is destroyed first (a window has one flip-model chain, and
   // on Vulkan one chain per surface), so the caller has waited the GPU idle (FrameRing::WaitIdle) and
   // holds latency::SwapChainChange. native() is another object afterwards. When the new format is
   // refused (the output does not present HDR10) the old one is made again: kKept, with the reason
   // logged; the other values are in the enum. Anything that drew into the old back buffers (the
   // framebuffers, the semaphores) is gone with it.
-  Recreated Recreate(bool hdr10);
+  Recreated Recreate(bool hdr10, bool vsync);
   // The same on the queue `queue` (null: the device's render queue), which stays the chain's from
   // then on, with `vsync` as the presentation mode. The old chain is destroyed first, as above.
   Recreated RecreateOn(plume::RenderCommandQueue* queue, bool hdr10, bool vsync,
@@ -113,8 +114,9 @@ class SwapChain {
   // presented meanwhile (empty() is true).
   bool lost() const { return device_ != nullptr && !swap_chain_; }
 
-  // True when the window size no longer matches the buffers.
+  // Compare the live window and present mode with the buffers, including backend failures.
   bool NeedsRebuild() const;
+  bool recovery_requested() const { return recovery_requested_.load(std::memory_order_acquire); }
   // Resizes to the window. The caller has waited the GPU idle. Returns false
   // when the window has no area (minimised) or the backend refused; the chain
   // is then empty() until a later rebuild succeeds.
@@ -155,8 +157,7 @@ class SwapChain {
   plume::RenderFormat format() const { return format_; }
   // The window the chain presents to, for what is asked of the display it is on.
   plume::RenderWindow window() const { return window_; }
-  // Whether the chain is on its way to the vsync it was asked for (SetVsync): the Vulkan chain
-  // changes its presentation mode at the next rebuild.
+  // The active mode: the Vulkan chain changes its presentation mode at the next rebuild.
   bool vsync_enabled() const { return swap_chain_ && swap_chain_->isVsyncEnabled(); }
   // The chain is HDR10 (R10G10B10A2 in ST 2084): what is drawn into it must be PQ code values.
   bool hdr() const { return hdr_; }
@@ -175,6 +176,8 @@ class SwapChain {
   plume::RenderCommandQueue* queue_ = nullptr;
   // Held by Acquire, Present and SetHdrMetadata: the chain wants one thread at a time in each.
   std::mutex use_mutex_;
+  // Acquire and Present can fail on the pacer thread even when the window size stays the same.
+  std::atomic<bool> recovery_requested_{false};
   plume::RenderWindow window_{};
   bool vsync_ = false;  // what the next chain starts with
   plume::RenderFormat format_ = kSdrFormat;

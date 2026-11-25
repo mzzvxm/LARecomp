@@ -75,7 +75,7 @@ class NoCPGraphicsDriver final : public rex::gpu::IXenosGraphicsDriver {
 
   void ResizeSurface(rex::u32, rex::u32) override {
 #if defined(LARECOMP_HAS_GPU)
-    mcla::gpu::RequestResize();
+    mcla::gpu::RequestResize(mcla::gpu::ResizeSource::kSdkSurface);
 #endif
   }
 

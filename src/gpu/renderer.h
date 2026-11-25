@@ -133,6 +133,8 @@ struct NativeWindow;
 
 namespace mcla::gpu {
 
+enum class ResizeSource : uint8_t;
+
 class Renderer final : public RenderThread::Executor {
  public:
   struct Options {
@@ -180,7 +182,9 @@ class Renderer final : public RenderThread::Executor {
   // the renderer.
   CommandStream& stream() { return thread_.stream(); }
   // Any thread.
-  void RequestResize() { resize_requested_.store(true, std::memory_order_release); }
+  void RequestResize(ResizeSource source) {
+    resize_requests_.fetch_or(static_cast<uint8_t>(source), std::memory_order_release);
+  }
   void RequestCapture() { capture_.Request(); }
   void RequestTextureDump() { textures_.RequestDump(); }
   void RequestTextureDumpAll() { textures_.RequestDumpAll(); }
@@ -238,6 +242,7 @@ class Renderer final : public RenderThread::Executor {
   // present into), then the ring moves on.
   void SubmitFrameWithoutPresent();
   void ExecutePresent(PresentSource source);
+  bool WantsSwapChainVsync() const;
   bool RebuildSwapChain();
 #if defined(_WIN32)
   void UpdateComposedPresentCeiling();
@@ -389,7 +394,7 @@ class Renderer final : public RenderThread::Executor {
 
   std::shared_ptr<OverlayHost> overlay_host_;
   std::atomic<bool> shutting_down_{false};
-  std::atomic<bool> resize_requested_{false};
+  std::atomic<uint8_t> resize_requests_{0};  // ResizeSource bits since the last present
   bool initialized_ = false;
   bool validate_ = false;       // mcla_gpu_validate, read at Initialize
   bool teardown_diagnostics_ = false;

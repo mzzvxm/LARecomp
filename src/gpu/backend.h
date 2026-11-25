@@ -274,6 +274,10 @@ bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistic
 // The D3D12 test present. The normal path uses RenderSwapChain::present.
 PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain);
 
+// Compare the existing buffers with what Plume would make on resize. Creation-only changes
+// (such as HDR or the present queue) go through SwapChain::RecreateOn separately.
+bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_recovery);
+
 // The PCI vendor id (0x10DE NVIDIA, 0x1002 AMD, 0x8086 Intel) of the GPU the renderer will use, as
 // DXGI lists it, for the adapter named `preferred_adapter` (mcla_gpu_adapter; empty: Windows' choice
 // as DefaultAdapterName makes it, else Plume's). 0 when it cannot be told (no DXGI, no adapter).
