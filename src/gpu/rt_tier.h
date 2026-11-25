@@ -580,7 +580,7 @@ inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     RtDerived("mcla_gpu_car_mirror_rt"),
     // World ambient occlusion uses the class table unless a High-class card traces rays quickly: the none and weak rungs say nothing (an empty cell: the class table decides), the strong rung
     // is ENHANCED RT ULTRA's cell (`rt`).
-    {"mcla_gpu_ao", "", "", gfx_preset::CellOf("mcla_gpu_ao", gfx_preset::Preset::kEnhancedRtUltra)},
+    {"mcla_gpu_ao", "", "", gfx_preset::CellOf("mcla_gpu_ao", gfx_preset::Preset::kEnhancedRtUltra) == "rt" ? "rt" : ""},
 };
 
 constexpr const RtEffectInfo& RtInfo(RtEffect effect) { return kRtEffects[static_cast<int>(effect)]; }
