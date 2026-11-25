@@ -8,7 +8,8 @@
   "options": [
     { "name": "LARECOMP_GPU", "value": "ON" },
     { "name": "LARECOMP_CPU_LEVEL", "from": "launcher.cpu_level" },
-    { "name": "LARECOMP_DLSS_FETCH", "value": "OFF", "when": "os.name == 'windows' && gpu.vendor != 'nvidia'" }
+    { "name": "LARECOMP_DLSS_FETCH", "value": "OFF", "when": "os.name == 'windows' && gpu.vendor != 'nvidia'" },
+    { "name": "LARECOMP_DXC_HOST_ARCHIVE", "from": "kit:dxc_host", "when": "os.name == 'windows'" }
   ],
   "targets": ["larecomp", "larecomp_online_tool"],
   "kits": "cmake/deps.json"

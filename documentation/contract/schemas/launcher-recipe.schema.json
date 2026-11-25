@@ -58,7 +58,7 @@
         "properties": {
           "name": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
           "value": { "type": "string" },
-          "from": { "type": "string", "pattern": "^launcher\\.[a-z][a-z0-9_]*$", "description": "a value the launcher supplies by name" },
+          "from": { "type": "string", "pattern": "^(launcher\\.[a-z][a-z0-9_]*|kit:[a-z][a-z0-9_]*)$", "description": "a value the launcher supplies by name (launcher.<name>), or kit:<id>: the checked archive of that archive kit of the kits file" },
           "when": { "type": "string" },
           "only_if_defined": { "type": "boolean", "description": "pass it only when the sources' CMake defines the option (an older game does not)" }
         }
