@@ -29,6 +29,7 @@
 #include "pipelines.h"
 #include "shaders.h"
 #include "temporal_backend.h"
+#include "vulkan_pipeline_cache_rules.h"
 
 
 namespace mcla::gpu {
@@ -298,10 +299,15 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
       return true;
     }
     const std::string have = ReadAll(stamp_path);
-    if (have.starts_with(expected)) {
+    const bool stamp_matches = have.starts_with(expected);
+    if (vulkan_pipeline_cache::CanUsePrebuildStamp(
+            stamp_matches, parts.device.HasPersistentVulkanPipelineCache(),
+            parts.device.LoadedVulkanPipelineCache())) {
       return false;
     }
-    log(0, "the pipelines need building: " + WhatChanged(have, expected));
+    log(0, "the pipelines need building: " +
+               (stamp_matches ? std::string("the Vulkan pipeline cache was not loaded")
+                              : WhatChanged(have, expected)));
     return true;
   };
   using Clock = std::chrono::steady_clock;
@@ -355,9 +361,13 @@ PrebuildResult PrebuildPipelines(const PrebuildOptions& options, const PrebuildE
                 std::format("None of the {} pipelines could be made (the log has the reasons).",
                             run.list.records + run.list.copies));
   }
-  // Last, like the shader packs' stamp: what the stamp vouches for is in place.
-  WriteStamp(stamp_path, expected + std::format("# ready={} failed={} seconds={:.1f}\n", run.ready,
-                                                 run.failed, run.seconds));
+  // The prebuild has joined its workers. Publish the compiled cache before stamping the list.
+  if (parts.device.SaveVulkanPipelineCache()) {
+    WriteStamp(stamp_path, expected + std::format("# ready={} failed={} seconds={:.1f}\n", run.ready,
+                                                   run.failed, run.seconds));
+  } else {
+    log(1, "the Vulkan pipeline cache could not be saved; the preparation stamp was not updated");
+  }
   std::string text = std::format("Prepared {} pipelines for {} ({}) in {:.0f} s.", run.ready,
                                  result.adapter, result.backend, run.seconds);
   if (run.list.copies != 0) {

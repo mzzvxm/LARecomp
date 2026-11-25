@@ -475,6 +475,7 @@
 {"mcla_gpu_perf_markers", "MCLA/GPU"},
 {"mcla_gpu_perf_markers_level", "MCLA/GPU"},
 {"mcla_gpu_pipeline_cache", "MCLA/GPU"},
+{"mcla_gpu_vulkan_pipeline_cache", "MCLA/GPU"},
 {"mcla_gpu_present_dither", "MCLA/GPU"},
 {"mcla_gpu_present_release", "MCLA/GPU"},
 {"mcla_gpu_present_release_check", "MCLA/GPU"},

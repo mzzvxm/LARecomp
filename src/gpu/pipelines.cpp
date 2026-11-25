@@ -43,6 +43,7 @@
 #include "pipeline_wait.h"
 #include "shadow_filter.h"
 #include "side_views.h"
+#include "stencil_ref.h"
 #include "temporal_backend.h"
 
 #if defined(_WIN32)
@@ -180,6 +181,7 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps, bool startup = false) {
 // The pipeline cache file: a header, the layouts, the records.
 // Host byte order; any mismatch discards the whole file.
 constexpr char kCacheMagic[8] = {'M', 'C', 'L', 'A', 'P', 'S', 'O', '\0'};
+// Still 1 after the stencil reference left the key (stencil_ref.h): LoadFile clears it in an older file's records.
 constexpr uint32_t kCacheVersion = 1;
 constexpr uint32_t kMaxStoredElements = 64;
 constexpr uint32_t kMaxSemanticName = 64;
@@ -595,6 +597,7 @@ void Pipelines::Shutdown() {
   loaded_records_ = 0;
   own_file_records_ = 0;
   frame_ = 0;
+  vulkan_cache_after_precache_ = false;
   persist_ = false;
   persistence_started_ = false;
   device_ = nullptr;
@@ -1507,6 +1510,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   size_t added = 0;
   uint32_t dropped = 0;
   uint32_t zeroed = 0;
+  uint32_t refs_cleared = 0;
   for (Record r : records) {
     r.layout = layout_of_file[r.layout];
     // A shader the pack no longer has: the pipeline cannot be made. Nor can one with a variant word of the
@@ -1529,6 +1533,12 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
       r.key.depth_bias = 0;
       r.key.slope_scaled_depth_bias = 0.0f;
     }
+    // The stencil reference is on the command list now (stencil_ref.h): a record an earlier build wrote has its draw's in the key, and
+    // the records that differed only by it are one pipeline, the first of them kept below (recorded_ drops the others).
+    if (const uint32_t masks = stencil_ref::WithoutReference(r.key.stencil_masks); masks != r.key.stencil_masks) {
+      ++refs_cleared;
+      r.key.stencil_masks = masks;
+    }
     // The bytes of a record are its identity: a -0.0 slope written by an earlier build is the +0.0 a draw asks for now.
     r.key.slope_scaled_depth_bias = key_guard::CanonicalZero(r.key.slope_scaled_depth_bias);
     // A depth format this device has no target for (the other API's file holds D24).
@@ -1540,9 +1550,10 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
     }
   }
   REXLOG_INFO("[gpu] pipelines: {} records and {} layouts in {}: {} new here ({} dropped: a "
-              "shader the pack does not have{})",
+              "shader the pack does not have{}{})",
               header.record_count, header.layout_count, path.string(), added, dropped,
-              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string());
+              zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string(),
+              refs_cleared ? std::format("; {} stencil references cleared (on the list now)", refs_cleared) : std::string());
   return added;
 }
 
@@ -1602,23 +1613,39 @@ void Pipelines::JoinAutosave() {
 }
 
 void Pipelines::Autosave() {
-  if (!persist_ || records_.size() == saved_records_ ||
-      autosave_running_.load(std::memory_order_acquire)) {
+  if (!persist_ || autosave_running_.load(std::memory_order_acquire)) {
     return;
   }
+  // A draw can claim the last entry before creating its pipeline. Check at EndFrame
+  // and do the snapshot and file I/O off the render thread.
+  const bool save_vulkan = !vulkan_cache_after_precache_ &&
+                           device_->HasPersistentVulkanPipelineCache() && !precached_.empty() &&
+                           precache_finished_.load() == precached_.size();
   constexpr auto kInterval = std::chrono::seconds(30);
-  const auto now = std::chrono::steady_clock::now();
-  if (now - last_save_ < kInterval) {
+  std::vector<uint8_t> bytes;
+  if (records_.size() != saved_records_) {
+    const auto now = std::chrono::steady_clock::now();
+    if (now - last_save_ >= kInterval) {
+      bytes = SerializeRecords();
+      last_save_ = now;
+      saved_records_ = records_.size();
+    }
+  }
+  if (!save_vulkan && bytes.empty()) {
     return;
   }
-  last_save_ = now;
-  saved_records_ = records_.size();
+  vulkan_cache_after_precache_ |= save_vulkan;
   JoinAutosave();  // finished: only the handle is left
   autosave_running_.store(true, std::memory_order_release);
   autosave_thread_ = std::thread(
-      [this, bytes = SerializeRecords(), records = records_.size(),
+      [this, save_vulkan, bytes = std::move(bytes), records = records_.size(),
        layouts = stored_layouts_.size()] {
-        WriteCacheFile(bytes, records, layouts);
+        if (save_vulkan) {
+          device_->SaveVulkanPipelineCache();
+        }
+        if (!bytes.empty()) {
+          WriteCacheFile(bytes, records, layouts);
+        }
         autosave_running_.store(false, std::memory_order_release);
       });
 }
@@ -1773,7 +1800,7 @@ KeyResult Pipelines::BuildKeyUncached(const XenosState& state, const PipelineInp
   }
   if (constant_blend) {
     Report(kReportConstantBlend,
-           "a blend with the constant colour/alpha factor (Plume has no dynamic blend factor; the "
+           "a blend with the constant colour/alpha factor (nothing sets the host's blend factor; the "
            "host default factor is used)");
   }
 
@@ -1795,17 +1822,16 @@ KeyResult Pipelines::BuildKeyUncached(const XenosState& state, const PipelineInp
                     (uint32_t(StencilOp(dc.stencilzfail)) << 13) |
                     (uint32_t(Compare(func_bf)) << 17) | (uint32_t(StencilOp(fail_bf)) << 21) |
                     (uint32_t(StencilOp(zpass_bf)) << 25);
-      key.stencil_masks = uint32_t(state.stencil.stencilmask) |
-                          (uint32_t(state.stencil.stencilwritemask) << 8) |
-                          (uint32_t(state.stencil.stencilref) << 16) |
-                          (uint32_t(StencilOp(zfail_bf)) << 24);
+      // The reference is not in the key: the draw puts it on the list (stencil_ref.h).
+      key.stencil_masks = stencil_ref::PackMasks(state.stencil.stencilmask, state.stencil.stencilwritemask,
+                                                 uint32_t(StencilOp(zfail_bf)));
       if (dc.backface_enable && (state.stencil_bf.stencilmask != state.stencil.stencilmask ||
                                  state.stencil_bf.stencilwritemask !=
                                      state.stencil.stencilwritemask ||
                                  state.stencil_bf.stencilref != state.stencil.stencilref)) {
         Report(kReportStencilBackFace,
-               "back-face stencil masks or reference different from the front (one set in a "
-               "pipeline; the front ones are used)");
+               "back-face stencil masks or reference different from the front (one set of "
+               "masks in a pipeline and one reference on the list; the front ones are used)");
       }
     }
   }
@@ -1917,8 +1943,11 @@ bool Pipelines::BuildDesc(const PipelineKey& key, const ShaderStore::Entry* vs,
     desc.stencilBackFace.depthFailOp = RenderStencilOp((key.stencil_masks >> 24) & 0xF);
     desc.stencilReadMask = key.stencil_masks & 0xFFu;
     desc.stencilWriteMask = (key.stencil_masks >> 8) & 0xFFu;
-    desc.stencilReference = (key.stencil_masks >> 16) & 0xFFu;
   }
+  // Every guest pipeline takes its stencil reference from the command list (Scene puts the draw's on it, stencil_ref.h), so draws that
+  // differ only by the reference are one pipeline. Also one with the stencil test off: a static reference would overwrite the list's at its
+  // bind (D3D12) or make it undefined for the next draw (Vulkan), and the list's own copy (stencil_ref::Held) would then be wrong.
+  desc.dynamicStencilReferenceEnabled = true;
   desc.cullMode = plume::RenderCullMode(key.raster & 0xF);
   desc.frontFace = ((key.raster >> 4) & 1u) ? plume::RenderFrontFace::COUNTER_CLOCKWISE
                                             : plume::RenderFrontFace::CLOCKWISE;

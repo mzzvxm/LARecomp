@@ -19,6 +19,9 @@ precache makes them in that order. Prefer D3D12 lists from a device with 24-bit 
 a Vulkan list from a device without it holds D32 keys that a D24 device never asks for.
 Rebuild the starter when the shader pack or PipelineKey changes: a record whose shader is not in the
 pack is dropped at load, and a list of another version is ignored.
+The stencil reference is not part of a key any more (it is set on the command list per draw, src/gpu/stencil_ref.h):
+every command reads a list with the references cleared and the records that differed only by one folded into the
+first, as the game does at load, so `merge -o NEW OLD` rewrites an older list as the game wants it.
 
 add puts the lists of runs (a run's cache/mcla_gpu_pipelines_<api>.bin) onto the starter. A run on a device
 with the dynamic depth bias (every D3D12 and Vulkan device of today) zeroes the starter's static biases at
@@ -77,6 +80,7 @@ DEPTH_FORMAT_AT = 56
 DEPTH_BIAS_AT = 92  # PipelineKey::depth_bias, then slope_scaled_depth_bias (float)
 COLOR_COUNT_AT = 36
 STENCIL_AT, STENCIL_MASKS_AT = 80, 84  # key.stencil (bit 0 enable; front compare, fail, pass, depth fail at bits 1, 5, 9, 13; back compare, fail, pass at 17, 21, 25), key.stencil_masks (read, write, reference; the back depth fail at 24)
+STENCIL_REF_MASK = 0x00FF0000  # key.stencil_masks bits 16-23: the draw's reference in a list an older build wrote; 0 since the reference is on the command list (src/gpu/stencil_ref.h)
 STENCIL_KEEP = 1  # plume RenderStencilOp: UNKNOWN 0, KEEP 1, ZERO 2, REPLACE 3 ...
 FIRST_PACKED_VARIANT = 2  # ShaderStore::kFirstPackedVariant: 0 and 1 are the main pack's spec variants
 # The variant word (ps_variant, vs_variant): bit 0 the main pack's spec variant, bits 1..31 the set of features (shaderpack/variant_chain.h):
@@ -104,7 +108,18 @@ class Bad(Exception):
     pass
 
 
-def read_list(path):
+def without_stencil_ref(key):
+    """The key with the stencil reference cleared: what a build that sets the reference on the command list asks for (the same as Pipelines::LoadFile)."""
+    masks = u32(key, STENCIL_MASKS_AT)
+    if not masks & STENCIL_REF_MASK:
+        return key
+    return key[:STENCIL_MASKS_AT] + struct.pack("<I", masks & ~STENCIL_REF_MASK) + key[STENCIL_MASKS_AT + 4:]
+
+
+def read_list(path, raw=False):
+    """(backend, layouts, records). The records' stencil references are cleared unless raw: a list of an older build holds one record
+    per reference of a state, which are one pipeline now: the first of them stays and the repeats are left out, as the game does when it
+    reads the list."""
     data = open(path, "rb").read()
     if len(data) < 32 or data[:8] != MAGIC:
         raise Bad(f"{path}: not a pipeline list")
@@ -127,14 +142,21 @@ def read_list(path):
             raise Bad(f"{path}: a layout is cut short")
         layouts.append((h, data[start + 8:at]))
     records = []
+    seen = set()
     for _ in range(record_count):
         if at + KEY_SIZE + 4 > len(data):
             raise Bad(f"{path}: a record is cut short")
         key = data[at:at + KEY_SIZE]
+        if not raw:
+            key = without_stencil_ref(key)
         (layout,) = struct.unpack_from("<I", data, at + KEY_SIZE)
         at += KEY_SIZE + 4
         if layout >= len(layouts):
             raise Bad(f"{path}: a record names no layout")
+        if not raw:
+            if key in seen:
+                continue
+            seen.add(key)
         records.append((key, layout))
     return BACKENDS.get(backend, str(backend)), layouts, records
 
@@ -169,8 +191,10 @@ def fmt_counts(counts):
 
 def info(paths):
     for p in paths:
-        backend, layouts, records = read_list(p)
+        backend, layouts, records = read_list(p, raw=True)
         keys = [k for k, _ in records]
+        with_ref = sum(1 for k in keys if u32(k, STENCIL_MASKS_AT) & STENCIL_REF_MASK)
+        folded = len({without_stencil_ref(k) for k in keys})
         biased = sum(1 for k in keys if k[DEPTH_BIAS_AT:DEPTH_BIAS_AT + 8] != b"\0" * 8)
         depth_only = sum(1 for k in keys if k[PS_AT:PS_AT + 8] == b"\0" * 8)
         packed = {}
@@ -180,8 +204,10 @@ def info(paths):
         variants = ", ".join(f"{word_name(v)} {n}" for v, n in sorted(packed.items())) or "none"
         print(f"{p}: {backend}, {len(records)} records, {len(layouts)} layouts, "
               f"{depth_only} depth only, {biased} with a static depth bias")
-        print(f"    {len({without_bias(k) for k in keys})} distinct without the bias (what a device with the "
-              f"dynamic bias keeps); by sample count {fmt_counts(by_samples(keys))}; shader variants: {variants}")
+        print(f"    {with_ref} with a stencil reference in the key (an older build's: it is on the command list now); "
+              f"{folded} distinct without it ({len(records) - folded} fold into another)")
+        print(f"    {len({without_bias(without_stencil_ref(k)) for k in keys})} distinct without the bias (what a device with the "
+              f"dynamic bias keeps; {len({without_bias(k) for k in keys})} while the reference was in the key); by sample count {fmt_counts(by_samples(keys))}; shader variants: {variants}")
 
 
 class Collector:
@@ -526,6 +552,26 @@ def selftest():
         expect(count == 3 and "1 of them write the stencil" in text and "pixel: headlights;" in text and "pixel: G-buffer;" in text and "writes the stencil" in text,
                f"lacks counts the 3 new records, the stencil writer and names the words ({text.strip()})")
         expect(word_name(3072) == "headlights + G-buffer" and word_name(8192) == "G-buffer vertex" and word_name(2048) == "G-buffer", "word names cover the G-buffer features")
+
+        # the stencil reference is on the command list since STENCIL-DYN: records that differ only by it are one pipeline
+        def with_ref(key, ref):
+            b = bytearray(key)
+            struct.pack_into("<I", b, STENCIL_AT, 1 | (8 << 1) | (STENCIL_KEEP << 5) | (STENCIL_KEEP << 9) | (STENCIL_KEEP << 13) | (8 << 17) | (STENCIL_KEEP << 21) | (STENCIL_KEEP << 25))
+            struct.pack_into("<I", b, STENCIL_MASKS_AT, 0xFF | (0xFF << 8) | (ref << 16) | (STENCIL_KEEP << 24))
+            return bytes(b)
+        r5, r9, r0 = with_ref(_key(31, 32, 2), 5), with_ref(_key(31, 32, 2), 9), with_ref(_key(31, 32, 2), 0)
+        other = with_ref(_key(33, 34, 2), 7)
+        write("refs.bin", [(r5, 0), (other, 0), (r9, 0), (r0, 0), (_key(35, 36, 2), 0)], [_layout(10)])
+        keys = [k for k, _ in read_list(path("refs.bin"))[2]]
+        expect(keys == [r0, with_ref(_key(33, 34, 2), 0), _key(35, 36, 2)] and all(not u32(k, STENCIL_MASKS_AT) & STENCIL_REF_MASK for k in keys),
+               "read_list clears the stencil reference and keeps the first of the records that differed only by it (in the first one's place)")
+        expect(len(read_list(path("refs.bin"), raw=True)[2]) == 5, "raw keeps every record as written")
+        _quiet(merge, [path("refs.bin")], path("refs-merged.bin"))
+        expect([k for k, _ in read_list(path("refs-merged.bin"), raw=True)[2]] == keys, "merge writes the list with the references cleared and the repeats gone")
+        _quiet(add, path("refs.bin"), [path("refs.bin")], path("refs-added.bin"))
+        expect(len(read_list(path("refs-added.bin"), raw=True)[2]) == 3, "add does not take a record that differs from the base's only by the reference")
+        _, text = _quiet(info, [path("refs.bin")])
+        expect("3 with a stencil reference in the key" in text and "3 distinct without it (2 fold into another)" in text, f"info counts the references ({text.strip()})")
 
         # junk is refused
         with open(path("junk.bin"), "wb") as f:

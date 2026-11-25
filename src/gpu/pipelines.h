@@ -16,8 +16,9 @@
 //     shader (g_BlendPremult*, constants.h);
 //   - a copy blend (ONE, ZERO, ADD on both equations) is "blend off";
 //   - depth and stencil state are zeroed when depth/stencil are off;
-//   - the stencil reference is static (Plume has no dynamic stencil
-//     reference; three references per state were measured, 24.3);
+//   - the stencil reference is not in the key: every pipeline has it dynamic and the draw puts it
+//     on the command list (stencil_ref.h; Plume's setStencilReference), so draws that differ only
+//     by it share a pipeline (three references per state were measured, 24.3);
 //   - the depth bias is dynamic where the device has it (Vulkan always,
 //     D3D12 with options16 and Plume's Agility SDK build), as reblue does, and
 //     part of the key otherwise;
@@ -30,8 +31,9 @@
 // translates every field whether blending is on or not, and UNKNOWN is not a
 // valid D3D12 or Vulkan value.
 // What the host cannot express is reported once per kind: a constant blend
-// factor (Plume has no setBlendFactor), separate back-face stencil masks or
-// reference (one set of masks in a D3D12 pipeline), point fill, an alpha
+// factor (the host default is used: Plume's setBlendConstants could set the guest's per draw, nothing does yet),
+// separate back-face stencil masks or reference (one set of masks in a D3D12 pipeline, one reference
+// on the list), point fill, an alpha
 // test function that is not a lower bound, alpha test or alpha to coverage on
 // a pixel shader compiled without the variant. Both faces culled is not a
 // failure: the draw has no effect (the caller skips it).
@@ -192,7 +194,7 @@ struct PipelineKey {
   uint32_t blend[kColorTargetCount] = {};
   uint32_t depth = 0;    // enable | write | func
   uint32_t stencil = 0;  // enable | func, fail, zpass, zfail front; func, fail, zpass back (4 bits)
-  uint32_t stencil_masks = 0;  // read | write | ref, 8 bits each
+  uint32_t stencil_masks = 0;  // read | write, 8 bits each; bits 16-23 the reference (0: it is on the command list, stencil_ref.h); back depth fail at 24
   uint32_t raster = 0;   // cull | front ccw | fill | depth clip
   int32_t depth_bias = 0;  // static depth bias only (0 with the dynamic one)
   float slope_scaled_depth_bias = 0.0f;
@@ -684,6 +686,7 @@ class Pipelines {
   std::chrono::steady_clock::time_point last_save_;
   std::thread autosave_thread_;
   std::atomic<bool> autosave_running_{false};
+  bool vulkan_cache_after_precache_ = false;  // startup snapshot scheduled by the render thread
   static constexpr uint32_t kNoLayout = 0xFFFFFFFFu;  // a layout that cannot be persisted
 
   // Precache: one entry per loaded record, its state moved by
