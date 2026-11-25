@@ -25486,10 +25486,10 @@ name = "Patch_RearViewCadence"
 registers = ["r17", "r21", "r27"]
 after_instruction = false
 
-# 0x822E68D8: the `mr r4,r30` before the phase's end call (sub_822F7570) in sub_822E6408; reached for every phase, r30 = the phase. For the mirror's (0x1000000) it
-# sends the shared view's END marker (for a BEGIN that was sent), ends the city radius cut and puts back the bit a held frame took out of renderer+364.
+# 0x822E6908: the phase increment in sub_822E6408, after both end calls. The mirror's callback draws the sky before restoring the main camera.
+# r30 still names the finished phase. For 0x1000000 close the shared view and restore the bit a held frame took out of renderer+364.
 [[midasm_hook]]
-address = 0x822E68D8
+address = 0x822E6908
 name = "Patch_RearViewPhaseEnd"
 registers = ["r30"]
 after_instruction = false

@@ -952,7 +952,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
         // The rear view mirror's phase (mirror_view.h): the markers need the open list (the view's pass, its resolve), unlike the UI messages below, which only set flags. They are on the
         // same side channel (top byte 0x7F), so they are told first.
         plume::RenderCommandList* list = OpenFrameList();
-        PerfScope label(markers_, list, bucket == mirror_view::kMarkerBegin ? "MirrorViewBegin" : "MirrorViewEnd", PerfMarkers::kEvent);
+        PerfScope label(markers_, list, mirror_view::IsBeginMarker(bucket) ? "MirrorViewBegin" : "MirrorViewEnd", PerfMarkers::kEvent);
         scene_.OnMirrorMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, list);  // the begin's tag: the field this phase's camera was built with (MV-J2)
         return;
       }

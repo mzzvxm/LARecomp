@@ -360,7 +360,8 @@ inline Request RequestFor(const RequestFacts& f) {
 enum class PhaseState : uint8_t {
   kIdle,         // no phase open: every draw is the main target's
   kRedirect,     // the phase is open and the view takes its draws and its begin clear
-  kPassThrough,  // the phase is open and the switch is on, but the view cannot run (no rectangle, no plan, the images failed): the game's own mirror, as without the switch
+  kPassThrough,  // the view cannot run and the HUD mirror is visible: draw the game's own HUD mirror
+  kSuppress,     // the view cannot run and the HUD mirror is hidden: discard the draws and clears
 };
 
 struct BeginFacts {
@@ -368,6 +369,7 @@ struct BeginFacts {
   bool rect_valid = false;  // the guest published the rectangle (mirror_draws::Current().valid())
   bool plan_valid = false;  // a size for the view is there (PlanForRect)
   bool blocked = false;     // the images could not be made in the last attempts (video memory): wait for the next change before asking again
+  bool hud_stamp = false;   // the begin marker says whether the phase also has a visible HUD mirror
 };
 
 // The phase of the frame in progress. Begin and End come from the markers, FrameStart from Scene::BeginFrame (a phase never lasts past the frame: a lost end closes there, and is counted).
@@ -384,7 +386,7 @@ struct PhaseTracker {
     }
     ++phases;
     const bool redirect = f.enabled && f.rect_valid && f.plan_valid && !f.blocked;
-    state = redirect ? PhaseState::kRedirect : PhaseState::kPassThrough;
+    state = redirect ? PhaseState::kRedirect : (f.hud_stamp ? PhaseState::kPassThrough : PhaseState::kSuppress);
     redirected += redirect ? 1u : 0u;
     return state;
   }
@@ -406,6 +408,7 @@ struct PhaseTracker {
     }
   }
   bool redirecting() const { return state == PhaseState::kRedirect; }
+  bool suppressing() const { return state == PhaseState::kSuppress; }
 };
 
 // ---------------------------------------------------------------------------

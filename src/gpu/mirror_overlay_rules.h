@@ -30,6 +30,7 @@
 #include <cstring>
 
 #include "car_shadow_map_rules.h"
+#include "mirror_glass_need.h"
 #include "mirror_view_rules.h"
 #include "temporal_math.h"
 
@@ -363,6 +364,21 @@ inline bool ProjectionCoefficients(const PushInputs& in, double c[4][4]) {
     }
   }
   return std::fabs(c[0][0]) > 1e-12 && std::fabs(c[1][1]) > 1e-12;
+}
+
+// A known camera that the overlay cannot replay has no use for a side-only rear view.
+// Keep the ordinary hold for gaps in camera or draw capture between usable frames.
+inline mirror_glass::NeedState UpdateSideNeed(mirror_glass::NeedHold& hold, const mirror_glass::NeedState& need, bool camera_known,
+                                             const tp::Mat4& view, const tp::Mat4& view_projection) {
+  if (camera_known && (need.need() || hold.holding())) {
+    const PushInputs projection{.view = view, .view_projection = view_projection};
+    double coefficients[4][4];
+    if (!ProjectionCoefficients(projection, coefficients)) {
+      hold.Reset();
+      return {.found = need.found};
+    }
+  }
+  return hold.Update(need);
 }
 
 inline PushResult MakePush(const PushInputs& in, Push* out) {

@@ -10,6 +10,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "mirror_overlay_rules.h"
 #include "mirror_setting.h"
 
 namespace mcla::gpu {
@@ -183,8 +184,10 @@ void MirrorGlass::OnPresent() {
   if (r.found) {
     LogPair(r);
   }
-  // The guest's flag: this frame's need, held for a few frames so a missing draw or a camera cut does not toggle the phase.
-  const mg::NeedState published = hold_.Update(r.need);
+  // A camera the overlay cannot replay (the toolkit camera's projection) gets no side-only rear view: its raster pass would draw into the main
+  // picture with nothing to compose it (the sky patch of the 11-24 front shots). No car frame: the old hold.
+  const car_frame::Frame* frame = car_frame_ ? &car_frame_->Current() : nullptr;
+  const mg::NeedState published = frame ? mirror_overlay::UpdateSideNeed(hold_, r.need, frame->valid, frame->view, frame->view_projection) : hold_.Update(r.need);
   mg::PublishNeed(published);
   published_ = true;
   if (published.need() && !first_need_logged_) {

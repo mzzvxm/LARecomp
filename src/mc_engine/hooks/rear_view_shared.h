@@ -82,8 +82,8 @@ inline bool CarsInView(const Mode& m, bool cars_setting) { return cars_setting |
 // ---------------------------------------------------------------------------
 
 // The phase loop (sub_822E6408) runs the begin step of EVERY phase every frame and its end step too; the mirror's begin step (sub_82308178) is reached whenever the renderer's phase mask has
-// the mirror's bit, the HUD mirror up or not, and does nothing unless the pass's active byte is set. The tracker sends a BEGIN only for a phase that really runs: requested this frame (the
-// bit in r21 after a held frame took it out) and the consumer active. An END goes out for every BEGIN, once; a BEGIN that finds one open is ignored (counted); the frame's start closes one
+// the mirror's bit, the HUD mirror up or not, and does nothing unless the pass's active byte is set. The tracker sends a BEGIN for a tracked, requested phase with the consumer active.
+// An END goes out for every BEGIN, once; a BEGIN that finds one open is ignored (counted); the frame's start closes one
 // whose end never came. A HELD frame (the cadence took the phase out) sends the two back to back, an empty phase at the place the phase would have ended: the host then draws its stamp from
 // the picture it kept (MV1's rule: no end marker, no stamp).
 class MarkerTracker {
@@ -105,7 +105,7 @@ class MarkerTracker {
     return vlink::kMarkerBegin;
   }
 
-  // The mirror's phase end (0x822E68D8 with r30 = the mirror's phase). Returns vlink::kMarkerEnd when a bracket is open.
+  // After the mirror's end callback (0x822E6908 with r30 = the mirror's phase). Returns vlink::kMarkerEnd when a bracket is open.
   uint32_t OnEnd() {
     if (!open_) {
       return 0;

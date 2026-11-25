@@ -332,7 +332,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .reads = data::kLights, .reads_previous = data::kShadowAtlas,
      .note = "the block is this frame's lights, the maps are the LAST frame's (HP3 in local_lights.h: a moving car's shadow edge differs by a frame's motion from the light pass's); runs before the "
              "AO's apply, so the occlusion darkens it (HP11) and the bounce light's colour chain sees it"},
-    {.step = Step::kDrawMirrorView, .phase = Phase::kDraws, .kind = Kind::kScanned, .name = "the rear view mirror's phase draws into the view (mcla_gpu_mirror_view)", .call = "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag))",
+    {.step = Step::kDrawMirrorView, .phase = Phase::kDraws, .kind = Kind::kScanned, .name = "the rear view mirror's phase draws into the view (mcla_gpu_mirror_view)", .call = "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag), bucket == mirror_view::kMarkerBegin)",
      .label_file = "mirror_view.cpp", .label = "mirror view", .more_labels = {{"mirror view resolve"}}, .closing_label = "after mirror view", .makes = data::kMirrorView,
      .note = "MIRROR-VIEW MV1 (mirror_view.h, perf/MIRROR-VIEW.md): between the guest's two markers (Scene::OnMirrorMarker) the draws and the begin clear of the mirror's phase go into the view's own colour and depth, "
              "never into the main target: no G-buffer planes, none of the main view's effects hear of them (Scene::RecordMirrorDraw, OnClear). The end marker closes the pass and averages the samples into the picture. "

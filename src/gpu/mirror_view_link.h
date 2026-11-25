@@ -4,14 +4,14 @@
 // ===========================================================================
 // Only <algorithm>, <atomic>, <cmath> and <cstdint>, so a hook in src/mc_engine may include it (`#include "gpu/mirror_view_link.h"`, as rear_view.cpp includes gpu/mirror_draws.h) without any renderer
 // header. Everything that travels between the two halves is here, defined once, in one namespace (mcla::gpu::mirror_view); the hooks' rules (hooks/rear_view_shared.h) and the host's
-// (gpu/mirror_view_rules.h) include it and add nothing to the link. ONE SWITCH drives both halves: mcla_gpu_mirror_view (0 = the game's own mirror, nothing is sent, nothing is redirected).
+// (gpu/mirror_view_rules.h) include it and add nothing to the link. A mode of zero keeps the game's visible HUD mirror and still permits marking a buffered hidden phase for suppression.
 //
 // GUEST -> HOST (all on the guest render thread unless said, in command stream order with the draws):
 //   1. mcla::gpu::mirror_draws::Publish(rect)        before the phase, every frame a phase is requested, also for a phase only the side mirrors asked for (gpu/mirror_draws.h)
 //   2. SetStampWanted(bool)                          true while the HUD mirror is up (the default), false for a phase that only the side mirrors asked for (below)
-//   3. mcla::gpu::NoteMirrorPhase(true)              at the phase's begin (Patch_RearViewDiag, the entry of sub_82308178)
-//      mcla::gpu::NoteMirrorPhase(false)             at its end (Patch_RearViewPhaseEnd, r30 = 0x1000000)
-//      (declared in gpu/gpu.h, defined in gpu/mirror_view.cpp: it sends the marker below only while mcla_gpu_mirror_view is on, and an end only for a begin it sent). On a frame whose phase is held (the
+//   3. mcla::gpu::NoteMirrorPhase(true, hud_stamp)   at the phase's begin (Patch_RearViewDiag, the entry of sub_82308178)
+//      mcla::gpu::NoteMirrorPhase(false, false)     after its end callback (Patch_RearViewPhaseEnd, r30 = 0x1000000)
+//      (declared in gpu.h, defined in gpu/mirror_view.cpp). The begin bucket says whether the phase has a visible HUD mirror. On a frame whose phase is held (the
 //      every-Nth-frame cadence) call the two back to back, with no draw between, where the phase would have run: the host then stamps the held picture.
 //      THE BEGIN MARKER CARRIES THE PHASE'S FIELD (MV-J2, PhaseField below): the field the camera of THAT phase was built with, in the composite record's second word, in order with the draws. The guest
 //      runs one to three frames ahead of the render thread, so what the host reads from the latest camera build (CurrentCamera) can belong to a later phase than the draws it is sizing; the tag
@@ -45,17 +45,18 @@ namespace mcla::gpu::mirror_view {
 // The values ultrawide.h uses are 0x7F000001 .. 0x7F00000A; these two follow at 0x10 so a later piece of the HUD cannot meet them.
 inline constexpr uint32_t kMarkerBegin = 0x7F000010u;
 inline constexpr uint32_t kMarkerEnd = 0x7F000011u;
-static_assert((kMarkerBegin & 0xFF000000u) == 0x7F000000u && (kMarkerEnd & 0xFF000000u) == 0x7F000000u,
+inline constexpr uint32_t kMarkerBeginNoStamp = 0x7F000012u;
+static_assert((kMarkerBegin & 0xFF000000u) == 0x7F000000u && (kMarkerEnd & 0xFF000000u) == 0x7F000000u &&
+                  (kMarkerBeginNoStamp & 0xFF000000u) == 0x7F000000u,
               "the markers must be messages of the composite record's side channel (ultrawide.h IsUiMessage)");
-inline constexpr bool IsMarker(uint32_t bucket) { return bucket == kMarkerBegin || bucket == kMarkerEnd; }
+inline constexpr bool IsBeginMarker(uint32_t bucket) { return bucket == kMarkerBegin || bucket == kMarkerBeginNoStamp; }
+inline constexpr bool IsMarker(uint32_t bucket) { return IsBeginMarker(bucket) || bucket == kMarkerEnd; }
 
 // ---------------------------------------------------------------------------
 // guest -> host: the stamp
 // ---------------------------------------------------------------------------
 
-// Whether the picture of the phase is stamped into the rectangle: true while the HUD mirror is up (the default: with the host alone the HUD mirror is the only reason for a phase), false for a phase that
-// only the side mirrors asked for (the HUD form is hidden, the picture is for the glass). The guest sets it where it decides the phase (TickRearView); one relaxed atomic, like mirror_draws::Publish.
-// This is the ONLY channel of the fact (GuestFacts below does not repeat it).
+// The latest HUD state, published by TickRearView so the host can choose the next requested field. The begin marker carries the HUD state used for the individual phase.
 inline std::atomic<bool> g_stamp_wanted{true};
 inline void SetStampWanted(bool wanted) { g_stamp_wanted.store(wanted, std::memory_order_relaxed); }
 inline bool StampWanted() { return g_stamp_wanted.load(std::memory_order_relaxed); }

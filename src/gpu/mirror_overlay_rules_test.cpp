@@ -569,6 +569,24 @@ void TestPushRefusals() {
   }
 }
 
+void TestSideNeed() {
+  namespace mg = mcla::gpu::mirror_glass;
+  const World w = MakeWorld();
+  tp::Mat4 skew = ProjectionAo(w.proj);
+  skew.m[1][0] = 0.3;
+  const tp::Mat4 unsupported = tp::Mul(w.view, skew);
+  const mg::NeedState right{true, 2, 105};
+  const mg::NeedState found{true, 0, 0};
+  mg::NeedHold hold;
+  Check(mo::UpdateSideNeed(hold, right, true, w.view, w.view_projection) == right && hold.holding(), "a usable projection requests the view and starts the hold");
+  Check(mo::UpdateSideNeed(hold, found, false, {}, {}) == right && hold.holding(), "a missing camera and draw retain the held view");
+  Check(mo::UpdateSideNeed(hold, right, true, w.view, unsupported) == found && !hold.holding(), "an unusable projection withdraws current demand and ends the hold");
+  Check(mo::UpdateSideNeed(hold, right, true, w.view, unsupported) == found && !hold.holding(), "an unusable projection cannot restart demand");
+  Check(mo::UpdateSideNeed(hold, right, true, w.view, w.view_projection) == right && hold.holding(), "a usable camera can request the view again");
+  Check(mo::UpdateSideNeed(hold, found, true, w.view, w.view_projection) == right && hold.holding(), "a missing glass draw holds demand with a usable camera");
+  Check(mo::UpdateSideNeed(hold, {}, true, w.view, unsupported) == mg::NeedState{} && !hold.holding(), "an unusable camera also ends demand when only the hold remains");
+}
+
 void TestPushValues() {
   const World w = MakeWorld(0.0, 0.05);
   const mo::ViewPose pose = PoseAt(w, 80.0, 50.0, 1);
@@ -1049,6 +1067,7 @@ int main(int argc, char** argv) {
   TestDepthTest();
   TestVariants();
   TestPushRefusals();
+  TestSideNeed();
   TestPushValues();
   TestClip();
   TestLookup();

@@ -68,9 +68,10 @@ class MirrorView {
 
   // ---- the phase --------------------------------------------------------------------------------------------------------------------
   // The begin marker, with the rectangle the guest published (guest pixels of the main target) and the field the camera of THIS phase was built with (the marker's tag: mirror_view_link.h PhaseField, MV-J2:
-  // the view's size, the stamp's crop and the overlay's lookup follow it, never the guest's latest camera build, which can be a later phase's). True when the phase's draws and clear are redirected.
-  bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field);
+  // the view's size, the stamp's crop and the overlay's lookup follow it). The marker's bucket also gives HUD eligibility. True when the phase's draws and clear are redirected.
+  bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field, bool hud_stamp);
   bool redirecting() const { return phase_.redirecting(); }
+  bool suppressing() const { return phase_.suppressing(); }
   const mirror_draws::Rect& rect() const { return rect_; }
   // Where a prepared draw goes, and the count that says why a drop happened. The first draw that is a kView names the formats of the phase (Use).
   mirror_view::Route RouteDraw(const mirror_view::DrawFacts& facts);
@@ -176,6 +177,7 @@ class MirrorView {
 
   // The phase.
   mirror_view::PhaseTracker phase_;
+  bool phase_hud_stamp_ = false;
   mirror_view::ViewFormats formats_;
   mirror_view::Plan plan_;
   mirror_view::Plan picture_plan_;   // the plan of the picture the readers hold (plan_ of the phase that finished it): its field decides the stamp's crop

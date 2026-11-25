@@ -77,7 +77,7 @@
 //                                      `and r21,r17,r11`): on a held frame the mirror's bit leaves r17,
 //                                      r21 and renderer+364, which is everything the begin steps, the
 //                                      clients and the phase's end test, so no part of the phase runs;
-//                                      Patch_RearViewPhaseEnd (0x822E68D8, every phase, r30 = the phase)
+//                                      Patch_RearViewPhaseEnd (0x822E6908, every phase, r30 = the phase)
 //                                      puts renderer+364 back. A camera cut draws at once. The picture is
 //                                      NOT held (the host does not keep the stamp's pixels yet): a held
 //                                      frame shows the main view in the rectangle.
@@ -86,11 +86,10 @@
 // with mcla_gpu_mirror_class, keeps them out of the main view's per-draw effects.
 //
 // THE SHARED VIEW, the guest half (perf/MIRROR-VIEW.md, package MV2, joined with the host half in section 12; rules and tests in rear_view_shared.h / rear_view_shared_test.cpp, the contract with the
-// host in gpu/mirror_view_link.h, the one link header). ONE SWITCH for both halves: the host's debug setting mcla_gpu_mirror_view (0, the default: every hook below does what it did before, and
-// nothing is sent; 1 to 4: the host redirects the phase into its view, and this half runs):
-//   markers          Patch_RearViewDiag (the entry of the phase's begin step, sub_82308178) sends a BEGIN and Patch_RearViewPhaseEnd (0x822E68D8, r30 = 0x1000000) an END through
-//                    the composite record's side channel, only for a phase that really runs (requested this frame, consumer active). The host sends the draws between them into
-//                    its own small view. A lost END is closed at the next frame's start (Patch_RearViewCadence). A held frame (the cadence) sends the two back to back, an empty phase:
+// host in gpu/mirror_view_link.h, the one link header). The host's mode selects the game's visible HUD mirror at 0 and the shared view at 1 to 4:
+//   markers          Patch_RearViewDiag (the entry of the phase's begin step, sub_82308178) sends a BEGIN and Patch_RearViewPhaseEnd (0x822E6908, r30 = 0x1000000) an END through
+//                    the composite record's side channel, including for a buffered hidden phase while the view is off. The host routes the draws between them.
+//                    A lost END is closed at the next frame's start (Patch_RearViewCadence). A held frame (the cadence) sends the two back to back, an empty phase:
 //                    the host stamps the picture it kept (MV1's rule).
 //   camera           Patch_RearViewCamera sets the mirror camera's field and aspect (f1 = the vertical field in degrees, f2 = w/h) to what the host asks for, and tells the host the
 //                    game's own field (the retail HUD mirror's), so the stamp can keep the retail look.
@@ -332,9 +331,7 @@ static bool MainEye(const uint8_t* base, uint32_t renderer, float eye[3]) {
 namespace shared = larecomp::rearview_shared;
 namespace vlink = mcla::gpu::mirror_view;  // the link header's namespace; not `link`: unistd.h declares a function of that name
 
-// The guest half runs only while the host's switch is on and with the Plume renderer (the markers go through its capture; the Xenia renderer has no host half). The switch is the host's own answer,
-// read live here (gpu.h MirrorViewMode: the SIDE MIRRORS row, with the debug setting mcla_gpu_mirror_view forcing it on): there is no second guest switch, so the guest cannot send markers to a host that
-// is off (NoteMirrorPhase tests it again, gpu/mirror_view.cpp), and the host does not redirect a phase the guest did not mark (it needs the markers).
+// Sharing the view uses the Plume renderer and the host's live mode (gpu.h MirrorViewMode). The begin hook can also mark a buffered hidden phase so the host can discard it after a mode change.
 static bool SharedViewOn() {
 #if defined(LARECOMP_HAS_GPU)
     return mcla::gpu::MirrorViewMode() != 0 && mcla::gpu::Enabled();
@@ -353,21 +350,23 @@ static shared::Mode CurrentMode() {
     return m;
 }
 
-// A marker to the host, in order with the draws: the host's entry point (gpu.h NoteMirrorPhase: the composite record's side channel, ultrawide.h), which sends it only while mcla_gpu_mirror_view is
-// on and an END only for a BEGIN it sent. The tracker (rear_view_shared.h) decides when; 0 is nothing to send.
-static void SendMirrorMarker(uint32_t marker) {
+// A marker to the host, in order with the draws. The tracker (rear_view_shared.h) decides when; 0 is nothing to send.
+static void SendMirrorMarker(uint32_t marker, bool hud_stamp = false) {
     if (marker == 0) return;
 #if defined(LARECOMP_HAS_GPU)
-    mcla::gpu::NoteMirrorPhase(marker == vlink::kMarkerBegin);
+    mcla::gpu::NoteMirrorPhase(marker == vlink::kMarkerBegin, hud_stamp);
 #endif
 }
 
 // The phase loop's thread only (Patch_RearViewDiag, Patch_RearViewPhaseEnd, Patch_RearViewCadence, Patch_RearViewCamera run on it).
 static shared::MarkerTracker g_markers;
-static bool g_phase_requested = false;                // the mirror's bit was in r21 at this frame's start, after a held frame took it out (Patch_RearViewCadence)
 static bool g_frame_held = false;                     // this frame is a held one: the cadence took the mirror's phase out (the host keeps its picture; Patch_RearViewPhaseEnd sends the empty phase)
 // The guest's frame tick writes, the HUD draw's hook reads: is the HUD form visible (the game's own bit, mirrored into the widget while the HUD mirror is on)?
 static std::atomic<bool> g_form_visible{true};
+
+static bool HudStampWanted() {
+    return larecomp::settings::rearview.Get() && g_form_visible.load(std::memory_order_relaxed);
+}
 
 struct SharedStats {
     uint64_t frames = 0;           // frames the mirror was up with the guest half on (the cadence hook's count: drawn or held)
@@ -653,14 +652,14 @@ void Patch_RearViewDiag() {
     // force until Patch_RearViewPhaseEnd.
     g_car_budget.Reset();
     g_in_mirror_phase = true;
-    // The marker for the host: the draws from here to Patch_RearViewPhaseEnd are the phase's. This entry is reached on every frame the renderer's phase mask holds the mirror's bit, the
-    // HUD mirror up or not; the begin step does nothing unless the consumer is active (sub_82308178's first test, [pass + buffer + 32]), and the clients draw only a phase that was asked for
-    // (the bit in r21 at the frame's start, g_phase_requested), so the marker is sent only when both hold. CHECK: that a run shows one BEGIN and one END per mirror frame in the log's
-    // "markers so far" line, and none while the mirror is off.
-    {
+    // The caller has tested the renderer's mirror bit. The begin clear and end sky use the consumer byte even if r21 masks out the client loop.
+#if defined(LARECOMP_HAS_GPU)
+    if (mcla::gpu::Enabled()) {
         auto* base = larecomp::guest::Membase();
-        SendMirrorMarker(g_markers.OnBegin(SharedViewOn(), g_phase_requested, base && MirrorConsumerActive(base)));
+        const bool hud_stamp = HudStampWanted();
+        SendMirrorMarker(g_markers.OnBegin(SharedViewOn() || !hud_stamp, true, base && MirrorConsumerActive(base)), hud_stamp);
     }
+#endif
     if (!larecomp::settings::rearview_diag.Get()) return;
     static std::atomic<uint32_t> calls{0};
     if (calls.fetch_add(1, std::memory_order_relaxed) % 120 != 0) return;
@@ -751,9 +750,13 @@ void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {
 // the rectangle at [pass+0..12] (r3 = x, r4 = y, r5 = w, r6 = h, flags r7 = 1, r9 = 1 and the stack byte 87 = 1, f1 = the depth 0.0 from `lfs f31,3796(r11)`, r8 = 0xFFFF0000) into the MAIN
 // target, before the main world draws. True jumps to 0x82307F90, past the call. The phase's own clear is the second sub_82178C40 call, in sub_82308178, with black and depth 1.0.
 // With the guest half on and the host redirecting the phase (SkipCameraClear) the call is skipped: the rectangle of the main target is not the phase's any more (the HUD stamp covers its
-// colour, and a clear left under it would leave depth 0 there for the host's effects; for the side mirrors' phase nothing covers it at all). Off or without a redirect: the game's own clear, as before.
+// colour, and a clear left under it would leave depth 0 there for the host's effects). A visible HUD mirror falling back to the game still gets its own clear.
 // CHECK: that this call is a Clear of the rectangle with those values (the design's CHECK 1 and 2), and that skipping it changes nothing but what is said here: the main world then draws in the rectangle.
 bool Patch_RearViewCameraClear() {
+#if defined(LARECOMP_HAS_GPU)
+    // A buffered phase can remain active while the HUD or raster view is being switched off.
+    if (mcla::gpu::Enabled() && !HudStampWanted()) return true;
+#endif
     return shared::SkipCameraClear(SharedViewOn(), vlink::CurrentRequest());
 }
 
@@ -835,23 +838,21 @@ static void RearViewCadenceStep(PPCRegister& r17, PPCRegister& r21, PPCRegister&
     }
 }
 
-// The hook proper: the frame's first look at the phase loop. A marker bracket still open lost its END (the end hook did not run): it is closed before anything else. Then the cadence;
-// then the frame's fact the markers need: whether the mirror's bit is still in r21, after a held frame took it out, i.e. whether the clients will draw the phase.
+// A bracket still open at the frame's first look at the phase loop lost its END. Close it before applying the cadence.
 void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {
     SendMirrorMarker(g_markers.OnFrameStart());
     RearViewCadenceStep(r17, r21, r27);
-    g_phase_requested = (r21.u32 & kMirrorPhase) != 0;
 }
 
-// Hooked at 0x822E68D8, the `mr r4,r30` before the phase's end call (sub_822F7570) in the renderer's phase loop (loc_822E68D8: reached for every phase whether or not its clients ran, r30 =
-// the phase). For the mirror's it sends the END marker for a BEGIN that was sent (rear_view_shared.h MarkerTracker), ends the city's radius cut and puts back the bit a held frame took
-// out of renderer+364.
+// Hooked at 0x822E6908, before the phase increment. The mirror end callback (sub_82306758 -> sub_823082B0) draws its sky via sub_82494258 while the rear viewport
+// is still current, then restores the main camera. Keep the host redirect and the held frame's mask in force through the callback.
+// CHECK: confirm the trailing sky draw lands in the private view on both APIs and the held frame emits only an empty marker pair.
 void Patch_RearViewPhaseEnd(PPCRegister& r30) {
     if (r30.u32 != kMirrorPhase) return;
     g_in_mirror_phase = false;
     SendMirrorMarker(g_markers.OnEnd());  // the END of the draws the host redirects (one for every BEGIN sent; none for a phase that did not run)
     if (g_markers.OnHeldFrame(SharedViewOn(), g_frame_held)) {  // a held frame: the phase was not run, the host stamps the picture it kept: BEGIN and END back to back, where the phase would have ended
-        SendMirrorMarker(vlink::kMarkerBegin);
+        SendMirrorMarker(vlink::kMarkerBegin, HudStampWanted());
         SendMirrorMarker(vlink::kMarkerEnd);
     }
     g_frame_held = false;

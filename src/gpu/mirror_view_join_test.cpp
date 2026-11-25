@@ -131,12 +131,14 @@ struct Host {
   }
   // A marker out of the composite record. `drew`: the phase had draws (a real phase), not the empty pair of a held frame (MirrorView::EndPhase: the picture before stays and the stamp is armed from it).
   bool OnMarker(uint32_t marker, bool* redirected, bool drew = true) {
-    if (marker == mv::kMarkerBegin) {
+    if (mv::IsBeginMarker(marker)) {
       mv::BeginFacts b;
       b.enabled = enabled;
       b.rect_valid = rect_valid;
       b.plan_valid = true;
       b.blocked = blocked;
+      b.hud_stamp = marker == mv::kMarkerBegin;
+      phase_hud_stamp = b.hud_stamp;
       const bool r = phase.Begin(b) == mv::PhaseState::kRedirect;
       if (redirected && r) *redirected = true;
       return r;
@@ -146,23 +148,23 @@ struct Host {
         whole = true;
         age = 0;
       }
-      armed = mv::StampDue(whole, age, rect_valid, mv::StampWanted());
+      armed = mv::StampDue(whole, age, rect_valid, phase_hud_stamp);
     }
     return true;
   }
   // The first copy of the main colour after the end marker: is the stamp drawn?
   bool StampNow() const { return armed; }
+  bool phase_hud_stamp = false;
 };
 
-// NoteMirrorPhase (mirror_view.cpp): a begin only while the setting is on, an end only for a begin that went.
+// NoteMirrorPhase (mirror_view.cpp): the begin carries the hook's HUD decision, and the end closes a begin that went.
 struct Notes {
   bool open = false;
   // returns the marker sent, 0 for none
-  uint32_t Note(bool begin, int view_now) {
+  uint32_t Note(bool begin, bool hud_stamp) {
     if (begin) {
-      if (view_now == 0) return 0;
       open = true;
-      return mv::kMarkerBegin;
+      return hud_stamp ? mv::kMarkerBegin : mv::kMarkerBeginNoStamp;
     }
     if (open) {
       open = false;
@@ -172,8 +174,7 @@ struct Notes {
   }
 };
 
-// One whole frame: the host's BeginFrame, then the guest's tick, the cadence, the phase's begin and end, the end-of-scene stamp. `flip_to` >= 0 turns the switch to that value between the guest tracker's
-// read and NoteMirrorPhase's (the worst place for it).
+// One whole frame. `flip_to` >= 0 changes the setting after the guest has scheduled the phase.
 Frame RunFrame(Host& host, Notes& notes, rs::MarkerTracker& tracker, const World& w, bool glass_need, int flip_to = -1, const HostFacts& hf = HostFacts{}) {
   Frame out;
   // host: the render thread's frame start. The side mirrors' need is MV3's flag, read through the real atomic.
@@ -202,14 +203,14 @@ Frame RunFrame(Host& host, Notes& notes, rs::MarkerTracker& tracker, const World
 
   // the phase loop: the camera step's clear (colour pass begin), the begin step, the end step
   bool redirected_now = false;
+  const bool hud_stamp = rs::HudStamp(out.mode, w.form_visible);
+  const bool view_at_begin = (flip_to >= 0 ? flip_to : w.view) != 0;
   if (out.phase_asked && active) {
-    out.camera_clear_skipped = rs::SkipCameraClear(shared, out.request);
+    out.camera_clear_skipped = !hud_stamp || rs::SkipCameraClear(view_at_begin, out.request);
   }
-  const uint32_t begin_marker = tracker.OnBegin(shared, out.phase_asked, active);
-  int view_for_notes = w.view;
-  if (flip_to >= 0) view_for_notes = flip_to;
+  const uint32_t begin_marker = tracker.OnBegin(view_at_begin || !hud_stamp, out.phase_asked, active);
   if (begin_marker != 0) {
-    const uint32_t sent = notes.Note(true, view_for_notes);
+    const uint32_t sent = notes.Note(true, hud_stamp);
     if (sent != 0) {
       out.markers.push_back(sent);
       host.OnMarker(sent, &redirected_now);
@@ -217,15 +218,15 @@ Frame RunFrame(Host& host, Notes& notes, rs::MarkerTracker& tracker, const World
   }
   const uint32_t end_marker = tracker.OnEnd();
   if (end_marker != 0) {
-    const uint32_t sent = notes.Note(false, view_for_notes);
+    const uint32_t sent = notes.Note(false, false);
     if (sent != 0) {
       out.markers.push_back(sent);
       host.OnMarker(sent, nullptr);
     }
   }
-  if (tracker.OnHeldFrame(shared, active && w.held)) {  // a held frame: the empty phase at the place the phase would have ended
+  if (tracker.OnHeldFrame(view_at_begin, active && w.held)) {  // a held frame: the empty phase at the place the phase would have ended
     for (bool begin : {true, false}) {
-      const uint32_t sent = notes.Note(begin, view_for_notes);
+      const uint32_t sent = notes.Note(begin, hud_stamp);
       if (sent != 0) {
         out.markers.push_back(sent);
         host.OnMarker(sent, begin ? &redirected_now : nullptr, false);
@@ -248,7 +249,7 @@ void ResetLink() {
 // ---------------------------------------------------------------------------
 
 void TestSwitchOff() {
-  // Every combination with the switch off: nothing is sent, nothing asked, nothing skipped, every hook answers as the game did (rear_view_shared.h's rules with shared off).
+  // With the switch off the game's visible HUD mirror is left alone. A buffered hidden phase is still marked for suppression.
   int frames = 0;
   for (int bits = 0; bits < 128; ++bits) {
     World w;
@@ -269,11 +270,12 @@ void TestSwitchOff() {
     ++frames;
     const std::string tag = " [off, hud " + std::to_string(w.hud) + " blocked " + std::to_string(w.blocked) + " game " + std::to_string(w.game_visible) + " form " + std::to_string(w.form_visible) +
                             " active " + std::to_string(w.consumer_active) + " held " + std::to_string(w.held) + " glass " + std::to_string(glass) + "]";
-    Check(f.markers.empty(), "no marker with the switch off" + tag);
+    const bool hidden_phase = f.phase_asked && w.consumer_active && !w.form_visible;
+    Check(f.markers.size() == (hidden_phase ? 2 : 0), "only a buffered hidden phase is marked with the switch off" + tag);
     Check(!f.host_redirected && !host.whole && !f.stamp_armed, "the host redirects nothing and stamps nothing" + tag);
     Check(!f.request.redirect && !f.request.side_need, "the host's request says no redirect and no need (the finder's flag is not passed on)" + tag);
     Check(!f.mode.side_need && !f.side_only, "no side-only phase" + tag);
-    Check(!f.camera_clear_skipped, "the camera step's clear is the game's" + tag);
+    Check(f.camera_clear_skipped == hidden_phase, "only a buffered hidden phase skips the camera step's clear with the switch off" + tag);
     Check(f.visible == (w.hud ? w.game_visible : false), "the visibility answers are the game's, or hidden with the HUD mirror off" + tag);
     Check(rs::PhaseWanted(f.mode) == w.hud && rs::FrameHidden(f.mode, w.form_visible) == !w.hud, "the phase and the frame follow the player's setting alone" + tag);
     Check(mv::StampWanted(), "the stamp flag is back at its default" + tag);
@@ -318,15 +320,12 @@ void TestSwitchOn() {
       // the markers are balanced, and a pair of them reaches the host only when the guest ran or held the phase
       Check(f.markers.size() % 2 == 0, "markers come in pairs" + tag);
       for (size_t i = 0; i < f.markers.size(); ++i) {
-        Check(f.markers[i] == (i % 2 == 0 ? mv::kMarkerBegin : mv::kMarkerEnd), "markers alternate BEGIN / END" + tag);
+        const uint32_t begin = w.hud && w.form_visible ? mv::kMarkerBegin : mv::kMarkerBeginNoStamp;
+        Check(f.markers[i] == (i % 2 == 0 ? begin : mv::kMarkerEnd), "markers carry the HUD decision and alternate BEGIN / END" + tag);
       }
       Check(host.phase.state == mv::PhaseState::kIdle && host.phase.unbalanced == 0, "the host's tracker ends the frame closed and balanced" + tag);
       const bool ran = !f.markers.empty() && !w.held;
-      // the camera clear is skipped exactly when the phase ran under a redirect
-      Check(f.camera_clear_skipped == (f.phase_asked && w.consumer_active && !w.blocked && (f.mode.hud || f.mode.side_need) && f.visible), "the camera step's clear is skipped only under a redirect" + tag);
-      if (f.camera_clear_skipped) {
-        Check(f.host_redirected, "a skipped camera clear always meets a host that redirects the phase" + tag);
-      }
+      Check(f.camera_clear_skipped == (ran && (!w.blocked || !w.hud || !w.form_visible)), "the camera clear is skipped for a redirect or a hidden HUD" + tag);
       if (ran) {
         Check(f.host_redirected == !w.blocked, "the host redirects a marked phase unless it is blocked" + tag);
       }
@@ -349,7 +348,7 @@ void TestSwitchOn() {
 }
 
 void TestFlipsInTheMiddle() {
-  // The switch flips between the guest tracker's read and NoteMirrorPhase's (and the host reads it at the frame's start): the host's tracker never sees an unbalanced phase.
+  // The switch flips after the guest schedules the phase. The host's tracker never sees an unbalanced phase.
   uint32_t seed = 2026u;
   auto next = [&seed]() {
     seed = seed * 1664525u + 1013904223u;
@@ -373,17 +372,14 @@ void TestFlipsInTheMiddle() {
     w.consumer_active = (next() % 8) != 0;
     w.held = (next() % 4) == 0;
     const bool glass = (next() % 3) == 0;
-    const int flip = (next() % 3) == 0 ? int(next() % 2) * 2 : -1;  // 0 (off) or 2 (on) between the two reads
+    const int flip = (next() % 3) == 0 ? int(next() % 2) * 2 : -1;
     const Frame f = RunFrame(host, notes, tracker, w, glass, flip);
-    for (uint32_t m : f.markers) (m == mv::kMarkerBegin ? begins : ends)++;
+    for (uint32_t m : f.markers) (mv::IsBeginMarker(m) ? begins : ends)++;
     if (f.markers.size() % 2 != 0) balanced = false;
     if (host.phase.state != mv::PhaseState::kIdle || notes.open) open_at_end = true;
     redirected += f.host_redirected ? 1 : 0;
-    if (w.view == 0 && flip < 0) {
-      if (!f.markers.empty()) balanced = false;  // a marker with the switch off and no flip
-    }
   }
-  Check(balanced, "random frames with the switch flipping mid-frame: the markers always come in BEGIN / END pairs, none with the switch off");
+  Check(balanced, "random frames with the switch flipping mid-frame: the markers always come in BEGIN / END pairs");
   Check(!open_at_end, "and no phase or note is left open at a frame's end");
   Check(host.phase.unbalanced == 0, "the host's tracker saw no begin without an end and no end without a begin");
   Check(begins == ends && begins > 1000 && redirected > 500, "the run really exercised the join (" + std::to_string(begins) + " pairs, " + std::to_string(redirected) + " redirected)");
@@ -392,6 +388,28 @@ void TestFlipsInTheMiddle() {
 // ---------------------------------------------------------------------------
 // 2. the request, once a frame, and MV3's flag with its hold
 // ---------------------------------------------------------------------------
+
+void TestQueuedHudEligibility() {
+  ResetLink();
+  Host host;
+  host.BeginFrame(1, true, false, HostFacts{});
+  host.OnMarker(mv::kMarkerBeginNoStamp, nullptr);
+  Check(host.phase.suppressing(), "an unavailable view discards the queued hidden-HUD phase even when the latest HUD flag is on");
+  host.OnMarker(mv::kMarkerEnd, nullptr);
+  Check(!host.StampNow() && !host.phase.suppressing(), "the suppressed phase ends without a stamp");
+
+  host.BeginFrame(1, false, false, HostFacts{});
+  Check(host.OnMarker(mv::kMarkerBeginNoStamp, nullptr), "a ready view redirects the same phase");
+  host.OnMarker(mv::kMarkerEnd, nullptr);
+  Check(!host.StampNow(), "a redirected hidden-HUD phase does not stamp even when the latest HUD flag is on");
+
+  mv::SetStampWanted(false);
+  host.BeginFrame(1, false, false, HostFacts{});
+  host.OnMarker(mv::kMarkerBegin, nullptr);
+  host.OnMarker(mv::kMarkerEnd, nullptr, false);
+  Check(host.StampNow(), "a held visible-HUD phase stamps the held picture even when the latest HUD flag is off");
+  ResetLink();
+}
 
 void TestRequestEveryFrame() {
   ResetLink();
@@ -947,19 +965,19 @@ void TestFiles(const std::string& src) {
           "the guest half is on exactly while the host's answer (the SIDE MIRRORS row under the debug switch, gpu.h MirrorViewMode) is not 0, with the Plume renderer");
   }
   {
-    const size_t at = rv.find("static void SendMirrorMarker(uint32_t marker) {");
+    const size_t at = rv.find("static void SendMirrorMarker(uint32_t marker, bool hud_stamp = false) {");
     const size_t end = rv.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : rv.substr(at, end - at);
-    Check(Has(body, "mcla::gpu::NoteMirrorPhase(marker == vlink::kMarkerBegin)") && !Has(body, "OnGuestSceneComposited"), "the guest sends its markers through the host's entry point (which tests the switch itself)");
+    Check(Has(body, "mcla::gpu::NoteMirrorPhase(marker == vlink::kMarkerBegin, hud_stamp)") && !Has(body, "OnGuestSceneComposited"), "the guest sends markers and HUD eligibility through the host entry point");
   }
   {
-    const size_t at = host.find("void NoteMirrorPhase(bool begin) {");
+    const size_t at = host.find("void NoteMirrorPhase(bool begin, bool hud_stamp) {");
     const size_t end = host.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
-    Check(Has(body, "MirrorViewMode() == 0") && !Has(body, "mcla_gpu_mirror_view.Get()") && Has(body, "g_open.exchange(false") && Has(body, "mirror_view::kMarkerBegin") && Has(body, "mirror_view::kMarkerEnd"),
-          "NoteMirrorPhase tests the same answer as the guest's hooks and sends an end only for a begin it sent");
+    Check(!Has(body, "MirrorViewMode()") && !Has(body, "mcla_gpu_mirror_view.Get()") && Has(body, "g_open.exchange(false") && Has(body, "mirror_view::kMarkerEnd"),
+          "NoteMirrorPhase keeps the guest's decision and sends an end only for a begin it sent");
   }
-  Check(Has(gpu_h, "void NoteMirrorPhase(bool begin);") && Has(gpu_h, "int MirrorViewMode();"), "gpu.h declares NoteMirrorPhase and MirrorViewMode");
+  Check(Has(gpu_h, "void NoteMirrorPhase(bool begin, bool hud_stamp);") && Has(gpu_h, "int MirrorViewMode();"), "gpu.h declares NoteMirrorPhase and MirrorViewMode");
 
   // ---- the request, once a frame, from one place, before anything can return
   {
@@ -991,18 +1009,19 @@ void TestFiles(const std::string& src) {
         "Scene::BeginFrame calls MirrorView::BeginFrame once, with CarMirrorRt::active() (the ray traced side mirrors win)");
   Check(Has(host_h, "void BeginFrame(bool rt_side_mirrors);") && !Has(host_h, "mirror_view::Request request_;") && Has(host_h, "mirror_view::Plan picture_plan_;"), "JOIN2: the view keeps the plan of its picture (MV-J2: not the request it published)");
   // ---- MV-J2: the per-phase field tag
-  Check(Has(host_h, "bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field);") && Has(host, "bool MirrorView::BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field) {") &&
+  Check(Has(host_h, "bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field, bool hud_stamp);") &&
             Has(host, "plan_ = mirror_view::PlanForPhase(SizeClass(), double(rect.w), double(rect.h), field);") && !Has(host, "PlanForView(") && !Has(host, "PlanForRect(") && !Has(rules, "PlanForView(") && !Has(rules, "FieldApplied("),
         "MV-J2: a phase's size follows the field of its own camera (PlanForPhase, from the begin marker's tag), not the request against the latest camera build (PlanForView and FieldApplied are gone)");
   Check(Has(host, "picture_field_ = phase_field_;") && Has(host, "phase_field_ = field;") && Has(host, "picture_field_ = mirror_view::PhaseField{};") && Has(host_h, "mirror_view::PhaseField phase_field_;") && Has(host_h, "mirror_view::PhaseField picture_field_;") &&
             Has(host_h, "bool PictureField(float* hfov_deg, float* vfov_deg) const;") && Has(host, "if (!whole_ || !picture_field_.known()) {"),
         "MV-J2: the view keeps the field of the phase that drew the picture it holds, and says it only while the picture is whole");
   {
-    const size_t at = host.find("void NoteMirrorPhase(bool begin) {");
+    const size_t at = host.find("void NoteMirrorPhase(bool begin, bool hud_stamp) {");
     const size_t end = host.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
-    Check(Has(body, "OnGuestSceneComposited(mirror_view::kMarkerBegin, mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));") && Has(body, "OnGuestSceneComposited(mirror_view::kMarkerEnd);"),
-          "MV-J2: the begin marker carries the field of the phase's camera (the latest facts, read on the guest's own thread), the end carries nothing");
+    Check(Has(body, "OnGuestSceneComposited(hud_stamp ? mirror_view::kMarkerBegin : mirror_view::kMarkerBeginNoStamp,") &&
+              Has(body, "mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));") && Has(body, "OnGuestSceneComposited(mirror_view::kMarkerEnd);"),
+          "the begin carries the phase camera's field and HUD eligibility, and the end carries nothing");
   }
   Check(Has(gpu_h, "void OnGuestSceneComposited(uint32_t bucket, uint32_t tag = 0);"), "MV-J2: gpu.h's composite entry takes the record's second word");
   {
@@ -1019,7 +1038,7 @@ void TestFiles(const std::string& src) {
           "... the renderer passes it to the scene with the marker");
     Check(Has(trace, "r.bucket, r.tag, draws_);"), "... and the frame trace prints it");
   }
-  Check(Has(scene, "void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list) {") && Has(scene, "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag))") &&
+  Check(Has(scene, "if (mirror_view::IsBeginMarker(bucket)) {") && Has(scene, "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag), bucket == mirror_view::kMarkerBegin)") &&
             Has(scene, "const bool field_known = mirror_view_->PictureField(&field_h, &field_v);") && Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);"),
         "MV-J2: the scene hands the begin's tag to the view and the picture's own field to the overlay");
   {
@@ -1042,11 +1061,23 @@ void TestFiles(const std::string& src) {
     const std::string body = at == std::string::npos ? std::string() : rv.substr(at, end - at);
     Check(Has(body, "shared::EffectiveSideNeed(m.shared, vlink::CurrentRequest())") && !Has(rv, "mirror_glass::") && !Has(rv, "mirror_glass_need.h"), "the guest's need is the request's (MV3's flag is copied in by the host, the hooks do not include it)");
   }
-  // the stamp's one channel
-  Check(Has(rv, "vlink::SetStampWanted(hud_stamp);") && Has(rv, "vlink::SetStampWanted(true);") && !Has(link, "hud_stamp"), "the stamp's flag has one channel: SetStampWanted (TickRearView sets it, the facts block does not repeat it)");
+  Check(Has(rv, "vlink::SetStampWanted(hud_stamp);") && Has(rv, "vlink::SetStampWanted(true);"), "the request builder still reads the HUD stamp flag from TickRearView");
+  Check(Has(host, "facts.hud_stamp = hud_stamp;") && Has(host, "phase_hud_stamp_ = hud_stamp;") &&
+            Count(host, "rect_.valid(), phase_hud_stamp_)") == 2, "both fresh and held pictures use the phase marker for the HUD stamp");
   // the camera step's clear and the hooks' wiring
-  Check(Has(rv, "return shared::SkipCameraClear(SharedViewOn(), vlink::CurrentRequest());"), "the camera step's clear is skipped under the request's redirect");
-  Check(Has(rv, "SendMirrorMarker(g_markers.OnBegin(SharedViewOn(), g_phase_requested, base && MirrorConsumerActive(base)));") && Has(rv, "SendMirrorMarker(g_markers.OnEnd());"), "the markers: BEGIN at the begin step, END at the phase's end");
+  Check(Has(rv, "if (mcla::gpu::Enabled() && !HudStampWanted()) return true;") &&
+            Has(rv, "return shared::SkipCameraClear(SharedViewOn(), vlink::CurrentRequest());"), "the camera step skips the main clear for hidden and redirected mirrors");
+  Check(Has(rv, "SendMirrorMarker(g_markers.OnBegin(SharedViewOn() || !hud_stamp, true, base && MirrorConsumerActive(base)), hud_stamp);") &&
+            Has(rv, "SendMirrorMarker(g_markers.OnEnd());"), "the begin covers the clear and sky even when the client loop is masked");
+  Check(Has(toml, "address = 0x822E6908\nname = \"Patch_RearViewPhaseEnd\"\nregisters = [\"r30\"]\nafter_instruction = false"), "the END hook stays after the sky callback and before the phase changes");
+  const size_t draw = scene.find("void Scene::OnDraw(");
+  const size_t clear = scene.find("void Scene::OnClear(");
+  const std::string suppress = "if (mirror_view_ && mirror_view_->suppressing())";
+  const size_t draw_guard = scene.find(suppress, draw);
+  const size_t clear_guard = scene.find(suppress, clear);
+  Check(scene.find("banks_.Apply(", draw) < draw_guard && draw_guard < scene.find("const Skip skip = Prepare(", draw),
+        "suppressed draws consume constant deltas and skip draw preparation and recording");
+  Check(clear_guard < scene.find("const RegisterWindow pre(", clear), "suppressed clears leave the main target alone");
   Check(Has(rv, "SetClientMirrorPhase(base, renderer, kCars, mirror_on && shared::CarsInView(mode, larecomp::settings::rearview_cars.Get()));") &&
             Has(rv, "if (!shared::CarsInView(CurrentMode(), larecomp::settings::rearview_cars.Get()) || !PlausibleGuestPtr(item)) return;"),
         "the racers join the side mirrors' view in both places that decide it (the membership and the car's phase hook)");
@@ -1068,6 +1099,7 @@ int main(int argc, char** argv) {
   TestSwitchOff();
   TestSwitchOn();
   TestFlipsInTheMiddle();
+  TestQueuedHudEligibility();
   TestRequestEveryFrame();
   TestSideOnlyEndToEnd();
   TestRacersJoin();

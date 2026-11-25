@@ -549,8 +549,12 @@ void TestPhase() {
     f.plan_valid = missing != 2;
     f.blocked = missing == 3;
     PhaseTracker p;
+    f.hud_stamp = true;
     Check(p.Begin(f) == PhaseState::kPassThrough && !p.redirecting(), "without the switch, the rectangle, the plan, or with the images blocked the phase passes through (case " + std::to_string(missing) + ")");
     Check(!p.End() && p.completed == 0 && p.unbalanced == 0 && p.redirected == 0, "the end of a pass-through phase makes no picture and is balanced");
+    f.hud_stamp = false;
+    Check(p.Begin(f) == PhaseState::kSuppress && p.suppressing() && !p.redirecting(), "each unavailable view suppresses an unframed phase (case " + std::to_string(missing) + ")");
+    Check(!p.End() && p.completed == 0 && p.unbalanced == 0 && !p.suppressing(), "a suppressed phase makes no picture and closes before the next draw");
   }
   // an end outside a phase, a begin inside one, a phase left open at the frame's start: counted, never stuck
   PhaseTracker u;

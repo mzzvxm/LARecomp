@@ -74,17 +74,14 @@ MirrorView::~MirrorView() = default;
 // the guest's side of the interface (gpu.h)
 // ---------------------------------------------------------------------------
 
-// Guest render thread. The marker goes only while the view is on (mirror_setting.h: the SIDE MIRRORS row, or the debug switch mcla_gpu_mirror_view forcing it), and an end only for a begin that went (the switch
-// may flip between the two). A held frame sends the two back to back.
-void NoteMirrorPhase(bool begin) {
+// Guest render thread. The hook has selected the phase. Keep its marker even if the setting changes while the phase is in flight.
+void NoteMirrorPhase(bool begin, bool hud_stamp) {
   static std::atomic<bool> g_open{false};  // trivially destructible: nothing to leak at the hard exit
   if (begin) {
-    if (MirrorViewMode() == 0) {
-      return;
-    }
     g_open.store(true, std::memory_order_relaxed);
     // The phase's own field goes with its begin (MV-J2): the camera of this phase was built just before, on this thread, so the latest camera facts are its (mirror_view_link.h PhaseField).
-    OnGuestSceneComposited(mirror_view::kMarkerBegin, mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));
+    OnGuestSceneComposited(hud_stamp ? mirror_view::kMarkerBegin : mirror_view::kMarkerBeginNoStamp,
+                          mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));
   } else if (g_open.exchange(false, std::memory_order_relaxed)) {
     OnGuestSceneComposited(mirror_view::kMarkerEnd);
   }
@@ -238,10 +235,12 @@ void MirrorView::Census(bool force) {
 // the phase
 // ---------------------------------------------------------------------------
 
-bool MirrorView::BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field) {
+bool MirrorView::BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field, bool hud_stamp) {
   mirror_view::BeginFacts facts;
   facts.enabled = enabled();
   facts.rect_valid = rect.valid();
+  facts.hud_stamp = hud_stamp;
+  phase_hud_stamp_ = hud_stamp;
   // The size follows the field the camera of THIS phase was built with (the marker's tag): the requested side mirrors' field where the guest applied it, else the rectangle's aspect at the game's own field
   // (PlanForPhase).
   phase_field_ = field;
@@ -370,13 +369,13 @@ bool MirrorView::EndPhase(plume::RenderCommandList* list) {
   const bool failed = failed_phase_;
   const uint32_t clears = clears_in_phase_;
   if (!phase_.End()) {
-    return false;  // a pass-through phase, or an end with no begin: nothing was redirected
+    return false;  // the phase did not use the view
   }
   ++stats_.completed;
   if (!was_used || failed) {
     // A phase with no draw and no clear (the guest's held frame sends the two markers back to back) or one whose images failed: the picture of the phase before stays, and the frame's stamp is drawn
     // from it (StampDue holds the age).
-    stamp_armed_ = whole_ && !failed && mirror_view::StampDue(whole_, uint32_t(std::min<uint64_t>(frame_ - picture_frame_, 0xFFFFFFFFu)), rect_.valid(), mirror_view::StampWanted());
+    stamp_armed_ = whole_ && !failed && mirror_view::StampDue(whole_, uint32_t(std::min<uint64_t>(frame_ - picture_frame_, 0xFFFFFFFFu)), rect_.valid(), phase_hud_stamp_);
     overlay_armed_ = whole_ && !failed && frame_ - picture_frame_ <= mirror_view::kMaxHeldFrames;
     return false;
   }
@@ -419,7 +418,7 @@ bool MirrorView::EndPhase(plume::RenderCommandList* list) {
     picture_plan_ = plan_;
     picture_field_ = phase_field_;
     picture_frame_ = frame_;
-    stamp_armed_ = mirror_view::StampDue(whole_, 0, rect_.valid(), mirror_view::StampWanted());
+    stamp_armed_ = mirror_view::StampDue(whole_, 0, rect_.valid(), phase_hud_stamp_);
     overlay_armed_ = true;
   }
   return true;

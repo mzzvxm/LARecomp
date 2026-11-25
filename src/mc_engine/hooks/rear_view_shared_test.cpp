@@ -57,7 +57,10 @@ void TestMarkers() {
     Check(v != vlink::kMarkerBegin && v != vlink::kMarkerEnd, "a marker does not collide with ultrawide's 0x7F0000nn values");
   }
   Check(vlink::IsMarker(vlink::kMarkerBegin) && vlink::IsMarker(vlink::kMarkerEnd), "IsMarker says yes to both");
-  Check(!vlink::IsMarker(0x10000000u) && !vlink::IsMarker(0x7F000001u) && !vlink::IsMarker(0) && !vlink::IsMarker(0x7F000012u), "IsMarker says no to a real bucket and to the other messages");
+  Check(vlink::kMarkerBeginNoStamp == 0x7F000012u && vlink::IsMarker(vlink::kMarkerBeginNoStamp), "the hidden-HUD begin has its own bucket");
+  Check(vlink::IsBeginMarker(vlink::kMarkerBegin) && vlink::IsBeginMarker(vlink::kMarkerBeginNoStamp) && !vlink::IsBeginMarker(vlink::kMarkerEnd),
+        "both begin buckets open a phase and the end bucket closes it");
+  Check(!vlink::IsMarker(0x10000000u) && !vlink::IsMarker(0x7F000001u) && !vlink::IsMarker(0) && !vlink::IsMarker(0x7F000013u), "IsMarker says no to a real bucket and to the other messages");
 }
 
 void TestCenti() {

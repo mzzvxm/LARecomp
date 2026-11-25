@@ -1303,6 +1303,13 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     }
   }
 
+  // Consume the bank deltas even when the view is unavailable and the HUD mirror is hidden.
+  // CHECK: exercise a buffered hidden phase while switching the raster view off or while its images are blocked.
+  if (mirror_view_ && mirror_view_->suppressing()) {
+    ++window_.no_effect[size_t(NoEffect::kCulled)];
+    return;
+  }
+
   // The scene phase of the frame ends at the game's motion blur draw (the anchor), which comes
   // after the main view's last draw (EdramTargets::DepthLayer).
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
@@ -3443,9 +3450,9 @@ void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandLi
   if (!mirror_view_) {
     return;
   }
-  if (bucket == mirror_view::kMarkerBegin) {
+  if (mirror_view::IsBeginMarker(bucket)) {
     // The rectangle is the one the guest published (TickRearView) before the phase ran.
-    if (mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag)) && list) {
+    if (mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag), bucket == mirror_view::kMarkerBegin) && list) {
       // The phase's draws leave the main pass: nothing the frame has bound is the view's.
       if (bound_.framebuffer) {
         list->setFramebuffer(nullptr);
@@ -3703,6 +3710,9 @@ bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandL
 
 void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
   ++window_.clears;
+  if (mirror_view_ && mirror_view_->suppressing()) {
+    return;
+  }
   if (!list || (record.flags & kEventSurfaceUnreadable)) {
     ++window_.clears_failed;
     return;
