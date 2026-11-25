@@ -479,8 +479,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
                          edram_);
     temporal_.SetRrGuidePass(&rr_guides_);  // the upscale runs the guide pass where Ray Reconstruction (or a guide view) wants it
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
-    fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_,
-                   &resize_requested_);
+    fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_);
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
     vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
@@ -1151,10 +1150,18 @@ void Renderer::OnIdle() {
   const bool hdr_changed = ApplyHdrSetting() | ApplyFrameGenerationSetting() | ApplyUiFade();
   overlay_host_->RequestPass();
   const bool first_frame = presented_ == 0;
-  const bool resize = resize_requested_.load(std::memory_order_acquire);
+  const bool resize = resize_requests_.load(std::memory_order_acquire) != 0 ||
+                      swap_chain_.recovery_requested();
   if (first_frame || resize || hdr_changed || overlay_.HasNewContent()) {
     ExecutePresent(PresentSource::kIdle);
   }
+}
+
+bool Renderer::WantsSwapChainVsync() const {
+  if (fg_.active()) {
+    return fg_.WantsVsync();
+  }
+  return dlssg_.active() ? dlssg_.WantsVsync() : larecomp::settings::mcla_gpu_vsync.Get();
 }
 
 bool Renderer::RebuildSwapChain() {
@@ -1245,11 +1252,8 @@ void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, 
     dlssg_.AfterPresent();  // Streamline's status now and then
   }
   if (result == PresentResult::kFailed) {
-    // DXGI and Vulkan both report a chain that no longer matches the window
-    // here; anything else that fails here is the device.
-    if (!device_.CheckLost("swap chain present")) {
-      resize_requested_.store(true, std::memory_order_release);
-    }
+    // SwapChain recorded the failure for recovery; check whether the device itself was lost.
+    device_.CheckLost("swap chain present");
   }
   if (source != PresentSource::kGuest) {
     return;
@@ -1323,7 +1327,7 @@ bool Renderer::ApplyHdrSetting() {
     SwapChain::Recreated result;
     {
       latency::SwapChainChange latency_change;
-      result = swap_chain_.Recreate(present_.hdr_output());
+      result = swap_chain_.Recreate(present_.hdr_output(), WantsSwapChainVsync());
       latency_change.Replaced(swap_chain_);
     }
     dlss::SwapChainRecreated();
@@ -1440,7 +1444,7 @@ bool Renderer::SwitchHdr(bool to_hdr, const std::string& why) {
   SwapChain::Recreated result;
   {
     latency::SwapChainChange latency_change;
-    result = swap_chain_.Recreate(to_hdr);
+    result = swap_chain_.Recreate(to_hdr, WantsSwapChainVsync());
     latency_change.Replaced(swap_chain_);
   }
   dlss::SwapChainRecreated();  // D3D12 with Streamline: the plain new chain is offered again
@@ -1571,15 +1575,25 @@ void Renderer::ExecutePresent(PresentSource source) {
     bool& flag_;
   } presenting(presenting_);
   // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
-  swap_chain_.SetVsync(fg_.active() ? fg_.WantsVsync()
-                                    : (dlssg_.active() ? dlssg_.WantsVsync()
-                                                       : larecomp::settings::mcla_gpu_vsync.Get()));
+  swap_chain_.SetVsync(WantsSwapChainVsync());
   UpdateHdr();
   UpdateDisplayAspect();
 
-  if (resize_requested_.exchange(false, std::memory_order_acq_rel) ||
-      swap_chain_.NeedsRebuild()) {
+  // The SDK can forward a window event both directly and through ResizeSurface. Consume
+  // the notifications together and use the latest size and mode once for this present.
+  // and toggle HDR and vsync together, including with frame generation active.
+  const uint8_t resize_requests = resize_requests_.exchange(0, std::memory_order_acq_rel);
+  const bool rebuild_attempted = swap_chain_.NeedsRebuild();
+  if (rebuild_attempted) {
     RebuildSwapChain();
+  } else if (resize_requests && !swap_chain_.empty()) {
+    const char* reason = "SDL pixel-size event and SDK surface resize";
+    if (resize_requests == static_cast<uint8_t>(ResizeSource::kWindowEvent)) {
+      reason = "SDL pixel-size event";
+    } else if (resize_requests == static_cast<uint8_t>(ResizeSource::kSdkSurface)) {
+      reason = "SDK surface resize";
+    }
+    REXLOG_INFO("[gpu] swap chain rebuild skipped: nothing changed ({})", reason);
   }
   if (swap_chain_.empty()) {
     // Minimised, or a rebuild the backend refused: nothing to present into.
@@ -1601,9 +1615,10 @@ void Renderer::ExecutePresent(PresentSource source) {
   }
   uint32_t image = 0;
   if (!swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
-    // Out of date (Vulkan) or a lost chain: rebuild once and retry. A failed
-    // acquire did not signal the semaphore, so nothing may wait on it.
-    if (!RebuildSwapChain() || !swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
+    // A failed acquire did not signal the semaphore. If this present already rebuilt the
+    // buffers, leave the failure pending so the next present can recover them.
+    if (rebuild_attempted || !RebuildSwapChain() ||
+        !swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
       device_.CheckLost("swap chain acquire");
       SubmitFrameWithoutPresent();
       ++skipped_;
@@ -2659,9 +2674,9 @@ void NoteGuestFenceWait(uint64_t wait_ns) {
   g_fence_wait_ns.fetch_add(wait_ns, std::memory_order_relaxed);
 }
 
-void RequestResize() {
+void RequestResize(ResizeSource source) {
   if (Renderer* r = g_active.load(std::memory_order_acquire)) {
-    r->RequestResize();
+    r->RequestResize(source);
   }
 }
 

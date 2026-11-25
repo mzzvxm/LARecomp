@@ -1271,7 +1271,7 @@ void LarecompApp::OnUIEvent(const rex::ui::UIEvent& event) {
     case Type::kResize:
       PublishWindowSize(GetUI());
 #if defined(LARECOMP_HAS_GPU)
-      mcla::gpu::RequestResize();
+      mcla::gpu::RequestResize(mcla::gpu::ResizeSource::kWindowEvent);
 #endif
       break;
     case Type::kFocus:

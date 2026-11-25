@@ -9,6 +9,7 @@
 #include "backend_impl.h"
 
 #include "present_rules.h"
+#include "swap_chain_rules.h"
 #include "temporal_dlss.h"
 #include "thread_load.h"
 #include "uma_budget.h"
@@ -536,6 +537,24 @@ bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistic
     out.sync_qpc = stats.SyncQPCTime.QuadPart;
   }
   return true;
+}
+
+bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_recovery) {
+  const auto& chain = static_cast<const plume::D3D12SwapChain&>(swap_chain);
+  const SwapChainState current{chain.getWidth(), chain.getHeight(),
+                               static_cast<uint32_t>(chain.nativeFormat),
+                               static_cast<uint32_t>(chain.getColorSpace()), chain.getTextureCount(),
+                               chain.isVsyncEnabled(), chain.swapChainFlags};
+  // ResizeBuffers retains the format, color space, buffer count and creation flags. DXGI
+  // applies vsync on the Present call, so the live setting already applies to both states.
+  SwapChainState requested = current;
+  RECT client{};
+  const HWND hwnd = chain.getWindow();
+  if (hwnd && GetClientRect(hwnd, &client)) {
+    requested.width = static_cast<uint32_t>(client.right - client.left);
+    requested.height = static_cast<uint32_t>(client.bottom - client.top);
+  }
+  return ShouldRebuildSwapChain(current, requested, needs_recovery);
 }
 
 PresentResult PresentNowait(plume::RenderSwapChain* swap_chain) {

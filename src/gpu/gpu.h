@@ -290,9 +290,10 @@ void OnGuestOcclusionEvent(const uint8_t* base, uint32_t query, bool is_begin);
 // for the query is written to its record first. Guest thread.
 void OnGuestQueryGetData(const uint8_t* base, uint32_t query);
 
-// UI thread, on a window pixel-size change. The rebuild happens on the render
-// thread at the next present (an idle one if the guest is not swapping).
-void RequestResize();
+// The UI event and the SDK's present thread can both report the same window pixel-size change.
+// The render thread checks the current size and mode at the next present.
+enum class ResizeSource : uint8_t { kWindowEvent = 1, kSdkSurface = 2 };
+void RequestResize(ResizeSource source);
 
 // Any thread. Texture mods: every texture the renderer holds to the dump
 // folder (F2 does only the next frame's), and the replacement folders read

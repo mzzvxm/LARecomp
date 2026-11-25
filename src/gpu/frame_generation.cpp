@@ -173,8 +173,7 @@ int64_t FrameGeneration::NowUs() {
 
 void FrameGeneration::Initialize(Device& device, FrameRing& frames, HostPasses& passes,
                                  PassTiming& pass_timing, FrameLayers& layers,
-                                 TemporalSystem& temporal, SwapChain& swap_chain,
-                                 std::atomic<bool>* resize_flag) {
+                                 TemporalSystem& temporal, SwapChain& swap_chain) {
   device_ = &device;
   frames_ = &frames;
   passes_ = &passes;
@@ -182,7 +181,6 @@ void FrameGeneration::Initialize(Device& device, FrameRing& frames, HostPasses& 
   layers_ = &layers;
   temporal_ = &temporal;
   swap_chain_ = &swap_chain;
-  resize_flag_ = resize_flag;
   initialized_ = true;
 #if defined(LARECOMP_HAS_FFX_FG)
   backend_ = MakeFfxFrameGeneration();
@@ -1251,9 +1249,6 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
                                       uint64_t latency_frame, bool* ok) {
   *ok = false;
   const auto fail = [&]() {
-    if (resize_flag_) {
-      resize_flag_->store(true, std::memory_order_release);
-    }
     std::lock_guard lock(mu_);
     ++pacer_stats_.failed;
     return int64_t(0);

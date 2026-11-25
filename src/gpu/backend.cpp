@@ -274,6 +274,10 @@ bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistic
   return MCLA_GPU_ACTIVE(QueryPresentStatistics(swap_chain, out));
 }
 
+bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_recovery) {
+  return MCLA_GPU_ACTIVE(NeedsSwapChainResize(swap_chain, needs_recovery));
+}
+
 PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain) {
 #if defined(LARECOMP_GPU_HAS_D3D12)
   if (ActiveBackend() == Backend::kD3D12) {

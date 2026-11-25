@@ -42,6 +42,7 @@ plume::RenderCommandQueue* SwapChain::Queue() const {
 }
 
 bool SwapChain::MakeChain(bool hdr10) {
+  recovery_requested_.store(false, std::memory_order_release);
   format_ = kSdrFormat;
   hdr_ = false;
   // NVIDIA Streamline's proxy factory, while DLSS frame generation is on (D3D12): the chains made in
@@ -111,11 +112,8 @@ bool SwapChain::MakeChain(bool hdr10) {
 // old format coming back (kKept) or "the swap chain" errors (kLost). Vulkan: the old chain and its
 // surface are destroyed straight after FrameRing::WaitIdle, as Rebuild does before it resizes; the
 // validation layer is the judge (VUID-vkDestroySwapchainKHR, binary semaphores of a present).
-SwapChain::Recreated SwapChain::Recreate(bool hdr10) {
-  if (device_ && swap_chain_) {
-    vsync_ = swap_chain_->isVsyncEnabled();
-  }
-  return RecreateOn(queue_, hdr10, vsync_);
+SwapChain::Recreated SwapChain::Recreate(bool hdr10, bool vsync) {
+  return RecreateOn(queue_, hdr10, vsync);
 }
 
 SwapChain::Recreated SwapChain::RecreateOn(plume::RenderCommandQueue* queue, bool hdr10,
@@ -152,13 +150,15 @@ void SwapChain::Shutdown() {
 }
 
 bool SwapChain::NeedsRebuild() const {
-  return swap_chain_ && (swap_chain_->needsResize() || framebuffers_.empty());
+  return swap_chain_ && (empty() || backend::NeedsSwapChainResize(*swap_chain_, recovery_requested()));
 }
 
 bool SwapChain::Rebuild() {
   if (!swap_chain_) {
     return false;
   }
+  // The pacer is paused: any pending failure referred to the buffers being replaced.
+  recovery_requested_.store(false, std::memory_order_release);
   // Plume's D3D12 resize() releases the back buffers, so nothing may still
   // reference them.
   framebuffers_.clear();
@@ -193,7 +193,11 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
   const latency::SwapChainUse use;
   const std::lock_guard lock(use_mutex_);
   const ScopedGpuWaitDetail detail(GpuWaitKind::kAcquire);
-  return swap_chain_->acquireTexture(signal, image);
+  if (!swap_chain_->acquireTexture(signal, image)) {
+    recovery_requested_.store(true, std::memory_order_release);
+    return false;
+  }
+  return true;
 }
 
 PresentResult SwapChain::Present(uint32_t image, bool do_not_wait) {
@@ -205,19 +209,25 @@ PresentResult SwapChain::Present(uint32_t image, bool do_not_wait) {
   // thread that name it wait (latency.h).
   const latency::SwapChainUse use;
   const std::lock_guard lock(use_mutex_);
+  PresentResult result;
   if (do_not_wait) {
-    return backend::PresentD3D12Nowait(swap_chain_.get());
+    result = backend::PresentD3D12Nowait(swap_chain_.get());
+  } else {
+    plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
+    // Plume's call includes its own Vulkan queue lock. The other waits are measured separately.
+    const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentCall);
+    result = swap_chain_->present(image, waits, 1) ? PresentResult::kPresented : PresentResult::kFailed;
   }
-  plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
-  // Plume's call includes its own Vulkan queue lock. The frame fence, acquire,
-  // and optional present-slot wait are measured at their own call sites.
-  const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentCall);
-  return swap_chain_->present(image, waits, 1) ? PresentResult::kPresented : PresentResult::kFailed;
+  if (result == PresentResult::kFailed) {
+    recovery_requested_.store(true, std::memory_order_release);
+  }
+  return result;
 }
 
 void SwapChain::SetVsync(bool vsync) {
-  if (swap_chain_ && swap_chain_->isVsyncEnabled() != vsync) {
+  if (swap_chain_ && vsync_ != vsync) {
     swap_chain_->setVsyncEnabled(vsync);
+    vsync_ = vsync;
   }
 }
 
