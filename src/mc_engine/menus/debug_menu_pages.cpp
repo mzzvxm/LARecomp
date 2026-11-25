@@ -399,6 +399,11 @@ const ItemDef kDebugCameraItems[] = {
     Bool("PM_RxDbgMenuCamLock", "menu_cam_lock",        "MENU CAM LOCK: "),
     Dbl ("PM_RxDbgMenuCamSlot", "menu_cam_slot",        "MENU CAM SLOT: ", kMenuCamSlots.v, 64,
          "%g"),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Bool("PM_RxDbgSsgiCabinSamples", "mcla_gpu_ssgi_cabin_samples", "COCKPIT BOUNCE SAMPLES: ")),
+    NativeOnly(Bool("PM_RxDbgRtaoCabinGuide", "mcla_gpu_rtao_cabin_guide", "COCKPIT RT AO GUIDE: ")),
+    NativeOnly(Bool("PM_RxDbgGiCabinRig", "mcla_gpu_gi_cabin_rig", "RT GI SHIELD COCKPIT ONLY: ")),
+#endif
     // The cheap rear view mirror (gameplay > camera > rear view must be on): each row is one option of perf/MIRRORS-SURVEY.md and changes nothing at its first value.
     // Camera: the mirror's field of view scaled down and its far plane pulled in; the city's detail radius while the mirror draws; the racers' number and model level
     // (they need CARS IN REAR VIEW); every Nth frame (a held frame shows the main view in the rectangle until the host keeps the picture). The cost chain's "cheap" tier

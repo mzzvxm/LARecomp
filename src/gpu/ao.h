@@ -826,6 +826,7 @@ class AmbientOcclusion {
   // GTAO main pass, and a debug picture of them. Off unless mcla_gpu_ssgi_test is on and the occlusion
   // is; Run turns it off for the frame when anything it needs is missing.
   struct GiPlan {
+    uint32_t cabin_id = 0;
     bool on = false;
     float thickness = 0.0f;        // the back face of a sample, world units: 0 = a solid (GTAO's horizons)
     float facing = 1.0f;           // the weight of the facing test (0: surfaces are taken to face the pixel)
@@ -1155,6 +1156,7 @@ class AmbientOcclusion {
   bool gi_test_ = false;              // mcla_gpu_ssgi_test (the debug override), shaders made
   Mode gi_mode_ = Mode::kOff;         // mcla_gpu_ssgi, `auto` resolved for this GPU (off until its pipelines are made)
   bool gi_active_ = false;            // the test or the setting is on, the occlusion is, the shaders exist
+  bool ssgi_cabin_samples_ = false;
   uint32_t census_every_ = 0;
   uint32_t off_frames_ = 0;
 
@@ -1425,6 +1427,7 @@ class AmbientOcclusion {
   HostImage gi_hist_[2];
   HostImage gi_weight_;
   bool history_gi_ = false;
+  uint32_t history_gi_cabin_id_ = 0;
   uint32_t history_index_ = 0;
   bool history_valid_ = false;    // it holds a picture the next frame may lean on
   bool history_cut_ = false;      // ... and was dropped by a cut (for the census)

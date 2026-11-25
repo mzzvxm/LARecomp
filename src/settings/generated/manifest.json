@@ -668,6 +668,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rtao_cabin_guide": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: match reduced-resolution RT AO traces to their guide surface in the cockpit. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rtao_spatial_resolve": {
   "type": "bool",
   "default": "false",
@@ -962,6 +973,17 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{-1.0, 12.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssgi_cabin_samples": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: match the screen-space bounce colour resolve to depth and use level zero taps on the player's cockpit surfaces. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -2174,6 +2196,17 @@
   "default": "false",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. \"\n    \"With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, \"\n    \"and the screen-space bounce light stays the source. The RT BOUNCE LIGHT row is grey with (NOT READY) while the update is missing; this makes it live for a test. Has no effect once the update is built. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gi_cabin_rig": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: restrict the RT GI cabin shield to the rendered cockpit rig. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

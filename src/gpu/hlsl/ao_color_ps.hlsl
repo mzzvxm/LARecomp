@@ -55,6 +55,8 @@
 //            times 0.3 so that 1.0 reads below the tone map's white; the gain multiplies that)
 
 #include "ao_common.hlsli"
+#include "ao_gbuffer_normal.hlsli"
+#include "interior_camera_rules.hlsli"
 #include "ssgi_common.hlsli"
 #include "nan_guard.hlsli"
 
@@ -164,25 +166,34 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const int2 base = int2(position.xy) * (low ? 2 : 1);
   const int2 last = int2(g_push.sizes.zw) - 1;
   const int across = low ? 2 : 1;
+  const bool match_depth = (g_push.slots2.z & kSsgiMatchColour) != 0u;
 #if AO_COLOR_MS
   const uint host_samples = max(g_push.slots.y & 0xFFu, 1u);  // (the high half is the lights' normal image slot: AoLights)
-  const bool one = AoOneSample();
+  const bool one = AoOneSample() || match_depth;
   const uint samples = one ? 1u : host_samples;
   const uint first = one ? min(g_push.slots2.x, host_samples - 1u) : 0u;
 #else
   const uint samples = 1u;
   const uint first = 0u;
 #endif
-  float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
-  for (int j = 0; j < across; ++j) {
-    for (int i = 0; i < across; ++i) {
-      const int2 p = min(base + int2(i, j), last);
-      for (uint s = 0u; s < samples; ++s) {
-        sum += TakeColour(p, first + s);
+  float4 result;
+  if (match_depth) {
+    // Match the spatial representative and guest sample used by the linear depth.
+    const uint source = low ? AoGbSourceOf(AoLoadLinear(g_push.slots2.y, int2(position.xy))) : 0u;
+    const int2 p = min(base + int2(source & 1u, source >> 1u), last);
+    result = TakeColour(p, first);
+  } else {
+    float4 sum = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    for (int j = 0; j < across; ++j) {
+      for (int i = 0; i < across; ++i) {
+        const int2 p = min(base + int2(i, j), last);
+        for (uint s = 0u; s < samples; ++s) {
+          sum += TakeColour(p, first + s);
+        }
       }
     }
+    result = sum / float(uint(across * across) * samples);
   }
-  float4 result = sum / float(uint(across * across) * samples);
   if (AoLightsOnly()) {
     // (alpha, the source share, stays the texel's own: a lamp's own texel takes none of the lights' share and the apply gives a source no bounce.) No usable history: black.
     result.rgb = AoLights() ? SsgiCarryLights(float3(0.0f, 0.0f, 0.0f), LightsHistory(int2(position.xy)), g_push.shape.z, SsgiLightsCap(max(g_push.shape.x, 1e-3f), g_push.shape.w), result.a)

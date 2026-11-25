@@ -15,6 +15,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "gpu_class.h"
+#include "hlsl/interior_camera_rules.hlsli"
 #include "host_shaders.h"
 #include "pass_timing.h"
 #include "rt_scene_service.h"
@@ -307,8 +308,10 @@ void RtAo::ReleaseImages() {
 }
 
 bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
-  if (!plan_.on || !list || !in.depth || !in.depth->texture)
+  if (!plan_.on || !list || !top_level_ || !in.depth || !in.depth->texture)
     return false;
+  match_cabin_guide_ = in.cockpit && settings::mcla_gpu_rtao_cabin_guide.Get() &&
+                       (in.depth->width > plan_.traced[0] || in.depth->height > plan_.traced[1]);
   frame_ = in.frame;
   tan_[0] = in.tan_x;
   tan_[1] = in.tan_y;
@@ -353,6 +356,7 @@ bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
                    (check_ == 1 ? rtao::kFlagCheckOpen : 0u) | (check_ == 2 ? rtao::kFlagCheckClosed : 0u) |
                    (interior_ ? rtao::kFlagInterior : 0u) | ((in.noise_code & ao_stable::kBlueNoiseFlag) ? rtao::kFlagBlue : 0u) |
                    (in.depth->width != in.render[0] || in.depth->height != in.render[1] ? rtao::kFlagDepthHalf : 0u) |
+                   (match_cabin_guide_ ? interior_camera::kRtAoMatchGuide : 0u) |
                    (probe ? rtao::kFlagProbe : 0u) | (sample ? rtao::kFlagStats : 0u);
   timing_->Mark(list, "rtao trace");
   if (govern_ && !plan_.raw && backend::TimestampsSupported(device_->device())) {
@@ -414,7 +418,8 @@ bool RtAo::RecordFilter(plume::RenderCommandList* list, const FilterInputs& in) 
     return false;
   const bool keep = rtao::KeepHistory(previous_ours_, previous_frame_ + 1 == frame_,
                                      previous_size_[0] == signal_.width && previous_size_[1] == signal_.height,
-                                     in.camera.have_motion || in.vehicles.ids != 0, in.cut);
+                                     in.camera.have_motion || in.vehicles.ids != 0,
+                                     in.cut || previous_match_cabin_guide_ != match_cabin_guide_);
   if (!keep || plan_.raw || !in.ours)
     denoise_->ResetHistory();
   previous_ours_ = false;
@@ -435,6 +440,7 @@ bool RtAo::RecordFilter(plume::RenderCommandList* list, const FilterInputs& in) 
     }
   }
   previous_frame_ = frame_;
+  previous_match_cabin_guide_ = match_cabin_guide_;
   std::copy_n(tan_, 2, previous_tan_);
   std::copy_n(plan_.traced, 2, previous_size_);
   FinishTraceTiming(list);

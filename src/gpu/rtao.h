@@ -50,6 +50,7 @@ class RtAo {
     uint32_t noise_code = 0;
     uint64_t frame = 0;
     bool interior = false;
+    bool cockpit = false;
   };
 
   rtao::Plan PlanFrame(const Inputs&, const CarRtView& top_level, bool bounce_light_on);
@@ -115,6 +116,7 @@ class RtAo {
   float tan_[2] = {}, previous_tan_[2] = {};
   uint64_t frame_ = 0, previous_frame_ = 0;
   bool previous_ours_ = false, recorded_ = false;
+  bool match_cabin_guide_ = false, previous_match_cabin_guide_ = false;
   bool listed_ = false, failed_[2] = {};
   bool wanted_ = false, selected_ = false, play_view_ = false, raw_ = false;
   bool blend_car_ = false, cabin_screen_ = false, interior_ = false, cabin_closed_ = false;

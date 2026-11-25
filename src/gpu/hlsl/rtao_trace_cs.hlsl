@@ -8,6 +8,7 @@
 #include "city_hit_alpha.hlsli"
 #include "gbuffer_common.hlsli"
 #include "rtao_common.hlsli"
+#include "interior_camera_rules.hlsli"
 #include "rtao_noise.hlsli"
 
 #ifdef __spirv__
@@ -213,8 +214,15 @@ void TracePixel(uint2 pixel) {
   g_normal[pixel] = float4(SurfaceNormal(coords[guide], guide_depth, guide_position), 1.0);
 
   const uint sample_index = RtAoSubpixel(int(pixel.x), int(pixel.y), g_push.trace.x);
-  const int2 sample_pixel = coords[sample_index];
-  const float t = depths[sample_index];
+  uint trace_sample = sample_index;
+  if ((flags & kRtAoMatchGuide) != 0u && sample_index != guide) {
+    // Keep rotating through taps that represent the guide's surface.
+    const uint sample_id = VehicleId(coords[sample_index], g_push.slots.z, bits[sample_index]);
+    const float tolerance = kHalfSurfaceShare * depths[guide] + kHalfSurfaceFloor;
+    trace_sample = RtAoSampleOf(sample_index, guide, sample_id, id, abs(depths[sample_index] - depths[guide]), tolerance);
+  }
+  const int2 sample_pixel = coords[trace_sample];
+  const float t = depths[trace_sample];
   const float2 centre = float2(sample_pixel) + 0.5;
   float3 p = ViewPos(centre, float2(size), t);
   const bool cabin = (flags & kFlagInterior) != 0u && g_push.box_max.w != 0.0 &&
@@ -236,7 +244,7 @@ void TracePixel(uint2 pixel) {
   float lift = Lift(t, footprint);
   uint instance = 0u, primitive = 0u;
   bool own = false;
-  if ((bits[sample_index] & 1u) != 0u) {
+  if ((bits[trace_sample] & 1u) != 0u) {
     float3 snapped_p, snapped_n;
     // A hit on the city has no car normal, so it cannot snap a vehicle pixel.
     own = Snap(centre, float2(size), t, snapped_p, snapped_n, instance, primitive);

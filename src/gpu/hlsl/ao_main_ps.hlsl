@@ -126,6 +126,8 @@
 #if AO_GI
 #include "ssgi_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#include "cabin_shadow_rules.hlsli"
+#include "interior_camera_rules.hlsli"
 #endif
 
 static const float kPi = 3.14159265358979f;
@@ -326,6 +328,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 size = g_push.sizes.zw;
   const int2 isize = int2(size);
   const float tc = AoLoadLinear(g_push.slots.z, pixel);
+  const bool player_receiver = g_push.lin.z != 0.0f && CabinMarkedDepth(asuint(tc));
   // The sky, and what is past where the effect fades out entirely: nothing to occlude, nothing blocks.
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
     return float4(1.0f, 0.0f, 0.0f, 0.0f);
@@ -409,7 +412,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       // and truncated, without the square root and the logarithm).
       const float length_px = share * radius_px;
       const float2 offset = dir_px * length_px;
-      const uint level = (length_px >= 16.0f ? 1u : 0u) + (length_px >= 32.0f ? 1u : 0u);
+      const uint level = SsgiSampleLevel(player_receiver, (length_px >= 16.0f ? 1u : 0u) + (length_px >= 32.0f ? 1u : 0u));
       AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, falloff_mul,
                  falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
                  limit_vehicles, vehicle_fall, clip_scale, occupied, light);
@@ -427,7 +430,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
         share *= share;
         const float length_px = lerp(near_end_px, far_px, share);
         const float2 offset = dir_px * length_px;
-        const uint level = length_px >= 32.0f ? 2u : 1u;
+        const uint level = SsgiSampleLevel(player_receiver, length_px >= 32.0f ? 2u : 1u);
         AoGiSample(centre + offset, level, dir_px, 1.0f, low0, pc, view_vec, axis, far_falloff_mul,
                    falloff_add, n, sin_n, cos_n, g_end, inv_total, thickness, facing_weight,
                    limit_vehicles, vehicle_fall, clip_scale, occupied, light);
