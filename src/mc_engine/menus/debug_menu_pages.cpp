@@ -47,6 +47,7 @@ constexpr int Len(const T (&)[N]) {
 // An INT32 cvar of 0 and 1 (frame_pacing): a Bool row would write "true" and "false".
 constexpr const char* kOffOnVals[]  = {"0", "1"};
 constexpr const char* kOffOnNames[] = {"OFF", "ON"};
+constexpr const char* kOffOnTextVals[] = {"off", "on"};
 // How often an AI racer's driving line is improved (race_line_max_hz): the cvar is the number of jobs a second, 0 = every frame.
 constexpr const char* kRaceLineVals[]  = {"0", "30", "60"};
 constexpr const char* kRaceLineNames[] = {"EVERY FRAME", "30 A SECOND", "60 A SECOND"};
@@ -217,6 +218,8 @@ const ItemDef kDebugPictureFixesItems[] = {
     // taps follow the scale). Read at each draw, so the row is live; no change at a render scale of 1x.
     NativeOnly(Bool("PM_RxDbgLumScale", "mcla_gpu_luminance_scale_fix", "EXPOSURE SAMPLE FIX: ")),
     NativeOnly(Bool("PM_RxDbgRoadMirror", "mcla_gpu_road_mirror_blur", "ROAD MIRROR BLUR: ")),
+    NativeOnly(Str("PM_RxDbgRainScatter", "mcla_gpu_vol_rain_scatter", "RAIN HEADLIGHT SCATTER FIX: ",
+                   kOffOnTextVals, kOffOnNames, Len(kOffOnTextVals))),
     // How hard the UI sharpening works (gpu/ui_sharp.h): the SHARP UI row on GRAPHICS > IMAGE QUALITY turns it on and off (mcla_ui_sharp, on by default,
     // and SHARP MINIMAP is mcla_ui_minimap_scale); this is the strength for tuning, 1 the default, 2 a harder alpha edge. Read at each UI draw, so live.
     NativeOnly(Dbl("PM_RxDbgUiSharp", "mcla_ui_sharp_strength", "UI SHARP STRENGTH: ",

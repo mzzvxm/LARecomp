@@ -280,6 +280,7 @@ struct VolLook {
 };
 
 inline constexpr int kLookFields = 11;
+inline constexpr float kRainHeadStrength = 0.12f;
 enum class LookWeather : int { kClear = 0, kFog = 1, kRain = 2 };
 enum class LookHour : int { kNight = 0, kLow = 1, kDay = 2 };
 
@@ -304,9 +305,9 @@ inline constexpr float kLookTable[3][3][kLookFields] = {
      {0.0100f, 0.5f, 40.0f, 0.60f, 0.35f, 0.40f, 0.5f, 3.0f, 0.16f, 0.20f, 6.0f},
      {0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.40f, 0.5f, 3.0f, 0.16f, 0.20f, 4.0f}},
     // rain
-    {{0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, 0.12f, 0.20f, 5.0f},
-     {0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, 0.12f, 0.20f, 5.0f},
-     {0.0060f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, 0.12f, 0.20f, 4.0f}}};
+    {{0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, kRainHeadStrength, 0.20f, 5.0f},
+     {0.0080f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, kRainHeadStrength, 0.20f, 5.0f},
+     {0.0060f, 0.5f, 40.0f, 0.60f, 0.35f, 0.50f, 0.0f, 3.0f, kRainHeadStrength, 0.20f, 4.0f}}};
 
 // The game's foggy weather from the fog quad's opacity (PS c64.w of PSBlendedHeightFog*, the run's census): the foggy NIGHT is 0.56 (a clear night 0 to 0.13, the
 // dusk 0.41, the clear day 0.4 to 0.67) and the foggy DAY 0.94; so the night's ramp is 0.35 to 0.52 and the day's 0.75 to 0.90, mixed by the night factor. A cloudy
@@ -353,7 +354,7 @@ inline VolLook LookCell(LookWeather weather, LookHour hour) {
 }
 
 // The look of a frame: the table's cells mixed by the weights (a weather change or the sun's setting blends, nothing jumps).
-inline VolLook LookFor(const LookWeights& w) {
+inline VolLook LookFor(const LookWeights& w, bool reduce_rain_scatter = false) {
   const float weather[3] = {w.clear, w.fog, w.rain};
   const float hour[3] = {w.night, w.low, w.day};
   float sum[kLookFields] = {};
@@ -375,6 +376,10 @@ inline VolLook LookFor(const LookWeights& w) {
   l.sun_strength = sum[6];
   l.lamp_strength = sum[7];
   l.head_strength = sum[8];
+  if (reduce_rain_scatter) {
+    // Remove half of the rain cell's contribution, preserving the clear and fog shares.
+    l.head_strength -= 0.5f * kRainHeadStrength * w.rain;
+  }
   l.extinction = sum[9];
   l.cap = sum[10];
   return l;

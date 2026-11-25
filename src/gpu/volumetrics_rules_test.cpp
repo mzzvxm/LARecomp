@@ -587,6 +587,34 @@ void CheckLook() {
   Check(SoftLimit(float(StreetLight(stretched, kBall[0], kBall[1], true, true)), rainy.cap) <= rainy.cap, "50 times the lights still stay under the cap");
 }
 
+void CheckRainScatter() {
+  for (float elevation : {-47.5f, 20.0f, 60.0f}) {
+    const LookWeights clear = LookWeightsFor(elevation, 0.0f, 0.0f);
+    const LookWeights fog = LookWeightsFor(elevation, 0.0f, 0.94f);
+    const LookWeights rain = LookWeightsFor(elevation, WetFactor(1.17f), 0.59f);
+    CheckNear(LookFor(clear, true).head_strength, 0.09, 1e-6, "rain switch preserves dry clear headlight scatter");
+    CheckNear(LookFor(fog, true).head_strength, 0.16, 1e-6, "rain switch preserves dry fog headlight scatter");
+    CheckNear(LookFor(rain, false).head_strength, 0.12, 1e-6, "rain switch off preserves the existing rain gain");
+    CheckNear(LookFor(rain, true).head_strength, 0.06, 1e-6, "rain switch on halves the rain gain");
+  }
+  const LookWeights mixed_clear = LookWeightsFor(-47.5f, 0.5f, 0.0f);
+  const LookWeights mixed_fog = LookWeightsFor(-47.5f, 0.5f, 0.56f);
+  CheckNear(LookFor(mixed_clear, true).head_strength, (0.09 + 0.06) / 2, 1e-6, "wetness blends tuned rain with clear air");
+  CheckNear(LookFor(mixed_fog, true).head_strength, (0.16 + 0.06) / 2, 1e-6, "wetness blends tuned rain with fog");
+
+  const LookWeights rain = LookWeightsFor(-47.5f, 1.0f, 0.59f);
+  const VolLook original = LookFor(rain);
+  const VolLook tuned = LookFor(rain, true);
+  CheckNear(original.head_strength, 0.12, 1e-6, "default rain look uses the original gain");
+  const double original_beam = StreetLight(original, kStreetFar[0], kStreetFar[1], true, false);
+  const double tuned_beam = StreetLight(tuned, kStreetFar[0], kStreetFar[1], true, false);
+  const double tuned_sky = StreetLight(tuned, kSkyTop[0], kSkyTop[1], true, false);
+  CheckNear(tuned_beam, original_beam * 0.5, 1e-5, "tuned rain beam carries half the original headlight scatter");
+  Check(tuned_beam > tuned_sky, "the tuned rain headlight beam stands above its sky scatter");
+  CheckNear(StreetLight(tuned, 0.16f, 0.26f, false, true), StreetLight(original, 0.16f, 0.26f, false, true), 1e-6,
+            "the rain switch preserves the street lamp halo in the model");
+}
+
 void CheckConstants() {
   // The byte layout the shaders read.
   Check(sizeof(VolLamp) == 64 && sizeof(VolShadowView) == 96 && sizeof(VolCascade) == 80 && sizeof(VolWorld) == 112, "member sizes");
@@ -896,6 +924,7 @@ int main(int argc, char** argv) {
   CheckNoise();
   CheckDefaults();
   CheckLook();
+  CheckRainScatter();
   CheckConstants();
   CheckAdaptors();
   if (argc > 1) {

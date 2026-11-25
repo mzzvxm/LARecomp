@@ -734,7 +734,7 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
   // The look of the frame: the table of weathers by hours (volumetrics_rules.h LookFor). The debug cvars are multipliers on it (a ratio to the cvar's
   // default, so that the default leaves the table as it is).
   const vol::LookWeights weights = vol::LookWeightsFor(float(light.elevation), wet, fog_opacity);
-  const vol::VolLook look = vol::LookFor(weights);
+  const vol::VolLook look = vol::LookFor(weights, st::mcla_gpu_vol_rain_scatter.Get() == "on");
   look_weights_ = weights;
   look_ = look;
   const auto ratio = [](double value, double reference, double highest) { return float(std::clamp(value / reference, 0.0, highest)); };
