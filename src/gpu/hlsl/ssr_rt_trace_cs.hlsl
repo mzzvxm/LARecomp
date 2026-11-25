@@ -164,6 +164,8 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float lift = SsrRtLift(r.pc.z, 2.0f * tan_y / float(max(h0.y, 1)));
   const float3 origin = r.pc + r.n * lift;
   const float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
+  // The shared city mask admits far LOD. Ground reflections keep their SSR/planar answer where the closest hit is a proxy or uses the placeholder material.
+  const bool require_detail = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;
 
   // the road view the trace takes out of a road where it finds a reflection (the share the trace was given): taken out here for the ray traced one in the same way
   float3 fallback = float3(0.0f, 0.0f, 0.0f);
@@ -215,10 +217,10 @@ void main(uint3 id : SV_DispatchThreadID) {
     ray.direction = dir;
     ray.t = hit.t;
     ray.footprint = SsrRtFootprint(pixel_angle, receiver_distance, hit.t, cone_tan);
-    const CityHitResolved res = CityHitResolve(p, f, s, ray, hit.inst);
+    const CityHitResolved res = CityHitResolve(p, f, s, ray, hit.inst, require_detail);
     if (res.source == CITY_HIT_SOURCE_NONE) {
       SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);
-      continue;   // no data for this hit: the game's reflection stays
+      continue;   // keep the SSR/planar result for this ray, including its hit distance
     }
     SsrRtCount(stats, res.screen >= 0.5f ? SSR_RT_CENSUS_SCREEN : SSR_RT_CENSUS_SHADED);
     const float fade = SsrRtReachFade(hit.t, reach);

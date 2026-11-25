@@ -585,6 +585,8 @@ City BuildCity(Lcg& rng) {
     if (!s.built) row = GpuSectorRow{};
     std::memcpy(&c.slots[size_t(SectorRowOf(uint32_t(i), false)) * 8], &row, sizeof(row));
   }
+  // Give the wall an identical LOD record so the resolve test can isolate the instance detail bit.
+  std::copy_n(c.slots.begin(), 8, c.slots.begin() + SectorRowOf(0, true) * 8);
   c.slot_rows.resize(c.slots.size() / 4);
   for (size_t i = 0; i < c.slot_rows.size(); ++i) c.slot_rows[i] = hlsl_shim::uint4(c.slots[4 * i], c.slots[4 * i + 1], c.slots[4 * i + 2], c.slots[4 * i + 3]);
   c.material_rows.resize(c.material_words.size() / 4);
@@ -982,6 +984,44 @@ void NanChecks(const City& city, Lcg& rng) {
   Check(differ == 0, Num("the shaded colour is the twin's with NaN and infinite units too (%.0f cases differ)", differ));
 }
 
+void ResolveDetailChecks(const City& city, Lcg& rng) {
+  Case k = RandomCase(rng, uint32_t(city.sectors.size()));
+  k.frame.light.valid = true;
+  k.p.mode = cs::kModeReflect;
+  k.p.flags = 0;
+  std::vector<hlsl_shim::uint4> rows;
+  BindFrame(k.frame, &rows);
+  const auto frame = hlsl_shim::RtHitLoadFrame();
+  const auto params = ShaderParams(k);
+  const auto ray = ShaderRay(k);
+  const hlsl_shim::CityHitScreen screen{};
+
+  k.sector = 0;  // textured wall
+  const auto wall = ShaderInstance(k);
+  const auto resolve = [&](hlsl_shim::CityHitInstance instance, bool require_detail) {
+    return hlsl_shim::CityHitResolve(params, frame, screen, ray, instance, require_detail);
+  };
+  const auto original = resolve(wall, false);
+  const auto detailed = resolve(wall, true);
+  CHECK(original.source == cs::kSourceShaded && detailed.source == original.source &&
+        Close(detailed.colour, {original.colour.x, original.colour.y, original.colour.z}));
+
+  auto lod = wall;
+  lod.instanceId = kInstanceIdFlag | SectorRowOf(k.sector, true);
+  CHECK(resolve(lod, false).source == cs::kSourceShaded);
+  CHECK(resolve(lod, true).source == cs::kSourceNone);
+
+  k.sector = 7;  // geometry only, uses material 0
+  const auto placeholder = ShaderInstance(k);
+  CHECK(resolve(placeholder, false).source == cs::kSourceShaded);
+  CHECK(resolve(placeholder, true).source == cs::kSourceNone);
+
+  k.sector = 4;  // known material whose texture is not resident
+  CHECK(resolve(ShaderInstance(k), true).source == cs::kSourceShaded);
+  k.sector = 11;  // missing hit data
+  CHECK(resolve(ShaderInstance(k), true).source == cs::kSourceNone);
+}
+
 // CityHitResolve against the twin's resolve.
 void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
   int wrong_source = 0, wrong_colour = 0, wrong_weight = 0, wrong_fields = 0, wrong_stats = 0, calibrated = 0;
@@ -1127,6 +1167,7 @@ int main(int argc, char** argv) {
         Num2("textured, sun-ray, lamp-ray, cascade, GI, glow and feedback cases were all exercised (textured %.0f, sun rays %.0f)", cov.textured_cases, cov.sun_rays));
   int sources[4] = {};
   ResolveChecks(city, rng, 6000, sources);
+  ResolveDetailChecks(city, rng);
   Check(sources[cs::kSourceScreen] > 400 && sources[cs::kSourceShaded] > 400 && sources[cs::kSourceBlend] > 100 && sources[cs::kSourceNone] > 100,
         Num2("the resolve ended in the picture, the model, both and nothing (picture %.0f, model %.0f)", sources[cs::kSourceScreen], sources[cs::kSourceShaded]));
   LampTermChecks(city, rng, src);

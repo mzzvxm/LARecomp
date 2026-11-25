@@ -1037,14 +1037,19 @@ CityHitResolved CityHitResolvedNone()
 // (CityHitShade times its class's gain) where it is not, both by the picture's weight where it fades. In GI mode the picture's colour is capped (CityHitScreen::cap: a lamp or a neon sign is a
 // bounded source). A stats frame (CITY_HIT_P_CALIBRATE) adds, for a hit the picture speaks for in full, the log of its luminance and of the UNGAINED model's to the class's counters. `source` NONE
 // says there was nothing to resolve (no frame light, no data in the pool): the caller keeps its colour.
-CityHitResolved CityHitResolve(CityHitParams p, RtHitFrame f, CityHitScreen s, CityHitRay ray, CityHitInstance inst)
+CityHitResolved CityHitResolve(CityHitParams p, RtHitFrame f, CityHitScreen s, CityHitRay ray, CityHitInstance inst, bool requireDetail = false)
 {
     CityHitResolved result = CityHitResolvedNone();
+    // city_rt_rules.h InstanceId stores the sector's detail in bit 0 (0 = hi, 1 = far LOD).
+    if (requireDetail && (inst.instanceId & 1u) != 0u)
+    {
+        return result;
+    }
     const float3 hit = ray.origin + ray.direction * ray.t;
     const CityHit decoded = CityHitDecode(inst.instanceId, inst.geometryIndex, inst.primitiveIndex, inst.barycentrics);
-    if (decoded.valid == 0u)
+    if (decoded.valid == 0u || (requireDetail && decoded.material == 0u))
     {
-        return result;  // the hit's data is not in the pool: nothing to resolve, the caller keeps its colour
+        return result;  // missing hit data or the placeholder grey material
     }
     float weight = 0.0;
     float3 seen = float3(0.0, 0.0, 0.0);

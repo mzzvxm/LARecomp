@@ -859,8 +859,11 @@ void TestShaderSources(const std::string& dir) {
   Check(Has(trace, "#define CAR_RT_SPACE 6") && Has(trace, "#define RT_WORLD_SPACE 6") && Has(trace, "#define CITY_HIT_SPACE 6") && Has(trace, "register(u0, space5)") && Has(trace, "register(u1, space5)") &&
             Has(trace, "register(u2, space5)") && Has(select, "register(u1, space5)") && Has(select, "register(u2, space5)"),
         "the layout's spaces: the textures 0 to 3, the samplers and the push block 4, the output set 5, the ray tracing set 6");
-  Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
+  Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst, require_detail)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
         "the trace pass resolves its hits with the city hit library in the world frame's light, with the world frame's class gains");
+  Check(Has(trace, "const bool require_detail = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;") &&
+            Has(trace, "if (res.source == CITY_HIT_SOURCE_NONE) {\n      SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);\n      continue;"),
+        "ground hits require detail, and rejected rays leave the radiance and hit distance alone");
   Check(Has(trace, "NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight))") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
   Check(Has(trace, "if (!CityHitIsCity(hit.inst.instanceId))") && Has(trace, "SSR_RT_CENSUS_CAR"), "a hit on a car is not shaded here (it is counted)");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),
