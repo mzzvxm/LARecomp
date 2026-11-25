@@ -28,6 +28,8 @@
 #include "light_manager.h"
 #include "gi_apply.h"
 #include "gi_bounce_settings.h"
+#include "capture_readback.h"
+#include "mc_engine/cinematic/capture_mode.h"
 #include "gi_integration.h"
 #include "local_lights.h"
 #include "rt_world_frame.h"
@@ -807,6 +809,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  visual_mask_ = mc::cinematic::CaptureVisualMask();
+  visual_hdr_rows_ = 0;
+  const bool capture_class = (visual_mask_ & vis::Bit(vis::kClass)) != 0;
   if (rt_world_) {
     rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
   }
@@ -826,6 +831,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     gi_apply_->BeginFrame();  // the probe field's apply: its wants (RT1 and RT2, the depth chain) only while the field runs, and the frame's latch of the screen-space bounce light's share
   }
   if (gbuffer_) {
+    const auto consumer = gbuffer::Consumer::kVisualCapture;
+    gbuffer_->Want(consumer, capture_class ? gbuffer::ConsumerPlanes(consumer) : 0);
+    if (!capture_class) gbuffer_->ReleaseCaptureClass();
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
   watch::BeginFrame(frame_serial_);
@@ -835,6 +843,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   const uint64_t targets_before = edram_->change_serial();
   if (temporal_) {
+    temporal_->RequestCaptureVectors(capture_class || (visual_mask_ & vis::Bit(vis::kMotion)));
     // A frame boundary: nothing is recorded in `list` yet, so the temporal system may change the
     // scene's scale (and the path) here.
     temporal_->BeginFrame(slot, list);
@@ -888,6 +897,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   ResetListState();
   marked_framebuffer_ = nullptr;
   if (layers_) {
+    layers_->Request(FrameLayers::kRequesterVisualCapture, capture_class);
     layers_->BeginFrame();
   }
   if (hdr_tone_) {
@@ -4075,7 +4085,18 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
-  const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene);
+  const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene,
+                                                          visual_mask_ & vis::Bit(vis::kHdr));
+  if (summary.visual_scene) {
+    if (summary.visual_y0 == 0) {
+      visual_hdr_key_ = summary.visual_scene->key;
+      visual_hdr_rows_ = summary.visual_y1;
+      visual_hdr_swap_rb_ = summary.visual_swap_rb;
+    } else if (visual_hdr_rows_ == summary.visual_y0 && visual_hdr_key_ == summary.visual_scene->key &&
+               visual_hdr_swap_rb_ == summary.visual_swap_rb) {
+      visual_hdr_rows_ = summary.visual_y1;
+    }
+  }
   bool gbuffer_published = false;
   if (gbuffer_ && gbuffer_->active()) {
     // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
@@ -4450,6 +4471,39 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.pipelines_created += from.pipelines_created;
   into.pipelines_failed += from.pipelines_failed;
   into.pipeline_create_ns += from.pipeline_create_ns;
+}
+
+void Scene::CollectVisualSources(VisualSources& sources) const {
+  if (resolve_ && visual_hdr_rows_ && visual_hdr_rows_ == visual_hdr_key_.height) {
+    const auto* p = resolve_->Find(visual_hdr_key_, visual_hdr_key_.base_page);
+    if (p && p->texture && !p->depth_source && p->format == plume::RenderFormat::R16G16B16A16_FLOAT) {
+      sources.images[vis::kHdr] = {p->texture.get(), p->format, p->layout,
+                                   p->scale.Edge(p->key.width), p->scale.Edge(p->key.height), 0,
+                                   visual_hdr_swap_rb_};
+    }
+  }
+  if (ao_) {
+    sources.images[vis::kAo] = VisualSource::Image(ao_->CaptureAo());
+    sources.images[vis::kGi] = VisualSource::Image(ao_->CaptureBounce(), 2);
+  }
+  // apply writes straight into scene colour, and has no equivalent 2D target to copy.
+  if (!sources.images[vis::kGi].texture && gi_apply_) {
+    sources.images[vis::kGi] = VisualSource::Image(gi_apply_->CaptureLookup());
+    sources.images[vis::kGi].alternate = true;
+  }
+  if (ssr_ && ssr_->wants_draws()) {
+    sources.images[vis::kRefl] = VisualSource::Image(ssr_->CaptureSignal());
+  } else if (car_refl_) {
+    sources.images[vis::kRefl] = VisualSource::Image(car_refl_->CaptureRtSignal());
+    sources.images[vis::kRefl].alternate = true;
+  }
+  if (temporal_) {
+    const auto kept = temporal_->motion().kept();
+    if (kept.valid && kept.frame == temporal_->frame().frame && temporal_->frame().anchor_ok) {
+      sources.images[vis::kMotion] = VisualSource::Image(kept.motion);
+      sources.depth = kept.depth;
+    }
+  }
 }
 
 void Scene::OnPresent() {

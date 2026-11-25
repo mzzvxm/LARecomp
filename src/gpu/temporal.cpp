@@ -190,10 +190,10 @@ void TemporalSystem::SetEnabled(bool enabled) {
   post_unserved_reported_.fill(false);
   plain_logged_.fill(false);
   if (enabled && effective_ == Upscaler::kOff && vectors_on_) {
-    REXLOG_INFO("{} ON for frame generation: the camera is read from the game's motion blur draw "
+    REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw "
                 "and each frame's depth and motion vectors are kept; nothing is moved or replaced. "
                 "A summary is logged when the game exits",
-                kPrefix);
+                kPrefix, vectors_wanted_ || vectors_wanted_dlssg_ ? "frame generation" : "visual capture");
   } else if (enabled) {
     REXLOG_INFO("{} ON for {}: the camera is read from the game's motion blur draw and the 3D "
                 "scene is moved by a sub-pixel amount every frame once the upscaler is ready. A "
@@ -207,7 +207,7 @@ void TemporalSystem::SetEnabled(bool enabled) {
 }
 
 void TemporalSystem::SyncVectors() {
-  const bool wanted = vectors_wanted_ || vectors_wanted_dlssg_;
+  const bool wanted = vectors_wanted_ || vectors_wanted_dlssg_ || vectors_wanted_capture_;
   if (wanted == vectors_on_) {
     return;
   }

@@ -71,6 +71,7 @@ class RtAo {
     uint32_t car_term_slot = kNoSlot;
   };
   uint32_t RecordCompose(plume::RenderCommandList*, const ComposeInputs&);
+  const HostImage* ComposedImage(uint32_t slot) const;
   void OnPresent();
   uint64_t HeldBytes() const;
   std::string CensusText() const;

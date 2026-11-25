@@ -514,6 +514,10 @@ void RtAo::NoteFallback(uint64_t frame, rtao::Fallback why) {
     REXLOG_INFO("[rtao] frame {}: back to the screen-space term: {}", frame, rtao::FallbackText(why));
 }
 
+const HostImage* RtAo::ComposedImage(uint32_t slot) const {
+  return compose_ ? compose_->ImageAt(slot) : nullptr;
+}
+
 void RtAo::OnPresent() {
   if (denoise_)
     denoise_->OnPresent();

@@ -250,6 +250,8 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
 
 const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }
 
+const HostImage* CarSelfRefl::CaptureRtSignal() const { return rt_ ? rt_->ImageFor(frame_) : nullptr; }
+
 void CarSelfRefl::BeginFrame() {
   raw_ = false;  // RR-4b: the Scene says it again before the trigger's history pass, in a frame Ray Reconstruction takes
   Mode mode = ReadMode();

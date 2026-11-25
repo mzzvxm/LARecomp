@@ -135,6 +135,7 @@ class GiApply {
   // G6: the per-pixel pass's hit distance image of THIS frame, null unless the pass ran raw in it (RG16F at its own size, the distance in x, in the read state): the guide pass's last-choice hit distance.
   // Valid after OnTrigger, until the next frame's.
   const HostImage* RawHitImage() const;
+  const HostImage* CaptureLookup() const { return capture_lookup_ ? &lookup_ : nullptr; }
   // True while the effect has a field to apply this frame (the Scene calls OnTrigger only then).
   bool wants_draws() const { return enabled_; }
 
@@ -198,6 +199,7 @@ class GiApply {
   bool pipelines_failed_ = false;
   std::array<Slot, kFramesInFlight> slots_;
   HostImage lookup_;  // RGBA16F at the traced size: rgb = E_net x confidence, a = the linear depth the texel was looked up at
+  bool capture_lookup_ = false;
 
   // the frame
   bool enabled_ = false;

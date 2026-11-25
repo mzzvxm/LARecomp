@@ -204,6 +204,7 @@ class CarSelfRefl {
   void SetRawMode(bool raw) { raw_ = raw; }
   // RR-4b: the ray traced pass's hit distance image of this frame (R16_FLOAT, the picture's size, readable) when it ran raw, else null (car_rt_refl.h RawHitImage).
   const HostImage* RawHitImage() const;
+  const HostImage* CaptureRtSignal() const;
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return mode_ != Mode::kOff; }
 

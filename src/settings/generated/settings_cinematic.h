@@ -56,6 +56,10 @@ class CinematicSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_capture_luma, "", "RT noise capture: replace the PNG sequence with lossless luma for full or x,y,width,height and three color previews. Empty keeps the PNG sink.", rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_capture_buffers, "", "Visual comparison buffers to write during a take: all or comma-separated final,hdr,ao,refl,gi,class,motion. Empty or off disables buffer capture.", rex::kDebugOnly);
+  REX_SETTING(i32, mcla_capture_buffer_every, 1, "Visual comparison buffers: record the first take frame and every Nth frame after it.", rex::Range{1, 10000}, rex::kDebugOnly);
+  REX_SETTING(std::string, mcla_capture_buffer_region, "full", "Visual comparison buffers: full or rects (the bounding rectangle of the scene capture key's rects option).", rex::kDebugOnly);
+
   REX_SETTING(i32, mcla_capture_memory_mb, 2048, "TRAILER TOOLKIT capture mode: the hard cap, in MiB, on the memory a take holds (its GPU readback buffers and its ring, one frame "
     "each). The ring is cut first, then the GPU buffers; a take that does not fit with 2 + 2 frames does not run, and the log says what "
     "to change (a lower render scale). Nothing grows with the take's length or the writer's speed. Read when a take starts.", rex::Range{64, 65536}, rex::kDebugOnly);
@@ -163,6 +167,9 @@ inline auto& mcla_capture_gate_timeout_ms = g_cinematic.mcla_capture_gate_timeou
 inline auto& mcla_capture_lag = g_cinematic.mcla_capture_lag;
 inline auto& mcla_capture_log_every = g_cinematic.mcla_capture_log_every;
 inline auto& mcla_capture_luma = g_cinematic.mcla_capture_luma;
+inline auto& mcla_capture_buffers = g_cinematic.mcla_capture_buffers;
+inline auto& mcla_capture_buffer_every = g_cinematic.mcla_capture_buffer_every;
+inline auto& mcla_capture_buffer_region = g_cinematic.mcla_capture_buffer_region;
 inline auto& mcla_capture_memory_mb = g_cinematic.mcla_capture_memory_mb;
 inline auto& mcla_capture_name = g_cinematic.mcla_capture_name;
 inline auto& mcla_capture_out = g_cinematic.mcla_capture_out;

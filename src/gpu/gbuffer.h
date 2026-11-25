@@ -136,6 +136,9 @@ class GBuffer {
   // Right after the other effects of the same trigger (the AO's apply, the sun shafts, the car passes) so that the picture replaces what they drew: the debug view,
   // when mcla_gpu_gbuffer_view asks for one and the frame was published. True when passes were recorded (the caller's list state is gone).
   bool DrawView(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  const HostImage* DrawCaptureClass(plume::RenderCommandList* list, const HostImage* depth,
+                                    const HostImage* ui, uint32_t ui_gap);
+  void ReleaseCaptureClass();
 
   // True once after a call that left the planes' own framebuffer bound on the list (a clear): the Scene then forgets which framebuffer it had bound.
   bool TakeFramebufferDirty() {
@@ -156,6 +159,7 @@ class GBuffer {
   struct ViewPipeline {
     plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
     uint32_t samples = 1;
+    bool source_ms = false;
     std::unique_ptr<plume::RenderPipeline> pipeline;
   };
   struct ViewPush {
@@ -170,7 +174,7 @@ class GBuffer {
   void ClearRect(plume::RenderCommandList* list, const plume::RenderRect& host);
   void FillSidecar(Sidecar* out) const;
   bool CheckAffordable(const EdramTargets::Target& colour0);
-  plume::RenderPipeline* ViewPipelineFor(plume::RenderFormat format, uint32_t samples);
+  plume::RenderPipeline* ViewPipelineFor(plume::RenderFormat format, uint32_t samples, bool source_ms);
   void LogInterval();
 
   HostPasses* passes_ = nullptr;
@@ -179,6 +183,7 @@ class GBuffer {
 
   // The images, one per plane of the stage's set (a plane outside it has none).
   std::array<HostImage, gbuffer::kPlaneCount> images_;
+  HostImage capture_class_;
   uint32_t image_planes_ = 0;  // PlaneBit of the planes that have an image now
   uint32_t generation_ = 0;
   bool needs_clear_ = true;  // the images are new: their contents are not 0 until a clear
@@ -201,6 +206,7 @@ class GBuffer {
 
   std::array<std::unique_ptr<plume::RenderShader>, 2> view_shaders_;  // one sample, multisampled
   bool view_shaders_failed_ = false;
+  bool capture_class_failed_ = false;
   std::vector<ViewPipeline> view_pipelines_;
 
   // The counts of an interval of frames (LogInterval), and of the first frames' windows.

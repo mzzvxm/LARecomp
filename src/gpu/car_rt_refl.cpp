@@ -898,12 +898,17 @@ void CarRtRefl::ReleaseScratch() {
   RetireSet(first_set_);
 }
 
-uint32_t CarRtRefl::SlotFor(uint64_t history_frame) const {
+const HostImage* CarRtRefl::ImageFor(uint64_t history_frame) const {
   const HostImage& result = result_in_stable_ ? stable_[stable_index_] : (result_in_scratch_ ? scratch_ : image_);
   if (!recorded_ || recorded_frame_ != history_frame || !result.texture || result.slot == kNoSlot) {
-    return car_selfrefl::kNoRtImage;
+    return nullptr;
   }
-  return result.slot;
+  return &result;
+}
+
+uint32_t CarRtRefl::SlotFor(uint64_t history_frame) const {
+  const auto* image = ImageFor(history_frame);
+  return image ? image->slot : car_selfrefl::kNoRtImage;
 }
 
 void CarRtRefl::ReleaseImage() {

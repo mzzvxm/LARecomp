@@ -42,6 +42,9 @@ class RtAoCompose {
   bool EnsureImage(uint32_t width, uint32_t height, bool bounce);
   void ReleaseImage();
   uint64_t HeldBytes() const;
+  const HostImage* ImageAt(uint32_t slot) const {
+    return image_.texture && image_.slot == slot ? &image_ : nullptr;
+  }
 
  private:
   std::unique_ptr<plume::RenderPipeline> MakePipeline(bool bounce) const;

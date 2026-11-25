@@ -246,6 +246,7 @@ class CarRtRefl {
   // The bindless slot of the image the paint draws of the frame after `history_frame` read (the denoise's result: the trace's image after two
   // passes or none, the scratch image after one), or car_selfrefl::kNoRtImage when the pass did not run for that history.
   uint32_t SlotFor(uint64_t history_frame) const;
+  const HostImage* ImageFor(uint64_t history_frame) const;
   // RR-4b: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran raw and wrote it, else null. Valid until the next frame's pass.
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
 

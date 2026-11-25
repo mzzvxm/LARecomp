@@ -902,7 +902,10 @@ void TestCaptureOptions() {
     Check(ParseScene("scene a\nat 1 capture fps 60 name " + std::string(64, 'a') + "\nend 5\n").Ok(), "64 characters are allowed");
     CheckError("at 1 capture fps 60 statelog maybe", "statelog on or statelog off, not 'maybe'");
     CheckError("at 1 capture off name x", "capture off takes nothing after it");
-    CheckError("at 1 capture fps 60 speed 2", "(fps, step, name, sink, statelog)");
+    CheckError("at 1 capture fps 60 speed 2", "(fps, step, name, sink, statelog, rects)");
+    const ParseResult rects = ParseScene("scene a\nat 0 capture fps 30 rects \"1,2,3,4;4,5,6,7\"\nend 1\n");
+    Check(rects.Ok() && rects.scene.capture_rects == "1,2,3,4;4,5,6,7", "capture keeps the authored rects");
+    CheckError("at 1 capture fps 60 rects 1,2,0,4", "capture rects needs");
 }
 
 

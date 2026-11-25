@@ -588,6 +588,8 @@ class AmbientOcclusion {
     float paint_power = 1.0f;
   };
   bool FrameOcclusionNow(OcclusionView* out) const;
+  const HostImage* CaptureAo() const { return capture_ao_; }
+  const HostImage* CaptureBounce() const { return capture_bounce_; }
   // The frame's light constants as the apply's maths take them: the ambient's and the sun's colour (PS c26 and c39, the commonest of the main view's draws, the units the colour is in) and the
   // world-space direction to the sun (SunDirection). False when no draw had a light.
   bool FrameLight(float ambient[3], float sun[3], double to_sun[3]) const;
@@ -1194,6 +1196,8 @@ class AmbientOcclusion {
   bool ran_this_frame_ = false;
   bool applied_this_frame_ = false;   // ... and the apply pass drew into the colour target
   OcclusionView occlusion_view_;      // what the probe field's apply reads (FrameOcclusionNow), set with the apply
+  const HostImage* capture_ao_ = nullptr;
+  const HostImage* capture_bounce_ = nullptr;
   GiApply* gi_apply_ = nullptr;       // the probe field's apply: the bounce light's share (SetGiApply)
   const HostImage* linear_depth_image_ = nullptr;  // the frame's level 0 depth, set when the passes ran (FrameLinearDepth)
   float linear_depth_tan_[2] = {};

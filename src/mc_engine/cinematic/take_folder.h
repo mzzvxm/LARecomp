@@ -105,6 +105,9 @@ struct MemoryRequest {
     uint64_t available_bytes = 0;  // free physical memory now; 0 = not known
     uint64_t reserve_bytes = 0;    // that much has to stay free
     uint64_t fixed_bytes = 0;      // other memory the take holds for sure (the pipe to ffmpeg), counted in the total
+    bool legacy_frame = true;
+    uint64_t extra_gpu_frame_bytes = 0;
+    uint64_t extra_host_frame_bytes = 0;
 };
 struct MemoryPlan {
     bool ok = false;

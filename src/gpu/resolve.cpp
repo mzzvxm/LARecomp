@@ -39,6 +39,7 @@
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "temporal_backend.h"
+#include "temporal_identities.h"
 #include "texture_decode.h"
 #include "watch.h"
 
@@ -1033,7 +1034,8 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
 // ---------------------------------------------------------------------------
 
 ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
-                                            plume::RenderCommandList* list, bool float_scene) {
+                                            plume::RenderCommandList* list, bool float_scene,
+                                            bool capture_hdr) {
   Summary summary;
   ++stats_.resolves;
   if (!list) {
@@ -1685,6 +1687,16 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       ++stats_.copies;
       ++stats_.modes[mode & 0xFF];
       stats_.pixels += uint64_t(tx1 - tx0) * uint64_t(ty1 - ty0);
+      if (capture_hdr && !depth_source && level == 0 && tx0 == 0 && uint32_t(tx1) == level_width &&
+          temporal::MainColorSamples(src_key) != 0 &&
+          temporal::ViewOfSamples(src_key.samples) == temporal::View::kPlay &&
+          (key.base_page == 0x07FE0 || key.base_page == 0x07C48) &&
+          p->format == plume::RenderFormat::R16G16B16A16_FLOAT) {
+        summary.visual_scene = p;
+        summary.visual_y0 = uint32_t(ty0);
+        summary.visual_y1 = uint32_t(ty1);
+        summary.visual_swap_rb = (full_mode & kFlagSwapRedBlue) != 0;
+      }
       if (depth_source) {
         summary.depth_copy = true;
         summary.source = src;

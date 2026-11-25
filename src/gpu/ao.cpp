@@ -3399,6 +3399,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       occlusion_view_.strength = look_.strength;
       occlusion_view_.fade_end = push.extra[1];
       occlusion_view_.paint_power = ao_paint::PowerOf(look_.paint_code);
+      capture_ao_ = !has_ao_term ? nullptr
+                    : rtao_slot != kNoSlot && rtao_ ? rtao_->ComposedImage(rtao_slot)
+                    : plan.gi.apply && gi_bounce ? gi_bounce : screen_term;
+      capture_bounce_ = plan.gi.apply && gi_bounce
+                            ? (rtao_slot != kNoSlot && rtao_ ? rtao_->ComposedImage(rtao_slot) : gi_bounce)
+                            : nullptr;
     }
   }
   if (plan.gi.on) {
@@ -5023,6 +5029,7 @@ void AmbientOcclusion::OnPresent() {
   ran_this_frame_ = false;
   applied_this_frame_ = false;
   occlusion_view_ = OcclusionView{};
+  capture_ao_ = capture_bounce_ = nullptr;
   ++frame_;
 }
 
