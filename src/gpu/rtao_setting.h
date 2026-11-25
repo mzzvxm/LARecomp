@@ -93,16 +93,11 @@ inline std::string AutoDescription() {
     return text;
   };
   constexpr auto ao = gc::Effect::kAmbientOcclusion;
-  const std::string_view rt = gc::RtCell(gc::RtEffect::kRtAo, gc::RtTier::kStrong);
-  if (rt.empty()) {   // no ray traced Auto (RTAO held, 2026-11-24): three classes, no fourth clause
-    return "Auto is " + title(gc::Cell(ao, gc::GpuClass::kLow)) + " on integrated graphics, " +
-           title(gc::Cell(ao, gc::GpuClass::kMid)) + " on a mid-range card and " +
-           title(gc::Cell(ao, gc::GpuClass::kHigh)) + " on a high-end card.";
-  }
   return "Auto is " + title(gc::Cell(ao, gc::GpuClass::kLow)) + " on integrated graphics, " +
          title(gc::Cell(ao, gc::GpuClass::kMid)) + " on a mid-range card, " +
          title(gc::Cell(ao, gc::GpuClass::kHigh)) + " on a high-end card and " +
-         title(rt) + " on a high-end card that traces rays quickly.";
+         title(gc::RtCell(gc::RtEffect::kRtAo, gc::RtTier::kStrong)) +
+         " on a high-end card that traces rays quickly.";
 }
 
 }  // namespace mcla::gpu::rtao_setting

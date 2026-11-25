@@ -35,7 +35,7 @@ void CheckDecisions() {
   constexpr Choice auto_choices[3][3] = {
       {Choice::kOff, Choice::kOff, Choice::kOff},
       {Choice::kHigh, Choice::kHigh, Choice::kHigh},
-      {Choice::kUltra, Choice::kUltra, Choice::kUltra},  // RTAO held (2026-11-24): strong RT cards keep screen-space ULTRA
+      {Choice::kUltra, Choice::kUltra, Choice::kRt},
   };
   constexpr RtTier rungs[3][3] = {
       {RtTier::kNone, RtTier::kNone, RtTier::kNone},
@@ -98,13 +98,14 @@ void CheckLabels() {
     for (const auto tier : kTiers) {
       for (const bool built : {false, true}) {
         const auto label = ao::AutoLabel(ao::Decide(kClasses[c], true, tier, Choice::kAuto, built));
-        const auto expected = auto_labels[c];   // RTAO held (2026-11-24): no class or rung has ray traced Auto
+        const auto expected = c == 2 && tier == RtTier::kStrong && built ? "AUTO (RT)" : auto_labels[c];
         Check(label == expected && label.size() <= 14, "Auto labels show the effective level within width");
       }
     }
   }
   Check(ao::AutoDescription() ==
-            "Auto is Off on integrated graphics, High on a mid-range card and Ultra on a high-end card.",
+            "Auto is Off on integrated graphics, High on a mid-range card, Ultra on a high-end card "
+            "and Ray traced on a high-end card that traces rays quickly.",
         "launcher Auto sentence follows the class and RT cells");
 }
 

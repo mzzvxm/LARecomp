@@ -168,9 +168,7 @@ inline constexpr Row kRows[] = {
     // CAR SHADOWS: `auto` is the 2048 map on a discrete card (car_shadow_map_rules.h AutoLevel, which still reads the class: its Low cell is the 1024 map, the one `auto` that is not VANILLA's).
     {"mcla_gpu_car_shadow_map", Page::kLighting, {"off", "ultra", "ultra", "ultra", "ultra"}},
     // AMBIENT OCCLUSION: ray traced (`rt`) in the one preset that is everything at the top of a strong card.
-    // RAY TRACED AO is held (2026-11-24): grain under the cars on the rtao6 pictures and no noise verdict yet; ENHANCED RT ULTRA keeps the
-    // screen-space ULTRA until chain-rtao passes (then this cell goes back to "rt"). RT stays a hand pick on the row.
-    {"mcla_gpu_ao", Page::kLighting, {"off", "high", "ultra", "high", "ultra"}},
+    {"mcla_gpu_ao", Page::kLighting, {"off", "high", "ultra", "high", "rt"}},
     {"mcla_gpu_ao_intensity", Page::kLighting, {"default", "default", "default", "default", "default"}},
     {"mcla_gpu_ssgi", Page::kLighting, {"off", "off", "high", "off", "high"}},
     // RT BOUNCE LIGHT: the rung's cells (off, off, high); a weak card keeps the screen-space bounce light.

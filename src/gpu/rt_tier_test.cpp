@@ -639,7 +639,7 @@ const CellRow kCells[] = {
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
     // The player's side mirrors traced: strong cards only (the car's structures are built in every frame for it; a weak card can set it by hand).
     {RtEffect::kCarMirrorRt, "mcla_gpu_car_mirror_rt", "off", "off", "on"},
-    {RtEffect::kRtAo, "mcla_gpu_ao", "", "", ""},  // RTAO held (2026-11-24)
+    {RtEffect::kRtAo, "mcla_gpu_ao", "", "", "rt"},
 };
 
 const char* const kOwnChoices[] = {"off", "on", "high", "ultra", "rt", "ao", "contact", "both", "", "Auto", "AUTO", "game", "auto " /* a space: not auto */};

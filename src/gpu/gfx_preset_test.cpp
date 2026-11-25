@@ -270,7 +270,7 @@ const OldRtEffect kOldRt[] = {
     {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "off", "high"},
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
     {RtEffect::kCarMirrorRt, "mcla_gpu_car_mirror_rt", "off", "off", "on"},
-    {RtEffect::kRtAo, "mcla_gpu_ao", "", "", ""},  // RTAO held (2026-11-24)
+    {RtEffect::kRtAo, "mcla_gpu_ao", "", "", "rt"},
 };
 
 struct OldScaleCells {
@@ -376,7 +376,7 @@ void CheckAutoUnchanged() {
     CheckEq(RtCell(old.effect, RtTier::kWeak), old.weak, cvar + ": the weak rung is unchanged");
     CheckEq(RtCell(old.effect, RtTier::kStrong), old.strong, cvar + ": the strong rung is unchanged");
     if (old.effect == RtEffect::kRtAo) {
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "ultra", "ray traced ambient occlusion is held: ENHANCED RT ULTRA keeps screen-space ULTRA");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "rt", "the world's ambient occlusion is ray traced in ENHANCED RT ULTRA");
       continue;
     }
     const auto resolved = [&](Preset p) { return gp::Resolved(old.cvar, gp::CellOf(old.cvar, p)); };
