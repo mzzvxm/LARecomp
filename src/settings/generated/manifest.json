@@ -668,6 +668,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rtao_spatial_resolve": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: apply a wider bilateral resolve to ray traced ambient occlusion on world surfaces. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rtao_raw_scale": {
   "type": "i32",
   "default": "2",

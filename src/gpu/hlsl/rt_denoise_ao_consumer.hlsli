@@ -25,6 +25,7 @@ uint RtDnHi(uint word) { return word >> 16u; }
 int2 RtDnSize() { return int2(RtDnLo(RtDnW(3)), RtDnHi(RtDnW(3))); }
 uint RtDnIteration() { return RtDnW(4) & 15u; }
 bool RtDnHasHistory() { return (RtDnW(4) & (1u << 8u)) != 0u; }
+bool RtAoSpatialResolve() { return RtDnW(27) != 0u; }
 float RtDnPixelAngle() { return 2.0f * RtDnF(6) / float(RtDnSize().y); }
 bool RtAoVehicle(float depth) { return (asuint(depth) & 1u) != 0u; }
 float RtDnDepthAt(int2 p) { return g_textures[RtDnHi(RtDnW(0))].Load(int3(p, 0)).x; }

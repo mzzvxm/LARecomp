@@ -20,6 +20,7 @@ namespace words = rt_denoise::plain;
 constexpr uint32_t kVehicleSlotHigh = 24;
 constexpr uint32_t kHistoryCap = 25;
 constexpr uint32_t kRawSignal = 26;
+constexpr uint32_t kSpatialResolve = 27;
 constexpr uint32_t kInvalidHalfSlot = 0xFFFFu;
 
 bool Matches(const HostImage* image, const uint32_t (&size)[2]) {
@@ -118,6 +119,7 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   pass.signal = const_cast<HostImage*>(temporal);
   pass.reads[3] = in.signal;
   pass.iterations = rt_denoise::kMaxIterations;
+  push[kSpatialResolve] = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get() ? 1u : 0u;
   const HostImage* result = denoiser_.RecordSpatial(pass);
   if (!result) {
     ResetHistory();

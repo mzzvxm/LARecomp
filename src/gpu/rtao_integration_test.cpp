@@ -16,7 +16,7 @@ constexpr std::array Settings{
     "mcla_gpu_rtao_rays", "mcla_gpu_rtao_reach", "mcla_gpu_rtao_range",
     "mcla_gpu_rtao_scale", "mcla_gpu_rtao_alpha", "mcla_gpu_rtao_screen",
     "mcla_gpu_rtao_interior", "mcla_gpu_rtao_check", "mcla_gpu_rtao_view",
-    "mcla_gpu_rtao_history", "mcla_gpu_rtao_denoise", "mcla_gpu_rtao_raw_scale",
+    "mcla_gpu_rtao_history", "mcla_gpu_rtao_denoise", "mcla_gpu_rtao_spatial_resolve", "mcla_gpu_rtao_raw_scale",
     "mcla_gpu_dlss_rr_rt_ao", "mcla_gpu_rtao_blend_car",
 };
 
@@ -94,6 +94,8 @@ void SettingsChecks(Checks& checks, const fs::path& src) {
     reads.erase(name);
   }
   checks.Expect(reads.empty(), "all RTAO setting readers are registered");
+  checks.Expect(definitions.contains(std::string("REX_") + "SETTING(bool, mcla_gpu_rtao_spatial_resolve, false,"),
+                "the spatial resolve is opt-in");
 }
 
 void FrameChecks(Checks& checks, const fs::path& gpu) {
@@ -101,9 +103,22 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   const auto order = Read(gpu / "frame_order.h");
   const auto rules = Read(gpu / "rtao_rules.h");
   const auto trace = Read(gpu / "rtao.cpp");
+  const auto denoise = Read(gpu / "rtao_denoise.cpp");
+  const auto consumer = Read(gpu / "hlsl/rt_denoise_ao_consumer.hlsli");
+  const auto engine = Read(gpu / "hlsl/rt_denoise_engine.hlsli");
   const auto has = [&](const std::string& code, const char* pattern, std::string_view what) {
     checks.Expect(std::regex_search(code, std::regex(pattern)), what);
   };
+  checks.Expect(denoise.contains("kSpatialResolve = 27;") &&
+                    denoise.contains("push[kSpatialResolve] = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get() ? 1u : 0u;") &&
+                    consumer.contains("RtAoSpatialResolve() { return RtDnW(27) != 0u; }"),
+                "host and spatial shader agree on the live resolve word");
+  checks.Expect(engine.contains("!(step == 2u && resolve)") &&
+                    engine.contains("RtDnAmbientStep(radius, step, c.length, resolve, c.vehicle != 0u)"),
+                "the spatial shader runs the extra bilateral step only on eligible world pixels");
+  checks.Expect(engine.contains("extra_step = step == 2u && c.length >= kRtDnMatureLength;") &&
+                    engine.contains("if (extra_step) w *= RtAoResolveEdgeWeight(c.colour.x, t.colour.x);"),
+                "the extra step applies the stronger edge weight");
   const auto trace_call = ao.find("rtao_->RecordTrace(");
   const auto filter_call = ao.find("rtao_->RecordFilter(");
   const auto visibility = ao.find(R"rx("ao visibility")rx", filter_call);

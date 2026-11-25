@@ -55,8 +55,10 @@ void RtDnSpatialMain(uint3 id) {
   // a colour that is not a number (see RtDnIsNumber) is black, in the pass-through as well; the alpha is the consumer's
   const float4 raw_signal = RtDnSignal(p);
 #if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
-  // The last two dispatches only need the already-filtered value at mature pixels.
-  if (RtDnIteration() > 0u && raw_signal.w >= kRtDnMatureLength) {
+  const uint step = 1u << RtDnIteration();
+  const bool resolve = RtAoSpatialResolve();
+  // Keep the second bilateral step available to mature road and other world pixels.
+  if (step > 1u && raw_signal.w >= kRtDnMatureLength && !(step == 2u && resolve)) {
     g_dn_out[p] = raw_signal;
     return;
   }
@@ -68,7 +70,9 @@ void RtDnSpatialMain(uint3 id) {
   RtDnPixel c = RtDnLoad(p);
   c.colour = RtDnSane(c.colour);
   const float amount = RtDnMix(c.share);
+#if RT_DN_PROFILE != RT_DN_PROFILE_AMBIENT
   const uint step = 1u << RtDnIteration();
+#endif
   if (!RtDnGuidesOk(c) || amount <= 0.0f) {
     g_dn_out[p] = own;
     return;
@@ -76,13 +80,17 @@ void RtDnSpatialMain(uint3 id) {
   const float alpha = c.rough * c.rough;
   const float radius = RtDnRadius(RT_DN_PROFILE, alpha, c.hit, c.z, RtDnPixelAngle(), c.length);
 #if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
-  if (!RtDnAmbientStep(radius, step, c.length)) {
+  if (!RtDnAmbientStep(radius, step, c.length, resolve, c.vehicle != 0u)) {
 #else
   if (!RtDnStepTaken(radius, step)) {
 #endif
     g_dn_out[p] = own;
     return;
   }
+#if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
+  // Depth and normal guides see the same road on both sides of a moving shadow.
+  const bool extra_step = step == 2u && c.length >= kRtDnMatureLength;
+#endif
   // the neighbourhood's luminance variance (3 x 3 at this step, the pixels that are signal)
   float sum = 0.0f;
   float sum2 = 0.0f;
@@ -132,6 +140,7 @@ void RtDnSpatialMain(uint3 id) {
 #if RT_DN_PROFILE == RT_DN_PROFILE_AMBIENT
         w *= RtDnDepthWeight(plane, c.z, depth_sigma) * RtDnNormalWeight(dot(c.n, t.n), normal_power) *
              RtDnLumaWeight(luma_centre, t.colour.x, variance, luma_sigma) * t.share;
+        if (extra_step) w *= RtAoResolveEdgeWeight(c.colour.x, t.colour.x);
 #else
         w *= RtDnDepthWeight(plane, c.z, depth_sigma) * RtDnNormalWeight(dot(c.n, t.n), normal_power) * RtDnRoughWeight(c.rough, t.rough, rough_sigma) *
              RtDnLumaWeight(luma_centre, RtDnLuma(t.colour.x, t.colour.y, t.colour.z), variance, luma_sigma) * RtDnHitWeight(c.hit, t.hit, hit_sigma);

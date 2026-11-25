@@ -28,6 +28,10 @@ float RtAoNextLength(float length, float cap) {
   return min(length + 1.0f, cap);
 }
 
+float RtAoResolveEdgeWeight(float centre, float tap) {
+  return saturate(1.0f - abs(centre - tap) * 4.0f);
+}
+
 float RtAoUpsampleWeight(float bilinear, float depth, float receiver, bool same_surface) {
   if (!same_surface) return 0.0f;
   const float dz = (depth - receiver) / max(0.02f * receiver, 0.05f);

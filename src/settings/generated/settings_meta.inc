@@ -468,6 +468,7 @@
 {"mcla_gpu_rt_lights_lamp_slot", "MCLA/GPU"},
 {"mcla_gpu_rtao_history", "MCLA/GPU"},
 {"mcla_gpu_rtao_denoise", "MCLA/GPU"},
+{"mcla_gpu_rtao_spatial_resolve", "MCLA/GPU"},
 {"mcla_gpu_rtao_raw_scale", "MCLA/GPU"},
 {"mcla_gpu_object_names", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},

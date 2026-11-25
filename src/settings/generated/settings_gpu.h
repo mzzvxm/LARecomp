@@ -1298,6 +1298,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_rtao_history, 32, "Debug: ray traced ambient occlusion history cap in frames. 1 disables temporal accumulation. Live.", rex::kDebugOnly, rex::Range{1, 64});
 
   REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
+  REX_SETTING(bool, mcla_gpu_rtao_spatial_resolve, false, "Debug: apply a wider bilateral resolve to ray traced ambient occlusion on world surfaces. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_rtao_raw_scale, 2, "Debug: ray traced ambient occlusion trace divisor for DLSS Ray Reconstruction raw frames. 2 is half size, 1 is full size. Live.", rex::kDebugOnly, rex::Range{1, 2});
 
@@ -2359,6 +2360,7 @@ inline auto& mcla_gpu_rt_lights_scale = g_gpu.mcla_gpu_rt_lights_scale;
 inline auto& mcla_gpu_rt_lights_lamp_slot = g_gpu.mcla_gpu_rt_lights_lamp_slot;
 inline auto& mcla_gpu_rtao_history = g_gpu.mcla_gpu_rtao_history;
 inline auto& mcla_gpu_rtao_denoise = g_gpu.mcla_gpu_rtao_denoise;
+inline auto& mcla_gpu_rtao_spatial_resolve = g_gpu.mcla_gpu_rtao_spatial_resolve;
 inline auto& mcla_gpu_rtao_raw_scale = g_gpu.mcla_gpu_rtao_raw_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
