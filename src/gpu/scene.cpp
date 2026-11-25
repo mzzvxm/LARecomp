@@ -810,7 +810,8 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (rt_world_) {
     rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
   }
-  headlight_rig::SampleRoute();  // the headlight route's setting, read once for this frame (LiveText): the light pass just below and the rig further down both take it from headlight_rig::CurrentRoute() (review F3)
+  // CHECK: exercise the live switch on both APIs with the stock forward headlight route.
+  headlight_rig::SampleRoute(local_lights_ != nullptr && local_lights_->SampleRtLights());
   if (local_lights_) {
     local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
   }

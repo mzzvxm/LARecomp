@@ -6,7 +6,7 @@ The table is src/gpu/gfx_preset.h (kRows: one cvar, its page and one cell for ea
 needs no source reading (the cells against the old `auto` tables and the audit's values, the rules); this reads the sources the table has to agree with:
 
   1. every row of the four effect pages (kImageQualityItems, kLightItems, kReflectionItems, kWorldDetailItems in pause_menu.cpp) is a covered row of the table or on its exempt list, with
-     the page the table says; every covered row is on a page; a support row is on none;
+     the page the table says; every covered row is on a page; RT rows name RT and raster presets never enable them;
   2. no preset names a DISPLAY or UPSCALING setting: not one of kNeverCovered, not one a row of kVideoItems, upscaling_menu.cpp or frame_generation_menu.cpp names;
   3. every cell is a value its setting takes (the setting's own Allowed(...) list, its Range{...}, true or false for a bool), and never `auto`;
   4. every row of the table is a setting that exists (mcla_gpu_preset and mcla_gpu_preset_from too: the first live and not debug-only, the second debug-only, the words of both are the table's);
@@ -33,6 +33,10 @@ PAGE_TABLES = {
     "Lighting": "kLightItems",
     "Reflections": "kReflectionItems",
     "WorldDetail": "kWorldDetailItems",
+}
+RT_ONLY = {
+    "mcla_gpu_rt_shadows", "mcla_gpu_ao_rt", "mcla_gpu_rt_gi", "mcla_gpu_rt_lights",
+    "mcla_gpu_ssr_rt", "mcla_gpu_car_selfrefl_rt", "mcla_gpu_rt_reflections", "mcla_gpu_car_mirror_rt",
 }
 ROW = re.compile(r'\b(?:Bool|Str|Dbl|Color)\s*\(\s*"(PM_\w+)"\s*,\s*"([\w.]+)"')
 ANY_STRING = re.compile(r'"([\w.]+)"')
@@ -112,7 +116,8 @@ def settings_of(src):
             rm = re.search(r"rex::Range\s*\{\s*([-\d.e+]+)\s*,\s*([-\d.e+]+)\s*\}", traits)
             if rm:
                 rng = (float(rm.group(1)), float(rm.group(2)))
-            out[args[1].strip()] = {"type": args[0].strip(), "allowed": allowed, "range": rng, "debug": "kDebugOnly" in CSE.blank_strings(traits)}
+            out[args[1].strip()] = {"type": args[0].strip(), "default": args[2].strip(), "allowed": allowed,
+                                    "range": rng, "debug": "kDebugOnly" in CSE.blank_strings(traits)}
     return out
 
 
@@ -151,16 +156,23 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
     rules = rules_text if rules_text is not None else CSE.read(os.path.join(src, "settings", "ui_rules.toml"))
     doc = tomllib.loads(rules)
     on_page = {}
+    bounded_settings = set(RT_ONLY) | {"mcla_gpu_ao"}
     for page, table in PAGE_TABLES.items():
-        _, cvars = table_rows(menu, table, doc)
+        body, cvars = table_rows(menu, table, doc)
+        for row_id, cvar in ROW.findall(body):
+            if cvar in bounded_settings:
+                match = re.search(r'"' + row_id + r'"\s*,\s*"\w+"\s*,\s*"([^"]+)"', body)
+                if not match or not re.search(r"\bRT\b", match[1]):
+                    add(f"{row_id}: its label must identify ray tracing")
+                for state in doc["rows"].get(row_id, {}).get("states", []):
+                    if "label" in state and not re.search(r"\bRT\b", state["label"]):
+                        add(f"{row_id}: its status label must identify ray tracing")
         for c in cvars:
             on_page.setdefault(c, set()).add(page)
     for c, pages in sorted(on_page.items()):
         if c in by_cvar:
             want = by_cvar[c][0]
-            if want == "Support":
-                add(f"{c}: a support row is on the page {sorted(pages)}")
-            elif pages != {want}:
+            if pages != {want}:
                 add(f"{c}: the table says {want}, the menu has it on {sorted(pages)}")
         elif c not in exempt:
             add(f"{c}: on {sorted(pages)} but neither covered by a preset nor exempt (kExempt)")
@@ -170,10 +182,8 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
         if c not in on_page:
             add(f"{c}: exempt, but no row of the four pages has it (a stale exempt entry)")
     for cvar, (page, _) in by_cvar.items():
-        if page != "Support" and cvar not in on_page:
+        if cvar not in on_page:
             add(f"{cvar}: covered, but on none of the four pages")
-        if page == "Support" and cvar in on_page:
-            add(f"{cvar}: a support row on a page")
 
     # 2. DISPLAY and UPSCALING
     shown = display_settings(src) if data is None else set(header.get("display", []))
@@ -189,11 +199,13 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
         if info is None:
             add(f"{cvar}: not a setting")
             continue
-        if page == "Support":
-            continue   # a support row's cells are what an `auto` table reads (`both`, `contact`): no preset writes them
+        if info["debug"]:
+            add(f"{cvar}: preset applies a debug-only setting")
         for preset, cell in zip(PRESETS, cells):
-            if cell == "auto" and cvar != "mcla_gpu_car_selfrefl_rt":   # the one setting with no `on`: the RT presets write `auto` (gfx_preset.h Resolved)
+            if cell == "auto":
                 add(f"{cvar} in {preset}: a preset never holds `auto`")
+            if preset in PRESETS[:3] and ((cvar in RT_ONLY and cell != "off") or (cvar == "mcla_gpu_ao" and cell == "rt")):
+                add(f"{cvar} in {preset}: a raster preset enables ray tracing")
             if "low" in cell.split("_"):
                 add(f"{cvar} in {preset}: '{cell}': no setting has a level called low")
             if info["type"] == "bool":
@@ -209,6 +221,14 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
                     add(f"{cvar} in {preset}: {cell} is outside the setting's range {info['range']}")
             elif info["allowed"] is not None and cell not in info["allowed"]:
                 add(f"{cvar} in {preset}: '{cell}' is not one of {info['allowed']}")
+
+    ssr = by_cvar.get("mcla_gpu_ssr")
+    if ssr and "off" in ssr[1][1:]:
+        add("mcla_gpu_ssr: every Enhanced preset must select a concrete enabled level")
+    for cvar in ("mcla_ui_sharp", "mcla_ui_minimap_scale"):
+        info = settings.get(cvar, {})
+        if not info.get("debug") or info.get("default") != "true":
+            add(f"{cvar}: the sharpening setting must default on and be debug-only")
 
     # 4. the two settings
     for name, debug in (("mcla_gpu_preset", False), ("mcla_gpu_preset_from", True)):
@@ -294,7 +314,8 @@ def selftest(src):
         data["display"] = sorted(display_settings(src))
         extra = mutate(data)
         extra = extra if isinstance(extra, dict) else {}
-        problems = check(src, data=data, menu_text=extra.get("menu", menu), settings=settings, rules_text=extra.get("rules", rules))
+        problems = check(src, data=data, menu_text=extra.get("menu", menu),
+                         settings=extra.get("settings", settings), rules_text=extra.get("rules", rules))
         if not problems:
             print(f"SELFTEST FAILED: '{label}' was not reported")
             return 1
@@ -310,18 +331,27 @@ def selftest(src):
         failures += 1
     failures += run(lambda d: d["rows"].pop(0), "a covered row removed from the table")
     failures += run(lambda d: d["rows"].append(("fps_limit", "WorldDetail", ["30"] * 5)), "a DISPLAY setting added to the table")
+    failures += run(lambda d: d["rows"].append(("mcla_gpu_aa", "ImageQuality", ["off"] * 5)), "the relocated Post AA still covered")
     failures += run(lambda d: d["rows"].append(("mcla_gpu_upscaler", "Lighting", ["off"] * 5)), "an UPSCALING setting added to the table")
     failures += run(lambda d: d["rows"].__setitem__(0, (d["rows"][0][0], d["rows"][0][1], ["auto"] + d["rows"][0][2][1:])), "auto as a cell")
     ao = next(i for i, r in enumerate(base["rows"]) if r[0] == "mcla_gpu_ao")
     failures += run(lambda d: d["rows"].__setitem__(ao, (d["rows"][ao][0], d["rows"][ao][1], ["nonsense"] + d["rows"][ao][2][1:])), "a word the setting does not take")
     failures += run(lambda d: d["rows"].__setitem__(0, (d["rows"][0][0], "Lighting", d["rows"][0][2])), "a row on the wrong page")
-    failures += run(lambda d: d["exempt"].append(("mcla_gpu_aa", "x")), "a covered row that is also exempt")
+    failures += run(lambda d: d["exempt"].append(("mcla_gpu_ao", "x")), "a covered row that is also exempt")
     failures += run(lambda d: d["exempt"].pop(0), "an exempt row dropped (a row of the pages with no cell)")
     failures += run(lambda d: d["rows"].append(("mcla_gpu_new_effect", "Lighting", ["off"] * 5)), "a row for a setting that does not exist")
     failures += run(lambda d: d["labels"].reverse(), "the labels in another order")
     failures += run(lambda d: d["rules"].pop(0), "a class rule dropped")
     failures += run(lambda d: {"menu": menu.replace('"PM_RxGpuPreset"', '"PM_RxGpuPresetX"')}, "the pause row renamed")
     failures += run(lambda d: {"rules": rules.replace("gpu.rt_tier != 'none' ||", "true ||")}, "the RT presets offered everywhere")
+    failures += run(lambda d: {"menu": menu.replace('"SURFACE REFLECTIONS RT: "', '"SURFACE REFLECTIONS: "')}, "RT label missing")
+    for cvar in ("mcla_ui_sharp", "mcla_ui_minimap_scale"):
+        failures += run(lambda d: {"settings": settings | {cvar: settings[cvar] | {"debug": False}}},
+                        f"{cvar} exposed as a player setting")
+    for cvar, cell in (("mcla_gpu_ssr_rt", "high"), ("mcla_gpu_ao", "rt"), ("mcla_gpu_ssr", "off")):
+        def replace_cell(d):
+            next(row for row in d["rows"] if row[0] == cvar)[2][1] = cell
+        failures += run(replace_cell, f"{cvar} incorrectly set to {cell} in Enhanced")
     return failures
 
 
@@ -341,9 +371,8 @@ def main():
         return 1 if failures else 0
     problems = check(src)
     header = parse_header(read_stripped(os.path.join(src, "gpu", "gfx_preset.h")))
-    covered = [r for r in header["rows"] if r[1] != "Support"]
     print(f"check_gfx_presets: {src}")
-    print(f"  {len(header['rows'])} rows in the table ({len(covered)} covered on the four pages, {len(header['rows']) - len(covered)} support), {len(header['exempt'])} exempt, {len(header['below'])} below their top level in ENHANCED ULTRA")
+    print(f"  {len(header['rows'])} rows in the table covered on four effect pages, {len(header['exempt'])} exempt, {len(header['below'])} below their top level in ENHANCED ULTRA")
     if args.verbose:
         for cvar, page, cells in header["rows"]:
             print(f"  {page:12} {cvar:34} " + " ".join(f"{c:>8}" for c in cells))

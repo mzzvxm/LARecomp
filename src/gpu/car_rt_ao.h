@@ -177,7 +177,7 @@ class CarRtAo {
 
   // The frame.
   bool wanted_ = false;
-  car_rt_ao::Setting setting_ = car_rt_ao::Setting::kAuto;
+  car_rt_ao::Setting setting_ = car_rt_ao::Setting::kOff;
   uint32_t idle_frames_ = 0;
 
   // The log and the totals.

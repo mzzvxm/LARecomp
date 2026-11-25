@@ -84,6 +84,11 @@ size_t At(const std::string& text, const std::string& what) { return text.find(w
 
 void RouteChecks() {
   using R = hp::Route;
+  Check(hp::RouteForRtLights(R::kForward, false) == R::kForward &&
+            hp::RouteForRtLights(R::kForward, true) == R::kPass &&
+            hp::RouteForRtLights(R::kPass, true) == R::kPass &&
+            hp::RouteForRtLights(R::kBoth, true) == R::kBoth,
+        "explicit RT lights route forward headlights through the deferred pass");
   Check(hp::ParseRoute("forward") == R::kForward && hp::ParseRoute("pass") == R::kPass && hp::ParseRoute("both") == R::kBoth, "the three words");
   Check(hp::ParseRoute("") == R::kForward && hp::ParseRoute("Pass") == R::kForward && hp::ParseRoute("deferred") == R::kForward && hp::ParseRoute("passes") == R::kForward,
         "a word that is no value is the forward stage (the game as it is)");
@@ -621,12 +626,12 @@ void SourceChecks(const std::string& src) {
   // LIGHT-STACK-REVIEW F3: the route's string setting is read ONCE a frame through LiveText (the debug menu's thread writes the cvar), at the Scene's frame start (headlight_rig::SampleRoute, before the light pass's
   // BeginFrame and the rig's), and both take it from CurrentRoute()
   const std::string scene = ReadFile(gpu + "scene.cpp");
-  Check(Has(rig, "larecomp::gpu::headlight_pass::Route SampleRoute() {") &&
-            Has(rig, "const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(light_text::HeadlightPass().Get());") &&
+  Check(Has(rig, "larecomp::gpu::headlight_pass::Route SampleRoute(bool rt_lights) {") &&
+            Has(rig, "hp::RouteForRtLights(hp::ParseRoute(light_text::HeadlightPass().Get()), rt_lights)") &&
             Has(rig, "g_route.store(uint8_t(route), std::memory_order_relaxed);") && !Has(rig, "mcla_gpu_headlight_pass.Get()") && !Has(pass_cpp, "mcla_gpu_headlight_pass.Get()") &&
             Has(pass_cpp, "const hp::Route route = headlight_rig::CurrentRoute();"),
         "the route is read once a frame through LiveText (SampleRoute); the rig and the pass take it from CurrentRoute()");
-  const size_t sample_at = At(scene, "headlight_rig::SampleRoute();");
+  const size_t sample_at = At(scene, "headlight_rig::SampleRoute(local_lights_ != nullptr && local_lights_->SampleRtLights());");
   const size_t lights_at = At(scene, "local_lights_->BeginFrame();");
   const size_t rig_at = At(scene, "headlights_->BeginFrame();");
   Check(sample_at != std::string::npos && lights_at != std::string::npos && rig_at != std::string::npos && sample_at < lights_at && lights_at < rig_at,
@@ -662,7 +667,7 @@ void SourceChecks(const std::string& src) {
   // ... and keeps tracking, ranking and publishing in every route: the pass, the replay and the volume read its lights; HEADLIGHTS stays the master (the route is no part of the rig's enable)
   const size_t enabled_at = At(rig, "enabled_ = memory_ != nullptr && headlight_rig::SettingOn();");
   Check(enabled_at != std::string::npos && rig.substr(enabled_at, rig.find('\n', enabled_at) - enabled_at).find("route") == std::string::npos, "HEADLIGHTS stays the master: the route is no part of the rig's own enable");
-  Check(Has(rig_h, "bool SettingOn();") && Has(rig_h, "CurrentRoute();") && Has(rig_h, "SampleRoute();") && Has(rig_h, "#include \"headlight_pass_rules.h\""), "the rig's header offers the setting's state and the route");
+  Check(Has(rig_h, "bool SettingOn();") && Has(rig_h, "CurrentRoute();") && Has(rig_h, "SampleRoute(bool rt_lights);") && Has(rig_h, "#include \"headlight_pass_rules.h\""), "the rig's header offers the setting's state and the route");
 
   // the pass: the route makes it run and lights the frame's headlights
   Check(Has(pass_cpp, "const bool on_for_lights = hp::PassOn(route, setting_on);") && Has(pass_cpp, "hp::SourcesFor(route,"), "the pass runs for the route and adds the frame's source");

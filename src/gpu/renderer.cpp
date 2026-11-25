@@ -397,7 +397,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
         if (gi_pixel_.available()) {
           gi_apply_.SetGiPixel(&gi_pixel_);
         }
-        // RT-LIGHTS-D1 (rt_lights.h, debug only): the ray traced visibility of the top K lights, run by the deferred light pass; makes nothing until mcla_gpu_rt_lights asks (its pipelines are listed with the
+        // Local Light Shadows RT (rt_lights.h): the ray visibility of the top K lights, run by the deferred light pass when explicitly requested (its pipelines are listed with the
         // precache the first time it is wanted).
         rt_lights_.Initialize(device_, frames_, heap_, passes_, pass_timing_, car_rt_, rt_world_, rt_scene_);
         if (rt_lights_.available()) {

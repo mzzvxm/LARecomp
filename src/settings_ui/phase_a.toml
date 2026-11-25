@@ -26,18 +26,6 @@ variants = [
   {when = "renderer == 'xenia'", setting = "disable_msaa", default = "false", apply = "restart", values = [{id = "true", label = "OFF"}, {id = "false", label = "2X"}]},
 ]
 
-[rows.PM_RxGpuCarSelfRefl]
-reads = ["mcla_gpu_car_selfrefl", "mcla_gpu_car_selfrefl_rt"]
-default = "auto"
-apply = "live"
-decode = {cases = [{when = "s.mcla_gpu_car_selfrefl == 'on' && s.mcla_gpu_car_selfrefl_rt != 'off'", value = "ray_traced"}, {when = "s.mcla_gpu_car_selfrefl == 'on'", value = "on"}, {when = "s.mcla_gpu_car_selfrefl == 'off'", value = "off"}, {value = "auto"}]}
-values = [
-  {id = "auto", label = "AUTO", auto_label = true, writes = [{setting = "mcla_gpu_car_selfrefl", value = "auto"}, {setting = "mcla_gpu_car_selfrefl_rt", value = "auto"}]},
-  {id = "off", label = "OFF", writes = [{setting = "mcla_gpu_car_selfrefl", value = "off"}]},
-  {id = "on", label = "ON", writes = [{setting = "mcla_gpu_car_selfrefl", value = "on"}, {setting = "mcla_gpu_car_selfrefl_rt", value = "off"}]},
-  {id = "ray_traced", label = "RAY TRACED", writes = [{setting = "mcla_gpu_car_selfrefl", value = "on"}, {setting = "mcla_gpu_car_selfrefl_rt", value = "auto"}]},
-]
-
 [rows.PM_RxGpuUpsc]
 reads = ["mcla_gpu_upscaler", "mcla_gpu_fsr"]
 default = "off"

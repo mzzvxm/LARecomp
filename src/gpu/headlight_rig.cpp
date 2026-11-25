@@ -94,8 +94,9 @@ larecomp::gpu::headlight_pass::Route CurrentRoute() { return larecomp::gpu::head
 
 // The route's setting, read through LiveText (another thread writes the cvar's string: the debug menu's row) ONCE for the frame; the light pass (LocalLights::BeginFrame, before the rig in the Scene's
 // frame start) and the rig both take the route from CurrentRoute() after it, so that a toggle in between cannot give one frame both lights or none (review F3).
-larecomp::gpu::headlight_pass::Route SampleRoute() {
-  const larecomp::gpu::headlight_pass::Route route = larecomp::gpu::headlight_pass::ParseRoute(light_text::HeadlightPass().Get());
+larecomp::gpu::headlight_pass::Route SampleRoute(bool rt_lights) {
+  namespace hp = larecomp::gpu::headlight_pass;
+  const hp::Route route = hp::RouteForRtLights(hp::ParseRoute(light_text::HeadlightPass().Get()), rt_lights);
   g_route.store(uint8_t(route), std::memory_order_relaxed);  // GB-H2: `pass` takes the forward stage away from the draws (VariantSelected); the rig still tracks, ranks and publishes the lights the pass and the volume read
   return route;
 }

@@ -2298,9 +2298,9 @@ void TestSources(const std::string& dir) {
     const size_t items = pause.find("const ItemDef kReflectionItems[] = {");
     const size_t items_end = items == std::string::npos ? std::string::npos : pause.find("\n};", items);
     const std::string reflection_page = items == std::string::npos || items_end == std::string::npos ? "" : pause.substr(items, items_end - items);
-    Check(Has(reflection_page, "Str(\"PM_RxGpuSsr\", \"mcla_gpu_ssr\", \"REFLECTIONS ON SURFACES: \",") && Has(reflection_page, "kNativeSsrVals, kNativeSsrNames, 4") && Has(pause, "const char* const kNativeSsrVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") &&
-              Has(Read(dir, "../settings/ui_rules.toml"), "[rows.PM_RxGpuSsr.value.\"auto\"]\nauto_label = true"),
-          "GB-J: the row REFLECTIONS ON SURFACES is on the GRAPHICS > REFLECTIONS page: AUTO (what the class says), OFF, HIGH, ULTRA (nothing called low)");
+    Check(Has(reflection_page, "\"SURFACE REFLECTIONS: \"") && Has(reflection_page, "\"SURFACE REFLECTIONS RT: \"") &&
+              Has(Read(dir, "../settings/ui_rules.toml"), "decode = \"resolved(s.mcla_gpu_ssr)\""),
+          "surface reflection quality and its explicit RT fallback have separate rows");
     Check(!Has(pause, "\"mcla_gpu_local_lights\"") && !Has(pause, "LOCAL LIGHTS") && Has(debug_pages, "Bool(\"PM_RxDbgLocalLights\", \"mcla_gpu_local_lights\", \"LOCAL LIGHT PASS: \")") &&
               Has(debug_pages, "\"mcla_gpu_local_lights_sources\", \"LIGHT PASS SOURCES: \""),
           "GB-J: the light pass has NO row for players (no LOCAL LIGHTS row, owner Q3) and a switch and a sources row on the hidden DEBUG menu's RENDERING page");
@@ -2470,13 +2470,13 @@ void TestSources(const std::string& dir) {
             Has(validated_history, "float2(image.u, image.v) * float2(ssr) - (float2(pix) + 0.5f)") &&
             Has(validated_history, "keep = SsrSparkleClipKeep(motion.x, motion.y);"),
         "the sparkle floor is opt-in, requires valid history and excludes vehicle hits without motion rows");
-  const std::string sparkle_setting = std::string("REX_") + "SETTING(bool, mcla_gpu_ssr_sparkle_resolve, false,";
+  const std::string sparkle_setting = std::string("REX_") + "SETTING(bool, mcla_gpu_ssr_sparkle_resolve, true,";
   const std::string debug_pages = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
   const size_t sparkle_at = settings.find(sparkle_setting);
   Check(sparkle_at != std::string::npos && Has(settings.substr(sparkle_at, settings.find('\n', sparkle_at) - sparkle_at), "rex::kDebugOnly") &&
             Has(debug_pages, "\"mcla_gpu_ssr_sparkle_resolve\"") && Has(manifest, "\"mcla_gpu_ssr_sparkle_resolve\": {") &&
             Has(meta, "{\"mcla_gpu_ssr_sparkle_resolve\", \"MCLA/GPU\"}"),
-        "the sparkle resolve defaults off and is available as a debug setting");
+        "the sparkle resolve runs by default and has a debug switch");
 
   TestRawSources(dir, rules, header, cpp, scene, cmake, shaders_h, pass, apply_ps, settings, manifest, meta);
 

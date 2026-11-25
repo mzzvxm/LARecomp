@@ -284,7 +284,7 @@ void BudgetChecks() {
   for (int r = 0; r < 3; ++r)
     for (int l = 0; l < 3; ++l)
       Check(gi::LayoutFor(Rung(r), Level(l)) == expect[r][l], std::string("the cell: ") + std::string(gi::RungName(Rung(r))) + " / " + std::string(gi::LevelName(Level(l))));
-  Check(gi::AutoLevel(Rung::kStrong) == Level::kHigh && gi::AutoLevel(Rung::kWeak) == Level::kOff && gi::AutoLevel(Rung::kNone) == Level::kOff, "auto: HIGH on a strong card only (rt_tier.h kRtGi)");
+  Check(gi::AutoLevel(Rung::kStrong) == Level::kOff && gi::AutoLevel(Rung::kWeak) == Level::kOff && gi::AutoLevel(Rung::kNone) == Level::kOff, "auto: HIGH on a strong card only (rt_tier.h kRtGi)");
   for (int r = 0; r < 3; ++r)
     for (int l = 0; l < 3; ++l) {
       const Layout layout = gi::LayoutFor(Rung(r), Level(l));

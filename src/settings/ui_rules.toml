@@ -49,15 +49,9 @@ active_upscaler.cases = [
   { when = "d.shown_upscaler in ['fsr31','fsr4']", value = { expr = "d.shown_upscaler" } },
   { value = "off" },
 ]
-car_selfrefl_choice.cases = [
-  { when = "s.mcla_gpu_car_selfrefl == 'off'", value = "off" },
-  { when = "s.mcla_gpu_car_selfrefl == 'on' && (s.mcla_gpu_car_selfrefl_rt == 'off' || !api.car_rt)", value = "on" },
-  { when = "s.mcla_gpu_car_selfrefl == 'on'", value = "ray_traced" },
-  { when = "s.mcla_gpu_car_selfrefl_rt != 'off'", value = "auto" },
-  { when = "auto_of('mcla_gpu_car_selfrefl') == 'on'", value = "on" },
-  { value = "off" },
-]
-car_rt_runs = "api.car_rt && (d.car_selfrefl_choice == 'ray_traced' || (d.car_selfrefl_choice == 'auto' && auto_of('mcla_gpu_car_selfrefl') == 'on'))"
+car_rt_runs = "api.car_rt && gpu.rt_rung != 'none' && resolved(s.mcla_gpu_car_selfrefl) == 'on' && s.mcla_gpu_car_selfrefl_rt == 'on'"
+ssr_on = "resolved(s.mcla_gpu_ssr) in ['high','ultra']"
+contact_on = "resolved(s.mcla_gpu_contact_shadows) in ['high','ultra']"
 rt_city_wanted = "resolved(s.mcla_gpu_rt_reflections) in ['high','ultra']"
 renderer_choice = "live.renderer_choice ?? 'larecomp'"
 frame_gen_available = "live.frame_generation_choice_available ?? d.frame_gen_on"
@@ -135,6 +129,7 @@ states = [
 ]
 
 [rows.PM_RxGpuReflex]
+decode = { cases = [{ when = "s.mcla_gpu_low_latency != 'auto'", value = { expr = "s.mcla_gpu_low_latency" } }, { when = "features.latency.auto_on", value = "on" }, { value = "off" }] }
 hidden_unless = "features.latency.kind == 'reflex'"
 states = [
   { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)", label = "REFLEX" },
@@ -142,13 +137,8 @@ states = [
   { when = "(live.latency_health ?? 'ok') == 'failed'", enabled = true, suffix = " (NOT WORKING)", label = "REFLEX" },
 ]
 
-[rows.PM_RxGpuReflex.value."auto"]
-label_rules = [
-  { when = "features.latency.auto_on", label = "AUTO (ON)" },
-  { when = "!features.latency.auto_on", label = "AUTO (OFF)" },
-]
-
 [rows.PM_RxGpuAntiLag]
+decode = { cases = [{ when = "s.mcla_gpu_low_latency == 'boost'", value = "on" }, { when = "s.mcla_gpu_low_latency != 'auto'", value = { expr = "s.mcla_gpu_low_latency" } }, { when = "features.latency.auto_on", value = "on" }, { value = "off" }] }
 hidden_unless = "features.latency.kind == 'antilag2'"
 states = [
   { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)", label = "ANTI-LAG 2" },
@@ -156,19 +146,17 @@ states = [
   { when = "(live.latency_health ?? 'ok') == 'failed'", enabled = true, suffix = " (NOT WORKING)", label = "ANTI-LAG 2" },
 ]
 
-[rows.PM_RxGpuAntiLag.value."auto"]
-label_rules = [
-  { when = "features.latency.auto_on", label = "AUTO (ON)" },
-  { when = "!features.latency.auto_on", label = "AUTO (OFF)" },
-]
-
 [rows.PM_RxGpuHdrWhite]
+value = {}
+decode = { cases = [{ when = "s.mcla_gpu_hdr_paper_white_nits == 0", value = { expr = "features.hdr.auto_paper_white_nits" } }, { value = { expr = "s.mcla_gpu_hdr_paper_white_nits" } }] }
 format = "%.0f NITS"
 states = [
   { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
 ]
 
 [rows.PM_RxGpuHdrPeak]
+value = {}
+decode = { cases = [{ when = "s.mcla_gpu_hdr_peak_nits == 0", value = { expr = "features.hdr.auto_peak_nits" } }, { value = { expr = "s.mcla_gpu_hdr_peak_nits" } }] }
 format = "%.0f NITS"
 states = [
   { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
@@ -182,16 +170,6 @@ states = [
 [rows.PM_RxGpuHdrTest]
 states = [
   { when = "!d.hdr_on", enabled = false, suffix = " (HDR OFF)" },
-]
-
-[rows.PM_RxGpuHdrWhite.value."0"]
-label_rules = [
-  { when = "true", label = "AUTO ({features.hdr.auto_paper_white_nits} NITS)" },
-]
-
-[rows.PM_RxGpuHdrPeak.value."0"]
-label_rules = [
-  { when = "true", label = "AUTO ({features.hdr.auto_peak_nits} NITS)" },
 ]
 
 [rows.PM_RxGpuHdrHighlights.value."1"]
@@ -242,45 +220,34 @@ values = [
 
 [rows.PM_RxFoliage]
 states = [
-  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+  { when = "!d.shadows_on", enabled = false, suffix = " (SUN OFF)" },
 ]
 
 [rows.PM_RxGpuShadowDetail]
+decode = "resolved(s.mcla_gpu_shadow_resolution)"
 states = [
-  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+  { when = "!d.shadows_on", enabled = false, suffix = " (SUN OFF)" },
 ]
-
-[rows.PM_RxGpuShadowDetail.value."auto"]
-auto_label = true
 
 [rows.PM_RxGpuShadowFilter]
+decode = "resolved(s.mcla_gpu_shadow_filter)"
 states = [
-  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+  { when = "!d.shadows_on", enabled = false, suffix = " (SUN OFF)" },
 ]
-
-[rows.PM_RxGpuShadowFilter.value."auto"]
-auto_label = true
 
 [rows.PM_RxGpuTrafficShadows]
+decode = "resolved(s.mcla_gpu_traffic_shadows)"
 states = [
-  { when = "!d.shadows_on", enabled = false, suffix = " (NO SHADOW)" },
+  { when = "!d.shadows_on", enabled = false, suffix = " (SUN OFF)" },
 ]
-
-[rows.PM_RxGpuTrafficShadows.value."auto"]
-auto_label = true
 
 [rows.PM_RxGpuShadowFilter.value."pcss"]
 label_rules = [
-  { when = "!features.pcss", label = "PCSS (SOFT)" },
+  { when = "!features.pcss", label = "ULTRA (HIGH)" },
 ]
 
 [rows.PM_RxGpuAo]
-
-[rows.PM_RxGpuAo.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "gpu.rt_rung == 'strong' && d.rtao_open", label = "AUTO (RT)" },
-]
+decode = "resolved(s.mcla_gpu_ao)"
 
 [rows.PM_RxGpuAo.value."rt"]
 label_rules = [
@@ -290,49 +257,31 @@ label_rules = [
 ]
 
 [rows.PM_RxGpuContact]
-
-[rows.PM_RxGpuContact.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_contact_shadows)"
 
 [rows.PM_RxGpuSunShafts]
-
-[rows.PM_RxGpuSunShafts.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_sun_shafts)"
 
 [rows.PM_RxGpuHeadlights]
-
-[rows.PM_RxGpuHeadlights.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_headlights)"
 
 [rows.PM_RxGpuVolumetrics]
-
-[rows.PM_RxGpuVolumetrics.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_volumetrics)"
 
 [rows.PM_RxGpuRoadRefl]
-
-[rows.PM_RxGpuRoadRefl.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_reflection_resolution)"
 
 [rows.PM_RxGpuSsr]
-
-[rows.PM_RxGpuSsr.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_ssr)"
 
 [rows.PM_RxGpuCarRefl]
-
-[rows.PM_RxGpuCarRefl.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_env_resolution)"
 
 [rows.PM_RxGpuCarShadowMap]
-
-[rows.PM_RxGpuCarShadowMap.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_car_shadow_map)"
 
 [rows.PM_RxGpuNeonLight]
-
-[rows.PM_RxGpuNeonLight.value."auto"]
-auto_label = true
+decode = "resolved(s.mcla_gpu_neon_light)"
 
 [rows.PM_RxGpuAoLevel]
 states = [
@@ -340,56 +289,43 @@ states = [
 ]
 
 [rows.PM_RxGpuLightShadows]
+decode = "resolved(s.mcla_gpu_light_shadows)"
 states = [
   { when = "resolved(s.mcla_gpu_headlights) != 'on'", enabled = false, reason = "Headlights are off." },
 ]
 
-[rows.PM_RxGpuLightShadows.value."auto"]
-auto_label = true
-
 [rows.PM_RxGpuRtShadows]
+decode = "resolved(s.mcla_gpu_rt_shadows)"
 states = [
   { when = "!api.city_rt_shadows", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "gpu.class == 'low'", enabled = false, suffix = " (GPU TOO SLOW)" },
+  { when = "gpu.class == 'low'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false, reason = "Contact shadows are off." },
-]
-
-[rows.PM_RxGpuRtShadows.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "!api.city_rt_shadows", label = "AUTO (OFF)" },
+  { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false, reason = "Contact Shadows is off." },
 ]
 
 [rows.PM_RxGpuSsgi]
+decode = "resolved(s.mcla_gpu_ssgi)"
 states = [
   { when = "!d.ao_on && (live.rt_gi_replaces_bounce ?? false)", enabled = false, suffix = " (REPLACED)" },
   { when = "!d.ao_on", enabled = false, reason = "Ambient occlusion is off." },
   { when = "live.rt_gi_replaces_bounce ?? false", enabled = true, suffix = " (REPLACED)" },
 ]
 
-[rows.PM_RxGpuSsgi.value."auto"]
-auto_label = true
-
 [rows.PM_RxGpuRtGi]
+decode = "resolved(s.mcla_gpu_rt_gi)"
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
   { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "!build.rt_gi_update_built", enabled = false, suffix = " (NOT READY)" },
 ]
 
-[rows.PM_RxGpuRtGi.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "!d.rt_gi_open", label = "AUTO (OFF)" },
-]
-
 [rows.PM_RxGpuSsgiLevel]
 states = [
-  { when = "!d.bounce_on", enabled = false, reason = "Bounce Light and RT Bounce Light are off." },
+  { when = "!d.bounce_on", enabled = false, reason = "Bounce Light and Bounce Light RT are off." },
 ]
 
 [rows.PM_RxGpuRtCityRefl]
+decode = "resolved(s.mcla_gpu_rt_reflections)"
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT CITY" },
   { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT CITY" },
@@ -398,41 +334,59 @@ states = [
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'building'", enabled = true, suffix = " (BUILDING DATA)", label = "RT CITY" },
 ]
 
-[rows.PM_RxGpuRtCityRefl.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
-]
-
 [rows.PM_RxGpuSideMirrors]
+decode = "resolved(s.mcla_gpu_side_mirrors)"
 states = [
   { when = "live.side_mirrors_replaced ?? false", enabled = true, suffix = " (REPLACED)" },
 ]
 
-[rows.PM_RxGpuSideMirrors.value."auto"]
-auto_label = true
-
 [rows.PM_RxGpuRtMirror]
+decode = "resolved(s.mcla_gpu_car_mirror_rt)"
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT MIRRORS" },
   { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT MIRRORS" },
 ]
 
-[rows.PM_RxGpuRtMirror.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
+[rows.PM_RxGpuCarSelfRefl]
+decode = "resolved(s.mcla_gpu_car_selfrefl)"
+
+[rows.PM_RxGpuCarAoRt]
+decode = { cases = [{ when = "s.mcla_gpu_ao_rt == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_ao_rt" } }] }
+states = [
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "CAR AO RT" },
+  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)", label = "CAR AO RT" },
+  { when = "!d.ao_on && !d.contact_on", enabled = false, reason = "Ambient occlusion and contact shadows are off." },
 ]
 
-[rows.PM_RxGpuCarSelfRefl]
-reads = ["mcla_gpu_car_selfrefl", "mcla_gpu_car_selfrefl_rt"]
-decode = "d.car_selfrefl_choice"
-values = [
-  { id = "auto", label = "AUTO", auto_label = true, label_rules = [{ when = "auto_of('mcla_gpu_car_selfrefl') == 'off'", label = "AUTO (OFF)" }, { when = "api.car_rt", label = "AUTO (RAY TRACED)" }, { when = "!api.car_rt", label = "AUTO (ON)" }], writes = [{ setting = "mcla_gpu_car_selfrefl_rt", value = "auto" }, { setting = "mcla_gpu_car_selfrefl", value = "auto" }] },
-  { id = "off", label = "OFF", writes = [{ setting = "mcla_gpu_car_selfrefl", value = "off" }] },
-  { id = "on", label = "ON", writes = [{ setting = "mcla_gpu_car_selfrefl_rt", value = "off" }, { setting = "mcla_gpu_car_selfrefl", value = "on" }] },
-  { id = "ray_traced", label = "RAY TRACED", when = "api.car_rt", writes = [{ setting = "mcla_gpu_car_selfrefl_rt", value = "auto" }, { setting = "mcla_gpu_car_selfrefl", value = "on" }] },
+[rows.PM_RxGpuRtLights]
+decode = { cases = [{ when = "s.mcla_gpu_rt_lights == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_rt_lights" } }] }
+states = [
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "LIGHT RT" },
+  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)", label = "LIGHT RT" },
 ]
+
+[rows.PM_RxGpuSsrRt]
+decode = { cases = [{ when = "s.mcla_gpu_ssr_rt == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_ssr_rt" } }] }
+states = [
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
+  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)" },
+  { when = "!d.ssr_on", enabled = false, reason = "Surface Reflections is off." },
+]
+
+[rows.PM_RxGpuCarSelfReflRt]
+decode = { cases = [{ when = "s.mcla_gpu_car_selfrefl_rt == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_car_selfrefl_rt" } }] }
+states = [
+  { when = "!api.car_rt", enabled = false, suffix = " (NO RT GPU)" },
+  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
+  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)" },
+  { when = "resolved(s.mcla_gpu_car_selfrefl) != 'on'", enabled = false, reason = "Car Self-Reflections is off." },
+]
+
+[rows.PM_RxAspect]
+decode = { cases = [{ when = "s.aspect_ratio == 'auto'", value = "window" }, { value = { expr = "s.aspect_ratio" } }] }
+
+[rows.PM_RxGpuHdr]
+decode = { cases = [{ when = "s.mcla_gpu_hdr != 'auto'", value = { expr = "s.mcla_gpu_hdr" } }, { when = "d.hdr_on", value = "on" }, { value = "off" }] }
 
 [rows.PM_RxLanguage]
 apply = "restart"
@@ -490,29 +444,24 @@ label = "1 (LIGHT)"
 label = "8 (FIRM)"
 
 [rows.PM_RxUnspawn]
-
-[rows.PM_RxUnspawn.value."0"]
-auto_label = true
+value = {}
+decode = "resolved(s.traffic_unspawn_dist)"
 
 [rows.PM_RxPedDensity]
-
-[rows.PM_RxPedDensity.value."-1"]
-auto_label = true
+value = {}
+decode = "resolved(s.ped_density_scale)"
 
 [rows.PM_RxParkedCars]
-
-[rows.PM_RxParkedCars.value."-1"]
-auto_label = true
+value = {}
+decode = "resolved(s.parked_car_scale)"
 
 [rows.PM_RxLodTraffic]
-
-[rows.PM_RxLodTraffic.value."0"]
-auto_label = true
+value = {}
+decode = "resolved(s.lod_traffic_scale)"
 
 [rows.PM_RxLodCity]
-
-[rows.PM_RxLodCity.value."0"]
-auto_label = true
+value = {}
+decode = "resolved(s.lod_city_scale)"
 
 [rows.PM_RxDbgRenderer]
 apply = "restart"

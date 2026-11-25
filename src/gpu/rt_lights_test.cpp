@@ -180,12 +180,9 @@ void TestSettings() {
   CHECK(rl::ParseMode("on") == rl::Mode::kOn && rl::ParseMode("On\r\n") == rl::Mode::kOn && rl::ParseMode("1") == rl::Mode::kOn && rl::ParseMode("true") == rl::Mode::kOn);
   CHECK(rl::ParseMode("auto") == rl::Mode::kAuto && rl::ParseMode("") == rl::Mode::kAuto && rl::ParseMode("-1") == rl::Mode::kAuto && rl::ParseMode("whatever") == rl::Mode::kAuto);
   CHECK(std::string(rl::ModeName(rl::Mode::kOff)) == "off" && std::string(rl::ModeName(rl::Mode::kAuto)) == "auto" && std::string(rl::ModeName(rl::Mode::kOn)) == "on");
-  // the pass is wanted: on whatever the row says, auto where the row's level is on, never when off
-  for (int row = 0; row < 2; ++row) {
-    CHECK(!rl::Wanted(rl::Mode::kOff, row != 0));
-    CHECK(rl::Wanted(rl::Mode::kOn, row != 0));
-    CHECK(rl::Wanted(rl::Mode::kAuto, row != 0) == (row != 0));
-  }
+  CHECK(!rl::Wanted(rl::Mode::kOff));
+  CHECK(rl::Wanted(rl::Mode::kOn));
+  CHECK(!rl::Wanted(rl::Mode::kAuto));
   CHECK(rl::AutoK(false) == 3 && rl::AutoK(true) == 6);
   CHECK(rl::ClampK(0, false) == 3 && rl::ClampK(-4, true) == 6 && rl::ClampK(1, false) == 1 && rl::ClampK(5, false) == 5 && rl::ClampK(9, true) == 9 && rl::ClampK(99, false) == 9);
   CHECK(rl::ClampRays(0) == 1 && rl::ClampRays(1) == 1 && rl::ClampRays(3) == 3 && rl::ClampRays(40) == 4);
@@ -2134,7 +2131,7 @@ void TestSources(const std::string& src) {
     CHECK(Has(settings, ", " + n + ", ") && Has(settings, "inline auto& " + n + " = g_gpu." + n + ";") && Has(meta, "{\"" + n + "\", \"MCLA/GPU\"},") && Has(manifest, "\"" + n + "\": {"));
     CHECK(Count(settings, "REX_" "SETTING(") > 0 && Count(settings, ", " + n + ", ") == 1);
   }
-  CHECK(Has(settings, "REX_" "SETTING(std::string, mcla_gpu_rt_lights, \"off\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"on\")"));
+  CHECK(Has(settings, "REX_" "SETTING(std::string, mcla_gpu_rt_lights, \"off\"") && Has(settings, "rex::Allowed(\"auto\", \"off\", \"on\")"));
   CHECK(Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_k, 0,") && Has(settings, "rex::Range{0, 9}") && Has(settings, "REX_" "SETTING(f64, mcla_gpu_rt_lights_radius, 0.0,") && Has(settings, "rex::Range{0.0, 2.0}") &&
         Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_rays, 1,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_view, 0,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_check, 0,") && Has(settings, "REX_" "SETTING(i32, mcla_gpu_rt_lights_scale, 0,"));
   {

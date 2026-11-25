@@ -101,6 +101,8 @@ class RtLights {
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   bool available() const { return ready_; }
+  // Sample before choosing the frame's headlight route.
+  bool SampleEnabled();
 
   // The frame's start (LocalLights::BeginFrame, which the Scene calls before everything that reads the structures' wants): reads the settings, asks the ray tracing scene service for the structures and
   // the game's lamp list for its copy while the pass is wanted. `pass_runs`: the light pass runs this frame (nothing else makes a use of this class).

@@ -50,8 +50,7 @@ inline Decision Decide(gc::GpuClass cls, bool class_known, gc::RtTier tier, Choi
   d.rung = gc::RtRung(cls, tier);
   d.gate = GateFor(cls, tier, pass_built);
   if (choice == Choice::kAuto) {
-    const std::string_view rt_cell = gc::RtCell(gc::RtEffect::kRtAo, d.rung);
-    choice = ParseChoice(rt_cell.empty() ? gc::Cell(gc::Effect::kAmbientOcclusion, cls) : rt_cell);
+    choice = ParseChoice(gc::Cell(gc::Effect::kAmbientOcclusion, cls));
   }
   d.chosen = choice;
   d.rt = choice == Choice::kRt && Available(d.gate);
@@ -95,9 +94,7 @@ inline std::string AutoDescription() {
   constexpr auto ao = gc::Effect::kAmbientOcclusion;
   return "Auto is " + title(gc::Cell(ao, gc::GpuClass::kLow)) + " on integrated graphics, " +
          title(gc::Cell(ao, gc::GpuClass::kMid)) + " on a mid-range card, " +
-         title(gc::Cell(ao, gc::GpuClass::kHigh)) + " on a high-end card and " +
-         title(gc::RtCell(gc::RtEffect::kRtAo, gc::RtTier::kStrong)) +
-         " on a high-end card that traces rays quickly.";
+         title(gc::Cell(ao, gc::GpuClass::kHigh)) + " on a high-end card.";
 }
 
 }  // namespace mcla::gpu::rtao_setting

@@ -47,10 +47,9 @@ LiveText& Setting() {
   return text;
 }
 
-// The setting as the ray tracing tier resolves it (rt_tier.h kRtEffects): `auto` is on where the card traces (off with no ray tracing and in the Low class,
-// as the car's reflection is itself); an `off` is the player's own and stays.
 car_rt_refl::Setting SettingNow() {
-  return car_rt_refl::SettingOf(gpu_class::ResolveRt(gpu_class::RtEffect::kCarSelfReflRt, Setting().Get()));
+  if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) return car_rt_refl::Setting::kOff;
+  return car_rt_refl::SettingOf(Setting().Get());
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 0); }
@@ -110,18 +109,18 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   }
   // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
   opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_, city_.Builder(),
-                  reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto);
+                  reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kOn);
   // The player's windows (car_rt_glass_refl.h): optional too, on the same layout of sets.
-  glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(), reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto);
+  glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(), reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kOn);
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
-  if (reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kAuto) {
+  if (reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kOn) {
     uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     if (denoise_ready_) {
       added += passes.precache().Add(DenoiseKey(), kDenoiseName, [this] { return MakeDenoisePipeline(); }) ? 1u : 0u;
     }
     listed_ = true;
-    passes.precache().Note("ray traced car self-reflections: on (auto) where the car self-reflections are", added);
+    passes.precache().Note("ray traced car self-reflections: on where the car self-reflections are active", added);
   } else {
     passes.precache().Note("ray traced car self-reflections: made when first wanted", 0);
   }

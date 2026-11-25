@@ -296,7 +296,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, \"\n    \"where nearby objects block sky light. off, high (half resolution, 2 slices), \"\n    \"ultra (full resolution, 3 slices), or rt: ray traced occlusion, from the real geometry of the \"\n    \"city and the cars, so what is off the screen or behind an edge still darkens. Needs a graphics \"\n    \"card that traces rays; on any other it runs as ultra. Auto (the default) is off on integrated \"\n    \"graphics, high on a mid-range card, ultra on a high-end card and ray traced on a high-end card \"\n    \"that traces rays quickly. The pause menu \"\n    \"and the launcher show the same words. A value that is none of these (the low of an older \"\n    \"larecomp.toml) is ignored and the setting runs as auto. \"\n    \"Costs graphics card time, ultra more than high. \"\n    \"Also drawn behind the pause menu and on the map, so a change made there shows at once. \"\n    \"Live.\"",
+  "help": "\"Darkens corners and creases. High and Ultra use the screen's depth, and RT traces the city's geometry. Legacy auto uses screen-space occlusion. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\", \"rt\")"
   ],
@@ -552,9 +552,8 @@
   "type": "std::string",
   "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the \"\\n    \"nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal \"\\n    \"and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights \"\\n    \"is only ever taken away from, never added. off (the default), on (the pass runs, where the graphics card traces rays), auto (follows the RT SHADOWS row's level). \"\\n    \"Needs the deferred light pass to run (mcla_gpu_local_lights or the lamp shadows). Live.\"",
+  "help": "\"Ray traces shadows from nearby headlights, neon and street lamps in the deferred light pass. Live.\"",
   "traits": [
-   "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"on\")"
   ],
   "comments": [],
@@ -1217,20 +1216,20 @@
  },
  "mcla_gpu_car_selfrefl_rt": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of \"\n    \"its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the \"\n    \"wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the \"\n    \"car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the \"\n    \"screen-space version whatever this says. Live.\"",
+  "help": "\"Reflects parts of a car in its own paint using ray tracing. Needs car self-reflections and ray queries. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\")"
+   "rex::Allowed(\"auto\", \"off\", \"on\")"
   ],
   "comments": [],
   "pp_depth": 0
  },
  "mcla_gpu_car_mirror_rt": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced side mirrors: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), the two side mirrors of your car show the real view behind - the cars beside \"\n    \"you, your own flank and the sky and street the game's environment map holds - instead of the game's blurred sky, mostly in the first person cameras (cockpit, bumper), where \"\n    \"the glass is big enough to read. auto (the default) is on on a strong graphics card; on switches it on on any card that can ray trace except a slow one that shares memory with the processor (it builds your car's ray tracing structures \"\n    \"in every frame); off keeps the game's mirrors. A graphics card that cannot ray trace keeps the game's mirrors whatever this says. The pause menu's row is GRAPHICS, REFLECTIONS, RT SIDE MIRRORS. Live.\"",
+  "help": "\"Traces the view behind you in the side mirrors. Needs ray queries. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"on\")"
   ],
@@ -1346,9 +1345,9 @@
  },
  "mcla_gpu_rt_shadows": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced sun shadows from the city's own triangles (the city pack, built from your game files by the launcher's setup or, \"\n    \"if it is missing, by the game in the background). Rays go from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp \"\n    \"where it touches what casts it and softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows \"\n    \"(mcla_gpu_contact_shadows must be on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a \"\n    \"discrete graphics card with 5.5 GiB of video memory or more that can ray trace, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand \"\n    \"with less memory) in ray tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, \"\n    \"or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RT SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.\"",
+  "help": "\"Traces sun shadows from city geometry. Needs contact shadows and ray queries. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
@@ -1497,9 +1496,9 @@
  },
  "mcla_gpu_rt_reflections": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches 150 m, ultra 1,000 m. Rides on the ray traced car self-reflections (mcla_gpu_car_selfrefl with mcla_gpu_car_selfrefl_rt: the row is grey until that one is on RAY TRACED), needs ray queries and needs the city pack and the city hit data, which the launcher's setup builds from your game files (the game builds them in the background if they are not there, and the row says BUILDING DATA until they are done); without them the paint keeps the game's reflection. The pause menu's RT CITY REFLECTIONS row (GRAPHICS > REFLECTIONS). Live.\"",
+  "help": "\"Traces streets and buildings reflected in car paint. Needs car self-reflections RT and the city data. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
@@ -2103,7 +2102,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Reflections on surfaces: sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and water, traced through the picture itself (screen space) and added to \"\n    \"the game's own reflections. A car's paint and chrome keep their own (CAR REFLECTIONS, CAR SELF-REFLECTIONS). Only what is on the screen can be reflected: where a ray \"\n    \"finds nothing, or a surface is near the picture's edge, the game's own reflection stays alone. off, high, ultra or auto (the default: for now off on every graphics card). \"\n    \"high: one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history; ultra: two rays a pixel, up to 64 steps, about 12 frames, which is smoother \"\n    \"and finds more. Costs graphics card time, the G-buffer's planes (made only while this is on) and about 12 MiB (1080p) to 48 MiB (4K) of video memory for the effect's own \"\n    \"images. A wet road reflects, a dry one does not (the weather's wetness takes about a second to rise or fall). Live.\"",
+  "help": "\"Adds reflections of visible cars and lights to wet roads and glossy surfaces. High and Ultra change sampling quality. Off keeps the game's reflections. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
@@ -2124,9 +2123,9 @@
  },
  "mcla_gpu_rt_gi": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traced bounce light: light bounces around the city the way it does in the real world. The sunlit street and walls light the shaded sides of buildings, the ground under bridges \"\n    \"and the insides of alleys with a soft glow in place of a flat ambient, large coloured walls tint what stands near them, and at night each street lamp and neon sign lights the facades, \"\n    \"the sidewalk and the cars around it a little more. What is behind or beside the camera counts too (the screen-space bounce light, mcla_gpu_ssgi, can only use what is in the picture). \"\n    \"It is worked out in a field of probes laid round the camera from the city's own triangles (the city pack) and added to the picture where the G-buffer knows the surface; it never darkens. \"\n    \"Where it stands it takes the place of the screen-space bounce light, which stays for graphics cards that cannot ray trace and for the places the field does not cover, and it is as strong as \"\n    \"BOUNCE LIGHT STRENGTH says (mcla_gpu_ssgi_intensity). off, high, ultra or auto (the default): high on a graphics card that traces rays quickly (the ray tracing tier strong: about an RTX 3070 \"\n    \"and up, an RX 7800 XT and up), off on the rest; a weaker ray tracing card can switch it on by hand, with fewer probes. high is three cascades of probes, 2, 4 and 8 m apart, \"\n    \"or two, 3 and 6 m apart on a weaker card. ultra adds a fourth cascade, 16 m apart, and refreshes the probes twice as often. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, or Vulkan with ray queries) \"\n    \"and the city pack; without them the screen-space bounce light stands. The pause menu's RT BOUNCE LIGHT row (GRAPHICS > LIGHTING AND SHADOWS). Live.\"",
+  "help": "\"Traces bounced light from city geometry. Needs ray queries and the city data. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
@@ -2277,11 +2276,10 @@
  },
  "mcla_gpu_ssr_rt": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at \"\n    \"the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. \"\n    \"auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, \"\n    \"two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card \"\n    \"takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than \"\n    \"their share of the frame. Live.\"",
+  "help": "\"Fills missing surface reflections with ray traced hits. High covers glass, metal and water. Ultra also covers wet roads and sidewalks. Needs surface reflections and ray queries. Live.\"",
   "traits": [
-   "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
   "comments": [],
@@ -2323,7 +2321,7 @@
  },
  "mcla_gpu_ssr_sparkle_resolve": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"A/B for screen-space reflections with temporal upscaling. Preserve more of a slow reflection across sparse ray hits. Live.\"",
   "traits": [
@@ -7068,11 +7066,11 @@
  },
  "aspect_ratio": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"window\"",
   "category": "MCLA/Patches",
-  "help": "\"Shape of the picture: auto fills the window at any shape (a 21:9 or 32:9 window gets a wider view, \"\n    \"a 16:10, 4:3 or taller one more above and below; the HUD stays 16:9 in the middle), or 16:9, \"\n    \"16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is \"\n    \"narrower than that shape and at the sides where it is wider.\"",
+  "help": "\"Fits the picture to the window or uses a fixed aspect ratio with black bars. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"16:9\", \"16:10\", \"21:9\", \"32:9\")"
+   "rex::Allowed(\"auto\", \"window\", \"16:9\", \"16:10\", \"21:9\", \"32:9\")"
   ],
   "comments": [
    "// \"auto\" is the window's own shape, whatever it is (mc_engine/ultrawide.h): wider than 16:9 widens the",
@@ -11051,7 +11049,9 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Draw the minimap, the D-pad quick map, the phone screen and menu pages at the render scale from 1.25x. \"\n    \"This sharpens map roads and icons and menu text at 1080p and 4K. Turning it off keeps the game's original sizes. \"\n    \"Higher render scales use more video memory. Applies live.\"",
-  "traits": [],
+  "traits": [
+   "rex::kDebugOnly"
+  ],
   "comments": [],
   "pp_depth": 0
  },
@@ -11060,7 +11060,9 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p \"\n    \"picture: 1080p and 4K windows). The game's buttons, icons, panels and text are bitmaps made for the console's \"\n    \"1280x720 picture, drawn with a bilinear filter, so at 4K every texel is three pixels of soft edge. This reads them \"\n    \"with a sharper filter (Catmull-Rom on the colour) and steepens the alpha across a bitmap's edges so that glyphs and \"\n    \"icon outlines stay about one pixel soft, like a distance-field font. Off is the game's own picture, bit for bit; at \"\n    \"720p (render scale 1x) it is the game's either way. Needs the shader pack's variant file (ui_sharp). Live; the \"\n    \"first time it shows, the graphics card builds its shaders (a short stutter).\"",
-  "traits": [],
+  "traits": [
+   "rex::kDebugOnly"
+  ],
   "comments": [],
   "pp_depth": 0
  },
@@ -11179,12 +11181,11 @@
  },
  "mcla_gpu_ao_rt": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray \"\n    \"tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, \"\n    \"darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) \"\n    \"and shadow the cars' own parts and the road from the sun exactly. \"\n    \"auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; \"\n    \"ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this \"\n    \"says. Live.\"",
+  "help": "\"Ray traces short occlusion and sun shadows around cars. Off, ao, contact or both. Needs ambient occlusion or contact shadows and ray queries. Live.\"",
   "traits": [
-   "rex::kDebugOnly",
-   "rex::Allowed(\"auto\", \"off\", \"ao\", \"contact\")"
+   "rex::Allowed(\"auto\", \"off\", \"ao\", \"contact\", \"both\")"
   ],
   "comments": [],
   "pp_depth": 0

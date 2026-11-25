@@ -50,10 +50,9 @@ LiveText& Setting() {
   return text;
 }
 
-// The setting as the ray tracing tier resolves it (rt_tier.h kRtEffects): `auto` is both terms on a strong card, the sun ray alone on a weak one, none with
-// no ray tracing; an own choice (off, ao, contact) stays.
 rules::Setting SettingNow() {
-  return rules::SettingOf(gpu_class::ResolveRt(gpu_class::RtEffect::kCarRtAo, Setting().Get()));
+  if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) return rules::Setting::kOff;
+  return rules::SettingOf(Setting().Get());
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kAmbientOcclusion, kPipelineVariant); }
@@ -102,7 +101,7 @@ void CarRtAo::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   if (listed_at_start && SettingNow() != rules::Setting::kOff) {
     const uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     listed_ = true;
-    passes.precache().Note("ray traced ambient occlusion and contact shadows: on (auto) where the occlusion or the contact shadows are", added);
+    passes.precache().Note("ray traced ambient occlusion and contact shadows: on where occlusion or contact shadows are active", added);
   } else {
     passes.precache().Note("ray traced ambient occlusion and contact shadows: made when first wanted", 0);
   }

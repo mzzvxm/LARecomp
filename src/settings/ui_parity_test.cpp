@@ -13,7 +13,6 @@
 #include "gpu/rtao_setting.h"
 #include "gpu/upscale_modes.h"
 #include "mc_engine/menus/pause_parity_rows.h"
-#include "mc_engine/menus/pause_selfrefl_row.h"
 
 #include <filesystem>
 #include <fstream>
@@ -27,7 +26,6 @@ namespace gi = mcla::gpu::gi_setting;
 namespace rtao = mcla::gpu::rtao_setting;
 namespace mirror = mcla::gpu::mirror_setting;
 namespace cmirror = mcla::gpu::car_mirror_setting;
-namespace self = mcla_menu::selfrefl;
 constexpr bool flags[] = {false, true};
 constexpr std::string_view levels[] = {"auto", "off", "high", "ultra"};
 constexpr std::string_view ao_levels[] = {"auto", "off", "high", "ultra", "rt"};
@@ -84,6 +82,10 @@ struct Fixture final : Env {
         Check((state ? (*state)["label"].value_or(variant) : variant) == label, id, "label override");
         Check((state && (*state)["needs_restart"].value_or(false)) == restart, id, "restart");
     }
+    void Decodes(std::string_view id, std::string_view expected) const {
+        const auto row = Row(id);
+        Check(ValueText(Decode(row.Owner("decode").decode, *this)) == expected, id, "decode");
+    }
     void Label(std::string_view id, std::string_view value, std::string_view setting, std::string_view expected,
                std::optional<double> number = {}, const char* format = "%g", std::string_view fallback = "AUTO") const {
         const auto row = Row(id);
@@ -115,41 +117,43 @@ void Lighting(Fixture& f) {
         f.F("gpu.rt_rung", gc::RtTierName(gc::RtRung(cls, tier)));
         f.B("gpu.handheld", handheld);
         for (int i = 0; i < gc::kEffectCount; ++i) {
-            if (class_rows[i]) f.Label(class_rows[i], "auto", gc::Info(gc::Effect(i)).cvar,
-                                       gc::AutoLabelFor(cls, handheld, gc::Effect(i)));
+            const auto effect = gc::Effect(i);
+            const auto cvar = gc::CvarName(effect);
+            if (class_rows[i]) {
+                f.S(cvar.data(), "auto");
+                f.Decodes(class_rows[i], gc::CellFor(effect, cls, handheld));
+            }
         }
-        f.Label("PM_RxGpuCarShadowMap", "auto", "mcla_gpu_car_shadow_map",
-                gc::AutoLabelOf(mcla::gpu::car_shadow_map::LevelName(mcla::gpu::car_shadow_map::AutoLevel(cls))));
-        f.Label("PM_RxGpuRtCityRefl", "auto", "mcla_gpu_rt_reflections", city::AutoLabel(cls, tier));
+        f.S("mcla_gpu_car_shadow_map", "auto");
+        f.Decodes("PM_RxGpuCarShadowMap", mcla::gpu::car_shadow_map::LevelName(mcla::gpu::car_shadow_map::AutoLevel(cls)));
+        f.S("mcla_gpu_rt_reflections", "auto");
+        f.Decodes("PM_RxGpuRtCityRefl", "off");
         constexpr std::string_view scale_rows[] = {
             "PM_RxLodCity", "PM_RxLodTraffic", "PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars",
         };
         for (int i = 0; i < gc::kScaleCount; ++i) {
             const auto scale = gc::Scale(i);
             const auto& info = gc::ScaleOf(scale);
-            const double number = info.zero_is_auto ? 0.0 : -1.0;
-            const std::string format = std::string("%g") + info.unit;
-            f.Label(scale_rows[i], NumberId(number), info.cvar, gc::ScaleLabelFor(scale, true, cls, number),
-                    number, format.c_str());
+            f.settings[std::string(info.cvar)] = Value::Number(info.zero_is_auto ? 0.0 : -1.0);
+            f.Decodes(scale_rows[i], FormatNumber(gc::ScaleCell(scale, cls)));
         }
         for (bool shadows : flags) for (bool pcss : flags) {
             f.settings["perf_no_shadows"] = Value::Bool(!shadows);
             f.B("features.pcss", pcss);
             for (const auto row : {"PM_RxFoliage", "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxGpuTrafficShadows"})
-                f.State(row, shadows, shadows ? "" : " (NO SHADOW)");
-            f.Label("PM_RxGpuShadowFilter", "pcss", "", pcss ? "PCSS" : "PCSS (SOFT)", {}, "%g", "PCSS");
+                f.State(row, shadows, shadows ? "" : " (SUN OFF)");
+            f.Label("PM_RxGpuShadowFilter", "pcss", "", pcss ? "ULTRA" : "ULTRA (HIGH)", {}, "%g", "ULTRA");
         }
         for (bool api : flags) for (const auto contact : levels) {
             f.B("api.city_rt_shadows", api);
             f.S("mcla_gpu_contact_shadows", contact);
             const auto resolved = gc::ResolveFor(cls, handheld, gc::Effect::kContactShadows, contact);
             const bool available = api && cls != gc::GpuClass::kLow && tier != gc::RtTier::kNone;
-            const auto suffix = !api ? " (NO RT GPU)" : cls == gc::GpuClass::kLow ? " (GPU TOO SLOW)" :
+            const auto suffix = !api ? " (NO RT GPU)" : cls == gc::GpuClass::kLow ? " (TOO SLOW)" :
                                 tier == gc::RtTier::kNone ? " (NO RT GPU)" : "";
             f.State("PM_RxGpuRtShadows", available && (resolved == "high" || resolved == "ultra"), suffix);
-            namespace rt = mcla::gpu::city_rt;
-            f.Label("PM_RxGpuRtShadows", "auto", "mcla_gpu_rt_shadows",
-                    gc::AutoLabelOf(rt::LevelName(rt::AutoLevelForRung(cls, tier, api))));
+            f.S("mcla_gpu_rt_shadows", "auto");
+            f.Decodes("PM_RxGpuRtShadows", "off");
         }
         for (bool built : flags) for (const auto ao : ao_levels) for (const auto ss : levels)
             for (const auto rt : levels) for (bool replaced : flags) {
@@ -165,13 +169,16 @@ void Lighting(Fixture& f) {
                 f.S("mcla_gpu_ssgi", ss);
                 f.S("mcla_gpu_rt_gi", rt);
                 f.State("PM_RxGpuAoLevel", ao_on);
-                f.Label("PM_RxGpuAo", "auto", "mcla_gpu_ao", rtao::AutoLabel(rtao::Decide(cls, true, tier, rtao::Choice::kAuto, built)));
+                if (ao == "auto") {
+                    f.Decodes("PM_RxGpuAo", gc::Cell(gc::Effect::kAmbientOcclusion, cls));
+                    Check(!ao_decision.rt, "PM_RxGpuAo", "legacy auto remains raster");
+                }
                 for (const auto fixed : {rtao::Choice::kOff, rtao::Choice::kHigh, rtao::Choice::kUltra, rtao::Choice::kRt})
-                    f.Label("PM_RxGpuAo", rtao::kValues[uint8_t(fixed)], "mcla_gpu_ao", rtao::ValueLabel(fixed, rtao::GateFor(cls, tier, built)),
-                            {}, "%g", rtao::kNames[uint8_t(fixed)]);
+                    f.Label("PM_RxGpuAo", rtao::kValues[uint8_t(fixed)], "mcla_gpu_ao", fixed == rtao::Choice::kRt && ao_decision.gate == rtao::Gate::kRuns ? "RT" : rtao::ValueLabel(fixed, ao_decision.gate),
+                            {}, "%g", fixed == rtao::Choice::kRt ? "RT" : rtao::kNames[uint8_t(fixed)]);
                 f.State("PM_RxGpuSsgi", ao_on, replaced ? gi::kReplacedSuffix : "");
                 f.State("PM_RxGpuRtGi", gi::RowEnabled(decision.gate), gi::RowSuffix(decision.gate));
-                f.Label("PM_RxGpuRtGi", "auto", "mcla_gpu_rt_gi", gi::AutoLabel(cls, tier, built));
+                if (rt == "auto") f.Decodes("PM_RxGpuRtGi", "off");
                 f.State("PM_RxGpuSsgiLevel", gi::AnyBounceLight(ao_on && (ss_word == "high" || ss_word == "ultra"), decision));
             }
         for (bool replaced : flags) {
@@ -181,39 +188,28 @@ void Lighting(Fixture& f) {
         {
             const auto gate = cmirror::GateFor(cls, tier);
             f.State("PM_RxGpuRtMirror", cmirror::RowEnabled(gate), cmirror::RowSuffix(gate), gate == cmirror::Gate::kRuns ? "" : cmirror::RowLabel(gate));
-            f.Label("PM_RxGpuRtMirror", "auto", "mcla_gpu_car_mirror_rt", cmirror::AutoLabel(cls, tier));
+            f.S("mcla_gpu_car_mirror_rt", "auto");
+            f.Decodes("PM_RxGpuRtMirror", "off");
         }
         for (auto word : {"auto", "off", "on"}) {
             f.S("mcla_gpu_headlights", word);
             f.State("PM_RxGpuLightShadows", gc::ResolveFor(cls, handheld, gc::Effect::kHeadlights, word) == "on");
         }
-        const bool car_auto = gc::CellFor(gc::Effect::kCarSelfRefl, cls, handheld) == "on";
-        constexpr std::string_view car_ids[] = {"auto", "off", "on", "ray_traced"};
-        for (bool api : flags) for (auto car_word : {"auto", "on", "off"}) for (auto rt_word : {"auto", "off"}) {
+        for (const auto pair : {std::pair{"PM_RxGpuCarAoRt", "mcla_gpu_ao_rt"},
+                                std::pair{"PM_RxGpuRtLights", "mcla_gpu_rt_lights"},
+                                std::pair{"PM_RxGpuSsrRt", "mcla_gpu_ssr_rt"}}) {
+            f.S(pair.second, "auto");
+            f.Decodes(pair.first, "off");
+        }
+        for (bool api : flags) for (auto car_word : {"auto", "on", "off"}) for (auto rt_word : {"auto", "off", "on"}) {
             f.B("api.car_rt", api);
             f.S("mcla_gpu_car_selfrefl", car_word);
             f.S("mcla_gpu_car_selfrefl_rt", rt_word);
-            const auto pick = self::ChoiceOf(car_word, rt_word, car_auto, api);
-            const auto row = f.Row("PM_RxGpuCarSelfRefl");
-            const auto ids = Ids(row);
-            Check(int(ids.size()) == self::Count(api), "CAR SELF-REFLECTIONS", "count");
-            Check(ValueText(Decode(row.Owner("decode").decode, f)) == car_ids[self::IndexOf(pick)],
-                  "CAR SELF-REFLECTIONS", "decode");
-            for (int i = 0; i < int(ids.size()); ++i) {
-                Check(ids[i] == car_ids[i], "CAR SELF-REFLECTIONS", "order");
-                f.Label("PM_RxGpuCarSelfRefl", ids[i], "mcla_gpu_car_selfrefl", self::LabelOf(self::At(i), car_auto, api));
-                const auto* writes = (*row.Choices()[i])["writes"].as_array();
-                const auto old = self::WritesOf(self::At(i));
-                Check(writes && writes->size() == size_t(old.rt != nullptr) + size_t(old.selfrefl != nullptr),
-                      "CAR SELF-REFLECTIONS", "writes count");
-                if (writes && writes->size() > 0) {
-                    const auto& first = *writes->get(0)->as_table();
-                    Check(first["setting"].value_or("") == std::string_view(old.rt ? "mcla_gpu_car_selfrefl_rt" : "mcla_gpu_car_selfrefl") &&
-                          first["value"].value_or("") == std::string_view(old.rt ? old.rt : old.selfrefl),
-                          "CAR SELF-REFLECTIONS", "first write");
-                }
-            }
-            const bool car_rt = self::RayTracedRuns(car_word, rt_word, car_auto, api);
+            const auto base = gc::ResolveFor(cls, handheld, gc::Effect::kCarSelfRefl, car_word);
+            const bool rt = std::string_view(rt_word) == "on";
+            f.Decodes("PM_RxGpuCarSelfRefl", base);
+            f.Decodes("PM_RxGpuCarSelfReflRt", rt ? "on" : "off");
+            const bool car_rt = api && base == "on" && rt && gc::RtRung(cls, tier) != gc::RtTier::kNone;
             for (const auto city_word : levels) for (auto data : {city::Data::kUnknown, city::Data::kReady, city::Data::kBuilding, city::Data::kUnavailable}) {
                 f.F("live.city_data", data == city::Data::kBuilding ? "building" :
                     data == city::Data::kUnavailable ? "unavailable" : data == city::Data::kReady ? "ready" : "unknown");
@@ -260,8 +256,10 @@ void Display(Fixture& f) {
         f.N("features.hdr.auto_peak_nits", 1000);
         for (auto row : {"PM_RxGpuHdrWhite", "PM_RxGpuHdrPeak", "PM_RxGpuHdrHighlights", "PM_RxGpuHdrTest"})
             f.State(row, hdr, hdr ? "" : " (HDR OFF)");
-        f.Label("PM_RxGpuHdrWhite", "0", "", "AUTO (240 NITS)");
-        f.Label("PM_RxGpuHdrPeak", "0", "", "AUTO (1000 NITS)");
+        f.settings["mcla_gpu_hdr_paper_white_nits"] = Value::Number(0);
+        f.settings["mcla_gpu_hdr_peak_nits"] = Value::Number(0);
+        f.Decodes("PM_RxGpuHdrWhite", "240");
+        f.Decodes("PM_RxGpuHdrPeak", "1000");
         f.State("PM_RxHudWidth", wide, wide ? "" : " (16X9: NO EFFECT)");
         Check(f.Row("PM_RxLanguage").Choices().size() == (portuguese ? 7u : 6u), "LANGUAGE", "count");
     }
@@ -390,7 +388,8 @@ void FrameGenerationAndLatency(Fixture& f) {
                     std::tuple{"PM_RxGpuAntiLag", "antilag2", "ANTI-LAG 2"}}) {
                 Check(f.Row(row).IsListed() == (std::string_view(kind) == expected), row, "listed");
                 f.State(row, !running, suffix, suffix[0] ? label : "");
-                f.Label(row, "auto", "", auto_on ? "AUTO (ON)" : "AUTO (OFF)");
+                f.S("mcla_gpu_low_latency", "auto");
+                f.Decodes(row, auto_on ? "on" : "off");
             }
         }
     for (auto chosen : {"off", "fsr31", "dlss"})

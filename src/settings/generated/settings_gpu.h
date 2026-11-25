@@ -99,18 +99,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, mcla_gpu_anisotropy, "game", "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
     "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.");
 
-  REX_SETTING(std::string, mcla_gpu_ao, "auto", "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
-    "where nearby objects block sky light. off, high (half resolution, 2 slices), "
-    "ultra (full resolution, 3 slices), or rt: ray traced occlusion, from the real geometry of the "
-    "city and the cars, so what is off the screen or behind an edge still darkens. Needs a graphics "
-    "card that traces rays; on any other it runs as ultra. Auto (the default) is off on integrated "
-    "graphics, high on a mid-range card, ultra on a high-end card and ray traced on a high-end card "
-    "that traces rays quickly. The pause menu "
-    "and the launcher show the same words. A value that is none of these (the low of an older "
-    "larecomp.toml) is ignored and the setting runs as auto. "
-    "Costs graphics card time, ultra more than high. "
-    "Also drawn behind the pause menu and on the map, so a change made there shows at once. "
-    "Live.", rex::Allowed("auto", "off", "high", "ultra", "rt"));
+  REX_SETTING(std::string, mcla_gpu_ao, "auto", "Darkens corners and creases. High and Ultra use the screen's depth, and RT traces the city's geometry. Legacy auto uses screen-space occlusion. Live.", rex::Allowed("auto", "off", "high", "ultra", "rt"));
 
   REX_SETTING(f64, mcla_gpu_ao_car_reach, 0.4, "Diagnostic: how far what a car blocks of the sky light reaches on the road and the other things "
     "round it, as a share of the occlusion's radius (0.4 of the default 3 m is 1.2 m: the dark line "
@@ -175,13 +164,7 @@ class GPUSettings final : public rex::SettingOwner {
     "(3.6) out again, so the paint is darkened by the share of the sky a part can see. Rounded to sixteenths, 1/16 to 1. "
     "Live.", rex::kDebugOnly, rex::Range{0.0625, 1.0});
 
-  REX_SETTING(std::string, mcla_gpu_ao_rt, "auto", "Diagnostic: the ray traced part of the ambient occlusion and the contact shadows, where the graphics card can ray trace (Direct3D 12 with ray "
-    "tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, "
-    "darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) "
-    "and shadow the cars' own parts and the road from the sun exactly. "
-    "auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; "
-    "ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this "
-    "says. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "ao", "contact"));
+  REX_SETTING(std::string, mcla_gpu_ao_rt, "off", "Ray traces short occlusion and sun shadows around cars. Off, ao, contact or both. Needs ambient occlusion or contact shadows and ray queries. Live.", rex::Allowed("auto", "off", "ao", "contact", "both"));
 
   REX_SETTING(f64, mcla_gpu_ao_rt_length, 0.6, "Diagnostic: how far the ray traced occlusion's rays reach, in the game's world units (about metres): what your car blocks within it darkens "
     "the pixel, less the farther it is, nothing at the reach. A longer reach darkens more of the road round the car. Live.", rex::kDebugOnly, rex::Range{0.2, 2.0});
@@ -306,13 +289,7 @@ class GPUSettings final : public rex::SettingOwner {
     "given the constants of a still car, so the opponents' ray traced pass traces the parked car's paint like a moving traffic car's and the player's reflections show its exact colour. Within the traffic count of "
     "mcla_gpu_car_rt_cars_traffic and the share of mcla_gpu_car_rt_traffic_refl; needs mcla_gpu_car_rt_cars_parked. off: a parked car is reflected but keeps the game's paint, as before. Live.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_rt_shadows, "auto", "Ray traced sun shadows from the city's own triangles (the city pack, built from your game files by the launcher's setup or, "
-    "if it is missing, by the game in the background). Rays go from every pixel toward the sun, spread over the sun's disc, through the city's buildings and the cars: a shadow is sharp "
-    "where it touches what casts it and softer the farther it falls, and there are no cascade seams. They are added to the game's shadows through the contact shadows "
-    "(mcla_gpu_contact_shadows must be on), within about 300 m, and darken only where the game's own shadow mask says the sun reaches. off, high, ultra or auto (the default): high on a "
-    "discrete graphics card with 5.5 GiB of video memory or more that can ray trace, off on the rest. high keeps the buildings within 300 m (150 m on a card set to high by hand "
-    "with less memory) in ray tracing structures and casts 2 rays a pixel; ultra 600 m and 4 rays. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, "
-    "or Vulkan with ray queries) and the city pack; without them the game's shadows stand. The pause menu's RT SHADOWS row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_rt_shadows, "off", "Traces sun shadows from city geometry. Needs contact shadows and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(f64, mcla_gpu_city_rt_sun, 3.0, "Debug: the size of the sun's disc for the ray traced city shadows, as a multiple of the real sun (0.53 degrees across), 0.25 to "
     "16. The real sun makes a penumbra 6 cm wide for a caster 10 m away; the few rays of a pixel and the filter turn that into noise farther off, so the default is 3. "
@@ -361,14 +338,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_city_hit_probe, false, "Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_rt_reflections, "auto", "Ray traced reflections of the real city in the car paint: the player's car, and the cars beside it, reflect the buildings, signs, lamp posts and lamp "
-    "heads around them as the ray tracing finds them (where a reflected point is in the picture it takes the picture's own colour, elsewhere it is shaded "
-    "from the building's own materials), instead of the game's blurred environment map; the sky stays the map. off, high, ultra or auto (the default): high "
-    "on a strong ray tracing graphics card, off on the rest; a weak card may be set to high or ultra by hand and then runs lighter numbers. high reaches "
-    "150 m, ultra 1,000 m. Rides on the ray traced car self-reflections (mcla_gpu_car_selfrefl with mcla_gpu_car_selfrefl_rt: the row is grey until that one is on RAY TRACED), "
-    "needs ray queries and needs the city pack and the city hit data, which the launcher's setup builds from your game files (the game builds them in the background if they are "
-    "not there, and the row says BUILDING DATA until they are done); without them the paint keeps the game's reflection. The pause menu's RT CITY REFLECTIONS row "
-    "(GRAPHICS > REFLECTIONS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_rt_reflections, "off", "Traces streets and buildings reflected in car paint. Needs car self-reflections RT and the city data. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(bool, mcla_gpu_city_refl_screen, true, "Debug: with mcla_gpu_rt_reflections on, a reflected point that is in the picture takes the picture's own colour (the game's lighting, foliage and "
     "lamps as drawn). false: every reflected point is shaded from the city's own materials, for comparing. Live.", rex::kDebugOnly);
@@ -500,16 +470,9 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_car_selfrefl_length, 2.0, "Diagnostic: how far the car self-reflection's ray goes, in the game's world units (about metres). Live.", rex::kDebugOnly, rex::Range{0.2, 6.0});
 
-  REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "auto", "Ray traced car self-reflections: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), your car's reflection of "
-    "its own body comes from its real shape, not from the picture of the car on the screen: a part the camera cannot see (the back of the "
-    "wing, a mirror's far side) shows in the paint as it does in a mirror, and thin parts are exact. auto (the default) is on there while the "
-    "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "
-    "screen-space version whatever this says. Live.", rex::Allowed("auto", "off"));
+  REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "off", "Reflects parts of a car in its own paint using ray tracing. Needs car self-reflections and ray queries. Live.", rex::Allowed("auto", "off", "on"));
 
-  REX_SETTING(std::string, mcla_gpu_car_mirror_rt, "auto", "Ray traced side mirrors: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), the two side mirrors of your car show the real view behind - the cars beside "
-    "you, your own flank and the sky and street the game's environment map holds - instead of the game's blurred sky, mostly in the first person cameras (cockpit, bumper), where "
-    "the glass is big enough to read. auto (the default) is on on a strong graphics card; on switches it on on any card that can ray trace except a slow one that shares memory with the processor (it builds your car's ray tracing structures "
-    "in every frame); off keeps the game's mirrors. A graphics card that cannot ray trace keeps the game's mirrors whatever this says. The pause menu's row is GRAPHICS, REFLECTIONS, RT SIDE MIRRORS. Live.", rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_car_mirror_rt, "off", "Traces the view behind you in the side mirrors. Needs ray queries. Live.", rex::Allowed("auto", "off", "on"));
 
   REX_SETTING(i32, mcla_gpu_car_mirror_rt_pixels, 0, "Debug: the most pixels one side mirror's rectangle on the screen may cover for the ray traced side mirrors (mcla_gpu_car_mirror_rt), in thousands (0, the default: the graphics card's "
     "class decides: 160 on the High class, 64 on the Mid class). A mirror over it is left to the game. Live.", rex::kDebugOnly, rex::Range{0, 262});
@@ -1001,26 +964,13 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_screen_view_level, 0, "Diagnostic (shared screen products): the level the views 2 and 3 (the Hi-Z) and 6 (colour_post) of mcla_gpu_screen_view show: 0 is the traced size (colour_post's own size for the view 6), "
     "each level above is half the one below (the Hi-Z has 7 levels at 1080 lines, down to 1/64, colour_post up to 5 and only while the reflections want them); a level the chain does not have shows its last. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
-  REX_SETTING(std::string, mcla_gpu_ssr, "auto", "Reflections on surfaces: sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and water, traced through the picture itself (screen space) and added to "
-    "the game's own reflections. A car's paint and chrome keep their own (CAR REFLECTIONS, CAR SELF-REFLECTIONS). Only what is on the screen can be reflected: where a ray "
-    "finds nothing, or a surface is near the picture's edge, the game's own reflection stays alone. off, high, ultra or auto (the default: for now off on every graphics card). "
-    "high: one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history; ultra: two rays a pixel, up to 64 steps, about 12 frames, which is smoother "
-    "and finds more. Costs graphics card time, the G-buffer's planes (made only while this is on) and about 12 MiB (1080p) to 48 MiB (4K) of video memory for the effect's own "
-    "images. A wet road reflects, a dry one does not (the weather's wetness takes about a second to rise or fall). Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_ssr, "auto", "Adds reflections of visible cars and lights to wet roads and glossy surfaces. High and Ultra change sampling quality. Off keeps the game's reflections. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_ssr_view, 0, "Diagnostic (screen-space reflections): draws one picture over the main view in place of the effect's add, where the ambient occlusion runs: 1 the term the effect adds (alone on black), 2 the class gate "
     "(green a pixel that reflects, brighter with its share; blue the stub's; orange a vehicle or the paint and chrome, which keep their own reflections; dark red anything else; black no data), 3 the raw trace at "
     "half size before the accumulation (premultiplied radiance), 4 the trace's distance (blue to white by a log scale, orange where the hit is a vehicle's, red a ray that found nothing, black not traced), 5 the game's road reflection view as the effect reads it, over the whole picture (black: none in this frame), 6 the term's sign (green what is added, red what is taken out of the game's own reflection). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 6});
 
-  REX_SETTING(std::string, mcla_gpu_rt_gi, "auto", "Ray traced bounce light: light bounces around the city the way it does in the real world. The sunlit street and walls light the shaded sides of buildings, the ground under bridges "
-    "and the insides of alleys with a soft glow in place of a flat ambient, large coloured walls tint what stands near them, and at night each street lamp and neon sign lights the facades, "
-    "the sidewalk and the cars around it a little more. What is behind or beside the camera counts too (the screen-space bounce light, mcla_gpu_ssgi, can only use what is in the picture). "
-    "It is worked out in a field of probes laid round the camera from the city's own triangles (the city pack) and added to the picture where the G-buffer knows the surface; it never darkens. "
-    "Where it stands it takes the place of the screen-space bounce light, which stays for graphics cards that cannot ray trace and for the places the field does not cover, and it is as strong as "
-    "BOUNCE LIGHT STRENGTH says (mcla_gpu_ssgi_intensity). off, high, ultra or auto (the default): high on a graphics card that traces rays quickly (the ray tracing tier strong: about an RTX 3070 "
-    "and up, an RX 7800 XT and up), off on the rest; a weaker ray tracing card can switch it on by hand, with fewer probes. high is three cascades of probes, 2, 4 and 8 m apart, "
-    "or two, 3 and 6 m apart on a weaker card. ultra adds a fourth cascade, 16 m apart, and refreshes the probes twice as often. Needs a graphics card with ray queries (Direct3D 12 with DirectX Raytracing 1.1, or Vulkan with ray queries) "
-    "and the city pack; without them the screen-space bounce light stands. The pause menu's RT BOUNCE LIGHT row (GRAPHICS > LIGHTING AND SHADOWS). Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_rt_gi, "off", "Traces bounced light from city geometry. Needs ray queries and the city data. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_rt_gi_view, 0, "Diagnostic (ray traced bounce light, the probe field's apply): draws one picture over the main view in place of the bounce light's add, at the trigger where the field runs: 1 the irradiance the field holds at the pixel, 2 the confidence (red the field has nothing there, green it stands), 3 the sky visibility (dark blue closed, white open), 5 the ground baseline the field's irradiance is reduced by, 6 the leak test (green no probe is hidden from the point by geometry, red all of them are), 9 the light the pass adds (alone on black, four times as bright), 10 the net irradiance after the baseline, dead band, daylight correction and lookup confidence, 11 the occlusion's term the bounce is multiplied by. 4, 7 and 8 are the field's own pictures (the probes as spheres). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 11});
 
@@ -1053,19 +1003,14 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_ssr_rt, "auto", "Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at "
-    "the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. "
-    "auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, "
-    "two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card "
-    "takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than "
-    "their share of the frame. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Fills missing surface reflections with ray traced hits. High covers glass, metal and water. Ultra also covers wet roads and sidewalks. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_rt_denoise, -1, "Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.", rex::kDebugOnly, rex::Range{-1, 3});
 
   REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_ssr_resolve, true, "Diagnostic (screen-space reflections): the accumulation averages the trace's 3x3 over the pixels of one surface before it takes the history (nine rays of one lobe are nearer its mean than one), looks the history of a pixel whose ray found nothing up with the nearest hit of its neighbours, and does not let one frame whose rays all missed wipe a bright reflection (the clip takes at most a quarter of it a frame). A lamp's or a tail light's reflection flickered with the sparse hits. False: the first version's resolve (the centre pixel alone, the clip whole), for comparing. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_sparkle_resolve, false, "A/B for screen-space reflections with temporal upscaling. Preserve more of a slow reflection across sparse ray hits. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_sparkle_resolve, true, "A/B for screen-space reflections with temporal upscaling. Preserve more of a slow reflection across sparse ray hits. Live.", rex::kDebugOnly);
 
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
@@ -1268,11 +1213,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_rtao_view, 0, "Debug: Traced AO debug image. 0 is the result, 1 raw, 2 filtered, 3 coverage, 4 history length, 5 rays, and 6 vehicle IDs. Live.", rex::kDebugOnly, rex::Range{0, 6});
   REX_SETTING(i32, mcla_gpu_rtao_blend_car, 0, "Debug: Keep the car pass's occlusion term in a traced AO frame for comparison. 0 combines only its sun term. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_rt_lights, "off", "Debug (RT-LIGHTS-D1, perf/RT-DIRECT-SURVEY.md): ray traced visibility of the lights the deferred light pass draws, for the top K (a car's headlights, neon, the "
-    "nearest street lamps): one ray from every pixel to a point of the light's disc, against the city's structures and the cars, filtered by the renderer's own temporal "
-    "and a-trous filter, read by the light pass as a second shadow beside the shadow atlas (the two multiply: neither knows every caster). A street lamp the game lights "
-    "is only ever taken away from, never added. off (the default), on (the pass runs, where the graphics card traces rays), auto (follows the RT SHADOWS row's level). "
-    "Needs the deferred light pass to run (mcla_gpu_local_lights or the lamp shadows). Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_rt_lights, "off", "Ray traces shadows from nearby headlights, neon and street lamps in the deferred light pass. Live.", rex::Allowed("auto", "off", "on"));
 
   REX_SETTING(i32, mcla_gpu_rt_lights_k, 0, "Debug: how many lights get a ray (the top K), 1 to 9; 0 (the default) is the level's (3, and 6 at the largest LIGHT SHADOWS level). A group of three lights is one "
     "set of images: 1 to 3 lights cost one group, 4 to 6 two, 7 to 9 three. Headlights come first, then neon, then the nearest street lamps. Live.", rex::kDebugOnly, rex::Range{0, 9});
@@ -2050,7 +1991,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_ui_minimap_scale, true, "Draw the minimap, the D-pad quick map, the phone screen and menu pages at the render scale from 1.25x. "
     "This sharpens map roads and icons and menu text at 1080p and 4K. Turning it off keeps the game's original sizes. "
-    "Higher render scales use more video memory. Applies live.");
+    "Higher render scales use more video memory. Applies live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_ui_sharp, true, "Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p "
     "picture: 1080p and 4K windows). The game's buttons, icons, panels and text are bitmaps made for the console's "
@@ -2058,7 +1999,7 @@ class GPUSettings final : public rex::SettingOwner {
     "with a sharper filter (Catmull-Rom on the colour) and steepens the alpha across a bitmap's edges so that glyphs and "
     "icon outlines stay about one pixel soft, like a distance-field font. Off is the game's own picture, bit for bit; at "
     "720p (render scale 1x) it is the game's either way. Needs the shader pack's variant file (ui_sharp). Live; the "
-    "first time it shows, the graphics card builds its shaders (a short stutter).");
+    "first time it shows, the graphics card builds its shaders (a short stutter).", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_ui_sharp_census, false, "Debug: every 600 frames, log the textures the HUD and menus read (the draws after the scene is composed, the "
     "menus' render-to-texture views, and the frames that have no scene: loading, title, movies): the pixel shader, the "

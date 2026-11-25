@@ -39,7 +39,7 @@ constexpr uint32_t kReleaseAfterFrames = 120;
 // The census line is logged at most this often (frames), at a stats frame.
 constexpr uint64_t kLogEveryFrames = 120;
 
-// mcla_gpu_ssr_rt (debug: auto, off, high, ultra), read through LiveText (the pause menu's thread writes the cvar's string while this one reads it).
+// mcla_gpu_ssr_rt (off, high, ultra), read through LiveText (the pause menu's thread writes the cvar's string while this one reads it).
 LiveText& Setting() {
   static LiveText text("mcla_gpu_ssr_rt");
   return text;

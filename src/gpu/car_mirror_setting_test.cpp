@@ -63,20 +63,15 @@ gc::RtTier ModelRung(gc::GpuClass c, gc::RtTier t) {
   return t;
 }
 
-// What a word comes to: off is off; on runs wherever a card traces and is not of the Low class; auto is on at the strong rung only; a word that is none of the three is auto.
 bool ModelWanted(gc::GpuClass c, gc::RtTier t, const std::string& word) {
-  const gc::RtTier rung = ModelRung(c, t);
-  if (rung == gc::RtTier::kNone) return false;  // no ray tracing, or the Low class (the rung of it is none)
-  if (word == "off") return false;
-  if (word == "on") return true;
-  return rung == gc::RtTier::kStrong;
+  return word == "on" && ModelRung(c, t) != gc::RtTier::kNone;
 }
 
 void CellChecks() {
   Check(gc::RtCvarName(gc::RtEffect::kCarMirrorRt) == "mcla_gpu_car_mirror_rt", "the table's cvar is mcla_gpu_car_mirror_rt");
   Check(gc::RtCell(gc::RtEffect::kCarMirrorRt, gc::RtTier::kNone) == "off" && gc::RtCell(gc::RtEffect::kCarMirrorRt, gc::RtTier::kWeak) == "off" &&
-            gc::RtCell(gc::RtEffect::kCarMirrorRt, gc::RtTier::kStrong) == "on",
-        "AUTO is off without ray tracing, off on a weak card and on a strong one");
+            gc::RtCell(gc::RtEffect::kCarMirrorRt, gc::RtTier::kStrong) == "off",
+        "legacy Auto is off at every RT rung");
   int pairs = 0;
   for (const gc::GpuClass c : kClasses) {
     for (const gc::RtTier t : kTiers) {
@@ -148,7 +143,7 @@ void RowChecks() {
       Check(cs::AutoLabel(c, t).size() <= cs::kWidestValue, Name(c, t, "auto") + ": AUTO's label fits the page's value width");
     }
   }
-  Check(cs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and On on a strong one.", "the launcher's line: " + cs::LauncherAutoLine());
+  Check(cs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and Off on a strong one.", "the launcher's line: " + cs::LauncherAutoLine());
   Check(cs::LauncherAutoLine() == gc::RtAutoDescription(gc::RtEffect::kCarMirrorRt), "... and it is rt_tier.h's RtAutoDescription");
   Check(cs::GateName(cs::Gate::kRuns) == "on" && cs::GateName(cs::Gate::kNoRt) == "no ray tracing graphics card" && cs::GateName(cs::Gate::kTooSlow) == "graphics card too slow", "the gate's names (for the log)");
 }
@@ -187,23 +182,18 @@ void MenuChecks(const std::string& dir) {
   const size_t items = At(menu, "const ItemDef kReflectionItems[] = {");
   const size_t items_end = items == std::string::npos ? std::string::npos : At(menu, "\n};", items);
   const std::string page = items == std::string::npos || items_end == std::string::npos ? "" : menu.substr(items, items_end - items);
-  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtMirror\", \"mcla_gpu_car_mirror_rt\",") && Has(page, "\"RT SIDE MIRRORS: \", kNativeMirrorRtVals, kNativeMirrorRtNames, 3)),"),
-        "the row is a native-only cycle of mcla_gpu_car_mirror_rt with three values, on the REFLECTIONS page");
-  Check(Before(page, "\"PM_RxGpuRtCityRefl\"", "\"PM_RxGpuRtMirror\"") && Before(page, "\"PM_RxGpuRtMirror\"", "\"PM_RxGpuSsr\""), "the row is after RT CITY REFLECTIONS and before REFLECTIONS ON SURFACES");
-  Check(Has(menu, "kNativeMirrorRtVals[]  = {\"auto\", \"off\", \"on\"};") && Has(menu, "kNativeMirrorRtNames[] = {\"AUTO\", \"OFF\", \"ON\"};"), "the row's words are AUTO / OFF / ON (one level: On; nothing is called low)");
-  // The row's greying, short label and reasons are data now (src/settings/ui_rules.toml, the shared rules; ui_parity_test.cpp holds them against car_mirror_setting.h for every class and tier).
+  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtMirror\", \"mcla_gpu_car_mirror_rt\", \"SIDE MIRRORS RT: \""),
+        "side mirrors RT has its explicit native renderer row");
+  Check(Before(page, "\"PM_RxGpuSideMirrors\"", "\"PM_RxGpuRtMirror\""), "the RT row follows the regular mirrors");
   const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const size_t begin = At(rules, "[rows.PM_RxGpuRtMirror]");
   const size_t next = At(rules, "[rows.PM_RxGpuCarSelfRefl]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
-  Check(Has(row, "gpu.rt_tier == 'none'") && Has(row, "\" (NO RT GPU)\"") && Has(row, "d.rt_field_class == 'low'") && Has(row, "\" (TOO SLOW)\"") && Has(row, "label = \"RT MIRRORS\"") &&
-            Has(row, "auto_label = true") && Has(row, "\"AUTO (OFF)\""),
-        "the row's grey states, reasons, short label and AUTO label are the gate's (car_mirror_setting.h GateFor: the ray tracing tier, then the Low class)");
-  Check(std::string(cs::kFullLabel) + ": " == "RT SIDE MIRRORS: " && Has(menu, "\"RT SIDE MIRRORS: \""), "the row's prefix is the header's whole label");
-  // the mirror asks for its structures itself: the row has nothing to do with the car row, the shadows or the occlusion
-  Check(!row.empty() && !Has(row, "car_rt_runs") && !Has(row, "shadows") && !Has(row, "ao_on"), "RT SIDE MIRRORS has nothing to do with the car row, the shadows or the occlusion");
-  Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\"") && std::strlen("Road, car, city, mirrors and surfaces.") <= 40, "the tab's line names the mirrors (at most 40 characters, the longest of the other tabs' lines)");
-  Check(Has(menu, "RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)") && Has(menu, "REFLECTIONS (kReflectionItems, 7 rows)"), "the page's comments name the row (the seventh is SIDE MIRRORS, before this one)");
+  Check(Has(row, "decode = \"resolved(s.mcla_gpu_car_mirror_rt)\"") && Has(row, "gpu.rt_tier == 'none'") &&
+            Has(row, "d.rt_field_class == 'low'") && Has(row, "label = \"RT MIRRORS\""),
+        "the row decodes legacy values and names the RT capability gates");
+  Check(!Has(row, "car_rt_runs") && !Has(row, "shadows") && !Has(row, "ao_on"), "RT side mirrors use an independent pass");
+
 }
 
 void SettingsChecks(const std::string& dir) {
@@ -212,16 +202,14 @@ void SettingsChecks(const std::string& dir) {
   const std::string meta = ReadFile(dir + "/../settings/generated/settings_meta.inc");
   // (Written in pieces: tools/check_settings_exposure.py takes a literal definition macro anywhere in src for a setting definition.)
   const std::string define = std::string("REX_SET") + "TING(";
-  const std::string def = DefinitionOf(header, define + "std::string, mcla_gpu_car_mirror_rt, \"auto\"");
-  Check(!def.empty() && Has(def, "rex::Allowed(\"auto\", \"off\", \"on\")"), "mcla_gpu_car_mirror_rt is a string setting, auto by default, with the three words");
+  const std::string def = DefinitionOf(header, define + "std::string, mcla_gpu_car_mirror_rt, \"off\"");
+  Check(!def.empty() && Has(def, "rex::Allowed(\"auto\", \"off\", \"on\")"), "mcla_gpu_car_mirror_rt is a string setting, off by default, with the three words");
   Check(!def.empty() && !Has(def, "kDebugOnly") && !Has(def, "kRestart") && !Has(def, "kRequiresRestart") && Has(def, "Live."), "it is not debug-only (it has its row) and it is live (no restart trait)");
-  Check(!def.empty() && Has(def, "RT SIDE MIRRORS") && Has(def, "Vulkan with ray queries"), "its help names the row and both graphics APIs");
   Check(Has(header, "inline auto& mcla_gpu_car_mirror_rt = g_gpu.mcla_gpu_car_mirror_rt;") && Has(meta, "{\"mcla_gpu_car_mirror_rt\", \"MCLA/GPU\"},"), "the alias and the meta list have it");
   const size_t mat = At(manifest, "\"mcla_gpu_car_mirror_rt\": {");
   const size_t mend = mat == std::string::npos ? 0 : manifest.find("\"comments\"", mat);
   const std::string entry = mat == std::string::npos ? "" : manifest.substr(mat, mend - mat);
-  Check(!entry.empty() && Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"auto\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"on\\\")") && !Has(entry, "kDebugOnly") &&
-            Has(entry, "RT SIDE MIRRORS") && Has(entry, "Vulkan with ray queries"),
+  Check(!entry.empty() && Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"off\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"on\\\")") && !Has(entry, "kDebugOnly"),
         "the manifest entry is the same setting: live, not debug-only, with the row named in its help");
   // its two tuning settings stay debug-only (no player row)
   for (const char* name : {"mcla_gpu_car_mirror_rt_pixels", "mcla_gpu_car_mirror_rt_strength"}) {
@@ -237,8 +225,8 @@ void HostChecks(const std::string& dir) {
   const std::string cpp = ReadFile(dir + "/car_mirror_rt.cpp");
   Check(Has(cpp, "cm::Wanted(setting, true, gpu_class::CurrentRtClass())") && Has(cpp, "cm::LimitsFor(gpu_class::CurrentRtClass(), int("), "the host reads the setting through the pass's rule, with the ray tracing tier's class");
   const std::string tier = ReadFile(dir + "/rt_tier.h");
-  Check(Has(tier, "kCarMirrorRt,") && Has(tier, "inline constexpr int kRtEffectCount = 7;") && Has(tier, "RtDerived(\"mcla_gpu_car_mirror_rt\"),") && Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_car_mirror_rt\", Page::kReflections, {\"off\", \"off\", \"off\", \"off\", \"on\"}},"),
-        "rt_tier.h has the effect, with its cells read from the preset table (gfx_preset.h: none off, weak off, strong on)");
+  Check(Has(tier, "kCarMirrorRt,") && Has(tier, "inline constexpr int kRtEffectCount = 7;") && Has(tier, "{\"mcla_gpu_car_mirror_rt\", \"off\", \"off\", \"off\"},") && Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_car_mirror_rt\", Page::kReflections, {\"off\", \"off\", \"off\", \"off\", \"on\"}},"),
+        "legacy Auto keeps side mirrors raster, while RT Ultra selects explicit On");
 }
 
 void BuildChecks(const std::string& dir) {

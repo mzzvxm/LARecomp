@@ -208,7 +208,7 @@ constexpr std::string_view RungName(Rung rung) { return rung == Rung::kNone ? "n
 
 // What `auto` stands for at each rung (a copy of rt_tier.h's kRtEffects cell of mcla_gpu_rt_gi, so that the two can be compared when the branches meet): the field on a strong card at
 // HIGH; a weak card keeps the screen-space bounce light (+2.5 to 4 ms on an RTX 3060 at 1080p: M3 section 6) unless the player turns the field on by hand. COST PASS.
-constexpr Level AutoLevel(Rung rung) { return rung == Rung::kStrong ? Level::kHigh : Level::kOff; }
+constexpr Level AutoLevel(Rung) { return Level::kOff; }
 
 // Which budget a field runs.
 enum class Layout : uint8_t {
@@ -1026,7 +1026,7 @@ static_assert(LayoutFor(Rung::kStrong, Level::kOff) == Layout::kNone && LayoutFo
 static_assert(!PixelPassAllowed(Rung::kWeak, Layout::kStandard) && !PixelPassAllowed(Rung::kWeak, Layout::kExtended) && !PixelPassAllowed(Rung::kStrong, Layout::kStandard) &&
                   PixelPassAllowed(Rung::kStrong, Layout::kExtended) && !PixelPassAllowed(Rung::kNone, Layout::kExtended),
               "the per-pixel pass is the strong card's ULTRA layer only");
-static_assert(AutoLevel(Rung::kNone) == Level::kOff && AutoLevel(Rung::kWeak) == Level::kOff && AutoLevel(Rung::kStrong) == Level::kHigh, "auto: the field on a strong card at HIGH only (rt_tier.h kRtGi)");
+static_assert(AutoLevel(Rung::kNone) == Level::kOff && AutoLevel(Rung::kWeak) == Level::kOff && AutoLevel(Rung::kStrong) == Level::kOff, "Legacy Auto leaves RT bounce light off on every rung");
 static_assert(!ReplacesSsgi(Layout::kNone) && ReplacesSsgi(Layout::kLean) && ReplacesSsgi(Layout::kStandard) && ReplacesSsgi(Layout::kExtended), "the field replaces the screen-space bounce light wherever it runs");
 static_assert(static_cast<uint8_t>(Rung::kNone) == 0 && static_cast<uint8_t>(Rung::kWeak) == 1 && static_cast<uint8_t>(Rung::kStrong) == 2, "the order of gpu_class::RtTier");
 static_assert(SsgiShare(0.0f, 1.0f) == 1.0f && SsgiShare(1.0f, 0.0f) == 1.0f && SsgiShare(1.0f, 1.0f) == 0.0f && SsgiShare(0.5f, 1.0f) == 0.5f, "the screen-space share of a pixel");

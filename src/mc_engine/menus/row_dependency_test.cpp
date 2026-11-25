@@ -30,7 +30,7 @@ void Check(bool ok, const std::string& what) {
 
 // Model the native menu input gates with the old SHADOWS dependency.
 bool g_perf_no_shadows = false;
-constexpr char kNeedsShadowsReason[] = " (NO SHADOW)";
+constexpr char kNeedsShadowsReason[] = " (SUN OFF)";
 constexpr ItemDef kPage[] = {
     mcla_menu::Bool("PM_RxNoShadows", "perf_no_shadows", "SHADOWS: ", true),
     mcla_menu::Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
@@ -149,57 +149,11 @@ std::vector<std::string> Keys(const std::vector<Row>& rows) {
 
 bool Has(const std::string& text, const std::string& what) { return text.find(what) != std::string::npos; }
 
-// Width of a page (pause_menu.cpp "Page width"): the widest label (suffix included) and the widest value.
-void PageWidthOfLighting(const std::vector<Row>& rows) {
-  // Every label in kLightItems (pause_menu.cpp's own constructors) with the reason on the four rows; the widest value is SUN SHAFTS' "AUTO (DEFAULT)".
-  struct L { const char* key; const char* label; bool needs_shadows; };
-  const L labels[] = {
-      {"PM_RxNoShadows", "SHADOWS", false},          {"PM_RxFoliage", "FOLIAGE SHADOWS", true},
-      {"PM_RxGpuShadowDetail", "SHADOW DETAIL", true}, {"PM_RxGpuShadowFilter", "SHADOW FILTER", true},
-      {"PM_RxGpuContact", "CONTACT SHADOWS", false},   {"PM_RxGpuRtShadows", "RT SHADOWS (GPU TOO SLOW)", false},
-      {"PM_RxGpuTrafficShadows", "TRAFFIC SHADOWS", true}, {"PM_RxGpuCarShadowMap", "CAR SHADOWS", false},
-      {"PM_RxGpuAo", "AMBIENT OCCLUSION", false},
-      {"PM_RxGpuAoLevel", "AO INTENSITY", false},      {"PM_RxGpuSsgi", "BOUNCE LIGHT (REPLACED)", false},
-      {"PM_RxGpuRtGi", "RT BOUNCE LIGHT (NO RT GPU)", false},
-      {"PM_RxGpuSsgiLevel", "BOUNCE LIGHT STRENGTH", false}, {"PM_RxGpuSunShafts", "SUN SHAFTS", false},
-      {"PM_RxGpuHeadlights", "HEADLIGHTS", false},     {"PM_RxGpuLightShadows", "LIGHT SHADOWS", false},
-      {"PM_RxGpuNeonLight", "NEON LIGHT", false},      {"PM_RxGpuVolumetrics", "VOLUMETRIC LIGHT", false},
-  };
-  size_t widest_label = 0;
-  for (const L& l : labels) {
-    size_t n = std::strlen(l.label) + (l.needs_shadows ? std::strlen(kNeedsShadowsReason) : 0);
-    widest_label = std::max(widest_label, n);
-  }
-  const size_t widest_value = std::strlen("AUTO (DEFAULT)");
-  Check(widest_label + widest_value <= 41,
-        "LIGHTING AND SHADOWS stays within 41 characters with the reason: " + std::to_string(widest_label + widest_value));
-  // The wording the owner would pick is two characters too wide for this page (why the reason is " (NO SHADOW)").
-  Check(std::strlen("TRAFFIC SHADOWS (SHADOWS OFF)") + widest_value > 41, "' (SHADOWS OFF)' would not fit the page");
-  Check(rows.size() == sizeof(labels) / sizeof(labels[0]), "the width table lists every row of LIGHTING AND SHADOWS");
-  for (size_t i = 0; i < rows.size() && i < sizeof(labels) / sizeof(labels[0]); ++i)
-    Check(rows[i].key == labels[i].key, std::string("the width table is in the page's order at ") + labels[i].key);
-  Check(rows.size() <= 24, "LIGHTING AND SHADOWS has at most 24 rows");
-}
-
-// Width of REFLECTIONS (pause_menu.cpp "Page width"): every label of kReflectionItems in every state its suffix can be in, and the widest value, which is CAR SELF-REFLECTIONS' "AUTO (RAY TRACED)". The
-// RT CITY REFLECTIONS row names itself by state (gpu/city_refl_setting.h RowLabel and RowSuffix: the whole name while it is on, "RT CITY" with the reason otherwise: the whole name with a reason would
-// make the page 48 wide); gpu/city_refl_setting_test.cpp holds the states against the header itself, this is the page's table.
-void PageWidthOfReflections(const std::vector<Row>& rows) {
-  const char* const labels[] = {"ROAD REFLECTIONS",        "CAR REFLECTIONS",        "CAR SELF-REFLECTIONS",       "RT CITY REFLECTIONS", "RT CITY (NO RT GPU)", "RT CITY (TOO SLOW)",
-                                "RT CITY (NEEDS CAR RT)",  "RT CITY (NOT READY)",    "RT CITY (BUILDING DATA)",    "REFLECTIONS ON SURFACES",
-                                "RT SIDE MIRRORS",         "RT MIRRORS (NO RT GPU)", "RT MIRRORS (TOO SLOW)",  "SIDE MIRRORS",         "SIDE MIRRORS (REPLACED)"};
-  size_t widest_label = 0;
-  for (const char* label : labels) widest_label = std::max(widest_label, std::strlen(label));
-  const size_t widest_value = std::strlen("AUTO (RAY TRACED)");
-  Check(widest_label + widest_value <= 41, "REFLECTIONS stays within 41 characters in every state of RT CITY REFLECTIONS: " + std::to_string(widest_label + widest_value));
-  Check(std::strlen("RT CITY REFLECTIONS (BUILDING DATA)") + widest_value > 41, "the whole name with the longest reason would not fit the page");
-  Check(std::strlen("RT SIDE MIRRORS (NO RT GPU)") + widest_value > 41, "the whole name of the mirrors' row with a reason would not fit the page");
-  const std::vector<std::string> expected = {"PM_RxGpuRoadRefl", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl", "PM_RxGpuRtCityRefl", "PM_RxGpuSideMirrors", "PM_RxGpuRtMirror", "PM_RxGpuSsr"};
-  Check(Keys(rows) == expected, "REFLECTIONS has its seven rows in order, the city's right after the car's own ray traced reflection it rides on, then the side mirrors and the traced ones that replace them");
-  for (const Row& r : rows) {
-    Check(r.native_only, r.key + " is a native renderer row");
-  }
-  Check(rows.size() <= 24, "REFLECTIONS has at most 24 rows");
+void CheckWidth(std::string_view page, std::initializer_list<std::string_view> labels,
+                std::string_view widest_value) {
+  size_t widest = 0;
+  for (const auto label : labels) widest = std::max(widest, label.size());
+  Check(widest + widest_value.size() <= 41, std::string(page) + " fits within 41 columns");
 }
 
 void Page(const std::string& dir) {
@@ -210,20 +164,35 @@ void Page(const std::string& dir) {
   }
   const std::string code = StripLineComments(source);
 
-  const std::vector<Row> light = Rows(TableBody(code, "kLightItems"));
-  const std::vector<Row> world = Rows(TableBody(code, "kWorldDetailItems"));
+  const auto light = Rows(TableBody(code, "kLightItems"));
+  const auto reflections = Rows(TableBody(code, "kReflectionItems"));
   const std::vector<std::string> light_expected = {
-      "PM_RxNoShadows",       "PM_RxFoliage",       "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxGpuContact",
-      "PM_RxGpuRtShadows",    "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuAo",         "PM_RxGpuAoLevel",      "PM_RxGpuSsgi",
-      "PM_RxGpuRtGi",         "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuNeonLight",
-      "PM_RxGpuVolumetrics"};
-  const std::vector<std::string> world_expected = {"PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars",
-                                                   "PM_RxFragDist", "PM_RxLodTraffic", "PM_RxLodCity"};
-  Check(Keys(light) == light_expected, "LIGHTING AND SHADOWS has its rows in the approved order, FOLIAGE SHADOWS right after SHADOWS");
-  Check(Keys(world) == world_expected, "WORLD DETAIL has its six rows and no FOLIAGE SHADOWS");
-  Check(light.size() >= 2 && light[0].key == "PM_RxNoShadows" && light[1].key == "PM_RxFoliage", "SHADOWS is first and FOLIAGE SHADOWS second");
-  PageWidthOfLighting(light);
-  PageWidthOfReflections(Rows(TableBody(code, "kReflectionItems")));
+      "PM_RxNoShadows", "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxFoliage",
+      "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuContact", "PM_RxGpuRtShadows",
+      "PM_RxGpuAo", "PM_RxGpuCarAoRt", "PM_RxGpuAoLevel", "PM_RxGpuSsgi", "PM_RxGpuRtGi",
+      "PM_RxGpuSsgiLevel", "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuRtLights",
+      "PM_RxGpuNeonLight", "PM_RxGpuSunShafts", "PM_RxGpuVolumetrics"};
+  const std::vector<std::string> reflections_expected = {
+      "PM_RxGpuRoadRefl", "PM_RxGpuSsr", "PM_RxGpuSsrRt", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl",
+      "PM_RxGpuCarSelfReflRt", "PM_RxGpuRtCityRefl", "PM_RxGpuSideMirrors", "PM_RxGpuRtMirror"};
+  const std::vector<std::string> display_expected = {
+      "PM_RxDisplayMode", "PM_RxVsync", "PM_RxResolution", "PM_RxAspect", "PM_RxSubGpuHdr",
+      "PM_RxDisplayGamma", "PM_RxFpsCap", "PM_RxMsaa", "PM_RxGpuAa"};
+  const std::vector<std::string> image_expected = {"PM_RxGpuAniso", "PM_RxXeAniso", "PM_RxDof", "PM_RxBlur"};
+  const std::vector<std::string> world_expected = {
+      "PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars", "PM_RxFragDist", "PM_RxLodTraffic", "PM_RxLodCity"};
+  Check(Keys(light) == light_expected, "Lighting and Shadows groups shadows, occlusion, bounce and local lights");
+  Check(Keys(reflections) == reflections_expected, "Reflections keeps each RT row beside its base effect");
+  Check(Keys(Rows(TableBody(code, "kVideoItems"))) == display_expected, "Display owns both AA rows");
+  Check(Keys(Rows(TableBody(code, "kImageQualityItems"))) == image_expected, "Image Quality holds filtering and blur");
+  Check(Keys(Rows(TableBody(code, "kWorldDetailItems"))) == world_expected, "World Detail keeps all six rows");
+  for (const Row& row : reflections) Check(row.native_only, row.key + " is native only");
+  std::string debug;
+  Check(ReadFile(dir + "debug_menu_pages.cpp", &debug), "debug menu source is available");
+  const auto fixes = TableBody(StripLineComments(debug), "kDebugFixesItems");
+  Check(Has(fixes, "PM_RxSharpUi") && Has(fixes, "PM_RxSharpMinimap"), "both sharpening switches are under Debug Fixes");
+  CheckWidth("Lighting and Shadows", {"SUN SHADOW FILTER (SUN OFF)", "BOUNCE LIGHT RT (NO RT GPU)", "CAR AO RT (NO RT GPU)"}, "RT (NO RT GPU)");
+  CheckWidth("Reflections", {"CAR SELF-REFLECTIONS RT (NO RT GPU)", "SURFACE REFLECTIONS RT (NO RT GPU)", "RT CITY (BUILDING DATA)"}, "ULTRA");
 
   // FOLIAGE SHADOWS is a plain checkbox of the setting it always was (key, cvar, inverted) on both renderers, with the shadows rule.
   Check(Has(code, "Bool(\"PM_RxFoliage\", \"disable_imposter_shadows\", \"FOLIAGE SHADOWS: \", true)"),

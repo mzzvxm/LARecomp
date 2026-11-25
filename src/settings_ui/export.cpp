@@ -86,10 +86,7 @@ void AddAuto(Table& settings) {
     // The RT table supersedes the legacy class cell for RT SHADOWS.
     for (const auto& effect : gc::kRtEffects) {
         if (auto* setting = settings[effect.cvar].as_table()) {
-            // CHECK: v1 validates resolved cells as writable words. Internal results such as
-            // "both" for RT AO and "on" for car RT need a validator change before export.
-            if (effect.cvar == "mcla_gpu_ao_rt" || effect.cvar == "mcla_gpu_car_selfrefl_rt") continue;
-            // An empty cell at the none rung defers to the class table (mcla_gpu_ao: RTAO adds `rt` at the strong rung only, which the row's AUTO label rule names): the class descriptor stays.
+            // World AO uses its raster class cell for legacy Auto.
             if (effect.none.empty() && setting->contains("auto")) continue;
             setting->insert_or_assign("auto", Table{
                 {"by", "rt_rung"}, {"cells", Table{{"none", effect.none}, {"weak", effect.weak}, {"strong", effect.strong}}}});
@@ -276,7 +273,13 @@ Table Row(const ItemDef& item, const Table& settings, const Table& text, const T
         // A choice supplied entirely by variants uses the selected setting's default.
         const bool variant_choices = kind == "choice" && row.contains("variants") &&
                                      !row.contains("values") && !row.contains("values_ref");
-        if (!row.contains("default") && !row.contains("values_from") && !variant_choices) {
+        const auto* listed = row["values"].as_array();
+        const bool legacy_default = row.contains("decode") && listed &&
+            std::ranges::none_of(*listed, [&](const auto& value) {
+                const auto* item = value.as_table();
+                return item && Text((*item)["id"]) == fallback;
+            });
+        if (!row.contains("default") && !row.contains("values_from") && !variant_choices && !legacy_default) {
             row.insert("default", item.inverted ? (fallback == "true" ? "false" : "true") : fallback);
         }
         const auto life = Text(setting["life"]);

@@ -73,6 +73,10 @@ namespace larecomp::gpu::headlight_pass {
 
 enum class Route : uint8_t { kForward = 0, kPass = 1, kBoth = 2 };
 
+constexpr Route RouteForRtLights(Route route, bool rt_lights) {
+  return rt_lights && route == Route::kForward ? Route::kPass : route;
+}
+
 inline constexpr Route ParseRoute(std::string_view word) {
   if (word == "pass") {
     return Route::kPass;

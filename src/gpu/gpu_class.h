@@ -163,28 +163,8 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // for medium and 1.0 ms for high at 1080p on a GTX 1050-class card): medium on Mid, high on High, nothing on shared memory. Ultra is
     // a deliberate pick: its cost is not "no visible loss" for the weakest cards of the High class (6 GB GTX 1060-class).
     Derived("mcla_gpu_volumetrics"),
-    // Ray traced sun shadows from the city's own triangles (CITY-RT M1, city_rt_rules.h): high on the High class only (the sectors within 300 m, 120 to 180 MB of
-    // structures, ray queries from the depth), off on Mid and Low. A Mid card (a ray tracing card under 5.5 GiB) may be given high or ultra by hand; the budget
-    // for it is in city_rt_rules.h. The cell is a first guess for the owner's runs (perf/CITY-RT-M1-RUNPLAN.md): the cost is measured before it changes.
-    // NOT READ FROM THE PRESET TABLE: this class-only cell (city_rt_rules.h LevelFor) is older than the ray tracing rung's table, which decides (rt_tier.h kRtEffects: none off, weak high, strong
-    // high = gfx_preset.h's ENHANCED, ENHANCED RT and ENHANCED RT ULTRA cells of this row); a class has no RT presets of its own. Kept as it was until LevelFor reads the rung everywhere.
-    {"mcla_gpu_rt_shadows", "off", "off", "high"},
-    // Reflections on surfaces (screen-space reflections: wet roads, sidewalks, glass, metal; ssr.h, ssr_rules.h; GB-I1 + GB-I2): OFF ON EVERY CLASS UNTIL THE OWNER HAS SEEN THE PICTURES (owner,
-    // 2026-11-21: the pictures of the SSR and of the light pass come first), so `auto` is off and the effect is off by default exactly as before the row existed. The cells are PREPARED (the cost limits are
-    // a proposal for the owner to confirm; the numbers come from chain-gb-phase2b.ps1's cost arms):
-    //   High  ULTRA (two rays a pixel, 64 steps, a 12 frame history) if the phase 2b cost run (perf/out, the SSR arms) says ultra costs under about 0.5 ms of graphics card time at 4K on the
-    //         RTX 5080, else HIGH (one ray, 40 steps, a 10 frame history);
-    //   Mid   HIGH only if the same run (the 1080p arms, the RTX 5080 forced to class mid) says high costs under about 0.2 ms at 1080p, since a GTX 1050-class card is several times slower
-    //         than that PC (not measured here): otherwise OFF until a Mid card has measured it;
-    //   Low   OFF (shared memory: the scene alone is 100+ ms there).
-    // To switch them on: change the cells below and the matching row of gpu_class_test.cpp's kTable (and its CheckSsr); nothing else follows (the row and the effect read the cell through Resolve).
-    // A HAND PICK (HIGH or ULTRA in the row) is open on EVERY class, Low and the Steam Deck included, on purpose (LIGHT-STACK-REVIEW F7; the owner's rule: a graphics row can be picked by hand unless the
-    // class cannot run it, and AUTO is what keeps weak cards off). Nothing here stops the effect from running: it asks for the G-buffer's three planes, the Hi-Z and colour_post with its mips and
-    // three RGBA16F images, which on shared memory is the cost the player chose. The only hard limit is the sidecar's memory cap (gbuffer_rules.h kMaxSidecarBytes, 512 MiB: past it the frame
-    // makes no sidecar, the effect does not run and the log says why once). The release notes say so.
-    // NOT READ FROM THE PRESET TABLE: `auto` is off on every class, the High class included (owner, 2026-11-24: the wet-road reflections flicker in motion, so the High class does not take
-    // them yet), while ENHANCED ULTRA and ENHANCED RT ULTRA hold the row's top level, ultra, as explicit maximum presets (gfx_preset.h). The recommended preset of a High card is one of those two,
-    // so this is the one effect whose `auto` is not its recommended preset's cell: when the final pass turns SSR on for a class, change this line to Derived("mcla_gpu_ssr").
+    // Compatibility values used by old files. Named presets apply their own cells.
+    {"mcla_gpu_rt_shadows", "off", "off", "off"},
     {"mcla_gpu_ssr", "off", "off", "off"},
     // A car's neon underglow lights the ground, the kerbs, the walls and the other cars near it (GB-NEON; neon_light.h; owner, 2026-11-21: ON BY DEFAULT where the light pass runs). One level, `on`: the
     // light pass draws a few small scissored lights (4 / 9 / 16 a frame at most, by the LIGHT SHADOWS level, only while a car with a neon is lit: its G-buffer planes are made only then), so every

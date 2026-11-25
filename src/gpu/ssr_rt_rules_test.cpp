@@ -540,10 +540,9 @@ void TestSelectModel() {
 
 void TestDecision() {
   const rt::Level levels[3] = {rt::Level::kOff, rt::Level::kHigh, rt::Level::kUltra};
-  const rt::Choice choices[4] = {rt::Choice::kAuto, rt::Choice::kOff, rt::Choice::kHigh, rt::Choice::kUltra};
+  const rt::Choice choices[3] = {rt::Choice::kOff, rt::Choice::kHigh, rt::Choice::kUltra};
   const gc::RtTier rungs[3] = {gc::RtTier::kNone, gc::RtTier::kWeak, gc::RtTier::kStrong};
   bool identity = true;
-  bool follows = true;
   bool by_hand = true;
   for (rt::Level ssr : levels) {
     for (rt::Choice choice : choices) {
@@ -553,28 +552,19 @@ void TestDecision() {
           identity = identity && r.level == rt::Level::kOff && r.cell.ray_cap == 0 && r.why != rt::Why::kRuns;
           continue;
         }
-        if (choice == rt::Choice::kAuto) {
-          if (rung == gc::RtTier::kStrong) {
-            follows = follows && r.level == ssr && r.why == rt::Why::kRuns && r.cell.ray_cap == rt::CellFor(ssr, rung).ray_cap;
-          } else {
-            follows = follows && r.level == rt::Level::kOff && r.why == rt::Why::kWeakAuto;
-          }
-          continue;
-        }
         const rt::Level wanted = choice == rt::Choice::kHigh ? rt::Level::kHigh : rt::Level::kUltra;
         by_hand = by_hand && r.level == wanted && r.why == rt::Why::kRuns && r.cell.ray_cap == rt::CellFor(wanted, rung).ray_cap && r.cell.ray_cap != 0;
       }
     }
   }
   Check(identity, "the effect off, a card that does not trace and the debug word off all give no fallback at all (the effect is what it was)");
-  Check(follows, "auto follows the effect's level on a strong card and is off on a weak one");
   Check(by_hand, "high and ultra by hand run on a strong card and on a weak one (a card that does not trace never)");
   Check(rt::Resolve({rt::Level::kHigh, rt::Choice::kUltra, gc::RtTier::kStrong}).cell.group_mask == rt::kUltraCell.group_mask, "the debug word can run ULTRA's cell under the effect's high");
   Check(rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.ray_cap == rt::kMidCell.ray_cap && rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.reach == 60.0f,
         "a weak card by hand takes the Mid cell, 60 m, whatever it asks for");
-  Check(rt::ParseChoice("auto") == rt::Choice::kAuto && rt::ParseChoice("off") == rt::Choice::kOff && rt::ParseChoice("high") == rt::Choice::kHigh && rt::ParseChoice("ultra") == rt::Choice::kUltra &&
-            rt::ParseChoice("") == rt::Choice::kAuto && rt::ParseChoice("medium") == rt::Choice::kAuto,
-        "the debug word: a word that is none is auto");
+  Check(rt::ParseChoice("auto") == rt::Choice::kOff && rt::ParseChoice("off") == rt::Choice::kOff && rt::ParseChoice("high") == rt::Choice::kHigh && rt::ParseChoice("ultra") == rt::Choice::kUltra &&
+            rt::ParseChoice("") == rt::Choice::kOff && rt::ParseChoice("medium") == rt::Choice::kOff,
+        "legacy Auto and unrecognised values keep the fallback off");
   // the cells
   Check(rt::kHighCell.group_mask == rt::GroupBit(rt::kGroupBright) && rt::kUltraCell.group_mask == (rt::GroupBit(rt::kGroupBright) | rt::GroupBit(rt::kGroupGround)) && rt::kMidCell.group_mask == rt::kHighCell.group_mask,
         "HIGH takes glass, metal and water; ULTRA adds the road, the sidewalk and the tunnels; the Mid cell is HIGH's classes");
@@ -596,7 +586,7 @@ void TestDecision() {
         "the scene service is asked for the structures, the hit data and every texture at the level's level, no cars; off asks nothing");
   // the frame's decision, in its order
   rt::FrameFacts f;
-  f.resolved = rt::Resolve({rt::Level::kHigh, rt::Choice::kAuto, gc::RtTier::kStrong});
+  f.resolved = rt::Resolve({rt::Level::kHigh, rt::Choice::kHigh, gc::RtTier::kStrong});
   f.pipelines_ready = f.scene_valid = f.images_ok = true;
   Check(rt::DecideFrame(f) == rt::Why::kRuns, "everything there: it runs");
   rt::FrameFacts g = f;
@@ -944,8 +934,8 @@ void TestHostSources(const std::string& dir) {
   Check(shadow_init != std::string::npos && shadow_init < rt_init && rt_init < precache_start && Has(renderer_cpp, "rt_world_.CensusText() + ssr_.RtCensusText()"),
         "the renderer starts the fallback after the car scene's, the scene service's and the world frame's start, before the precache, and prints its census with the city's");
   // the setting
-  Check(Has(settings, "REX_SETTING(std::string, " "mcla_gpu_ssr_rt, \"auto\"") && Has(settings, "rex::kDebugOnly, rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(settings, "inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;"),
-        "mcla_gpu_ssr_rt is a debug-only setting: auto, off, high, ultra, auto by default");
+  Check(Has(settings, "REX_SETTING(std::string, " "mcla_gpu_ssr_rt, \"off\"") && Has(settings, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(settings, "inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;"),
+        "the player setting defaults to off and accepts the legacy word");
 }
 }  // namespace
 
