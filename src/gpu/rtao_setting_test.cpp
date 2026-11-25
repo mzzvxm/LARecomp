@@ -115,9 +115,10 @@ std::string Read(const fs::path& file) {
 }
 
 void CheckReaders(const fs::path& src) {
-  // Literal uses outside the setting and metadata must be one of these entry points.
+  // Literal uses outside the setting and metadata must be one of these entry points. The presets' table (gfx_preset.h, a row of cells, no reader) is one, and the RT tier's cell for
+  // the ray traced preset (rt_tier.h kRtEffects) names the row twice: its own name and the preset table's lookup of it.
   std::map<std::string, int> uses = {
-      {"gpu/ao.cpp", 1}, {"gpu/effect_compare.h", 1}, {"gpu/rt_tier.h", 1}, {"gpu/gpu_class.h", 1},
+      {"gpu/ao.cpp", 1}, {"gpu/effect_compare.h", 1}, {"gpu/rt_tier.h", 2}, {"gpu/gpu_class.h", 1}, {"gpu/gfx_preset.h", 1},
       {"mc_engine/display/effect_compare.cpp", 1}, {"mc_engine/menus/pause_menu.cpp", 2},
   };
   for (const auto& entry : fs::recursive_directory_iterator(src)) {
