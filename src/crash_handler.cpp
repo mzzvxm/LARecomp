@@ -32,6 +32,7 @@
 namespace {
 
 std::mutex g_sym_mtx;  // dbghelp is single-threaded; serialize handler entry
+std::atomic<bool> g_no_dialog{false};
 
 // Hands what the logger holds to every sink, so the file has the last lines. rexglue 0.11: the SDK's logger is the only
 // registry (spdlog is private to the SDK), and rex::log::Flush() is its call for a crash handler.
@@ -151,7 +152,7 @@ static LONG WINAPI CrashHandler(EXCEPTION_POINTERS* ep) {
     // The test harness's switch (crash_options.h): the SDK's reporter has written its report and skipped its box (LarecompApp::
     // GetCrashOptions) and has called this filter last, so nothing is left to write. End the process here with a status of its
     // own instead of going on to Windows Error Reporting (its box, its minutes-long dump), so a test run sees the end at once.
-    if (larecomp::crash::NoDialogFromEnvironment()) {
+    if (g_no_dialog.load()) {
         larecomp::EndProcessNow(static_cast<int>(larecomp::crash::kNoDialogExitCode));
     }
 
@@ -228,6 +229,7 @@ void InstallCrashLogger() {
     static bool installed = false;
     if (installed) return;
     installed = true;
+    g_no_dialog.store(larecomp::crash::NoDialogFromEnvironment());
 
     SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES | SYMOPT_FAIL_CRITICAL_ERRORS);
     SymInitialize(GetCurrentProcess(), nullptr, TRUE);

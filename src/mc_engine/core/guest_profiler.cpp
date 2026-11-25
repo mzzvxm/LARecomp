@@ -7,6 +7,7 @@
 #include <rex/ppc/recompiled_code.h>
 
 #include "logging.h"
+#include "os/environment.h"
 #include "os/thread_priority.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 
@@ -98,8 +99,8 @@ constexpr DWORD64 kMaxSymbolDisp = 0x8000;
 // Override with MCLA_PROFILE_SLOW_MS.
 double SlowFrameMs() {
     static const double ms = [] {
-        if (const char* e = std::getenv("MCLA_PROFILE_SLOW_MS")) {
-            const double v = std::atof(e);
+        if (const auto e = larecomp::os::ReadEnvironment("MCLA_PROFILE_SLOW_MS")) {
+            const double v = std::atof(e->c_str());
             if (v > 0.5 && v < 1000.0) return v;
         }
         return 20.0;
@@ -1057,8 +1058,8 @@ void DumpAllThreads(const char* reason) {
 }
 
 bool EnabledImpl() {
-    const char* e = std::getenv("MCLA_PROFILE");
-    return (e && *e == '1') || larecomp::settings::guest_profile.Get();
+    const auto e = larecomp::os::ReadEnvironment("MCLA_PROFILE");
+    return (e && e->starts_with('1')) || larecomp::settings::guest_profile.Get();
 }
 
 // MCLA_PROFILE_THREAD pins the sampler to a named thread, matched as a
@@ -1068,8 +1069,7 @@ bool EnabledImpl() {
 // drives frames -- which is usually blocked rather than busy, so the other
 // slots are filled from the CPU table instead of guessed at boot.
 std::string TargetThreadFilter() {
-    const char* e = std::getenv("MCLA_PROFILE_THREAD");
-    return e ? std::string(e) : std::string();
+    return larecomp::os::ReadEnvironment("MCLA_PROFILE_THREAD").value_or("");
 }
 
 }  // namespace

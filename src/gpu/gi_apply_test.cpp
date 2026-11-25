@@ -688,7 +688,6 @@ void LayoutChecks() {
   Check(std::memcmp(buf.data(), gpu.words.data(), 320) == 0, "BUFFER: the first 320 bytes are the field's rows, unchanged");
   hlsl_shim::g_rows.assign(gi::kGpuFrameRows + ga::kApplyRows, hlsl_shim::uint4());
   for (uint32_t r = 0; r < gi::kGpuFrameRows + ga::kApplyRows; ++r) hlsl_shim::g_rows[r] = hlsl_shim::uint4(buf[r * 4], buf[r * 4 + 1], buf[r * 4 + 2], buf[r * 4 + 3]);
-  g_atlas = &fld.atlas;
   const hlsl_shim::GiaFrame h = hlsl_shim::GiaLoadFrame();
   const bool ok = h.right.x == fr.right[0] && h.right.z == fr.right[2] && h.tanX == fr.tan_x && h.up.y == fr.up[1] && h.tanY == fr.tan_y && h.forward.z == fr.forward[2] && h.fieldShare == fr.field_share &&
                   h.position.x == fr.position[0] && h.position.y == fr.position[1] && h.position.z == fr.position[2] && h.strength == fr.strength && h.lin.z == fr.lin[2] && h.render.x == fr.render[0] &&
@@ -762,6 +761,7 @@ void LeakChecks() {
     const gi::Vec3 nn = rng.Direction();
     if (!Near(hlsl_shim::GiaGuardShare(H3(p), H3(nn)), ga::GuardShare(fld.frame, fld.atlas, p, nn), 1e-5)) ++bad;
   }
+  g_atlas = nullptr;
   Check(bad == 0, "LEAK TEST: the .hlsli's guard share is the twin's on 600 random points");
 }
 
@@ -854,6 +854,7 @@ void TwinChecks() {
     if (!NearV(a, b, 1e-3, 1e-5)) ++cam_bad;
   }
   Check(cam_bad == 0, "TWIN: the .hlsli's linear depth and world position are the twin's");
+  g_atlas = nullptr;
 }
 
 // ---------------------------------------------------------------------------

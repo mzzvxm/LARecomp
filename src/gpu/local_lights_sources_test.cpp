@@ -365,11 +365,13 @@ void PoliceChecks(const Probe& probe) {
   std::vector<Light> out;
   for (const cl::Car* car : {probe.player, probe.racer_on, probe.racer_off, probe.traffic[0], probe.traffic[1], probe.traffic[2]}) {
     Check(car != nullptr, "the probe's car is there");
+    if (!car) continue;
     lp::MakePoliceLights(*car, lp::Tier::kUltra, 1.0f, &out);
   }
   Check(out.empty(), "the recorded player, racers and traffic make NO police light: their kind 8 lamps sit beside the headlights (0.1 to 0.55 m)");
   uint32_t kind8_seen = 0, kind8_not_sirens = 0;
   for (const cl::Car* car : {probe.player, probe.traffic[1], probe.traffic[2]}) {
+    if (!car) continue;
     for (uint32_t i = 0; i < car->lamp_count; ++i) {
       if (car->lamps[i].kind == pts::kKindPolice1) {
         ++kind8_seen;
@@ -628,7 +630,8 @@ void HeadChecks(const Probe& probe) {
   const cl::Car& car2 = *probe.traffic[1];
   lp::MakeHeadLight(car2, frame, tier, 1.0f, &out);
   Check(out.size() == 1, "a traffic car whose headlights are on and not in the frame gets a head lamp light");
-  const Light& l = out[0];
+  if (out.size() != 1) return;
+  const Light l = out.front();
   Check(l.kind == LightKind::kSpot && l.law == LightLaw::kHeadlight && l.source == LightSource::kHeadlight && l.roles == kRoleMaskSurface && (l.flags & kLightFlagGameLit) == 0,
         "a spot of the headlight law, surface light only");
   CheckNear(l.law_a, light_laws::kHeadlightFalloffDistance, 1.0e-6, "the rig's falloff distance");
@@ -1160,8 +1163,10 @@ int main(int argc, char** argv) {
   }
   static Probe probe;
   FillProbe(&probe);
-  Check(probe.cars.count == 6 && probe.player != nullptr && probe.racer_on != nullptr && probe.racer_off != nullptr && probe.traffic[0] != nullptr && probe.traffic[1] != nullptr && probe.traffic[2] != nullptr,
+  const bool have_cars = probe.cars.count == 6 && probe.player && probe.racer_on && probe.racer_off && probe.traffic[0] && probe.traffic[1] && probe.traffic[2];
+  Check(have_cars,
         "the probe's six cars: the player, two racers, three traffic cars");
+  if (!have_cars) return 1;
   TierChecks();
   ScoreChecks();
   PoliceChecks(probe);

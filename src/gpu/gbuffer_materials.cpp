@@ -2,13 +2,13 @@
 
 #include "gbuffer_materials.h"
 
-#include <cstdlib>
 #include <string>
 
 #include <rex/logging/log_category.h>
 #include <rex/platform/file.h>
 
 #include "mc_engine/modloader/modloader.h"
+#include "os/environment.h"
 #include "texture_names.h"
 #include "textures.h"
 
@@ -21,8 +21,7 @@ namespace {
 constexpr uint64_t kRefreshFrames = 30;
 
 std::string EnvText(const char* name) {
-  const char* value = std::getenv(name);
-  return value != nullptr ? std::string(value) : std::string();
+  return larecomp::os::ReadEnvironment(name).value_or("");
 }
 
 }  // namespace

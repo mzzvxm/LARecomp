@@ -81,12 +81,16 @@ void TestTransform() {
   // A game camera: at (10, 2, 5) looking down -z of its own view space (z backward), with a yaw of 0.3 rad.
   const tp::Mat4 camera_to_world = tp::Mul(RotationY(0.3), Translation(10, 2, 5));
   tp::Mat4 view;
-  Check(tp::Inverse(camera_to_world, &view), "the camera's matrix has an inverse");
+  const bool inverted = tp::Inverse(camera_to_world, &view);
+  Check(inverted, "the camera's matrix has an inverse");
+  if (!inverted) return;
   const tp::Mat4 model = tp::Mul(RotationY(-0.7), Translation(12, 2.5, 3));  // a part placed near the camera
   const double p[3] = {0.4, -0.2, 1.3};
 
   float t[3][4];
-  Check(rr::PackInstanceTransform(model, view, false, t), "a rigid placement packs");
+  const bool packed = rr::PackInstanceTransform(model, view, false, t);
+  Check(packed, "a rigid placement packs");
+  if (!packed) return;
   double world[3], expected[3], got[3];
   Apply(model, p, world);
   Apply(view, world, expected);
@@ -94,21 +98,25 @@ void TestTransform() {
   Check(Near(got[0], expected[0]) && Near(got[1], expected[1]) && Near(got[2], expected[2]), "the 3x4 does what (p 1) * model * view does");
 
   float flipped[3][4];
-  Check(rr::PackInstanceTransform(model, view, true, flipped), "a flipped placement packs");
+  const bool packed_flipped = rr::PackInstanceTransform(model, view, true, flipped);
+  Check(packed_flipped, "a flipped placement packs");
+  if (!packed_flipped) return;
   Apply34(flipped, p, got);
   Check(Near(got[0], expected[0]) && Near(got[1], expected[1]) && Near(got[2], -expected[2]), "flipping negates the view's z only");
 
   // The row-to-column transposition: a pure translation lands in the last column.
   float tr[3][4];
-  Check(rr::PackInstanceTransform(Translation(1, 2, 3), tp::Identity(), false, tr), "a translation packs");
-  Check(tr[0][3] == 1.0f && tr[1][3] == 2.0f && tr[2][3] == 3.0f && tr[0][0] == 1.0f && tr[1][1] == 1.0f && tr[2][2] == 1.0f &&
+  const bool packed_translation = rr::PackInstanceTransform(Translation(1, 2, 3), tp::Identity(), false, tr);
+  Check(packed_translation, "a translation packs");
+  Check(packed_translation && tr[0][3] == 1.0f && tr[1][3] == 2.0f && tr[2][3] == 3.0f && tr[0][0] == 1.0f && tr[1][1] == 1.0f && tr[2][2] == 1.0f &&
             tr[0][1] == 0.0f && tr[1][0] == 0.0f,
         "the translation is the 3x4's last column, the rotation the identity");
 
   // A rotation's rows and columns: v' = v R, the 3x4 is R transposed.
   float rot[3][4];
-  Check(rr::PackInstanceTransform(RotationY(0.5), tp::Identity(), false, rot), "a rotation packs");
-  Check(Near(rot[0][2], std::sin(0.5)) && Near(rot[2][0], -std::sin(0.5)), "the rotation is transposed into the column form");
+  const bool packed_rotation = rr::PackInstanceTransform(RotationY(0.5), tp::Identity(), false, rot);
+  Check(packed_rotation, "a rotation packs");
+  Check(packed_rotation && Near(rot[0][2], std::sin(0.5)) && Near(rot[2][0], -std::sin(0.5)), "the rotation is transposed into the column form");
 
   // A scale (the squash and stretch of a part) packs; no volume and perspective do not.
   tp::Mat4 scale = tp::Identity();

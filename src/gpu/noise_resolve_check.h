@@ -257,9 +257,11 @@ inline std::string ReadFile(const std::string& path) {
   std::string s;
   char buf[65536];
   size_t n;
-  while ((n = std::fread(buf, 1, sizeof(buf), f)) > 0) {
+  do {
+    n = std::fread(buf, 1, sizeof(buf), f);
     s.append(buf, n);
-  }
+  } while (n == sizeof(buf));
+  if (std::ferror(f)) s.clear();
   std::fclose(f);
   return s;
 }

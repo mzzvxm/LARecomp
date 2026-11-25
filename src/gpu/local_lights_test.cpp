@@ -1313,6 +1313,7 @@ FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const 
         }
       }
     }
+    g_stored_depth = {};
     return r;
   }
   for (uint32_t i = 0; i < count; ++i) {
@@ -1329,6 +1330,7 @@ FlowResult ShaderFlow(const PixelData& px, const hlsl_shim::LpGlobals& g, const 
     r.sum = r.sum + add;
     r.written = true;
   }
+  g_stored_depth = {};
   return r;
 }
 
@@ -1530,6 +1532,7 @@ void CostChecks() {
         if (hlsl_shim::LpTakesContact(rows_of[k], material && pd.vehicle)) {  // the single draw of the neon-bleed shader: its own contact term
           g_stored_depth = pd.field;
           add = add * hlsl_shim::LpContactVisibility(g, w, nrm, rows_of[k].pos);
+          g_stored_depth = {};
           if (!AnyPositive(add)) {
             continue;
           }
@@ -2075,6 +2078,7 @@ float ContactBoth(const lp::Rows& rows, float tan_x, float tan_y, float width, f
   const hlsl_shim::LpGlobals g = ShimGlobalsOf(rows, tan_x, tan_y, width, height, lin);
   const float hl = hlsl_shim::LpContactVisibility(g, hlsl_shim::float3(world[0], world[1], world[2]), hlsl_shim::float3(normal[0], normal[1], normal[2]),
                                                   hlsl_shim::float3(light[0], light[1], light[2]));
+  g_stored_depth = {};
   CheckNear(hl, cpp, 2.0e-4, "the HLSL twin's contact term is the C++ one: " + what);
   return cpp;
 }
@@ -2543,6 +2547,7 @@ CapStats CapScenes(uint32_t points, int scenes, Lcg& rng) {
           const double diff = std::fabs(double(vis[i]) - double(capped[i]));
           st.cross_worst = std::max(st.cross_worst, diff);
         }
+        g_stored_depth = {};
         ++st.cross_checked;
       }
       // the alternatives that were measured and not taken

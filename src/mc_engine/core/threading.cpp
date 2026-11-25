@@ -4,6 +4,7 @@
 #include "logging.h"
 
 #include "settings/larecomp_settings.h"
+#include "os/environment.h"
 #include "os/cpu_affinity_rules.h"
 #include "os/thread_yield.h"
 #include <rex/ppc/hook.h>
@@ -225,8 +226,8 @@ u32 Sleep_hook(u32 ms) {
     }
 
     static const bool legacy_spin = [] {
-        const char* e = std::getenv("MCLA_SLEEP_SPIN");
-        return e && *e == '1';
+        const auto e = larecomp::os::ReadEnvironment("MCLA_SLEEP_SPIN");
+        return e && e->starts_with('1');
     }();
 
     const auto target = std::chrono::steady_clock::now()

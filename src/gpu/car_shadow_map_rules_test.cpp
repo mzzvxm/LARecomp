@@ -505,7 +505,9 @@ void TestMatrices() {
   view.m[3][2] = -(forward[0] * eye[0] + forward[1] * eye[1] + forward[2] * eye[2]);
 
   float rows[3][4];
-  Check(cs::ViewToMap(fit, view, rows), "the contact pass's rows");
+  const bool have_rows = cs::ViewToMap(fit, view, rows);
+  Check(have_rows, "the contact pass's rows");
+  if (!have_rows) return;
   double worst = 0.0;
   for (const auto& corner : kBox) {
     for (int mask = 0; mask < 4; ++mask) {

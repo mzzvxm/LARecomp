@@ -15,6 +15,7 @@
 #include "mc_engine/modloader/rpf3.h"
 #include "mc_engine/music/audio_dat.h"
 #include "mc_engine/music/wave_bank.h"
+#include "os/environment.h"
 
 // The archive stores plain files deflated: modloader's InflateRaw (texture.h) inflates them with the stb_image
 // decoder compiled into modloader/texture.cpp (rexglue 0.11 no longer exports the SDK's own copy).
@@ -634,16 +635,14 @@ std::vector<fs::path> MusicFolders(const fs::path& exe_dir) {
     // The folder's name is found whatever its case (a Linux file system tells "Music" from "music").
     std::vector<fs::path> folders{mc::modloader::FindDirNoCase(exe_dir, "music")};
 #if defined(_WIN32)
-    if (const char* home = std::getenv("USERPROFILE")) {
-        folders.push_back(fs::path(home) / "Documents" / "Rockstar Games" / "LARecomp" /
-                          "User Music");
-    }
+    const auto home = larecomp::os::ReadEnvironment("USERPROFILE");
 #else
-    if (const char* home = std::getenv("HOME")) {
-        folders.push_back(fs::path(home) / "Documents" / "Rockstar Games" / "LARecomp" /
+    const auto home = larecomp::os::ReadEnvironment("HOME");
+#endif
+    if (home) {
+        folders.push_back(fs::path(*home) / "Documents" / "Rockstar Games" / "LARecomp" /
                           "User Music");
     }
-#endif
     return folders;
 }
 

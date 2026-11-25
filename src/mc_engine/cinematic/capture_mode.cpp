@@ -73,6 +73,7 @@
 //
 
 #include "capture_mode.h"
+#include "os/environment.h"
 #include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
@@ -775,7 +776,7 @@ const ExeInfo& GetExeInfo() {
             }
         }
         if (i.commit.empty()) {
-            if (const char* env = std::getenv("LARECOMP_EXE_COMMIT")) i.commit = env;
+            i.commit = larecomp::os::ReadEnvironment("LARECOMP_EXE_COMMIT").value_or("");
         }
         return i;
     }());

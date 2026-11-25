@@ -367,7 +367,11 @@ void TestFile() {
     if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
         uint8_t buf[4096];
         size_t n;
-        while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+        do {
+            n = std::fread(buf, 1, sizeof buf, f);
+            bytes.insert(bytes.end(), buf, buf + n);
+        } while (n == sizeof buf);
+        Check(!std::ferror(f), "the WAV file was read without errors");
         std::fclose(f);
     }
     CheckU(bytes.size(), 56 + 1601 * 8, "the file's size is the header and the samples");
@@ -402,7 +406,11 @@ void TestFile() {
         if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
             uint8_t buf[4096];
             size_t n;
-            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) six.insert(six.end(), buf, buf + n);
+            do {
+                n = std::fread(buf, 1, sizeof buf, f);
+                six.insert(six.end(), buf, buf + n);
+            } while (n == sizeof buf);
+            Check(!std::ferror(f), "the WAV file was read without errors");
             std::fclose(f);
         }
         CheckU(six.size(), 80 + 256 * 24, "size of the 6 channel file");
@@ -444,7 +452,11 @@ void TestCloseDuringAppends() {
         if (std::FILE* f = std::fopen(path.string().c_str(), "rb")) {
             uint8_t buf[8192];
             size_t n;
-            while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) bytes.insert(bytes.end(), buf, buf + n);
+            do {
+                n = std::fread(buf, 1, sizeof buf, f);
+                bytes.insert(bytes.end(), buf, buf + n);
+            } while (n == sizeof buf);
+            Check(!std::ferror(f), "the WAV file was read without errors");
             std::fclose(f);
         }
         Check(bytes.size() >= 56, "race: the header is there");

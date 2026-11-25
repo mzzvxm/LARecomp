@@ -77,6 +77,7 @@
 #endif
 
 #include "hooks.h"
+#include "os/environment.h"
 #include "hooks_internal.h"
 #include "mc_engine/camera/camera_trace.h"
 #include "../cinematic/capture_mode.h"
@@ -149,7 +150,7 @@ double QpcPerMs() {
 int32_t FpsLimit() {
     // The same override EnforceFrameLimit honours.
     static const int32_t env_limit = [] {
-        if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
+        if (const auto e = larecomp::os::ReadEnvironment("MCLA_FPS_CAP")) return std::atoi(e->c_str());
         return -1;
     }();
     return env_limit >= 0 ? env_limit : larecomp::settings::fps_limit.Get();

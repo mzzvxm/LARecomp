@@ -996,7 +996,9 @@ void CameraChecks() {
       Check((handed == 0 && det > 0.99f) || (handed == 1 && det < -0.99f), Num("the test's camera %d has the expected handedness (det %.3f)", double(handed), double(det)));
       float ray[4];
       float cam[4];
-      Check(gb::MakeCameraRows(right, up, forward, tan_x, tan_y, width, height, ray, cam), "a camera's axes make the rows");
+      const bool have_rows = gb::MakeCameraRows(right, up, forward, tan_x, tan_y, width, height, ray, cam);
+      Check(have_rows, "a camera's axes make the rows");
+      if (!have_rows) continue;
       const gb::Quat q{cam[0], cam[1], cam[2], cam[3]};
       Check(std::fabs(q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w - 1.0f) < 1.0e-4f, "the rotation is a unit quaternion");
       for (int j = 0; j < 6; ++j) {

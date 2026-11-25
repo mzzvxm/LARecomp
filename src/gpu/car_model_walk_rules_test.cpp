@@ -493,10 +493,10 @@ void TestWalk() {
   Check(h30 && h30->valid && h30->in_use && h30->region == 2 && h30->item == car.hood_item && h30->matrices == car.hood_matrices, "the hood, variant 3 lod 0: in use, region 2, its item and matrix array");
   Check(h31 && h31->valid && !h31->in_use, "the hood, variant 3 lod 1: valid, not in use (the parts' lod, V+6008, is 0)");
   Check(h40 && h40->valid && !h40->in_use, "the hood, variant 4: valid, not worn: not in use");
-  Check(h30->matrix_read && h30->matrix_bone == 4 && h30->matrix_position[0] == 10.5f && h30->matrix_position[1] == 2.5f && h30->matrix_position[2] == -29.0f,
+  Check(h30 && h30->matrix_read && h30->matrix_bone == 4 && h30->matrix_position[0] == 10.5f && h30->matrix_position[1] == 2.5f && h30->matrix_position[2] == -29.0f,
         "the hood's matrix source: the matrix array's entry of its lowest bone (4), row 3");
-  Check(body1->matrix_read && body1->matrix_bone == 0, "the body's matrix source: bone 0 of the body item's array");
-  Check(h30->models == 2 && h30->bucket_mask == 5 && h30->geometries == 2, "the hood has two models and two geometries; the LOD's bucket mask");
+  Check(body1 && body1->matrix_read && body1->matrix_bone == 0, "the body's matrix source: bone 0 of the body item's array");
+  Check(h30 && h30->models == 2 && h30->bucket_mask == 5 && h30->geometries == 2, "the hood has two models and two geometries; the LOD's bucket mask");
   Check(w.entries_present == 5 && w.entries_loaded == 5 && w.entries_valid == 4 && w.entries_unreadable == 0,
         "five entries present and loaded (the body's state word is 3), four valid (the body's lod 0 is not placed)");
 
@@ -512,6 +512,7 @@ void TestWalk() {
     wide = g.address == car.wide_geometry ? &g : wide;
   }
   Check(rigid && skin && wide, "the geometries are found by address");
+  if (!rigid || !skin || !wide) return;
   Check(rigid->part == 2 && rigid->variant == 3 && rigid->lod == 0 && rigid->model == 0 && rigid->slot == 0 && rigid->in_use, "the rigid geometry's place");
   Check(rigid->vertex_count == 4 && rigid->index_count == 6 && rigid->primitive_count == 2 && rigid->draw_mode == cw::kPrimitiveTriangleList, "counts and the triangle list mode");
   Check(rigid->vb_ok && rigid->vb_stride == 32 && rigid->vb_count == 4 && rigid->decl.PositionIsFloat3() && rigid->decl.offset[0] == 0, "vertex buffer: stride 32, the position float3 at offset 0");

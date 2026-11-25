@@ -39,6 +39,7 @@
 #include "mc_engine/core/guest_profiler.h"
 #include "larecomp_guest.h"
 #include "fence_spin.h"
+#include "os/environment.h"
 #include "os/thread_yield.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
@@ -82,8 +83,8 @@ bool Patch_FenceSpinThrottle() {
     // with the log made every A/B pay the instrumentation and compare against
     // a binary that did not. MCLA_SPIN_COUNTERS=1 turns them on deliberately.
     static const bool kCount = [] {
-        const char* e = std::getenv("MCLA_SPIN_COUNTERS");
-        return e && *e == '1';
+        const auto e = larecomp::os::ReadEnvironment("MCLA_SPIN_COUNTERS");
+        return e && e->starts_with('1');
     }();
     if (!larecomp::settings::fence_spin_throttle.Get()) {
         // Still count the reaches, so the OFF run reports the same call rate
@@ -220,7 +221,7 @@ static void EnforceFrameLimit() {
     // MCLA_FPS_CAP overrides the cvar. Read once: environment variables cannot
     // change after process start, and this runs on every single frame.
     static const int32_t env_limit = [] {
-        if (const char* e = std::getenv("MCLA_FPS_CAP")) return std::atoi(e);
+        if (const auto e = larecomp::os::ReadEnvironment("MCLA_FPS_CAP")) return std::atoi(e->c_str());
         return -1;
     }();
     // The pacing deadline. File-scope-static across calls, so it has to be
@@ -389,8 +390,8 @@ static uint64_t StepCapForFrame(uint64_t measured) {
     // environment variables cannot change after the process starts.
     static const double env_ms = [] {
         double ms = 0.0;
-        if (const char* e = std::getenv("MCLA_MAX_FRAME_MS")) {
-            if (!ParseStepCapMs(e, ms)) ms = 0.0;
+        if (const auto e = larecomp::os::ReadEnvironment("MCLA_MAX_FRAME_MS")) {
+            if (!ParseStepCapMs(e->c_str(), ms)) ms = 0.0;
         }
         return ms;
     }();
