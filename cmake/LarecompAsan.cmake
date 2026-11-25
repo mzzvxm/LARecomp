@@ -35,6 +35,9 @@ foreach(_asan_target IN ITEMS larecomp larecomp_gpu plume larecomp_cpuguard
     if(TARGET ${_asan_target})
         target_compile_options(${_asan_target} PRIVATE
             "$<$<COMPILE_LANGUAGE:C,CXX>:${_asan_compile_options}>")
+        # The uninstrumented recompiled code links into the same exe: the MSVC STL container annotations must
+        # agree across objects (/failifmismatch annotate_string / annotate_vector), so they stay off here.
+        target_compile_definitions(${_asan_target} PRIVATE _DISABLE_STRING_ANNOTATION _DISABLE_VECTOR_ANNOTATION)
         target_link_libraries(${_asan_target} PRIVATE larecomp_asan_runtime)
     endif()
 endforeach()
