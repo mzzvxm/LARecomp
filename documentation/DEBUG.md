@@ -190,7 +190,7 @@ The same text works in the launcher's **More game options**, and as `mcla_gpu_pa
 
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. `break_pairwise_collision` is not here either: its hook reads it at every call, so it is live (a setting in F4 and a launch argument that also works while the game runs; it has no row). The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
-The list, 130 names in 15 groups (the number in brackets is the group's size):
+The list, 132 names in 15 groups (the number in brackets is the group's size):
 
 **The unlock** (1)
 `debug_menu`
