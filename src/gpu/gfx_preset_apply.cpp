@@ -25,7 +25,9 @@ namespace cv = larecomp::cvar;
 std::recursive_mutex g_mutex;
 bool g_started = false;
 Preset g_held = Preset::kCustom;          // the named preset whose values are held over the rows now (CUSTOM: none)
-std::unordered_set<std::string> g_rows;   // the rows held
+// The rows held. On the heap and never freed: no destructor runs at exit (exit_audit: the fast exit must not
+// tear down statics a late callback could still reach).
+std::unordered_set<std::string>& g_rows = *new std::unordered_set<std::string>();
 bool g_had_own = false;                   // some row had a value of the player's own (the file's, or set this session) when the preset's values went over it
 
 // Set while this file writes settings: the preset's own callback and the menu hook ignore what they see.
