@@ -200,6 +200,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/gameplay/squash_stretch.cpp
     src/mc_engine/gameplay/garage_fixes.cpp
     src/mc_engine/gameplay/garage_fixes_open.cpp
+    src/mc_engine/gameplay/car_mesh_fixes.cpp
     src/mc_engine/gameplay/tire_camber.cpp
     src/mc_engine/gameplay/tire_offset.cpp
     src/mc_engine/gameplay/hud_units.cpp
