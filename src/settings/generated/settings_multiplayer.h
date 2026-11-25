@@ -38,8 +38,9 @@ class MultiplayerSettings final : public rex::SettingOwner {
                     "restore the stock behaviour.", rex::kDebugOnly);
 
   REX_SETTING(std::string, online_master_server, "26.24.254.19:31003", "Server list for the server browser (F6): host or host:port of a "
-                      "larecomp_master_server (port 31003 if omitted). Empty = no list, only "
-                      "server_browser_servers and the current server.");
+                      "larecomp_master_server (port 31003 if omitted). Blank (empty or only spaces) "
+                      "= no list: only server_browser_servers and the current server. Deleting "
+                      "the setting brings the default back.");
 
   REX_SETTING(bool, online_race_prop_guard, true, "Skip the physics update of a prop whose owner is broken instead of "
                     "crashing. Starting an online race re-syncs every race prop.", rex::kDebugOnly);

@@ -1194,6 +1194,40 @@ void CheckLoopbackFlows() {
         CheckInt(none.servers.size(), 0, "list: nothing to ask");
     }
     {
+        // A blank list address is no list, whatever the blank is made of: nothing is asked and the state stays "not set"
+        // (online_master_server = blank means no list; it is not the default list and not an address to try).
+        const int hits_before = master.hits;
+        for (const std::string blank : {std::string(" "), std::string("   "), std::string("\t"), std::string(" \r\n\t ")}) {
+            br::Sources s;
+            s.master = blank;
+            const br::Collected res = br::Collect(s, opts, {});
+            CheckInt(int(res.master.state), int(br::MasterStatus::State::kNotSet), "list: a blank address is no list");
+            CheckEq(res.master.text, "", "list: and says nothing about a list that does not answer");
+            CheckInt(res.master.http_status, 0, "list: and asked nobody");
+            CheckInt(res.servers.size(), 0, "list: so no servers");
+        }
+        CheckInt(int(master.hits), hits_before, "list: no blank address reached the master");
+        CheckEq(br::TrimAddress("  \t 127.0.0.1:31003 \r\n"), "127.0.0.1:31003", "list: the trim drops the white space at both ends");
+        CheckEq(br::TrimAddress(" a b "), "a b", "list: and only there");
+        CheckEq(br::TrimAddress(" \t\r\n"), "", "list: white space alone is blank");
+
+        // the player's own servers and the current one are still shown, as the only servers
+        br::Sources own;
+        own.master = "   ";
+        own.favorites = a.Address();
+        const br::Collected only_own = br::Collect(own, opts, {});
+        CheckInt(int(only_own.master.state), int(br::MasterStatus::State::kNotSet), "list: a blank address with a saved server: still no list");
+        CheckInt(only_own.servers.size(), 1, "list: only the saved server");
+        if (only_own.servers.size() == 1) Check(only_own.servers[0].favorite && !only_own.servers[0].listed, "list: it is the player's own, not listed");
+
+        // a stray space around a real address is not part of it
+        br::Sources padded;
+        padded.master = "  " + master.Address() + " \t";
+        const br::Collected ok = br::Collect(padded, opts, {});
+        CheckInt(int(ok.master.state), int(br::MasterStatus::State::kOk), "list: an address with spaces around it is the address");
+        CheckInt(int(master.hits), hits_before + 1, "list: and the master was asked once");
+    }
+    {
         br::Sources s;
         s.master = "127.0.0.1:" + std::to_string(ClosedTcpPort());
         const br::Collected res = br::Collect(s, opts, {});
@@ -1249,6 +1283,21 @@ void CheckLoopbackFlows() {
         Check(Path(doc2, "ok").b, "list: unreachable master is still ok:true");
         CheckEq(Path(doc2, "master.state").s, "unreachable", "list: state unreachable");
         CheckInt(int(Path(doc2, "servers").a.size()), 0, "list: no servers");
+    }
+    {
+        // the tool's JSON for a blank --master is the document of no list: the address is null, the state "not_set"
+        ot::Args blank;
+        blank.command = ot::Command::kServers;
+        blank.master = "   ";
+        blank.servers = a.Address();
+        blank.timeout_ms = 200;
+        const std::string text = ot::RenderServers(ot::GatherServers(blank), false);
+        JV doc3;
+        Check(ParseJson(text, doc3, err), "list: the document of a blank list is valid JSON");
+        Check(Path(doc3, "master.address").t == JV::kNull, "list: a blank list has no address in the document");
+        CheckEq(Path(doc3, "master.state").s, "not_set", "list: its state is not_set");
+        CheckEq(Path(doc3, "master.message").s, "", "list: with no message");
+        CheckInt(int(Path(doc3, "servers").a.size()), 1, "list: only the saved server");
     }
 
     {

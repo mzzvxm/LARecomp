@@ -189,6 +189,13 @@ void SplitHostPort(const std::string& in, std::string& host, uint16_t& port) {
     if (p > 0 && p < 65536) port = uint16_t(p);
 }
 
+std::string TrimAddress(const std::string& in) {
+    size_t first = 0, last = in.size();
+    while (first < last && std::isspace(static_cast<unsigned char>(in[first]))) ++first;
+    while (last > first && std::isspace(static_cast<unsigned char>(in[last - 1]))) --last;
+    return in.substr(first, last - first);
+}
+
 bool SendTargetHint(const std::string& host, uint16_t port, uint32_t host_vip, int timeout_ms) {
     SocketHandle s = Open(host, port);
     if (s == kNoSocket) return false;
@@ -380,8 +387,10 @@ Collected Collect(const Sources& src, const Options& opts, const std::map<std::s
     // Who to ask: the master's list, the player's own, the current relay.
     std::vector<Target> targets;
     std::set<std::string> seen;
-    if (!src.master.empty()) {
-        const MasterAnswer m = FetchMaster(src.master, opts);
+    // A blank list address (empty, or only white space) is no list at all: nothing is asked, the state stays "not set".
+    const std::string master = TrimAddress(src.master);
+    if (!master.empty()) {
+        const MasterAnswer m = FetchMaster(master, opts);
         out.master.text = m.text;
         out.master.detail = m.detail;
         out.master.http_status = m.http_status;

@@ -14,7 +14,9 @@ The player's online identity (gamertag, key, backup, recovery code, rename) has 
 
 ### The server list address is a setting, never built in
 
-The tool has no server list address of its own. The launcher reads the player's list address from `larecomp.toml` (`online_master_server`; the game's default is the list at the address in `src/settings/generated/settings_multiplayer.h`) and passes it with `--master`. Without `--master` the tool asks no list and says so (`master.state` is `"not_set"`). A launcher setting for the list address belongs on the Settings page, with the game's default as its default.
+The tool has no server list address of its own. The launcher reads the player's list address from `larecomp.toml` (`online_master_server`; the game's default is the list at the address in `src/settings/generated/settings_multiplayer.h`) and passes it with `--master`. Without `--master` the tool asks no list and says so (`master.state` is `"not_set"`).
+
+A blank address means no list: a setting that is empty, or holds only spaces, is not the default list. The game's server browser then shows only the player's own servers (`server_browser_servers`) and the current server, and the launcher does the same and passes no `--master` (the tool also takes `--master ""` and `--master " "` as no list, and its document says `master.address` is `null`). The default address is back when the setting is deleted or reset to the default in a settings page, never by leaving it blank. A launcher setting for the list address belongs on the Settings page, with the game's default as its default and a blank box allowed.
 
 ### Running it
 
@@ -48,7 +50,7 @@ larecomp_online_tool --help
 
 | Option | Meaning |
 |---|---|
-| `--master H[:P]` | The server list to read (`POST /servers`; port 31003 when absent). Leave it out (or pass an empty value) for no list. |
+| `--master H[:P]` | The server list to read (`POST /servers`; port 31003 when absent). Leave it out (or pass a blank value: empty, or only spaces) for no list. |
 | `--servers a,b` | The player's own relays, `host[:port]` separated by commas (`server_browser_servers`; port 31000 when absent). An address that is no relay but answers `/servers` is treated as a list: its relays are asked and it is not shown itself, as in the game. |
 | `--current H[:P]` | The relay the game is set to (`mcla_online_server`). |
 | `--icons DIR` | Keep relay icons in `DIR` as `<crc>.png` (created if missing). Without it no icon is fetched (the document still has the icon's size and checksum). |

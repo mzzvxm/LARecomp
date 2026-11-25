@@ -8787,7 +8787,7 @@
   "type": "std::string",
   "default": "\"26.24.254.19:31003\"",
   "category": "MCLA/Multiplayer",
-  "help": "\"Server list for the server browser (F6): host or host:port of a \"\n                      \"larecomp_master_server (port 31003 if omitted). Empty = no list, only \"\n                      \"server_browser_servers and the current server.\"",
+  "help": "\"Server list for the server browser (F6): host or host:port of a \"\n                      \"larecomp_master_server (port 31003 if omitted). Blank (empty or only spaces) \"\n                      \"= no list: only server_browser_servers and the current server. Deleting \"\n                      \"the setting brings the default back.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0

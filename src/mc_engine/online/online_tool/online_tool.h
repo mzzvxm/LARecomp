@@ -31,7 +31,7 @@ struct Args {
     Command command = Command::kNone;
     bool pretty = false;
     // servers
-    std::string master;       // --master: the server list, "host[:port]"; empty = none (there is no built-in default)
+    std::string master;       // --master: the server list, "host[:port]"; empty or only spaces = no list (there is no built-in default)
     std::string servers;      // --servers: the player's own, comma-separated
     std::string current;      // --current: the relay the game is on
     std::string icons_dir;    // --icons: where to keep relay icons, <crc>.png; empty = icons are not fetched
