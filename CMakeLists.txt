@@ -203,6 +203,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/display/display_mode.cpp
     src/mc_engine/display/window_icon.cpp
     src/mc_engine/display/ultrawide.cpp
+    src/mc_engine/hooks/run_ready.cpp
     src/mc_engine/menus/frame_generation_menu.cpp
     src/mc_engine/menus/upscaling_menu.cpp
     src/mc_engine/keyboard_native.cpp
@@ -652,6 +653,9 @@ target_include_directories(larecomp_cli_rules_test PRIVATE src)
 add_executable(larecomp_browser_join_core_test EXCLUDE_FROM_ALL
     src/mc_engine/online/server_browser/browser_join_core_test.cpp)
 target_include_directories(larecomp_browser_join_core_test PRIVATE src/mc_engine/online/server_browser)
+
+add_executable(larecomp_run_ready_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/run_ready_test.cpp)
 
 # The --join_server launch argument (src/mc_engine/online/server_browser/join_server_core.h: the grammar, the room match, the status file the
 # launcher reads) has a check that needs no game and no server:

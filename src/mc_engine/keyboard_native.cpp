@@ -2,6 +2,7 @@
 #include "keyboard_native.h"
 #include "settings/immortal.h"
 #include "mc_engine/display/ultrawide.h"
+#include "mc_engine/hooks/run_ready.h"
 #include "larecomp_guest.h"
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
@@ -1627,6 +1628,7 @@ void RebuildPadKeys(const uint8_t* b) {
 
 // Hook at loc_82615048 of sub_82614D30; r31 is the pad being built.
 void Hook_PadBitsFinalize(PPCRegister& r31) {
+    if (r31.u32 == 0x82905388u) mc::run_ready::NotePadPoll();
     if (g_game_entered || !larecomp::settings::keyboard_native.Get()) return;
     uint8_t* b = GuestBase();
     const uint32_t pad = static_cast<uint32_t>(r31.u64);
