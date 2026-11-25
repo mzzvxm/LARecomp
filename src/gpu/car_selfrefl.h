@@ -192,6 +192,8 @@ class CarSelfRefl {
   // True when the effect was on at the start and its pipelines were listed with the host precache (Initialize): what CarRtRefl asks to
   // list its own pipeline the same way.
   bool ListedAtStart() const { return listed_; }
+  // The main colour target's exponent bias as the last paint draw saw it (RT0's color_exp_bias); the game's own (kMainTargetExpBias) until one has. The side mirrors' trace takes it.
+  int32_t exp_bias() const { return exp_bias_; }
 
   // The Scene opened a frame's first list: reads the settings.
   void BeginFrame();

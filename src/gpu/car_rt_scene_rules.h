@@ -82,6 +82,10 @@ inline constexpr uint32_t kMaskOtherChrome = 0x20;
 inline constexpr uint32_t kMaskOtherPaint = 0x40;
 // The table's flags word (z): the mask in the low 8 bits, then these (CAR_RT_FLAG_*).
 inline constexpr uint32_t kFlagAfterWorld = 0x100;
+// The side mirrors (car_mirror_patch_rules.h, car_mirror_rt_rules.h): the instance is one of the two mirror glasses of the player's car, or a pane of glass a camera looks through (a window). They are
+// flags of the table's row and not mask bits: all eight bits of the mask are the cars' and the city's.
+inline constexpr uint32_t kFlagMirror = 0x200;
+inline constexpr uint32_t kFlagSeeThrough = 0x400;
 
 // The tyres' vertex shader (xWheelRubber VS_ParallaxRubber2: no palette, gWorld alone; car_dump_rules.h kKnownWorldOnlyVs).
 inline constexpr uint64_t kTyreVs = car_dump::kKnownWorldOnlyVs[0];

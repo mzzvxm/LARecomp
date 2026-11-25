@@ -340,7 +340,7 @@ void MenuChecks(const std::string& dir) {
   const size_t items = At(menu, "const ItemDef kReflectionItems[] = {");
   const size_t items_end = items == std::string::npos ? std::string::npos : At(menu, "\n};", items);
   const std::string page = items == std::string::npos || items_end == std::string::npos ? "" : menu.substr(items, items_end - items);
-  const char* order[] = {"PM_RxGpuRoadRefl", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl", "PM_RxGpuRtCityRefl", "PM_RxGpuSsr"};
+  const char* order[] = {"PM_RxGpuRoadRefl", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl", "PM_RxGpuRtCityRefl", "PM_RxGpuRtMirror", "PM_RxGpuSsr"};
   bool ordered = !page.empty();
   size_t last = 0;
   for (const char* key : order) {
@@ -348,7 +348,7 @@ void MenuChecks(const std::string& dir) {
     ordered = ordered && at != std::string::npos && at >= last;
     last = at == std::string::npos ? last : at;
   }
-  Check(ordered, "REFLECTIONS has ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, REFLECTIONS ON SURFACES in that order (the city row right after the car pass it rides on)");
+  Check(ordered, "REFLECTIONS has ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES in that order (the city row right after the car pass it rides on)");
   Check(Has(page, "NativeOnly(WithDynamics(Str(\"PM_RxGpuRtCityRefl\", \"mcla_gpu_rt_reflections\",") && Has(page, "\"RT CITY REFLECTIONS: \", kNativeRtCityVals, kNativeRtCityNames, 4),") && Has(page, "&kRtCityDynamics)),"),
         "the row is a native-only cycle of mcla_gpu_rt_reflections with four values and its dynamics");
   Check(Has(menu, "\"RT CITY REFLECTIONS: \"") && std::string(crs::kFullLabel) + ": " == "RT CITY REFLECTIONS: ", "the row's prefix is the header's whole label");
@@ -367,7 +367,7 @@ void MenuChecks(const std::string& dir) {
   const size_t dyn_end = dyn == std::string::npos ? 0 : menu.find(';', dyn);
   const std::string init = dyn == std::string::npos ? "" : menu.substr(dyn, dyn_end - dyn);
   Check(!init.empty() && !Has(init, "NeedsShadows") && !Has(init, "AoOn") && !Has(init, "ContactShadowsOn"), "RT CITY REFLECTIONS has nothing to do with the shadows or the occlusion");
-  Check(Has(menu, "\"Road, car, city and surface reflections.\""), "the tab's line names the city's reflections");
+  Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\""), "the tab's line names the city's reflections and the mirrors (at most 40 characters, as the longest of the other tabs' lines)");
 }
 
 // The text of one setting's definition in settings_gpu.h: from the text that finds it to the next definition (a help text can hold ");").

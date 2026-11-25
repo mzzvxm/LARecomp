@@ -30,6 +30,7 @@
 #include "gi_integration.h"
 #include "local_lights.h"
 #include "local_shadow.h"
+#include "car_mirror_rt.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
 #include "car_shadow_map.h"
@@ -848,6 +849,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   if (car_refl_) {
     car_refl_->BeginFrame();
+  }
+  if (car_mirror_) {
+    car_mirror_->BeginFrame();  // the side mirrors' setting; asks for the car's structures where the pass is wanted (car_mirror_rt.h)
   }
   if (car_frame_) {
     car_frame_->BeginFrame();
@@ -3862,6 +3866,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (only in a frame it ran raw; mcla_gpu_dlss_rr_rt_gi 2 leaves the hit distance out).
     temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);
   }
+  if (car_mirror_ && car_rt_ && car_rt_->TriggeredThisResolve()) {
+    // The side mirrors (car_mirror_rt.h): at the same trigger, after the car structures' step built the car's top level and the self-reflection's own pass is recorded; the traced mirror image is
+    // blended over the game's mirror glass in the main colour (its own pass, pipelines and target: the reset below forgets them too).
+    const bool car_mirror = car_mirror_->OnResolve(summary, list, car_refl_ ? car_refl_->exp_bias() : car_selfrefl::kMainTargetExpBias);
+    order_.Note(frame_order::Step::kCarMirror, car_mirror);
+  }
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
     gbuffer_->DrawView(summary, list);
@@ -4120,6 +4130,9 @@ void Scene::OnPresent() {
   }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
+  }
+  if (car_mirror_) {
+    car_mirror_->OnPresent();  // the frame boundary: an image of a pass that showed nothing for a while goes back
   }
   {
     // The frame's passes at the trigger and the end-of-scene copy, held to the table in frame_order.h (LIGHT-UNIFY U9): the first frame of each set of passes that ran is logged with the order they

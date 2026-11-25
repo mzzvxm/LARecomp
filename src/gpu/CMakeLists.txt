@@ -36,6 +36,7 @@ add_library(larecomp_gpu OBJECT
     car_rt_refl.cpp
     car_rt_glass_refl.cpp
     car_rt_opp_refl.cpp
+    car_mirror_rt.cpp
     city_refl.cpp
     city_refl_setting.cpp
     capture_readback.cpp
@@ -682,6 +683,16 @@ add_executable(larecomp_car_model_traffic_rules_test EXCLUDE_FROM_ALL car_model_
 # ao_main_ps.hlsl and ao_contact_ps.hlsl use the header's numbers and flags) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_ao_rules_test, then run src/gpu/larecomp_car_rt_ao_rules_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_car_rt_ao_rules_test EXCLUDE_FROM_ALL car_rt_ao_rules_test.cpp)
+# The player's side mirrors (car_mirror_patch_rules.h: which draws are the mirror glass, from a mesh's patch numbers and the pair in view space; car_mirror_rt_rules.h: the setting, the cell by class, the lens,
+# the mirrors' rectangles, the pixel's arithmetic; and that hlsl/car_mirror_rt_cs.hlsl, hlsl/car_mirror_apply_ps.hlsl, car_rt_common.hlsli and the host hold the headers' numbers) likewise:
+#   cmake --build <dir> --target larecomp_car_mirror_rt_rules_test, then run src/gpu/larecomp_car_mirror_rt_rules_test [<src dir>] (exit 0 = passed).
+add_executable(larecomp_car_mirror_rt_rules_test EXCLUDE_FROM_ALL car_mirror_rt_rules_test.cpp)
+# The side mirrors' setting and its pause row (car_mirror_setting.h, MIRROR-ROW: what each word comes to on every class and ray tracing tier and that it is the pass's own Wanted, the gate that greys the row and
+# what it says, the page width, AUTO's label and the launcher's line; it also reads pause_menu.cpp, the settings, the exposure list and the CMake lines for the wiring) likewise:
+#   cmake --build <dir> --target larecomp_car_mirror_setting_test, then run src/gpu/larecomp_car_mirror_setting_test [-v] [<src/gpu dir>] (exit 0 = passed; the folder defaults to the test's own, src/gpu).
+add_executable(larecomp_car_mirror_setting_test EXCLUDE_FROM_ALL car_mirror_setting_test.cpp)
+target_include_directories(larecomp_car_mirror_setting_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_car_mirror_setting_test PRIVATE cxx_std_23)
 # The camera cut rule (temporal_camera.h, temporal_cut.cpp) is pure and has a check of its own, on camera
 # sequences recorded from the game's logs and made up:
 #   cmake --build <dir> --target larecomp_camera_cut_test, then run src/gpu/larecomp_camera_cut_test
@@ -1294,6 +1305,10 @@ larecomp_gpu_host_shader(gi_apply_ps ps_6_0 DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=0
 larecomp_gpu_host_shader(gi_apply_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=0)
 larecomp_gpu_host_shader(gi_apply_up_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=1)
 larecomp_gpu_host_shader(gi_apply_up_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=1 GIA_MS=1 GIA_UP=1)
+# The player's side mirrors (car_mirror_rt.h): the trace is a compute pass with inline ray queries against the car's structures (Shader Model 6.5, SPIR-V 1.5 on Vulkan), the apply blends its image over the
+# main colour (an ordinary pixel shader).
+larecomp_gpu_host_shader_rt(car_mirror_rt_cs cs_6_5)
+larecomp_gpu_host_shader(car_mirror_apply_ps ps_6_0)
 # The ray tracing benchmark's trace (rt_bench.h, rt_bench_rules.h): random rays through a synthetic city, run once on the first start with a card to move it between
 # the weak and the strong ray tracing tier (rt_tier.h). Shader Model 6.5 and SPIR-V 1.5 like the car passes.
 larecomp_gpu_host_shader_rt(rt_bench_cs cs_6_5)

@@ -495,6 +495,16 @@ class GPUSettings final : public rex::SettingOwner {
     "car self-reflections are on; off keeps the screen-space version everywhere. A graphics card that cannot ray trace uses the "
     "screen-space version whatever this says. Live.", rex::Allowed("auto", "off"));
 
+  REX_SETTING(std::string, mcla_gpu_car_mirror_rt, "auto", "Ray traced side mirrors: where the graphics card can ray trace (Direct3D 12 with ray tracing 1.1, Vulkan with ray queries), the two side mirrors of your car show the real view behind - the cars beside "
+    "you, your own flank and the sky and street the game's environment map holds - instead of the game's blurred sky, mostly in the first person cameras (cockpit, bumper), where "
+    "the glass is big enough to read. auto (the default) is on on a strong graphics card; on switches it on on any card that can ray trace except a slow one that shares memory with the processor (it builds your car's ray tracing structures "
+    "in every frame); off keeps the game's mirrors. A graphics card that cannot ray trace keeps the game's mirrors whatever this says. The pause menu's row is GRAPHICS, REFLECTIONS, RT SIDE MIRRORS. Live.", rex::Allowed("auto", "off", "on"));
+
+  REX_SETTING(i32, mcla_gpu_car_mirror_rt_pixels, 0, "Debug: the most pixels one side mirror's rectangle on the screen may cover for the ray traced side mirrors (mcla_gpu_car_mirror_rt), in thousands (0, the default: the graphics card's "
+    "class decides: 160 on the High class, 64 on the Mid class). A mirror over it is left to the game. Live.", rex::kDebugOnly, rex::Range{0, 262});
+
+  REX_SETTING(f64, mcla_gpu_car_mirror_rt_strength, 0.92, "Debug: the share of the game's own mirror glass the ray traced side mirrors replace (0.92, the default; 1 is all of it, 0 nothing). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
+
   REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_denoise, 2, "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
     "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
     "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.", rex::kDebugOnly, rex::Range{0, 2});
@@ -2053,6 +2063,9 @@ inline auto& mcla_gpu_car_selfrefl_gain = g_gpu.mcla_gpu_car_selfrefl_gain;
 inline auto& mcla_gpu_car_selfrefl_history = g_gpu.mcla_gpu_car_selfrefl_history;
 inline auto& mcla_gpu_car_selfrefl_length = g_gpu.mcla_gpu_car_selfrefl_length;
 inline auto& mcla_gpu_car_selfrefl_rt = g_gpu.mcla_gpu_car_selfrefl_rt;
+inline auto& mcla_gpu_car_mirror_rt = g_gpu.mcla_gpu_car_mirror_rt;
+inline auto& mcla_gpu_car_mirror_rt_pixels = g_gpu.mcla_gpu_car_mirror_rt_pixels;
+inline auto& mcla_gpu_car_mirror_rt_strength = g_gpu.mcla_gpu_car_mirror_rt_strength;
 inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_denoise;
 inline auto& mcla_gpu_car_selfrefl_rt_gloss = g_gpu.mcla_gpu_car_selfrefl_rt_gloss;
 inline auto& mcla_gpu_car_selfrefl_rt_length = g_gpu.mcla_gpu_car_selfrefl_rt_length;

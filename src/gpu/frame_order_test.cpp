@@ -101,7 +101,7 @@ bool Before(Step a, Step b) { return PosOf(a) < PosOf(b); }
 void CheckTableItself() {
   const auto problems = Problems(Copy(), true);
   Check(problems.empty(), "the shipped table is consistent: " + Join(problems));
-  Check(Rows().size() == 47 && Rows().back().step == Step::kPresentRig, "47 steps, the present's rig last");
+  Check(Rows().size() == 48 && Rows().back().step == Step::kPresentRig, "48 steps, the present's rig last");
   size_t phase_count[size_t(Phase::kCount)] = {};
   size_t noted = 0;
   size_t inner = 0;
@@ -125,10 +125,10 @@ void CheckTableItself() {
     // RR-2: the anchor's steps are the temporal system's, in temporal.cpp, and held by the source checks alone
     if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
-  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 26 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
+  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 2 && phase_count[size_t(Phase::kTrigger)] == 27 && phase_count[size_t(Phase::kEndOfScene)] == 2 &&
             phase_count[size_t(Phase::kAnchor)] == 3 && phase_count[size_t(Phase::kPresent)] == 4,
-        "10 at the frame's start, 2 in the draws, 26 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass), 2 at the end of the scene, 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
-  Check(noted == 17 && inner == 9 && scanned == 21, "17 noted calls, 8 steps inside the AO's frame and 1 inside the light pass, 21 held by the source checks alone");
+        "10 at the frame's start, 2 in the draws, 27 at the trigger (RT-LIGHTS-D1 added the ray traced visibility inside the light pass, MIRROR-RT the side mirrors), 2 at the end of the scene, 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
+  Check(noted == 18 && inner == 9 && scanned == 21, "18 noted calls, 8 steps inside the AO's frame and 1 inside the light pass, 21 held by the source checks alone");
   // every data bit is made, and made once (nothing is made by two steps: the frame's lights are the frame start's, the rig's present makes nothing)
   for (uint32_t bit = 1; bit <= fo::data::kAll; bit <<= 1) {
     int makers = 0;
@@ -146,7 +146,7 @@ void CheckTableItself() {
 void CheckPinnedOrder() {
   // the trigger
   const Step trigger[] = {Step::kGBufferPublish, Step::kCarSunMap, Step::kCarStructures, Step::kShadowReplay, Step::kLightMaps, Step::kGiField, Step::kAo, Step::kGiApply, Step::kLocalLights, Step::kShafts,
-                          Step::kVolume, Step::kCarRtCheck, Step::kColourPost, Step::kSsr, Step::kCarHistory, Step::kGBufferView, Step::kScreenView};
+                          Step::kVolume, Step::kCarRtCheck, Step::kColourPost, Step::kSsr, Step::kCarHistory, Step::kCarMirror, Step::kGBufferView, Step::kScreenView};
   for (size_t i = 1; i < std::size(trigger); ++i) Check(Before(trigger[i - 1], trigger[i]), std::string("at the trigger '") + fo::RowOf(trigger[i - 1]).name + "' comes before '" + fo::RowOf(trigger[i]).name + "'");
   // inside the AO's frame
   const Step ao[] = {Step::kAo, Step::kAoDepth, Step::kAoNormals, Step::kColourPre, Step::kCarRtAo, Step::kAoVisibility, Step::kContact, Step::kAoApply, Step::kScreenPublish};
@@ -608,7 +608,7 @@ std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
   static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
-                                       "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLocalLights", "kRtLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
+                                       "kAoVisibility", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLocalLights", "kRtLights", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
                                        "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];
@@ -762,7 +762,7 @@ void CheckSources(const std::string& gpu) {
     const std::string argument = scene.substr(at + key.size(), scene.find(')', at) - (at + key.size()));
     Check(argument == variable, std::string(r.name) + ": notes '" + variable + "' (the call's result), notes '" + argument + "'");
   }
-  Check(Count(scene, "order_.Note(") == noted && noted == 17, "scene.cpp has one Note for each of the 17 noted calls and no other");
+  Check(Count(scene, "order_.Note(") == noted && noted == 18, "scene.cpp has one Note for each of the 18 noted calls and no other");
   Check(Has(scene, "const frame_order::Recorder::Report order = order_.End(frame_serial_);") && Has(scene_h, "frame_order::Recorder order_;"), "the Scene holds a recorder and ends the frame with it at the present");
   Check(At(scene, "order_.End(frame_serial_)") > At(scene, "light_manager_->OnPresent()"), "the frame ends after the present's calls");
   Check(Has(scene, "IS THE TABLE IN frame_order.h") && !Has(scene, "//   1. the car's sun shadow map (car_shadow_map.h)"), "the comment block that listed the order is replaced by the table's pointer");
