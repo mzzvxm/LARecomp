@@ -214,8 +214,8 @@ Which renderer runs is the SDK's `gpu.driver` (`larecomp`, `d3d12` or `vulkan`; 
 **Legacy native D3D12 runtime (Windows, experimental)** (11)
 `mcla_native_gfx_present`, `mcla_native_gfx_aniso`, `mcla_native_gfx_gen_mips`, `mcla_native_gfx_mrt`, `mcla_native_gfx_msaa`, `mcla_native_gfx_own_device`, `mcla_native_gfx_own_heap_kb`, `mcla_native_gfx_own_swapchain`, `mcla_native_gfx_surface_key`, `mcla_native_gfx_upload_mb`, `mcla_gfx_probe`
 
-**Speed experiments read at start** (12)
-`perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`, `host_helpers_mask`, `race_line_native_mask`, `race_line_check_calls`, `thread_qos`
+**Speed experiments read at start** (14)
+`perf_no_race_shadows`, `perf_no_impostors`, `perf_no_fullscreen_blur`, `fma_float_fast`, `vsync_fast_poll`, `submit_on_primary_buffer_end`, `lzx_native`, `lzx_native_check_all`, `host_helpers_mask`, `race_line_native_mask`, `race_line_check_calls`, `race_line_twin`, `race_line_twin_mask`, `thread_qos`
 
 `thread_qos` (Windows 10 1709 or later, restart, `0` off by default) is for testing whether Windows power throttling affects the game. `1` requests HighQoS for the process while focused. `-1` (automatic) selects `1`. `2` also tags the render and audio threads and the frame generation pacer for the whole session. On hybrid CPUs, `2` selects Pro Audio when `audio_mixer_priority` is automatic. The `[qos]` log lines say what was applied (see `perf/HYBRID-QOS.md`).
 

@@ -844,6 +844,8 @@
 {"race_line_record_count", "MCLA/Performance"},
 {"race_line_record_every", "MCLA/Performance"},
 {"race_line_stats", "MCLA/Performance"},
+{"race_line_twin", "MCLA/Performance"},
+{"race_line_twin_mask", "MCLA/Performance"},
 {"real_frame_delta", "MCLA/Patches"},
 {"rearview", "MCLA/HUD"},
 {"rearview_cars", "MCLA/HUD"},

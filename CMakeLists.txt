@@ -471,9 +471,8 @@ add_executable(larecomp_host_helpers_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_host_helpers_test PRIVATE src/mc_engine/hooks)
 # The native versions of the Race Line's two hottest functions (hooks/race_line_native.h) against reference checks (exit 0 = passed):
 #   cmake --build <build dir> --target larecomp_race_line_test, then run <build dir>/larecomp_race_line_test.
-# With the game's recompiled functions as the oracle (tools/race_line_extract.py writes rl_originals.inc from a generated folder; that file is the
-# game's code and never goes into a commit), compile the same file by hand with -DRL_WITH_ORIGINALS -I <folder of rl_originals.inc> and the SDK's include
-# folder (the header of race_line_test.cpp has the command line).
+# This target runs the reference checks without game codegen. For the comparisons against the recompiled functions and the path twins,
+# see the manual build command in race_line_test.cpp.
 add_executable(larecomp_race_line_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/race_line_test.cpp)
 target_include_directories(larecomp_race_line_test PRIVATE src/mc_engine/hooks)
@@ -1015,6 +1014,29 @@ else()
     # EXCLUDE <name> drops a staged file (rexgpu-xenos-null is only a test driver); NO_COPY stages nothing.
     # The launcher's file lists and tools/prebuilt-local must follow the new set (R7 of the plan).
     rexglue_setup_target(larecomp)
+
+    find_package(Python3 3.10 QUIET COMPONENTS Interpreter)
+    set(_race_line_twin_dir "${CMAKE_CURRENT_BINARY_DIR}/generated/race_line")
+    # The header is optional. Tracking it as a byproduct lets Ninja retry if it is missing.
+    # CHECK: verify fresh, incremental and fallback builds on Windows and Linux.
+    add_custom_command(
+        OUTPUT "${_race_line_twin_dir}/race_line_twin.stamp"
+        BYPRODUCTS "${_race_line_twin_dir}/race_line_twin_gen.h"
+        COMMAND "${CMAKE_COMMAND}" "-DPYTHON=${Python3_EXECUTABLE}"
+                "-DGENERATOR=${CMAKE_CURRENT_SOURCE_DIR}/tools/race_line_twin_gen.py"
+                "-DINPUT_DIR=${REXGLUE_ENTRYPOINT_INCLUDE_DIR}"
+                "-DOUTPUT_DIR=${_race_line_twin_dir}"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/GenerateRaceLineTwin.cmake"
+        DEPENDS larecomp_codegen "${REXGLUE_ENTRYPOINT_INCLUDE_DIR}/codegen.build.stamp"
+                tools/race_line_twin_gen.py cmake/GenerateRaceLineTwin.cmake
+        VERBATIM)
+    add_custom_target(larecomp_race_line_twin
+        DEPENDS "${_race_line_twin_dir}/race_line_twin.stamp")
+    add_dependencies(larecomp larecomp_race_line_twin)
+    target_include_directories(larecomp PRIVATE "${_race_line_twin_dir}")
+    # The stamp also rebuilds this object when __has_include changes from false to true.
+    set_property(SOURCE src/mc_engine/hooks/race_line.cpp APPEND PROPERTY
+        OBJECT_DEPENDS "${_race_line_twin_dir}/race_line_twin.stamp")
 
     # Third-party code that rexglue 0.10 installed for every program and 0.11 keeps private. Each is a submodule of
     # LARecomp (.gitmodules), pinned to the commit the 0.11 SDK itself pins (o1heap: the one the 0.10 SDK pinned).

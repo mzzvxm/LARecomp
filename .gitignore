@@ -5,6 +5,7 @@ bin/
 obj/
 generated/
 generated_xeo3/
+race_line_twin_gen.h
 # tools/ is local scratch work, except the repository backup script,
 # which has to travel with the history it backs up, the tool that builds
 # the starter pipeline list in assets/, and the shader pack builder's command
@@ -23,6 +24,8 @@ tools/*
 !tools/check_menu_rows.py
 !tools/check_descriptor_counts.py
 !tools/race_line_extract.py
+# and the one that writes the Race Line path twins into the build directory from the game's recompiled text
+!tools/race_line_twin_gen.py
 !tools/settings_exposure.toml
 !tools/check_live_readers.py
 !tools/live_readers.toml

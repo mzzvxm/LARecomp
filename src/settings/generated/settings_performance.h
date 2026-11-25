@@ -164,6 +164,17 @@ class PerformanceSettings final : public rex::SettingOwner {
     "input and the results compared; any difference switches that native pass off for the rest of the session (a "
     "warning in the log says where). 0 = no check. Read at start.", rex::Range{0, 1000000000}, rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(i32, race_line_twin, 0, "Which version of the Race Line's two path functions runs (sub_8216E408 the headings, curvature and speed limits of the "
+    "path's samples, sub_8216F900 the samples from the control points): 0 the recompiled functions (the default until a race has "
+    "been checked), 1 the host twins (hooks/race_line_twin.h: the same instructions over a local register file, bit for bit the "
+    "recompiled functions' results; the first race_line_check_calls calls of each also run the recompiled function on the same "
+    "input and any difference switches that twin off), 2 check (every call runs both and compares; the game keeps the recompiled "
+    "result; the log counts the differences and names the first). Needs FMA3; a call whose memory is not plain guest RAM runs "
+    "recompiled. Read at start.", rex::Range{0, 2}, rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(i32, race_line_twin_mask, 3, "Which path functions take part when race_line_twin is 1 or 2, as bits: 1 sub_8216E408, 2 sub_8216F900. "
+    "Read at start.", rex::Range{0, 3}, rex::kDebugOnly, rex::kRequiresRestart);
+
   REX_SETTING(bool, race_line_stats, false, "Log one line every 10 s about the Race Line: the jobs queued, skipped by the cap and run, and the time they took. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, race_line_record, "", "Write the inputs of Race Line jobs to this file (a debug recording for the Race Line test: the planner's "
@@ -285,6 +296,8 @@ inline auto& race_line_record = g_performance.race_line_record;
 inline auto& race_line_record_count = g_performance.race_line_record_count;
 inline auto& race_line_record_every = g_performance.race_line_record_every;
 inline auto& race_line_stats = g_performance.race_line_stats;
+inline auto& race_line_twin = g_performance.race_line_twin;
+inline auto& race_line_twin_mask = g_performance.race_line_twin_mask;
 inline auto& render_cpu_mask = g_performance.render_cpu_mask;
 inline auto& single_tile = g_performance.single_tile;
 inline auto& submit_on_primary_buffer_end = g_performance.submit_on_primary_buffer_end;

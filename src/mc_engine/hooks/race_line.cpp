@@ -30,8 +30,14 @@
 //    session and says where in the log (the same safety as lzx_native's).
 // 3. Debug (race_line_stats, race_line_record): one log line per 10 s with the jobs queued, skipped and run and the
 //    time they took; and a file of job inputs (race_line_record) for race_line_test.cpp's replay.
+// 4. Twins of the path functions (race_line_twin, default 0 = recompiled; perf\RACELINE-TWIN.md): sub_8216E408 (headings, curvature and speed limits of the path's
+//    samples) and sub_8216F900 (the samples from the control points) with their callees, generated into the build directory over a local register file.
+//    If the generated header is absent, the recompiled path functions run. Unlike the native speed passes in (2), the twins leave the context exactly
+//    as the recompiled function does (every register it names, the flush state of the host's MXCSR), so nothing about the
+//    registers has to be argued. Mode 1: the first race_line_check_calls calls of each also run recompiled and are compared (every byte of the blocks and the stack
+//    window), a difference switches that twin off; mode 2: every call is checked, the game keeps the recompiled result, the log counts the differences.
 //
-// What the overrides leave in the registers: the natives touch no register but f1 (the backward pass's result,
+// What the overrides of 2 leave in the registers: the natives touch no register but f1 (the backward pass's result,
 // the forward pass's argument); the volatile registers keep the caller's values instead of the function's scratch
 // values (dead after a call by the ABI; the call sites were scanned in perf\RACE-LINE.md). A skipped queue call
 // returns r3 = 0, the value a full ring returns.
@@ -56,6 +62,7 @@
 #include "larecomp_log.h"
 #include "race_line_cap.h"
 #include "race_line_native.h"
+#include "race_line_twin.h"
 #include "settings/larecomp_settings.h"
 
 REX_EXTERN(__imp__rex_sub_8216C7E0);  // queues the job: r3 = the planner; returns the job's handle in r3 (0 = none)
@@ -63,6 +70,8 @@ REX_EXTERN(__imp__rex_sub_8254DEA0);  // runs the job in place (the game's singl
 REX_EXTERN(__imp__rex_sub_82171078);  // the job: r3 = tuning block (planner + 16), r4 = vehicle tuning, r5 = path (planner + 25440), r6 = scratch
 REX_EXTERN(__imp__rex_sub_8216CBC0);
 REX_EXTERN(__imp__rex_sub_8216CDD0);
+REX_EXTERN(__imp__rex_sub_8216E408);  // the path's headings, curvature and speed limits: r3 = tuning block, r4 = vehicle tuning, r5 = path, r6 = the job's scratch block
+REX_EXTERN(__imp__rex_sub_8216F900);  // the samples from the control points: r3 = tuning block, r4 = path, r5 = scratch block, r6 = 0, f1 = the path's total time
 
 namespace {
 
@@ -87,6 +96,7 @@ std::atomic<bool> g_off_report[2];
 std::atomic<int64_t> g_last_report_ns{0};
 
 std::string TakePlannerSummary();  // below, with the planner table: "addr q/s ..." of this window (and resets the window), empty when none ran
+std::string TwinSummary();         // below, with the path twins: their call, check and mismatch counts so far, empty when they are off
 
 void MaybeReport() {
     const int64_t now = NowNs();
@@ -108,6 +118,8 @@ void MaybeReport() {
     // how many racers have a planner and how their jobs spread.
     const std::string planners = TakePlannerSummary();
     if (!planners.empty()) LARECOMP_APP_INFO("[RaceLine] planners (window {:.1f} s, guest address queued/skipped): {}", secs, planners);
+    const std::string twins = TwinSummary();
+    if (!twins.empty()) LARECOMP_APP_INFO("[RaceLine] path twins: {}", twins);
 }
 
 // ---------------------------------------------------------------------------------------------- the rate cap
@@ -327,6 +339,180 @@ void Verdict(Pass p, const uint8_t* base, uint32_t r5, const CheckBuffers& buf, 
     }
 }
 
+// ---------------------------------------------------------------------------------------------- path twins
+
+// race_line_twin (restart): 0 the recompiled functions (the default), 1 the host twins with the first race_line_check_calls calls of each also run recompiled and
+// compared, 2 every call run both ways and compared (the game keeps the recompiled result). The twins are race_line_twin.h: the recompiled instructions over a local
+// register file; perf\RACELINE-TWIN.md says what a first run must check.
+#if RL_HAS_TWIN
+enum Twin : uint32_t { kE408 = 0, kF900 = 1, kTwinCount = 2 };
+const char* const kTwinNames[kTwinCount] = {"path headings and limits (sub_8216E408)", "path samples (sub_8216F900)"};
+
+struct TwinCounters {
+    std::atomic<uint64_t> calls{0};       // calls that reached the twin logic (plain memory, twin enabled)
+    std::atomic<uint64_t> twin_calls{0};  // of them run as the twin alone (after the check window)
+    std::atomic<uint64_t> checked{0};     // of them run both ways and compared
+    std::atomic<uint64_t> mismatches{0};
+    std::atomic<uint64_t> declined{0};  // calls whose memory was not plain guest RAM: recompiled
+    std::atomic<bool> off{false};       // switched off by a mismatch in mode 1
+};
+TwinCounters g_twin[kTwinCount];
+
+uint32_t TwinMode() {
+    static const uint32_t mode = [] {
+        uint32_t m = static_cast<uint32_t>(larecomp::settings::race_line_twin.Get());
+        if (m > 2) m = 2;
+        if (m && !race_line::Fma3Available()) {
+            LARECOMP_APP_INFO("[RaceLine] this CPU has no FMA3 (or the OS does not save AVX state): the path functions stay recompiled");
+            m = 0;
+        }
+        if (m) {
+            LARECOMP_APP_INFO("[RaceLine] path twins: mode {} ({}), mask {:#x} (bit 0 sub_8216E408, bit 1 sub_8216F900); {}", m, m == 1 ? "twin" : "check every call",
+                              larecomp::settings::race_line_twin_mask.Get(),
+                              m == 1 ? "the first race_line_check_calls calls of each are also run recompiled and compared" : "every call runs both ways, the game keeps the recompiled result");
+        }
+        return m;
+    }();
+    return mode;
+}
+
+uint32_t TwinMask() {
+    static const uint32_t mask = static_cast<uint32_t>(larecomp::settings::race_line_twin_mask.Get()) & 3u;
+    return mask;
+}
+
+std::string TwinSummary() {
+    if (TwinMode() == 0) return {};
+    std::string out;
+    for (uint32_t i = 0; i < kTwinCount; ++i) {
+        char text[240];
+        std::snprintf(text, sizeof text, "%s%s: %llu calls (%llu twin alone, %llu checked, %llu mismatches, %llu declined)%s", out.empty() ? "" : "; ", kTwinNames[i],
+                      static_cast<unsigned long long>(g_twin[i].calls.load()), static_cast<unsigned long long>(g_twin[i].twin_calls.load()), static_cast<unsigned long long>(g_twin[i].checked.load()),
+                      static_cast<unsigned long long>(g_twin[i].mismatches.load()), static_cast<unsigned long long>(g_twin[i].declined.load()), g_twin[i].off.load() ? " [switched off]" : "");
+        out += text;
+    }
+    return out;
+}
+
+// The memory a call can touch, as plain guest RAM: the planner's tuning block, the vehicle's (E408), the path, the job's scratch block, and the stack window around r1 (the
+// functions' own frames below r1 and the caller's argument slots above it).
+struct Span {
+    uint32_t addr, len;
+    const char* name;
+};
+constexpr uint32_t kTuningBytes = 25424, kVehicleBytes = 8780, kPathBytes2 = 5376, kScratchBytes = 21600, kStackBelow = 2048, kStackAbove = 1024;
+constexpr uint32_t kTwinMaxSpans = 5;
+
+uint32_t TwinSpans(Twin t, const PPCContext& ctx, Span (&s)[kTwinMaxSpans]) {  // returns the count including the stack window, 0 when a block is not plain RAM
+    const uint32_t r1 = ctx.r1.u32;
+    if (!(r1 >= 0x10000u + kStackBelow && r1 < race_line::kPhysicalWindow - kStackAbove)) return 0;
+    uint32_t n = 0;
+    auto add = [&](uint32_t addr, uint32_t len, const char* name) { s[n++] = Span{addr, len, name}; };
+    if (t == kE408) {  // r3 tuning, r4 vehicle, r5 path, r6 scratch
+        add(ctx.r3.u32, kTuningBytes, "tuning block");
+        add(ctx.r4.u32, kVehicleBytes, "vehicle block");
+        add(ctx.r5.u32, kPathBytes2, "path");
+        add(ctx.r6.u32, kScratchBytes, "scratch block");
+    } else {  // r3 tuning, r4 path, r5 scratch
+        add(ctx.r3.u32, kTuningBytes, "tuning block");
+        add(ctx.r4.u32, kPathBytes2, "path");
+        add(ctx.r5.u32, kScratchBytes, "scratch block");
+    }
+    for (uint32_t i = 0; i < n; ++i)
+        if (!race_line::PlainBlock(s[i].addr, s[i].len)) return 0;
+    add(r1 - kStackBelow, kStackBelow + kStackAbove, "stack");
+    return n;
+}
+
+struct TwinBuffers {
+    static constexpr uint32_t kBytes = kTuningBytes + kVehicleBytes + kPathBytes2 + kScratchBytes + kStackBelow + kStackAbove + 64;
+    uint8_t before[kBytes];
+    uint8_t twin[kBytes];
+};
+
+using TwinRunner = void (*)(PPCContext&, uint8_t*);
+using TwinDiff = const char* (*)(const PPCContext&, const PPCContext&);
+
+// One call of a path function. Mode 0, a function not in the mask, a switched-off twin or memory that is not plain RAM: the recompiled function. A twin call that is not
+// checked: the twin alone. A checked call: the memory is saved, the twin runs on a copy of the context, its result is saved, the memory is put back and the recompiled
+// function runs on the real context; then the two results (every byte of the blocks and the stack window, the registers the function names, the host's flush state) are
+// compared. The game always keeps the recompiled result of a checked call.
+void CallPathFunction(Twin t, PPCContext& ctx, uint8_t* base, PPCFunc* original, TwinRunner twin, TwinDiff diff) {
+    TwinCounters& st = g_twin[t];
+    const uint32_t mode = TwinMode();
+    if (mode == 0 || ((TwinMask() >> t) & 1u) == 0 || st.off.load(std::memory_order_relaxed)) return original(ctx, base);
+    Span spans[kTwinMaxSpans];
+    const uint32_t spans_n = TwinSpans(t, ctx, spans);
+    if (spans_n == 0) {
+        if (st.declined.fetch_add(1, std::memory_order_relaxed) == 0)
+            LARECOMP_APP_WARN("[RaceLine] {}: a call got blocks that are not plain guest RAM (r1 {:#x}, r3 {:#x}, r4 {:#x}, r5 {:#x}, r6 {:#x}): such calls stay recompiled", kTwinNames[t], ctx.r1.u32,
+                              ctx.r3.u32, ctx.r4.u32, ctx.r5.u32, ctx.r6.u32);
+        return original(ctx, base);
+    }
+    st.calls.fetch_add(1, std::memory_order_relaxed);
+    const bool check = mode == 2 || st.checked.load(std::memory_order_relaxed) < CheckLimit();
+    if (!check) {
+        st.twin_calls.fetch_add(1, std::memory_order_relaxed);
+        return twin(ctx, base);
+    }
+    // 128 KB, made on first use by a thread that runs a checked call (a thread_local array would be 128 KB of every thread's TLS block); not freed at thread exit
+    static thread_local TwinBuffers* buf_ptr = nullptr;
+    if (!buf_ptr) buf_ptr = new TwinBuffers;
+    TwinBuffers& buf = *buf_ptr;
+    uint32_t at = 0;
+    uint32_t offsets[kTwinMaxSpans];
+    for (uint32_t i = 0; i < spans_n; ++i) {
+        offsets[i] = at;
+        std::memcpy(buf.before + at, base + spans[i].addr, spans[i].len);
+        at += spans[i].len;
+    }
+    PPCContext twin_ctx = ctx;
+    const uint32_t csr0 = _mm_getcsr();
+    twin(twin_ctx, base);
+    const uint32_t csr_twin = _mm_getcsr();
+    for (uint32_t i = 0; i < spans_n; ++i) std::memcpy(buf.twin + offsets[i], base + spans[i].addr, spans[i].len);
+    for (uint32_t i = 0; i < spans_n; ++i) std::memcpy(base + spans[i].addr, buf.before + offsets[i], spans[i].len);  // the input again
+    _mm_setcsr(csr0);
+    original(ctx, base);
+    const uint32_t csr_original = _mm_getcsr();
+    const uint64_t number = st.checked.fetch_add(1, std::memory_order_relaxed) + 1;
+
+    char where[160];
+    where[0] = 0;
+    bool same = true;
+    for (uint32_t i = 0; i < spans_n && same; ++i) {
+        uint32_t first = 0;
+        if (!SameWords(buf.twin + offsets[i], base + spans[i].addr, spans[i].len, &first)) {
+            same = false;
+            uint32_t a = 0, b = 0;
+            std::memcpy(&a, buf.twin + offsets[i] + first, 4);
+            std::memcpy(&b, base + spans[i].addr + first, 4);
+            std::snprintf(where, sizeof where, "%s + %u: twin %08x, recompiled %08x", spans[i].name, first, __builtin_bswap32(a), __builtin_bswap32(b));
+        }
+    }
+    if (same) {
+        if (const char* reg = diff(twin_ctx, ctx)) {
+            same = false;
+            std::snprintf(where, sizeof where, "register %s", reg);
+        }
+    }
+    if (same && csr_twin != csr_original) {
+        same = false;
+        std::snprintf(where, sizeof where, "the flush mode left in MXCSR: twin %08x, recompiled %08x", csr_twin, csr_original);
+    }
+    if (same) {
+        if (mode == 1 && number == CheckLimit()) LARECOMP_APP_INFO("[RaceLine] the twin of {}: the first {} calls came out bit for bit like the recompiled function's", kTwinNames[t], number);
+        return;
+    }
+    const uint64_t bad = st.mismatches.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (mode == 1) {
+        if (!st.off.exchange(true)) LARECOMP_APP_WARN("[RaceLine] the twin of {} differs from the recompiled function (call {}: {}): the twin is switched off for this session", kTwinNames[t], number, where);
+    } else if (bad <= 5 || bad % 1000 == 0) {
+        LARECOMP_APP_WARN("[RaceLine] check: the twin of {} differs from the recompiled function (mismatch {} at call {}: {})", kTwinNames[t], bad, number, where);
+    }
+}
+#endif  // RL_HAS_TWIN
+
 // ---------------------------------------------------------------------------------------------- recorder
 
 // File format (little-endian host fields; the guest blocks are copied byte for byte, so big-endian as in guest memory):
@@ -504,5 +690,22 @@ extern "C" REX_FUNC(rex_sub_8216CDD0) {
     }
 #endif
     __imp__rex_sub_8216CDD0(ctx, base);
+}
+extern "C" REX_FUNC(rex_sub_8216E408) {
+    // r3 = tuning block, r4 = vehicle tuning, r5 = path, r6 = scratch block; nothing is returned.
+#if RL_HAS_TWIN
+    CallPathFunction(kE408, ctx, base, __imp__rex_sub_8216E408, race_line::twin::RunE408, race_line::twin::DiffE408);
+#else
+    __imp__rex_sub_8216E408(ctx, base);
+#endif
+}
+
+extern "C" REX_FUNC(rex_sub_8216F900) {
+    // r3 = tuning block, r4 = path, r5 = scratch block, r6 = 0, f1 = the path's total time; nothing is returned.
+#if RL_HAS_TWIN
+    CallPathFunction(kF900, ctx, base, __imp__rex_sub_8216F900, race_line::twin::RunF900, race_line::twin::DiffF900);
+#else
+    __imp__rex_sub_8216F900(ctx, base);
+#endif
 }
 #endif  // !REXGLUE_HAS_XEO3_TARGET
