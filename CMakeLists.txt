@@ -10,6 +10,19 @@ project(larecomp LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+option(LARECOMP_ASAN "Instrument the Windows host and Plume with AddressSanitizer" OFF)
+if(LARECOMP_ASAN)
+    if(NOT WIN32 OR NOT CMAKE_C_COMPILER_ID STREQUAL "Clang"
+       OR NOT CMAKE_C_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+       OR NOT CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+       OR NOT CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC"
+       OR NOT CMAKE_CXX_COMPILER_ARCHITECTURE_ID STREQUAL "x64")
+        message(FATAL_ERROR "LARECOMP_ASAN needs x64 Windows and clang-cl")
+    endif()
+    # Match the prebuilt SDK DLLs' CRT, including in a Debug host build.
+    set(CMAKE_MSVC_RUNTIME_LIBRARY MultiThreadedDLL)
+endif()
+
 # rexglue 0.11: the SDK is a package (find_package) or, for development, a source folder built with the project.
 #   -DREXSDK_DIR=<LAR-RXSDK checkout>   add_subdirectory (builds the SDK here)
 #   -DCMAKE_PREFIX_PATH=<install>       an installed SDK (the launcher's prebuilt kit: tools/prebuilt-local)
@@ -1972,4 +1985,8 @@ else()
     endif()
     target_sources(larecomp PRIVATE $<TARGET_OBJECTS:larecomp_cpuguard>)
     message(STATUS "larecomp: CPU level ${LARECOMP_CPU_LEVEL}")
+
+    if(LARECOMP_ASAN)
+        include(cmake/LarecompAsan.cmake)
+    endif()
 endif()
