@@ -27,6 +27,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <new>
+#include <utility>
 
 #include <plume_render_interface.h>
 
@@ -41,6 +43,21 @@ class FrameRing;
 // An image one host pass draws into and the next one samples (M6c): the texture, its view in a bindless slot, its framebuffer, and the
 // layout it was left in (HostPasses::EnsureImage/DrawInto).
 struct HostImage {
+  // Release order matters: the view and the framebuffer read their texture when they are destroyed. The destructor (members in
+  // reverse order: framebuffer, view, texture) is right; the defaulted move assignment assigned in declaration order and freed the
+  // old texture BEFORE the old view (heap-use-after-free under ASan in GiField::Shutdown, Vulkan, 11-25). Move assignment therefore
+  // destroys this image first, then move-constructs in place, so every field (also ones added later) moves and the order holds.
+  HostImage() = default;
+  HostImage(HostImage&&) noexcept = default;
+  HostImage& operator=(HostImage&& other) noexcept {
+    if (this != &other) {
+      this->~HostImage();
+      new (this) HostImage(std::move(other));
+    }
+    return *this;
+  }
+  ~HostImage() = default;
+
   std::unique_ptr<plume::RenderTexture> texture;
   std::unique_ptr<plume::RenderTextureView> view;
   std::unique_ptr<plume::RenderFramebuffer> framebuffer;

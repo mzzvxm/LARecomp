@@ -111,9 +111,11 @@
 #include <cstdint>
 #include <fstream>
 #include <memory>
+#include <new>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include <plume_render_interface.h>
@@ -239,6 +241,20 @@ class LocalShadow final : public ShadowProvider {
   // The depth atlas: a D32 float + S8 target (the format the renderer's own depth targets use, whose depth plane Plume views as one float on
   // both backends), a view in a bindless slot, a framebuffer of the depth alone.
   struct Atlas {
+    // Release order matters as in HostImage (host_passes.h): the view reads its texture when it is destroyed (Vulkan), and the defaulted
+    // move assignment (`atlas_ = Atlas{}`) freed the texture first. Assignment destroys this atlas (the destructor's order: framebuffer,
+    // view, texture), then move-constructs in place.
+    Atlas() = default;
+    Atlas(Atlas&&) noexcept = default;
+    Atlas& operator=(Atlas&& other) noexcept {
+      if (this != &other) {
+        this->~Atlas();
+        new (this) Atlas(std::move(other));
+      }
+      return *this;
+    }
+    ~Atlas() = default;
+
     std::unique_ptr<plume::RenderTexture> texture;
     std::unique_ptr<plume::RenderTextureView> view;
     std::unique_ptr<plume::RenderFramebuffer> framebuffer;

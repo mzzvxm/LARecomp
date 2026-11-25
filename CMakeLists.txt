@@ -502,6 +502,13 @@ target_include_directories(larecomp_race_line_test PRIVATE src/mc_engine/hooks)
 add_executable(larecomp_fence_spin_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/fence_spin_test.cpp)
 target_include_directories(larecomp_fence_spin_test PRIVATE src/mc_engine/hooks)
+# The native LZX decoder (src/mc_engine/hooks/lzx_stream.h) has a check that needs no game: it builds verbatim-block streams whose matches reach almost a window back
+# (the source then wraps to just ahead of the write position and overlaps it: ASan memcpy-param-overlap, fixed with memmove) and compares every frame with a byte-by-byte
+# reference (exit 0 = passed). A plain build cannot see that overlap; build it with -fsanitize=address (the header of lzx_stream_test.cpp has the command line):
+#   cmake --build <build dir> --target larecomp_lzx_stream_test, then run <build dir>/larecomp_lzx_stream_test.
+add_executable(larecomp_lzx_stream_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/lzx_stream_test.cpp)
+target_include_directories(larecomp_lzx_stream_test PRIVATE src/mc_engine/hooks)
 # The names of our threads on Linux, which keeps 15 bytes of one (src/os/thread_name.h) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_thread_name_test, then run <build dir>/larecomp_thread_name_test (exit 0 = passed).
 add_executable(larecomp_thread_name_test EXCLUDE_FROM_ALL
