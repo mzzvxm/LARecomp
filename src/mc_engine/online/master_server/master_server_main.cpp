@@ -91,9 +91,15 @@ std::atomic<bool> g_stop{false};
 void OnSignal(int) { g_stop.store(true); }
 
 void Log(const std::string& msg) {
-  char stamp[32];
+  char stamp[32]{};
   const std::time_t t = std::time(nullptr);
-  std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", std::localtime(&t));
+  std::tm local{};
+#if defined(_WIN32)
+  const bool have_time = localtime_s(&local, &t) == 0;
+#else
+  const bool have_time = localtime_r(&t, &local) != nullptr;
+#endif
+  if (have_time) std::strftime(stamp, sizeof(stamp), "%Y-%m-%d %H:%M:%S", &local);
   std::printf("[%s] %s\n", stamp, msg.c_str());
   std::fflush(stdout);
 }

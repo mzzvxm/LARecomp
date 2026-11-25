@@ -19,6 +19,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "mc_engine/core/draw_stats.h"
+#include "os/environment.h"
 #include "larecomp_guest.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
 
@@ -39,8 +40,8 @@ constexpr double kHistogramWindowSec = 30.0;
 
 bool TimingLogEnabled() {
     static const bool enabled = [] {
-        const char* e = std::getenv("MCLA_TIMING_LOG");
-        return e && *e == '1';
+        const auto e = larecomp::os::ReadEnvironment("MCLA_TIMING_LOG");
+        return e && e->starts_with('1');
     }();
     return enabled;
 }

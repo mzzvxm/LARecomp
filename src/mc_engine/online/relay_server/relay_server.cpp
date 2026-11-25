@@ -250,10 +250,15 @@ int64_t NowMs() {
 }
 
 void LogInfo(const char* fmt, ...) {
-  std::time_t t = std::time(nullptr);
-  std::tm* tm_info = std::localtime(&t);
-  char time_str[32];
-  std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+  const std::time_t t = std::time(nullptr);
+  std::tm local{};
+#if defined(_WIN32)
+  const bool have_time = localtime_s(&local, &t) == 0;
+#else
+  const bool have_time = localtime_r(&t, &local) != nullptr;
+#endif
+  char time_str[32]{};
+  if (have_time) std::strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", &local);
 
   std::printf("[%s] [mcla-server] ", time_str);
 
@@ -715,11 +720,14 @@ void LoadIdentity(bool log) {
   if (FILE* f = std::fopen((g_dir + icon_file).c_str(), "rb")) {
     uint8_t buf[4096];
     size_t got;
-    while ((got = std::fread(buf, 1, sizeof(buf), f)) > 0 && icon.size() <= kIconMaxBytes)
+    do {
+      got = std::fread(buf, 1, sizeof(buf), f);
       icon.insert(icon.end(), buf, buf + got);
+    } while (got == sizeof(buf) && icon.size() <= kIconMaxBytes);
+    const bool read_error = std::ferror(f) != 0;
     std::fclose(f);
-    if (!IconLooksValid(icon)) {
-      icon_rejected = !icon.empty();
+    if (read_error || !IconLooksValid(icon)) {
+      icon_rejected = read_error || !icon.empty();
       icon.clear();
     }
   }
