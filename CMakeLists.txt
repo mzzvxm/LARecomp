@@ -1692,6 +1692,8 @@ else()
     )
     target_include_directories(larecomp_identity_adapter_test BEFORE PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/src/mc_engine/online/identity/test/stubs")
+    # the identity sources include settings/immortal.h (no exit-time destructors); the stubs above still win
+    target_include_directories(larecomp_identity_adapter_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     if(WIN32)
         target_link_libraries(larecomp_identity_adapter_test PRIVATE ws2_32 crypt32)
         target_compile_definitions(larecomp_identity_adapter_test PRIVATE _CRT_SECURE_NO_WARNINGS)
