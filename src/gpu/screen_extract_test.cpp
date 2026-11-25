@@ -117,6 +117,7 @@ struct Plan {
   bool one_sample = false;
   struct Gi {
     float cap = 2.0f;
+    uint32_t cabin_id = 0;
   } gi;
   bool SplitContact() const { return split; }
   bool OneSampleColour() const { return one_sample; }
@@ -241,6 +242,8 @@ struct Env {
     DrawPass(list, NormalFullImage(), pipeline, push);                                       \
   }
 
+namespace interior_camera = mcla::gpu::interior_camera;
+
 // ---- the old colour chain: the body of AmbientOcclusion::RecordColourChain after the transition ----
 #define LEGACY_COLOUR                                                                         \
   pass_timing_->Mark(list, "ssgi colour chain");                                             \
@@ -258,6 +261,11 @@ struct Env {
   if (ms && plan.OneSampleColour()) {                                                        \
     push.slots2[2] |= kColourOneSampleFlag;                                                  \
     push.slots2[0] = base.slots[1];                                                          \
+  }                                                                                          \
+  if (plan.gi.cabin_id != 0u) {                                                               \
+    push.slots2[2] |= interior_camera::kSsgiMatchColour;                                      \
+    push.slots2[0] = base.slots[1];                                                          \
+    push.slots2[1] = Depth(0).slot;                                                          \
   }                                                                                          \
   DrawPass(list, Colour(0), Pipeline(ms ? kVColorMs : kVColor), push);                       \
   plume_RenderPipeline_mip = Pipeline(kVColorMip);                                           \
@@ -338,10 +346,12 @@ Trace RunLegacyColour(Env& e) {
   int plume_RenderPipeline_mip = 0;
   const int mip = 13;
 #define Colour(i) e.Colour(i)
+#define Depth(i) e.Depth(i)
 #define Pipeline(v) e.Pipeline(v)
 #define DrawPass(l, image, pipe, p) e.DrawPass(l, image, pipe, p)
   LEGACY_COLOUR
 #undef Colour
+#undef Depth
 #undef Pipeline
 #undef DrawPass
   (void)plume_RenderPipeline_mip;
@@ -425,6 +435,8 @@ ex::ColourRecipe ColourRecipeOf(const Env& e) {
   r.source_start = ssgi_light::SourceStart(e.base.light[3], e.base.extra[0]);
   r.one_sample = e.colour.host_samples > 1 && e.plan.OneSampleColour();
   r.sample = e.base.slots[1];
+  r.match_depth = e.plan.gi.cabin_id != 0u;
+  r.matched_depth_slot = e.img[0].slot;
   return r;
 }
 
@@ -508,6 +520,7 @@ void IdentityChecks() {
         e.plan.split = in.contact && choice.contact_full;
         e.plan.one_sample = in.bounce && choice.by_height && in.half_above_bounce;
         e.plan.gi.cap = 0.5f + float(rng.Next() % 100) * 0.05f;
+        e.plan.gi.cabin_id = in.bounce && (variant & 2) != 0 ? 9u : 0u;
         e.levels = (variant & 1) != 0;
         e.base = RandomBlock(rng);
         e.summary.stencil_slot = rng.Next() & 0x7FFF;

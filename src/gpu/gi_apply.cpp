@@ -20,8 +20,10 @@
 #include "gi_cabin_rules.h"
 #include "gi_field.h"
 #include "gi_pixel.h"
+#include "hlsl/interior_camera_rules.hlsli"
 #include "host_shaders.h"
 #include "live_text.h"
+#include "mc_engine/camera/menu_camera.h"
 #include "pass_timing.h"
 #include "ray_regen_plan.h"
 #include "records.h"
@@ -453,7 +455,9 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   // known, the camera is in it under a roof and the frame has the material plane; the shader then reads nothing of it. `closed` is 1: nothing tells us a convertible from a coupe yet (CHECK C3 there).
   gi_cabin::Rows cabin = gi_cabin::OffRows();
   uint32_t material_slot = gi_cabin::kNoMaterialSlot;
-  if (cabin_on_ && car_frame_ != nullptr && gb.Has(gbuffer::kPlaneMaterial)) {
+  const bool cockpit_only = larecomp::settings::mcla_gpu_gi_cabin_rig.Get();
+  if (cabin_on_ && car_frame_ != nullptr && gb.Has(gbuffer::kPlaneMaterial) &&
+      interior_camera::ApplyGiShield(cockpit_only, CurrentRenderedCameraRig())) {
     const car_frame::Frame& car = car_frame_->Current();
     if (car.valid) {
       cabin = gi_cabin::MakeRows(true, fr.position, car.bounds_valid, car.bounds_min, car.bounds_max, 1.0f);

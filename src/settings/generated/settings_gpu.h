@@ -1034,6 +1034,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_gi_cabin, true, "Diagnostic (ray traced bounce light, the player's cabin, INTERIOR-CAM-FIX, the A/B): on (the default) the probe field's bounce light on the cabin's own surfaces (the driver, the dash, the wheel, the seats: a vehicle's part that is not paint, chrome or glass, inside the car's box) "
     "is cut to 30% while the camera is inside a roofed car, because the probes trace the city only and cannot see the car's roof (the glass's share is left); off is the field's light as it was (the street's irradiance at the cabin, as if the car had no roof). Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_gi_cabin_rig, false, "Debug: restrict the RT GI cabin shield to the rendered cockpit rig. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_ssr_strength, 1.0, "Diagnostic (screen-space reflections): the effect's strength, 0 to 4: the added reflection is multiplied by it (the class's own gain, the Fresnel term and the picture's edge fades come on top). Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
 
@@ -1299,6 +1300,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
   REX_SETTING(bool, mcla_gpu_rtao_spatial_resolve, false, "Debug: apply a wider bilateral resolve to ray traced ambient occlusion on world surfaces. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rtao_cabin_guide, false, "Debug: match reduced-resolution RT AO traces to their guide surface in the cockpit. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_rtao_raw_scale, 2, "Debug: ray traced ambient occlusion trace divisor for DLSS Ray Reconstruction raw frames. 2 is half size, 1 is full size. Live.", rex::kDebugOnly, rex::Range{1, 2});
 
@@ -1593,6 +1595,8 @@ class GPUSettings final : public rex::SettingOwner {
     "size, 1 half the picture's size (the occlusion's slices and steps) even where the occlusion is high, 2 "
     "both. The same samples give the occlusion's visibility, so 1 and 2 also make the occlusion's own "
     "picture half resolution while the bounce light is on. Live.", rex::kDebugOnly, rex::Range{0, 2});
+
+  REX_SETTING(bool, mcla_gpu_ssgi_cabin_samples, false, "Debug: match the screen-space bounce colour resolve to depth and use level zero taps on the player's cockpit surfaces. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_ssgi_radius, 1.0, "Diagnostic: how far the bounce light's NEAR samples look, as a multiple of the ambient occlusion's radius "
     "(mcla_gpu_ao_intensity); the same samples give the occlusion's visibility, so a change moves that too. 1: the "
@@ -2294,6 +2298,7 @@ inline auto& mcla_gpu_rt_gi_daylight_recovery = g_gpu.mcla_gpu_rt_gi_daylight_re
 inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
 inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;
 inline auto& mcla_gpu_gi_cabin = g_gpu.mcla_gpu_gi_cabin;
+inline auto& mcla_gpu_gi_cabin_rig = g_gpu.mcla_gpu_gi_cabin_rig;
 inline auto& mcla_gpu_ssr_strength = g_gpu.mcla_gpu_ssr_strength;
 inline auto& mcla_gpu_ssr_min_smooth = g_gpu.mcla_gpu_ssr_min_smooth;
 inline auto& mcla_gpu_ssr_stub = g_gpu.mcla_gpu_ssr_stub;
@@ -2363,6 +2368,7 @@ inline auto& mcla_gpu_rt_lights_lamp_slot = g_gpu.mcla_gpu_rt_lights_lamp_slot;
 inline auto& mcla_gpu_rtao_history = g_gpu.mcla_gpu_rtao_history;
 inline auto& mcla_gpu_rtao_denoise = g_gpu.mcla_gpu_rtao_denoise;
 inline auto& mcla_gpu_rtao_spatial_resolve = g_gpu.mcla_gpu_rtao_spatial_resolve;
+inline auto& mcla_gpu_rtao_cabin_guide = g_gpu.mcla_gpu_rtao_cabin_guide;
 inline auto& mcla_gpu_rtao_raw_scale = g_gpu.mcla_gpu_rtao_raw_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
@@ -2415,6 +2421,7 @@ inline auto& mcla_gpu_ssgi_lights_floor = g_gpu.mcla_gpu_ssgi_lights_floor;
 inline auto& mcla_gpu_ssgi_intensity = g_gpu.mcla_gpu_ssgi_intensity;
 inline auto& mcla_gpu_ssgi_low = g_gpu.mcla_gpu_ssgi_low;
 inline auto& mcla_gpu_ssgi_radius = g_gpu.mcla_gpu_ssgi_radius;
+inline auto& mcla_gpu_ssgi_cabin_samples = g_gpu.mcla_gpu_ssgi_cabin_samples;
 inline auto& mcla_gpu_ssgi_reach = g_gpu.mcla_gpu_ssgi_reach;
 inline auto& mcla_gpu_ssgi_strength = g_gpu.mcla_gpu_ssgi_strength;
 inline auto& mcla_gpu_ssgi_test = g_gpu.mcla_gpu_ssgi_test;

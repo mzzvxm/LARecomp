@@ -23,6 +23,7 @@
 #include "car_frame.h"
 #include "hlsl/cabin_shadow_rules.hlsli"
 #include "mc_engine/camera/menu_camera.h"
+#include "hlsl/interior_camera_rules.hlsli"
 #include "ao_stable.h"
 #include "car_rt_ao.h"
 #include "car_rt_scene.h"
@@ -1160,6 +1161,10 @@ void AmbientOcclusion::BeginFrame() {
     bounce_wanted = false;  // the colour chain's pipelines are the shared screen products': held off until they are made
   }
   gi_active_ = bounce_wanted && mode_ != Mode::kOff && EnsureGiShaders();
+  ssgi_cabin_samples_ = larecomp::settings::mcla_gpu_ssgi_cabin_samples.Get();
+  if (gi_active_ && ssgi_cabin_samples_ && car_frame_ && interior_camera::IsCockpit(CurrentRenderedCameraRig())) {
+    car_frame_->Request();
+  }
   if (rt_ao_) {
     // The ray traced occlusion and sun term around the player's car (car_rt_ao.h): wanted where the occlusion or the contact shadows are on; the
     // frame's own gates (the sun, rain, the bounce light) come with the passes.
@@ -2288,6 +2293,8 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) c
     use.why = HistoryWhy::kSize;
   } else if (history_gi_ != plan.gi.on) {
     use.why = HistoryWhy::kKind;
+  } else if (history_gi_cabin_id_ != plan.gi.cabin_id) {
+    use.why = HistoryWhy::kView;
   } else {
     bool cut = false;
     if (!FrameMotion(&use.motion, &use.pose, &cut)) {
@@ -2677,6 +2684,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     rtao_in.fade_end = float(std::clamp(larecomp::settings::mcla_gpu_ao_fade_end.Get(), 20.0, 1000.0));
     rtao_in.look_radius = look_.radius;
     rtao_in.interior = rtao::InsideBox(camera, top_level.player_box, rtao::kCabinPad);
+    rtao_in.cockpit = interior_camera::IsCockpit(CurrentRenderedCameraRig());
     rtao_in.frame = frame_;
     plan.rtao = rtao_->PlanFrame(rtao_in, top_level, plan.gi.on);
   }
@@ -2794,18 +2802,21 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     UpdateLook();
   Push base;
   FillPush(&base, summary, plan, have_light ? &light : nullptr);
-  if (contact && car_frame_ && summary.stencil_slot != kNoSlot) {
+  const bool match_gi_samples = plan.gi.on && ssgi_cabin_samples_;
+  if ((contact || match_gi_samples) && car_frame_ && summary.stencil_slot != kNoSlot) {
     // Play and pause draws both collect a fresh CarFrame against their own stencil writes.
     const auto& car = car_frame_->Current();
     // CHECK: Verify the player stencil at guest sample 0 on hands, wheel and gauges across cars and APIs.
     // CHECK: This stencil also covers any player body panels the cockpit shows, including the hood.
     // CHECK: Confirm the four-sample cockpit view identifies the current player's stencil on both APIs.
-    plan.cabin_player_id = cabin_shadow::CabinPlayerId(CurrentRenderedCameraRig(), car.valid, car.player_id);
+    const uint32_t player_id = cabin_shadow::CabinPlayerId(CurrentRenderedCameraRig(), car.valid, car.player_id);
+    plan.gi.cabin_id = match_gi_samples ? player_id : 0u;
+    plan.cabin_player_id = contact ? player_id : 0u;
     if (plan.cabin_player_id != 0u) {
       plan.cabin_shadow_mode = cabin_shadow_mode_;
-      if (cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode) != 0u) {
-        base.slots[3] = plan.cabin_player_id;  // Depth resolve only, after which this lane goes back to zero.
-      }
+    }
+    if (plan.gi.cabin_id != 0u || cabin_shadow::CabinSourceMode(plan.cabin_shadow_mode) != 0u) {
+      base.slots[3] = player_id;  // Depth resolve only, after which this lane goes back to zero.
     }
   }
   if (normals_.on) {
@@ -2817,7 +2828,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     const ao_gbuffer::Which apply_reads = ao_gbuffer::ApplyReads(split, plan.low);
     normals_.apply_slot = apply_reads == ao_gbuffer::Which::kFull ? NormalFullImage().slot : (apply_reads == ao_gbuffer::Which::kAo ? NormalImage().slot : 0u);
   }
-  normals_.depth_source_bits = plan.low && (normals_.on || plan.rtao.on);
+  normals_.depth_source_bits = plan.low && (normals_.on || plan.rtao.on || plan.gi.cabin_id != 0u);
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
   if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
@@ -3038,6 +3049,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       gi_push.slots[0] = Colour(0).slot;
       gi_push.slots[1] = Colour(1).slot;
       gi_push.slots2[3] = Colour(2).slot;
+      gi_push.lin[2] = plan.gi.cabin_id != 0u ? 1.0f : 0.0f;
       gi_push.shape[2] = plan.gi.thickness;
       gi_push.shape[3] = plan.gi.facing;
       // The far ring: its reach and its steps (hlsl/ao_main_ps.hlsl; none: the near samples only).
@@ -3226,6 +3238,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         use.on ? std::min(use.age + 1, plan.gi.on ? std::max(use.cap, plan.gi.history) : use.cap)
                : 0u;
     history_gi_ = plan.gi.on;
+    history_gi_cabin_id_ = plan.gi.cabin_id;
     screen_term = &(plan.view == 6u ? weight_image : history_out);
     ao_slot = screen_term->slot;
   };
@@ -4735,6 +4748,10 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
   // filtered over many pixels after this; half the colour target's reads).
   recipe.one_sample = colour.host_samples > 1 && plan.OneSampleColour();
   recipe.sample = base.slots[1];
+  if (plan.gi.cabin_id != 0u) {
+    recipe.match_depth = true;
+    recipe.matched_depth_slot = Depth(0).slot;
+  }
   // GI-BOUNCE-SS (ssgi_lights.h): with a usable history (the AO's own: the same camera motion, the same depth history) and the last frame's two light captures, the level 0 pass also takes the last frame's light.
   // The history is chosen here as the accumulation pass chooses it below (ChooseHistory is a pure function of the frame's state, so the two agree).
   // GI-BOUNCE-JOIN: where the probe field stands (plan.gi.lights_only) the chain's radiance is the lights' share alone, from the RESIDUAL pair; with no usable history it is black.
@@ -4812,6 +4829,11 @@ void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const P
     // sample of them (the bounce is a smooth signal, blurred and filtered over many pixels after this; half the colour target's reads).
     push.slots2[2] |= kColourOneSampleFlag;
     push.slots2[0] = base.slots[1];
+  }
+  if (plan.gi.cabin_id != 0u) {
+    push.slots2[2] |= interior_camera::kSsgiMatchColour;
+    push.slots2[0] = base.slots[1];
+    push.slots2[1] = Depth(0).slot;
   }
   DrawPass(list, Colour(0), Pipeline(ms ? kVColorMs : kVColor), push);
   // The coarser levels, one pass each, as the depth chain's.

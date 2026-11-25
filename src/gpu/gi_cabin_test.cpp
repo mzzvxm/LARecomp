@@ -425,7 +425,8 @@ void TextChecks(const std::string& dir) {
         "HOST: the rows go right after the apply's 9 in the apply's buffer, which has the room");
   Check(Has(cpp, "cabin_on_ = larecomp::settings::mcla_gpu_gi_cabin.Get();") && Has(cpp, "if (enabled_ && cabin_on_ && car_frame_ != nullptr) {") && Has(cpp, "car_frame_->Request();"),
         "HOST: the setting is read at each frame's start, and the car's frames are asked for only while the field runs and the rule is on");
-  Check(Has(cpp, "if (cabin_on_ && car_frame_ != nullptr && gb.Has(gbuffer::kPlaneMaterial)) {") && Has(cpp, "if (car.valid) {") &&
+  Check(Has(cpp, "if (cabin_on_ && car_frame_ != nullptr && gb.Has(gbuffer::kPlaneMaterial) &&") &&
+            Has(cpp, "interior_camera::ApplyGiShield(cockpit_only, CurrentRenderedCameraRig())) {") && Has(cpp, "if (car.valid) {") &&
             Has(cpp, "cabin = gi_cabin::MakeRows(true, fr.position, car.bounds_valid, car.bounds_min, car.bounds_max, 1.0f);") && Has(cpp, "material_slot = gb.slot[gbuffer::kPlaneMaterial];"),
         "HOST: the rule needs the setting, the car's frame with its box and the material plane; the eye is the camera the apply uses");
   Check(Has(cpp, "gi_cabin::PackMaterialSlot(ga::PackInfoW(") && Has(cpp, "cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot"), "HOST: the slot is in the push block only where a rule is");
