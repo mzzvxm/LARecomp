@@ -221,6 +221,7 @@ add_executable(larecomp_shadow_filter_noise_test EXCLUDE_FROM_ALL shadow_filter_
 # (fixed turn, a per pixel turn, more taps, an average over frames) with the numbers the decision rests on:
 #   cmake --build <dir> --target larecomp_shadow_filter_resolve_test, then run src/gpu/larecomp_shadow_filter_resolve_test [<src/gpu dir>] [--print] (a few seconds).
 add_executable(larecomp_shadow_filter_resolve_test EXCLUDE_FROM_ALL shadow_filter_resolve_test.cpp)
+add_executable(larecomp_cascade_schedule_test EXCLUDE_FROM_ALL cascade_schedule_test.cpp)
 # NOISE-RESOLVE (noise_resolve.h, NOISE-AUDIT.md CHECK 1 and 2): the effects that held one pattern without a temporal upscaler (the contact march, the traced sun rays, the shafts, the car reflection cone) change their noise
 # every frame and resolve it with a history; the twins of the passes measure the per-frame variation, the error after the history under a still and a moving camera, the flicker and the ghost; the upscaler's jitter in
 # a pinned still; the memory; the sources:

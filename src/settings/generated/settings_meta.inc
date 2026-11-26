@@ -485,6 +485,8 @@
 {"mcla_gpu_rtao_raw_scale", "MCLA/GPU"},
 {"mcla_gpu_object_names", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
+{"mcla_gpu_shadow_ledger", "MCLA/GPU"},
+{"mcla_gpu_shadow_schedule", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
 {"mcla_gpu_perf_markers", "MCLA/GPU"},
 {"mcla_gpu_perf_markers_level", "MCLA/GPU"},

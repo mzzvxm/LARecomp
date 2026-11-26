@@ -4862,7 +4862,12 @@ void AmbientOcclusion::RecordProbe(plume::RenderCommandList* list, const Plan&) 
   if (probe_busy_) {
     return;
   }
-  HostImage& level = Depth(2);
+  // A nearest-depth mip cannot measure the farthest visible receiver.
+  // The shadow ledger's depth run is separate from the timed A/B.
+  // CHECK: compare the level-0 maximum with the captured depth on both APIs.
+  const uint32_t level_shift = larecomp::settings::mcla_gpu_shadow_ledger.Get() ? 0 : 2;
+  HostImage& level = Depth(level_shift);
+  if (!list || !level.texture || !device_ || !frames_) return;
   const uint32_t width = level.width;
   const uint32_t height = level.height;
   const uint32_t row_bytes = (width * 2 + 255) / 256 * 256;  // R16_FLOAT, rows 256-aligned
@@ -4889,8 +4894,8 @@ void AmbientOcclusion::RecordProbe(plume::RenderCommandList* list, const Plan&) 
   const uint64_t frame = frame_;
   const uint64_t generation = generation_;
   const uint32_t row_texels = row_bytes / 2;
-  frames_->RetireAction([this, frame, generation, width, height, row_texels] {
-    ProcessProbe(frame, generation, width, height, row_texels, 2);
+  frames_->RetireAction([this, frame, generation, width, height, row_texels, level_shift] {
+    ProcessProbe(frame, generation, width, height, row_texels, level_shift);
   });
 }
 
@@ -4927,6 +4932,7 @@ void AmbientOcclusion::ProcessProbe(uint64_t frame, uint64_t generation, uint32_
   sample.reserve(16384);
   const size_t stride = std::max<size_t>(values.size() / 16384, 1);
   uint64_t sky = 0;
+  float max_non_sky = 0.0f;
   for (uint32_t y = 0; y < height; ++y) {
     Third& third = thirds[std::min(3u * y / height, 2u)];
     for (uint32_t x = 0; x < width; ++x) {
@@ -4937,6 +4943,7 @@ void AmbientOcclusion::ProcessProbe(uint64_t frame, uint64_t generation, uint32_
         ++sky;
       } else {
         third.sum += double(t);
+        max_non_sky = std::max(max_non_sky, t);
         if ((size_t(y) * width + x) % stride == 0) {
           sample.push_back(t);
         }
@@ -4957,6 +4964,7 @@ void AmbientOcclusion::ProcessProbe(uint64_t frame, uint64_t generation, uint32_
     p[2] = sample[sample.size() * 9 / 10];
     p[3] = sample.back();
   }
+  if (level_shift == 0) p[3] = max_non_sky;
   const double middle = mean(thirds[1]);
   const double bottom = mean(thirds[2]);
   const char* verdict =

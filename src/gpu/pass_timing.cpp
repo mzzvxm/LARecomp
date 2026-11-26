@@ -259,6 +259,7 @@ std::string PassTiming::TakeSummary() {
       const std::string& name = names_[order[i]];
       if (name.starts_with("resolve memory") || name.starts_with("aa ") ||
           name.starts_with("fsr1 ") || name.starts_with("ao ") || name.starts_with("ssgi ") ||
+          name.starts_with("sun cascade ") || name == "sun shadow collector" || name == "car shadow map" ||
           name.starts_with("car rt") || name.starts_with("car mirror") || name.starts_with("headlight shadow") || name.starts_with("rt gi") || name.starts_with("gi ")) {
         memory += std::format("{}{} {:.3f} ms", memory.empty() ? "" : ", ", names_[order[i]],
                               double(label_ns_[order[i]]) / double(frames_) / 1e6);

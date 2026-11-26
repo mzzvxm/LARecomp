@@ -55,6 +55,7 @@
 #include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/car_shadow_map_rules.h"
+#include "gpu/cascade_schedule.h"
 #include "gpu/gpu_class.h"
 #include "gpu/live_text.h"
 #include "gpu/traffic_shadow.h"
@@ -357,6 +358,21 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
         if (ts::CascadeIndex(uint32_t(r28.u64)) != 0 && mcla::gpu::car_shadow_map::PlayerShadowIsTheMaps()) {
             gates.Add(Gate::kPlayerLeftOut);
             r11.u64 = 0;
+        } else if (r28.u32 == ts::kCascadePhases[0] && mcla::gpu::cascade_schedule::track_casters) {
+            const auto* base = GuestBase();
+            const uint32_t vehicle = r30.u32;
+            const uint32_t entity = base && PlausiblePtr(vehicle) ? ReadGuestU32(base, vehicle + kVehicleEntity) : 0;
+            if (PlausiblePtr(entity)) {
+                const bool render_copy = ThreadReadsRenderCopy(base, r13.u32);
+                const uint32_t row = entity + (render_copy ? kEntityMatrixRender : kEntityMatrixUpdate) + kMatrixTranslation;
+                const float at[3] = {ReadGuestF32(base, row), ReadGuestF32(base, row + 4), ReadGuestF32(base, row + 8)};
+                Eyes eyes;
+                // The near stock caster is covered by cascades 1 and 2. A
+                // detached camera can leave the player in a far cascade.
+                if (FindEyes(base, gates, false, eyes) && ts::Distance(eyes.eye, at) > 15.0f) {
+                    mcla::gpu::cascade_schedule::NoteCaster(vehicle, at, 4);
+                }
+            }
         }
         return;
     }
@@ -429,7 +445,11 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
     }
 
     gates.Add(Gate::kDecided);
-    if (DecideAndPublish(s, mode, CurrentLimits(mode), vehicle, phase, distance)) {
+    const ts::Limits limits = CurrentLimits(mode);
+    if (DecideAndPublish(s, mode, limits, vehicle, phase, distance)) {
+        if (phase == ts::kCascadePhases[0]) {
+            mcla::gpu::cascade_schedule::NoteCaster(vehicle, at, uint8_t(limits.cascades));
+        }
         gates.Add(Gate::kCast);
         r11.u64 = 1;
     }
@@ -588,7 +608,9 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
     }
 
     gates.Add(Gate::kDecided);
-    if (DecideAndPublish(s, mode, CurrentLimits(mode), item, phase, distance)) {
+    const ts::Limits limits = CurrentLimits(mode);
+    if (DecideAndPublish(s, mode, limits, item, phase, distance)) {
+        if (census_phase) mcla::gpu::cascade_schedule::NoteCaster(item, at, uint8_t(limits.cascades));
         gates.Add(Gate::kRemapped);
         r4.u64 = ts::kAmbientBodyPhase;
     }

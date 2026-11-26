@@ -556,6 +556,7 @@ class Scene {
   const GuestLayout* layout_ = nullptr;
   const BindlessHeap* heap_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  uint8_t marked_shadow_pass_ = 0;
   GuestOcclusion* occlusion_ = nullptr;
   TemporalSystem* temporal_ = nullptr;
   AmbientOcclusion* ao_ = nullptr;
@@ -745,6 +746,8 @@ class Scene {
     uint64_t tiling_begins = 0;
     uint64_t tiling_ends = 0;
     uint64_t prepare_cycles = 0;  // TSC cycles (cycles.h)
+    std::array<uint64_t, 4> shadow_prepare_cycles{};
+    std::array<uint64_t, 4> shadow_draws{};
     // The rear view mirror's draws (mirror_draws.h): prepared draws whose viewport is the mirror's rectangle, the ones of them recorded, the frames that had any,
     // the TSC cycles they took to prepare and record, and the ones kept from the main view's per-draw consumers (mcla_gpu_mirror_class).
     uint64_t mirror_prepared = 0;

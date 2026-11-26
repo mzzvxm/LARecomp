@@ -25591,6 +25591,58 @@ name = "Patch_ImpostorShadowGuard"
 registers = ["r3"]
 jump_address_on_true = 0x823126A8
 
+# Sun cascade schedule. The frame hook follows the rear-view cadence hook at
+# 0x822E6634. It leaves both phase masks intact.
+[[midasm_hook]]
+address = 0x822E6638
+name = "Patch_CascadeFrame"
+registers = ["r21", "r27"]
+
+[[midasm_hook]]
+address = 0x822E67F4
+name = "Patch_CascadePhaseBegin"
+registers = ["r30"]
+
+# Skip the fit. The fourth cascade still copies all four current plane sets
+# into the cull context, including the held tile's existing planes.
+[[midasm_hook]]
+address = 0x82312C34
+name = "Patch_CascadeFit"
+registers = ["r3", "r4", "r5", "r6"]
+jump_address_on_true = 0x82312C38
+
+# The viewport/matrix bind contains the clear at 0x825F5D74-0x825F5DAC.
+[[midasm_hook]]
+address = 0x82312C5C
+name = "Patch_CascadeBind"
+registers = ["r4"]
+jump_address_on_true = 0x823130B4
+
+# Bypass the client loop while keeping the phase object's end callback.
+[[midasm_hook]]
+address = 0x822E6854
+name = "Patch_CascadeClients"
+registers = ["r30"]
+jump_address_on_true = 0x822E68D8
+
+# Skip the resolve only. Cascade 4 still uploads the collector constants and
+# calls the impostor manager when requested.
+[[midasm_hook]]
+address = 0x82311A9C
+name = "Patch_CascadeResolve"
+registers = ["r4"]
+jump_address_on_true = 0x82311AA0
+
+[[midasm_hook]]
+address = 0x82311AA0
+name = "Patch_CascadePhaseEnd"
+registers = ["r30"]
+
+[[midasm_hook]]
+address = 0x82311AF4
+name = "Patch_CascadeCollectorUpload"
+registers = []
+
 # Online: gate de compatibilidade de conteúdo (DLC) da sessão.
 #
 # sub_8238B7E0 (caminho de join/host) reconstrói uma máscara de 8 bits a partir

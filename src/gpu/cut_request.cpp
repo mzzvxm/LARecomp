@@ -1,6 +1,7 @@
 // Camera cuts the game asked for, and the motion blur on a cut: see cut_request.h.
 
 #include "cut_request.h"
+#include "cascade_schedule.h"
 #include "settings/immortal.h"
 
 #include <algorithm>
@@ -46,6 +47,7 @@ bool SameCamera(const CameraPose& a, const CameraPose& b) {
 }
 
 uint64_t Requests::Submit(uint32_t game_frame, const CameraPose& camera) {
+  cascade_schedule::camera_cut.fetch_add(1, std::memory_order_relaxed);
   std::lock_guard<std::mutex> lock(mutex_);
   constexpr size_t kMaxPending = 16;
   if (pending_.size() >= kMaxPending) {  // nothing is taking them: drop the oldest, it is long over

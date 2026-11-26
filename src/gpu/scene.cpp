@@ -56,6 +56,7 @@
 #include "native_gfx/vertex_declaration.h"
 #include "occlusion.h"
 #include "pass_timing.h"
+#include "cascade_schedule.h"
 #include "post.h"
 #include "resolve.h"
 #include "resolve_memory.h"
@@ -1291,6 +1292,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   const DrawView view(payload);
   const DrawRecord& r = view.record();
   ++window_.draws;
+  if (cascade_schedule::TileBit(r.sun_cascade)) ++window_.shadow_draws[r.sun_cascade - 1];
   if (watch::Active()) {
     watch::OnDraw(r.ps_identity);
   }
@@ -1434,6 +1436,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   if (timed) {
     const uint64_t spent = draw_sampler_.Scale(cycles::Now() - c0);
     window_.prepare_cycles += spent;
+    if (cascade_schedule::TileBit(r.sun_cascade)) window_.shadow_prepare_cycles[r.sun_cascade - 1] += spent;
     if (mirror_draw) {
       window_.mirror_cycles += spent;
     }
@@ -3307,9 +3310,23 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     m.height = target_height;
     m.framebuffer = framebuffer;
   }
-  if (pass_timing_->enabled() && marked_framebuffer_ != framebuffer) {
-    pass_timing_->Mark(list, PassLabel(colors, d.key.color_count, depth));
-    marked_framebuffer_ = framebuffer;
+  if (pass_timing_ && pass_timing_->enabled()) {
+    const bool sun_depth = depth && depth->side_view == SideView::kShadow && d.key.color_count == 0;
+    const bool collector = d.ps &&
+        (d.ps->features & ShaderStore::FeatureBit(larecomp::shaderpack::kFeatureShadowFilter)) != 0;
+    const uint8_t shadow_pass = sun_depth && cascade_schedule::TileBit(r.sun_cascade) ? r.sun_cascade :
+                                collector ? 5 : 0;
+    if (marked_framebuffer_ != framebuffer || marked_shadow_pass_ != shadow_pass) {
+      if (shadow_pass == 5) {
+        pass_timing_->Mark(list, "sun shadow collector");
+      } else if (shadow_pass != 0) {
+        pass_timing_->Mark(list, cascade_schedule::kDrawLabels[shadow_pass - 1]);
+      } else {
+        pass_timing_->Mark(list, PassLabel(colors, d.key.color_count, depth));
+      }
+      marked_shadow_pass_ = shadow_pass;
+      marked_framebuffer_ = framebuffer;
+    }
   }
   if (target_census_.active()) {
     target_census_.OnDraw(PassLabel(colors, d.key.color_count, depth), r.ps_identity);
@@ -4465,6 +4482,10 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.tiling_begins += from.tiling_begins;
   into.tiling_ends += from.tiling_ends;
   into.prepare_cycles += from.prepare_cycles;
+  for (unsigned i = 0; i < into.shadow_draws.size(); ++i) {
+    into.shadow_draws[i] += from.shadow_draws[i];
+    into.shadow_prepare_cycles[i] += from.shadow_prepare_cycles[i];
+  }
   into.mirror_prepared += from.mirror_prepared;
   into.mirror_recorded += from.mirror_recorded;
   into.mirror_frames += from.mirror_frames;
@@ -4741,6 +4762,12 @@ void Scene::Report(const char* why) {
           : 0.0,
       w.clears, w.resolves, w.tiling_begins, w.tiling_ends, ps.variant_failed, ps.variant_fallback_draws,
       cycles::ToNs(w.prepare_cycles) / frames / 1e6, thread_text, wait_text);
+  if (larecomp::settings::mcla_gpu_shadow_ledger.Get()) {
+    for (unsigned i = 0; i < w.shadow_draws.size(); ++i) {
+      REXLOG_INFO("[shadow ledger] render cascade {} over {} frames: {} draws, prepare and record {:.3f} ms/frame",
+                  i + 1, w.frames, w.shadow_draws[i], cycles::ToNs(w.shadow_prepare_cycles[i]) / frames / 1e6);
+    }
+  }
   if (w.mirror_prepared != 0 || mirror_rect_.valid()) {
     // The rear view mirror's draws (mirror_draws.h), per frame of the window (every frame, not only the ones that drew it: a mirror that skips frames shows its
     // average), with the frames that drew it, what they cost to prepare and record, and whether they stay out of the main view's consumers. The cost chain
