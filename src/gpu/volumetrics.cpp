@@ -258,6 +258,8 @@ void Volumetrics::Shutdown() {
     image = HostImage{};
   }
   accum_ = HostImage{};
+  capture_ = HostImage{};
+  for (auto& pipeline : capture_pipelines_) pipeline.reset();
   for (auto& uav : uav_sets_) {
     uav = UavSet{};
   }
@@ -400,7 +402,10 @@ plume::RenderPipeline* Volumetrics::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
+void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view, bool capture) {
+  capture_wanted_ = capture;
+  captured_ = false;
+  if (!capture && passes_ && capture_.texture) passes_->ReleaseImage(capture_);
   if (menu_view_ != menu_view) {
     ground_valid_ = false;
     fog_seen_ = false;
@@ -426,6 +431,7 @@ void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
   view_ = uint32_t(std::clamp(larecomp::settings::mcla_gpu_vol_view.Get(), 0, 3));
   const vol::Choice choice = ReadChoice();
   Level level = choice.level;
+  capture_off_ = level == Level::kOff;
   if (!ready_ && vol::On(level) && !shaders_failed_ && MakeLayoutAndShaders()) {
     REXLOG_INFO("{} the volumetric light was off at the start: its layout and shaders are made now", kPrefix);
   }
@@ -453,9 +459,14 @@ void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
   }
 }
 
+bool Volumetrics::CaptureEmpty() const {
+  return capture_off_ || outcome_ == Outcome::kWorld || outcome_ == Outcome::kGated ||
+         outcome_ == Outcome::kTooSmall;
+}
+
 uint64_t Volumetrics::HeldBytes() const {
   uint64_t bytes = lamp_tile_bytes_;
-  for (const HostImage* image : {&scatter_[0], &scatter_[1], &accum_}) {
+  for (const HostImage* image : {&scatter_[0], &scatter_[1], &accum_, &capture_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -1434,6 +1445,21 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after vol apply");
+  if (capture_wanted_) {
+    // CHECK: compare this plane with debug view 1 on both APIs, including MSAA depth edges.
+    const unsigned ms = depth->host_samples > 1;
+    auto& capture_pipeline = capture_pipelines_[ms];
+    if (!capture_pipeline && apply_shaders_[ms]) {
+      capture_pipeline = passes_->CreatePipeline(*apply_shaders_[ms], kVolumeFormat, "capture volume light");
+    }
+    if (capture_pipeline && passes_->EnsureImage(capture_, plan.render[0], plan.render[1], kVolumeFormat, "capture volume light")) {
+      push.slots[3] = vol::ApplyWord(plan.depth_sample, stable_, 1);
+      pass_timing_->Mark(list, "capture volume light");
+      passes_->DrawInto(list, capture_, capture_pipeline.get(), &push, sizeof(push));
+      pass_timing_->Mark(list, "after capture volume light");
+      captured_ = true;
+    }
+  }
   ++runs_;
   return true;
 }

@@ -297,6 +297,7 @@ std::string PassTiming::TakeSummary() {
           name.starts_with("car rt") || name.starts_with("mirror ") || name.starts_with("headlight shadow") || name.starts_with("rt gi") || name.starts_with("gi ") ||
           name.starts_with("ssr ") || name.starts_with("planar ") || name.starts_with("ray regen ") ||
           name == "road reflection cars" || name == "capture road reflection" || name.starts_with("env map ") ||
+          name.starts_with("vol ") || name.starts_with("shafts ") || name == "atmosphere apply" ||
           name.starts_with("520 4x k_2_10_10_10_FLOAT@416") ||
           name == "rtao denoise" || name == "rt lights denoise" || name == "city sun denoise") {
         memory += std::format("{}{} {:.3f} ms", memory.empty() ? "" : ", ", names_[order[i]],

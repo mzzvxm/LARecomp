@@ -34,6 +34,12 @@ dimensions, crop or source during the take fails visibly.
 | motion | XY, f16le, motion-px | Temporal vectors in render pixels, previous minus current, +Y down, with jitter removed. Each vector covers a single update even with subsampling |
 | reflhit | Visible source and RT query ID, u8, class-id | Current surface reflection trace on the `refl` grid, or native fallback material tags on the full G-buffer grid with SSR off |
 | roadrefl | Combined luma and screen confidence, f16le, linear-scene | Half-resolution `road-reflection-lobe-v1` from SSR's apply input and the renderer's estimate of the native planar radiance |
+| vol | RGB, f16le, linear-scene | Unit-gain volumetric in-scattering at the scene render size |
+| shafts | RGB, f16le, linear-scene | Tinted, thresholded shaft light after spatial and temporal filtering, sampled at the scene render size |
+
+The `atmosphere-light-v1` metadata lists deliberate zero-light updates in
+`empty_frames`. Those updates have no binary payload. An update missing from
+both lists lacks capture evidence. A fully gated stream has zero dimensions.
 
 Score `roadrefl` on class 1 receivers. `combined_luma` is nonnegative
 scene-linear luma before receiver shading. The native estimate uses the

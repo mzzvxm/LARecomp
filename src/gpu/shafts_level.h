@@ -9,9 +9,7 @@
 //   strong     x3
 //   stronger   x4
 //   strongest  x5
-//   auto       the default of the setting: DEFAULT on the Mid and High GPU classes, OFF on the Low class
-//              (an integrated GPU, a handheld or a software adapter keeps the game's own picture;
-//              gpu_class.h's table, kEffects)
+//   auto       the ENHANCED preset value (DEFAULT on every GPU class)
 // The multiplier is the one mcla_gpu_sun_shafts_intensity was while the shafts were tuned; that debug cvar
 // stays, a fine multiplier on top of the level (1 = the level as it is).
 //
@@ -95,12 +93,13 @@ inline bool ParseLevel(std::string_view text, Level* level) {
 // What one saved text comes to.
 struct Choice {
   Level level = Level::kOff;
-  bool automatic = false;  // `auto` (or a text that is no value, taken as `auto`): the class's cell decided
+  bool automatic = false;  // `auto` or an unknown value uses the preset's compatibility value
   bool unknown = false;    // the text is not a value of the setting (a hand-edited file); taken as `auto`
   bool legacy = false;     // an old value (low, high): read as `default`
 };
 
-// The level the setting's text (any case) comes to on class `cls`.
+// The level selected by the setting's text. The class argument is retained
+// for the shared compatibility helper in gpu_class.h.
 inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   Choice choice;
   const std::string text = Lower(saved);

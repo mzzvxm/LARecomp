@@ -26,7 +26,7 @@
 //              is the NEXT frame's colour chain's history of the lights) | sun shafts | volumetric light (lamp cull, fused inject and integrate) | car ray tracing check |
 //              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the last pass that adds to the colour here but one) | car history + ray traced reflections (+ the
 //              player's windows' additive reflection of the city, CITY-RT M2 R3b: the very last add) | debug views
-//   end of scene   the volumetric composite, the sun shafts' composite
+//   end of scene   the atmosphere composite (volume and shafts share a blend when both are ready)
 //   anchor     (RR-2) the game's post chain starts at its motion blur draw, where the temporal system runs the upscaler: the Ray Reconstruction guide pass makes the five guide images from the planes
 //              (only while it is wanted), then the upscaler, then the guide debug view over its output
 //   present    world classification | screen products trade their capture with the history | light manager checks and uploads | the rig makes the next frame's lights

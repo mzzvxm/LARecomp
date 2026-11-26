@@ -57,9 +57,20 @@ void Writer::Reset(const std::filesystem::path& take) {
 bool Writer::Write(const Frame& frame, std::span<const uint8_t> data, std::string& why) {
     for (size_t i = 0; i < kCount; ++i) {
         const Plane& plane = frame.planes[i];
-        if (!plane.crop.width) continue;
+        const bool empty = (frame.empty & kAtmosphereMask & (1u << i)) != 0;
+        if (!plane.crop.width && !empty) continue;
         const Stream& stream = kStreams[i];
         Written& written = streams_[i];
+        if ((empty && plane.crop.width) ||
+            (!written.frames.empty() && frame.index <= written.frames.back()) ||
+            (!written.empty_frames.empty() && frame.index <= written.empty_frames.back())) {
+            why = std::string(stream.name) + " had an invalid or out-of-order frame";
+            return false;
+        }
+        if (empty) {
+            written.empty_frames.push_back(frame.index);
+            continue;
+        }
         const auto folder = root_ / stream.name;
         const uint32_t output_bytes = stream.channels * stream.channel_bytes;
         const uint64_t bytes = uint64_t(plane.row_pitch) * plane.crop.height;
@@ -81,11 +92,11 @@ bool Writer::Write(const Frame& frame, std::span<const uint8_t> data, std::strin
             written.plane = plane;
         } else {
             const auto& old = written.plane;
-            if (frame.index <= written.frames.back() || plane.width != old.width ||
+            if (plane.width != old.width ||
                 plane.height != old.height || plane.crop.x != old.crop.x || plane.crop.y != old.crop.y ||
                 plane.crop.width != old.crop.width || plane.crop.height != old.crop.height ||
                 plane.alternate != old.alternate) {
-                why = std::string(stream.name) + " changed layout or source, or had an out-of-order index";
+                why = std::string(stream.name) + " changed layout or source";
                 return false;
             }
         }
@@ -128,9 +139,15 @@ bool Writer::Write(const Frame& frame, std::span<const uint8_t> data, std::strin
 bool Writer::Finish(std::string& why) {
     for (size_t i = 0; i < kCount; ++i) {
         const Written& written = streams_[i];
-        if (written.frames.empty()) continue;
+        if (written.frames.empty() && written.empty_frames.empty()) continue;
         const Stream& stream = kStreams[i];
         const auto folder = root_ / stream.name;
+        std::error_code ec;
+        std::filesystem::create_directories(folder, ec);
+        if (ec) {
+            why = std::string("cannot create buffers/") + stream.name + ": " + ec.message();
+            return false;
+        }
         const auto temp = folder / "meta.json.tmp";
         std::ofstream file(temp, std::ios::binary);
         file << "{\"w\":" << written.plane.crop.width << ",\"h\":" << written.plane.crop.height
@@ -141,6 +158,17 @@ bool Writer::Finish(std::string& why) {
             file << written.frames[n];
         }
         file << ']';
+        if (kAtmosphereMask & (1u << i)) {
+            const auto& plane = written.plane;
+            file << ",\"domain\":\"atmosphere-light-v1\",\"source_w\":" << plane.width
+                 << ",\"source_h\":" << plane.height << ",\"x\":" << plane.crop.x << ",\"y\":" << plane.crop.y
+                 << ",\"empty_frames\":[";
+            for (size_t n = 0; n < written.empty_frames.size(); ++n) {
+                if (n) file << ',';
+                file << written.empty_frames[n];
+            }
+            file << ']';
+        }
         if (i == kRefl) {
             file << ",\"source\":\"" << (written.plane.alternate ? "car-rt-history" : "ssr-resolve-input") << '"';
         }
@@ -174,7 +202,6 @@ bool Writer::Finish(std::string& why) {
         }
         file << "}\n";
         file.close();
-        std::error_code ec;
         if (file) std::filesystem::rename(temp, folder / "meta.json", ec);
         if (!file || ec) {
             why = std::string("cannot publish buffers/") + stream.name + "/meta.json";

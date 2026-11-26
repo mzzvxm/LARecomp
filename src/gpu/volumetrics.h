@@ -87,7 +87,9 @@ class Volumetrics {
   void SetInputSource(volumetrics::VolInputSource* source) { source_ = source; }
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame(gbuffer::PauseFxView menu_view);
+  void BeginFrame(gbuffer::PauseFxView menu_view, bool capture);
+  const HostImage* CaptureLight() const { return captured_ ? &capture_ : nullptr; }
+  bool CaptureEmpty() const;
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
   // The game's sun cascades of this frame as the shadow collector's draws told them (the data FillCascades gives the volume: the light matrices, the boxes, the atlas), for another pass that
@@ -346,6 +348,11 @@ class Volumetrics {
   // The images: the scatter volume twice (this frame's and last frame's), the accumulated one; all RGBA16F, the 2D atlas.
   std::array<HostImage, 2> scatter_;
   HostImage accum_;
+  HostImage capture_;
+  std::array<std::unique_ptr<plume::RenderPipeline>, 2> capture_pipelines_;
+  bool capture_wanted_ = false;
+  bool capture_off_ = false;
+  bool captured_ = false;
   uint32_t parity_ = 0;  // the scatter written this frame (the other is the history)
   volumetrics::GridDesc made_for_;
   // One constants buffer and set per frame slot, one UAV set per image.

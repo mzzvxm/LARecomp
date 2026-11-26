@@ -3,6 +3,96 @@
 Use the same executable on both sides of a comparison. These runs are unproven
 on this branch. Smoke one short capture on each API before running the pairs.
 
+## POST-ATM isolated light and pass cost
+
+After committing the staged POST-3 merge and the renderer changes, merge the
+branch into `test/post-atm-opt` based on `test/land-1126-opt`. Apply the VISMET
+patch in the tools workspace.
+
+```powershell
+Set-Location C:\mcv\larecomp
+git apply --check .\h11-work\atm-cheap\vismet-atmosphere.patch
+git apply .\h11-work\atm-cheap\vismet-atmosphere.patch
+$postExe = 'post-atm'
+$postRef = 'test/post-atm-opt'
+& .\perf\scripts\build-set-011.ps1 -Name $postExe -Ref $postRef -Sdk setm -Patches none -ExtraTargets 'larecomp_atmosphere_test,larecomp_volumetrics_amortize_test,larecomp_frame_order_test'
+& .\perf\scripts\make-pack-011.ps1 -Name $postExe -Exe $postExe -Ref $postRef
+. .\perf\scripts\lockrun-lease.ps1
+$postLock = Find-LockrunPy
+$postAccept = '.\perf\scripts\vismet\accept.py'
+foreach ($postMode in 'presence', 'merge', 'shafts') {
+    foreach ($postConfig in 'PLAYER', 'TOP') {
+        $postTag = "post-atm-$postMode-$postConfig-dx"
+        python -B $postAccept --prepare $postTag --ab --atmosphere $postMode --config $postConfig --exe $postExe --lockrun $postLock --backend d3d12
+        Get-Content "perf\out\look-$postTag\capture-plan.txt"
+    }
+    $postTag = "post-atm-$postMode-rog"
+    python -B $postAccept --prepare $postTag --ab --atmosphere $postMode --config PLAYER --exe $postExe --backend vulkan --rog
+    Get-Content "perf\out\look-$postTag\capture-plan.txt"
+}
+```
+
+Run the printed commands for each plan. On the ROG they stage the scenes, print
+and launch the lane queue, and judge the pulled takes. Run `presence` first and
+use its dry-dusk A/A row as the repeat floor. Read the per-frame presence and
+gating rows, isolated FLIP, mean linear-luma ratio, darkest-20% luma, and the
+dry-dusk adjacent-frame residual. Confirm the merged arm's final FLIP and
+isolated light are at the repeat floor. Compare the cheap shaft arm's sky FLIP
+to 0.25 mean and 0.60 p95 and its isolated temporal row to the parked repeat.
+The expected dry pose and gates need a live smoke. Check the sun leaving the
+frame with a slow camera pan at the dry spot. Open the full map during an
+isolated take and require gated indices for both streams. Verify garage,
+photo and pause after the UI and camera have settled. Recheck the paired
+and single-effect paths with 2x MSAA and backend validation.
+
+Measure pass cost with captures disabled. The dry tour follows the existing
+parked pose. The wet tour uses the PERF-TIERS scene. Launch these lanes serially
+and require complete steady 3600-present windows.
+
+```powershell
+$postWet = (Resolve-Path perf\scripts\perf_tiers.scene).Path
+$postWetRog = 'C:/larecomp-test/atmosphere/perf_tiers.scene'
+ssh -o BatchMode=yes rog 'cmd /c mkdir C:\larecomp-test\atmosphere'
+scp -B $postWet "rog:$postWetRog"
+$postCommon = @('--msaa','2','--fps-limit','0','--log-level','info','--save','mzlate','--no-pm','--max-run-s','850','--tour-timeout-s','730','--no-tour-shots')
+$postFlags = @('--mcla_gpu_preset=custom','--mcla_gpu_hdr=off','--mcla_gpu_upscaler=off','--mcla_gpu_frame_generation=off','--mcla_gpu_volumetrics=ultra','--mcla_gpu_sun_shafts=default','--mcla_gpu_headlights=on','--mcla_gpu_light_shadows=medium','--mcla_gpu_pass_timing=true','--mcla_gpu_scene_profile=true')
+$postRog = @()
+foreach ($postArm in 'legacy','separate','merged','wet-oracle','wet-reuse') {
+    $postTaps = if ($postArm -eq 'legacy') { '64' } else { '0' }
+    $postMerge = if ($postArm -eq 'separate') { 'false' } else { 'true' }
+    $postReuse = if ($postArm -eq 'wet-oracle') { 'false' } else { 'true' }
+    $postSwitches = @("--mcla_gpu_sun_shafts_steps=$postTaps","--mcla_gpu_atmosphere_merge=$postMerge","--mcla_gpu_vol_amortize=$postReuse")
+    $postDryTour = @('--time-of-day','17.7','--weather','nice','--tour','w1-shaftlevels','--tour-var','LEVELS=default','--tour-var','SETTLE_S=480')
+    $postWetTour = @('--time-of-day','20','--weather','stormy','--tour','scene-test','--tour-var','SHOTS=','--tour-var','PRELOAD_S=20','--tour-var','TIMEOUT_S=700','--tour-var','AFTER_S=0','--tour-var')
+    $postTourDx = if ($postArm -like 'wet-*') { $postWetTour + "SCENE=$postWet" } else { $postDryTour }
+    $postTourVk = if ($postArm -like 'wet-*') { $postWetTour + "SCENE=$postWetRog" } else { $postDryTour }
+    foreach ($postScale in '1.5', '3') {
+        $postRun = "post-atm-dx-$($postScale.Replace('.','_'))-$postArm"
+        python -I $postLock --lock --keep-display --game --max-min 18 --log "perf\logs\$postRun.log" -- python -I ports\scripts\opt_run.py --name $postRun --exe-dir "ports\exe\$postExe" --backend d3d12 --adapter-name 'NVIDIA GeForce RTX 5080' --window 1280x720 --scale $postScale @postCommon @postTourDx --extra "--shader_pack_dir=$PWD\ports\scratch\packs-$postExe" @postFlags @postSwitches
+    }
+    foreach ($postGpu in 'rtx','intel') {
+        $postDevice = if ($postGpu -eq 'rtx') { 'NVIDIA GeForce RTX 4080 Laptop GPU' } else { 'Intel(R) RaptorLake-S Mobile Graphics Controller' }
+        $postRog += @{name="post-atm-vk-$postGpu-$postArm"; exe=$postExe; packs="packs-$postExe"; backend='vulkan'; title_blind=($postGpu -eq 'intel'); args=@('--adapter-name',$postDevice) + $postCommon + $postTourVk + @('--extra') + $postFlags + $postSwitches}
+    }
+}
+$postQueue = 'perf\out\post-atm-cost-rog.json'
+$postRog | ConvertTo-Json -Depth 5 | Set-Content -Encoding ascii $postQueue
+python -I perf\scripts\laptop\laptop_lane.py $postQueue --plan
+python -I perf\scripts\laptop\laptop_lane.py $postQueue
+Get-ChildItem ports\run -Directory -Filter 'post-atm-*' | ForEach-Object {
+    rg 'pass timing over|first sun shafts pass|first volume|froxel amortization' "$($_.FullName)\larecomp.log"
+}
+```
+
+For AMD iGPU coverage on the main PC, use the exact adapter name from the
+boot log and the 1.5-scale arm, with distinct run names. At each size check
+render size and sample count in the effect logs. Compare `shafts sky` plus
+`shafts blur` in legacy and merged (target at least 70% less). Compare
+`vol apply` plus `shafts add` in separate against `atmosphere apply` in
+merged. Verify the wet arms have no shaft work and compare `vol inject` plus
+`vol integrate` against `vol cull` plus `vol inject + integrate`. Run the
+POST-3 moving-headlight proof below for trail and history behavior.
+
 ## Build and packs
 
 Merge the changes into the coordinator's test integration based on

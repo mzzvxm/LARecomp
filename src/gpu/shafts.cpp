@@ -214,6 +214,8 @@ void SunShafts::Shutdown() {
   sky_ = HostImage{};
   shaft_ = HostImage{};
   blur_segment_ = HostImage{};
+  capture_ = HostImage{};
+  capture_pipeline_.reset();
   hist_[0] = HostImage{};
   hist_[1] = HostImage{};
   hist_valid_ = false;
@@ -342,7 +344,10 @@ plume::RenderPipeline* SunShafts::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void SunShafts::BeginFrame(gbuffer::PauseFxView menu_view) {
+void SunShafts::BeginFrame(gbuffer::PauseFxView menu_view, bool capture) {
+  capture_wanted_ = capture;
+  captured_ = false;
+  if (!capture && passes_ && capture_.texture) passes_->ReleaseImage(capture_);
   if (menu_view_ != menu_view) {
     sky_have_ = false;
   }
@@ -354,6 +359,7 @@ void SunShafts::BeginFrame(gbuffer::PauseFxView menu_view) {
   menu_view_ = menu_view;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_sun_shafts_census.Get()));
   Level level = ReadLevel();
+  capture_off_ = level == Level::kOff;
   if (!ready_ && level != Level::kOff && !shaders_failed_ && MakeShaders()) {
     // Off at the start, on now (a live change): the shaders were not made; they are made here (a short
     // call) and the pipelines in the background (HoldUntilBuilt).
@@ -377,9 +383,14 @@ void SunShafts::BeginFrame(gbuffer::PauseFxView menu_view) {
   }
 }
 
+bool SunShafts::CaptureEmpty() const {
+  return capture_off_ || outcome_ == Outcome::kWorld || outcome_ == Outcome::kGated ||
+         outcome_ == Outcome::kTooSmall;
+}
+
 uint64_t SunShafts::HeldBytes() const {
   uint64_t bytes = 0;
-  for (const HostImage* image : {&sky_, &shaft_, &blur_segment_, &hist_[0], &hist_[1]}) {
+  for (const HostImage* image : {&sky_, &shaft_, &blur_segment_, &hist_[0], &hist_[1], &capture_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -1212,6 +1223,7 @@ bool SunShafts::Composite(plume::RenderCommandList* list, const HostImage& shine
       return false;
     }
   }
+  if (capture_wanted_) RecordCapture(list, plan, shine);
   composited_ = true;
   outcome_ = Outcome::kRecorded;
   if (!first_run_logged_) {
@@ -1249,6 +1261,26 @@ bool SunShafts::Composite(plume::RenderCommandList* list, const HostImage& shine
   return true;
 }
 
+void SunShafts::RecordCapture(plume::RenderCommandList* list, const Pending& plan, const HostImage& shine) {
+  if (!list || !passes_ || !pass_timing_ || !shine.texture) return;
+  constexpr auto format = plume::RenderFormat::R16G16B16A16_FLOAT;
+  if (!capture_pipeline_ && shaders_[kPassAdd]) {
+    capture_pipeline_ = passes_->CreatePipeline(*shaders_[kPassAdd], format, "capture shaft light");
+  }
+  if (!capture_pipeline_ || !passes_->EnsureImage(capture_, plan.render[0], plan.render[1], format, "capture shaft light")) return;
+  Push push{};
+  push.slots[1] = shine.slot;
+  push.slots[3] = 4;  // shaft light with the apply threshold, without blending
+  push.sizes[0] = float(plan.render[0]);
+  push.sizes[1] = float(plan.render[1]);
+  std::copy_n(plan.tint, 3, push.tint);
+  // CHECK: compare the captured light against the composited increment on both APIs.
+  pass_timing_->Mark(list, "capture shaft light");
+  passes_->DrawInto(list, capture_, capture_pipeline_.get(), &push, sizeof(push));
+  pass_timing_->Mark(list, "after capture shaft light");
+  captured_ = true;
+}
+
 const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const Pending& plan) {
   plume::RenderPipeline* temporal = Pipeline(kVTemporal);
   if (!temporal || !hist_[0].texture || !hist_[1].texture || hist_[0].width != plan.image[0] || hist_[0].height != plan.image[1]) {
@@ -1264,7 +1296,8 @@ const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const
   const uint32_t out_index = 1 - hist_index_;
   HostImage& history_in = hist_[hist_index_];
   HostImage& history_out = hist_[out_index];
-  const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&
+  const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause &&
+                    hist_legacy_steps_ == plan.legacy_steps && std::isfinite(shift_u) && std::isfinite(shift_v) &&
                     noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect) && history_in.layout != plume::RenderTextureLayout::UNKNOWN;
   Push push = {};
   push.slots[0] = keep ? history_in.slot : shaft_.slot;  // without a history any readable image: the shader does not read it
@@ -1285,6 +1318,7 @@ const HostImage* SunShafts::RecordTemporal(plume::RenderCommandList* list, const
   hist_valid_ = true;
   hist_frame_ = frame_;
   hist_pause_ = pause;
+  hist_legacy_steps_ = plan.legacy_steps;
   hist_sun_[0] = plan.sun_uv[0];
   hist_sun_[1] = plan.sun_uv[1];
   // A frame that does not keep the history still writes one frame into it: the next frame has 1 frame of history (weight 1/2), not 0.

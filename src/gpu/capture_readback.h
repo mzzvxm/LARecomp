@@ -61,6 +61,7 @@ struct VisualSource {
 };
 struct VisualSources {
   std::array<VisualSource, vis::kCount> images;
+  uint32_t empty = 0;
   const HostImage* depth = nullptr;
   bool native_reflection_fallback = false;
   bool road_view_drawn = false;

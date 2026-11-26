@@ -906,10 +906,10 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   const auto pause_fx = gbuffer_ && gbuffer_->tracks_pause_fx() ? pause_fx_candidate : gbuffer::PauseFxView::kNone;
   const auto atmosphere_view = gbuffer::PauseFxViewOf(menu_atmosphere, movie, garage_lighting, menu_atmosphere);
   if (shafts_) {
-    shafts_->BeginFrame(atmosphere_view);
+    shafts_->BeginFrame(atmosphere_view, (visual_mask_ & vis::Bit(vis::kShafts)) != 0);
   }
   if (vol_) {
-    vol_->BeginFrame(atmosphere_view);
+    vol_->BeginFrame(atmosphere_view, (visual_mask_ & vis::Bit(vis::kVol)) != 0);
   }
   if (mirror_glass_) {
     mirror_glass_->BeginFrame();  // the side mirrors' glass finder (mirror_glass.h): reads its setting and asks CarFrame for the next frame's draws; BEFORE CarFrame::BeginFrame, which starts a requested frame
@@ -4748,6 +4748,14 @@ void Scene::Add(Stats& into, const Stats& from) const {
 }
 
 void Scene::CollectVisualSources(VisualSources& sources) const {
+  if (vol_ && (visual_mask_ & vis::Bit(vis::kVol))) {
+    sources.images[vis::kVol] = VisualSource::Image(vol_->CaptureLight());
+    if (!sources.images[vis::kVol].texture && vol_->CaptureEmpty()) sources.empty |= vis::Bit(vis::kVol);
+  }
+  if (shafts_ && (visual_mask_ & vis::Bit(vis::kShafts))) {
+    sources.images[vis::kShafts] = VisualSource::Image(shafts_->CaptureLight());
+    if (!sources.images[vis::kShafts].texture && shafts_->CaptureEmpty()) sources.empty |= vis::Bit(vis::kShafts);
+  }
   if (resolve_ && visual_hdr_rows_ && visual_hdr_rows_ == visual_hdr_key_.height) {
     const auto* p = resolve_->Find(visual_hdr_key_, visual_hdr_key_.base_page);
     if (p && p->texture && !p->depth_source && p->format == plume::RenderFormat::R16G16B16A16_FLOAT) {

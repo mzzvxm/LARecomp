@@ -53,9 +53,10 @@ void Options() {
     uint32_t mask = 0;
     Check(vis::ParseBuffers("", mask) && !mask, "default disabled");
     Check(vis::ParseBuffers("off", mask) && !mask, "explicit off");
-    Check(vis::ParseBuffers("all", mask) && mask == 511, "all streams");
+    Check(vis::ParseBuffers("all", mask) && mask == (1u << vis::kCount) - 1, "all streams");
     Check(vis::ParseBuffers("reflhit", mask) && mask == vis::Bit(vis::kReflHit), "hit stream alone");
     Check(vis::ParseBuffers("roadrefl", mask) && mask == vis::Bit(vis::kRoadRefl), "road reflection stream alone");
+    Check(vis::ParseBuffers("vol,shafts", mask) && mask == vis::kAtmosphereMask, "atmosphere streams alone");
     Check(vis::ParseBuffers("class,hdr", mask) && mask == (vis::Bit(vis::kClass) | vis::Bit(vis::kHdr)), "named subset");
     for (auto bad : {"motion,motion", "final,", ",class", "unknown"}) {
         Check(!vis::ParseBuffers(bad, mask), "invalid list");
@@ -142,7 +143,7 @@ void Writers(const fs::path& take) {
         frame.planes[i] = vis::Place({2, 1, 2, 2}, 8, 4, vis::kStreams[i].max_source_bytes,
                                     i == vis::kGi ? 2 : 0, i == vis::kFinal, end);
     }
-    Check(frame.planes[vis::kHdr].offset == 512 && end == 4608, "D3D12 placement alignment");
+    Check(frame.planes[vis::kHdr].offset == 512 && end == 5632, "D3D12 placement alignment");
     uint64_t odd_end = 1;
     const auto odd = vis::Place({0, 0, 257, 1}, 257, 1, 1, 0, false, odd_end);
     Check(odd.offset == 512 && odd.row_pitch == 512 && odd_end == 1024, "unaligned footprint");
@@ -166,6 +167,8 @@ void Writers(const fs::path& take) {
     frame.index = 4;
     frame.planes[vis::kFinal].swap_rb = false;
     frame.planes[vis::kRefl] = {};
+    frame.planes[vis::kShafts] = {};
+    frame.empty = vis::Bit(vis::kShafts);
     Check(writer.Write(frame, bytes, why) && writer.Finish(why), "publish sparse metadata");
     const auto root = take / "buffers";
     Check(Read(root / "final/frame_0.bin") == std::string("\3\2\1\13\12\11\43\42\41\53\52\51", 12), "BGRA to RGB, row padding stripped");
@@ -179,6 +182,10 @@ void Writers(const fs::path& take) {
           Read(root / "roadrefl/meta.json").contains("\"domain\":\"road-reflection-lobe-v1\",\"channel_names\":[\"combined_luma\",\"screen_confidence\"],\"source_w\":8,\"source_h\":4,\"x\":2,\"y\":1"),
           "combined road reflection stores both half-float lanes and its exact layout");
     Check(Read(root / "motion/meta.json") == "{\"w\":2,\"h\":2,\"channels\":2,\"encoding\":\"f16le\",\"space\":\"motion-px\",\"frames\":[0,4]}\n", "exact motion metadata");
+    Check(Read(root / "vol/frame_0.bin").size() == 24 &&
+          Read(root / "vol/meta.json").contains("\"frames\":[0,4],\"domain\":\"atmosphere-light-v1\""), "volume stores linear RGB");
+    Check(Read(root / "shafts/meta.json").contains("\"empty_frames\":[4]") &&
+          !fs::exists(root / "shafts/frame_4.bin"), "gated frame is indexed without a pixel payload");
     Check(Read(root / "refl/meta.json") == "{\"w\":2,\"h\":2,\"channels\":3,\"encoding\":\"f16le\",\"space\":\"linear-scene\",\"frames\":[0],\"source\":\"ssr-resolve-input\"}\n" &&
           !fs::exists(root / "refl/frame_4.bin"), "missing frame stays absent");
     Check(Read(root / "reflhit/frame_4.bin") == std::string("\1\40\7\41\22\22\10\0", 8), "hit IDs without scratch bytes or padding");
@@ -204,6 +211,11 @@ void Writers(const fs::path& take) {
           Read(take / "native/buffers/reflhit/meta.json").contains("\"source\":\"native-material\""), "native source is tagged");
     writer.Reset(take / "empty");
     Check(writer.Write({}, {}, why) && writer.Finish(why) && !fs::exists(take / "empty"), "absent streams produce no files");
+    vis::Frame gated{};
+    gated.empty = vis::kAtmosphereMask;
+    Check(writer.Write(gated, {}, why) && !writer.Write(gated, {}, why), "gated frame is written once");
+    Check(writer.Finish(why) && Read(take / "empty/buffers/shafts/meta.json").contains(
+          "{\"w\":0,\"h\":0,\"channels\":3,\"encoding\":\"f16le\",\"space\":\"linear-scene\",\"frames\":[]"), "all-gated stream has metadata");
 }
 }  // namespace
 

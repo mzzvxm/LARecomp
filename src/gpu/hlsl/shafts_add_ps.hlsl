@@ -7,7 +7,7 @@
 //
 // Debug views (the push's view): 1 the sky image and 2 the blurred image as a grey (0.3 of the value,
 // so 1.0 reads below the tone map's white), 3 the light alone; the pipeline then replaces the colour
-// instead of adding.
+// instead of adding. View 4 writes the applied light to the separate VISMET capture plane.
 
 #include "shafts_common.hlsli"
 #include "host_pass_samplers.hlsli"
@@ -16,9 +16,9 @@
 float4 main(float4 position : SV_Position) : SV_Target {
   const float2 uv = position.xy / g_push.sizes.xy;
   const uint view = g_push.slots.w;
-  if (view == 0u) {
+  if (view == 0u || view == 4u) {
     const float3 light = SampleShaftLight(uv, g_push.slots.y, g_push.tint.xyz);
-    if (!any(light > 0.0f)) {
+    if (view == 0u && !any(light > 0.0f)) {
       discard;
     }
     return float4(light, 0.0f);
