@@ -81,21 +81,25 @@ struct PoolRequest {
   uint32_t tile = 0;    // texels of a tile's side
   uint32_t slots = 0;   // tiles
   bool sticky = false;  // a slot stays with a light id (StickySlots)
+  uint32_t band_slot = 0;  // logical slot of a separately packed tile
+  bool manual_clear = false;
   friend constexpr bool operator==(const PoolRequest&, const PoolRequest&) = default;
 };
 
-inline constexpr uint32_t kMaxPools = 4;   // the replay's tiles, a lamp provider's live tiles and its static tiles, one spare
+inline constexpr uint32_t kMaxPools = 32;  // eight headlight tiles and ten live/static lamp pairs
+inline constexpr uint32_t kMaxLegacyPools = 4;
 inline constexpr uint32_t kMaxSlots = 32;  // the most tiles of an atlas (ultra: 6 + 10 + 10 would be 26)
 
 struct AtlasSpec {
   std::array<PoolRequest, kMaxPools> pools{};
   uint32_t count = 0;
+  bool compact = false;
   // A pool of no tiles (a provider that has nothing to ask for) is left out; false when the spec is full.
   bool Add(const PoolRequest& p) {
     if (p.tile == 0 || p.slots == 0) {
       return true;
     }
-    if (count >= kMaxPools) {
+    if (count >= (compact ? kMaxPools : kMaxLegacyPools)) {
       return false;
     }
     pools[count++] = p;
@@ -109,7 +113,7 @@ struct AtlasSpec {
     return n;
   }
   friend bool operator==(const AtlasSpec& a, const AtlasSpec& b) {
-    if (a.count != b.count) {
+    if (a.count != b.count || a.compact != b.compact) {
       return false;
     }
     for (uint32_t i = 0; i < a.count; ++i) {
@@ -163,9 +167,9 @@ struct Layout {
     return Rect{};
   }
   // The pool a provider's role has in this layout, or -1.
-  int FindPool(ProviderId provider, PoolRole role) const {
+  int FindPool(ProviderId provider, PoolRole role, uint32_t band_slot = 0) const {
     for (uint32_t i = 0; i < pool_count; ++i) {
-      if (pools[i].request.provider == provider && pools[i].request.role == role) {
+      if (pools[i].request.provider == provider && pools[i].request.role == role && pools[i].request.band_slot == band_slot) {
         return int(i);
       }
     }
@@ -199,6 +203,72 @@ struct Layout {
   }
 };
 
+// Compact layouts contain one square per pool. Try widths on the common 128-texel grid and choose the smallest occupied rectangle.
+inline Layout MakeCompactLayout(const AtlasSpec& spec) {
+  constexpr uint32_t quantum = 128;
+  constexpr uint32_t limit = 64;  // 8192 texels per side
+  if (spec.count == 0 || spec.count > kMaxPools) {
+    return {};
+  }
+  std::array<uint32_t, kMaxPools> order{};
+  uint32_t first_width = 0, last_width = 0;
+  for (uint32_t i = 0; i < spec.count; ++i) {
+    const PoolRequest& request = spec.pools[i];
+    if (request.slots != 1 || request.tile == 0 || request.tile % quantum != 0 || request.tile >= limit * quantum) {
+      return {};
+    }
+    const uint32_t side = request.tile / quantum;
+    order[i] = i;
+    first_width = std::max(first_width, side);
+    last_width += side;
+  }
+  std::stable_sort(order.begin(), order.begin() + spec.count, [&](uint32_t a, uint32_t b) { return spec.pools[a].tile > spec.pools[b].tile; });
+  Layout best;
+  uint32_t best_area = limit * limit + 1;
+  for (uint32_t width = first_width; width <= std::min(limit, last_width); ++width) {
+    std::array<uint64_t, limit> occupied{};
+    Layout fit;
+    uint32_t right = 0, bottom = 0;
+    for (uint32_t i = 0; i < spec.count; ++i) {
+      const PoolRequest& request = spec.pools[order[i]];
+      const uint32_t side = request.tile / quantum;
+      bool placed = false;
+      for (uint32_t y = 0; y + side <= limit && !placed; ++y) {
+        uint64_t blocked = 0;
+        for (uint32_t row = y; row < y + side; ++row) {
+          blocked |= occupied[row];
+        }
+        for (uint32_t x = 0; x + side <= width; ++x) {
+          const uint64_t mask = ((uint64_t{1} << side) - 1) << x;
+          if ((blocked & mask) != 0) {
+            continue;
+          }
+          for (uint32_t row = y; row < y + side; ++row) {
+            occupied[row] |= mask;
+          }
+          fit.pools[fit.pool_count++] = {request, 1, 1, x * quantum, y * quantum, i};
+          right = std::max(right, x + side);
+          bottom = std::max(bottom, y + side);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed || right * bottom > best_area) {
+        break;
+      }
+    }
+    if (fit.pool_count == spec.count && (right * bottom < best_area ||
+        (right * bottom == best_area && std::max(right, bottom) * quantum < std::max(best.width, best.height)))) {
+      best_area = right * bottom;
+      fit.width = right * quantum;
+      fit.height = bottom * quantum;
+      fit.slot_count = fit.pool_count;
+      best = fit;
+    }
+  }
+  return best;
+}
+
 // The tile as atlas uv: {u offset, v offset, u size, v size} (local_shadow::UvRect's arithmetic: the division is in double).
 inline void UvOf(const Layout& layout, const Rect& r, float out[4]) {
   const double w = double(layout.width);
@@ -214,6 +284,9 @@ inline void UvOf(const Layout& layout, const Rect& r, float out[4]) {
 // lamp tiles of 512 under the replay's 3 x 2 tiles of 1024 are 6 x 2 (3072 x 1024), not 4 x 3 (2048 x 1536 in a 3072 wide texture). One pool: width = tile x ColumnsFor(slots),
 // height = tile x rows = local_shadow::MakeAtlas, which is what the replay made until now.
 inline Layout MakeLayout(const AtlasSpec& spec) {
+  if (spec.compact) {
+    return MakeCompactLayout(spec);
+  }
   Layout out;
   std::array<uint32_t, kMaxPools> order{};
   uint32_t n = 0;
@@ -451,7 +524,8 @@ inline ClearPlan MakeClearPlan(const Layout& layout, uint32_t static_invalid = 0
   bool all = layout.valid();
   for (uint32_t i = 0; i < layout.pool_count; ++i) {
     const PoolLayout& p = layout.pools[i];
-    const bool clear = ClearOf(p.request.role) == ClearWhen::kEveryRecord || (static_invalid & (1u << i)) != 0;
+    const bool clear = !p.request.manual_clear &&
+                       (ClearOf(p.request.role) == ClearWhen::kEveryRecord || (static_invalid & (1u << i)) != 0);
     if (!clear) {
       all = false;
       continue;

@@ -230,6 +230,11 @@ struct Budget {
   friend constexpr bool operator==(const Budget&, const Budget&) = default;
 };
 
+constexpr uint32_t BandedLampTile(uint32_t cap, double metres, uint32_t previous) {
+  const double edge = previous == 384 ? 28.0 : previous == 512 ? 32.0 : 30.0;
+  return std::min(cap, metres > edge ? 384u : 512u);
+}
+
 // The budget of a LIGHT SHADOWS level (shadow_atlas_rules.h kLampRows). `override_lamps` (mcla_gpu_lamp_shadows_lamps, debug): -1 no lamp views, 0 the level's, n the lamps (at most
 // kMaxSlots - spare). The level `off` has none.
 constexpr Budget BudgetFor(lb::Level level, int override_lamps, bool cache) {
@@ -870,6 +875,7 @@ struct PublishInput {
   uint32_t atlas_slot = lg::kNoLightSlot;
   uint32_t sampler = lg::kNoLightSlot;
   bool atlas_valid = false;
+  bool banded = false;
 };
 
 // The lamps' entries: for each published lamp the static entry (matrix to its static tile), then the live twin when the live tile holds casters, or one single entry when the cache is off (the
@@ -901,11 +907,17 @@ inline void BuildFrame(const std::vector<Published>& lamps, const PublishInput& 
   };
   for (size_t k = 0; k < lamps.size(); ++k) {
     const Published& p = lamps[k];
-    if (!p.valid || p.id == lg::kNoLightId || in.live_pool < 0) {
+    if (!p.valid || p.id == lg::kNoLightId) {
       continue;
     }
-    const sa::Rect live = in.layout->SlotRect(uint32_t(in.live_pool), p.tile);
-    const sa::Rect stat = (in.cache && in.static_pool >= 0) ? in.layout->SlotRect(uint32_t(in.static_pool), p.tile) : sa::Rect{};
+    const int live_pool = in.banded ? in.layout->FindPool(sa::ProviderId::kLamps, sa::PoolRole::kLive, p.tile) : in.live_pool;
+    const int static_pool = in.banded ? in.layout->FindPool(sa::ProviderId::kLamps, sa::PoolRole::kStatic, p.tile) : in.static_pool;
+    const uint32_t slot = in.banded ? 0u : p.tile;
+    const sa::Rect live = in.layout->SlotRect(uint32_t(live_pool), slot);
+    const sa::Rect stat = in.cache ? in.layout->SlotRect(uint32_t(static_pool), slot) : sa::Rect{};
+    if (!live.valid() || (in.banded && in.cache && !stat.valid())) {
+      continue;
+    }
     const uint32_t first = out->count;
     if (in.cache && stat.valid()) {
       if (out->count + (p.has_live ? 2u : 1u) > lg::kMaxLampEntries) {

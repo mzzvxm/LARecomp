@@ -287,6 +287,19 @@ class LocalShadow final : public ShadowProvider {
     UploadSpan ps_constants;    // the draw's own (alpha tested draws read it)
     double origin[3] = {};      // its world matrix's translation (filled at the trigger)
     bool wvp_ok = false;
+    bool place_checked = false;
+  };
+  struct HeldView {
+    uint64_t raster = 0;
+    uint32_t generation = 0;
+    uint32_t car = 0;
+    local_shadow::LampSide side = local_shadow::LampSide::kWhole;
+    shadow_atlas::Rect rect;
+    local_shadow::ViewSpec spec;
+    temporal::Mat4 clip;
+    double sx = 0.0, sy = 0.0;
+    bool had_actors = false;
+    bool right_handed = false;
   };
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
   // OnResolve's work (OnResolve tells the headlight rig of the result).
@@ -369,6 +382,10 @@ class LocalShadow final : public ShadowProvider {
   light_pick::LightPicker* light_picker_ = nullptr;  // the manager's (SetLightPicker)
   ShadowAtlas* shadow_atlas_ = nullptr;              // the one shadow atlas (SetShadowAtlas, LU-5)
   bool use_atlas_ = false;                           // this frame records into it (mcla_gpu_light_frame bit 8, decided at BeginFrame)
+  bool banded_ = false;
+  std::array<uint32_t, local_shadow::kMaxViews> request_tiles_{};
+  std::array<HeldView, local_shadow::kMaxViews> held_views_{};
+  uint64_t views_reused_ = 0;
   shadow_atlas::Layout atlas_layout_;                // the layout the atlas planned for this frame (OnLayout) and the replay's pool in it
   int replay_pool_ = -1;
   std::array<uint64_t, 4> published_ids_{};          // the id of the rig's light i, for the lights the last map was made for (CollectViews)

@@ -59,6 +59,7 @@ void ShadowAtlas::Shutdown() {
   width_ = height_ = 0;
   layout_ = sa::Layout{};
   planned_ = sa::Layout{};
+  spec_ = sa::AtlasSpec{};
   published_ = sa::Published{};
   use_.Reset();
   providers_.fill(nullptr);
@@ -86,13 +87,16 @@ uint64_t ShadowAtlas::HeldBytes() const { return texture_ ? TextureBytes(width_,
 // ---------------------------------------------------------------------------
 
 const sa::Layout& ShadowAtlas::Plan() {
-  spec_ = sa::AtlasSpec{};
+  sa::AtlasSpec spec;
   for (ShadowProvider* p : providers_) {
     if (p != nullptr) {
-      p->RequestPools(&spec_);
+      p->RequestPools(&spec);
     }
   }
-  planned_ = sa::MakeLayout(spec_);
+  if (!(spec_ == spec)) {
+    spec_ = spec;
+    planned_ = sa::MakeLayout(spec_);
+  }
   for (ShadowProvider* p : providers_) {
     if (p != nullptr) {
       p->OnLayout(planned_);
@@ -203,7 +207,9 @@ bool ShadowAtlas::BeginRecord(plume::RenderCommandList* list) {
   }
   list->setFramebuffer(framebuffer_.get());
   const sa::ClearPlan clear = sa::MakeClearPlan(layout_, static_invalid_);
-  if (clear.whole_target) {
+  // A new compact layout invalidates every cached tile. Initialize its unused texels for the debug atlas view as well.
+  const bool fresh_compact = spec_.compact && static_invalid_ == ~0u;
+  if (clear.whole_target || fresh_compact) {
     list->clearDepthStencil(true, true, sa::kClearDepth, sa::kClearStencil);  // every pool is drawn every record: one clear of the texture (the replay's, as it always was)
   } else if (clear.rect_count != 0) {
     std::array<plume::RenderRect, sa::kMaxPools> rects{};
@@ -217,7 +223,7 @@ bool ShadowAtlas::BeginRecord(plume::RenderCommandList* list) {
   for (uint32_t i = 0; i < clear.rect_count; ++i) {
     static_invalid_ &= ~(1u << clear.pools[i]);
   }
-  if (clear.whole_target) {
+  if (clear.whole_target || fresh_compact) {
     static_invalid_ = 0;
   }
   return true;

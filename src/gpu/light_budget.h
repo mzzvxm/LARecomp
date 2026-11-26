@@ -37,6 +37,33 @@ inline constexpr uint32_t kMaxShadowViews = 8;
 // The cars that can have views: the rig lights four.
 inline constexpr uint32_t kMaxShadowCars = 4;
 
+// Traffic view distances from the camera. The player's view keeps the level's full size.
+// The two-metre dead band keeps a tile stable at a boundary.
+constexpr uint32_t BandedShadowTile(uint32_t cap, double metres, uint32_t previous = 0) {
+  constexpr uint32_t tiles[] = {1024, 768, 512, 384};
+  constexpr double edges[] = {15.0, 30.0, 60.0};
+  for (uint32_t i = 0; i < 3; ++i) {
+    const uint32_t tile = std::min(cap, tiles[i]);
+    const uint32_t next = std::min(cap, tiles[i + 1]);
+    const double edge = edges[i] + (tile == next ? 0.0 : previous >= tile ? 2.0 : previous != 0 && previous <= next ? -2.0 : 0.0);
+    if (metres <= edge) {
+      return tile;
+    }
+  }
+  return std::min(cap, tiles[3]);
+}
+
+constexpr uint32_t ShadowDrawCap(uint32_t tile) { return tile >= 1024 ? 1024 : tile >= 768 ? 768 : 512; }
+
+constexpr uint32_t BandedHeadlampCars(uint32_t requested, int views_override, bool player_first) {
+  return views_override != 0 ? requested : requested != 0 && player_first ? 1u : 0u;
+}
+
+// Distant, actor-free views can reuse the immediately preceding raster. Adjacent slots refresh on opposite frames.
+constexpr bool HoldShadowView(double metres, uint64_t frame, uint64_t raster, bool has_actors, bool had_actors, bool cut, uint32_t slot) {
+  return metres > 25.0 && raster != 0 && frame > raster && frame - raster == 1 && !has_actors && !had_actors && !cut && ((frame ^ slot) & 1u) != 0;
+}
+
 // One row of the shadow level table.
 struct ShadowRow {
   Level level = Level::kOff;

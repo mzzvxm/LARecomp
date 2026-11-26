@@ -174,6 +174,8 @@ void CarShadowMap::Shutdown() {
   map_ = Map{};
   matrix_ = HostImage{};
   items_.clear();
+  saved_parts_.clear();
+  saved_fit_ = {};
   pipelines_.clear();
   listed_.clear();
   failed_.clear();
@@ -387,6 +389,7 @@ bool CarShadowMap::EnsureMap(uint32_t size) {
     frames_->Retire(std::move(map_.texture));
   }
   map_ = Map{};
+  saved_fit_ = {};
   plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(size, size, 1, kDepthFormat, plume::RenderTextureFlag::DEPTH_TARGET);
   desc.multisampling.sampleCount = plume::RenderSampleCounts(1);
   map_.texture = device_->CreateTexture(desc, "car shadow map");
@@ -437,6 +440,7 @@ void CarShadowMap::ReleaseImages() {
   }
   map_ = Map{};
   passes_->ReleaseImage(matrix_);
+  saved_fit_ = {};
   size_logged_ = 0;  // the next map is logged again
 }
 
@@ -464,6 +468,10 @@ void CarShadowMap::BeginFrame() {
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
+  reuse_map_ = larecomp::settings::mcla_gpu_car_shadow_reuse.Get();
+  if (!view_.valid || !reuse_map_) {
+    saved_fit_ = {};
+  }
   view_ = CarShadowMapView{};
   if (!ready_) {
     wanted_ = false;
@@ -538,7 +546,7 @@ void CarShadowMap::NoteSkipped(rules::Why why) {
 
 bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kCarShadow);
-  if (!list || !ready_ || !wanted_ || !IsTrigger(record, summary)) {
+  if (!list || !ready_ || !wanted_ || !car_frame_ || !IsTrigger(record, summary)) {
     return false;
   }
   trigger_seen_ = true;
@@ -584,13 +592,6 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
                 estimate.from_bounds ? "from the frame's bounds" : "the fallback sphere: no usable bounds", 2.0 * fit.half_extent,
                 fit.texel_m * 1000.0, size, size);
   }
-  // The contact pass's rows: the AO's view space -> the map.
-  float to_map[3][4];
-  if (!rules::ViewToMap(fit, frame.view, to_map)) {
-    NoteSkipped(rules::Why::kNoCar);
-    return false;
-  }
-
   // The draws: the rigid parts, each with the pipeline of its position variant. The skinned driver is left out.
   items_.clear();
   bool pending = false;
@@ -614,12 +615,19 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
       ++unusable;
       continue;
     }
-    plume::RenderPipeline* pipeline = Pipeline(rules::VariantKey(kind, uint32_t(g.topology), d.position_stride), &pending);
+    const uint32_t variant = rules::VariantKey(kind, uint32_t(g.topology), d.position_stride);
+    plume::RenderPipeline* pipeline = Pipeline(variant, &pending);
     if (!pipeline) {
       ++unusable;  // pending or failed: the frame is held below, a failed one is left out
       continue;
     }
-    items_.push_back({&d, pipeline});
+    Item& item = items_.emplace_back();
+    item.draw = &d;
+    item.pipeline = pipeline;
+    item.key.mesh = d.mesh_key;
+    item.key.variant = variant;
+    item.key.position_offset = d.position_offset;
+    rules::ModelToClip(fit, d.model_to_world, item.key.clip);
   }
   FlushListing();
   draws_skinned_ += skinned;
@@ -659,7 +667,41 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
                 kPrefix, size, size, Mib(HeldBytes()), fit.texel_m * 1000.0, fit.depth_m, items_.size(), frame.draws.size(), skinned,
                 unusable);
   }
-  RecordMap(fit, list);
+  const rules::Fit relative = reuse_map_ ? rules::RelativeFit(fit, pose) : rules::Fit{};
+  bool reuse = reuse_map_ && saved_parts_.size() == items_.size() && rules::ReuseFit(saved_fit_, relative, last_raster_frame_, frame_);
+  for (size_t i = 0; reuse && i < items_.size(); ++i) {
+    const car_frame::Draw& draw = *items_[i].draw;
+    double extent[3];
+    for (int k = 0; k < 3; ++k) {
+      extent[k] = draw.has_box ? std::max(std::abs(double(draw.box_min[k])), std::abs(double(draw.box_max[k]))) : fit.half_extent;
+    }
+    reuse = rules::SamePart(saved_parts_[i], items_[i].key, extent, fit);
+  }
+  // CHECK: compare wing and wheel edges on both APIs after a straight drive, turn, pause and photo cut.
+  if (reuse) {
+    fit = rules::AttachFit(saved_fit_, pose);
+  }
+  float to_map[3][4];
+  if (!rules::ViewToMap(fit, frame.view, to_map)) {
+    NoteSkipped(rules::Why::kNoCar);
+    return false;
+  }
+  if (reuse) {
+    ++reused_;
+  } else {
+    RecordMap(list);
+    saved_fit_ = relative;
+    last_raster_frame_ = frame_;
+    if (reuse_map_) {
+      saved_parts_.clear();
+      for (const Item& item : items_) {
+        saved_parts_.push_back(item.key);
+      }
+    }
+    ++maps_;
+    draws_ += items_.size();
+    last_draw_count_ = uint32_t(items_.size());
+  }
   float matrix_rows[16];
   for (int k = 0; k < 3; ++k) {
     for (int j = 0; j < 4; ++j) {
@@ -689,9 +731,6 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
   if (view_mode_ == 1) {
     RecordView(summary, list);
   }
-  ++maps_;
-  draws_ += items_.size();
-  last_draw_count_ = uint32_t(items_.size());
   idle_frames_ = 0;
   view_.valid = true;
   view_.slot = map_.slot;
@@ -703,7 +742,7 @@ bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Su
   return true;
 }
 
-void CarShadowMap::RecordMap(const car_shadow_map::Fit& fit, plume::RenderCommandList* list) {
+void CarShadowMap::RecordMap(plume::RenderCommandList* list) {
   pass_timing_->Mark(list, "car shadow map");
   if (map_.layout != plume::RenderTextureLayout::DEPTH_WRITE) {
     const plume::RenderTextureBarrier barrier(map_.texture.get(), plume::RenderTextureLayout::DEPTH_WRITE);
@@ -718,7 +757,6 @@ void CarShadowMap::RecordMap(const car_shadow_map::Fit& fit, plume::RenderComman
   list->setScissors(&scissor, 1);
   list->setGraphicsPipelineLayout(layout_.get());
   const plume::RenderPipeline* bound = nullptr;
-  float rows[16];
   for (const Item& item : items_) {
     const car_frame::Draw& d = *item.draw;
     const DrawGeometry& g = d.geometry;
@@ -726,8 +764,7 @@ void CarShadowMap::RecordMap(const car_shadow_map::Fit& fit, plume::RenderComman
       list->setPipeline(item.pipeline);
       bound = item.pipeline;
     }
-    rules::ModelToClip(fit, d.model_to_world, rows);
-    list->setGraphicsPushConstants(0, rows, 0, kPushBytes);
+    list->setGraphicsPushConstants(0, item.key.clip, 0, kPushBytes);
     // The draw's own vertex view, shifted to its POSITION element (checked usable above), at the stride its main-view draw read.
     plume::RenderVertexBufferView view = g.vertex_views[d.position_slot];
     view.buffer.offset += d.position_offset;
@@ -801,11 +838,11 @@ bool CarShadowMap::RecordView(const ResolveCache::Summary& summary, plume::Rende
 void CarShadowMap::Census() {
   REXLOG_INFO("{} frame {}: {} ({}x{}); since the start {} triggers, {} maps recorded ({} draws, the last {}; {} skinned draws left out "
               "in the last, {} unusable in all), {} frames held for a pipeline being made; no map: {} no car, {} sun, {} sun too low, "
-              "{} not the game view; {:.1f} MiB",
+              "{} not the game view; {} maps reused; {:.1f} MiB",
               kPrefix, frame_, rules::Describe(choice_, gpu_class::Current()), choice_.size(), choice_.size(), triggers_, maps_, draws_,
               last_draw_count_, last_skinned_, draws_unusable_, pending_frames_, skipped_[size_t(rules::Why::kNoCar)],
               skipped_[size_t(rules::Why::kNoSun)], skipped_[size_t(rules::Why::kSunLow)], skipped_[size_t(rules::Why::kNotPlayView)],
-              Mib(HeldBytes()));
+              reused_, Mib(HeldBytes()));
 }
 
 }  // namespace mcla::gpu

@@ -65,7 +65,7 @@ struct Draw;
 }
 
 struct CarShadowMapView {
-  bool valid = false;           // a map of THIS frame's player car was recorded on the list before the AO's passes
+  bool valid = false;           // the recorded map is usable with this frame's receiver transform
   uint32_t slot = 0xFFFFFFFFu;  // bindless texture slot of the map: one float channel, depth from the sun (0 nearest the sun,
                                 // 1 farthest), 1 where no part of the car is. A reader treats a stored 1 as "no car here" BEFORE it
                                 // compares: a point behind the car's far plane has a depth above 1, and (1 < depth - bias) would
@@ -153,6 +153,7 @@ class CarShadowMap {
   struct Item {
     const car_frame::Draw* draw = nullptr;
     plume::RenderPipeline* pipeline = nullptr;
+    car_shadow_map::PartKey key;
   };
 
   // The keys below the depth variants' (VariantKey is at least 256: a stride of 1 byte and over): 0 the matrix texture's pass, 16 + n
@@ -177,7 +178,7 @@ class CarShadowMap {
   bool EnsureMap(uint32_t size);
   bool EnsureMatrix();
   void ReleaseImages();
-  void RecordMap(const car_shadow_map::Fit& fit, plume::RenderCommandList* list);
+  void RecordMap(plume::RenderCommandList* list);
   bool RecordView(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
   plume::RenderPipeline* ViewPipeline(uint32_t host_samples);
   void NoteSkipped(car_shadow_map::Why why);
@@ -199,6 +200,10 @@ class CarShadowMap {
 
   // The car's fit, held from frame to frame.
   car_shadow_map::Held held_;
+  car_shadow_map::Fit saved_fit_;
+  std::vector<car_shadow_map::PartKey> saved_parts_;
+  uint64_t last_raster_frame_ = 0;
+  bool reuse_map_ = false;
   // Whether the map alone casts the player's car's shadow on the world (car_shadow_map_rules.h Owner).
   car_shadow_map::Owner owner_;
 
@@ -236,6 +241,7 @@ class CarShadowMap {
   bool view_failed_logged_ = false;
   uint64_t triggers_ = 0;
   uint64_t maps_ = 0;
+  uint64_t reused_ = 0;
   uint64_t pending_frames_ = 0;
   uint64_t skipped_[8] = {};
   uint64_t draws_ = 0;

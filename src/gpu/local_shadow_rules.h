@@ -674,6 +674,12 @@ struct ViewSpec {
   double lamps_m = 0.0; // how far behind the lamps the eye sits (the lamps are inside the frustum)
 };
 
+inline bool SameLightView(const ViewSpec& a, const ViewSpec& b) {
+  // About a quarter of a 768-texel view at the distance where reuse starts.
+  return detail::Distance(a.eye, b.eye) <= 0.005 && detail::Dot(a.dir, b.dir) >= 0.9999996192282494 &&
+         std::abs(a.fov - b.fov) <= Rad(0.05) && a.near_m == b.near_m && a.far_m == b.far_m;
+}
+
 // The half angle (radians) of the cone a light's shadow view must hold: shadow_half when MakeLight made it, else the cone's own.
 inline double ShadowHalf(const Light& l) { return l.shadow_half > 0.0 ? l.shadow_half : std::acos(std::clamp(l.cos_outer, -1.0, 1.0)); }
 

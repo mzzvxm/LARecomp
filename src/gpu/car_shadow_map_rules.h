@@ -437,6 +437,20 @@ struct Fit {
   double to_map[3][4] = {};
 };
 
+inline void SetProjection(Fit& f) {
+  const double cr = detail::Dot(f.centre, f.right);
+  const double cu = detail::Dot(f.centre, f.up);
+  const double cs = detail::Dot(f.centre, f.sun);
+  for (int i = 0; i < 3; ++i) {
+    f.to_map[0][i] = 0.5 / f.half_extent * f.right[i];
+    f.to_map[1][i] = -0.5 / f.half_extent * f.up[i];
+    f.to_map[2][i] = -0.5 / f.half_depth * f.sun[i];
+  }
+  f.to_map[0][3] = 0.5 - 0.5 * cr / f.half_extent;
+  f.to_map[1][3] = 0.5 + 0.5 * cu / f.half_extent;
+  f.to_map[2][3] = 0.5 + 0.5 * cs / f.half_depth;
+}
+
 // The sun's direction (any length over 0.5) and the car's frame, the held centre and radius, and the map's size in texels.
 inline bool MakeFit(const double to_sun[3], const Pose& pose, const Held& held, uint32_t size, Fit* fit) {
   *fit = Fit{};
@@ -486,19 +500,72 @@ inline bool MakeFit(const double to_sun[3], const Pose& pose, const Held& held, 
   f.half_depth = held.radius + kDepthMargin;
   f.texel_m = 2.0 * f.half_extent / double(size);
   f.depth_m = 2.0 * f.half_depth;
-  const double cr = detail::Dot(f.centre, f.right);
-  const double cu = detail::Dot(f.centre, f.up);
-  const double cs = detail::Dot(f.centre, f.sun);
-  for (int i = 0; i < 3; ++i) {
-    f.to_map[0][i] = 0.5 / f.half_extent * f.right[i];
-    f.to_map[1][i] = -0.5 / f.half_extent * f.up[i];
-    f.to_map[2][i] = -0.5 / f.half_depth * f.sun[i];
-  }
-  f.to_map[0][3] = 0.5 - 0.5 * cr / f.half_extent;
-  f.to_map[1][3] = 0.5 + 0.5 * cu / f.half_extent;
-  f.to_map[2][3] = 0.5 + 0.5 * cs / f.half_depth;
+  SetProjection(f);
   f.valid = true;
   *fit = f;
+  return true;
+}
+
+inline constexpr uint64_t kMapRefreshFrames = 4;
+inline constexpr double kReuseAngleCosine = 0.9999996192282494;  // cos(0.05 degrees)
+
+// Store the raster's axes and centre in car space. Reattach them to the current root before sampling the held map.
+inline Fit RelativeFit(const Fit& fit, const Pose& pose) {
+  Fit relative = fit;
+  const double centre[3] = {fit.centre[0] - pose.position[0], fit.centre[1] - pose.position[1], fit.centre[2] - pose.position[2]};
+  for (int i = 0; i < 3; ++i) {
+    relative.centre[i] = detail::Dot(centre, pose.axes[i]);
+    relative.right[i] = detail::Dot(fit.right, pose.axes[i]);
+    relative.up[i] = detail::Dot(fit.up, pose.axes[i]);
+    relative.sun[i] = detail::Dot(fit.sun, pose.axes[i]);
+  }
+  return relative;
+}
+
+inline Fit AttachFit(const Fit& relative, const Pose& pose) {
+  Fit fit = relative;
+  const auto world = [&](const double local[3], int i) {
+    return local[0] * pose.axes[0][i] + local[1] * pose.axes[1][i] + local[2] * pose.axes[2][i];
+  };
+  for (int i = 0; i < 3; ++i) {
+    fit.centre[i] = pose.position[i] + world(relative.centre, i);
+    fit.right[i] = world(relative.right, i);
+    fit.up[i] = world(relative.up, i);
+    fit.sun[i] = world(relative.sun, i);
+  }
+  SetProjection(fit);
+  return fit;
+}
+
+inline bool ReuseFit(const Fit& saved, const Fit& now, uint64_t drawn, uint64_t frame) {
+  const double offset[3] = {now.centre[0] - saved.centre[0], now.centre[1] - saved.centre[1], now.centre[2] - saved.centre[2]};
+  return saved.valid && now.valid && frame > drawn && frame - drawn < kMapRefreshFrames && saved.texel_m == now.texel_m &&
+         saved.half_depth == now.half_depth && detail::Length(offset) < now.texel_m * 0.25 &&
+         detail::Dot(saved.sun, now.sun) >= kReuseAngleCosine && detail::Dot(saved.right, now.right) >= kReuseAngleCosine;
+}
+
+struct PartKey {
+  uint64_t mesh = 0;
+  uint32_t variant = 0;
+  uint32_t position_offset = 0;
+  float clip[16] = {};
+};
+
+// Compare the caster in the reattached raster's coordinates. Bound the change anywhere in its model-space box.
+inline bool SamePart(const PartKey& saved, const PartKey& now, const double extent[3], const Fit& fit) {
+  if (saved.mesh == 0 || saved.mesh != now.mesh || saved.variant != now.variant || saved.position_offset != now.position_offset) {
+    return false;
+  }
+  const double tolerance[3] = {0.25 * fit.texel_m / fit.half_extent, 0.25 * fit.texel_m / fit.half_extent, 0.25 * fit.texel_m / fit.depth_m};
+  for (int c = 0; c < 3; ++c) {
+    double delta = std::fabs(double(now.clip[12 + c]) - saved.clip[12 + c]);
+    for (int r = 0; r < 3; ++r) {
+      delta += extent[r] * std::fabs(double(now.clip[r * 4 + c]) - saved.clip[r * 4 + c]);
+    }
+    if (!(delta <= tolerance[c])) {
+      return false;
+    }
+  }
   return true;
 }
 

@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
 #include <string>
 #include <vector>
 
@@ -688,6 +689,75 @@ void TestOwner() {
   Check(!cs::PlayerShadowIsTheMaps(), "and it is given up the same way");
 }
 
+void TestRasterReuse() {
+  double sun[3];
+  Sun(34.0, 15.0, sun);
+  cs::Held held{true, {0.12, 0.25, -0.15}, 3.25};
+  const tp::Mat4 parked = CarWorld(10.0, 430.0, -5.0, 120.0);
+  const tp::Mat4 moved = CarWorld(10.0, 510.0, -5.0, 140.0);
+  cs::Pose parked_pose, moved_pose;
+  cs::Fit parked_fit, moved_fit;
+  Check(cs::MakePose(parked, &parked_pose) && cs::MakePose(moved, &moved_pose), "straight-drive poses");
+  Check(cs::MakeFit(sun, parked_pose, held, 2048, &parked_fit) && cs::MakeFit(sun, moved_pose, held, 2048, &moved_fit), "straight-drive fits");
+  const cs::Fit saved = cs::RelativeFit(parked_fit, parked_pose);
+  const cs::Fit now = cs::RelativeFit(moved_fit, moved_pose);
+  Check(cs::ReuseFit(saved, now, 5, 6) && cs::ReuseFit(saved, now, 5, 8), "translation holds the same raster for up to three intervening frames");
+  Check(!cs::ReuseFit(saved, now, 5, 9) && !cs::ReuseFit(saved, now, 5, 4), "the age limit and serial rollback force a new map");
+  cs::PartKey original{1, 256, 0}, translated{1, 256, 0};
+  cs::ModelToClip(parked_fit, parked, original.clip);
+  cs::ModelToClip(cs::AttachFit(saved, moved_pose), moved, translated.clip);
+  Check(std::memcmp(original.clip, translated.clip, sizeof(original.clip)) == 0, "reattaching preserves bit-identical clip coordinates in a straight drive");
+  const double extent[3] = {1.0, 0.4, 0.6};
+  Check(cs::SamePart(original, translated, extent, moved_fit), "unchanged body can reuse its depth");
+  translated.clip[4] += 0.01f;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "steering rotates a part enough to refresh");
+  translated = original;
+  translated.clip[13] += 0.002f;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "suspension travel refreshes the raster");
+  translated = original;
+  translated.clip[14] += 0.001f;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "a depth-only part change also refreshes the raster");
+  translated = original;
+  translated.clip[12] += 0.00001f;
+  Check(cs::SamePart(original, translated, extent, moved_fit), "a subtexel part change can be held");
+  translated = original;
+  translated.mesh++;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "a new mesh or LOD refreshes");
+  translated = original;
+  translated.variant++;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "a replay variant change refreshes");
+  translated = original;
+  translated.position_offset++;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "a position attribute change refreshes");
+  translated = original;
+  translated.mesh = original.mesh = 0;
+  Check(!cs::SamePart(original, translated, extent, moved_fit), "unknown geometry never reuses");
+
+  for (double turn : {0.01, 0.25, 8.0}) {
+    cs::Pose turned;
+    cs::Fit turned_fit;
+    Check(cs::MakePose(CarWorld(10.0 + turn, 510.0, -5.0, 140.0), &turned) && cs::MakeFit(sun, turned, held, 2048, &turned_fit), "turned pose and fit");
+    Check(cs::ReuseFit(saved, cs::RelativeFit(turned_fit, turned), 5, 6) == (turn < 0.05), "body yaw above the angular limit redraws immediately");
+  }
+  Sun(36.0, 15.0, sun);
+  Check(cs::MakeFit(sun, moved_pose, held, 2048, &moved_fit) && !cs::ReuseFit(saved, cs::RelativeFit(moved_fit, moved_pose), 5, 6), "moving sun refreshes");
+  cs::Fit changed = now;
+  changed.texel_m *= 2.0;
+  Check(!cs::ReuseFit(saved, changed, 5, 6), "resized texture refreshes");
+  changed = now;
+  changed.half_depth += 1.0;
+  Check(!cs::ReuseFit(saved, changed, 5, 6), "changed depth range refreshes");
+  changed = now;
+  changed.centre[0] += 0.1;
+  Check(!cs::ReuseFit(saved, changed, 5, 6), "moved fit centre refreshes");
+  changed = now;
+  changed.sun[0] = -changed.sun[0];
+  Check(!cs::ReuseFit(saved, changed, 5, 6), "a changed sun axis alone refreshes");
+  changed = now;
+  changed.right[0] = -changed.right[0];
+  Check(!cs::ReuseFit(saved, changed, 5, 6), "a map grid flip alone refreshes");
+}
+
 }  // namespace
 
 int main() {
@@ -698,6 +768,7 @@ int main() {
   TestFit();
   TestCovered();
   TestStable();
+  TestRasterReuse();
   TestMatrices();
   TestVariants();
   TestInset();
