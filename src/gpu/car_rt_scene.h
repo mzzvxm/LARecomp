@@ -113,6 +113,7 @@
 #include "city_hit_scene.h"
 #include "rt_world_frame.h"
 #include "frame.h"
+#include "rt_as_rules.h"
 #include "host_passes.h"
 #include "records.h"
 #include "resolve.h"
@@ -298,6 +299,7 @@ class CarRtScene final : public car_frame::Listener {
     uint32_t page = 0;  // the structure's page, offset and size
     uint64_t structure_offset = 0;
     uint64_t structure_size = 0;
+    uint64_t as_generation = 0;
     uint64_t bytes = 0;  // positions, normals, indices and structure
     uint64_t last_seen = 0;
     float bounds_min[3] = {};  // the mesh's box in its model space, for the cars' boxes (car_rt_instances_rules.h GrowBox)
@@ -330,6 +332,9 @@ class CarRtScene final : public car_frame::Listener {
     std::unique_ptr<plume::RenderBuffer> tlas_buffer;  // the top level's structure, at offset 0 of its own buffer
     std::unique_ptr<plume::RenderAccelerationStructure> tlas;
     uint64_t tlas_bytes = 0;
+    FrameWork tlas_work;
+    std::vector<rt_as::InstanceKey> tlas_keys;
+    bool tlas_fast_build = false;
     std::unique_ptr<plume::RenderBuffer> scratch;  // the builds' scratch (the bottom levels one after the other, then the top level)
     uint64_t scratch_bytes = 0;
     std::unique_ptr<plume::RenderBuffer> instances;  // the top level's instance descriptions (an upload buffer, mapped)
@@ -417,6 +422,9 @@ class CarRtScene final : public car_frame::Listener {
   bool Evictions(uint64_t need_bytes);
   // Uploads the staged meshes within the frame's budget into the shared buffers, places their structures and records their builds.
   void PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std::vector<Placed>* placed);
+  void CheckMeshBuilds();
+  bool DescribeTopLevel(const SlotResources& slot, plume::RenderTopLevelASBuildInfo& info, bool fast_build);
+  bool RecordTopLevel(SlotResources& slot, plume::RenderCommandList* list, const plume::RenderTopLevelASBuildInfo& info, bool reused, bool with_car_pages);
   bool EnsureSlot(SlotResources& slot, uint32_t index, uint64_t tlas_bytes, uint64_t scratch_bytes, uint64_t instance_bytes,
                   uint64_t table_bytes, uint64_t material_bytes);
   // RT-HIT-SHADING: the frame's material rows into `words` (car_rt_material_rules.h: the lighting rows, then two rows an item), the diffuse textures asked of the cache. The
@@ -454,6 +462,15 @@ class CarRtScene final : public car_frame::Listener {
 
   // The frame.
   uint64_t frame_ = 0;
+  struct PendingMesh {
+    uint64_t key = 0;
+    uint64_t generation = 0;
+    FrameWork work;
+  };
+  uint64_t next_as_generation_ = 0;
+  std::vector<PendingMesh> pending_meshes_;
+  std::vector<plume::RenderTopLevelASInstance> tlas_instances_;
+  std::vector<rt_as::InstanceKey> tlas_keys_;
   uint64_t generation_ = 0;  // bumped when everything is given back: a deferred free of an older generation is dropped
   bool requested_ = false;
   bool requested_prev_ = false;

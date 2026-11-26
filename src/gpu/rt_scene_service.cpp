@@ -108,6 +108,13 @@ bool RtSceneService::PredictedView(temporal::Mat4* view, bool* flip_z) {
   return true;
 }
 
+void RtSceneService::NoteTopLevel(bool reused, uint32_t city_instances) {
+  ++(reused ? counts_.tlas_reuses : counts_.tlas_builds);
+  if (city_instances != 0 && ++counts_.city_ready_frames == 1) {
+    REXLOG_INFO("{} first traceable city TLAS at frame {} ({} city instances)", kPrefix, board_.frame(), city_instances);
+  }
+}
+
 void RtSceneService::EndFrame() {
   // The debug want: the structures and the hit data with no effect reading them (mcla_gpu_city_hit_data), to test the pool and the city-only top level on their own.
   const city_rt::Level debug = city_rt::LevelOfCell(DebugHitSetting().Get());
@@ -156,8 +163,8 @@ std::string RtSceneService::CensusText() const {
   if (wants.empty() && counts_.city_only_tops == 0) {
     return {};
   }
-  return std::format("; ray tracing scene: wanted by {}; {} top levels with the car's camera, {} city-only ({} on a held pose), {} without a camera", wants.empty() ? "nobody" : wants, counts_.car_tops,
-                     counts_.city_only_tops, counts_.held_pose, counts_.no_camera);
+  return std::format("; ray tracing scene: wanted by {}; {} top levels with the car's camera, {} city-only ({} on a held pose), {} without a camera, {} TLAS builds, {} reuses, {} traceable city frames",
+                     wants.empty() ? "nobody" : wants, counts_.car_tops, counts_.city_only_tops, counts_.held_pose, counts_.no_camera, counts_.tlas_builds, counts_.tlas_reuses, counts_.city_ready_frames);
 }
 
 }  // namespace mcla::gpu

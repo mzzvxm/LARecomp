@@ -337,6 +337,10 @@ class GPUSettings final : public rex::SettingOwner {
     "stochastic rule (no hit data, or the texture not loaded yet); the log says every 120 frames how many candidates were decided each way, how many blocked, and the "
     "levels read. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_city_rt_compaction, true, "Compact static city ray tracing structures to save memory. Changes apply to future compaction work. Start a fresh session for a memory comparison.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_tlas_reuse, true, "Reuse the frame slot's ray tracing top level when its ordered instances and bottom level generations match. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_tlas_fast_build, false, "Prefer building ray tracing top levels faster. Use this to compare build and trace times with the default fast trace mode. Live.", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 "
     "(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.",
     rex::kDebugOnly, rex::Range{0.0, 1500.0});
@@ -2173,6 +2177,9 @@ inline auto& mcla_gpu_city_rt_rays = g_gpu.mcla_gpu_city_rt_rays;
 inline auto& mcla_gpu_city_rt_alpha = g_gpu.mcla_gpu_city_rt_alpha;
 inline auto& mcla_gpu_city_rt_alpha_ref = g_gpu.mcla_gpu_city_rt_alpha_ref;
 inline auto& mcla_gpu_city_rt_alpha_view = g_gpu.mcla_gpu_city_rt_alpha_view;
+inline auto& mcla_gpu_city_rt_compaction = g_gpu.mcla_gpu_city_rt_compaction;
+inline auto& mcla_gpu_rt_tlas_reuse = g_gpu.mcla_gpu_rt_tlas_reuse;
+inline auto& mcla_gpu_rt_tlas_fast_build = g_gpu.mcla_gpu_rt_tlas_fast_build;
 inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
 inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
 inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;

@@ -103,6 +103,12 @@ plume::RenderCommandList* FrameRing::Begin() {
   return OpenNextList();
 }
 
+FrameWork FrameRing::TrackWork() {
+  if (!open_) return {};
+  if (!recording_work_) recording_work_ = std::make_shared<FrameWorkStatus>(FrameWorkStatus::kRecording);
+  return recording_work_;
+}
+
 plume::RenderCommandList* FrameRing::FlushBatch() {
   if (!open_) {
     return nullptr;
@@ -120,10 +126,14 @@ plume::RenderCommandList* FrameRing::FlushBatch() {
   ++batch_flushes_;
   // Plume's Vulkan submit prints a failure and returns nothing: the status of the device, asked
   // right after, is what says this submit was the call that met the loss.
-  if (device_->CheckLost("after batch flush")) {
-    return nullptr;
+  if (!device_->CheckLost("after batch flush")) {
+    if (auto* next = OpenNextList()) return next;
+    // The batches already queued still name their resources.
+    WaitIdle();
   }
-  return OpenNextList();
+  if (recording_work_) *recording_work_ = FrameWorkStatus::kDiscarded;
+  recording_work_.reset();
+  return nullptr;
 }
 
 bool FrameRing::Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_count,
@@ -146,7 +156,10 @@ bool FrameRing::Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_coun
   s.serial = next_serial_++;
   // As in FlushBatch: a loss met by this very submit. False is the answer the callers already
   // handle for a loss noticed before it (nothing presented, the slot's fence is never waited).
-  return !device_->CheckLost("after frame submit");
+  const bool submitted = !device_->CheckLost("after frame submit");
+  s.work = std::move(recording_work_);
+  if (s.work) *s.work = submitted ? FrameWorkStatus::kSubmitted : FrameWorkStatus::kDiscarded;
+  return submitted;
 }
 
 void FrameRing::Abandon() {
@@ -162,6 +175,8 @@ void FrameRing::Abandon() {
     // simplest proof is enough: wait for the queue to drain.
     WaitIdle();
   }
+  if (recording_work_) *recording_work_ = FrameWorkStatus::kDiscarded;
+  recording_work_.reset();
 }
 
 void FrameRing::WaitSlot(Slot& slot) {
@@ -171,6 +186,7 @@ void FrameRing::WaitSlot(Slot& slot) {
   // A removed device never signals: waiting would hang the render thread
   // forever (reblue and reeot skip the drain for the same reason).
   auto* queue = device_ ? device_->queue() : nullptr;
+  bool completed = false;
   if (queue && !device_->CheckLost("fence wait")) {
     const ScopedGpuWait wait;
     {
@@ -181,8 +197,11 @@ void FrameRing::WaitSlot(Slot& slot) {
     // printed by Plume and otherwise silent): the submissions are not complete.
     if (!device_->CheckLost("after fence wait")) {
       completed_serial_ = std::max(completed_serial_, slot.serial);
+      completed = true;
     }
   }
+  if (slot.work) *slot.work = completed ? FrameWorkStatus::kComplete : FrameWorkStatus::kDiscarded;
+  slot.work.reset();
   slot.submitted = false;
 }
 

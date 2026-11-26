@@ -1447,6 +1447,39 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_rt_compaction": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Compact static city ray tracing structures to save memory. Changes apply to future compaction work. Start a fresh session for a memory comparison.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_tlas_reuse": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reuse the frame slot's ray tracing top level when its ordered instances and bottom level generations match. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_rt_tlas_fast_build": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Prefer building ray tracing top levels faster. Use this to compare build and trace times with the default fast trace mode. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_city_rt_radius": {
   "type": "f64",
   "default": "0.0",

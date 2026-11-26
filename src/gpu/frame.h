@@ -60,6 +60,12 @@ class Device;
 
 inline constexpr uint32_t kFramesInFlight = 2;
 
+enum class FrameWorkStatus : uint8_t { kRecording, kSubmitted, kComplete, kDiscarded };
+using FrameWork = std::shared_ptr<const FrameWorkStatus>;
+
+inline bool FrameWorkCompleted(const FrameWork& work) { return work && *work == FrameWorkStatus::kComplete; }
+inline bool FrameWorkSettled(const FrameWork& work) { return !work || FrameWorkCompleted(work) || *work == FrameWorkStatus::kDiscarded; }
+
 class FrameRing {
  public:
   FrameRing() = default;
@@ -80,6 +86,9 @@ class FrameRing {
     return open_ ? slots_[slot_].lists[slots_[slot_].next_list - 1].get() : nullptr;
   }
   uint32_t slot() const { return slot_; }
+  // One token for the open recording, shared by all its batches. Poll on the render
+  // thread. Only kComplete proves that GPU work ran and its results are CPU-visible.
+  FrameWork TrackWork();
 
   // The semaphore a swap-chain acquire for this slot signals, and its submission
   // waits on. One per slot: a binary semaphore cannot be re-signalled while a
@@ -171,6 +180,7 @@ class FrameRing {
     uint32_t next_list = 0;
     std::unique_ptr<plume::RenderCommandFence> fence;
     std::unique_ptr<plume::RenderCommandSemaphore> acquire;
+    std::shared_ptr<FrameWorkStatus> work;
     bool submitted = false;  // a fence signal is outstanding
     uint64_t serial = 0;     // serial of that submission
   };
@@ -193,6 +203,7 @@ class FrameRing {
   std::unique_ptr<plume::RenderCommandFence> idle_fence_;
   uint32_t slot_ = 0;
   bool open_ = false;
+  std::shared_ptr<FrameWorkStatus> recording_work_;
   // Serial the next Submit() will carry; objects retired now are freed after it.
   uint64_t next_serial_ = 1;
   uint64_t completed_serial_ = 0;

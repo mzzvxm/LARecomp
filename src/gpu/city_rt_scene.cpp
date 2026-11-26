@@ -18,6 +18,7 @@
 #include "device.h"
 #include "pass_timing.h"
 #include "rt_tier.h"
+#include "settings/larecomp_settings.h"
 #include "upload.h"
 
 namespace mcla::gpu {
@@ -45,6 +46,7 @@ bool CityRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uplo
   pass_timing_ = &pass_timing;
   pack_file_ = pack_file;
   class_ = cls;
+  compact_memory_ = std::make_shared<rt_as::CompactionMemory>();
   return true;
 }
 
@@ -52,14 +54,26 @@ void CityRtScene::Shutdown() {
   StopWorker();
   ReleaseAll("shutdown");
   city_refl_setting::NoteBase(city_refl_setting::Data::kUnknown);
-  for (SlotResources& slot : slots_) {
-    slot.scratch.reset();
-    slot.scratch_bytes = 0;
-  }
+  for (SlotResources& slot : slots_) slot = SlotResources{};
+  pending_builds_.clear();
+  pending_copies_.clear();
+  compact_memory_.reset();
+  pack_ = citypack::PackReader{};
+  counts_ = Stats{};
+  frame_ = last_wanted_frame_ = pack_probe_frame_ = query_retry_frame_ = 0;
+  next_priority_frame_ = log_frame_ = hit_epoch_ = 0;
+  logged_signature_ = ~uint64_t(0);
+  logged_pack_state_ = -1;
+  camera_known_ = first_build_logged_ = pack_missing_logged_ = build_requested_ = hit_bad_data_logged_ = false;
+  built_log_.clear();
+  built_dropped_ = 0;
+  level_ = city_rt::Level::kOff;
   built_.clear();
   states_.clear();
   sectors_.clear();
   staged_.clear();
+  instances_this_frame_ = 0;
+  budget_ = city_rt::Budget{};
   device_ = nullptr;
   frames_ = nullptr;
   upload_ = nullptr;
@@ -219,7 +233,8 @@ void CityRtScene::PollLoads() {
     city_rt::SectorState& st = states_[r.request.sector];
     city_rt::Residency& residency = r.request.detail == city_rt::Detail::kHi ? st.hi : st.lod;
     uint64_t& retry = r.request.detail == city_rt::Detail::kHi ? st.hi_retry_frame : st.lod_retry_frame;
-    if (residency != city_rt::Residency::kLoading) {
+    const Structure& target = r.request.detail == city_rt::Detail::kHi ? built_[r.request.sector].hi : built_[r.request.sector].lod;
+    if (residency != city_rt::Residency::kLoading || !rt_as::MatchesGeneration(r.request.generation, target.generation)) {
       continue;  // given back while the read was on its way (the setting went off, the camera moved on): the mesh is not wanted
     }
     if (!r.ok) {
@@ -231,11 +246,6 @@ void CityRtScene::PollLoads() {
     }
     if (city_rt::ReadBeforePool(hit_ != nullptr && hit_->ready(), r.request.with_hit)) {
       GiveBackForReread(r.request.sector, r.request.detail);  // read before the pool existed: not built as geometry only, read again with the blob
-      continue;
-    }
-    if (std::any_of(staged_.begin(), staged_.end(), [&](const Staged& s) { return s.sector == r.request.sector && s.detail == r.request.detail; })) {
-      // A second read of a mesh that waits for its build: the states were reset while the first was in the worker's queue (a live HIGH <-> ULTRA switch makes the hit data's pool again and gives every
-      // structure back) and the plan asked again. Built twice, the second structure would replace the first in the sector's slot at once, while the list being recorded builds it.
       continue;
     }
     Staged staged;
@@ -283,6 +293,8 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
     last_wanted_frame_ = frame_;
     return;
   }
+  CheckBuilds();
+  FinishCompaction(false);
   // The structures go back after a while without a request (the setting was switched off, or the pass is gated).
   if (!built_.empty() && frame_ > last_wanted_frame_ + kIdleReleaseFrames) {
     ReleaseAll("no request for a while");
@@ -303,6 +315,10 @@ void CityRtScene::Release(uint32_t sector, city_rt::Detail detail) {
     if (s.structure) frames_->Retire(std::move(s.structure));
     if (s.buffer) frames_->Retire(std::move(s.buffer));
     ++counts_.evictions;
+  }
+  if (!needs_size_.empty() || !needs_copy_.empty()) {
+    std::erase_if(needs_size_, [&](const SizeRequest& request) { return request.ref.generation == s.generation; });
+    std::erase_if(needs_copy_, [&](const CopyRequest& request) { return request.ref.generation == s.generation; });
   }
   s = Structure{};
   (detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kNone;
@@ -335,6 +351,8 @@ void CityRtScene::ReleaseAll(const char* why) {
   }
   // meshes read and waiting, and the states of reads in flight, go with them (a read still in the worker's queue is dropped when it arrives: its state is kNone)
   staged_.clear();
+  needs_size_.clear();
+  needs_copy_.clear();
   staged_bytes_ = 0;
   for (city_rt::SectorState& st : states_) {
     st = city_rt::SectorState{};
@@ -342,6 +360,176 @@ void CityRtScene::ReleaseAll(const char* why) {
   if (released != 0) {
     REXLOG_INFO("{} {} structures given back ({})", kPrefix, released, why);
   }
+}
+
+CityRtScene::Structure* CityRtScene::Find(const SectorRef& ref) {
+  if (ref.sector >= built_.size()) return nullptr;
+  SectorSlot& slot = built_[ref.sector];
+  Structure& source = ref.detail == city_rt::Detail::kHi ? slot.hi : slot.lod;
+  return source.structure && source.buffer && rt_as::MatchesGeneration(ref.generation, source.generation) ? &source : nullptr;
+}
+
+void CityRtScene::CheckBuilds() {
+  std::erase_if(pending_builds_, [&](const PendingBuild& build) {
+    if (build.work && *build.work == FrameWorkStatus::kDiscarded && Find(build.ref)) {
+      Release(build.ref.sector, build.ref.detail);
+    }
+    return FrameWorkSettled(build.work);
+  });
+}
+
+void CityRtScene::FinishCompaction(bool allow_publish) {
+  if (!compact_memory_ || !frames_) return;
+  const bool device_ready = device_ && !device_->IsLost();
+  for (SlotResources& slot : slots_) {
+    if (!slot.query_count || !FrameWorkSettled(slot.query_work)) continue;
+    const bool completed = FrameWorkCompleted(slot.query_work) && device_ready;
+    std::array<uint64_t, rt_as::kQueriesPerBatch> sizes{};
+    // CHECK: readback and query reuse under the D3D12 debug layer and Vulkan sync validation.
+    const bool read = completed && slot.compact_sizes && slot.compact_sizes->read(sizes.data(), slot.query_count);
+    for (uint32_t i = 0; i < slot.query_count; ++i) {
+      SizeRequest request = slot.queries[i];
+      const Structure* source = Find(request.ref);
+      if (!source) {
+        ++counts_.compact_cancelled;
+        continue;
+      }
+      if (!read) {
+        if (completed) ++counts_.compact_failures;
+        request.retry_frame = frame_ + (completed ? kRetryFrames : 0);
+        needs_size_.push_back(request);
+        continue;
+      }
+      const uint64_t bytes = rt_as::CompactBytes(source->bytes, sizes[i]);
+      if (bytes != 0) {
+        needs_copy_.push_back({request.ref, bytes});
+      } else {
+        ++counts_.compact_no_gain;
+      }
+    }
+    slot.query_count = 0;
+    slot.query_work.reset();
+  }
+
+  std::erase_if(pending_copies_, [&](PendingCopy& copy) {
+    Structure* source = Find(copy.request.ref);
+    const rt_as::CopyResult result = rt_as::FinishCopy(FrameWorkSettled(copy.work), FrameWorkCompleted(copy.work), source != nullptr, allow_publish && device_ready);
+    if (result == rt_as::CopyResult::kWait) return false;
+
+    const uint64_t compact_bytes = copy.destination.bytes;
+    if (result == rt_as::CopyResult::kPublish && source) {
+      const uint64_t original_bytes = source->bytes;
+      const uint64_t saved = original_bytes - compact_bytes;
+      copy.destination.triangles = source->triangles;
+      copy.destination.generation = ++next_generation_;
+      // Previous TLAS submissions can still read the old address even after
+      // the copy fence. Keep the old AS, its buffer and its reservation until
+      // the recording serial that follows those reads retires.
+      frames_->Retire(std::move(source->structure));
+      frames_->Retire(std::move(source->buffer));
+      compact_memory_->Publish(original_bytes, compact_bytes);
+      frames_->RetireAction([memory = compact_memory_, original_bytes, reserved = copy.reserved_bytes] {
+        memory->RetireOriginal(reserved, original_bytes);
+      });
+      *source = std::move(copy.destination);
+      structure_bytes_ -= saved;
+      ++counts_.compacted;
+      counts_.compact_saved_bytes += saved;
+      counts_.compact_peak_extra_bytes = std::max(counts_.compact_peak_extra_bytes, compact_memory_->extra);
+      REXLOG_DEBUG("{} compacted sector {} {}: {} -> {} bytes (saved {})", kPrefix, copy.request.ref.sector,
+                   copy.request.ref.detail == city_rt::Detail::kHi ? "hi" : "lod", original_bytes, compact_bytes, saved);
+    } else {
+      compact_memory_->CancelCopy(copy.reserved_bytes, compact_bytes);
+      ++counts_.compact_cancelled;
+      if (result == rt_as::CopyResult::kRetry) needs_copy_.push_back(copy.request);
+    }
+    return true;
+  });
+}
+
+bool CityRtScene::RecordCompactSizes(plume::RenderCommandList* list, SlotResources& slot) {
+  if (!list || !device_ || !device_->device() || !frames_ || !pass_timing_ || slot.query_count || needs_size_.empty() || frame_ < query_retry_frame_) return false;
+  if (!slot.compact_sizes) {
+    slot.compact_sizes = device_->device()->createASCompactedSizeQuery(rt_as::kQueriesPerBatch);
+    if (!slot.compact_sizes) {
+      query_retry_frame_ = frame_ + kRetryFrames;
+      ++counts_.compact_failures;
+      return false;
+    }
+  }
+
+  std::array<const plume::RenderAccelerationStructure*, rt_as::kQueriesPerBatch> structures{};
+  for (size_t remaining = needs_size_.size(); remaining > 0 && slot.query_count < structures.size(); --remaining) {
+    const SizeRequest request = needs_size_.front();
+    needs_size_.pop_front();
+    const Structure* source = Find(request.ref);
+    if (!source) continue;
+    if (frame_ < request.retry_frame) {
+      needs_size_.push_back(request);
+      continue;
+    }
+    structures[slot.query_count] = source->structure.get();
+    slot.queries[slot.query_count++] = request;
+  }
+  if (!slot.query_count) return false;
+  pass_timing_->Mark(list, "city rt compact query");
+  list->writeBottomLevelASCompactedSizes(slot.compact_sizes.get(), structures.data(), slot.query_count);
+  slot.query_work = frames_->TrackWork();
+  ++counts_.query_batches;
+  return true;
+}
+
+bool CityRtScene::RecordCompactCopies(plume::RenderCommandList* list) {
+  if (!list || !compact_memory_ || !device_ || !device_->device() || !frames_ || !pass_timing_) return false;
+
+  std::array<plume::RenderBufferBarrier, rt_as::kCopiesPerFrame> barriers{};
+  uint32_t count = 0;
+  uint32_t attempts = 0;
+  for (size_t remaining = needs_copy_.size(); remaining > 0 && attempts < rt_as::kCopiesPerFrame && !device_->IsLost(); --remaining) {
+    CopyRequest request = needs_copy_.front();
+    needs_copy_.pop_front();
+    const Structure* source = Find(request.ref);
+    if (!source) continue;
+    if (frame_ < request.retry_frame || !rt_as::CanReserve(compact_memory_->reserved, source->bytes)) {
+      needs_copy_.push_back(request);
+      continue;
+    }
+
+    ++attempts;
+    Structure destination;
+    destination.bytes = request.bytes;
+    destination.buffer = device_->CreateBuffer(plume::RenderBufferDesc::AccelerationStructureBuffer(request.bytes), "city rt compact BLAS");
+    if (destination.buffer) {
+      destination.structure = device_->device()->createAccelerationStructure(
+          plume::RenderAccelerationStructureDesc(plume::RenderAccelerationStructureType::BOTTOM_LEVEL, plume::RenderBufferReference(destination.buffer.get(), 0), request.bytes));
+    }
+    if (!destination.structure) {
+      ++counts_.compact_failures;
+      request.retry_frame = frame_ + kRetryFrames;
+      needs_copy_.push_back(request);
+      continue;
+    }
+
+    const uint64_t charge = rt_as::ReservationBytes(source->bytes);
+    compact_memory_->BeginCopy(charge, request.bytes);
+    counts_.compact_peak_extra_bytes = std::max(counts_.compact_peak_extra_bytes, compact_memory_->extra);
+    if (count == 0) pass_timing_->Mark(list, "city rt compact copy");
+    list->copyBottomLevelASCompact(destination.structure.get(), source->structure.get());
+    barriers[count++] = plume::RenderBufferBarrier(destination.buffer.get(), plume::RenderBufferAccess::READ);
+    pending_copies_.push_back({request, std::move(destination), frames_->TrackWork(), charge});
+    ++counts_.compact_copies;
+  }
+  if (count == 0) return false;
+  // CHECK: validate copy-to-TLAS visibility and original retirement across two
+  // in-flight frames, including eviction while a compact copy is queued.
+  list->barriers(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE, barriers.data(), count, nullptr, 0);
+  return true;
+}
+
+bool CityRtScene::RecordCompaction(plume::RenderCommandList* list, uint32_t slot) {
+  const bool copied = RecordCompactCopies(list);
+  const bool queried = device_ && !device_->IsLost() && RecordCompactSizes(list, slots_[slot]);
+  return copied || queried;
 }
 
 uint64_t CityRtScene::StagedBytesOf(const Staged& s) const {
@@ -380,7 +568,9 @@ void CityRtScene::Plan(const double camera[3]) {
         // With the pool made, the read brings the hit blob too and the sector's block is counted at its estimate until the real one is placed.
         const bool with_hit = hit_ != nullptr && hit_->ready();
         (r.detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = with_hit ? (r.detail == city_rt::Detail::kHi ? sectors_[r.sector].hi_pool : sectors_[r.sector].lod_pool) : 0;
-        requests_.push_back({r.sector, r.detail, with_hit});
+        Structure& target = r.detail == city_rt::Detail::kHi ? built_[r.sector].hi : built_[r.sector].lod;
+        target.generation = ++next_generation_;
+        requests_.push_back({r.sector, r.detail, with_hit, target.generation});
       }
     }
     reads_in_flight_.fetch_add(uint32_t(plan.loads.size()));
@@ -441,12 +631,15 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     std::unique_ptr<plume::RenderBuffer> buffer;
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
     uint64_t size = 0;
+    uint64_t admission_bytes = 0;
     bool pooled = false;
     CityHitScene::Reservation block;
   };
   std::vector<Job> jobs;
   uint64_t scratch_needed = 0;
   bool pool_copies = false;  // blocks were copied into the pool in this list (it is left readable below, whatever else happens)
+  const bool allow_compaction = larecomp::settings::mcla_gpu_city_rt_compaction.Get();
+  pass_timing_->Mark(list, "city rt upload");
   // A mesh that cannot be built now is tried again after `retry` frames.
   const auto give_up = [&](Staged& s, uint64_t retry) {
     city_rt::SectorState& st = states_[s.sector];
@@ -524,15 +717,34 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
                                                               plume::RenderBufferReference(geometry_buffer, vertex_at), plume::RenderFormat::R32_UINT,
                                                               plume::RenderFormat::R32G32B32_FLOAT, alpha * 3, m.vertex_count(), 12, /*isOpaque=*/false);
     }
-    device_->device()->setBottomLevelASBuildInfo(job.info, geometry, geometries, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
-    job.size = AlignUp(job.info.accelerationStructureSize, rr::kStructureAlignment);
-    if (job.size != 0) {
-      job.buffer = device_->CreateBuffer(plume::RenderBufferDesc::AccelerationStructureBuffer(job.size), std::format("city rt structure {}", s.sector).c_str());
-      if (job.buffer) {
-        job.structure = device_->device()->createAccelerationStructure(
-            plume::RenderAccelerationStructureDesc(plume::RenderAccelerationStructureType::BOTTOM_LEVEL, plume::RenderBufferReference(job.buffer.get(), 0), job.size));
+    auto* dev = device_->device();
+    dev->setBottomLevelASBuildInfo(job.info, geometry, geometries, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
+    job.admission_bytes = AlignUp(job.info.accelerationStructureSize, rr::kStructureAlignment);
+    const auto allocate_structure = [&](uint64_t bytes) {
+      if (bytes == 0) return false;
+      job.buffer = device_->CreateBuffer(plume::RenderBufferDesc::AccelerationStructureBuffer(bytes), std::format("city rt structure {}", s.sector).c_str());
+      if (!job.buffer) return false;
+      job.structure = dev->createAccelerationStructure(
+          plume::RenderAccelerationStructureDesc(plume::RenderAccelerationStructureType::BOTTOM_LEVEL, plume::RenderBufferReference(job.buffer.get(), 0), bytes));
+      if (!job.structure) {
+        job.buffer.reset();
+        return false;
+      }
+      job.size = bytes;
+      return true;
+    };
+    // Allowing compaction can change the prebuild size. Use the ordinary
+    // prebuild charge for streaming admission in both arms.
+    if (allow_compaction && rt_as::CanReserve(0, job.admission_bytes)) {
+      plume::RenderBottomLevelASBuildInfo compactable;
+      dev->setBottomLevelASBuildInfo(compactable, geometry, geometries, /*preferFastBuild=*/false, /*preferFastTrace=*/true, /*allowCompaction=*/true);
+      const uint64_t bytes = AlignUp(compactable.accelerationStructureSize, rr::kStructureAlignment);
+      if (rt_as::CanReserve(0, bytes)) {
+        if (allocate_structure(bytes)) job.info = std::move(compactable);
+        else ++counts_.compact_failures;
       }
     }
+    if (!job.structure) allocate_structure(job.admission_bytes);
     if (!job.structure) {
       // No room (or no object): the mesh is tried again after a while. Its block was copied: the range comes back when the GPU is done.
       if (job.pooled) {
@@ -579,6 +791,8 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
   }
   std::vector<plume::RenderBufferBarrier> built;
   std::vector<uint32_t> done_staged;
+  const FrameWork work = frames_->TrackWork();
+  pass_timing_->Mark(list, "city rt blas");
   for (Job& j : jobs) {
     if (!j.structure || j.staged_index == size_t(-1)) {
       continue;
@@ -592,6 +806,9 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     target.structure = std::move(j.structure);
     target.bytes = j.size;
     target.triangles = s.mesh.triangle_count();
+    const SectorRef ref{s.sector, s.detail, target.generation};
+    pending_builds_.push_back({ref, work});
+    if (j.info.allowCompaction && rt_as::CanReserve(0, j.size)) needs_size_.push_back({ref});
     structure_bytes_ += j.size;
     counts_.triangles += target.triangles;
     ++counts_.builds;
@@ -613,7 +830,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     counts_.build_triangles += target.triangles;
     city_rt::SectorState& st = states_[s.sector];
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kResident;
-    (s.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = j.size;
+    (s.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = j.admission_bytes;
     // The hit data's row becomes valid (the sector table the GPU reads is copied at the descriptor writes that follow this call).
     const bool committed = j.pooled && hit_->Commit(j.block, s.mesh.triangle_count(), s.mesh.opaque_triangles, 0, s.distance);  // the distance is the sector's textures' priority
     (s.detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = committed ? city_hit::PoolAllocator::Round(j.block.plan.total_bytes) : 0;
@@ -647,10 +864,12 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
   return true;
 }
 
-uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances) {
+uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>& instances,
+                              std::vector<rt_as::InstanceKey>& keys) {
   recorded_ = false;
   instances_this_frame_ = 0;
-  if (!device_ || level_ == city_rt::Level::kOff || !budget_.on() || !list || slot >= kFramesInFlight) {
+  if (!device_ || !device_->device() || device_->IsLost() || !frames_ || !pass_timing_ || !upload_ || level_ == city_rt::Level::kOff || !budget_.on() || !list ||
+      slot >= kFramesInFlight) {
     return 0;
   }
   if (!OpenPack()) {
@@ -673,9 +892,13 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
   if (hit_ != nullptr) {
     hit_->Record(list, slot);  // the material table, once
   }
+  CheckBuilds();
   PollLoads();
   Plan(camera_);
+  const bool compact = larecomp::settings::mcla_gpu_city_rt_compaction.Get();
+  FinishCompaction(compact);
   recorded_ = BuildStaged(list, slot);
+  if (compact && !device_->IsLost()) recorded_ |= RecordCompaction(list, slot);
   RefreshTexturePriorities();
 
   // The instances: one transform, the cars' own (a mesh in world space, identity model matrix).
@@ -696,7 +919,9 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
     plume::RenderTopLevelASInstance instance(plume::RenderBufferReference(s.buffer.get(), 0), city_rt::InstanceId(i, detail), city_rt::kMaskCity, 0, /*cullDisable=*/true,
                                              plume::RenderAffineTransform());
     std::memcpy(instance.transform.m, transform, sizeof(transform));
-    instances->push_back(instance);
+    instance.bottomLevelASObject = s.structure.get();
+    instances.push_back(instance);
+    keys.push_back(rt_as::KeyOf(instance, s.generation));
     ++added;
   }
   instances_this_frame_ = added;
@@ -763,7 +988,7 @@ uint64_t CityRtScene::HeldBytes() const {
   for (const SlotResources& slot : slots_) {
     scratch += slot.scratch_bytes;
   }
-  return structure_bytes_ + scratch + staged_bytes_;
+  return structure_bytes_ + scratch + staged_bytes_ + (compact_memory_ ? compact_memory_->extra : 0);
 }
 
 std::string CityRtScene::CensusText() const {
@@ -771,8 +996,10 @@ std::string CityRtScene::CensusText() const {
     return {};
   }
   const Stats s = stats();
-  return std::format("; city ray tracing: {} hi and {} lod sectors, {:.1f} MiB, {} builds, {} evictions, {} failures{}", s.hi_resident, s.lod_resident,
-                     double(s.structure_bytes) / (1024.0 * 1024.0), s.builds, s.evictions, s.failures, hit_ != nullptr ? hit_->CensusText() : std::string());
+  return std::format("; city ray tracing: {} hi and {} lod sectors, {:.1f} MiB, {} builds, {} evictions, {} failures; compaction {} query batches, {} copies, {} published, "
+                     "{} bytes saved, {} no gain, {} failures, {} cancelled, {} peak extra bytes{}", s.hi_resident, s.lod_resident,
+                     double(s.structure_bytes) / (1024.0 * 1024.0), s.builds, s.evictions, s.failures, s.query_batches, s.compact_copies, s.compacted,
+                     s.compact_saved_bytes, s.compact_no_gain, s.compact_failures, s.compact_cancelled, s.compact_peak_extra_bytes, hit_ != nullptr ? hit_->CensusText() : std::string());
 }
 
 void CityRtScene::LogState(const char* why) {

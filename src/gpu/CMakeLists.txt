@@ -610,6 +610,16 @@ add_executable(larecomp_car_rt_scene_rules_test EXCLUDE_FROM_ALL car_rt_scene_ru
 # with its hysteresis and memory cap on a synthetic city, the frame's build schedule) likewise:
 #   cmake --build <dir> --target larecomp_city_rt_rules_test, then run src/gpu/larecomp_city_rt_rules_test (exit 0 = passed).
 add_executable(larecomp_city_rt_rules_test EXCLUDE_FROM_ALL city_rt_rules_test.cpp)
+
+add_executable(larecomp_rt_as_rules_test EXCLUDE_FROM_ALL rt_as_rules_test.cpp)
+target_compile_features(larecomp_rt_as_rules_test PRIVATE cxx_std_23)
+
+add_executable(larecomp_rt_as_parity_test EXCLUDE_FROM_ALL rt_as_parity_test.cpp)
+target_compile_features(larecomp_rt_as_parity_test PRIVATE cxx_std_23)
+target_link_libraries(larecomp_rt_as_parity_test PRIVATE plume)
+if(WIN32)
+  target_link_libraries(larecomp_rt_as_parity_test PRIVATE d3d12)
+endif()
 # The ray tracing scene service's rules (rt_scene_rules.h, CITY-RT M2 H3: the Want lifecycle, the merge of the consumers, the top level's plan with and without the player's car, the
 # camera predictor on made-up drives) likewise:
 #   cmake --build <dir> --target larecomp_rt_scene_rules_test, then run src/gpu/larecomp_rt_scene_rules_test (exit 0 = passed).
