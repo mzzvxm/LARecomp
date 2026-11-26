@@ -497,8 +497,8 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "MIRROR-VIEW MV1: one quad into the rectangle of the main colour at the first copy of the main colour after the phase's end marker (Scene::RecordMirrorStamp), before that copy reads the colour; a held frame "
              "(the guest's every-Nth-frame cadence sends the two markers with no draws between) stamps the held picture. Scanned, not noted: it runs only while the view is on and a picture is whole. "
              "CHECK (run): that the first copy of the main colour after the end marker is the end-of-scene copy (the effects of the trigger have run by then), CHECK 4 of the design"},
-    {.step = Step::kMirrorGlass, .phase = Phase::kEndOfScene, .kind = Kind::kScanned, .name = "the car's side mirror glass drawn again with a lookup into the rear view's picture", .call = "RecordMirrorGlass(record, list)",
-     .label_file = "mirror_overlay.cpp", .label = "mirror glass", .closing_label = "after mirror glass", .reads = data::kMirrorView,
+    {.step = Step::kMirrorGlass, .phase = Phase::kEndOfScene, .kind = Kind::kScanned, .name = "the car's mirror glass drawn again with a lookup into the rear view's picture", .call = "RecordMirrorGlass(record, list)",
+     .label_file = "mirror_overlay.cpp", .label = "mirror overlay", .closing_label = "after mirror overlay", .reads = data::kMirrorView,
      .deps = {{{Step::kMirrorStamp, "the glass is drawn after the HUD stamp: the two readers of the view's picture, the stamp first, then the side mirrors' glass over the main colour"},
                {Step::kShaftsComposite, "the haze and the shafts' light are composited first: they do not lie over the mirror's picture"}}},
      .note = "MIRROR-VIEW MV4 (mirror_overlay.h, perf/MIRROR-VIEW.md): at the same copy, the glass patches of the player's car (MirrorGlass::Current: the pair found by shape, a glass on the picture and wide enough) are drawn again "

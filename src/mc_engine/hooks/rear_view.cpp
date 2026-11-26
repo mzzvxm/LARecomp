@@ -117,10 +117,12 @@
 #include "hooks_internal.h"
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
+#include "gpu/cabin_mirror_rules.h"
 #include "gpu/car_model_walk_tap.h"
 #include "gpu/mirror_draws.h"
 #include "gpu/mirror_view_link.h"
 #include "mc_engine/camera/camera_look.h"
+#include "mc_engine/input/adaptive_triggers.h"
 #include "rear_view_cheap.h"
 #include "rear_view_shared.h"
 #if defined(LARECOMP_HAS_GPU)
@@ -332,6 +334,7 @@ static bool MainEye(const uint8_t* base, uint32_t renderer, float eye[3]) {
 
 // --- the shared view's guest half (the file comment says what it is; rules in rear_view_shared.h) -----------------------------------------------------------
 namespace shared = larecomp::rearview_shared;
+namespace cabin = mcla::gpu::cabin_mirror;
 namespace vlink = mcla::gpu::mirror_view;  // the link header's namespace; not `link`: unistd.h declares a function of that name
 
 // Sharing the view uses the Plume renderer and the host's live mode (gpu.h MirrorViewMode). The begin hook can also mark a buffered hidden phase so the host can discard it after a mode change.
@@ -367,8 +370,24 @@ static bool g_frame_held = false;                     // this frame is a held on
 // The guest's frame tick writes, the HUD draw's hook reads: is the HUD form visible (the game's own bit, mirrored into the widget while the HUD mirror is on)?
 static std::atomic<bool> g_form_visible{true};
 
+static bool CabinRigActive() {
+    return CurrentCameraRig() == cabin::kCockpitRig && !larecomp::triggers::IsGamePaused() &&
+           larecomp::settings::rearview_interior.Get();
+}
+
+static uint32_t CabinEyeRequest() {
+    const auto request = vlink::CurrentRequest();
+    return request.redirect && (request.side_mask & cabin::kReader) && CabinRigActive()
+               ? vlink::CabinOffset() : 0;
+}
+
+static bool HideHudWithCabin() {
+    return larecomp::settings::rearview_hide_with_interior.Get() && vlink::CabinDrawn() &&
+           SharedViewOn() && CabinEyeRequest() != 0;
+}
+
 static bool HudStampWanted() {
-    return larecomp::settings::rearview.Get() && g_form_visible.load(std::memory_order_relaxed);
+    return larecomp::settings::rearview.Get() && g_form_visible.load(std::memory_order_relaxed) && !HideHudWithCabin();
 }
 
 struct SharedStats {
@@ -419,10 +438,10 @@ void TickRearView() {
     // host reads that one). With the guest half off the blocks are kept all zero (nothing is read from the host either) and the stamp's flag is back at its default.
     const shared::Mode mode = CurrentMode();
     vlink::GuestFacts facts;
-    if (mode.shared) facts.rig = CurrentCameraRig();
+    if (mode.shared) facts.rig = larecomp::triggers::IsGamePaused() ? -1 : CurrentCameraRig();
     const auto publish = [&](bool hud_stamp, bool phase) {
         if (!mode.shared) return;
-        vlink::SetStampWanted(hud_stamp);
+        vlink::SetStampWanted(hud_stamp && !HideHudWithCabin());
         facts.phase_asked = phase;
         facts.side_only = phase && shared::SideOnly(mode);
         vlink::PublishGuest(facts);
@@ -782,6 +801,27 @@ void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {
     }
 }
 
+// CHECK: compare this rear image and its culling with a matched virtual-eye
+// reference. r4 is the scratch copy of the camera matrix, used both by
+// sub_8217CE80 and the pass. The main camera object stays untouched.
+void Patch_RearViewCabinEye(PPCRegister& r4) {
+    vlink::g_phase_cabin_offset = 0;
+    const uint32_t tag = SharedViewOn() ? CabinEyeRequest() : 0;
+    auto* base = larecomp::guest::Membase();
+    if (!tag || !base || !PlausibleGuestPtr(r4.u32) || (r4.u32 & 15u)) return;
+    const auto row = [&](uint32_t at) {
+        return cabin::V3{ReadGuestF32(base, at), ReadGuestF32(base, at + 4), ReadGuestF32(base, at + 8)};
+    };
+    const uint32_t matrix = r4.u32;
+    const auto delta = cabin::OffsetInRearAxes(cabin::UnpackOffset(tag), row(matrix), row(matrix + 16), row(matrix + 32));
+    const auto eye = row(matrix + 48) + delta;
+    if (!std::isfinite(eye.x) || !std::isfinite(eye.y) || !std::isfinite(eye.z) || !(cabin::Length(delta) < 8.0)) return;
+    WriteGuestF32(base, matrix + 48, float(eye.x));
+    WriteGuestF32(base, matrix + 52, float(eye.y));
+    WriteGuestF32(base, matrix + 56, float(eye.z));
+    vlink::g_phase_cabin_offset = tag;
+}
+
 // Hooked at 0x82307F8C, the first `bl sub_82178C40` of sub_82307F28 (the mirror's camera step, called from the colour pass's begin): a D3D Clear(1, &rect, colour + depth + stencil flags) of
 // the rectangle at [pass+0..12] (r3 = x, r4 = y, r5 = w, r6 = h, flags r7 = 1, r9 = 1 and the stack byte 87 = 1, f1 = the depth 0.0 from `lfs f31,3796(r11)`, r8 = 0xFFFF0000) into the MAIN
 // target, before the main world draws. True jumps to 0x82307F90, past the call. The phase's own clear is the second sub_82178C40 call, in sub_82308178, with black and depth 1.0.
@@ -850,14 +890,17 @@ static void RearViewCadenceStep(PPCRegister& r17, PPCRegister& r21, PPCRegister&
     static int last_rig = -1;
     static bool was_stamp_wanted = false;
     static uint8_t previous_side_mask = 0;
+    static bool had_cabin_eye = false;
     const int rig = CurrentCameraRig();
     const bool stamp_wanted = HudStampWanted();
-    const bool cut = rig != last_rig || (stamp_wanted && !was_stamp_wanted) ||
+    const bool cabin_eye = CabinEyeRequest() != 0;
+    const bool cut = rig != last_rig || cabin_eye != had_cabin_eye || (stamp_wanted && !was_stamp_wanted) ||
                      ((request.side_mask & ~previous_side_mask) != 0) ||
                      (have_eye && cheap::EyeJumped(g_last_eye, eye, g_have_last_eye));
     last_rig = rig;
     was_stamp_wanted = stamp_wanted;
     previous_side_mask = request.side_mask;
+    had_cabin_eye = cabin_eye;
     if (have_eye) {
         for (int i = 0; i < 3; ++i) g_last_eye[i] = eye[i];
     }
@@ -974,7 +1017,7 @@ void Patch_RearViewUpdateActive(PPCRegister& r3) {
 // generated sub_82234128, not run); turning rearview off while the mirror is up should
 // drop the frame at once instead of fading it.
 void Patch_RearViewDrawAlpha(PPCRegister& f13) {
-    if (shared::FrameHidden(CurrentMode(), g_form_visible.load(std::memory_order_relaxed))) f13.f64 = 0.0;
+    if (HideHudWithCabin() || shared::FrameHidden(CurrentMode(), g_form_visible.load(std::memory_order_relaxed))) f13.f64 = 0.0;
 }
 
 // Hooked at 0x822340F4 in mcRearView::Draw (sub_82233E18): the `lwzx` that loads the
@@ -997,6 +1040,7 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {}
 void Patch_RearViewDiag() {}
 void Patch_RearViewCullBits(PPCRegister& r3) {}
 void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {}
+void Patch_RearViewCabinEye(PPCRegister& r4) {}
 bool Patch_RearViewCameraClear() { return false; }
 void Patch_RearViewCityLod(PPCRegister& f1) {}
 void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {}

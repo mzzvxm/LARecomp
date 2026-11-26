@@ -1508,7 +1508,7 @@ class GPUSettings final : public rex::SettingOwner {
     "for the maps being drawn). The sun's shadows show from 8 to 17 hours in clear weather. Live; "
     "the first time it changes the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "high", "ultra"));
 
-  REX_SETTING(std::string, mcla_gpu_side_mirrors, "on", "Show the street and racers behind you in the side mirrors. The optional HUD rear-view widget shares the same picture. Live.", rex::Allowed("off", "on", "auto", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_side_mirrors, "on", "Show the street and racers behind you in the side and cabin mirrors. The HUD rear-view widget shares the picture and hides while the cabin mirror is visible. Live.", rex::Allowed("off", "on", "auto", "high", "ultra"));
 
   REX_SETTING(std::string, mcla_gpu_skip_shaders, "", "Workaround for a driver that dies compiling one particular shader combination: a "
     "comma-separated list of shader identities (the 16 hex digits of the pack's keys). A "

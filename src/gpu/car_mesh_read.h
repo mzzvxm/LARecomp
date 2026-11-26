@@ -51,13 +51,13 @@ inline constexpr uint32_t kMaxIndices = 8u * 1024u * 1024u;
 inline constexpr uint32_t kPlayerVehicleGlobal = 0x8288DCF8u;
 inline constexpr uint32_t kVehicleEntityOffset = 0x14;
 inline constexpr uint32_t kEntityMatrixOffset = 0x90;
-inline constexpr uint32_t kMatrixTranslationOffset = 0x30;
 
 struct PlayerVehicle {
   bool valid = false;       // the position was read
   uint32_t vehicle = 0;     // dword_8288DCF8: the vehicle the local player drives
   uint32_t entity = 0;      // vehicle + 0x14
   double position[3] = {};  // row 3 of the entity's world matrix (entity + 0x90 + 0x30)
+  temporal::Mat4 vehicle_to_world;  // entity axes: right, up, back, position
   std::string note;         // what was found, for the log (only when asked for)
 };
 

@@ -3497,7 +3497,7 @@ void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandLi
         float field_h = 0.0f;
         float field_v = 0.0f;
         const bool field_known = mirror_view_->PictureField(&field_h, &field_v);
-        mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);
+        mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v, tag);
       }
     }
   }
@@ -3733,6 +3733,8 @@ bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandL
   in.glass = mirror_glass_;
   in.view = mirror_view_;
   in.play_view = true;
+  in.upload = upload_;
+  in.slot = slot_;
   if (temporal_) {
     temporal_->FrameJitter(in.jitter);  // the sub-pixel offset the frame's gated draws were moved by: the overlay lands on the glass the game drew
   }
@@ -4565,6 +4567,7 @@ void Scene::OnPresent() {
   if (car_dump_) {
     car_dump_->OnPresent();  // the dump frame's census and OBJ
   }
+  if (mirror_overlay_) mirror_overlay_->OnPresent();
   if (mirror_glass_) {
     mirror_glass_->OnPresent();  // the glass finder evaluates the complete frame and publishes the need (mirror_glass_need.h); BEFORE CarFrame::OnPresent, which clears the frame
   }

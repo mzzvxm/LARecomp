@@ -157,6 +157,7 @@ void CarFrame::StartFrame() {
   frame_.guest_frame = guest_frame_;
   frame_.player_id = 0;
   frame_.player_world = temporal::Mat4{};
+  frame_.vehicle_to_world = temporal::Mat4{};
   frame_.view = temporal::Mat4{};
   frame_.view_projection = temporal::Mat4{};
   for (int c = 0; c < 3; ++c) {
@@ -361,6 +362,7 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   if (!player_read_) {
     player_read_ = true;  // the guest is held back inside this call: the player's vehicle is read here, once a frame
     car_mesh::ReadPlayerVehicle(&player_, log_);
+    if (player_.valid) frame_.vehicle_to_world = player_.vehicle_to_world;
     if (others_on_ && player_.valid && !vehicles_read_) {
       // The game's other vehicles near it, from the same call (car_rt_memory_rules.h): what places a car the camera does not see.
       vehicles_read_ = true;

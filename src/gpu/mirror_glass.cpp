@@ -44,6 +44,8 @@ void MirrorGlass::Initialize(CarFrame& car_frame) {
   window_ = Window{};
   pair_logged_ = false;
   first_need_logged_ = false;
+  cabin_key_ = 0;
+  cabin_scanned_ = false;
   ready_ = true;
 }
 
@@ -51,6 +53,7 @@ void MirrorGlass::Shutdown() {
   if (published_) {
     mg::WithdrawNeed();
   }
+  mirror_view::PublishCabinOffset(0);
   published_ = false;
   active_ = false;
   ready_ = false;
@@ -75,6 +78,7 @@ void MirrorGlass::BeginFrame() {
     REXLOG_INFO("{} the glass finder is {} (the MIRRORS row, or mcla_gpu_mirror_glass)", kPrefix, wanted ? "on" : "off");
     if (!wanted && published_) {
       mg::WithdrawNeed();  // the guest reads "no need" from the next frame on
+      mirror_view::PublishCabinOffset(0);
       published_ = false;
       hold_.Reset();
     }
@@ -101,7 +105,7 @@ void MirrorGlass::OnPlayerDraw(const car_frame::Draw& draw, const car_frame::Mes
   const mg::Finder::Reply reply = finder_.OnDraw(draw.part == car_frame::Part::kBody, draw.mesh_key, draw.geometry.count, draw.ps,
                                                  [&](std::vector<float>* positions, std::vector<uint32_t>* indices, std::vector<float>* normals) {
                                                    return reader.ReadTriangles(positions, indices, normals);
-                                                 });
+                                                 }, true);
   if (reply.skip != mg::Skip::kNone) {
     ++window_.skipped[size_t(reply.skip)];
     return;
@@ -135,16 +139,36 @@ void MirrorGlass::Evaluate(const car_frame::Frame& frame) {
     result_.why = mg::Why::kNoCar;
     return;
   }
+  const bool cockpit = mirror_view::CurrentGuest().rig == cabin_mirror::kCockpitRig && larecomp::settings::rearview_interior.Get();
+  temporal::Mat4 world_to_vehicle;
+  const bool vehicle_axes = cockpit && temporal::Inverse(frame.vehicle_to_world, &world_to_vehicle);
+  mg::ci::ViewBox body;
   finder_.BeginEvaluation();
   for (uint32_t i = 0; i < frame.draws.size(); ++i) {
     const car_frame::Draw& d = frame.draws[i];
-    finder_.Consider(i, d.part == car_frame::Part::kBody, d.mesh_key, d.geometry.count, d.ps, d.model_to_world);
+    const bool rigid = d.part == car_frame::Part::kBody;
+    finder_.Consider(i, rigid, d.mesh_key, d.geometry.count, d.ps, d.model_to_world, vehicle_axes);
+    if (vehicle_axes && rigid && d.has_box) {
+      float to_vehicle[3][4];
+      if (mg::rr::PackInstanceTransform(d.model_to_world, world_to_vehicle, false, to_vehicle)) {
+        mg::ci::ViewBox box;
+        mg::GrowViewBox(&box, to_vehicle, true, d.box_min, d.box_max);
+        // Reject streamed or hidden parts parked far from the car.
+        if (box.valid && box.min[0] > -3 && box.max[0] < 3 && box.min[1] > -3 && box.max[1] < 3 && box.min[2] > -6 && box.max[2] < 6) {
+          for (int c = 0; c < 3; ++c) {
+            body.min[c] = body.valid ? std::min(body.min[c], box.min[c]) : box.min[c];
+            body.max[c] = body.valid ? std::max(body.max[c], box.max[c]) : box.max[c];
+          }
+          body.valid = true;
+        }
+      }
+    }
   }
   mg::Camera camera;
   camera.view = frame.view;
   camera.view_projection = frame.view_projection;
   camera.flip_z = false;  // Frame::view is the occlusion's view space (z forward) by construction (mirror_glass_rules.h Camera)
-  result_ = finder_.Choose(frame_, camera);
+  result_ = finder_.Choose(frame_, camera, world_to_vehicle, body);
 }
 
 const mg::Result& MirrorGlass::Current() {
@@ -160,7 +184,7 @@ const mg::Result& MirrorGlass::Current() {
 
 const car_frame::Draw* MirrorGlass::DrawOf(uint32_t k) {
   const mg::Result& r = Current();
-  if (!r.found || k > 1 || !car_frame_) {
+  if (!car_frame_ || k > cabin_mirror::kGlassIndex || (k == cabin_mirror::kGlassIndex ? !r.cabin_found : !r.found)) {
     return nullptr;
   }
   const car_frame::Frame& frame = car_frame_->Current();
@@ -188,6 +212,15 @@ void MirrorGlass::OnPresent() {
   // picture with nothing to compose it (the sky patch of the 11-24 front shots). No car frame: the old hold.
   const car_frame::Frame* frame = car_frame_ ? &car_frame_->Current() : nullptr;
   const mg::NeedState published = frame ? mirror_overlay::UpdateSideNeed(hold_, r.need, frame->valid, frame->view, frame->view_projection) : hold_.Update(r.need);
+  // CHECK: census the winning patch on 12-16 cars, including roof states and a bike.
+  const auto& cabin = r.glass[cabin_mirror::kGlassIndex];
+  if (r.cabin_scanned && (!cabin_scanned_ || cabin.mesh_key != cabin_key_)) {
+    cabin_scanned_ = true;
+    REXLOG_INFO("[cabin mirror] frame {}: key {:016x}, draw {}, area {:.4f} m2, width {} px, requested {}",
+                frame_, cabin.mesh_key, cabin.draw, cabin.area, cabin.px_wide, cabin.needed);
+    cabin_key_ = cabin.mesh_key;
+  }
+  mirror_view::PublishCabinOffset((published.mask & cabin_mirror::kReader) ? r.cabin_offset : 0);
   mg::PublishNeed(published);
   published_ = true;
   if (published.need() && !first_need_logged_) {

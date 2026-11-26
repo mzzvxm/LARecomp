@@ -896,6 +896,8 @@
 {"rearview_far", "MCLA/HUD"},
 {"rearview_fov_scale", "MCLA/HUD"},
 {"rearview_frame", "MCLA/HUD"},
+{"rearview_interior", "MCLA/HUD"},
+{"rearview_hide_with_interior", "MCLA/HUD"},
 {"rearview_lod_distance", "MCLA/HUD"},
 {"rearview_refresh_hz", "MCLA/HUD"},
 {"rearview_position", "MCLA/HUD"},

@@ -13,6 +13,7 @@
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
 
+#include "backend.h"
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
@@ -21,6 +22,7 @@
 #include "mirror_view.h"
 #include "pass_timing.h"
 #include "upscaler_math.h"
+#include "upload.h"
 
 // The generated blobs of this pass's two shaders (src/gpu/CMakeLists.txt larecomp_gpu_host_shader), included here beside host_shaders.h's macros so that file is not touched: the arrays have internal linkage.
 #if defined(LARECOMP_GPU_HAS_D3D12)
@@ -39,6 +41,15 @@ namespace {
 
 namespace rules = mirror_overlay;
 namespace sm = car_shadow_map;
+namespace cab = cabin_mirror;
+
+struct OverlayDraw {
+  rules::Push push;
+  float mask_u[4] = {};
+  float mask_v[4] = {};
+  float mask_meta[4] = {};
+};
+static_assert(sizeof(OverlayDraw) == 176);
 
 constexpr const char* kPrefix = "[mirror overlay]";
 constexpr plume::RenderFormat kColourFormat = plume::RenderFormat::R16G16B16A16_FLOAT;  // the main colour as a host texture
@@ -110,14 +121,19 @@ bool MirrorOverlay::MakeShaders() {
   if (shaders_failed_ || !device_ || !passes_ || !heap_) {
     return false;
   }
-  // The host pass layout (host_passes.h: the four texture sets, the sampler set, a push range at (b0, space4) for both stages) with a push block of 128 bytes and an input layout for the glass's vertices.
+  // The host pass texture and sampler sets, the glass vertex input, and the
+  // per-draw constants (a root CBV on D3D12, an uploaded address on Vulkan).
   plume::RenderPipelineLayoutBuilder builder;
   builder.begin(/*isLocal=*/false, /*allowInputLayout=*/true);
   for (uint32_t set = 0; set < 4; ++set) {
     builder.addDescriptorSet(heap_->texture_set_builder());
   }
   builder.addDescriptorSet(heap_->sampler_set_builder());
-  builder.addPushConstant(0, 4, rules::kPushBytes, plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
+  if (ActiveBackend() == Backend::kD3D12) {
+    builder.addRootDescriptor(0, 4, plume::RenderRootDescriptorType::CONSTANT_BUFFER);
+  } else {
+    builder.addPushConstant(0, 4, sizeof(uint64_t), plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
+  }
   builder.end();
   layout_ = device_->CreatePipelineLayout(builder, "mirror overlay layout");
   const HostShaderBlob vs = VertexBlob();
@@ -141,6 +157,9 @@ void MirrorOverlay::Shutdown() {
   if (passes_) {
     passes_->precache().Stop();
   }
+  cabin_mask_.Shutdown();
+  mirror_view::PublishCabinDrawn(false);
+  cabin_drawn_ = cabin_pose_ = cabin_logged_ = false;
   pipelines_.clear();
   listed_.clear();
   failed_.clear();
@@ -290,6 +309,7 @@ plume::RenderPipeline* MirrorOverlay::Pipeline(uint32_t variant, bool* pending) 
 // ---------------------------------------------------------------------------
 
 void MirrorOverlay::BeginFrame() {
+  cabin_drawn_ = false;
   ++frame_;
   on_ = mirror_setting::Current().overlay;  // the row's view or the debug switch (mirror_setting.h); the rules still decide per frame whether a picture, a pair and a pose are there
   distance_ = rules::ClampDistance(larecomp::settings::mcla_gpu_mirror_view_t0.Get());
@@ -332,7 +352,7 @@ void MirrorOverlay::Census(bool force) {
 // field is the one the camera of THIS phase used, which the begin marker carried (mirror_view_link.h PhaseField, MirrorView::PictureField), not the guest's latest camera build: the guest runs one to three
 // frames ahead of the render thread, and the latest build can be a later phase's, with another field (a mirror coming into view or the HUD stamp coming and going changes it), which would put the lookup
 // at the wrong place in this picture for a frame or two. Not known = no camera had been built when the phase began: the overlay then draws nothing (Why::kNoField) rather than a mirror in the wrong place.
-void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v) {
+void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v, uint32_t cabin_offset) {
   if (!on_) {
     return;
   }
@@ -342,9 +362,19 @@ void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_
   field_h_ = h;
   field_v_ = v;
   pose_ = rules::ViewPose{};
-  if (field_known_ && frame.valid) {
-    rules::PoseOfView(frame.view, double(h), double(v), guest_frame, &pose_);
+  cabin_pose_ = false;
+  if (field_known_ && frame.valid && rules::PoseOfView(frame.view, double(h), double(v), guest_frame, &pose_) && cabin_offset != 0) {
+    const auto axis = [](const double v[3]) { return cab::V3{v[0], v[1], v[2]}; };
+    const auto delta = cab::OffsetInRearAxes(cab::UnpackOffset(cabin_offset), axis(pose_.right), axis(pose_.up), axis(pose_.forward) * -1.0);
+    pose_.eye[0] += delta.x;
+    pose_.eye[1] += delta.y;
+    pose_.eye[2] += delta.z;
+    cabin_pose_ = true;
   }
+}
+
+void MirrorOverlay::OnPresent() {
+  mirror_view::PublishCabinDrawn(cabin_drawn_);
 }
 
 // ---------------------------------------------------------------------------
@@ -352,7 +382,7 @@ void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_
 // ---------------------------------------------------------------------------
 
 bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, EdramTargets::Target* colour, EdramTargets::Target* depth) {
-  if (!list || !ready_ || !in.frame || !in.glass || !in.view) {
+  if (!list || !ready_ || !in.frame || !in.glass || !in.view || !in.upload || !device_ || !heap_ || !passes_ || !edram_ || !pass_timing_) {
     return false;
   }
   const MirrorView::Picture picture = in.view->CurrentPicture();
@@ -362,8 +392,9 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   facts.picture_whole = picture.whole && picture.slot != kInvalidBindlessSlot;
   facts.picture_age = picture.age;
   facts.play_view = in.play_view;
-  facts.glass_found = glass.found;
-  facts.needed_mask = (glass.glass[0].needed ? 1u : 0u) | (glass.glass[1].needed ? 2u : 0u);
+  facts.glass_found = glass.found || glass.cabin_found;
+  facts.needed_mask = glass.need.mask;
+  if (!cabin_pose_) facts.needed_mask &= ~cab::kReader;  // wait for the first image from the virtual eye
   facts.field_known = field_known_;
   facts.pose_known = pose_.known;
   const rules::Why why = rules::Decide(facts);
@@ -385,14 +416,15 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   struct Item {
     const car_frame::Draw* draw = nullptr;
     plume::RenderPipeline* pipeline = nullptr;
-    rules::Push push;
+    UploadSpan constants;
     plume::RenderViewport viewport;
+    bool cabin = false;
   };
-  Item items[2];
+  Item items[3];
   size_t count = 0;
   bool pending = false;
   rules::Why last = rules::Why::kGeometry;
-  for (uint32_t k = 0; k < 2; ++k) {
+  for (uint32_t k = 0; k < 3; ++k) {
     if ((facts.needed_mask & (1u << k)) == 0) {
       continue;
     }
@@ -437,7 +469,8 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     push.rig = pose_;
     push.distance = distance_;
     push.picture_slot = picture.slot;
-    const rules::PushResult made = rules::MakePush(push, &items[count].push);
+    OverlayDraw constants;
+    const rules::PushResult made = rules::MakePush(push, &constants.push);
     if (made != rules::PushResult::kOk) {
       last = made == rules::PushResult::kProjection ? rules::Why::kProjection : made == rules::PushResult::kBadCamera ? rules::Why::kNoCamera : rules::Why::kNoPose;
       if (made == rules::PushResult::kProjection && !projection_logged_) {
@@ -448,6 +481,31 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
       }
       continue;
     }
+    const UploadSpan span = in.upload->Allocate(in.slot, sizeof(constants), 256);
+    if (!span || !span.cpu) continue;
+    const bool cabin = k == cab::kGlassIndex;
+    if (cabin) {
+      const uint32_t mask = cabin_mask_.Record(*list, *device_, *passes_, *pass_timing_, *in.frame, *d, glass);
+      if (mask == kInvalidBindlessSlot) continue;
+      const auto& a = glass.aperture;
+      const double width = a.right - a.left, height = a.top - a.bottom;
+      const auto centre = glass.cabin_centre_model;
+      constants.mask_u[0] = float(a.across.x / width);
+      constants.mask_u[1] = float(a.across.y / width);
+      constants.mask_u[2] = float(a.across.z / width);
+      constants.mask_u[3] = float((-cab::Dot(a.across, centre) - a.left) / width);
+      constants.mask_v[0] = float(-a.up.x / height);
+      constants.mask_v[1] = float(-a.up.y / height);
+      constants.mask_v[2] = float(-a.up.z / height);
+      constants.mask_v[3] = float((cab::Dot(a.up, centre) + a.top) / height);
+      const float night = rt_hit::NightFromSunHeight(float(in.frame->to_sun[1]));
+      constants.mask_meta[0] = rules::Bits(mask);
+      constants.mask_meta[1] = car_rt_material::ClassAmbient(car_rt_material::Class::kInterior) * (0.065f - 0.055f * night) + 0.002f * night;
+      constants.mask_meta[2] = 1.0f;
+    }
+    std::memcpy(span.cpu, &constants, sizeof(constants));
+    items[count].constants = span;
+    items[count].cabin = cabin;
     items[count].draw = d;
     items[count].pipeline = pipeline;
     items[count].viewport = d->viewport.viewport;
@@ -472,7 +530,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     Count(rules::Why::kTargets);
     return true;  // the layouts were recorded: the caller's list state is gone
   }
-  pass_timing_->Mark(list, "mirror glass");
+  pass_timing_->Mark(list, "mirror overlay");
   list->setFramebuffer(framebuffer);
   const plume::RenderRect scissor(0, 0, int32_t(colour->scale.Edge(colour->width)), int32_t(colour->scale.Edge(colour->height)));
   list->setScissors(&scissor, 1);
@@ -487,7 +545,11 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     const DrawGeometry& geo = d.geometry;
     list->setViewports(&item.viewport, 1);
     list->setPipeline(item.pipeline);
-    list->setGraphicsPushConstants(0, &item.push, 0, sizeof(item.push));
+    if (ActiveBackend() == Backend::kD3D12) {
+      list->setGraphicsRootDescriptor(item.constants.reference(), 0);
+    } else {
+      list->setGraphicsPushConstants(0, &item.constants.device_address, 0, sizeof(item.constants.device_address));
+    }
     // The draw's own vertex view, shifted to its POSITION element (checked usable above), at the stride its main-view draw read.
     plume::RenderVertexBufferView view = geo.vertex_views[d.position_slot];
     view.buffer.offset += d.position_offset;
@@ -500,10 +562,16 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     } else {
       list->drawInstanced(geo.count, 1, geo.first, 0);
     }
+    // CHECK: confirm the depth-tested cabin patch and HUD suppression line up in cockpit cuts on both APIs.
+    cabin_drawn_ |= item.cabin;
+  }
+  if (cabin_drawn_ && !cabin_logged_) {
+    cabin_logged_ = true;
+    REXLOG_INFO("[cabin mirror] overlay recorded from shared view {}x{}", picture.width, picture.height);
   }
   list->setFramebuffer(nullptr);
   // The closing mark (PassTiming: a mark's time runs to the next mark): what is recorded next is not the overlay's.
-  pass_timing_->Mark(list, "after mirror glass");
+  pass_timing_->Mark(list, "after mirror overlay");
   Count(rules::Why::kDraw);
   drawn_glasses_ += count;
   if (!first_logged_) {
@@ -516,8 +584,8 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
 void MirrorOverlay::LogFirst(const Inputs& in, uint32_t drawn) {
   const MirrorView::Picture picture = in.view->CurrentPicture();
   const mirror_glass::Result& r = in.glass->Current();
-  REXLOG_INFO("{} the first glass drawn, frame {}: {} of the 2 glasses (needed mask {}), the picture {}x{} drawn {} frames ago from the eye ({:.2f}, {:.2f}, {:.2f}) with a field of {:.1f} x {:.1f} degrees "
-              "(across, up), the lookup's distance {:.1f} m, the overlay {:.1f} mm towards the eye; glass widths on a 1080 line picture {} and {} px (timed as 'mirror glass')",
+  REXLOG_INFO("{} the first glass drawn, frame {}: {} glasses (needed mask {}), the picture {}x{} drawn {} frames ago from the eye ({:.2f}, {:.2f}, {:.2f}) with a field of {:.1f} x {:.1f} degrees "
+              "(across, up), the lookup's distance {:.1f} m, the overlay {:.1f} mm towards the eye; glass widths on a 1080 line picture {} and {} px (timed as 'mirror overlay')",
               kPrefix, frame_, drawn, r.need.mask, picture.width, picture.height, picture.age, pose_.eye[0], pose_.eye[1], pose_.eye[2], double(field_h_), double(field_v_), distance_,
               rules::kBiasMetres * 1000.0, r.glass[0].px_wide, r.glass[1].px_wide);
 }

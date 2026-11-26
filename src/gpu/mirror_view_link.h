@@ -61,6 +61,18 @@ inline std::atomic<bool> g_stamp_wanted{true};
 inline void SetStampWanted(bool wanted) { g_stamp_wanted.store(wanted, std::memory_order_relaxed); }
 inline bool StampWanted() { return g_stamp_wanted.load(std::memory_order_relaxed); }
 
+inline std::atomic<uint32_t> g_cabin_offset{0};
+inline void PublishCabinOffset(uint32_t tag) { g_cabin_offset.store(tag, std::memory_order_relaxed); }
+inline uint32_t CabinOffset() { return g_cabin_offset.load(std::memory_order_relaxed); }
+
+inline std::atomic<bool> g_cabin_drawn{false};
+inline void PublishCabinDrawn(bool drawn) { g_cabin_drawn.store(drawn, std::memory_order_relaxed); }
+inline bool CabinDrawn() { return g_cabin_drawn.load(std::memory_order_relaxed); }
+
+// Written and read by the guest render thread. The value for a fresh
+// rear image is captured on its end marker, in order with the phase draws.
+inline thread_local uint32_t g_phase_cabin_offset = 0;
+
 // ---------------------------------------------------------------------------
 // host -> guest
 // ---------------------------------------------------------------------------

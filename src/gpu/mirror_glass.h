@@ -117,6 +117,8 @@ class MirrorGlass final : public car_frame::Listener {
   uint64_t pair_keys_[2] = {};  // the pair last logged
   bool pair_logged_ = false;
   bool first_need_logged_ = false;
+  uint64_t cabin_key_ = 0;
+  bool cabin_scanned_ = false;
 };
 
 }  // namespace mcla::gpu

@@ -40,6 +40,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "cabin_mirror_rules.h"
 #include "car_mirror_patch_rules.h"
 #include "car_rt_instances_rules.h"
 #include "car_rt_material_rules.h"
@@ -143,7 +144,7 @@ inline const char* SkipName(Skip s) {
 }
 
 // `host_indices` is the draw's host index count (DrawGeometry::count: a list's indices, a strip already converted to a list).
-inline Skip WhySkipped(bool rigid, uint64_t mesh_key, uint32_t host_indices, uint8_t material_class) {
+inline Skip WhySkipped(bool rigid, uint64_t mesh_key, uint32_t host_indices, uint8_t material_class, bool cabin = false) {
   if (!rigid) {
     return Skip::kNotBody;
   }
@@ -156,7 +157,7 @@ inline Skip WhySkipped(bool rigid, uint64_t mesh_key, uint32_t host_indices, uin
   if (host_indices > kMaxIndices) {
     return Skip::kManyIndices;
   }
-  if (!ClassMayBeGlass(material_class)) {
+  if (!ClassMayBeGlass(material_class) && !(cabin && cabin_mirror::ClassMayBeCabin(material_class) && host_indices <= 180)) {
     return Skip::kClass;
   }
   return Skip::kNone;
@@ -168,6 +169,7 @@ inline Skip WhySkipped(bool rigid, uint64_t mesh_key, uint32_t host_indices, uin
 
 struct Measured {
   bool ok = false;           // the mesh had triangles after the clean-up (an unreadable or empty one did not)
+  cabin_mirror::Aperture aperture;
   cm::PatchStats stats;      // valid false: a mesh that is no patch (too big, too wide, no area): remembered all the same
   bool has_box = false;
   float box_min[3] = {};
@@ -186,6 +188,7 @@ inline Measured MeasureMesh(std::vector<float>* positions, std::vector<uint32_t>
   out.ok = true;
   out.has_box = ci::BoundsOf(*positions, out.box_min, out.box_max);
   out.stats = cm::MeasurePatch(*positions, *indices, *normals);
+  out.aperture = cabin_mirror::Measure(out.stats, *positions, *indices);
   return out;
 }
 
@@ -199,6 +202,7 @@ class GlassCache {
   struct Entry {
     State state = State::kMeasured;
     cm::PatchStats stats;
+    cabin_mirror::Aperture aperture;
     bool has_box = false;
     float box_min[3] = {};
     float box_max[3] = {};
@@ -224,6 +228,7 @@ class GlassCache {
     Entry& e = Slot(key, frame);
     e.state = State::kMeasured;
     e.stats = m.stats;
+    e.aperture = m.aperture;
     e.has_box = m.has_box;
     for (int c = 0; c < 3; ++c) {
       e.box_min[c] = m.box_min[c];
@@ -297,6 +302,9 @@ struct Candidate {
   uint64_t mesh_key = 0;
   temporal::Mat4 model_to_world;  // row vectors, as the game's
   cm::PatchStats stats;
+  cabin_mirror::Aperture aperture;
+  bool side = false;
+  bool cabin = false;
   bool has_box = false;
   float box_min[3] = {};
   float box_max[3] = {};
@@ -358,7 +366,13 @@ struct Result {
   uint64_t guest_frame = 0;
   Why why = Why::kNoCar;
   bool found = false;       // a pair was chosen: glass[0] and glass[1]
-  Glass glass[2];           // ordered by the picture: [0] the one on the left (smaller view x), [1] on the right
+  Glass glass[3];           // [0] side left, [1] side right, [2] cabin
+  bool cabin_found = false;
+  bool cabin_scanned = false;
+  cabin_mirror::Aperture aperture;
+  mirror_view::V3 cabin_normal_model;
+  mirror_view::V3 cabin_centre_model;
+  uint32_t cabin_offset = 0;
   bool flip_z = false;      // the z rule the placements used (Camera::flip_z)
   double eye_world[3] = {}; // the camera's place in the world (the view's inverse)
   bool eye_known = false;
@@ -380,9 +394,10 @@ inline void FitRearField(Result& result) {
   rear.forward = {0, 0, -1};
   rear.up = {0, 1, 0};
   rear.right = {-1, 0, 0};
-  mv::V3 rays[16];
+  mv::V3 rays[24];
+  const mv::V3 offset = cabin_mirror::UnpackOffset(result.cabin_offset);
   int count = 0;
-  for (unsigned i = 0; i < 2; ++i) {
+  for (unsigned i = 0; i < 3; ++i) {
     if (!(result.need.mask & (1u << i))) continue;
     const auto& g = result.glass[i];
     const auto& box = g.box;
@@ -390,7 +405,7 @@ inline void FitRearField(Result& result) {
     const mv::V3 normal = mv::Normalize({g.normal_view[0], g.normal_view[1], g.normal_view[2]});
     for (unsigned corner = 0; corner < 8; ++corner) {
       const mv::V3 p{corner & 1 ? box.max[0] : box.min[0], corner & 2 ? box.max[1] : box.min[1], corner & 4 ? box.max[2] : box.min[2]};
-      rays[count++] = p + mv::Reflect(mv::Normalize(p), normal) * mv::kAssumedDistance;
+      rays[count++] = p + mv::Reflect(mv::Normalize(p), normal) * mv::kAssumedDistance - offset;
     }
   }
   if (count == 0) return;
@@ -444,9 +459,9 @@ class Finder {
   // One draw of the player's car, inside CarFrame's call for it. `read(positions, indices, normals)` reads the mesh's triangles from guest memory (false: unreadable); it is called at most once
   // and only for a mesh the cache does not know, within the frame's budget.
   template <class ReadFn>
-  Reply OnDraw(bool rigid, uint64_t mesh_key, uint32_t host_indices, uint64_t ps_identity, ReadFn&& read) {
+  Reply OnDraw(bool rigid, uint64_t mesh_key, uint32_t host_indices, uint64_t ps_identity, ReadFn&& read, bool cabin = false) {
     Reply reply;
-    reply.skip = WhySkipped(rigid, mesh_key, host_indices, ClassOfShader(ps_identity));
+    reply.skip = WhySkipped(rigid, mesh_key, host_indices, ClassOfShader(ps_identity), cabin);
     if (reply.skip != Skip::kNone) {
       return reply;
     }
@@ -488,16 +503,18 @@ class Finder {
   void BeginEvaluation() { candidates_.clear(); }
 
   // One draw of the frame: a candidate when its mesh is a measured patch and its class may be a glass. Returns whether it was one.
-  bool Consider(uint32_t draw_index, bool rigid, uint64_t mesh_key, uint32_t host_indices, uint64_t ps_identity, const temporal::Mat4& model_to_world) {
+  bool Consider(uint32_t draw_index, bool rigid, uint64_t mesh_key, uint32_t host_indices, uint64_t ps_identity, const temporal::Mat4& model_to_world, bool cabin = false) {
     const uint8_t cls = ClassOfShader(ps_identity);
-    if (WhySkipped(rigid, mesh_key, host_indices, cls) != Skip::kNone) {
+    if (WhySkipped(rigid, mesh_key, host_indices, cls, cabin) != Skip::kNone) {
       return false;
     }
     const GlassCache::Entry* e = cache_.Find(mesh_key);
-    if (!e || e->state != GlassCache::State::kMeasured || !cm::IsPatchCandidate(e->stats, cls)) {
-      return false;
-    }
+    if (!e || e->state != GlassCache::State::kMeasured) return false;
     Candidate c;
+    c.side = cm::IsPatchCandidate(e->stats, cls);
+    c.cabin = cabin && cabin_mirror::IsCabinCandidate(e->stats, e->aperture, cls);
+    if (!c.side && !c.cabin) return false;
+    c.aperture = e->aperture;
     c.draw = draw_index;
     c.mesh_key = mesh_key;
     c.model_to_world = model_to_world;
@@ -512,7 +529,7 @@ class Finder {
   }
 
   // The pair, among the candidates Consider collected, for the frame's camera.
-  Result Choose(uint64_t guest_frame, const Camera& camera) {
+  Result ChooseSides(uint64_t guest_frame, const Camera& camera) {
     Result r;
     r.guest_frame = guest_frame;
     if (candidates_.size() < 2) {
@@ -535,6 +552,7 @@ class Finder {
     transforms_.clear();
     sources_.clear();
     for (const Candidate& c : candidates_) {
+      if (!c.side) continue;
       std::array<std::array<float, 4>, 3> t{};
       float m[3][4];
       if (!rr::PackInstanceTransform(c.model_to_world, camera.view, camera.flip_z, m)) {
@@ -606,7 +624,8 @@ class Finder {
       return r;
     }
     bool any_on = false;
-    for (Glass& g : r.glass) {
+    for (unsigned k = 0; k < 2; ++k) {
+      Glass& g = r.glass[k];
       g.rect = ReferenceRect(g.box, r.tan_x, r.tan_y);
       g.px_wide = g.rect.Width();
       any_on = any_on || !g.rect.Empty();
@@ -617,8 +636,17 @@ class Finder {
       }
     }
     r.need.found = true;
-    FitRearField(r);
     r.why = r.need.mask != 0 ? Why::kNeeded : (any_on ? Why::kTooSmall : Why::kOffPicture);
+    return r;
+  }
+
+  Result Choose(uint64_t guest_frame, const Camera& camera, const temporal::Mat4& world_to_vehicle = {}, const ci::ViewBox& body = {}) {
+    Result r = ChooseSides(guest_frame, camera);
+    if (body.valid) {
+      r.cabin_scanned = true;
+      ChooseCabin(camera, world_to_vehicle, body, r);
+    }
+    FitRearField(r);
     return r;
   }
 
@@ -631,6 +659,57 @@ class Finder {
   size_t SweepIfDue(uint64_t frame) { return (frame % kSweepEveryFrames == 0) ? cache_.Sweep(frame) : 0; }
 
  private:
+  void ChooseCabin(const Camera& camera, const temporal::Mat4& world_to_vehicle, const ci::ViewBox& body, Result& r) const {
+    namespace cab = cabin_mirror;
+    const Candidate* best = nullptr;
+    double score = -1.0;
+    const cab::V3 body_min{body.min[0], body.min[1], body.min[2]};
+    const cab::V3 body_max{body.max[0], body.max[1], body.max[2]};
+    for (const Candidate& c : candidates_) {
+      if (!c.cabin) continue;
+      const auto to_body = temporal::Mul(c.model_to_world, world_to_vehicle);
+      const auto centre = cab::Point({c.stats.centroid[0], c.stats.centroid[1], c.stats.centroid[2]}, to_body);
+      const auto normal = cab::Normalize(cab::Vector({c.stats.normal[0], c.stats.normal[1], c.stats.normal[2]}, to_body));
+      const double rank = cab::Score(centre, normal, body_min, body_max);
+      if (rank > score) {
+        score = rank;
+        best = &c;
+      }
+    }
+    if (!best) return;
+    float t[3][4];
+    if (!rr::PackInstanceTransform(best->model_to_world, camera.view, camera.flip_z, t)) return;
+    const cm::Candidate placed = cm::Place(0, t, best->stats);
+    Glass& g = r.glass[cab::kGlassIndex];
+    g.draw = best->draw;
+    g.mesh_key = best->mesh_key;
+    g.area = best->stats.area;
+    r.aperture = best->aperture;
+    r.cabin_normal_model = {best->stats.normal[0], best->stats.normal[1], best->stats.normal[2]};
+    r.cabin_centre_model = {best->stats.centroid[0], best->stats.centroid[1], best->stats.centroid[2]};
+    for (int i = 0; i < 3; ++i) {
+      g.centre_view[i] = placed.centre[i];
+      g.normal_view[i] = placed.normal[i];
+    }
+    WorldPose(*best, &g);
+    GrowViewBox(&g.box, t, best->has_box, best->box_min, best->box_max);
+    r.cabin_found = true;
+    r.need.found = true;
+    r.lens_known = LensOf(camera.view, camera.view_projection, &r.tan_x, &r.tan_y);
+    if (!r.lens_known) return;
+    g.rect = ReferenceRect(g.box, r.tan_x, r.tan_y);
+    g.px_wide = g.rect.Width();
+    const cab::V3 centre{g.centre_view[0], g.centre_view[1], g.centre_view[2]};
+    const cab::V3 normal{g.normal_view[0], g.normal_view[1], g.normal_view[2]};
+    const uint32_t offset = cab::PackOffset(cab::VirtualOffset({}, centre, normal));
+    if (g.rect.Empty() || g.px_wide < kMinNeedWidth || !offset || cab::Dot(centre, normal) >= -0.02) return;
+    g.needed = true;
+    r.cabin_offset = offset;
+    r.need.mask |= cab::kReader;
+    r.need.widest = uint16_t(std::min<int32_t>(std::max<int32_t>(r.need.widest, g.px_wide), 0xFFFF));
+    r.why = Why::kNeeded;
+  }
+
   // The glass's centre and normal in the game's world: the patch's centroid through the draw's matrix (row vectors: world = (p, 1) M), its normal as a vector through the matrix's 3x3.
   static void WorldPose(const Candidate& c, Glass* g) {
     const double p[3] = {c.stats.centroid[0], c.stats.centroid[1], c.stats.centroid[2]};

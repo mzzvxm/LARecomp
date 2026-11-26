@@ -57,6 +57,7 @@ void ReadPlayerVehicle(PlayerVehicle* out, bool with_note) {
   out->vehicle = 0;
   out->entity = 0;
   out->position[0] = out->position[1] = out->position[2] = 0.0;
+  out->vehicle_to_world = {};
   if (with_note) {
     out->note.clear();
   }
@@ -96,12 +97,16 @@ void ReadPlayerVehicle(PlayerVehicle* out, bool with_note) {
     }
     return;
   }
-  for (uint32_t c = 0; c < 3; ++c) {
-    const uint32_t bits = car_dump::LoadBe32(matrix + kMatrixTranslationOffset + 4 * c);
-    float value;
-    std::memcpy(&value, &bits, 4);
-    out->position[c] = double(value);
+  for (uint32_t r = 0; r < 4; ++r) {
+    for (uint32_t c = 0; c < 3; ++c) {
+      const uint32_t bits = car_dump::LoadBe32(matrix + 16 * r + 4 * c);
+      float value;
+      std::memcpy(&value, &bits, 4);
+      out->vehicle_to_world.m[r][c] = double(value);
+    }
   }
+  out->vehicle_to_world.m[3][3] = 1.0;
+  for (uint32_t c = 0; c < 3; ++c) out->position[c] = out->vehicle_to_world.m[3][c];
   out->valid = std::isfinite(out->position[0]) && std::isfinite(out->position[1]) && std::isfinite(out->position[2]);
   if (with_note) {
     out->note = out->valid ? std::format("vehicle {:#010x}, entity {:#010x}, world position ({:.2f}, {:.2f}, {:.2f})", out->vehicle,

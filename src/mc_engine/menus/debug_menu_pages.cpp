@@ -410,6 +410,8 @@ const ItemDef kDebugCameraItems[] = {
     // (they need CARS IN REAR VIEW); every Nth frame (a held frame shows the main view in the rectangle until the host keeps the picture). The cost chain's "cheap" tier
     // has an arm for each. The host side (MIRROR DRAW CLASS) is on the RENDERING page.
     Dbl ("PM_RxDbgRvFov",     "rearview_fov_scale",     "REAR VIEW FOV X: ", kRearFovVals, Len(kRearFovVals), "%g"),
+    Bool("PM_RxDbgRvInterior", "rearview_interior", "CABIN MIRROR: "),
+    Bool("PM_RxDbgRvHideInterior", "rearview_hide_with_interior", "HIDE HUD WITH CABIN MIRROR: "),
     Dbl ("PM_RxDbgRvFar",     "rearview_far",           "REAR VIEW FAR: ", kRearFarVals, Len(kRearFarVals), "%g", " M", "OFF"),
     Dbl ("PM_RxDbgRvCity",    "rearview_lod_distance",  "REAR VIEW CITY: ", kRearCityVals, Len(kRearCityVals), "%g", " M", "OFF"),
     Str ("PM_RxDbgRvCarsMax", "rearview_cars_max",      "REAR VIEW CARS: ", kRearCarsMaxVals, kRearCarsMaxNames, Len(kRearCarsMaxVals)),

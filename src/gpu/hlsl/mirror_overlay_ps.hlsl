@@ -11,23 +11,34 @@
 #include "mirror_overlay.hlsli"
 
 #ifdef __spirv__
-[[vk::push_constant]] ConstantBuffer<MirrorOverlayPush> g_push;
+struct DrawAddress { uint64_t address; };
+[[vk::push_constant]] ConstantBuffer<DrawAddress> g_address;
+#define g_draw vk::RawBufferLoad<MirrorOverlayDraw>(g_address.address, 16)
 #else
-ConstantBuffer<MirrorOverlayPush> g_push : register(b0, space4);
+ConstantBuffer<MirrorOverlayDraw> g_draw : register(b0, space4);
 #endif
 
 struct PsInput {
   float4 position : SV_Position;
   float3 view_pos : TEXCOORD0;
+  float2 mask_uv : TEXCOORD1;
 };
 
 float4 main(PsInput input) : SV_Target {
-  const MirrorOverlayPush p = g_push;
+  const MirrorOverlayDraw draw = g_draw;
+  const MirrorOverlayPush p = draw.mirror;
   const float3 uv = MirrorOverlayUv(p, input.view_pos);
   float alpha = 0.0;
   if (uv.z > 0.0) {
     alpha = MirrorOverlayEdgeFade(uv.xy);
   }
   const float4 colour = g_textures[asuint(p.delta.w)].SampleLevel(g_samplers[kSamplerLinearClamp], uv.xy, 0.0);
-  return float4(NgFinite3(colour.rgb), alpha);
+  float3 rgb = NgFinite3(colour.rgb);
+  if (draw.mask_meta.z > 0.0) {
+    const float coverage = g_textures[asuint(draw.mask_meta.x)].SampleLevel(g_samplers[kSamplerLinearClamp], input.mask_uv, 0.0).r;
+    const float open = alpha * (1.0 - coverage);
+    alpha = open + coverage;
+    rgb = (rgb * open + draw.mask_meta.y.xxx * coverage) / max(alpha, 1e-6);
+  }
+  return float4(rgb, alpha);
 }

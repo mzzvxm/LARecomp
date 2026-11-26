@@ -36,6 +36,10 @@ class HUDSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, rearview_far, 150.0, "Debug: limit the rear-view camera range in metres. 0 keeps the game camera range. Live.", rex::Range{0.0, 5000.0}, rex::kDebugOnly);
 
+  REX_SETTING(bool, rearview_interior, true, "Enable the functional cabin mirror when MIRRORS is on. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, rearview_hide_with_interior, true, "Hide the HUD rear view while the cabin mirror is drawn. Live.", rex::kDebugOnly);
+
   REX_SETTING(f64, rearview_fov_scale, 1.0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): a multiple of the mirror camera's field of view (the stamp is 5.2:1, so the "
     "game's own is very wide). 1.0 (the default) leaves it; 0.5 shows roughly half the angle, so the game's own culling keeps fewer draws. "
     "Only narrows (0.1 to 1.0); the picture changes. Live.", rex::Range{0.1, 1.0}, rex::kDebugOnly);
@@ -95,6 +99,8 @@ inline auto& rearview_cars_max = g_hud.rearview_cars_max;
 inline auto& rearview_diag = g_hud.rearview_diag;
 inline auto& rearview_every = g_hud.rearview_every;
 inline auto& rearview_far = g_hud.rearview_far;
+inline auto& rearview_interior = g_hud.rearview_interior;
+inline auto& rearview_hide_with_interior = g_hud.rearview_hide_with_interior;
 inline auto& rearview_fov_scale = g_hud.rearview_fov_scale;
 inline auto& rearview_frame = g_hud.rearview_frame;
 inline auto& rearview_lod_distance = g_hud.rearview_lod_distance;
