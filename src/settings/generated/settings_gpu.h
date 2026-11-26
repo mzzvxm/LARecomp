@@ -1190,7 +1190,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_mirror_class, false, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md A): the rear view mirror's draws (the ones whose viewport is the mirror's rectangle, "
     "rearview_window_*) are their own class: they skip the per-draw work of the main view's effects (ambient occlusion, contact shadows, "
     "sun shafts, volumetric light, car reflections, the car dump and frame, the headlights, the light shadows), which would otherwise see "
-    "a second camera's draws. The scene line of the log always counts them (mirror: N draws/frame), on or off. Live.", rex::kDebugOnly);
+    "a second camera's draws. Use mcla_gpu_mirror_census to count and time the draws even when classification is off. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_mirror_glass, false, "Debug, the side mirrors without ray tracing (perf/MIRROR-VIEW.md MV3 and MV6): runs the glass finder on any card, whatever the SIDE MIRRORS row says (the row runs it by itself "
     "while its view runs). It finds the car's two mirror glasses among its draws by their shape (a small flat patch, a pair across the car at one height facing back and inward, as the ray traced side "
@@ -1312,6 +1312,16 @@ class GPUSettings final : public rex::SettingOwner {
     "the game, with mcla_gpu_debug_layer, and with mcla_gpu_perf_markers. This turns them on for "
     "a tool that does not load a DLL (Radeon GPU Profiler) or that attaches later. Read when the "
     "device opens.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(bool, mcla_gpu_draw_timing, false, "Time draw preparation and the geometry cache for the render-thread log. Scene profiling and render CPU comparisons also request these timings.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(bool, mcla_gpu_frame_timing, false, "Measure GPU frame and overlay time. Pass timing also includes these measurements.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(bool, mcla_gpu_mirror_census, false, "Count and time the rear-view mirror's draws in the renderer log.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(bool, mcla_gpu_gate_unused_rt_scene, true, "Skip ray tracing scene preparation and camera tracking when no effect needs them. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_skip_identity_bloom, true, "Use the game's bloom shader at its native render scale. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_pass_timing, false, "Measure GPU time per pass: a timestamp at every pass boundary (target change, resolve, "
     "clear, present, overlay), summed per pass and logged by cost with the frame statistics. "
@@ -2373,6 +2383,11 @@ inline auto& mcla_gpu_rtao_spatial_resolve = g_gpu.mcla_gpu_rtao_spatial_resolve
 inline auto& mcla_gpu_rtao_cabin_guide = g_gpu.mcla_gpu_rtao_cabin_guide;
 inline auto& mcla_gpu_rtao_raw_scale = g_gpu.mcla_gpu_rtao_raw_scale;
 inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
+inline auto& mcla_gpu_draw_timing = g_gpu.mcla_gpu_draw_timing;
+inline auto& mcla_gpu_frame_timing = g_gpu.mcla_gpu_frame_timing;
+inline auto& mcla_gpu_mirror_census = g_gpu.mcla_gpu_mirror_census;
+inline auto& mcla_gpu_gate_unused_rt_scene = g_gpu.mcla_gpu_gate_unused_rt_scene;
+inline auto& mcla_gpu_skip_identity_bloom = g_gpu.mcla_gpu_skip_identity_bloom;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
 inline auto& mcla_gpu_perf_markers = g_gpu.mcla_gpu_perf_markers;

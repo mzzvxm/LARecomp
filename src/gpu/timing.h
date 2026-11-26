@@ -57,7 +57,7 @@ class GpuTiming {
   GpuTiming& operator=(const GpuTiming&) = delete;
 
   // Never fails the renderer: without timestamps the stats say so.
-  void Initialize(Device& device);
+  void Initialize(Device& device, bool requested);
   void Shutdown();
 
   bool available() const { return available_; }
@@ -78,6 +78,7 @@ class GpuTiming {
  private:
   void Harvest(uint32_t slot);
 
+  bool requested_ = false;
   bool available_ = false;
   std::unique_ptr<plume::RenderQueryPool> pools_[kFramesInFlight];
   bool pending_[kFramesInFlight] = {};

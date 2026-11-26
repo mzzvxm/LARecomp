@@ -2922,6 +2922,64 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_draw_timing": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Time draw preparation and the geometry cache for the render-thread log. Scene profiling and render CPU comparisons also request these timings.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_frame_timing": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Measure GPU frame and overlay time. Pass timing also includes these measurements.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_mirror_census": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Count and time the rear-view mirror's draws in the renderer log.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gate_unused_rt_scene": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Skip ray tracing scene preparation and camera tracking when no effect needs them. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_skip_identity_bloom": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use the game's bloom shader at its native render scale. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_pass_timing": {
   "type": "bool",
   "default": "false",
@@ -11518,7 +11576,7 @@
   "type": "bool",
   "default": "false",
   "category": "MCLA/GPU",
-  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md A): the rear view mirror's draws (the ones whose viewport is the mirror's rectangle, rearview_window_*) are their own class: they skip the per-draw work of the main view's effects (ambient occlusion, contact shadows, sun shafts, volumetric light, car reflections, the car dump and frame, the headlights, the light shadows), which would otherwise see a second camera's draws. The scene line of the log always counts them (mirror: N draws/frame), on or off. Live.\"",
+  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md A): the rear view mirror's draws (the ones whose viewport is the mirror's rectangle, rearview_window_*) are their own class: they skip the per-draw work of the main view's effects (ambient occlusion, contact shadows, sun shafts, volumetric light, car reflections, the car dump and frame, the headlights, the light shadows), which would otherwise see a second camera's draws. Use mcla_gpu_mirror_census to count and time the draws even when classification is off. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

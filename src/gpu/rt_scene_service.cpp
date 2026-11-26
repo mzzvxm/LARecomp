@@ -61,6 +61,11 @@ void RtSceneService::Want(rt_scene::Consumer who, const rt_scene::Needs& needs) 
 }
 
 void RtSceneService::NoteAnchor(const ConstantBanks::Banks& banks, bool cut) {
+  // CHECK: a city-only view switched on live seeds its predictor at the first wanted anchor.
+  if (!rt_scene::NeedsAnchorCamera(larecomp::settings::mcla_gpu_gate_unused_rt_scene.Get(),
+                                   CityWanted())) {
+    return;
+  }
   const uint8_t* ps = banks.ps.data();
   const float width = car_dump::BankFloat(ps, 62, 0);
   const float height = car_dump::BankFloat(ps, 62, 1);

@@ -466,9 +466,10 @@ bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretatio
         *failure = Result::kUpload;
         return false;
       }
-      const uint64_t copy_start = cycles::Now();
+      const bool timed = prepare_sampler_.enabled();
+      const uint64_t copy_start = timed ? cycles::Now() : 0;
       Convert(how, src, length, span.cpu, v);
-      stats_.copy_cycles += cycles::Now() - copy_start;
+      if (timed) stats_.copy_cycles += cycles::Now() - copy_start;
       stats_.ring_bytes += length;
       v.ring = span;
       v.ring_frame = frame_;
@@ -496,9 +497,10 @@ bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretatio
   }
   if (r.hash_frame != frame_) {
     r.hash_frame = frame_;
-    const uint64_t hash_start = cycles::Now();
+    const bool timed = prepare_sampler_.enabled();
+    const uint64_t hash_start = timed ? cycles::Now() : 0;
     r.frame_hash = XXH3_64bits(src, length);
-    stats_.hash_cycles += cycles::Now() - hash_start;
+    if (timed) stats_.hash_cycles += cycles::Now() - hash_start;
     ++stats_.hashes;
     const bool unchanged = r.last_hash_valid && r.last_hash == r.frame_hash;
     r.stable_streak = unchanged ? r.stable_streak + 1 : 0;
@@ -532,9 +534,10 @@ bool GeometryCache::UseView(uint32_t start, uint32_t length, const Interpretatio
     *failure = Result::kUpload;
     return false;
   }
-  const uint64_t copy_start = cycles::Now();
+  const bool timed = prepare_sampler_.enabled();
+  const uint64_t copy_start = timed ? cycles::Now() : 0;
   Convert(how, src, length, span.cpu, v);
-  stats_.copy_cycles += cycles::Now() - copy_start;
+  if (timed) stats_.copy_cycles += cycles::Now() - copy_start;
   stats_.ring_bytes += length;
   v.ring = span;
   v.ring_frame = frame_;
@@ -981,7 +984,8 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
         if (!span) {
           return Result::kUpload;
         }
-        const uint64_t fold_start = cycles::Now();
+        const bool timed = prepare_sampler_.enabled();
+        const uint64_t fold_start = timed ? cycles::Now() : 0;
         const uint32_t first_source = r.start / 4;
         const uint32_t last_source = (r.start + r.count - 1) / 4;
         const uint32_t available = stride ? size / stride : 0;
@@ -1009,7 +1013,7 @@ GeometryCache::Result GeometryCache::PrepareDraw(const DrawView& view, const Xen
             ++stats_.fold_out_of_range;
           }
         }
-        stats_.fold_cycles += cycles::Now() - fold_start;
+        if (timed) stats_.fold_cycles += cycles::Now() - fold_start;
         ++stats_.folds;
         stats_.host_made_bytes += bytes;
         ref = span.reference();

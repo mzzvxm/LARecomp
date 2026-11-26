@@ -683,6 +683,8 @@ void Scene::Initialize(UploadRing& upload, Pipelines& pipelines, Samplers& sampl
   census_scale_ = larecomp::settings::mcla_gpu_census_scale.Get();
   geometry_->SetProfile(profile_);
   render_cpu_mask_ = larecomp::settings::render_cpu_mask.Get();
+  draw_timing_requested_ = larecomp::settings::mcla_gpu_draw_timing.Get();
+  mirror_census_ = larecomp::settings::mcla_gpu_mirror_census.Get();
   ApplyRenderCpu();
   draw_census_.Configure();
   target_census_.Configure();
@@ -693,8 +695,9 @@ void Scene::ApplyRenderCpu() {
   // measures both; off, B() is always true and the mask alone decides.
   const bool candidate = ab::B();
   const bool sampled = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kSampledDrawTimers);
-  draw_sampler_.Configure(sampled);
-  geometry_->SetSampledTiming(sampled);
+  const bool timed = render_cpu::DrawTimingWanted(draw_timing_requested_, profile_, ab::Enabled(), mirror_census_);
+  draw_sampler_.Configure(sampled, timed);
+  geometry_->SetDrawTiming(sampled, timed);
   device_cache_ = candidate && render_cpu::Has(render_cpu_mask_, render_cpu::kDeviceCache);
   banks_.SetDeviceCache(device_cache_);
 }
@@ -790,8 +793,10 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     pipelines_->SetDrawMemo(layout_two_way_);
   }
   scale_depth_bias_ = larecomp::settings::mcla_gpu_scale_depth_bias.Get() && larecomp::settings::mcla_gpu_work_17oct.Get();
-  mirror_rect_ = mirror_draws::Current();
+  gate_unused_rt_scene_ = larecomp::settings::mcla_gpu_gate_unused_rt_scene.Get();
+  skip_identity_bloom_ = larecomp::settings::mcla_gpu_skip_identity_bloom.Get();
   mirror_class_ = larecomp::settings::mcla_gpu_mirror_class.Get();
+  mirror_rect_ = (mirror_class_ || mirror_census_) ? mirror_draws::Current() : mirror_draws::Rect{};
   geometry_->BeginFrame(slot);
   draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
@@ -834,7 +839,6 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     const auto consumer = gbuffer::Consumer::kVisualCapture;
     gbuffer_->Want(consumer, capture_class ? gbuffer::ConsumerPlanes(consumer) : 0);
     if (!capture_class) gbuffer_->ReleaseCaptureClass();
-    gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
   watch::BeginFrame(frame_serial_);
   scene_noise::SetCountHeld(larecomp::settings::mcla_gpu_noise_held.Get());  // a held scene's noise keeps counting (scene_noise.h NoiseIndex)
@@ -855,20 +859,26 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
                    !temporal_ || temporal_->PathSettled(),
                    edram_->change_serial() != targets_before);
+  if (car_refl_) {
+    // CHECK: switching the car reflection source off withdraws its colour capture
+    // this frame, while another consumer can still keep it.
+    car_refl_->BeginFrame();
+  }
   if (screen_) {
     screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
   }
   if (ao_) {
     ao_->BeginFrame();
   }
+  if (gbuffer_) {
+    // CHECK: live AO and RR switches publish and withdraw planes at this boundary on both APIs.
+    gbuffer_->BeginFrame(frame_serial_);
+  }
   if (shafts_) {
     shafts_->BeginFrame();
   }
   if (vol_) {
     vol_->BeginFrame();
-  }
-  if (car_refl_) {
-    car_refl_->BeginFrame();
   }
   if (car_mirror_) {
     car_mirror_->BeginFrame();  // the side mirrors' setting; asks for the car's structures where the pass is wanted (car_mirror_rt.h)
@@ -1383,7 +1393,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       ++window_.no_effect[size_t(NoEffect::kCulled)];
     } else {
       ++window_.prepared;
-      // The rear view mirror's draws (mirror_draws.h) are told by their viewport. They are counted always; with mcla_gpu_mirror_class they also stay out of
+      // The rear view mirror's draws (mirror_draws.h) are told by their viewport for the census; with mcla_gpu_mirror_class they also stay out of
       // the per-draw consumers of the main view, which would take a second camera's draw for the main view's.
       // Between the guest's two markers of a redirected phase (mirror_view.h) every draw is the mirror's, whatever its viewport.
       const bool mirror_redirected = mirror_view_ && mirror_view_->redirecting();
@@ -1400,6 +1410,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
         ++window_.mirror_class_skips;
       }
       if (consumers && ((ao_ && ao_->wants_draws()) || (shafts_ && shafts_->wants_draws()) || (vol_ && vol_->wants_draws()) ||
+                        (screen_ && screen_->tracking()) || (ssr_ && ssr_->wants_draws()) || (local_lights_ && local_lights_->wants_draws()) ||
                         (car_refl_ && car_refl_->wants_draws()) || (car_dump_ && car_dump_->wants_draws()) ||
                         (car_frame_ && car_frame_->wants_draws()) || (headlights_ && headlights_->wants_draws()))) {
         NoteAmbientOcclusion(banks, d, r.vs_identity, r.ps_identity, view);
@@ -1711,6 +1722,9 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   d.scene = target_scale.scene;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
   d.key.sample_count = host_samples;
+  // The memo above keeps the packed word. The draw target supplies the actual scale.
+  // CHECK: at 1x compare the two bloom paths bit for bit on both APIs.
+  d.key.ps_variant = variant_wait::BloomWord(d.key.ps_variant, scale.unit(), skip_identity_bloom_);
   // The UI layer split (frame_layers.h): a draw into the UI target after the composite marker
   // gets the alpha blend that collects coverage, in the key only (the memo above keeps the game's).
   if (layers_ && layers_->ui_phase() && d.key.color_count != 0) {
@@ -4112,7 +4126,8 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     const bool car_sun_map = car_shadow_->OnResolve(record, summary, list);
     order_.Note(frame_order::Step::kCarSunMap, car_sun_map);
   }
-  if (car_rt_) {
+  const bool rt_resolve_wanted = car_rt_ && car_rt_->WantsResolve(gate_unused_rt_scene_);
+  if (rt_resolve_wanted) {
     // The game's sun cascades of this frame (the shadow collector's draws, which the volumetric light reads too): the car reflections' shaded hits read the sun's visibility from them, so
     // that a car beside the player's stands in the shade of the buildings and the trees as the road does (car_rt_hit_rules.h). None where the volumetric light is off or the frame has none
     // (night, rain): the cars' own ray alone.
@@ -4254,7 +4269,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     const bool vol_ran = vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
     order_.Note(frame_order::Step::kVolume, vol_ran);
   }
-  if (car_rt_) {
+  if (rt_resolve_wanted) {
     // The check pass of the structures, over the occlusion's linear depth (it exists only after the AO's frame).
     const bool car_check = car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
     order_.Note(frame_order::Step::kCarRtCheck, car_check);
@@ -4285,13 +4300,13 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     const bool car_history = car_refl_->OnResolve(record, summary, list);
     order_.Note(frame_order::Step::kCarHistory, car_history);
   }
-  if (temporal_) {
+  if (temporal_ && temporal_->WantsRrHitImages()) {
     // RR-4: the reflection effects' hit distance images of this frame (null where an effect did not run raw), for the guide pass at the anchor.
     temporal_->NoteRrHit(ssr_ ? ssr_->RawHitImage() : nullptr, car_refl_ ? car_refl_->RawHitImage() : nullptr);
     // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (only in a frame it ran raw; mcla_gpu_dlss_rr_rt_gi 2 leaves the hit distance out).
     temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);
   }
-  if (car_mirror_ && car_rt_ && car_rt_->TriggeredThisResolve()) {
+  if (car_mirror_ && rt_resolve_wanted && car_rt_->TriggeredThisResolve()) {
     // The side mirrors (car_mirror_rt.h): at the same trigger, after the car structures' step built the car's top level and the self-reflection's own pass is recorded; the traced mirror image is
     // blended over the game's mirror glass in the main colour (its own pass, pipelines and target: the reset below forgets them too).
     const bool car_mirror = car_mirror_->OnResolve(summary, list, car_refl_ ? car_refl_->exp_bias() : car_selfrefl::kMainTargetExpBias);

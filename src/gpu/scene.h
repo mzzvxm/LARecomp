@@ -907,10 +907,14 @@ class Scene {
   // (render_cpu.h). Called at the start and at each window's end, where ab::NextWindow() may have changed the variant.
   void ApplyRenderCpu();
   int32_t render_cpu_mask_ = 0;
+  bool draw_timing_requested_ = false;
+  bool mirror_census_ = false;
   render_cpu::DrawSampler draw_sampler_;  // the timers of OnDraw's prepare statistic (window_.prepare_cycles)
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame
+  bool gate_unused_rt_scene_ = true;
+  bool skip_identity_bloom_ = true;
   // The rear view mirror's rectangle in guest pixels (mirror_draws.h, published by the guest every frame the mirror is up) and mcla_gpu_mirror_class, read each frame;
   // mirror_frame_seen_: the frame in progress has had a mirror draw.
   mirror_draws::Rect mirror_rect_;

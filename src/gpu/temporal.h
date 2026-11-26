@@ -469,6 +469,7 @@ class TemporalSystem {
   const rayregen::Planner& RegenPlanner() const { return regen_; }
   // RR-4: the effects' hit distance images of this frame (R16_FLOAT at the render size; null where an effect did not write one), handed over by Scene after the trigger's passes and read by the guide
   // pass at the anchor (rr_guides.h Inputs::hit): [0] the screen-space reflections', [1] the cars' ray traced reflections'. Forgotten at the next frame boundary.
+  bool WantsRrHitImages() const;
   void NoteRrHit(const HostImage* ssr, const HostImage* car_refl) {
     rr_hit_[0] = ssr;
     rr_hit_[1] = car_refl;

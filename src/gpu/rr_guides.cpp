@@ -192,7 +192,7 @@ void RrGuides::BeginFrame(bool wanted) {
   view_ = ViewSetting();
   wanted_ = wanted && ready_to_list_;
   if (gbuffer_) {
-    // The planes exist only while somebody wants them: from the frame after this one (the G-buffer read its wants before the temporal system's frame boundary, frame_order.h kBeginTemporal).
+    // The G-buffer reads the want after the temporal system declares it, for this frame's draws.
     gbuffer_->Want(gbuffer::Consumer::kRayReconstruction, wanted_ ? rr_guides::kWantedPlanes : 0u);
   }
   if (wanted_) {

@@ -50,7 +50,7 @@
 //      recorder over the full frame, over frames with passes missing and over frames with every kind of mistake, and moves every pass of the table before what it depends on to check the table says so.
 //
 // RR-2 added the anchor phase and its two steps (the guide pass and its debug view, both in temporal.cpp: TemporalSystem::RecordUpscale calls them) and the temporal system's frame boundary at the
-// frame's start, where the guide pass declares its wants of the planes (kBeginTemporal: lag 1, the G-buffer reads its wants before the temporal system makes its plan). They are kScanned rows: only the
+// frame's start, where the guide pass declares its wants of the planes (kBeginTemporal, before the G-buffer reads them). They are kScanned rows: only the
 // source checks hold them (the Scene's recorder notes the trigger and the end of the scene). RR-3 added the upscale itself as a row between the guide pass and its view (kUpscale: it reads
 // data::kRrGuides where they are there; Ray Reconstruction's dispatch or Super Resolution's, TemporalSystem::ChooseRrDispatch).
 //
@@ -188,11 +188,11 @@ enum class Step : uint8_t {
   kBeginSsr,
   kBeginGiField,
   kBeginGiApply,
-  kBeginGBuffer,
   kBeginTemporal,
+  kBeginCarRefl,
   kBeginScreen,
   kBeginAo,
-  kBeginCarRefl,
+  kBeginGBuffer,
   kBeginLights,
   // the draws
   kDrawSidecar,
@@ -308,19 +308,18 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .deps = {{{Step::kBeginGiField, "its wants follow whether the field runs this frame (GiField::running(), set by the integration's BeginFrame)"}}},
      .note = "before the G-buffer and the screen owner read, like the reflections (lag 0): RT1 and RT2 (gbuffer_rules.h Consumer::kRtBounce) and lin_depth, ONLY while the field runs; nothing at off, so the "
              "sidecar and the occlusion's depth chain are not made for it"},
-    {.step = Step::kBeginGBuffer, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "G-buffer reads the planes' wants, opens its window", .call = "gbuffer_->BeginFrame(frame_serial_)",
-     .reads_wants = want::kPlanes},
     {.step = Step::kBeginTemporal, .phase = Phase::kBegin, .kind = Kind::kScanned,
      .name = "temporal system's frame boundary: the upscaler's path, the denoiser's plan, the guide pass's wants", .call = "temporal_->BeginFrame(slot, list)", .declares_for = Step::kRrGuides,
      .note = "RR-2: TemporalSystem::BeginFrame makes the denoiser's plan (dlss_rr_rules.h SelectDenoiser) and tells the guide pass whether it is wanted (rr_guides_rules.h PassWanted); the pass declares its wants of "
-             "the three planes then. The G-buffer has read its wants already (the line above), so the want lags ONE frame: the planes the guide pass reads exist from the frame after the plan wanted them, "
-             "which costs nothing (the plan is made from the guides of the frame before anyway)"},
+             "the three planes then. The G-buffer reads their wants below for this frame's draws."},
+    {.step = Step::kBeginCarRefl, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "car self-reflection declares its wants", .call = "car_refl_->BeginFrame()", .declares_for = Step::kCarHistory},
     {.step = Step::kBeginScreen, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "screen products read their wants, make the frame's plan", .call = "screen_->BeginFrame(frame_serial_)",
      .reads_wants = want::kScreen},
     {.step = Step::kBeginAo, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "AO declares its wants", .call = "ao_->BeginFrame()", .declares_for = Step::kAo,
        .note = "after the screen owner's BeginFrame, which it needs: it asks the plan whether a consumer outside its family wants the depth chain. "
                "RtAo::BeginFrame declares the structures' want and the RR consumer here"},
-    {.step = Step::kBeginCarRefl, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "car self-reflection declares its wants", .call = "car_refl_->BeginFrame()", .declares_for = Step::kCarHistory},
+    {.step = Step::kBeginGBuffer, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "G-buffer reads the planes' wants, opens its window", .call = "gbuffer_->BeginFrame(frame_serial_)",
+     .reads_wants = want::kPlanes},
     {.step = Step::kBeginLights, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "light manager opens the frame's lights", .call = "light_manager_->BeginLights(frame_serial_, slot)",
      .makes = data::kLights, .reads_wants = want::kLights,
      .note = "before the shadow replay's BeginFrame (the replay picks its cars from the frame's lights)"},

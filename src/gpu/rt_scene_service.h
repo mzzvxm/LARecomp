@@ -45,7 +45,7 @@ class RtSceneService {
   // The merged wants of this frame and the last (what the structures and the pool are told, and what the plan below judges).
   rt_scene::Needs Needs() const { return board_.Now(); }
   bool Wants(rt_scene::Consumer consumer) const { return board_.Wants(consumer); }
-  bool CityWanted() const { return board_.Now().city != city_level_off(); }
+  bool CityWanted() const { return board_.CityWanted(); }
 
   // The game's camera (scene.cpp, at the anchor draw): its pose of this frame. `cut`: the scene asked for a camera cut.
   void NoteAnchor(const ConstantBanks::Banks& banks, bool cut);
@@ -68,7 +68,6 @@ class RtSceneService {
     n.cars = true;
     return n;
   }
-  static constexpr city_rt::Level city_level_off() { return city_rt::Level::kOff; }
   void LogPlan(const rt_scene::TlasPlan& plan, bool car_frame_valid);
 
   CarRtScene* cars_ = nullptr;

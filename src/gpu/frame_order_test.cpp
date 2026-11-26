@@ -225,9 +225,8 @@ void CheckPinnedOrder() {
     Check(car_after_ssr, "the car history is kept after SSR and the dependency says why it does not see SSR (vehicle pixels only)");
   }
   Check(Before(Step::kBeginLights, Step::kDrawSidecar), "the frame's lights are made before the draws");
-  // RR-2: the temporal system's frame boundary stands between the G-buffer's read of its wants and the screen owner's (scene.cpp), the guide pass at the anchor after everything of the trigger and the end of
-  // the scene, the debug view right after the pass
-  Check(Before(Step::kBeginGBuffer, Step::kBeginTemporal) && Before(Step::kBeginTemporal, Step::kBeginScreen), "RR-2: the temporal system's frame boundary is between the G-buffer's and the screen owner's");
+  // RR-2: the guide pass uses the planes declared before the G-buffer's frame boundary.
+  Check(Before(Step::kBeginTemporal, Step::kBeginScreen) && Before(Step::kBeginAo, Step::kBeginGBuffer), "RR-2: the G-buffer samples AO and the temporal system after they publish their wants");
   Check(Before(Step::kShaftsComposite, Step::kRrGuides) && Before(Step::kGBufferPublish, Step::kRrGuides) && Before(Step::kRrGuides, Step::kPresentWorld) &&
             fo::RowOf(Step::kRrGuides).phase == Phase::kAnchor && PosOf(Step::kUpscale) == PosOf(Step::kRrGuides) + 1 && PosOf(Step::kRrGuidesView) == PosOf(Step::kUpscale) + 1 &&
             PosOf(Step::kPresentWorld) == PosOf(Step::kRrGuidesView) + 1,
@@ -302,21 +301,20 @@ void CheckWants() {
         "the light pass's wants are read in the frame they are made (lag 0)");
   Check(fo::rules::WantLag(Step::kBeginSsr, kPlanes) == 0 && fo::rules::WantLag(Step::kBeginSsr, kScreen) == 0,
         "GB-I3: the reflections' wants are read in the frame they are made (lag 0: the planes, the Hi-Z and the capture are there in the frame the setting changes; it was 1 while the call stood after the owners')");
-  Check(fo::rules::WantLag(Step::kBeginAo, kPlanes) == 1 && fo::rules::WantLag(Step::kBeginAo, kScreen) == 1, "the AO's wants lag one frame");
-  // RR-2: the guide pass's wants are the consumer table's, declared by the temporal system's frame boundary, which comes after the G-buffer reads: one frame
+  Check(fo::rules::WantLag(Step::kBeginAo, kPlanes) == 0 && fo::rules::WantLag(Step::kBeginAo, kScreen) == 1, "the AO declares its planes for the current frame");
+  // RR-2: the guide pass requests planes before the G-buffer plans the frame.
   Check(fo::RowOf(Step::kRrGuides).wants_planes == gb::ConsumerPlanes(gb::Consumer::kRayReconstruction) && gb::ConsumerPlanes(gb::Consumer::kRayReconstruction) == gb::kAllPlanes &&
             fo::RowOf(Step::kRrGuides).wants_screen == 0 && !fo::RowOf(Step::kRrGuides).wants_lights,
         "RR-2: the guide pass wants the three planes (gbuffer_rules.h kRayReconstruction) and no screen product");
-  Check(fo::rules::WantLag(Step::kBeginTemporal, kPlanes) == 1 && fo::RowOf(Step::kBeginTemporal).declares_for == Step::kRrGuides,
-        "RR-2: the guide pass's want of the planes is declared at the temporal system's frame boundary and lags one frame");
+  Check(fo::rules::WantLag(Step::kBeginTemporal, kPlanes) == 0 && fo::RowOf(Step::kBeginTemporal).declares_for == Step::kRrGuides,
+        "RR-2: the guide pass's want of the planes is applies to this frame's draws");
   {
     gb::ConsumerStates rr_on;
     rr_on.ray_reconstruction = true;
     Check(gb::AutoPlanes(rr_on) == gb::kAllPlanes && std::string(gb::ConsumerName(gb::Consumer::kRayReconstruction)) == "ray reconstruction", "RR-2: the auto policy makes all three planes while the guide pass is wanted");
   }
-  Check(fo::rules::WantLag(Step::kBeginCarRefl, kScreen) == 1, "the car self-reflection's want of colour_post lags one frame");
+  Check(fo::rules::WantLag(Step::kBeginCarRefl, kScreen) == 0, "colour_post reflects the current frame's car reflection request");
   Check(fo::rules::WantLag(Step::kBeginAo, kLights) == 0 || true, "(no step reads a light want after the AO's: the manager's want is the light pass's alone)");
-  Check(fo::rules::WantLag(Step::kBeginCarRefl, kPlanes) == 1, "an owner that reads before the declarer lags one frame");
   // a declared want belongs to a step that wants the kind, and a reader of that kind exists
   for (const Row& r : Rows()) {
     if (r.declares_for == Step::kNone) continue;
@@ -627,7 +625,7 @@ void CheckRecorder() {
 // ---------------------------------------------------------------------------------------------------------------------------------------------------
 std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
-  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginGBuffer", "kBeginTemporal", "kBeginScreen", "kBeginAo", "kBeginCarRefl", "kBeginLights", "kDrawSidecar", "kDrawHeadlight", "kDrawMirrorView",
+  static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginTemporal", "kBeginCarRefl", "kBeginScreen", "kBeginAo", "kBeginGBuffer", "kBeginLights", "kDrawSidecar", "kDrawHeadlight", "kDrawMirrorView",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
                                        "kRtAoTrace", "kRtAoFilter", "kAoVisibility", "kRtAoCompose", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
                                        "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kMirrorStamp", "kMirrorGlass", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
@@ -746,11 +744,16 @@ void CheckSources(const std::string& gpu) {
             "RR-3: the current slot's request is Super Resolution's (Ray Reconstruction is the companion's, never a change of the upscaler's own context)");
       Check(Has(temporal, "rr::RuntimePhaseCount(from_runtime, frame_.ratio, rr_may_run)"), "RR-3: the jitter sequence is 32 positions or more while Ray Reconstruction may run");
     }
-    // the frame boundary stands between the G-buffer's read and the screen owner's in scene.cpp, as the table's rows say
+    // The G-buffer plans its draws after both AO and RR have declared their wants.
     const size_t gbuffer_begin = At(scene, "gbuffer_->BeginFrame(frame_serial_)");
     const size_t temporal_begin = At(scene, "temporal_->BeginFrame(slot, list)");
+    const size_t car_refl_begin = At(scene, "car_refl_->BeginFrame()");
     const size_t screen_begin = At(scene, "screen_->BeginFrame(frame_serial_)");
-    Check(gbuffer_begin < temporal_begin && temporal_begin < screen_begin, "RR-2: scene.cpp's temporal frame boundary stands between the G-buffer's BeginFrame and the screen owner's");
+    const size_t ao_begin = At(scene, "ao_->BeginFrame()");
+    Check(temporal_begin < car_refl_begin && car_refl_begin < screen_begin &&
+              screen_begin < ao_begin && ao_begin < gbuffer_begin &&
+              gbuffer_begin != std::string::npos,
+          "Scene declares its current-frame requests before the screen and G-buffer owners read them");
   }
   Check(Has(scene, "light_manager_->BeginLights(frame_serial_, slot)") && At(scene, "light_manager_->BeginLights(frame_serial_, slot)") < At(scene, "local_shadow_->BeginFrame()"),
         "the frame's lights are opened before the shadow replay's frame start (the replay picks its cars from them)");

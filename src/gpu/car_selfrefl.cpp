@@ -285,7 +285,7 @@ void CarSelfRefl::BeginFrame() {
     rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
     if (screen_) {
       // CITY-RT M2: the city in the reflections reads the picture where a hit is on the screen (ResolveHit): colour_post with its mip chain and lin_depth, wanted while it is on (0 withdraws). Declared after
-      // the owner has read its wants for the frame (frame_order.h kBeginCarRefl), so the first frame after a switch has none: its hits are shaded by the model alone.
+      // the denoiser plans its frame, but before the screen owner reads the capture requests (frame_order.h kBeginCarRefl).
       screen_->Want(screen::Consumer::kCarRtRefl, rt_->ScreenProducts());
     }
   }

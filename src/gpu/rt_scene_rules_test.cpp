@@ -92,6 +92,26 @@ void TestNeeds() {
   CHECK(ConsumerName(Consumer::kRtAo) == "rtao" && size_t(Consumer::kRtAo) + 1 == kConsumerCount);
 }
 
+void TestUnusedWork() {
+  CHECK(!NeedsResolve(true, true, false, false));
+  CHECK(!NeedsResolve(false, false, true, true));
+  CHECK(NeedsResolve(true, false, false, false));
+  CHECK(NeedsResolve(true, true, true, false));
+  CHECK(NeedsResolve(true, true, false, true));
+  CHECK(!NeedsAnchorCamera(true, false));
+  CHECK(NeedsAnchorCamera(false, false));
+  CHECK(NeedsAnchorCamera(true, true));
+  WantBoard board;
+  board.Want(Consumer::kCars, CarsOnly());
+  CHECK(!board.CityWanted());
+  board.Want(Consumer::kCheck, HitAt(Level::kHigh));
+  CHECK(board.CityWanted());
+  board.EndFrame();
+  CHECK(board.CityWanted());
+  board.EndFrame();
+  CHECK(!board.CityWanted());
+}
+
 void TestWantLifecycle() {
   WantBoard board;
   CHECK(!board.Now().any() && !board.Wants(Consumer::kCitySunShadow));
@@ -389,6 +409,7 @@ void TestStepSize() {
 
 int main() {
   TestNeeds();
+  TestUnusedWork();
   TestWantLifecycle();
   TestIdleAndRelease();
   TestPlan();
