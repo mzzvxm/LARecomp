@@ -2402,6 +2402,8 @@ bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
   options.device.force_refusal = larecomp::settings::mcla_gpu_force_refusal.Get();  // a test of the box below (not the prebuild's)
   options.swap_chain.vsync = larecomp::settings::mcla_gpu_vsync.Get();
   options.swap_chain.present_wait = larecomp::settings::mcla_gpu_present_wait.Get();
+  options.swap_chain.test_d3d12_latency_one = larecomp::settings::debug_menu.Get() &&
+      larecomp::settings::mcla_test_d3d12_latency_one.Get();
   g_renderer = new Renderer();
   if (!g_renderer->Initialize(window, options, g_overlay_channel, g_overlay_host)) {
     REXLOG_ERROR("[gpu] renderer startup failed; nothing will be presented");

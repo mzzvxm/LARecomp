@@ -72,6 +72,7 @@ class SwapChain {
     // Try an HDR10 swap chain first (hdr.h Wanted). When Plume cannot make one for this window
     // the SDR one is made, with a log line.
     bool hdr10 = false;
+    bool test_d3d12_latency_one = false;
   };
 
   SwapChain() = default;
@@ -186,6 +187,7 @@ class SwapChain {
   std::vector<std::unique_ptr<plume::RenderFramebuffer>> framebuffers_;
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> render_semaphores_;
   bool present_wait_ = false;
+  bool test_d3d12_latency_one_ = false;
   bool (*factory_wrapper_)(void** factory) = nullptr;
   bool through_wrapper_ = false;
 };

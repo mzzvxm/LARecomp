@@ -385,6 +385,60 @@ gb::DrawFacts GoodDraw() {
   return f;
 }
 
+void VariantLookupChecks() {
+  using gb::PlaneMode;
+  using gb::Why;
+  struct RejectedDraw {
+    void (*set)(gb::DrawFacts&);
+    Why why;
+    PlaneMode mode;
+  };
+  const RejectedDraw rejected[] = {
+      {[](auto& f) { f.active = false; }, Why::kOff, PlaneMode::kNone},
+      {[](auto& f) { f.suppressed = true; }, Why::kSuppressed, PlaneMode::kNone},
+      {[](auto& f) { f.main_samples = 0; }, Why::kNotMainView, PlaneMode::kNone},
+      {[](auto& f) { f.main_samples = 4; }, Why::kPauseView, PlaneMode::kNone},
+      {[](auto& f) { f.guest_color_count = 2; }, Why::kNotOneColor, PlaneMode::kNone},
+      {[](auto& f) { f.window_open = false; }, Why::kWindowClosed, PlaneMode::kNone},
+      {[](auto& f) { f.rt0_writes = false; }, Why::kMaskedNoColor, PlaneMode::kMask},
+      {[](auto& f) { f.rt0_blended = true; }, Why::kMaskedBlended, PlaneMode::kMask},
+      {[](auto& f) { f.has_depth = false; }, Why::kMaskedNoDepth, PlaneMode::kClear},
+      {[](auto& f) { f.depth_is_main = false; }, Why::kMaskedOtherDepth, PlaneMode::kClear},
+      {[](auto& f) { f.sub_view = true; }, Why::kMaskedSubView, PlaneMode::kClear},
+  };
+  for (bool masked_attach : {false, true}) {
+    for (const auto& test : rejected) {
+      gb::DrawFacts facts = GoodDraw();
+      facts.masked_attach = masked_attach;
+      test.set(facts);
+      int lookups = 0;
+      const auto result = gb::Decide(facts, [&] {
+        ++lookups;
+        return kGBufferWord;
+      });
+      Check(lookups == 0, Num("rejected draw %.0f bypasses variant lookup", double(test.why)));
+      Check(result.why == test.why && result.variant == 0 &&
+                result.mode == (masked_attach ? test.mode : PlaneMode::kNone),
+            Num("rejected draw %.0f keeps its attachment and census", double(test.why)));
+    }
+  }
+
+  gb::DrawFacts facts = GoodDraw();
+  facts.ps_variant_before = kHeadlightWord;
+  facts.masked_attach = true;
+  for (uint32_t word : {0u, kHeadlightGBufferWord}) {
+    int lookups = 0;
+    const auto result = gb::Decide(facts, [&] {
+      ++lookups;
+      return word;
+    });
+    Check(lookups == 1 && result.variant == word, "each eligible draw uses its one variant lookup");
+    Check(result.why == (word ? Why::kWrites : Why::kMaskedOtherVariant) &&
+              result.mode == (word ? PlaneMode::kWrite : PlaneMode::kClear),
+          "an eligible draw writes its composed word or clears when the pack has none");
+  }
+}
+
 void RuleChecks() {
   using gb::Why;
   using gb::PlaneMode;
@@ -1210,6 +1264,7 @@ int main(int argc, char** argv) {
   LayoutChecks();
   LightSetChecks();
   RuleChecks();
+  VariantLookupChecks();
   PlaneChecks();
   MsaaChecks();
   AttachChecks();

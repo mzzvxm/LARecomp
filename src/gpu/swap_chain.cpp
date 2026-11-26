@@ -25,6 +25,7 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
   device_ = &device;
   window_ = window;
   vsync_ = options.vsync;
+  test_d3d12_latency_one_ = options.test_d3d12_latency_one && ActiveBackend() == Backend::kD3D12;
   present_wait_ = options.present_wait && device.capabilities().presentWait;
   if (options.present_wait && !present_wait_) {
     REXLOG_WARN("[gpu] present wait requested but {} does not support it; vsync paces presents",
@@ -51,7 +52,9 @@ bool SwapChain::MakeChain(bool hdr10) {
   // the internal back-buffer count"); Plume sets the value on the chain after it is made.
   const backend::SwapChainFactoryScope factory(device_->device(), factory_wrapper_);
   through_wrapper_ = factory.wrapped();
-  const uint32_t latency = factory.wrapped() ? kFramesInFlight + 1 : kFramesInFlight;
+  // CHECK: compare native D3D12 latency 1 and 2 and the actual displayed cadence on the ROG.
+  const uint32_t latency = SwapChainFrameLatency(kFramesInFlight, factory.wrapped(),
+                                                 test_d3d12_latency_one_ && !queue_);
   if (hdr10) {
     // The output has to take the HDR10 colour space (D3D12 CheckColorSpaceSupport, Vulkan's
     // surface formats); Plume says no by returning null, with the reason on stderr. The SDR chain
@@ -101,7 +104,7 @@ bool SwapChain::MakeChain(bool hdr10) {
     return false;
   }
   REXLOG_INFO("[gpu] swap chain {}x{}, {} buffers, latency {}, vsync {}, present wait {}, {}",
-              width(), height(), image_count(), kFramesInFlight, vsync_ ? "on" : "off",
+              width(), height(), image_count(), latency, vsync_ ? "on" : "off",
               present_wait_ ? "on" : "off", hdr_ ? "HDR10" : "SDR");
   return true;
 }

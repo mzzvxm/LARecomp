@@ -637,7 +637,9 @@ struct DrawDecision {
   bool attach() const { return mode != PlaneMode::kNone; }
   bool writes() const { return mode == PlaneMode::kWrite; }
 };
-inline DrawDecision Decide(const DrawFacts& f) {
+// Only a draw that can write the planes needs to look for a shader variant.
+template <typename SelectVariant>
+inline DrawDecision Decide(const DrawFacts& f, SelectVariant select_variant) {
   DrawDecision d;
   const auto not_carried = [&](Why why) {
     d.why = why;
@@ -660,7 +662,8 @@ inline DrawDecision Decide(const DrawFacts& f) {
   if (!f.has_depth) return masked(Why::kMaskedNoDepth, PlaneMode::kClear);
   if (!f.depth_is_main) return masked(Why::kMaskedOtherDepth, PlaneMode::kClear);
   if (f.sub_view) return masked(Why::kMaskedSubView, PlaneMode::kClear);
-  if (f.variant_word == 0) {
+  const uint32_t variant = select_variant();
+  if (variant == 0) {
     // No word: either the draw already has a feature the G-buffer's stage does not compose with on this shader, or the shader has no stage.
     return masked((f.ps_variant_before >> 1) != 0 ? Why::kMaskedOtherVariant : Why::kMaskedNoVariant, PlaneMode::kClear);
   }
@@ -671,9 +674,12 @@ inline DrawDecision Decide(const DrawFacts& f) {
     }
   }
   d.why = Why::kWrites;
-  d.variant = f.variant_word;
+  d.variant = variant;
   d.mode = PlaneMode::kWrite;
   return d;
+}
+inline DrawDecision Decide(const DrawFacts& f) {
+  return Decide(f, [&] { return f.variant_word; });
 }
 
 // The mode bits (gbuffer_types.h kMode*) of a writer's GBufferConstants: the planes it writes, the permission for the derivative normal when the frame has a camera
