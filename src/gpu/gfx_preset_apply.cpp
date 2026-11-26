@@ -53,7 +53,6 @@ void HoldNamedLocked(Preset p) {
   int left = 0;
   for (int i = 0; i < kRowCount; ++i) {
     const Row& row = kRows[i];
-    if (row.page == Page::kSupport) continue;
     const std::string name(row.cvar);
     const bool already = g_rows.count(name) != 0;
     if (!already) {
@@ -100,7 +99,6 @@ void ApplyBaseLocked() {
   int based = 0;
   for (int i = 0; i < kRowCount; ++i) {
     const Row& row = kRows[i];
-    if (row.page == Page::kSupport) continue;
     const std::string name(row.cvar);
     if (cv::GetFlagSource(name) != cv::Source::kDefault || cv::HasNonDefaultValue(name)) continue;
     if (larecomp::settings::SetDefault(name, CellAt(i, from))) ++based;

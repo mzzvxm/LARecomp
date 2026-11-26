@@ -91,7 +91,7 @@ inline bool ParseChoice(std::string_view text, Choice* out) {
       return true;
     }
   }
-  if (text.empty()) {
+  if (text.empty() || same("window")) {
     *out = Choice::kAuto;
     return true;
   }

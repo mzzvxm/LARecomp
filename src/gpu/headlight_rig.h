@@ -119,7 +119,7 @@ larecomp::gpu::headlight_pass::Route CurrentRoute();
 
 // Reads the route's setting (mcla_gpu_headlight_pass, through LiveText: the debug menu's thread writes it) ONCE for the frame and publishes it to CurrentRoute(). Scene::BeginFrame calls it before
 // the light pass's and the rig's BeginFrame, which both take the route from CurrentRoute(). Render thread.
-larecomp::gpu::headlight_pass::Route SampleRoute();
+larecomp::gpu::headlight_pass::Route SampleRoute(bool rt_lights);
 
 // The shadow producer's side: this frame's views and the atlas they are in (the bindless slots of the texture and of a sampler). `frame` null, or no
 // view, or no atlas slot: none (every light is lit and no atlas is read). The views are copied, and moved to the lights of the set that reads them by

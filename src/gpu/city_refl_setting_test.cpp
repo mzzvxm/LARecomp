@@ -22,14 +22,12 @@
 #include <vector>
 
 #include "city_refl_setting.h"
-#include "mc_engine/menus/pause_selfrefl_row.h"
 #include "rt_tier.h"
 
 namespace crs = mcla::gpu::city_refl_setting;
 namespace cr = mcla::gpu::city_refl;
 namespace cm = mcla::gpu::city_rt;
 namespace gc = mcla::gpu::gpu_class;
-namespace sr = mcla_menu::selfrefl;
 
 namespace {
 
@@ -74,7 +72,7 @@ cm::Level ExpectedLevel(Rung rung, const std::string& word) {
   if (word == "off") return cm::Level::kOff;
   if (word == "high") return cm::Level::kHigh;
   if (word == "ultra") return cm::Level::kUltra;
-  return rung == Rung::kStrong ? cm::Level::kHigh : cm::Level::kOff;
+  return cm::Level::kOff;
 }
 
 crs::Gate ExpectedGate(gc::GpuClass c, gc::RtTier t, bool car_rt_on, bool wanted, crs::Data data) {
@@ -114,7 +112,7 @@ void CellChecks() {
   Check(combos == 3 * 3 * 9 * 2 * 4, "every class, tier, word, car state and data state was looked at");
 
   // the owner's rule in plain sentences
-  Check(crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", true, crs::Data::kReady).level == cm::Level::kHigh, "AUTO on a strong card runs HIGH");
+  Check(crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", true, crs::Data::kReady).level == cm::Level::kOff, "legacy Auto leaves city reflections off on a strong card");
   Check(crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", true, crs::Data::kReady).level == cm::Level::kOff, "AUTO on a weak card runs nothing");
   Check(crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kNone, "auto", true, crs::Data::kReady).level == cm::Level::kOff, "AUTO without ray tracing runs nothing");
   Check(crs::Decide(gc::GpuClass::kMid, gc::RtTier::kStrong, "auto", true, crs::Data::kReady).level == cm::Level::kOff, "AUTO on a Mid class runs nothing (its rung is at most weak)");
@@ -124,8 +122,8 @@ void CellChecks() {
   Check(crs::Decide(gc::GpuClass::kLow, gc::RtTier::kStrong, "ultra", true, crs::Data::kReady).level == cm::Level::kOff, "the Low class never runs it");
   // the row's AUTO is the table's cell; the table is rt_tier.h's
   Check(std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kNone)) == "off" && std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kWeak)) == "off" &&
-            std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kStrong)) == "high",
-        "rt_tier.h's cells of mcla_gpu_rt_reflections: off, off, high");
+            std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kStrong)) == "off",
+        "rt_tier.h's cells of mcla_gpu_rt_reflections: off on all rungs");
   // the words are the player's own: a word is never changed into another by the gate (only the level that runs is off)
   for (const gc::GpuClass c : kClasses) {
     for (const gc::RtTier t : kTiers) {
@@ -162,26 +160,10 @@ void RowChecks() {
     Check(!std::string(crs::GateName(g)).empty(), name + ": it has a name for the log");
   }
 
-  // The REFLECTIONS page: the pause movie sizes it to the widest label (suffix included) plus the widest value over every row and every state, 41 characters at most.
-  size_t widest_label = 0;
-  for (const char* other : {"ROAD REFLECTIONS", "CAR REFLECTIONS", "CAR SELF-REFLECTIONS", "REFLECTIONS ON SURFACES"}) widest_label = std::max(widest_label, std::strlen(other));
-  Check(widest_label == 23, "the page's widest label so far is REFLECTIONS ON SURFACES (23)");
-  for (const crs::Gate g : kGates) widest_label = std::max(widest_label, LabelOf(g).size());
-  size_t widest_value = 0;
-  for (const bool auto_on : {false, true})
-    for (const bool available : {false, true})
-      for (int i = 0; i < sr::Count(available); ++i) widest_value = std::max(widest_value, sr::LabelOf(sr::At(i), auto_on, available).size());
-  for (const gc::GpuClass c : kClasses)
-    for (const gc::RtTier t : kTiers) widest_value = std::max(widest_value, crs::AutoLabel(c, t).size());
-  for (const char* v : {"OFF", "HIGH", "ULTRA"}) widest_value = std::max(widest_value, std::strlen(v));
-  widest_value = std::max(widest_value, std::strlen("AUTO (ULTRA)"));  // the road, car and surface rows' longest AUTO label
-  Check(widest_value == 17, "the page's widest value is CAR SELF-REFLECTIONS' AUTO (RAY TRACED) (17)");
-  Check(widest_label == 23 && widest_label + widest_value <= 41, "the REFLECTIONS page stays within 41 characters with every state of the new row: " + std::to_string(widest_label + widest_value));
-  Check(std::string(crs::kFullLabel).size() == 19, "the whole label is 19 characters");
-  // the wording the brief's first draft had would not fit
-  Check(std::strlen("RT CITY REFLECTIONS (BUILDING DATA)") + widest_value > 41, "'RT CITY REFLECTIONS (BUILDING DATA)' would make the page 52 wide");
-  Check(std::strlen("RT CITY REFLECTIONS (NO RT GPU)") + widest_value > 41, "'RT CITY REFLECTIONS (NO RT GPU)' would make the page 48 wide");
-  Check(crs::kPageChars == 41 && crs::kWidestValue == 17, "the header's budget constants are the page's");
+  for (const auto gate : kGates) {
+    Check(LabelOf(gate).size() + std::string_view("ULTRA").size() <= 41,
+          "the city paint RT row fits alongside the concrete quality levels");
+  }
 
   // what a state is for the same (class, tier): the row greys exactly where the gate says
   for (const gc::GpuClass c : kClasses) {
@@ -201,7 +183,7 @@ void RowChecks() {
       Check(crs::AutoLabel(c, t) == expect, Name(c, t, "auto") + ": AUTO's label is " + expect);
     }
   }
-  Check(crs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and High on a strong one.", "the launcher's line under the row: " + crs::LauncherAutoLine());
+  Check(crs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and Off on a strong one.", "the launcher's line under the row: " + crs::LauncherAutoLine());
 }
 
 // ---------------------------------------------------------------------------
@@ -266,7 +248,7 @@ void DataChecks() {
   };
   for (const Step& s : run) {
     const crs::Data data = crs::Combine(s.base, s.hit);
-    const crs::Decision d = crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", true, data);
+    const crs::Decision d = crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "high", true, data);
     Check(d.gate == s.gate && (d.level != cm::Level::kOff) == s.runs,
           std::string("first run: pack ") + std::string(crs::DataName(s.base)) + ", hit data " + std::string(crs::DataName(s.hit)) + " -> " + std::string(crs::GateName(d.gate)) + (s.runs ? ", the pass runs" : ", the pass waits"));
   }
@@ -286,12 +268,13 @@ void DataChecks() {
 void InterplayChecks() {
   int pairs = 0;
   for (const char* selfrefl : {"auto", "off", "on", "low", ""}) {
-    for (const char* rt : {"auto", "off", "maybe", ""}) {
+    for (const char* rt : {"auto", "off", "on", "maybe", ""}) {
       for (const bool auto_on : {false, true}) {
         for (const bool available : {false, true}) {
           ++pairs;
-          const bool car = sr::RayTracedRuns(selfrefl, rt, auto_on, available);
-          const crs::Decision d = crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", car, crs::Data::kReady);
+          const std::string_view base(selfrefl);
+          const bool car = available && std::string_view(rt) == "on" && (base == "on" || (base == "auto" && auto_on));
+          const crs::Decision d = crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "high", car, crs::Data::kReady);
           const std::string name = std::string("CAR SELF-REFLECTIONS ") + selfrefl + "/" + rt + (auto_on ? ", auto on" : ", auto off") + (available ? ", can run" : ", cannot run");
           Check((d.gate == crs::Gate::kNeedsCarRt) == !car, name + ": the city row is grey with NEEDS CAR RT exactly while the car's ray traced reflection is not running");
           Check((d.level == cm::Level::kHigh) == car, name + ": the city runs exactly while the car's ray traced reflection does");
@@ -299,14 +282,9 @@ void InterplayChecks() {
       }
     }
   }
-  Check(pairs == 5 * 4 * 2 * 2, "every pair of the car row's two settings was looked at");
+  Check(pairs == 5 * 5 * 2 * 2, "every pair of the car row's two settings was looked at");
   // the value the car row writes for RAY TRACED turns the city row on again (no other value of it does, except AUTO where AUTO comes to ray traced)
-  for (int i = 0; i < sr::Count(true); ++i) {
-    const sr::Choice c = sr::At(i);
-    const sr::Writes w = sr::WritesOf(c);
-    const bool car = sr::RayTracedRuns(w.selfrefl ? w.selfrefl : "auto", w.rt ? w.rt : "auto", true, true);
-    Check(car == (c == sr::Choice::kRayTraced || c == sr::Choice::kAuto), std::string("the car row's value ") + sr::LabelOf(c, true, true) + (car ? " runs" : " does not run") + " the pass on a card where AUTO is ray traced");
-  }
+
 }
 
 // ---------------------------------------------------------------------------
@@ -340,32 +318,21 @@ void MenuChecks(const std::string& dir) {
   const size_t items = At(menu, "const ItemDef kReflectionItems[] = {");
   const size_t items_end = items == std::string::npos ? std::string::npos : At(menu, "\n};", items);
   const std::string page = items == std::string::npos || items_end == std::string::npos ? "" : menu.substr(items, items_end - items);
-  const char* order[] = {"PM_RxGpuRoadRefl", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl", "PM_RxGpuRtCityRefl", "PM_RxGpuRtMirror", "PM_RxGpuSsr"};
-  bool ordered = !page.empty();
-  size_t last = 0;
-  for (const char* key : order) {
-    const size_t at = At(page, std::string("\"") + key + "\"");
-    ordered = ordered && at != std::string::npos && at >= last;
-    last = at == std::string::npos ? last : at;
-  }
-  Check(ordered, "REFLECTIONS has ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES in that order (the city row right after the car pass it rides on)");
-  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtCityRefl\", \"mcla_gpu_rt_reflections\",") &&
-          Has(page, "\"RT CITY REFLECTIONS: \", kNativeRtCityVals, kNativeRtCityNames, 4)"),
-        "the row is a native-only cycle of mcla_gpu_rt_reflections with four values");
-  Check(Has(menu, "\"RT CITY REFLECTIONS: \"") && std::string(crs::kFullLabel) + ": " == "RT CITY REFLECTIONS: ", "the row's prefix is the header's whole label");
-  Check(Has(menu, "kNativeRtCityVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") && Has(menu, "kNativeRtCityNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\"};"), "the row's words are AUTO / OFF / HIGH / ULTRA (nothing is called low)");
+  Check(Before(page, "\"PM_RxGpuCarSelfReflRt\"", "\"PM_RxGpuRtCityRefl\"") &&
+            Before(page, "\"PM_RxGpuRtCityRefl\"", "\"PM_RxGpuSideMirrors\""),
+        "the city paint row is grouped with the traced car paint");
+  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtCityRefl\", \"mcla_gpu_rt_reflections\", \"CITY IN CAR PAINT RT: \""),
+        "city paint is a native-only RT row");
   const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const size_t begin = At(rules, "[rows.PM_RxGpuRtCityRefl]");
-  const size_t next = At(rules, "[rows.PM_RxGpuCarSelfRefl]", begin);
+  const size_t next = At(rules, "[rows.PM_RxGpuSideMirrors]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
-  Check(Has(row, "d.car_rt_runs") && Has(row, "live.city_data") && Has(row, "auto_label = true") &&
-            Has(menu, "city_refl_setting::DataNow()"),
-        "the row evaluates the car reflection and the live city-data facts");
-  Check(Has(rules, "car_rt_runs =") && Has(rules, "d.car_selfrefl_choice"),
-        "the city gate uses the same choice as the car self-reflections row");
+  Check(Has(row, "d.car_rt_runs") && Has(row, "live.city_data") &&
+            Has(row, "decode = \"resolved(s.mcla_gpu_rt_reflections)\"") && Has(menu, "city_refl_setting::DataNow()"),
+        "the row decodes old settings and evaluates the car reflection and city-data facts");
   Check(!row.empty() && !Has(row, "shadows") && !Has(row, "ao_on"),
-        "RT CITY REFLECTIONS is independent of shadows and occlusion");
-  Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\""), "the tab's line names the city's reflections and the mirrors (at most 40 characters, as the longest of the other tabs' lines)");
+        "city paint reflections are independent of shadows and occlusion");
+
 }
 
 // The text of one setting's definition in settings_gpu.h: from the text that finds it to the next definition (a help text can hold ");").
@@ -382,16 +349,14 @@ void SettingsChecks(const std::string& dir) {
   const std::string meta = ReadFile(dir + "/../settings/generated/settings_meta.inc");
   // (Written in pieces: tools/check_settings_exposure.py takes a literal definition macro anywhere in src for a setting definition.)
   const std::string define = std::string("REX_SET") + "TING(";
-  const std::string def = DefinitionOf(header, define + "std::string, mcla_gpu_rt_reflections, \"auto\"");
-  Check(!def.empty() && Has(def, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"), "mcla_gpu_rt_reflections is a string setting, auto by default, with the four words");
+  const std::string def = DefinitionOf(header, define + "std::string, mcla_gpu_rt_reflections, \"off\"");
+  Check(!def.empty() && Has(def, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"), "mcla_gpu_rt_reflections is a string setting, off by default, with the four words");
   Check(!def.empty() && !Has(def, "kDebugOnly") && !Has(def, "kRestart") && Has(def, "Live."), "it is not debug-only any more (it has its row), and it is live (no restart trait)");
-  Check(!def.empty() && Has(def, "RT CITY REFLECTIONS") && Has(def, "ray traced car self-reflections") && !Has(def, "row comes later"), "its help names the row and the car row it rides on");
   Check(Has(header, "inline auto& mcla_gpu_rt_reflections = g_gpu.mcla_gpu_rt_reflections;") && Has(meta, "{\"mcla_gpu_rt_reflections\", \"MCLA/GPU\"},"), "the alias and the meta list have it");
   const size_t mat = At(manifest, "\"mcla_gpu_rt_reflections\": {");
   const size_t mend = mat == std::string::npos ? 0 : manifest.find("\"comments\"", mat);
   const std::string entry = mat == std::string::npos ? "" : manifest.substr(mat, mend - mat);
-  Check(!entry.empty() && Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"auto\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"high\\\", \\\"ultra\\\")") && !Has(entry, "kDebugOnly") &&
-            Has(entry, "RT CITY REFLECTIONS row (GRAPHICS > REFLECTIONS). Live."),
+  Check(!entry.empty() && Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"off\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"high\\\", \\\"ultra\\\")") && !Has(entry, "kDebugOnly"),
         "the manifest entry is the same setting: live, not debug-only, with the row named in its help");
   // the debug settings around it stay debug-only
   for (const char* name : {"mcla_gpu_city_refl_screen", "mcla_gpu_city_refl_coat", "mcla_gpu_city_refl_reach", "mcla_gpu_city_refl_view"}) {

@@ -1747,9 +1747,6 @@ else()
     # check that needs no game: cmake --build <dir> --target larecomp_pause_parity_test, then run it
     # (exit 0 = passed).
     add_executable(larecomp_pause_parity_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_parity_rows_test.cpp)
-    # The CAR SELF-REFLECTIONS row's values and how it reads its two settings back (pause_selfrefl_row.h):
-    # cmake --build <dir> --target larecomp_pause_selfrefl_test, then run it (exit 0 = passed).
-    add_executable(larecomp_pause_selfrefl_test EXCLUDE_FROM_ALL src/mc_engine/menus/pause_selfrefl_row_test.cpp)
     # Shared expression vectors, pause-menu rule parity, and native input gates.
     add_executable(larecomp_ui_expr_test EXCLUDE_FROM_ALL src/settings/ui_expr_test.cpp)
     target_include_directories(larecomp_ui_expr_test PRIVATE src)

@@ -22,6 +22,10 @@ tools/*
 !tools/check_settings_exposure.py
 !tools/check_row_tags.py
 !tools/check_menu_rows.py
+!tools/check_menu_redesign_tour.py
+!tools/tours/
+tools/tours/*
+!tools/tours/menu-redesign.tour
 !tools/check_descriptor_counts.py
 !tools/race_line_extract.py
 # and the one that writes the Race Line path twins into the build directory from the game's recompiled text

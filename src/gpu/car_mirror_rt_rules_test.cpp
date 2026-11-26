@@ -388,8 +388,8 @@ int main(int argc, char** argv) {
       Check(!cm::Wanted(cm::Setting::kOn, false, cls) && !cm::Wanted(cm::Setting::kAuto, false, cls), "a device that cannot trace wants nothing, whatever the setting says");
       Check(cm::Wanted(cm::Setting::kOn, true, cls) == (cls != GpuClass::kLow), "on is wanted on the Mid and High classes; the Low class (no ray tracing, shared memory) never runs it, as the pause row is grey there");
     }
-    Check(cm::Wanted(cm::Setting::kAuto, true, GpuClass::kHigh) && !cm::Wanted(cm::Setting::kAuto, true, GpuClass::kMid) && !cm::Wanted(cm::Setting::kAuto, true, GpuClass::kLow),
-          "auto is on on the strong class only");
+    Check(!cm::Wanted(cm::Setting::kAuto, true, GpuClass::kHigh) && !cm::Wanted(cm::Setting::kAuto, true, GpuClass::kMid) && !cm::Wanted(cm::Setting::kAuto, true, GpuClass::kLow),
+          "legacy Auto is off at every class");
     const cm::Limits high = cm::LimitsFor(GpuClass::kHigh, 0), mid = cm::LimitsFor(GpuClass::kMid, 0), low = cm::LimitsFor(GpuClass::kLow, 0);
     Check(high.max_pixels == 160000 && mid.max_pixels == 64000 && low == mid, "the cap by class: High 160 k, Mid 64 k, Low (a test's ask) the Mid's");
     Check(Near(high.reach, 18.0) && Near(mid.reach, 12.0) && Near(low.reach, 12.0), "the reach is the class's reach to another car (car_rt_hit_rules.h)");
@@ -686,7 +686,7 @@ int main(int argc, char** argv) {
               std::string("the setting ") + name + " is in the manifest and the settings header");
       }
       Check(Has(settings, "mcla_gpu_car_mirror_rt_strength, 0.92,") && Near(cm::kStrength, 0.92), "the strength's default is the header's");
-      Check(Has(settings, "mcla_gpu_car_mirror_rt, \"auto\",") && Has(settings, "rex::Allowed(\"auto\", \"off\", \"on\")"), "the mode's default is auto and its words are auto, off, on");
+      Check(Has(settings, "mcla_gpu_car_mirror_rt, \"off\",") && Has(settings, "rex::Allowed(\"auto\", \"off\", \"on\")"), "the mode's default is off and its words are auto, off, on");
     }
   }
 

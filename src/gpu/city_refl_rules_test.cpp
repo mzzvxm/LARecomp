@@ -132,13 +132,13 @@ int main(int argc, char** argv) {
   }
   Check(combos == 3 * 3 * 7, "every class, tier and text was looked at");
   // the owner's goal is a strong card's look: strong -> high, weak and none -> off (the brief of R1)
-  Check(cr::LevelFor(GpuClass::kHigh, RtTier::kStrong, "auto") == cm::Level::kHigh, "auto on a strong High card is HIGH");
+  Check(cr::LevelFor(GpuClass::kHigh, RtTier::kStrong, "auto") == cm::Level::kOff, "legacy Auto is off on a strong High card");
   Check(cr::LevelFor(GpuClass::kHigh, RtTier::kWeak, "auto") == cm::Level::kOff && cr::LevelFor(GpuClass::kHigh, RtTier::kNone, "auto") == cm::Level::kOff, "auto on a weak card or none is off");
   Check(cr::LevelFor(GpuClass::kMid, RtTier::kStrong, "auto") == cm::Level::kOff, "auto on a Mid class is off (its rung is at most weak)");
   Check(cr::LevelFor(GpuClass::kLow, RtTier::kStrong, "ultra") == cm::Level::kOff, "the Low class never runs it");
   Check(std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kNone)) == "off" && std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kWeak)) == "off" &&
-            std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kStrong)) == "high",
-        "rt_tier.h's cells of mcla_gpu_rt_reflections: off, off, high");
+            std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kStrong)) == "off",
+        "rt_tier.h's cells of mcla_gpu_rt_reflections: off on all rungs");
 
   // ---- the cells ----------------------------------------------------------------------------------------------------------------------------------
   {
@@ -711,8 +711,8 @@ int main(int argc, char** argv) {
       Check(Has(renderer, "car_rt_refl_.SetSceneService(&rt_scene_);"), "renderer.cpp: the pass has the scene service");
       Check(Has(cmake, "city_refl.cpp") && Has(cmake, "larecomp_city_refl_rules_test"), "CMakeLists.txt: the source and the test");
       Check(Has(screen_rules, "wants.Of(Consumer::kCarRtRefl) & (1u << kColourPost)"), "screen_rules.h: the car ray traced reflections' want makes colour_post's mips");
-      Check(Has(tier, "RtDerived(\"mcla_gpu_rt_reflections\"),") && Has(ReadFile(src + "/gpu/gfx_preset.h"), "{\"mcla_gpu_rt_reflections\", Page::kReflections, {\"off\", \"off\", \"off\", \"off\", \"high\"}},"),
-            "rt_tier.h: the cells of the reflections row (read from the preset table: none off, weak off, strong high)");
+      Check(Has(tier, "{\"mcla_gpu_rt_reflections\", \"off\", \"off\", \"off\"},") && Has(ReadFile(src + "/gpu/gfx_preset.h"), "{\"mcla_gpu_rt_reflections\", Page::kReflections, {\"off\", \"off\", \"off\", \"off\", \"high\"}},"),
+            "rt_tier.h: legacy Auto stays off and the RT Ultra preset selects High");
       // the settings: in the header, the manifest and the meta, with the aliases (the city's own switch is not debug-only since R8, which gave it the row RT CITY REFLECTIONS: city_refl_setting_test.cpp)
       const std::string settings = ReadFile(src + "/settings/generated/settings_gpu.h");
       const std::string manifest = ReadFile(src + "/settings/generated/manifest.json");
@@ -742,11 +742,11 @@ int main(int argc, char** argv) {
         const std::string world_entry = world_key == std::string::npos ? "" : manifest.substr(world_key, manifest.find("\n },", world_key) - world_key);
         Check(!world_entry.empty() && Has(world_entry, "\"type\": \"bool\"") && Has(world_entry, "\"default\": \"true\"") && Has(world_entry, "rex::kDebugOnly"), "the manifest has mcla_gpu_city_refl_world_light as a debug-only bool, true");
       }
-      const size_t at = settings.find("std::string, mcla_gpu_rt_reflections, \"auto\", ");
+      const size_t at = settings.find("std::string, mcla_gpu_rt_reflections, \"off\", ");
       const size_t next = at == std::string::npos ? std::string::npos : settings.find("\n  REX_SET" "TING(", at);
       const std::string def = at == std::string::npos ? "" : settings.substr(at, next == std::string::npos ? std::string::npos : next - at);
       Check(!def.empty() && def.find("rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")") != std::string::npos && def.find("kDebugOnly") == std::string::npos,
-            "mcla_gpu_rt_reflections is auto by default, with the four words, and not debug-only (R8 gave it its row)");
+            "mcla_gpu_rt_reflections is off by default, with the four words, and not debug-only (R8 gave it its row)");
     }
   }
 

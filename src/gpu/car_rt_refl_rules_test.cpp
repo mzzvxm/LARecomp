@@ -474,13 +474,13 @@ int main(int argc, char** argv) {
   const std::string src_dir = argc > 1 && argv[1][0] != '-' ? argv[1] : std::string();
   RawChecks(src_dir);
   // the setting
-  Check(rt::SettingOf("auto") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kAuto &&
-            rt::SettingOf("") == rt::Setting::kAuto,
+  Check(rt::SettingOf("auto") == rt::Setting::kOff && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kOff &&
+            rt::SettingOf("") == rt::Setting::kOff,
         "off is off, auto and a word that is no value are auto");
   // The ray tracing tier's `auto` table (rt_tier.h kRtEffects) hands this setting "on" (a strong or a weak card) or "off" (no ray tracing): on is the default
-  Check(rt::SettingOf("on") == rt::Setting::kAuto && rt::SettingOf("off") == rt::Setting::kOff, "the tier's cells: on is the default, off is off");
-  Check(rt::Wanted(rt::Setting::kAuto, true, true) && !rt::Wanted(rt::Setting::kOff, true, true) && !rt::Wanted(rt::Setting::kAuto, false, true) &&
-            !rt::Wanted(rt::Setting::kAuto, true, false),
+  Check(rt::SettingOf("on") == rt::Setting::kOn && rt::SettingOf("off") == rt::Setting::kOff, "only an explicit On requests tracing");
+  Check(rt::Wanted(rt::Setting::kOn, true, true) && !rt::Wanted(rt::Setting::kOff, true, true) && !rt::Wanted(rt::Setting::kOn, false, true) &&
+            !rt::Wanted(rt::Setting::kOn, true, false),
         "wanted: auto, on a device that can, with the self-reflection on");
 
   // the codes, through a half float

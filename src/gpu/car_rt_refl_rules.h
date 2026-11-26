@@ -71,10 +71,10 @@ namespace mcla::gpu::car_rt_refl {
 // ---------------------------------------------------------------------------------------------------------------------
 // mcla_gpu_car_selfrefl_rt: auto (the default: on where the device can ray trace the car and the self-reflection is on) | off. A word
 // that is no value counts as auto, as the other graphics settings' do.
-enum class Setting : uint8_t { kAuto, kOff };
-inline Setting SettingOf(std::string_view text) { return text == "off" ? Setting::kOff : Setting::kAuto; }
+enum class Setting : uint8_t { kOff, kOn };
+inline Setting SettingOf(std::string_view text) { return text == "on" ? Setting::kOn : Setting::kOff; }
 inline bool Wanted(Setting setting, bool device_supports, bool reflection_on) {
-  return setting == Setting::kAuto && device_supports && reflection_on;
+  return setting == Setting::kOn && device_supports && reflection_on;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------

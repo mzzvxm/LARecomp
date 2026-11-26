@@ -23,10 +23,7 @@ class PatchesSettings final : public rex::SettingOwner {
   // with pure black bars where the window is not that shape (mc_engine/frame_fit.h). Live: the pause
   // menu's DISPLAY > ASPECT RATIO and the launcher write it while the game runs. The Xenia renderer
   // always follows the window, and keeps 16:9 with bars in a window taller than that.
-  REX_SETTING(std::string, aspect_ratio, "auto", "Shape of the picture: auto fills the window at any shape (a 21:9 or 32:9 window gets a wider view, "
-    "a 16:10, 4:3 or taller one more above and below; the HUD stays 16:9 in the middle), or 16:9, "
-    "16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is "
-    "narrower than that shape and at the sides where it is wider.", rex::Allowed("auto", "16:9", "16:10", "21:9", "32:9"));
+  REX_SETTING(std::string, aspect_ratio, "window", "Fits the picture to the window or uses a fixed aspect ratio with black bars. Live.", rex::Allowed("auto", "window", "16:9", "16:10", "21:9", "32:9"));
 
   // Live: Patch_PhysicsCollision (vehicle.cpp) is a return_on_true hook on the collision function's first instruction and reads this on every
   // call, with no copy. It was tagged kRequiresRestart; nothing reads it at start.

@@ -166,6 +166,8 @@ const ItemDef kDebugHubItems[] = {
 // and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
 // page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
 const ItemDef kDebugFixesItems[] = {
+    NativeOnly(Bool("PM_RxSharpUi", "mcla_ui_sharp", "SHARP UI: ")),
+    NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale", "SHARP MINIMAP: ")),
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
     Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",

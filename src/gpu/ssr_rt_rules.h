@@ -16,10 +16,7 @@
 //     3 trace      (compute, hlsl/ssr_rt_trace_cs.hlsl) one thread a listed pixel: the same ray, the top level, the hit library; the result added into the trace image (a storage image)
 //     4 temporal, apply   unchanged
 //
-// WHEN IT RUNS. Resolve() at the frame's start: REFLECTIONS ON SURFACES must be on (mcla_gpu_ssr high or ultra, or auto that comes to it), the ray tracing rung of the card (rt_tier.h) must not be
-// none, and the debug setting mcla_gpu_ssr_rt (auto, off, high, ultra) must not be off. `auto` follows the effect's own level on a STRONG card and is off on a weak one (a weak card gets it by hand, with
-// the Mid cell); a card with no ray tracing (tier none, the Low class) never runs it and the effect is exactly what it was (the same shaders, the same images, the same passes: the identity). Decide()
-// at the trigger adds what the frame has: the material plane (not the stub), the pipelines, a top level in this frame. The reason is logged when it changes.
+// The fallback needs surface reflections, a supported RT rung and an explicit High or Ultra setting.
 //
 // THE CELLS (CITY-RT-M2 section 8; first guesses until the cost pass): classes, the ray cap a frame, the rays a pixel, the reach, and the GPU time the governor holds the passes to.
 //     HIGH   glass, metal, water       0.25 M rays   1 ray   150 m   0.8 ms
@@ -97,12 +94,11 @@ constexpr bool Candidate(uint32_t group, float confidence, uint32_t group_mask, 
 // the levels and the cells
 // ---------------------------------------------------------------------------
 
-enum class Choice : uint8_t { kAuto, kOff, kHigh, kUltra };
+enum class Choice : uint8_t { kOff, kHigh, kUltra };
 constexpr Choice ParseChoice(std::string_view text) {
-  if (text == "off") return Choice::kOff;
   if (text == "high") return Choice::kHigh;
   if (text == "ultra") return Choice::kUltra;
-  return Choice::kAuto;   // `auto`, and a word that is none of them (a hand-edited file)
+  return Choice::kOff;
 }
 
 struct Cell {
@@ -172,7 +168,6 @@ enum class Why : uint8_t {
   kSsrOff,       // REFLECTIONS ON SURFACES is off
   kNoRt,         // the card does not trace rays (tier none) or the class is Low
   kSetting,      // mcla_gpu_ssr_rt is off
-  kWeakAuto,     // auto on a weak card: by hand only
   kStub,         // the frame has no material plane (the stub class stands in)
   kNoScene,      // no top level in this frame (nothing built yet, no city, no camera)
   kNoPipelines,  // a shader or a pipeline is not made yet (a frame never waits for a compile) or could not be
@@ -185,7 +180,6 @@ constexpr const char* WhyName(Why why) {
     case Why::kSsrOff: return "REFLECTIONS ON SURFACES is off";
     case Why::kNoRt: return "this card or class does not trace rays";
     case Why::kSetting: return "mcla_gpu_ssr_rt is off";
-    case Why::kWeakAuto: return "auto is off on a weak ray tracing card (mcla_gpu_ssr_rt high or ultra turns it on)";
     case Why::kStub: return "the frame has no material plane (RT3): the stub class stands in";
     case Why::kNoScene: return "no ray tracing top level in this frame";
     case Why::kNoPipelines: return "a pass's pipeline is not ready";
@@ -197,7 +191,7 @@ constexpr const char* WhyName(Why why) {
 
 struct LevelFacts {
   Level ssr = Level::kOff;                  // the effect's own level this frame (mcla_gpu_ssr resolved)
-  Choice choice = Choice::kAuto;            // mcla_gpu_ssr_rt
+  Choice choice = Choice::kOff;            // mcla_gpu_ssr_rt
   gc::RtTier rung = gc::RtTier::kNone;      // rt_tier.h: the ray tracing tier gated by the class
 };
 struct Resolved {
@@ -219,15 +213,8 @@ constexpr Resolved Resolve(const LevelFacts& f) {
     r.why = Why::kSetting;
     return r;
   }
-  Level level = f.ssr;                                // auto follows the effect's level ...
-  if (f.choice == Choice::kHigh) level = Level::kHigh;
-  if (f.choice == Choice::kUltra) level = Level::kUltra;
-  if (f.choice == Choice::kAuto && f.rung != gc::RtTier::kStrong) {
-    r.why = Why::kWeakAuto;                           // ... on a strong card only
-    return r;
-  }
-  r.level = level;
-  r.cell = CellFor(level, f.rung);
+  r.level = f.choice == Choice::kUltra ? Level::kUltra : Level::kHigh;
+  r.cell = CellFor(r.level, f.rung);
   r.why = Why::kRuns;
   return r;
 }

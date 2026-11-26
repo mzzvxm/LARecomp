@@ -339,10 +339,14 @@ uint64_t RtLights::HeldBytes() const {
 // the frame
 // ---------------------------------------------------------------------------
 
+bool RtLights::SampleEnabled() {
+  mode_ = rt::ParseMode(ModeSetting().Get());
+  return ready_ && service_ != nullptr && gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone && rt::Wanted(mode_);
+}
+
 void RtLights::BeginFrame(bool pass_runs, bool ultra) {
   namespace st = larecomp::settings;
   ultra_ = ultra;
-  mode_ = rt::ParseMode(ModeSetting().Get());
   k_setting_ = int(st::mcla_gpu_rt_lights_k.Get());
   radius_setting_ = st::mcla_gpu_rt_lights_radius.Get();
   rays_ = rt::ClampRays(int(st::mcla_gpu_rt_lights_rays.Get()));
@@ -352,23 +356,20 @@ void RtLights::BeginFrame(bool pass_runs, bool ultra) {
   lamp_slot_ = st::mcla_gpu_rt_lights_lamp_slot.Get() != 0;
   blue_ = st::mcla_gpu_noise_blue.Get();
   wanted_ = false;
-  bool want = false;
-  if (ready_ && service_ != nullptr && mode_ != rt::Mode::kOff) {
-    // The structures at the level the sun shadows would take (the RT SHADOWS row's: a card with none, or the row off, is only a reason for auto not to run; "on" builds them at HIGH).
+  const bool want = pass_runs && ready_ && service_ != nullptr &&
+                    gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone && rt::Wanted(mode_);
+  if (want) {
+    // Reuse the city budget of Sun Shadows RT when selected.
     city_rt::Level level = city_rt::LevelForRung(gpu_class::Current(), gpu_class::CurrentRtTier(), city_rt::ParseChoice(ShadowsSetting().Get()));
-    const bool rt_shadows_on = level != city_rt::Level::kOff;
-    want = pass_runs && rt::Wanted(mode_, rt_shadows_on);
-    if (want) {
-      if (level == city_rt::Level::kOff) {
-        level = city_rt::Level::kHigh;
-      }
-      rt_scene::Needs needs;
-      needs.cars = true;
-      needs.city = level;
-      needs.city_radius = float(st::mcla_gpu_city_rt_radius.Get());
-      service_->Want(rt_scene::Consumer::kRtLights, needs);
-      wanted_ = true;
+    if (level == city_rt::Level::kOff) {
+      level = city_rt::Level::kHigh;
     }
+    rt_scene::Needs needs;
+    needs.cars = true;
+    needs.city = level;
+    needs.city_radius = float(st::mcla_gpu_city_rt_radius.Get());
+    service_->Want(rt_scene::Consumer::kRtLights, needs);
+    wanted_ = true;
   }
   denoiser::NoteConsumer(rr::Consumer::kRtLights, wanted_);   // RT-LIGHTS-D1 part 2: the effect runs this frame (the plan is made after, RawModes follows the plan)
   if (want != lamp_hook_on_) {

@@ -49,7 +49,7 @@ native = "kResolutionDynamics"
 help = "Sets the window size. In exclusive fullscreen, the game uses the selected display mode."
 
 [rows.PM_RxAspect]
-help = "Shape of the picture: auto fills the window at any shape (a 21:9 or 32:9 window gets a wider view, a 16:10, 4:3 or taller one more above and below; the HUD stays 16:9 in the middle), or 16:9, 16:10, 21:9 or 32:9 whatever the window is, with black bars above and below where the window is narrower than that shape and at the sides where it is wider."
+help = "Fits the picture to the window or keeps a fixed shape with black bars."
 
 [rows.PM_RxSubGpuHdr]
 help = "Open the hdr settings."
@@ -114,46 +114,46 @@ help = "On-screen button glyphs."
 
 [rows.PM_RxUnspawn]
 native = "kTrafficRangeDynamics"
-help = "How far from you traffic cars are kept, in metres: a car further away is removed."
+help = "Sets how far away traffic stays on the road."
 
 [rows.PM_RxPedDensity]
 native = "kPedDensityDynamics"
-help = "How many people walk the streets, as a multiple of the game's own amount (0 = none, 1 = the game's)."
+help = "Changes how many pedestrians appear."
 
 [rows.PM_RxParkedCars]
 native = "kParkedDensityDynamics"
-help = "How many cars are parked along the roads, as a multiple of the game's own amount (0 = none, 1 = the game's)."
+help = "Changes how many parked cars appear."
 
 [rows.PM_RxFragDist]
-help = "fragTuneStruct::GlobalMaxDrawingDistance — draw distance for breakable props (poles, signs, fences)."
+help = "Sets how far away breakable street props are drawn."
 
 [rows.PM_RxLodTraffic]
 native = "kTrafficLodDynamics"
-help = "How far away traffic cars keep their detailed models, as a multiple of the original distance."
+help = "Sets how far away traffic uses detailed models."
 
 [rows.PM_RxLodCity]
 native = "kCityLodDynamics"
-help = "How far away buildings and other city scenery keep their detail, as a multiple of the original distance."
+help = "Sets how far away buildings and scenery stay detailed."
 
 [rows.PM_RxMsaa]
 native = "kMsaaRowDynamics"
-help = "MSAA of the images of the screen the game multisamples (M6d.2): off (1 sample), 2 (the console's), 4 or 8 samples on the host."
+help = "Smooths edges as the scene is drawn. Higher counts cost more video memory."
 
 [rows.PM_RxGpuAa]
 native = "kPostAaDynamics"
-help = "Anti-aliasing of the composed scene, before the UI (M6c): off, fxaa (FXAA 3.11, Xenia's preset) or smaa (SMAA 1x, preset HIGH)."
+help = "Smooths edges in the finished scene before the HUD is drawn."
 
 [rows.PM_RxGpuAniso]
-help = "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16."
+help = "Sharpens roads and textures at shallow angles."
 
 [rows.PM_RxXeAniso]
-help = "Sharpens textures seen at an angle, such as roads and pavements."
+help = "Sharpens roads and textures at shallow angles."
 
 [rows.PM_RxDof]
-help = "Disable Depth of Field (DoF) completely."
+help = "Blurs parts of the scene outside the focus distance."
 
 [rows.PM_RxBlur]
-help = "Disable Motion Blur completely."
+help = "Blurs fast movement across the screen."
 
 [rows.PM_RxSharpUi]
 help = "Sharper HUD and menu art where the game's bitmaps are blown up (a render scale above 1.25x of the console's 720p picture: 1080p and 4K windows)."
@@ -162,101 +162,101 @@ help = "Sharper HUD and menu art where the game's bitmaps are blown up (a render
 help = "Draw the HUD's and the menus' small views (the minimap, the phone screen, and the page of the pause menu, the garage and the GPS map, which the game always draws at fixed sizes and the screen stretches) at the render scale, as the images of the screen are, so that the minimap and the menus' text come out as sharp as the rest of the picture at 1080p and 4K."
 
 [rows.PM_RxNoShadows]
-help = "Draws the game's real-time shadows. Off is the biggest speed-up, and the world loses its cast shadows."
+help = "Draws the game's cast shadows."
 
 [rows.PM_RxFoliage]
 native = "kFoliageDynamics"
-help = "Far trees are drawn as flat cards, and each casts a baked shadow silhouette into the sun's shadows."
+help = "Lets faraway trees cast shadows."
 
 [rows.PM_RxGpuShadowDetail]
 native = "kShadowDetailDynamics"
-help = "How sharp the edges of the sun's shadows can get. High draws them twice as big and Ultra three times, which costs a little speed and video memory."
+help = "Increases the resolution of the sun's shadow maps."
 
 [rows.PM_RxGpuShadowFilter]
 native = "kShadowFilterDynamics"
-help = "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from pixel to pixel, a grainy edge), soft (more taps on a disk, a smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with contact hardening: a shadow is sharp where it touches what casts it and softer with the distance from it, as the sun's own shadows are; an integrated graphics card gets soft)."
+help = "Softens shadow edges. Ultra varies the softness with distance."
 
 [rows.PM_RxGpuContact]
 native = "kContactDynamics"
-help = "Contact shadows: the short sun shadows the game does not draw (under a car's sills, at the foot of a kerb or a wall, under props on the pavement), found from the picture's depth and put only on the sun's light, so they never darken what the game's own shadows already cover."
+help = "Adds short shadows under cars, curbs and props."
 
 [rows.PM_RxGpuRtShadows]
 native = "kRtShadowsDynamics"
-help = "Uses ray tracing to draw the sun’s shadows from buildings and other city geometry."
+help = "Traces sun shadows from the city's geometry."
 
 [rows.PM_RxGpuTrafficShadows]
 native = "kTrafficShadowsDynamics"
-help = "Traffic and the other AI cars cast into the sun's shadow map like the player's car, so the ground under them is dark (the game only draws the player's car into it)."
+help = "Lets nearby or all visible traffic cast shadows."
 
 [rows.PM_RxGpuCarShadowMap]
 native = "kCarShadowDynamics"
-help = "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it."
+help = "Adds detailed shadows on and around your car."
 
 [rows.PM_RxGpuAo]
 native = "kAoDynamics"
-help = "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, from the picture's depth, only on the sky light and not on the sun's (the game's own constants say how much of a surface's light is which). Ray Traced finds it with rays in the city's and the cars' own shapes instead, where the graphics card can."
+help = "Darkens corners and creases; RT traces against city geometry."
 
 [rows.PM_RxGpuAoLevel]
 native = "kAoIntensityDynamics"
-help = "How strong ambient occlusion looks: light, default, strong or max."
+help = "Adjusts how far and how strongly ambient occlusion darkens surfaces."
 
 [rows.PM_RxGpuSsgi]
 native = "kSsgiDynamics"
-help = "Bounce light: the light a lit wall or the ground sends back onto the road, the sides of cars and the walls beside it, found from the picture, so a red wall tints the pavement by it and a street lamp's pool lights the wall next to it."
+help = "Adds colour and light bounced from visible surfaces."
 
 [rows.PM_RxGpuRtGi]
 native = "kRtGiDynamics"
-help = "Uses rays to light surfaces with light bounced from the city around them."
+help = "Traces the city's bounced light."
 
 [rows.PM_RxGpuSsgiLevel]
 native = "kSsgiLevelDynamics"
-help = "How strong the bounce light looks: light, default, strong, stronger or strongest."
+help = "Adjusts how strongly nearby surfaces light each other."
 
 [rows.PM_RxGpuSunShafts]
 native = "kShaftsDynamics"
-help = "Sun shafts: a low sun behind trees and buildings streams light across the scene, as light through a haze."
+help = "Changes the strength of sunbeams visible through haze."
 
 [rows.PM_RxGpuHeadlights]
 native = "kHeadlightsDynamics"
-help = "Lets car headlights illuminate the street, nearby cars, and roadside objects."
+help = "Lets headlights illuminate nearby streets and objects."
 
 [rows.PM_RxGpuLightShadows]
 native = "kLightShadowDynamics"
-help = "Lets headlights and nearby lights cast shadows."
+help = "Adds shadows from headlights and nearby lights."
 
 [rows.PM_RxGpuNeonLight]
 native = "kNeonLightDynamics"
-help = "Makes cars with neon underglow light the ground beneath them."
+help = "Lights the ground and objects near cars with neon."
 
 [rows.PM_RxGpuVolumetrics]
 native = "kVolumetricsDynamics"
-help = "Makes light beams from headlights and street lamps visible in the air."
+help = "Makes headlight and street-lamp beams visible in the air."
 
 [rows.PM_RxGpuRoadRefl]
 native = "kRoadReflectionDynamics"
-help = "How sharp the road reflection is: the wet roads, the shop and building windows and the water show a mirror image of the city that the game draws at 256x256 and stretches over the whole screen, which is why it looks soft."
+help = "Sharpens the game's reflections in wet roads, water and windows."
 
 [rows.PM_RxGpuCarRefl]
 native = "kCarReflectionDynamics"
-help = "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the world around the car as a 512x256 picture for them to reflect, which is why the reflections look soft up close."
+help = "Sharpens the game's environment reflections in car paint and glass."
 
 [rows.PM_RxGpuCarSelfRefl]
 native = "kCarSelfReflDynamics"
-help = "Your car's paint reflects the car itself. On works from the picture on the screen; Ray Traced from the car's own shape, so a part the camera cannot see shows in the paint too."
+help = "Reflects visible parts of a car in its own paint."
 
 [rows.PM_RxGpuRtCityRefl]
 native = "kRtCityDynamics"
-help = "The car paint reflects the real street, found by rays in the city's own triangles: the building across the road, the lamp posts, signs, the car beside you."
+help = "Reflects streets and buildings in car paint."
 
 [rows.PM_RxGpuSideMirrors]
-help = "The two side mirrors of your car show the street and the cars behind you, taken from the game's own rear view mirror camera. Works on any graphics card; where RT Side Mirrors runs it takes this row's place."
+help = "Shows the street and cars behind you in side mirrors."
 
 [rows.PM_RxGpuRtMirror]
-help = "The two side mirrors show the real view behind, found by rays in the car's own shape: the cars beside you, your own flank and rear, and the sky and street. Shown in the cockpit and bumper cameras."
+help = "Traces the view behind you in the side mirrors."
 
 [rows.PM_RxGpuSsr]
 native = "kSsrDynamics"
-help = "Adds reflections to wet roads and glossy surfaces using detail from the current picture."
+help = "Adds visible cars and lights to wet roads and glossy surfaces."
 
 [rows.PM_RxGpuHdr]
 help = "HDR output for an HDR10 display."
@@ -407,7 +407,7 @@ help = "On a wide picture, how far the HUD's corner pieces (the minimap, speedom
 value = { "0" = { "label" = "CENTERED" }, "50" = { "label" = "WIDER" }, "100" = { "label" = "FULL" } }
 
 [rows.PM_RxGpuPreset]
-help = "One choice for the four effect pages: image quality, lighting and shadows, reflections and world detail. Vanilla is the game as it shipped on the console. Enhanced adds the new effects at the settings that suit a mid-range card, Enhanced Ultra at the settings of a high-end one; the two RT presets also ray trace and need a graphics card that can. Display and upscaling are never changed. Changing a single effect afterwards switches this to Custom and keeps your values."
+help = "Sets the four effect pages together. Editing an effect switches to Custom. Display and upscaling stay as set."
 
 [rows.PM_RxSubVideo]
 help = "Open the display settings."
@@ -587,3 +587,15 @@ help = "Seconds the mouse has to sit still before the view starts easing back be
 
 [rows.PM_RxFlRate]
 help = "How quickly the view eases back once the delay is up, as a fraction of the remaining angle per second."
+
+[rows.PM_RxGpuCarAoRt]
+help = "Adds traced creases and short sun shadows around cars."
+
+[rows.PM_RxGpuRtLights]
+help = "Traces shadows from nearby headlights, neon and street lamps."
+
+[rows.PM_RxGpuSsrRt]
+help = "Fills missing surface reflections with traced hits."
+
+[rows.PM_RxGpuCarSelfReflRt]
+help = "Reflects car parts even when they are outside the camera view."

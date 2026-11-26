@@ -61,14 +61,13 @@ constexpr bool OcclusionOn(bool occlusion_on, bool rtao_runs, bool blend_car) {
 // ---------------------------------------------------------------------------------------------------------------------
 // The setting
 // ---------------------------------------------------------------------------------------------------------------------
-// mcla_gpu_ao_rt (debug only): auto (the default: both terms, where the device can trace the car and the effect they belong to is on) | off |
-// ao (the occlusion term only) | contact (the sun ray only). A word that is none of these counts as auto, as the graphics settings' do.
-enum class Setting : uint8_t { kAuto, kOff, kOcclusion, kContact };
+// Car Occlusion RT uses explicit terms. Legacy Auto leaves both terms off.
+enum class Setting : uint8_t { kOff, kOcclusion, kContact, kBoth };
 inline Setting SettingOf(std::string_view text) {
-  if (text == "off") return Setting::kOff;
   if (text == "ao") return Setting::kOcclusion;
   if (text == "contact") return Setting::kContact;
-  return Setting::kAuto;
+  if (text == "both") return Setting::kBoth;
+  return Setting::kOff;
 }
 
 struct Terms {

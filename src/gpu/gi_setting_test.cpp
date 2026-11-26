@@ -69,7 +69,7 @@ void CellChecks() {
   };
   const Case cases[] = {
       // High class, strong: AUTO is HIGH (the standard field); ULTRA the extended one with the per-pixel pass
-      {gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", gi::Level::kHigh, gi::Layout::kStandard},
+      {gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", gi::Level::kOff, gi::Layout::kNone},
       {gc::GpuClass::kHigh, gc::RtTier::kStrong, "high", gi::Level::kHigh, gi::Layout::kStandard},
       {gc::GpuClass::kHigh, gc::RtTier::kStrong, "ultra", gi::Level::kUltra, gi::Layout::kExtended},
       {gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", gi::Level::kOff, gi::Layout::kNone},
@@ -159,8 +159,7 @@ void LabelChecks() {
   for (gc::GpuClass cls : kClasses) {
     for (gc::RtTier tier : kTiers) {
       for (bool built : {true, false}) {
-        const bool high = cls == gc::GpuClass::kHigh && tier == gc::RtTier::kStrong && built;
-        Check(gs::AutoLabel(cls, tier, built) == (high ? "AUTO (HIGH)" : "AUTO (OFF)"), "AUTO's label: " + Name(cls, tier, "auto", built));
+        Check(gs::AutoLabel(cls, tier, built) == "AUTO (OFF)", "AUTO's label: " + Name(cls, tier, "auto", built));
       }
     }
   }
@@ -192,12 +191,12 @@ void LabelChecks() {
         "the shared class says (TOO SLOW) here, where rt_tier.h's longer words do not fit");
   Check(std::string(gs::RowSuffix(gs::Gate::kNotBuilt)) == " (NOT READY)", "the update that is not built says (NOT READY)");
   // the launcher's line under its row
-  Check(gs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and High on a strong one.", "the launcher's line says what Auto is at each tier: " + gs::LauncherAutoLine());
+  Check(gs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and Off on a strong one.", "the launcher's line says what Auto is at each tier: " + gs::LauncherAutoLine());
   Check(gs::LauncherAutoLine() == gc::RtAutoDescription(gc::RtEffect::kRtGi), "... and it is rt_tier.h's RtAutoDescription");
   // the cell and the cvar
   Check(gc::RtCvarName(gc::RtEffect::kRtGi) == "mcla_gpu_rt_gi", "the table's cvar is mcla_gpu_rt_gi");
-  Check(gc::RtCell(gc::RtEffect::kRtGi, gc::RtTier::kNone) == "off" && gc::RtCell(gc::RtEffect::kRtGi, gc::RtTier::kWeak) == "off" && gc::RtCell(gc::RtEffect::kRtGi, gc::RtTier::kStrong) == "high",
-        "AUTO is off, off, high for none, weak, strong");
+  Check(gc::RtCell(gc::RtEffect::kRtGi, gc::RtTier::kNone) == "off" && gc::RtCell(gc::RtEffect::kRtGi, gc::RtTier::kWeak) == "off" && gc::RtCell(gc::RtEffect::kRtGi, gc::RtTier::kStrong) == "off",
+        "legacy Auto is off on every rung");
   Check(gs::CellsAgree(), "gi_frame.h's AutoLevel is the table's cell");
 }
 
@@ -241,7 +240,7 @@ void ReplacedChecks() {
   Check(!gs::ReplacedBy(gi::GiFrame{}), "the frame the field starts each frame with does not");
 
   // the strength row: on while either bounce light runs
-  const gs::Decision on = gs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", true);
+  const gs::Decision on = gs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "high", true);
   const gs::Decision off = gs::Decide(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", true);
   Check(gs::AnyBounceLight(false, on), "BOUNCE LIGHT STRENGTH is on with only the probe field running");
   Check(gs::AnyBounceLight(true, off), "... with only the screen-space bounce light running");
@@ -376,16 +375,16 @@ void RendererChecks(const std::string& dir) {
 void MenuChecks(const std::string& dir) {
   const std::string menu = ReadFile(dir + "/../mc_engine/menus/pause_menu.cpp");
   const size_t ssgi = At(menu, "Str(\"PM_RxGpuSsgi\",");
-  const size_t rt = At(menu, "Str(\"PM_RxGpuRtGi\", \"mcla_gpu_rt_gi\", \"RT BOUNCE LIGHT: \",");
+  const size_t rt = At(menu, "Str(\"PM_RxGpuRtGi\", \"mcla_gpu_rt_gi\", \"BOUNCE LIGHT RT: \",");
   const size_t level = At(menu, "Str(\"PM_RxGpuSsgiLevel\",");
   Check(ssgi != std::string::npos && rt != std::string::npos && level != std::string::npos && ssgi < rt && rt < level, "the RT BOUNCE LIGHT row is after BOUNCE LIGHT and before its strength row, on LIGHTING AND SHADOWS");
-  Check(Has(menu, "kNativeRtGiVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") && Has(menu, "kNativeRtGiNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\"};"), "the row's words are AUTO / OFF / HIGH / ULTRA (nothing is called low)");
+  Check(Has(menu, "kQualityVals[] = {\"off\", \"high\", \"ultra\"}"), "RT bounce light uses concrete quality levels");
   const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const size_t begin = At(rules, "[rows.PM_RxGpuRtGi]");
   const size_t next = At(rules, "[rows.PM_RxGpuSsgiLevel]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
   Check(Has(row, "gpu.rt_tier") && Has(row, "d.rt_field_class") && Has(row, "build.rt_gi_update_built") &&
-            Has(row, "auto_label = true"),
+            Has(row, "decode = \"resolved(s.mcla_gpu_rt_gi)\""),
         "the RT BOUNCE LIGHT row uses the GPU, build and Auto rules");
   Check(Has(rules, "live.rt_gi_replaces_bounce") && Has(rules, " (REPLACED)") &&
             Has(menu, "gpu::RtGiReplacesBounceLight()"),
@@ -402,12 +401,12 @@ void SettingsChecks(const std::string& dir) {
   const std::string meta = ReadFile(dir + "/../settings/generated/settings_meta.inc");
   // (Written in pieces: tools/check_settings_exposure.py takes a literal definition macro anywhere in src for a setting definition.)
   const std::string define = std::string("REX_SET") + "TING(";
-  Check(Has(header, define + "std::string, mcla_gpu_rt_gi, \"auto\", \"") && Has(header, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(header, "inline auto& mcla_gpu_rt_gi = g_gpu.mcla_gpu_rt_gi;"),
-        "mcla_gpu_rt_gi is a string setting, auto by default, with the four words, live (no restart trait), and has its alias");
-  const size_t at = At(header, define + "std::string, mcla_gpu_rt_gi, \"auto\"");
+  Check(Has(header, define + "std::string, mcla_gpu_rt_gi, \"off\", \"") && Has(header, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(header, "inline auto& mcla_gpu_rt_gi = g_gpu.mcla_gpu_rt_gi;"),
+        "mcla_gpu_rt_gi is a string setting, off by default, with the four words, live (no restart trait), and has its alias");
+  const size_t at = At(header, define + "std::string, mcla_gpu_rt_gi, \"off\"");
   const size_t end = at == std::string::npos ? 0 : header.find(");", at);
   const std::string def = at == std::string::npos ? "" : header.substr(at, end - at);
-  Check(!def.empty() && !Has(def, "kRestart") && !Has(def, "kDebugOnly") && Has(def, "Live.") && Has(def, "RT BOUNCE LIGHT"), "the setting is live, not debug-only, and its help names the row");
+  Check(!def.empty() && !Has(def, "kRestart") && !Has(def, "kDebugOnly") && Has(def, "Live."), "the setting is live, not debug-only, and its help names the row");
   Check(Has(header, define + "bool, mcla_gpu_rt_gi_dry_run, false, \"") && Has(header, "inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;") && Has(manifest, "\"mcla_gpu_rt_gi_dry_run\": {") &&
             Has(meta, "{\"mcla_gpu_rt_gi_dry_run\", \"MCLA/GPU\"},"),
         "mcla_gpu_rt_gi_dry_run is a debug-only switch in the three settings files");
@@ -417,10 +416,10 @@ void SettingsChecks(const std::string& dir) {
   const size_t mat = At(manifest, "\"mcla_gpu_rt_gi\": {");
   const size_t mend = mat == std::string::npos ? 0 : manifest.find("\"comments\"", mat);
   const std::string entry = mat == std::string::npos ? "" : manifest.substr(mat, mend - mat);
-  Check(Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"auto\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"high\\\", \\\"ultra\\\")") && !Has(entry, "kDebugOnly"),
+  Check(Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"off\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"high\\\", \\\"ultra\\\")") && !Has(entry, "kDebugOnly"),
         "the manifest entry is the same setting");
   // the help in the manifest is the header's text
-  Check(!def.empty() && Has(manifest, "Ray traced bounce light: light bounces around the city the way it does in the real world.") && Has(def, "Ray traced bounce light: light bounces around the city the way it does in the real world."),
+  Check(!def.empty() && Has(manifest, "Traces bounced light from city geometry.") && Has(def, "Traces bounced light from city geometry."),
         "the help reads the same in the manifest and the header");
   // the meta order follows the header's (view, then the feedback)
   Check(Before(meta, "{\"mcla_gpu_rt_gi\", \"MCLA/GPU\"},", "{\"mcla_gpu_rt_gi_view\", \"MCLA/GPU\"},") && Before(meta, "{\"mcla_gpu_rt_gi_view\", \"MCLA/GPU\"},", "{\"mcla_gpu_rt_gi_bounces\", \"MCLA/GPU\"},"), "the meta list's order follows the header's");

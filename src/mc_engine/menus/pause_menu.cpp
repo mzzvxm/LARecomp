@@ -15,7 +15,6 @@
 #include "frame_generation_menu.h"
 #include "menu_items.h"
 #include "pause_parity_rows.h"
-#include "pause_selfrefl_row.h"
 #include "settings/ui_expr_auto.h"
 #include "settings/ui_expr_rules.h"
 #include "ui_expr_data.h"
@@ -1404,10 +1403,8 @@ constexpr double kCamSmoothVals[] = {0.2, 0.5, 0.8, 1.0, 1.2, 1.5, 2.0};
 
 constexpr double kFovValues[] = {0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.4,
                                  1.5, 1.6, 1.7, 1.8, 1.9, 2.0};
-// TRAFFIC LOD: AUTO (the cvar's 0: gpu/gpu_class.h kScales, 3X on a high-end graphics card), then the steps. The old 0.1 and 10 are not
-// steps (5 already keeps the most detailed model to 200 m): a value from an older larecomp.toml that is not a step gets an entry of its
-// own while the cvar holds it (the value rules).
-constexpr double kTrafficLodVals[] = {0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
+// World detail distances and densities are displayed in their own units.
+constexpr double kTrafficLodVals[] = {0.5, 1.0, 1.5, 2.0, 3.0, 5.0};
 // 40, 45 and 50 sit between the console's 30 and 60: steady on hardware that can't hold 60, and
 // even divisors of 120 Hz (40), 90 Hz (45) and 100 Hz (50) displays.
 constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.0};
@@ -1416,11 +1413,9 @@ constexpr double kFpsCapVals[] = {30.0, 40.0, 45.0, 50.0, 60.0, 120.0, 144.0, 0.
 // fragment-tune table brackets the two values the engine itself uses — 250 is
 // the fragTuneStruct constructor default and 3000 is what the shipped tune file
 // loads. 0 is "leave the tune file alone" and renders as STOCK.
-// TRAFFIC RANGE, PEDESTRIANS and PARKED CARS start with AUTO (the traffic range's 0, the densities' -1, where 0 is "none": gpu/gpu_class.h
-// kScales): what AUTO comes to follows the graphics card, and its label says it ("AUTO (400M)").
-constexpr double kUnspawnVals[]      = {0.0, 100.0, 150.0, 200.0, 250.0, 300.0,
+constexpr double kUnspawnVals[]      = {100.0, 150.0, 200.0, 250.0, 300.0,
                                         400.0, 500.0, 600.0};
-constexpr double kDensityVals[]      = {-1.0, 0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
+constexpr double kDensityVals[]      = {0.0, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0};
 constexpr double kFragDrawDistVals[] = {0.0, 250.0, 500.0, 1000.0, 1500.0,
                                         2000.0, 3000.0, 4000.0};
 
@@ -1456,8 +1451,8 @@ constexpr const char* kButtonLayoutNames[] = {"AUTO", "XBOX", "PLAYSTATION", "KE
 constexpr const char* kDisplayGammaVals[]  = {"tv", "pc"};
 constexpr const char* kDisplayGammaNames[] = {"CONSOLE", "PC"};
 // ASPECT RATIO: ":" is not allowed in a name, so the shapes read 16X9 as RESOLUTION reads 2560X1440.
-constexpr const char* kAspectVals[]  = {"auto", "16:9", "16:10", "21:9", "32:9"};
-constexpr const char* kAspectNames[] = {"AUTO", "16X9", "16X10", "21X9", "32X9"};
+constexpr const char* kAspectVals[]  = {"window", "16:9", "16:10", "21:9", "32:9"};
+constexpr const char* kAspectNames[] = {"FIT WINDOW", "16X9", "16X10", "21X9", "32X9"};
 // DIFFICULTY. PRESET picks whose rules the AI races by: the Complete Edition's
 // (the build larecomp runs) or the launch build's, before the title update of
 // December 2008 eased it. AI DIFFICULTY is a percent, -1 = the game's own choice
@@ -1481,76 +1476,30 @@ constexpr double kImpulseStrengthVals[] = {25.0, 50.0, 75.0, 100.0};
 // ── HDR ────────────────────────────────────────────────────────────────
 //
 // HDR (mcla_gpu_hdr) is live: the renderer applies it at the end of a frame, making the window's
-// swap chain again in the other format (the picture may flicker once), and AUTO follows Windows'
-// HDR switch while the game runs. The level rows work while HDR output is on: AUTO shows what it
-// stands for now (Windows' report for the display the window is on), and without HDR output they are
-// grey.
-
-// Width: the page's widest pair is "PEAK BRIGHTNESS (HDR OFF)" + "AUTO (1000 NITS)", about 690 units
-// (see "Page width").
-constexpr const char* kHdrModeVals[]  = {"off", "auto", "on"};
-constexpr const char* kHdrModeNames[] = {"OFF", "AUTO", "ON"};
+// swap chain again in the other format. Old configuration values that follow
+// Windows or the display are shown using their effective mode and brightness.
+constexpr const char* kHdrModeVals[]  = {"off", "on"};
+constexpr const char* kHdrModeNames[] = {"OFF", "ON"};
 // Windows' SDR content brightness slider covers 80 to 480 nits.
-constexpr double kHdrPaperWhiteVals[] = {0.0, 80.0, 100.0, 120.0, 160.0, 200.0,
+constexpr double kHdrPaperWhiteVals[] = {80.0, 100.0, 120.0, 160.0, 200.0,
                                          240.0, 280.0, 320.0, 400.0, 480.0};
-constexpr double kHdrPeakVals[] = {0.0, 200.0, 400.0, 600.0, 800.0, 1000.0,
+constexpr double kHdrPeakVals[] = {200.0, 400.0, 600.0, 800.0, 1000.0,
                                    1200.0, 1500.0, 2000.0, 3000.0, 4000.0};
 // How far the scene's lights go above paper white (mcla_gpu_hdr_highlights, the HDR curve's slope):
 // NORMAL, BRIGHT, BRIGHTER (the default), BRIGHTEST.
 constexpr double kHdrHighlightVals[] = {1.0, 1.5, 2.0, 3.0};
 
-// "240 NITS", and for 0 "AUTO (240 NITS)": what AUTO is on this display.
 #endif
 
 // ── Menu contents ──────────────────────────────────────────────────────
 
+// Display settings, including anti-aliasing. Presets cover the four effect pages below.
 #if defined(LARECOMP_HAS_GPU)
-// ── The graphics pages: one set for both renderers ─────────────────────
-//
-// GRAPHICS is a hub of five pages for both renderers, with the PRESET row (NATIVE only: the one choice for the four effect pages below, gpu/gfx_preset.h) after DISPLAY (UPSCALING was a sixth: its rows are DISPLAY's since the owner's decision of 2026-11-23, upscaling belongs with display): a row has the same name and place on both and maps to the
-// running renderer's own mechanism underneath (variant setting and the row's own list). A choice the other
-// renderer cannot run shows as its nearest there, and keeps its saved text, so it comes back when the renderer
-// is switched back. What only one renderer has is tagged XeniaOnly / NativeOnly and listed only for the renderer
-// this launch runs (MenuItemCount); a page with no row for it is not listed either (its hub row is tagged the
-// same way: REFLECTIONS is NATIVE only).
-//
-//   DISPLAY               the output rows: DISPLAY MODE, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA, VSYNC, FPS LIMIT, then NVIDIA REFLEX or AMD
-//                         ANTI-LAG 2 where the GPU has one; then the upscaling block: UPSCALING, its mode row, SHARPNESS, DLSS RAY RECONSTRUCTION (a GeForce RTX
-//                         card) or AMD FSR RAY REGENERATION (a Radeon RX 9000 series card on Windows 11) as an ON / OFF row where this PC has one, FRAME GENERATION,
-//                         FRAME GEN MULTIPLIER, FRAME GEN FPS LIMIT (kVideoItems, then DisplayPageRows: LowLatencyMenuRows, UpscalingPageRows in upscaling_menu.cpp and
-//                         frame_generation_menu.cpp; the denoiser row is gpu/denoiser_setting.h's and gpu/ray_regen_rules.h's). 15 rows at most.
-//   IMAGE QUALITY         MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR, SHARP UI, SHARP MINIMAP (kImageQualityItems)
-//   LIGHTING AND SHADOWS  SHADOWS, FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER, CONTACT SHADOWS, RT SHADOWS, TRAFFIC SHADOWS, CAR SHADOWS,
-//                         AMBIENT OCCLUSION, AO INTENSITY, BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS, LIGHT SHADOWS,
-//                         NEON LIGHT, VOLUMETRIC LIGHT (kLightItems; FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey while SHADOWS is off)
-//   REFLECTIONS           ROAD REFLECTIONS, CAR REFLECTIONS, CAR SELF-REFLECTIONS, RT CITY REFLECTIONS, SIDE MIRRORS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)
-//   WORLD DETAIL          TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST, TRAFFIC LOD, CITY LOD
-//                         (kWorldDetailItems)
-// On XENIA the hub lists DISPLAY (DISPLAY MODE, RESOLUTION, DISPLAY GAMMA, FPS LIMIT, RENDER SCALE), IMAGE QUALITY (MSAA,
-// ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR), LIGHTING AND SHADOWS (SHADOWS, FOLIAGE SHADOWS) and WORLD DETAIL.
-// CHECK: on XENIA (started with the XENIA renderer: the hidden fallback, gpu/renderer_fallback.h) the hub lists those four pages in that
-// order and no page is empty. MSAA is OFF / 2X with "(RESTART)" and writes disable_msaa, RENDER SCALE says "(RESTART)", lists
-// 33% / 67% / 100% at 4K and writes resolution_scale; leaving the menu after changing either of those two offers "Restart now?".
-// ANISOTROPIC is live and writes anisotropic_override. On NATIVE VSYNC writes mcla_gpu_vsync. DISPLAY GAMMA (CONSOLE / PC,
-// display_gamma) is live on both.
-
-int FindStringIndex(const std::string& value, const char* const* vals, int count);
-
-// MSAA. NATIVE: OFF, 2X, 4X, 8X in mcla_gpu_msaa, all live (gpu/msaa_level.h; the row says "(APPLYING)"
-// while the pipelines for a new level are made, and is grey while a temporal upscaler does the
-// anti-aliasing: upscaling_menu.cpp). XENIA: only the game's own switch, which the game reads at
-// start: OFF or 2X in disable_msaa, "(RESTART)". A saved 4X or 8X shows as 2X on XENIA.
-// Width: "MSAA (FSR 3.1 ON)" 17 at most ("MSAA (APPLYING)" 15), values 3.
+const char* const kPostAaVals[] = {"off", "fxaa", "smaa"};
+const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
 #endif
 
-// DISPLAY (GRAPHICS > DISPLAY): DISPLAY MODE, VSYNC, RESOLUTION, ASPECT RATIO, HDR >, DISPLAY GAMMA and FPS LIMIT
-// (kVideoItems); and after them (MenuDef::extra, DisplayPageRows) NVIDIA REFLEX or AMD ANTI-LAG 2, which is not listed where the
-// GPU, the driver or the graphics API has no latency reducer (LowLatencyMenuRows), and then the upscaling block (UpscalingPageRows: UPSCALING, its mode row, SHARPNESS, the
-// denoiser row where this PC has one, FRAME GENERATION and its two rows: the owner moved it here from the page of its own, 2026-11-23). Every row is one row for both renderers: DISPLAY MODE, RESOLUTION and FPS LIMIT
-// are live on both, and on XENIA the mode row (RENDER SCALE) is the one upscaling row. What only one renderer has (ASPECT RATIO, HDR, VSYNC, the latency row, the upscaler's rows) is tagged XeniaOnly / NativeOnly and listed only
-// when that renderer is the one this launch runs (MenuItemCount). The picture's rows are IMAGE QUALITY's, LIGHTING AND SHADOWS' and REFLECTIONS' (they were on this page, which had 19 rows with them).
-// At most 15 rows (7, the latency row, 7 of the upscaling block; the cap is 24: tools/check_menu_rows.py counts them), so the page needs no split. Width ("Page width" above ItemRowLabel): the widest label is
-// "AMD FSR RAY REGENERATION" (24) and the widest value 17 ("PERFORMANCE (50%)", "FSR 3.1 (NO ROOM)"): 41 of 41 (the latency row, the denoiser row and frame generation's say a short name before a reason for it, "Page width").
+// CHECK: verify the AA rows and the Xenia MSAA restart prompt during the Display tour.
 const ItemDef kVideoItems[] = {
     // The window mode and output resolution are live. Gamescope sets the size on Linux, where RESOLUTION is grey.
     Str("PM_RxDisplayMode", "fullscreen", "DISPLAY MODE: ", nullptr, nullptr, 0),
@@ -1560,7 +1509,7 @@ const ItemDef kVideoItems[] = {
 #endif
     Str("PM_RxResolution", "resolution", "RESOLUTION: ", nullptr, nullptr, 0),
 #if defined(LARECOMP_HAS_GPU)
-    // ASPECT RATIO: the shape of the picture in the window (mc_engine/display/frame_fit.h, ultrawide.h). AUTO fills
+    // ASPECT RATIO: the shape of the picture in the window (mc_engine/display/frame_fit.h, ultrawide.h). FIT WINDOW fills
     // the window at any shape (a wider one shows more at the sides, a taller one more above and below);
     // 16X9, 16X10, 21X9 and 32X9 keep that shape and leave pure black bars where the window is not that
     // shape. Live, NATIVE only (the Xenia renderer's present always fills the window, 16:9 at least).
@@ -1576,6 +1525,10 @@ const ItemDef kVideoItems[] = {
     // (frame_generation_menu.h) and counts rendered frames.
     Dbl("PM_RxFpsCap", "fps_limit", "FPS LIMIT: ", kFpsCapVals, 8, "%.0f", "",
                      "UNCAPPED"),
+#if defined(LARECOMP_HAS_GPU)
+    Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
+    NativeOnly(Str("PM_RxGpuAa", "mcla_gpu_aa", "POST AA: ", kPostAaVals, kPostAaNames, 3)),
+#endif
 };
 
 // (DISPLAY GAMMA is on the DISPLAY page now, kVideoItems; the controller rows are on the CONTROLLER
@@ -1653,210 +1606,51 @@ const ItemDef kControllerItems[] = {
          kButtonLayoutVals, kButtonLayoutNames, 4),
 };
 
-// WORLD DETAIL (GRAPHICS > WORLD DETAIL): how much of the world is there and how far it is drawn, in two runs (the old WORLD DENSITY and
-// LOD AND FOLIAGE pages): what is in the streets (TRAFFIC RANGE, PEDESTRIANS, PARKED CARS, PROP DRAW DIST), then the level of detail
-// (TRAFFIC LOD, CITY LOD), kWorldDetailItems below. Everything here trades image quality for framerate. The old PERFORMANCE
-// hub is gone with its RENDERING page: SHADOWS is on LIGHTING AND SHADOWS, and so is FOLIAGE SHADOWS (the far trees' shadows are a shadow row:
-// it moved there on 2026-11-20, right after SHADOWS), DEPTH OF FIELD is on IMAGE QUALITY and the vendor's latency reducer on DISPLAY.
-//
-// The developer switches that used to be here are not rows of the normal menus any more
-// (SETTINGS-REVIEW.md, SX-G5). The live ones (SHADOW PHASES, CHEAP CAR SHADOW, FOLIAGE, SINGLE TILE,
-// FENCE SPIN YIELD, BREAK FPS FLOOR and, on DISPLAY, PACE AT PRESENTATION) are on the DEBUG menu's
-// PERFORMANCE page (debug_menu_pages.cpp). TREE IMPOSTORS and SCREEN BLUR are read once at start, so
-// they are launch arguments (--perf_no_impostors, --perf_no_fullscreen_blur) and rows of the
-// launcher's Advanced tab. CITY AMBIENT CULLING
-// (enable_ambient_tuning), the master switch over TRAFFIC RANGE, PEDESTRIANS and PARKED CARS, is no
-// row either: those three stand alone and 400M / 1X / 1X is the stock game (the cvar stays, so an
-// old larecomp.toml that turns it off still acts).
-//
-// PROP DRAW DIST patches rage::fragTuneStruct in place after the game has parsed
-// $/tune/types/fragments, so it applies live. "Prop" here means a breakable fragment
-// (pole, sign, fence, barrier), not the whole world.
+constexpr double kCityLodVals[] = {0.5, 1.0, 1.5, 2.0};
 
-// CITY LOD (lod_city_scale, graphics.cpp, live): AUTO, 0.5X, 1X, 1.5X, 2X (the launcher's the same).
-// AUTO is the cvar's 0 and says what it comes to on this GPU, like the other AUTO rows: "AUTO (2X)" on a
-// mid-range or high-end card, "AUTO (1X)" on integrated graphics and where the class is not known (the
-// Xenia renderer; gpu/gpu_class.h CityLodAutoFor). A value from an older larecomp.toml that is not a
-// step (0.1, 5, 10) gets an entry of its own, shown as its number (value_label), and keeps working
-// until the player steps off it. Width: "CITY LOD" 8 with "AUTO (2X)" 9.
-constexpr double kCityLodVals[] = {0.0, 0.5, 1.0, 1.5, 2.0};
-// The labels of the rows that have an AUTO (world_detail.h: the value the class gives, or the value itself).
-// 6 rows, no suffix. Width: the longest label is "PROP DRAW DIST" (14) and the longest value "AUTO (0.75X)" (12): 26 of the 41 a page can take.
 const ItemDef kWorldDetailItems[] = {
     Dbl("PM_RxUnspawn", "traffic_unspawn_dist", "TRAFFIC RANGE: ",
                      kUnspawnVals, int(sizeof(kUnspawnVals) / sizeof(kUnspawnVals[0])), "%gM"),
-    Dbl("PM_RxPedDensity", "ped_density_scale", "PEDESTRIANS: ",
+    Dbl("PM_RxPedDensity", "ped_density_scale", "PEDESTRIAN DENSITY: ",
                      kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-    Dbl("PM_RxParkedCars", "parked_car_scale", "PARKED CARS: ",
+    Dbl("PM_RxParkedCars", "parked_car_scale", "PARKED CAR DENSITY: ",
                      kDensityVals, int(sizeof(kDensityVals) / sizeof(kDensityVals[0])), "%gX"),
-    Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DRAW DIST: ",
+    Dbl ("PM_RxFragDist",    "global_max_draw_distance", "PROP DISTANCE: ",
          kFragDrawDistVals, int(sizeof(kFragDrawDistVals) / sizeof(kFragDrawDistVals[0])),
          "%gM", "", "STOCK"),
-    Dbl("PM_RxLodTraffic", "lod_traffic_scale", "TRAFFIC LOD: ", kTrafficLodVals,
+    Dbl("PM_RxLodTraffic", "lod_traffic_scale", "TRAFFIC DETAIL DISTANCE: ", kTrafficLodVals,
                      int(sizeof(kTrafficLodVals) / sizeof(kTrafficLodVals[0])), "%gX"),
-    Dbl("PM_RxLodCity", "lod_city_scale", "CITY LOD: ", kCityLodVals,
+    Dbl("PM_RxLodCity", "lod_city_scale", "CITY DETAIL DISTANCE: ", kCityLodVals,
                      int(sizeof(kCityLodVals) / sizeof(kCityLodVals[0])), "%gX"),
 };
 
-// Rows that need SHADOWS (perf_no_shadows, the first row of LIGHTING AND SHADOWS, on both renderers): FOLIAGE SHADOWS (the far trees' baked
-// shadow silhouettes are drawn into the sun's cascades, which SHADOWS off clears), and on the NATIVE renderer SHADOW DETAIL, SHADOW FILTER and
-// TRAFFIC SHADOWS (they size, smooth and add to those same cascades). With SHADOWS off they do nothing, so they are shown grey and say why
-// ("SHADOW DETAIL (NO SHADOW)"); the value each had stays, and comes back with SHADOWS. The rule in ui_rules.toml is read live on every draw and poll. A grey row is the game's own disabled row: the
-// cursor lands on it, A, left, right and a click do nothing (MenuFormAccept, PollNativeRows).
-// CHECK: with SHADOWS flipped OFF and ON in the open LIGHTING AND SHADOWS page the four rows grey and un-grey at once (also when SHADOWS is
-// changed from the F4 panel behind the menu), the label says "(NO SHADOW)" while grey and nothing after it otherwise, the cursor lands on a grey
-// row, A / left / right on it change nothing, and the page is not cut on the right (27 + 14 = 41 of 41 characters).
-// FOLIAGE SHADOWS (disable_imposter_shadows, row inverted: ON = the far trees' shadows are refreshed): live, the hook reads the cvar on every
-// pass (graphics.cpp). On both renderers.
-
 #if defined(LARECOMP_HAS_GPU)
-// POST AA (mcla_gpu_aa, the NATIVE renderer's post pass, M6c, live): FXAA or SMAA on the finished
-// scene before the UI. It is named for what it is (a pass on the picture, after it is drawn) so that it
-// does not read like FSR's and DLSS's "NATIVE AA" mode, a render at the output's own size. The row is
-// grey and says what does the job while a temporal upscaler runs (upscaling_menu.cpp, "POST AA (FSR 3.1
-// ON)", 20 characters).
-const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
-const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
-// Ambient occlusion (gpu/ao.h, gpu/rtao_setting.h, live): AUTO (the default), off, half resolution, full resolution, RAY TRACED. AUTO
-// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on a
-// discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h), RT on a High class card that traces rays quickly (rt_tier.h kRtAo). Nothing in the graphics settings is called
-// low (owner, 2026-11-14): the stored values are the shown words, off / high / ultra / rt (a larecomp.toml that still says
-// low is ignored and the row is AUTO). RAY TRACED keeps its saved value on every GPU; the rules (ui_rules.toml) give the fallback reason when the gate is shut ("RT (NO RT GPU)", 14 characters).
-// The row is "AMBIENT OCCLUSION" (17 characters) with a value of at most 14 ("RT (NO RT GPU)"), 31 together, under the page's 41.
-// CHECK: confirm the 14-character "RT (NO RT GPU)" fits LIGHTING AND SHADOWS in the pause movie.
-// (The two lists are written out as the other rows' are: the settings UI exporter reads this table's source. gpu/rtao_setting_test.cpp holds them equal to rtao_setting::kValues / kNames.)
-const char* const kNativeAoVals[]  = {"auto", "off", "high", "ultra", "rt"};
-const char* const kNativeAoNames[] = {"AUTO", "OFF", "HIGH", "ULTRA", "RAY TRACED"};
-// How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
-// off (what AUTO comes to counts). At most 21 characters with its longest value.
-const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
-const char* const kNativeAoLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "MAX"};
-// Shadow filter (mcla_gpu_shadow_filter, gpu/shadow_filter.h, live): how the sun's shadows are smoothed, the
-// game's own four taps (GAME: the picture is the game's), more taps on a disk (SOFT) or that with contact
-// hardening (PCSS: a shadow is sharp where it touches what casts it and softer with the distance from it).
-// AUTO says what it comes to on this GPU (the first value's label, like the latency reducer's): GAME on an
-// integrated GPU (SOFT on the Steam Deck, whose GPU can carry that much), PCSS on the rest (gpu/gpu_class.h; decided by the owner on 2026-11-19).
-// PCSS on an integrated GPU has no blocker search (the same cost rule as its AUTO) and says so: "PCSS (SOFT)".
-// The row is "SHADOW FILTER" (13 characters) with a value of at most 11 ("AUTO (PCSS)", "AUTO (GAME)",
-// "PCSS (SOFT)").
-const char* const kNativeShadowFilterVals[]  = {"auto", "game", "soft", "pcss"};
-const char* const kNativeShadowFilterNames[] = {"AUTO", "GAME", "SOFT", "PCSS"};
-// Contact shadows (gpu/ao.h, live): the short sun shadows the game does not draw. AUTO is the default
-// and says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on
-// a discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h). Stored values off / high / ultra, shown OFF / HIGH /
-// ULTRA, as the ambient occlusion's. The row is "CONTACT SHADOWS" (15 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeContactVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeContactNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// Ray traced shadows (mcla_gpu_rt_shadows, gpu/city_rt_rules.h, gpu/city_rt_shadow.h, live): the sun's shadows traced from the city's own triangles (the city pack the launcher or the
-// game builds from the game files) through the contact shadows' pass, so a shadow is sharp where it touches what casts it, softer the farther it falls, with no cascade seams and
-// the long shadows of the evening that the game does not draw. OFF is the game's own shadows; HIGH keeps the buildings within 300 m (150 m on a smaller card) and ULTRA within 600 m
-// (more rays, more memory). AUTO says what it comes to on this graphics card: HIGH on a fast one that can ray trace, OFF on the rest (the same row for every API). The stored words
-// are the shown words. The row is grey, with the reason in its label, where the graphics card cannot ray trace (" (NO RT GPU)": Direct3D 12 with DXR 1.1, or Vulkan with ray
-// queries) or is too slow for it (the integrated class: " (GPU TOO SLOW)"), and without a value while the contact shadows are off: their march is what applies the traced shadows
-// (the CONTACT SHADOWS row above; AO INTENSITY and BOUNCE LIGHT are grey in the same way). The label is "RT SHADOWS" (10 characters, at most 25 with its longest suffix) with a value
-// of at most 12 ("AUTO (ULTRA)"): the page's widest pair stays 39.
-const char* const kNativeRtShadowsVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeRtShadowsNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// Traffic shadows (mcla_gpu_traffic_shadows, gpu/traffic_shadow.h, mc_engine/hooks/traffic_shadow.cpp, live): the other cars
-// (traffic and opponents) cast into the sun's shadow map like the player's car, which the game does alone, so the ground under
-// them is dark. AUTO says what it comes to on this GPU (NEAR on a discrete card, OFF on an integrated one); NEAR is the nearest
-// few cars within a short distance, ALL every car within a long one (more draws in the cascades). The row is "TRAFFIC SHADOWS"
-// (15 characters) with a value of at most 11 ("AUTO (NEAR)").
-const char* const kNativeTrafficShadowsVals[]  = {"auto", "off", "near", "all"};
-const char* const kNativeTrafficShadowsNames[] = {"AUTO", "OFF", "NEAR", "ALL"};
-// Sun shafts (gpu/shafts.h, shafts_level.h, live): how strong they are. AUTO picks by the graphics card and
-// the row says what it comes to ("AUTO (DEFAULT)", "AUTO (OFF)" on integrated graphics); OFF is the game's own
-// picture; then LIGHT, DEFAULT, STRONG, STRONGER and STRONGEST (1x to 5x the built-in strength). The ray quality follows
-// the card by itself. They show at dawn and dusk only. At most 26 characters with the longest label
-// ("SUN SHAFTS: AUTO (DEFAULT)"). An older larecomp.toml may still say low or high: the shafts read those as
-// DEFAULT and this row, which does not list them, shows AUTO until it is stepped.
-const char* const kNativeShaftsVals[]  = {"auto", "off", "light", "default", "strong", "stronger", "strongest"};
-const char* const kNativeShaftsNames[] = {"AUTO", "OFF", "LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
-// Headlights (mcla_gpu_headlights, gpu/headlight_rig.h, live): the cars' headlights light the road, the world and the other cars at night (the game's own
-// only glow): yours, the nearest opponents' and the nearest traffic cars', up to four at a time. One level, ON: AUTO says what it comes to on this GPU (ON
-// on a discrete card, OFF on an integrated one); OFF is the game's own night. The label is "HEADLIGHTS" (10 characters) with a value of at most 9
-// ("AUTO (OFF)").
-const char* const kNativeHeadlightsVals[]  = {"auto", "off", "on"};
-const char* const kNativeHeadlightsNames[] = {"AUTO", "OFF", "ON"};
-// Volumetric light (gpu/volumetrics.h, volumetrics_level.h, live): beams of light under the street lamps and the cars' headlights, a haze that light
-// shows in, and the sun's shafts between trees and buildings. AUTO picks by the graphics card and the row says what it comes to ("AUTO (HIGH)", "AUTO
-// (OFF)" on integrated graphics: gpu/gpu_class.h); OFF is the game's own picture; then MEDIUM, HIGH and ULTRA (the volume's size and the lights it
-// lights). Nothing is called low. The row is "VOLUMETRIC LIGHT" (16 characters) with a value of at most 13 ("AUTO (MEDIUM)"): 31 of the 41 a page takes.
-const char* const kNativeVolumetricsVals[]  = {"auto", "off", "medium", "high", "ultra"};
-const char* const kNativeVolumetricsNames[] = {"AUTO", "OFF", "MEDIUM", "HIGH", "ULTRA"};
-// Bounce light (mcla_gpu_ssgi, gpu/ao.h, live): the light a lit wall or the ground sends back onto what
-// stands beside it. AUTO says what it comes to on this GPU, as the rows above: OFF on every class for now,
-// until its cost is measured (gpu/gpu_class.h); or OFF, HIGH (a coarser search) or ULTRA (the full one): the stored values
-// are off / high / ultra, as the ambient occlusion's are. It
-// is made from the ambient occlusion's own passes, so the row is grey while the occlusion is off, as AO
-// INTENSITY is. The row is "BOUNCE LIGHT" (12 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeSsgiVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeSsgiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// While the probe field stands and the screen-space bounce light is not built (RT BOUNCE LIGHT is on and its field is in the picture: gpu/gi_setting.h ReplacedBy, set once a frame by the renderer) the label
-// says " (REPLACED)": the row still sets what runs where the field does not (a cut, the first moments, the places it does not cover). "BOUNCE LIGHT (REPLACED)" is 23 characters, under the page's 27.
-// Ray traced bounce light (mcla_gpu_rt_gi, gpu/gi_setting.h, gpu/gi_integration.h, gpu/gi_field.h, gpu/gi_apply.h, live): the same light as BOUNCE LIGHT, worked out in a field of probes laid round the camera
-// from the city's own triangles instead of from the picture, so it knows what is behind the camera and what is not lit in this frame's picture: the sunlit street lights the shaded wall across it, a lamp's pool
-// lights the facades around it. Where it stands it takes the place of BOUNCE LIGHT (that row then says "(REPLACED)"), which stays for graphics cards that cannot ray trace and for the places the field does not
-// cover; BOUNCE LIGHT STRENGTH sets how strong either looks. AUTO says what it comes to on this graphics card: HIGH where the ray tracing tier is strong, OFF on the rest (the weaker ray tracing cards can switch it
-// on by hand, with fewer probes). The stored words are the shown words. The row is grey, with the reason after its label, where the card cannot trace rays (" (NO RT GPU)"), is too slow for it (the integrated
-// class: " (TOO SLOW)": " (GPU TOO SLOW)" would make the page 44 wide) or the probe update is not in this build yet (" (NOT READY)"); it does not depend on the ambient occlusion. The label is "RT BOUNCE LIGHT"
-// (15 characters, 27 with its longest suffix, like FOLIAGE SHADOWS (NO SHADOW)) with a value of at most 11 ("AUTO (HIGH)").
-const char* const kNativeRtGiVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeRtGiNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// How strong the bounce light looks (mcla_gpu_ssgi_intensity, gpu/ssgi_level.h, live), the row under them: grey
-// while no bounce light runs, as AO INTENSITY is while the occlusion is. The screen-space bounce light is off when the
-// occlusion is, or when BOUNCE LIGHT says OFF, or says AUTO and AUTO comes to OFF on this graphics card (gpu/gpu_class.h); the probe field's
-// (RT BOUNCE LIGHT) is off when its row says OFF, or AUTO comes to OFF, or its gate is shut. Both are as strong as this row says.
-// Five levels, no AUTO: LIGHT, DEFAULT, STRONG, STRONGER, STRONGEST. The row is "BOUNCE LIGHT STRENGTH" (21
-// characters) with a value of at most 9 ("STRONGEST"): 30 together, under the page's 41.
-const char* const kNativeSsgiLevelVals[]  = {"light", "default", "strong", "stronger", "strongest"};
-const char* const kNativeSsgiLevelNames[] = {"LIGHT", "DEFAULT", "STRONG", "STRONGER", "STRONGEST"};
-// Either bounce light runs: the screen-space one, or the probe field (RT BOUNCE LIGHT on and not gated shut).
-// Road reflections (mcla_gpu_reflection_resolution, gpu/side_views.h, live): how sharp the mirror image
-// on wet roads, windows and water is, the game's own 256x256 stretched over the screen (GAME), 512x512
-// (HIGH) or 768x768 (ULTRA). AUTO says what it comes to on this GPU (the first value's label, like
-// the latency reducer's). Width: the label is 16 characters and the longest value "AUTO (HIGH)" 11,
-// 27 together ("AUTO (ULTRA)" would make it 28), under the page's 40.
-const char* const kSideViewVals[]  = {"auto", "game", "high", "ultra"};
-const char* const kSideViewNames[] = {"AUTO", "GAME", "HIGH", "ULTRA"};
-// Reflections on surfaces (mcla_gpu_ssr, gpu/ssr.h and ssr_rules.h, live; GB-J): sharp reflections of the scene on wet roads, wet sidewalks, glass, metal and
-// water, traced through the picture itself on top of the game's own reflections (a car's paint and chrome keep their own: CAR REFLECTIONS, CAR SELF-REFLECTIONS).
-// AUTO, OFF, HIGH (one ray a pixel at half the picture's size, up to 40 steps, about 10 frames of history) or ULTRA (two rays, up to 64 steps, about 12 frames).
-// AUTO says what it comes to on this GPU, like the other AUTO rows (gpu/gpu_class.h Effect::kSsr). THE CELLS ARE OFF ON EVERY CLASS for now: the effect stays off by default
-// until the owner has seen its pictures and the cost run's figures have set the cells (the prepared ones are in gpu_class.h). The effect needs the G-buffer's planes, which
-// exist only while a consumer wants them (this one, the light pass, the occlusion's normals: gbuffer_rules.h AutoPlanes), so OFF costs nothing. The stored words are the
-// shown words (no level is called low). The label is "REFLECTIONS ON SURFACES" (23 characters) with a value of at most 12 ("AUTO (ULTRA)"); the page counts its widest label (this one) plus
-// its widest value over all its rows ("AUTO (RAY TRACED)", 17): 40 of the 41 a page can take.
-const char* const kNativeSsrVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeSsrNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// Shadow detail (mcla_gpu_shadow_resolution, gpu/side_views.h, live): how finely the sun's shadows are drawn,
-// the game's own four 640x640 maps in a 1280x1280 picture (GAME), 2560x2560 (HIGH) or 3840x3840 (ULTRA);
-// with SHADOW FILTER on SOFT the edge of a shadow is half and a third as wide. AUTO says what it comes to on
-// this GPU (the first value's label): GAME on an integrated GPU, HIGH on the rest. The same value names as
-// the road reflections'. The label is "SHADOW DETAIL" (13 characters) with a value of at most 11
-// ("AUTO (HIGH)").
-// Car reflections (mcla_gpu_env_resolution, gpu/side_view_env.cpp, live): how sharp the world the paint,
-// windows and bonnet of the cars reflect is, the game's own 512x256 (GAME), 1024x512 (HIGH) or 1536x768
-// (ULTRA). The same values and the same label rule as the road reflections' row. Width: the label is 17
-// characters and the longest value "AUTO (HIGH)" 11, 28 together, under the page's 40.
-// Car shadows (mcla_gpu_car_shadow_map, gpu/car_shadow_map.h, live): your car casts a shadow of its real shape on itself and on the road beside
-// it (the game's own sun shadows draw it in a rough low-detail form, so the wing, the mirrors and the wheels cast none of their own): OFF, HIGH
-// (a 1024x1024 map fitted to the car) or ULTRA (2048x2048). AUTO says what it comes to on this GPU, like the other AUTO rows: ULTRA on a
-// discrete graphics card and HIGH on an integrated one (car_shadow_map_rules.h AutoLevel). The stored words are the shown words (no level is
-// called low). The map is drawn only while the contact shadows are on, in the game view and in daylight; the row stays live whatever they say.
-// The label is "CAR SHADOWS" (11 characters) with a value of at most 12 ("AUTO (ULTRA)").
-const char* const kNativeCarShadowVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeCarShadowNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// Light shadows (mcla_gpu_light_shadows, gpu/local_shadow.h, live; it was mcla_gpu_headlight_shadows, which stays as an alias): the local lights
-// cast shadows (the game has none from any light but the sun): the scene's opaque objects are drawn again from the lights into a small map the
-// lights' light reads. The row covers the headlights now and the street lamps later (owner, 2026-11-20: one row for every local light's shadows).
-// OFF, MEDIUM (the player's car and the nearest other car, one view for each car: 2 views of 512x512 texels), HIGH (the same two cars, the player's car with a shadow from each
-// headlamp and the other car with one: 3 views of 512x512) or ULTRA (also the next nearest car's, every car with a shadow from each lamp, sharper: 6 views of 1024x1024): the three
-// level shape (owner, 2026-11-20). The levels are the table of gpu/local_shadow_rules.h (kLevelTable, kThreeLevelShape), and so are this row's words (the row's code builds its arrays
-// from kMenuWords: auto, off, medium, high, ultra; three levels are Medium / High / Ultra, never "low"). AUTO says what it comes to on this GPU, like the other AUTO rows
-// (gpu/gpu_class.h Effect::kLightShadows: ULTRA on a fast card, MEDIUM on a medium one, OFF on an integrated one). The stored words are the shown words (no level is called low).
-// It runs only while a headlight is lit and in the game view; the row stays live whatever the hour is. The label is "LIGHT SHADOWS" (13 characters) with a value of at most 13
-// ("AUTO (MEDIUM)").
+const char* const kQualityVals[] = {"off", "high", "ultra"};
+const char* const kQualityNames[] = {"OFF", "HIGH", "ULTRA"};
+const char* const kOnOffVals[] = {"off", "on"};
+const char* const kOnOffNames[] = {"OFF", "ON"};
+const char* const kNativeAoVals[] = {"off", "high", "ultra", "rt"};
+const char* const kNativeAoNames[] = {"OFF", "HIGH", "ULTRA", "RT"};
+const char* const kCarAoRtVals[] = {"off", "ao", "contact", "both"};
+const char* const kCarAoRtNames[] = {"OFF", "OCCLUSION", "SUN", "BOTH"};
+const char* const kNativeAoLevelVals[] = {"light", "default", "strong", "max"};
+const char* const kNativeAoLevelNames[] = {"1", "2", "3", "4"};
+const char* const kNativeShadowFilterVals[] = {"game", "soft", "pcss"};
+const char* const kNativeShadowFilterNames[] = {"GAME", "HIGH", "ULTRA"};
+const char* const kNativeTrafficShadowsVals[] = {"off", "near", "all"};
+const char* const kNativeShaftsVals[] = {"off", "light", "default", "strong", "stronger", "strongest"};
+const char* const kNativeShaftsNames[] = {"OFF", "1", "2", "3", "4", "5"};
+const char* const kNativeVolumetricsVals[] = {"off", "medium", "high", "ultra"};
+const char* const kNativeVolumetricsNames[] = {"OFF", "MEDIUM", "HIGH", "ULTRA"};
+const char* const kNativeSsgiLevelVals[] = {"light", "default", "strong", "stronger", "strongest"};
+const char* const kNativeSsgiLevelNames[] = {"1", "2", "3", "4", "5"};
+const char* const kSideViewVals[] = {"game", "high", "ultra"};
+const char* const kSideViewNames[] = {"GAME", "HIGH", "ULTRA"};
+const char* const kNativeAnisoVals[] = {"game", "off", "2", "4", "8", "16"};
+const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
+const char* const kGfxPresetVals[] = {"vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"};
+const char* const kGfxPresetNames[] = {"VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM"};
+
 struct LightShadowWords {
     const char* vals[mcla::gpu::local_shadow::kMenuWordMax] = {};
     const char* names[mcla::gpu::local_shadow::kMenuWordMax] = {};
@@ -1865,206 +1659,110 @@ struct LightShadowWords {
 constexpr LightShadowWords MakeLightShadowWords() {
     LightShadowWords w;
     const mcla::gpu::local_shadow::MenuWords& menu = mcla::gpu::local_shadow::kMenuWords;
-    for (uint32_t i = 0; i < menu.count; ++i) {
-        w.vals[i] = menu.stored[i].data();   // the table's words are string literals: null terminated
-        w.names[i] = menu.shown[i].data();
+    for (uint32_t i = 1; i < menu.count; ++i) {
+        w.vals[i - 1] = menu.stored[i].data();   // the table's words are string literals: null terminated
+        w.names[i - 1] = menu.shown[i].data();
     }
-    w.count = int(menu.count);
+    w.count = int(menu.count) - 1;
     return w;
 }
 constexpr LightShadowWords kLightShadowWords = MakeLightShadowWords();
 constexpr const char* const* kNativeLightShadowVals  = kLightShadowWords.vals;
 constexpr const char* const* kNativeLightShadowNames = kLightShadowWords.names;
-// Grey while HEADLIGHTS is off (what AUTO comes to counts): the shadows are the headlights' own for now (when the street lamps get shadows too,
-// the row is grey only while both the headlights and the lamps are off).
-// Neon light (mcla_gpu_neon_light, gpu/neon_light.h, gpu/local_lights_sources.h, live): the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own
-// colour and pulse (owner, 2026-11-21: ON by default where the light pass runs). One level, ON: AUTO says what it comes to on this GPU (ON on a discrete card, OFF on an integrated one); OFF leaves the neon
-// as the game has it. How many cars and lights the pass takes follows LIGHT SHADOWS (gpu/light_budget.h), and nothing is drawn while no car with a lit neon is in view. No other row it waits for. The label is
-// "NEON LIGHT" (10 characters) with a value of at most 9 ("AUTO (OFF)").
-const char* const kNativeNeonLightVals[]  = {"auto", "off", "on"};
-const char* const kNativeNeonLightNames[] = {"AUTO", "OFF", "ON"};
-// Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
-// paint reflects its own body, the wing in the trunk lid and the mirror in the door, and the reflection is darker where the body shades it. One
-// level, ON (the stored word is `on`; the older low and high cost the same and are gone: a larecomp.toml that still says one of them is ignored and
-// the row shows AUTO). Where the graphics card can ray trace (Direct3D 12 with DXR 1.1 and shader model 6.5, or Vulkan with VK_KHR_ray_query:
-// gpu.h CarRtReflAvailable, decided in car_rt_scene.h CarRtSupported) the reflection can be traced from the car's own triangles instead of marched through the picture, so a part the
-// camera cannot see shows in the paint too. One row for both settings, AUTO / OFF / ON / RAY TRACED, RAY TRACED only where it can run:
-//   AUTO        mcla_gpu_car_selfrefl = auto, mcla_gpu_car_selfrefl_rt = auto; "AUTO (RAY TRACED)", "AUTO (ON)" or "AUTO (OFF)" by what runs
-//               on this PC (OFF on an integrated GPU, ON on a discrete one, RAY TRACED where that one can trace: gpu/gpu_class.h)
-//   OFF         mcla_gpu_car_selfrefl = off
-//   ON          mcla_gpu_car_selfrefl = on, mcla_gpu_car_selfrefl_rt = off
-//   RAY TRACED  mcla_gpu_car_selfrefl = on, mcla_gpu_car_selfrefl_rt = auto
-// The row reads the two settings back as pause_selfrefl_row.h says (a larecomp.toml can hold a pair the row never writes: auto with the ray tracing
-// off shows as ON, or OFF where auto is off). It works in the game, behind the pause menu and in the garage, not on the map. The label is
-// "CAR SELF-REFLECTIONS" (20 characters) with a value of at most 17 ("AUTO (RAY TRACED)").
-// CHECK: on an RTX card (D3D12 or Vulkan) the row steps AUTO (RAY TRACED) > OFF > ON > RAY TRACED and wraps; on a card without DXR 1.1 or Vulkan ray
-// queries it has three values and AUTO says "AUTO (ON)"; the log's "[car refl]" and "[car rt refl]" lines follow each step.
-const char* const kNativeCarSelfReflVals[]  = {"auto"};  // the ordered choices are in ui_rules.toml
-const char* const kNativeCarSelfReflNames[] = {"AUTO"};
-// RT city reflections (mcla_gpu_rt_reflections, gpu/city_refl_setting.h, gpu/city_refl.h, gpu/city_refl_rules.h, live): the player's car paint (and the other cars') reflects the REAL street, found by rays in the
-// city's own triangles: the building across the road, the lamp posts and lamp heads (small and sharp, not two glowing blobs), signs, the car beside you, with the sky where there is sky; the game's blurred
-// environment map stays for the sky and for where the data is not there. It rides on the car's own ray traced pass, so the row is right after CAR SELF-REFLECTIONS and is grey with " (NEEDS CAR RT)" until
-// that row is RAY TRACED (or AUTO that comes to it). AUTO says what it comes to on this graphics card: HIGH where the ray tracing tier is strong, OFF on the rest (the weaker ray tracing cards can switch
-// it on by hand, with a shorter reach: 60 m, two rays). The stored words are the shown words (no level is called low). The row is grey, with the reason after a SHORT label, where the card cannot trace
-// rays (" (NO RT GPU)"), is too slow for it (the integrated class, " (TOO SLOW)"), the car's ray traced reflection is not on (" (NEEDS CAR RT)") or the city's data cannot be had this session (" (NOT READY)");
-// while the game builds the city pack and the hit data from the game files in the background (the launcher's setup has them ready at the first start) the label says " (BUILDING DATA)" and the row
-// stays on: the setting is kept and the city comes into the paint by itself when the data is done. Width ("Page width" above ItemRowLabel): the whole label "RT CITY REFLECTIONS" is 19; the reasons
-// follow "RT CITY" (7), at most 23 as a label ("RT CITY (BUILDING DATA)"), so the page stays as wide as REFLECTIONS ON SURFACES makes it (23 + 17 = 40 of the 41).
-const char* const kNativeRtCityVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeRtCityNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// Side mirrors without ray tracing (mcla_gpu_side_mirrors, gpu/mirror_setting.h, gpu/mirror_view.h, gpu/mirror_glass.h, live): the two side mirrors of your car show the street and the cars behind you, taken from the game's own rear
-// view mirror camera, drawn once into a small picture (also the HUD's rear view mirror's picture while it runs), on any graphics card. The pair of RT SIDE MIRRORS, as BOUNCE LIGHT is of RT BOUNCE LIGHT: where the traced mirrors
-// run they REPLACE this row, which then says " (REPLACED)" after its label (nothing of it runs, the word applies again the moment RT SIDE MIRRORS goes off); the row is never grey. Two levels, so the words are AUTO / OFF / HIGH / ULTRA
-// (nothing is called low): HIGH draws the picture 512 pixels wide every second frame, ULTRA 768 wide every frame. AUTO says what it comes to on this graphics card (gpu_class.h kSideMirrors): OFF on the integrated class (the game's
-// own mirrors), HIGH on a mid range card, ULTRA on a fast one. Width ("Page width" above ItemRowLabel): "SIDE MIRRORS" is 12, 23 with " (REPLACED)" (the page's own widest label), a value at most 12 ("AUTO (ULTRA)").
-// CHECK: never seen in the game; the shared view and the glass overlay have not run on a device.
-const char* const kNativeSideMirrorsVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeSideMirrorsNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
-// RT side mirrors (mcla_gpu_car_mirror_rt, gpu/car_mirror_setting.h, gpu/car_mirror_rt.h, gpu/car_mirror_rt_rules.h, live): the two side mirrors of your car show the real view behind, found by rays
-// in the car's own triangles: the cars beside you, your own flank and rear, and the sky and street the game's environment map holds, instead of the game's blurred sky. It shows in the first
-// person cameras (cockpit, bumper), where the glass is big enough to read, and is not drawn in a frame without a mirror, in the pause and the garage views. One level, so the words are AUTO / OFF /
-// ON (nothing is called low). AUTO says what it comes to on this graphics card: ON where the ray tracing tier is strong, OFF on the rest (a weaker ray tracing card can switch it on by hand, with a smaller
-// pixel cap and a shorter reach to the cars beside). The row is grey, with the reason after a SHORT label, where the card cannot trace rays (" (NO RT GPU)") or is too slow for it (the integrated class, " (TOO SLOW)"). It does
-// not depend on CAR SELF-REFLECTIONS: the mirror asks for the car's structures itself. Width ("Page width" above ItemRowLabel): the whole label "RT SIDE MIRRORS" is 15; the reasons follow
-// "RT MIRRORS" (10), at most 22 as a label ("RT MIRRORS (NO RT GPU)"), so the page stays as wide as REFLECTIONS ON SURFACES makes it (23 + 17 = 40 of the 41). The plain row before it is SIDE MIRRORS.
-// CHECK: never seen in the game; the wording of the reasons is the width's.
-const char* const kNativeMirrorRtVals[]  = {"auto", "off", "on"};
-const char* const kNativeMirrorRtNames[] = {"AUTO", "OFF", "ON"};
-// Anisotropic filtering (M6d.1, live): the game's own or forced.
-const char* const kNativeAnisoVals[]  = {"game", "off", "2", "4", "8", "16"};
-const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
-// PRESET (gpu/gfx_preset.h kIds and kLabels, in this order: tools/check_gfx_presets.py compares them). The row's own list, with the RT presets left out where the card cannot trace rays, is
-// [rows.PM_RxGpuPreset] in ui_rules.toml; these are the words it stores and shows.
-const char* const kGfxPresetVals[]  = {"vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"};
-const char* const kGfxPresetNames[] = {"VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM"};
 #endif
-// The emulated GPU's anisotropic filtering (the SDK's anisotropic_override, which it reads for every
-// sampler it makes, so a change is live): -1 the game's own, 0 off, then 1 = 1x, 2 = 2x, 3 = 4x, 4 = 8x,
-// 5 = 16x. LARecomp starts it at 16x (larecomp_app.h) unless larecomp.toml says otherwise.
-const char* const kXeniaAnisoVals[]  = {"-1", "0", "1", "2", "3", "4", "5"};
+
+const char* const kXeniaAnisoVals[] = {"-1", "0", "1", "2", "3", "4", "5"};
 const char* const kXeniaAnisoNames[] = {"GAME", "OFF", "1X", "2X", "4X", "8X", "16X"};
 
-// IMAGE QUALITY (GRAPHICS > IMAGE QUALITY): how the picture is smoothed, filtered and focused, in this order: MSAA, POST AA, ANISOTROPIC,
-// DEPTH OF FIELD, MOTION BLUR, and then the two rows of the UI's own sharpness: SHARP UI and SHARP MINIMAP. One ANISOTROPIC row per renderer (the same
-// name and place), MSAA on both (the row's own mechanism per renderer); POST AA is the NATIVE renderer's. DEPTH OF FIELD and MOTION BLUR
-// are the game's own switches (disable_dof, disable_motion_blur: picture preferences, which were on PERFORMANCE > RENDERING and GAMEPLAY > CAMERA) and are
-// on both renderers. SHARP UI (mcla_ui_sharp) reads the HUD's and the menus' bitmaps with a sharper filter, SHARP MINIMAP (mcla_ui_minimap_scale) draws
-// the minimap, the phone's screen and the menus' page at the render scale instead of the console's size (gpu/ui_sharp.h, side_view_ui_map.cpp). Both are
-// NATIVE only, ON by default and live, and change nothing at 720p (a render scale below 1.25x). 7 rows.
-// Width: the longest label is "POST AA (FSR 3.1 ON)" (20), then "SHARP MINIMAP" (13), and the longest value "SMAA" (4): 24 of the 41 a page can take.
 const ItemDef kImageQualityItems[] = {
 #if defined(LARECOMP_HAS_GPU)
-    Str("PM_RxMsaa", "mcla_gpu_msaa", "MSAA: ", nullptr, nullptr, 0),
-    NativeOnly(Str ("PM_RxGpuAa",       "mcla_gpu_aa",           "POST AA: ",
-                                 kPostAaVals, kPostAaNames, 3)),
-    NativeOnly(Str ("PM_RxGpuAniso",    "mcla_gpu_anisotropy",   "ANISOTROPIC: ",
-                    kNativeAnisoVals, kNativeAnisoNames, 6)),
+    NativeOnly(Str("PM_RxGpuAniso", "mcla_gpu_anisotropy", "TEXTURE FILTERING: ",
+                   kNativeAnisoVals, kNativeAnisoNames, 6)),
 #endif
-    // CHECK: live on the emulated GPU (the SDK says kHotReload): a texture seen before the change
-    // takes the new level when its sampler is made again.
-    XeniaOnly(Str ("PM_RxXeAniso",      "anisotropic_override",  "ANISOTROPIC: ",
-                   kXeniaAnisoVals, kXeniaAnisoNames, 7)),
-    Bool("PM_RxDof",         "disable_dof",               "DEPTH OF FIELD: ", true),
-    Bool("PM_RxBlur",        "disable_motion_blur",       "MOTION BLUR: ",    true),
-#if defined(LARECOMP_HAS_GPU)
-    // The HUD's and the menus' art, sharper where the render scale blows the console's 720p bitmaps up (1080p and 4K windows): the fetch of the
-    // bitmaps (SHARP UI) and the views the game draws at fixed sizes (SHARP MINIMAP: the minimap, the phone's screen, the menus' page). ON by
-    // default; the same picture as the game's at 720p. Live: the targets are remade at the next frame boundary.
-    NativeOnly(Bool("PM_RxSharpUi",      "mcla_ui_sharp",             "SHARP UI: ")),
-    NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale",     "SHARP MINIMAP: ")),
-#endif
+    XeniaOnly(Str("PM_RxXeAniso", "anisotropic_override", "TEXTURE FILTERING: ",
+                  kXeniaAnisoVals, kXeniaAnisoNames, 7)),
+    Bool("PM_RxDof", "disable_dof", "DEPTH OF FIELD: ", true),
+    Bool("PM_RxBlur", "disable_motion_blur", "MOTION BLUR: ", true),
 };
 
-// LIGHTING AND SHADOWS (GRAPHICS > LIGHTING AND SHADOWS, the old GRAPHICS QUALITY page): the shadows, then the occlusion and the light. SHADOWS
-// (perf_no_shadows) is on both renderers: off is the biggest single FPS win and is live (render_phases.cpp). The rest are the NATIVE renderer's
-// graphics upgrades, each with an AUTO that follows the graphics card (gpu/gpu_class.h), every one live. The order: SHADOWS; the far trees' shadows
-// (FOLIAGE SHADOWS: on both renderers, moved here from WORLD DETAIL on 2026-11-20); the sun's shadows
-// (SHADOW DETAIL: how finely they are drawn, SHADOW FILTER: how they are smoothed), the contact shadows, the sun's shadows traced from the city's own triangles
-// (RT SHADOWS: grey while CONTACT SHADOWS is off and where the graphics card cannot ray trace), the traffic cars' shadows and your car's
-// (CAR SHADOWS); the occlusion (AMBIENT OCCLUSION, AO INTENSITY); and the light (BOUNCE LIGHT, RT BOUNCE LIGHT, BOUNCE LIGHT STRENGTH, SUN SHAFTS, HEADLIGHTS,
-// LIGHT SHADOWS, NEON LIGHT, VOLUMETRIC LIGHT: the cars' lights, the shadows the local lights cast, the neon's light on what is near the car, then the beams and the haze those lights show in). The ids and the
-// cvars are the rows' own as they were on DISPLAY, GRAPHICS QUALITY and PERFORMANCE > RENDERING: a saved setting reads the same. AO INTENSITY is
-// grey while AMBIENT OCCLUSION is off, BOUNCE LIGHT too (it is made from the occlusion's passes; it says " (REPLACED)" while RT BOUNCE LIGHT's field stands in its place), RT BOUNCE LIGHT where the graphics
-// card cannot ray trace (" (NO RT GPU)"), is too slow (" (TOO SLOW)") or the probe update is not built yet (" (NOT READY)"), BOUNCE LIGHT STRENGTH while neither bounce light runs
-// (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey
-// while SHADOWS is off and say so; HEADLIGHTS, NEON LIGHT and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
-// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 18 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs; RT BOUNCE LIGHT after BOUNCE LIGHT, whose strength row it shares).
-// Width ("Page width" above ItemRowLabel): the longest label is "FOLIAGE SHADOWS (NO SHADOW)" and "TRAFFIC SHADOWS (NO SHADOW)" (27, the four
-// shadow rows' reason is at most 12 characters), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
-// "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows, RT SHADOWS, RT BOUNCE LIGHT (27 with " (NO RT GPU)") and BOUNCE LIGHT ("BOUNCE LIGHT (REPLACED)" 23) have a suffix.
 const ItemDef kLightItems[] = {
-    Bool("PM_RxNoShadows",   "perf_no_shadows",           "SHADOWS: ", true),
+    Bool("PM_RxNoShadows", "perf_no_shadows", "SUN SHADOWS: ", true),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution", "SUN SHADOW DETAIL: ",
+                   kSideViewVals, kSideViewNames, 3)),
+    NativeOnly(Str("PM_RxGpuShadowFilter", "mcla_gpu_shadow_filter", "SUN SHADOW FILTER: ",
+                   kNativeShadowFilterVals, kNativeShadowFilterNames, 3)),
+#endif
     Bool("PM_RxFoliage", "disable_imposter_shadows", "FOLIAGE SHADOWS: ", true),
 #if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution",
-                                "SHADOW DETAIL: ", kSideViewVals, kSideViewNames, 4)),
-    NativeOnly(Str("PM_RxGpuShadowFilter", "mcla_gpu_shadow_filter", "SHADOW FILTER: ",
-                                kNativeShadowFilterVals, kNativeShadowFilterNames, 4)),
-    NativeOnly(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
-                                kNativeContactVals, kNativeContactNames, 4)),
-    NativeOnly(Str("PM_RxGpuRtShadows", "mcla_gpu_rt_shadows", "RT SHADOWS: ",
-                                kNativeRtShadowsVals, kNativeRtShadowsNames, 4)),
     NativeOnly(Str("PM_RxGpuTrafficShadows", "mcla_gpu_traffic_shadows", "TRAFFIC SHADOWS: ",
-                                kNativeTrafficShadowsVals, kNativeTrafficShadowsNames, 4)),
-    NativeOnly(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "CAR SHADOWS: ",
-                                kNativeCarShadowVals, kNativeCarShadowNames, 4)),
-    NativeOnly(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
-                                kNativeAoVals, kNativeAoNames, 5)),
-    NativeOnly(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
-                                kNativeAoLevelVals, kNativeAoLevelNames, 4)),
+                   kNativeTrafficShadowsVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "PLAYER CAR SHADOWS: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuContact", "mcla_gpu_contact_shadows", "CONTACT SHADOWS: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuRtShadows", "mcla_gpu_rt_shadows", "SUN SHADOWS RT: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION / RT: ",
+                   kNativeAoVals, kNativeAoNames, 4)),
+    NativeOnly(Str("PM_RxGpuCarAoRt", "mcla_gpu_ao_rt", "CAR OCCLUSION RT: ",
+                   kCarAoRtVals, kCarAoRtNames, 4)),
+    NativeOnly(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "OCCLUSION STRENGTH: ",
+                   kNativeAoLevelVals, kNativeAoLevelNames, 4)),
     NativeOnly(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",
-                                kNativeSsgiVals, kNativeSsgiNames, 4)),
-    NativeOnly(Str("PM_RxGpuRtGi", "mcla_gpu_rt_gi", "RT BOUNCE LIGHT: ",
-                                kNativeRtGiVals, kNativeRtGiNames, 4)),
-    NativeOnly(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE LIGHT STRENGTH: ",
-                                kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5)),
-    NativeOnly(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUN SHAFTS: ",
-                                kNativeShaftsVals, kNativeShaftsNames, 7)),
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuRtGi", "mcla_gpu_rt_gi", "BOUNCE LIGHT RT: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE STRENGTH: ",
+                   kNativeSsgiLevelVals, kNativeSsgiLevelNames, 5)),
     NativeOnly(Str("PM_RxGpuHeadlights", "mcla_gpu_headlights", "HEADLIGHTS: ",
-                                kNativeHeadlightsVals, kNativeHeadlightsNames, 3)),
-    NativeOnly(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LIGHT SHADOWS: ",
-                                kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count)),
-    NativeOnly(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON LIGHT: ",
-                                kNativeNeonLightVals, kNativeNeonLightNames, 3)),
-    NativeOnly(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
-                                kNativeVolumetricsVals, kNativeVolumetricsNames, 5)),
+                   kOnOffVals, kOnOffNames, 2)),
+    NativeOnly(Str("PM_RxGpuLightShadows", "mcla_gpu_light_shadows", "LOCAL LIGHT SHADOWS: ",
+                   kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count)),
+    NativeOnly(Str("PM_RxGpuRtLights", "mcla_gpu_rt_lights", "LOCAL LIGHT SHADOWS RT: ",
+                   kOnOffVals, kOnOffNames, 2)),
+    NativeOnly(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON UNDERGLOW: ",
+                   kOnOffVals, kOnOffNames, 2)),
+    NativeOnly(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUNBEAMS: ",
+                   kNativeShaftsVals, kNativeShaftsNames, 6)),
+    NativeOnly(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "LIGHT BEAMS: ",
+                   kNativeVolumetricsVals, kNativeVolumetricsNames, 4)),
 #endif
 };
 
 #if defined(LARECOMP_HAS_GPU)
-// REFLECTIONS (GRAPHICS > REFLECTIONS, NATIVE only): what the road, the cars' paint, the car itself, the city, the side mirrors and the surfaces of the street reflect: ROAD REFLECTIONS, CAR REFLECTIONS,
-// CAR SELF-REFLECTIONS (one row for the screen-space and the ray traced reflection), RT CITY REFLECTIONS (the real street in the paint, traced; it rides on the ray traced car reflection and is
-// grey while that is not on), SIDE MIRRORS (the street behind in the car's side mirrors on any card; it says (REPLACED) where RT SIDE MIRRORS runs), RT SIDE MIRRORS (the same traced; its own row: it
-// does not ride on the car reflection) and REFLECTIONS ON SURFACES (the
-// screen-space reflections of wet roads, sidewalks, glass and metal). Every row is live and has an AUTO that follows the graphics
-// card. Width: the longest label is "REFLECTIONS ON SURFACES" (23; RT CITY REFLECTIONS is 19 and 23 at most with a reason), the longest value "AUTO (RAY TRACED)" (17): 40 of the 41 a page can take.
+// CHECK: inspect row widths and the live RT dependency states in the menu tour.
 const ItemDef kReflectionItems[] = {
-    NativeOnly(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
-                                "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4)),
-    NativeOnly(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
-                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4)),
-    NativeOnly(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
-                                "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1)),
-    NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections",
-                                "RT CITY REFLECTIONS: ", kNativeRtCityVals, kNativeRtCityNames, 4)),
-    NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors",
-                                "SIDE MIRRORS: ", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4)),
-    NativeOnly(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt",
-                                "RT SIDE MIRRORS: ", kNativeMirrorRtVals, kNativeMirrorRtNames, 3)),
-    NativeOnly(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
-                                kNativeSsrVals, kNativeSsrNames, 4)),
+    NativeOnly(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution", "PLANAR REFLECTION DETAIL: ",
+                   kSideViewVals, kSideViewNames, 3)),
+    NativeOnly(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "SURFACE REFLECTIONS: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuSsrRt", "mcla_gpu_ssr_rt", "SURFACE REFLECTIONS RT: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution", "PAINT REFLECTION DETAIL: ",
+                   kSideViewVals, kSideViewNames, 3)),
+    NativeOnly(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl", "CAR SELF-REFLECTIONS: ",
+                   kOnOffVals, kOnOffNames, 2)),
+    NativeOnly(Str("PM_RxGpuCarSelfReflRt", "mcla_gpu_car_selfrefl_rt", "CAR SELF-REFLECTIONS RT: ",
+                   kOnOffVals, kOnOffNames, 2)),
+    NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections", "CITY IN CAR PAINT RT: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors", "SIDE MIRRORS: ",
+                   kQualityVals, kQualityNames, 3)),
+    NativeOnly(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt", "SIDE MIRRORS RT: ",
+                   kOnOffVals, kOnOffNames, 2)),
 };
 #endif
 
 #if defined(LARECOMP_HAS_GPU)
-// DISPLAY > HDR: HDR10 output on an HDR display, and its levels. AUTO follows Windows.
+// DISPLAY > HDR: HDR10 output and brightness controls.
 const ItemDef kGpuHdrItems[] = {
     Str("PM_RxGpuHdr", "mcla_gpu_hdr", "HDR: ",
-        kHdrModeVals, kHdrModeNames, 3),
+        kHdrModeVals, kHdrModeNames, 2),
     Dbl("PM_RxGpuHdrWhite", "mcla_gpu_hdr_paper_white_nits", "PAPER WHITE: ",
-                     kHdrPaperWhiteVals, 11, "%.0f"),
+                     kHdrPaperWhiteVals, 10, "%.0f"),
     Dbl("PM_RxGpuHdrPeak", "mcla_gpu_hdr_peak_nits", "PEAK BRIGHTNESS: ",
-                     kHdrPeakVals, 11, "%.0f"),
+                     kHdrPeakVals, 10, "%.0f"),
     // How far lights, the sun, the dusk sky and the headlights go above paper white.
     Dbl("PM_RxGpuHdrHighlights", "mcla_gpu_hdr_highlights", "HIGHLIGHTS: ",
                      kHdrHighlightVals, 4, "%g"),
@@ -2075,11 +1773,11 @@ const ItemDef kGpuHdrItems[] = {
 // DISPLAY > NVIDIA REFLEX / AMD ANTI-LAG 2 (mcla_gpu_low_latency, live): the GPU vendor's
 // latency reducer. The row comes from the renderer's own answer (gpu/latency.h): it names the vendor's
 // feature, and there is none where the GPU, the driver or the graphics API has no reducer, which is
-// how a PC that cannot run it never sees it. AUTO says what it comes to on this GPU. Anti-Lag 2 has no
+// how a PC that cannot run it never sees it. Legacy Auto shows its effective level. Anti-Lag 2 has no
 // boost, so its row stops at ON.
 #if defined(LARECOMP_HAS_GPU)
-const char* const kLowLatencyVals[]  = {"auto", "off", "on", "boost"};
-const char* const kLowLatencyNames[] = {"AUTO", "OFF", "ON", "ON + BOOST"};
+const char* const kLowLatencyVals[]  = {"off", "on", "boost"};
+const char* const kLowLatencyNames[] = {"OFF", "ON", "ON + BOOST"};
 
 // Says why a reducer that is asked for is not working right now. While frame generation runs it is
 // forced on (latency.cpp): the row is grey and says so. The vendor's name is shortened while a reason shows, as the denoiser row's and
@@ -2087,11 +1785,11 @@ const char* const kLowLatencyNames[] = {"AUTO", "OFF", "ON", "ON + BOOST"};
 // "AMD ANTI-LAG 2 (NOT WORKING)" was 28): "ANTI-LAG 2 (NOT WORKING)" 24, "REFLEX (NOT WORKING)" 20.
 const ItemDef kReflexRows[] = {
     NativeOnly(Str("PM_RxGpuReflex", "mcla_gpu_low_latency", "NVIDIA REFLEX: ",
-                                kLowLatencyVals, kLowLatencyNames, 4)),
+                                kLowLatencyVals, kLowLatencyNames, 3)),
 };
 const ItemDef kAntiLagRows[] = {
     NativeOnly(Str("PM_RxGpuAntiLag", "mcla_gpu_low_latency", "AMD ANTI-LAG 2: ",
-                                kLowLatencyVals, kLowLatencyNames, 3)),
+                                kLowLatencyVals, kLowLatencyNames, 2)),
 };
 #endif
 
@@ -2803,8 +2501,11 @@ std::string RuleNumberLabel(const ItemDef& item, double number) {
         const auto scale = gc::Scale(i);
         const auto& info = gc::ScaleOf(scale);
         if (info.cvar != item.cvar) continue;
-        id = gc::IsAutoValue(scale, number) ? (info.zero_is_auto ? 0.0 : -1.0) :
-             gc::ScaleFor(scale, false, gc::GpuClass::kLow, number);
+        id = gc::ScaleFor(scale, false, gc::GpuClass::kLow, number);
+        if (gc::IsAutoValue(scale, number)) {
+            const auto automatic = expr::Evaluate(expr::Parse("auto_of('" + std::string(info.cvar) + "')"), env);
+            if (automatic.kind == expr::Value::Kind::kNumber) id = automatic.n;
+        }
         break;
     }
     if (key == "PM_RxGpuFrameGenFps") {
@@ -2812,7 +2513,11 @@ std::string RuleNumberLabel(const ItemDef& item, double number) {
         else if (number > 0.0) id = 30.0;  // all positive caps share the same label template
     }
     if (key == "PM_RxHudWidth") id = std::clamp(number, 0.0, 100.0);
-    if (key == "PM_RxGpuHdrWhite" || key == "PM_RxGpuHdrPeak") id = std::max(0.0, number);
+    if (id <= 0 && (key == "PM_RxGpuHdrWhite" || key == "PM_RxGpuHdrPeak")) {
+        const char* fact = key == "PM_RxGpuHdrWhite" ? "features.hdr.auto_paper_white_nits" : "features.hdr.auto_peak_nits";
+        const auto automatic = expr::Evaluate(expr::Parse(fact), env);
+        if (automatic.kind == expr::Value::Kind::kNumber) id = automatic.n;
+    }
     if ((key == "PM_RxAiDiff" || key == "PM_RxRbNitroStart") && number < 0.0) id = -1.0;
     if (key == "PM_RxTrigThrottle" || key == "PM_RxTrigBrake") id = std::round(number);
     const auto* override = row.Field("format").as_string();
@@ -3180,6 +2885,11 @@ int ItemValueIndex(const ItemDef& it) {
         return (CarbonHaveCar() && CarbonHasGroup(uint8_t(it.nvals))) ? 1 : 0;
     case ItemKind::kStrCycle:
         if (HasRuleChoices(it)) return RuleChoiceIndex(it);
+        if (const auto* rules = ItemRules(it);
+            rules && (rules->base.decode.expr || !rules->base.decode.cases.empty())) {
+            const PauseRuleEnv env;
+            return FindStringIndex(expr::ValueText(expr::Decode(rules->base.decode, env)), it.svals, it.nvals);
+        }
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
     case ItemKind::kColor:
         return FindStringIndex(CvarGet(it.cvar), it.svals, it.nvals);
@@ -3252,26 +2962,8 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // "2560X1440"). A label or a value that is longer than its page's widest needs counting against that
 // before it goes in, in each state a suffix can be in; each page counts its own, here and where it is
 // built:
-// DISPLAY (kVideoItems, DisplayPageRows: the latency row, the upscaler's rows with the denoiser row where this PC has one, and frame generation's: 15 rows at most). The page counts ONE widest label and ONE
-// widest value over ALL of them, so a long label on one row costs every other row's values: the widest value is 17 ("PERFORMANCE (50%)" and the mode row's other longest, "ULTRA PERF. (33%)",
-// "PERFORMANCE (N/A)", "ULTRA QUAL. (77%)", and frame generation's "FSR 3.1 (NO ROOM)"; the DISPLAY MODE values "BORDERLESS" and "FULLSCREEN", the latency row's "ON + BOOST" and "AUTO (OFF)" are 10), so no
-// label may be over 24: "AMD FSR RAY REGENERATION" (24, the denoiser row on a Radeon while it says nothing; "DLSS RAY RECONSTRUCTION" is 23), "ANTI-LAG 2 (NOT WORKING)" (24), "RESOLUTION (7680X4320)" 22 (23 at
-// five digits across, display_menu.h), "RENDER SCALE (RESTART)" (XENIA, 22), "FPS LIMIT (FRAME GEN)" 21, "UPSCALING (APPLYING)", "SHARPNESS (FSR ONLY)", "FRAME GEN (APPLYING)" and "FRAME GEN
-// MULTIPLIER" (20): 24 + 17 = 41. A row whose name is long says a SHORT name before a reason (the way RT CITY REFLECTIONS does, below): DLSS RR (NEEDS DLSS) 20, RAY REGEN (D3D12 ONLY) 22,
-// REFLEX / ANTI-LAG 2 for the latency row, FRAME GEN for frame generation. The whole names with their reasons ("DLSS RAY RECONSTRUCTION (NEEDS DLSS)" 36, "AMD FSR RAY REGENERATION (D3D12 ONLY)"
-// 37) would make the page 53 and 54 wide: the page's value width, not the row's, is what counts. gpu/denoiser_setting_test.cpp counts every row of the page in every state. The upscaling rows'
-// states are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
-// IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
-// FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 18 rows; RT SHADOWS has the suffixes " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label, and RT BOUNCE LIGHT " (NO RT GPU)", " (TOO SLOW)" and " (NOT READY)", at most 27 as a label (BOUNCE LIGHT says " (REPLACED)", 23); the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
-// SHADOWS while SHADOWS is off): labels at most 27 ("FOLIAGE SHADOWS (NO SHADOW)", "TRAFFIC SHADOWS (NO SHADOW)"), then "SHADOW DETAIL
-// (NO SHADOW)" and "SHADOW FILTER (NO SHADOW)" 25, "BOUNCE LIGHT STRENGTH" 21, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "LIGHT
-// SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10, "NEON LIGHT" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 13 (LIGHT SHADOWS' "AUTO
-// (MEDIUM)"), 12 ("AUTO (ULTRA)", "AUTO (HIGH)", "AUTO (SOFT)", "AUTO (GAME)") and 9 (BOUNCE LIGHT STRENGTH's "STRONGEST"): 41 together. On XENIA the page has SHADOWS and FOLIAGE
-// SHADOWS: 27 and 3.
-// REFLECTIONS (kReflectionItems, 7 rows): "REFLECTIONS ON SURFACES" 23, "RT CITY (BUILDING DATA)" 23, "SIDE MIRRORS (REPLACED)" 23, "RT CITY (NEEDS CAR RT)" 22, "RT MIRRORS (NO RT GPU)" 22, "CAR
-// SELF-REFLECTIONS" 20, "RT CITY REFLECTIONS" 19, "ROAD REFLECTIONS" 16, "RT SIDE MIRRORS" 15, "CAR REFLECTIONS" 15, "SIDE MIRRORS" 12; values at most 17 ("AUTO (RAY TRACED)"): 40. WORLD DETAIL (kWorldDetailItems): "PROP
-// DRAW DIST" 14, "AUTO (0.75X)" 12: 26.
+// Display has up to 17 rows. Short status labels keep the page within its 41-column limit.
+// Image Quality, Lighting and Shadows, Reflections and World Detail use the same limit.
 // The CONTROLLER page (kControllerItems, 8 rows, no suffixes): labels at most 21 ("XBOX TRIGGER
 // STRENGTH", "RIGHT STICK DEAD ZONE"), values at most 11 ("PLAYSTATION"): 32. RECOMP SETTINGS has two
 // rows now: 33 ("ORIGINAL INTRO SPEED (NEXT START)") and 3.

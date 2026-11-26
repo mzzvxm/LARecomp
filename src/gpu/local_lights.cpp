@@ -364,6 +364,10 @@ void LocalLights::BeginFrame() {
   trigger_seen_ = false;
 }
 
+bool LocalLights::SampleRtLights() {
+  return rt_lights_ != nullptr && rt_lights_->SampleEnabled();
+}
+
 bool LocalLights::rt_lights_wanted() const {
   return rt_lights_ != nullptr && rt_lights_->wanted();
 }

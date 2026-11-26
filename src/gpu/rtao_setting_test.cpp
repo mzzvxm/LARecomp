@@ -35,7 +35,7 @@ void CheckDecisions() {
   constexpr Choice auto_choices[3][3] = {
       {Choice::kOff, Choice::kOff, Choice::kOff},
       {Choice::kHigh, Choice::kHigh, Choice::kHigh},
-      {Choice::kUltra, Choice::kUltra, Choice::kRt},
+      {Choice::kUltra, Choice::kUltra, Choice::kUltra},
   };
   constexpr RtTier rungs[3][3] = {
       {RtTier::kNone, RtTier::kNone, RtTier::kNone},
@@ -48,7 +48,7 @@ void CheckDecisions() {
       const auto cls = kClasses[c];
       const auto tier = kTiers[t];
       const auto cell = ao::gc::RtCell(ao::gc::RtEffect::kRtAo, rungs[c][t]);
-      Check(cell == (auto_choices[c][t] == Choice::kRt ? "rt" : ""), "RT Auto cell");
+      Check(cell.empty(), "RT Auto cell");
       for (const bool built : {false, true}) {
         const Gate gate = t == 0 ? Gate::kNoRt : c == 0 ? Gate::kTooSlow
                                                        : built ? Gate::kRuns : Gate::kNotBuilt;
@@ -98,14 +98,13 @@ void CheckLabels() {
     for (const auto tier : kTiers) {
       for (const bool built : {false, true}) {
         const auto label = ao::AutoLabel(ao::Decide(kClasses[c], true, tier, Choice::kAuto, built));
-        const auto expected = c == 2 && tier == RtTier::kStrong && built ? "AUTO (RT)" : auto_labels[c];
+        const auto expected = auto_labels[c];
         Check(label == expected && label.size() <= 14, "Auto labels show the effective level within width");
       }
     }
   }
   Check(ao::AutoDescription() ==
-            "Auto is Off on integrated graphics, High on a mid-range card, Ultra on a high-end card "
-            "and Ray traced on a high-end card that traces rays quickly.",
+            "Auto is Off on integrated graphics, High on a mid-range card, Ultra on a high-end card.",
         "launcher Auto sentence follows the class and RT cells");
 }
 
@@ -148,12 +147,12 @@ void CheckReaders(const fs::path& src) {
         "host plan delegates to the AO resolver");
   // The row's labels and AO INTENSITY's dependency are data now (settings/ui_rules.toml, the shared rules; settings/ui_parity_test.cpp holds them against this resolver
   // for every class, tier, choice and readiness); the menu hands the rules the readiness (the fact live.rtao_pass_built) and the setting's own words.
-  Check(contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoVals[]  = {\"auto\", \"off\", \"high\", \"ultra\", \"rt\"};") &&
-            contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\", \"RAY TRACED\"};") &&
+  Check(contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoVals[] = {\"off\", \"high\", \"ultra\", \"rt\"};") &&
+            contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoNames[] = {\"OFF\", \"HIGH\", \"ULTRA\", \"RT\"};") &&
             contains("mc_engine/menus/pause_menu.cpp", "\"live.rtao_pass_built\") return Value::Bool(gpu::rtao_setting::PassBuilt())"),
         "the menu's words and the pass's readiness come from the resolver's header");
   Check(contains("settings/ui_rules.toml", "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
-            contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") && contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "label = \"AUTO (RT)\""),
+            contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") && contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "decode = \"resolved(s.mcla_gpu_ao)\""),
         "the rules name the ray traced choice's fallback reasons and AO INTENSITY's dependency counts it");
   Check(contains("gpu/effect_compare_rules.h", "rtao_setting::ParseChoice(saved.occlusion)") &&
             contains("gpu/effect_compare_rules.h", "rtao_setting::Decide(saved.cls,"),

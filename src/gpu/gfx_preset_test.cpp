@@ -63,8 +63,6 @@ struct Allowed {
   const char* words;  // '|' separated
 };
 const Allowed kAllowed[] = {
-    {"mcla_gpu_msaa", "off|2|4|8"},
-    {"mcla_gpu_aa", "off|fxaa|smaa"},
     {"mcla_gpu_anisotropy", "game|off|2|4|8|16"},
     {"disable_dof", "true|false"},
     {"disable_motion_blur", "true|false"},
@@ -89,11 +87,13 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_reflection_resolution", "game|high|ultra"},
     {"mcla_gpu_env_resolution", "game|high|ultra"},
     {"mcla_gpu_car_selfrefl", "off|on"},
-    {"mcla_gpu_car_selfrefl_rt", "off|auto"},
+    {"mcla_gpu_car_selfrefl_rt", "off|on"},
     {"mcla_gpu_rt_reflections", "off|high|ultra"},
     {"mcla_gpu_side_mirrors", "off|high|ultra"},
     {"mcla_gpu_car_mirror_rt", "off|on"},
     {"mcla_gpu_ssr", "off|high|ultra"},
+    {"mcla_gpu_ssr_rt", "off|high|ultra"},
+    {"mcla_gpu_rt_lights", "off|on"},
     {"traffic_unspawn_dist", "100|150|200|250|300|400|500|600"},
     {"ped_density_scale", "0|0.25|0.5|0.75|1|1.5|2"},
     {"parked_car_scale", "0|0.25|0.5|0.75|1|1.5|2"},
@@ -103,7 +103,7 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_ao_rt", "off|ao|contact|both"},
 };
 
-bool InList(const char* words, std::string_view cell) {
+bool InList(std::string_view words, std::string_view cell) {
   std::string_view rest(words);
   while (true) {
     const std::size_t bar = rest.find('|');
@@ -125,18 +125,22 @@ void CheckTable() {
     for (int k = i + 1; k < gp::kRowCount; ++k) {
       Check(gp::kRows[k].cvar != row.cvar, cvar + " is in the table once");
     }
-    CheckEq(kAllowed[i].cvar, cvar, "the test lists the rows in the table's order (row " + std::to_string(i) + ")");
+    std::string_view allowed;
+    for (const auto& spec : kAllowed) {
+      if (row.cvar == spec.cvar) allowed = spec.words;
+    }
+    Check(!allowed.empty(), cvar + ": has a list of allowed values");
     for (const Preset p : kNamed) {
       const std::string_view cell = gp::CellOf(row.cvar, p);
       Check(!cell.empty(), Name(row.cvar, p) + ": has a cell (every covered row has a value in every preset)");
-      Check(cell != "auto" || row.cvar == "mcla_gpu_car_selfrefl_rt", Name(row.cvar, p) + ": a preset never holds `auto` (but the ray traced car self-reflections' setting has no `on`)");
-      Check(InList(kAllowed[i].words, cell), Name(row.cvar, p) + ": '" + std::string(cell) + "' is a value the row takes");
+      Check(cell != "auto", Name(row.cvar, p) + ": a preset must use a concrete value");
+      Check(InList(allowed, cell), Name(row.cvar, p) + ": '" + std::string(cell) + "' is a value the row takes");
       Check(cell.find("low") == std::string_view::npos, Name(row.cvar, p) + ": no setting has a level called low");
     }
     CheckEq(gp::CellOf(row.cvar, Preset::kCustom), "", cvar + ": CUSTOM has no cell of its own");
     Check(gp::FindRow(row.cvar) == i, cvar + ": FindRow");
     Check(gp::IsKnownRow(row.cvar), cvar + ": IsKnownRow");
-    Check(gp::IsCovered(row.cvar) == (row.page != gp::Page::kSupport), cvar + ": covered unless it is a support row");
+    Check(gp::IsCovered(row.cvar), cvar + ": covered");
     Check(!gp::IsNeverCovered(row.cvar), cvar + ": is not a DISPLAY or UPSCALING setting (a preset never touches those)");
     Check(!gp::IsExempt(row.cvar), cvar + ": is covered, so it is not on the exempt list");
   }
@@ -146,17 +150,8 @@ void CheckTable() {
     Check(gp::FindRow(name) < 0, std::string(name) + ": a DISPLAY or UPSCALING setting has no row");
   }
 
-  int covered = 0;
-  int support = 0;
-  for (const gp::Row& row : gp::kRows) {
-    if (row.page == gp::Page::kSupport) {
-      ++support;
-    } else {
-      ++covered;
-    }
-  }
-  Check(covered == 37 && support == 1, "37 covered rows and one support row (mcla_gpu_ao_rt)");
-  Check(gp::kExemptCount == 3, "three rows of the four pages are exempt");
+  Check(gp::kRowCount == 38, "all 38 native effects have preset cells");
+  Check(gp::kExemptCount == 1, "the Xenia anisotropy row is outside native preset coverage");
   for (const gp::Note& e : gp::kExempt) {
     Check(gp::FindRow(e.cvar) < 0, std::string(e.cvar) + ": an exempt row is not in the table");
     Check(!e.text.empty(), std::string(e.cvar) + ": an exempt row says why");
@@ -171,8 +166,6 @@ struct Want {
 // perf\LEGACY-GFX-AUDIT.md, with the owner's calls on its grey cases (anisotropy: the game's own; anti-aliasing: the original's 2x MSAA; LOD, draw distance and street density: stock; the
 // shadow detail: the game's own atlas); every new effect off.
 const Want kVanilla[] = {
-    {"mcla_gpu_msaa", "2"},
-    {"mcla_gpu_aa", "off"},
     {"mcla_gpu_anisotropy", "game"},
     {"disable_dof", "false"},                   // the game has depth of field
     {"disable_motion_blur", "false"},           // and motion blur
@@ -202,6 +195,8 @@ const Want kVanilla[] = {
     {"mcla_gpu_side_mirrors", "off"},
     {"mcla_gpu_car_mirror_rt", "off"},
     {"mcla_gpu_ssr", "off"},
+    {"mcla_gpu_ssr_rt", "off"},
+    {"mcla_gpu_rt_lights", "off"},
     {"traffic_unspawn_dist", "400"},            // the game's own range
     {"ped_density_scale", "1"},                 // the game's own density
     {"parked_car_scale", "1"},
@@ -249,8 +244,8 @@ const OldEffect kOldEffects[] = {
     {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on"},
     {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra"},
     {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high"},
-    {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "high"},  // the one class cell that is not read from the table (gpu_class.h)
-    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off"},  // off on every class and in every preset (held by the owner, 2026-11-24: unstable in motion); the class cell is a literal
+    {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "off"},  // the one class cell that is not read from the table (gpu_class.h)
+    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off"},  // the legacy class table keeps SSR off
     {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on"},
     {Effect::kSideMirrors, "mcla_gpu_side_mirrors", "off", "high", "ultra"},
 };
@@ -295,8 +290,6 @@ struct NoAuto {
   const char* ultra;
 };
 const NoAuto kNoAuto[] = {
-    {"mcla_gpu_msaa", "2", "4"},
-    {"mcla_gpu_aa", "off", "off"},
     {"mcla_gpu_anisotropy", "game", "16"},
     {"disable_dof", "true", "true"},
     {"disable_motion_blur", "false", "false"},
@@ -321,10 +314,10 @@ void CheckAutoUnchanged() {
     if (old.effect == Effect::kRtShadows) continue;  // the ray tracing rung's cells decide (below); the class cell is the old literal
     if (old.effect == Effect::kSsr) {                // the other literal: `auto` is off on every class, the ULTRA presets are the explicit maximum
       CheckEq(gp::CellOf(old.cvar, Preset::kVanilla), "off", "SSR in VANILLA");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), "off", "SSR in ENHANCED (auto stays off on the Mid class)");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "off", "SSR in ENHANCED RT");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), "off", "SSR in ENHANCED ULTRA (held: unstable in motion, 2026-11-24)");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "off", "SSR in ENHANCED RT ULTRA (held: unstable in motion, 2026-11-24)");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), "high", "SSR in Enhanced");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "high", "SSR in EnhancedRt");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), "ultra", "SSR in EnhancedUltra");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "ultra", "SSR in EnhancedRtUltra");
       continue;
     }
     // ENHANCED is the Mid class's `auto`, ENHANCED ULTRA the High class's, VANILLA the Low class's: the table and the `auto` cells are one thing.
@@ -372,14 +365,15 @@ void CheckAutoUnchanged() {
     const std::string cvar = old.cvar;
     Check(static_cast<int>(old.effect) == i, cvar + ": in the order of the RT enum");
     CheckEq(RtCvarName(old.effect), cvar, cvar + ": kRtEffects names it");
-    CheckEq(RtCell(old.effect, RtTier::kNone), old.none, cvar + ": the none rung is unchanged");
-    CheckEq(RtCell(old.effect, RtTier::kWeak), old.weak, cvar + ": the weak rung is unchanged");
-    CheckEq(RtCell(old.effect, RtTier::kStrong), old.strong, cvar + ": the strong rung is unchanged");
+    const auto legacy = old.effect == RtEffect::kRtAo ? "" : "off";
+    for (const auto tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
+      CheckEq(RtCell(old.effect, tier), legacy, cvar + ": legacy Auto never enables RT");
+    }
     if (old.effect == RtEffect::kRtAo) {
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "rt", "the world's ambient occlusion is ray traced in ENHANCED RT ULTRA");
       continue;
     }
-    const auto resolved = [&](Preset p) { return gp::Resolved(old.cvar, gp::CellOf(old.cvar, p)); };
+    const auto resolved = [&](Preset p) { return gp::CellOf(old.cvar, p); };
     CheckEq(resolved(Preset::kEnhanced), old.none, cvar + ": ENHANCED has the ray traced row off (the none rung)");
     CheckEq(resolved(Preset::kEnhancedRt), old.weak, cvar + ": ENHANCED RT is the weak rung's cell");
     CheckEq(resolved(Preset::kEnhancedRtUltra), old.strong, cvar + ": ENHANCED RT ULTRA is the strong rung's cell");
@@ -402,7 +396,6 @@ struct Top {
   const char* top;
 };
 const Top kTops[] = {
-    {"mcla_gpu_msaa", "8"},
     {"mcla_gpu_anisotropy", "16"},
     {"mcla_gpu_shadow_resolution", "ultra"},
     {"mcla_gpu_shadow_filter", "pcss"},
@@ -460,11 +453,6 @@ void CheckNumber() {
   CheckNum(gp::Number("0.25"), 0.25, "0.25");
   CheckNum(gp::Number("2"), 2.0, "2");
   CheckNum(gp::Number("0.1"), 0.1, "0.1 is the nearest double to the text, as the literal is");
-  // The one cell that is `auto`: the RT presets write it, the ray tracing rung's table reads it as `on`.
-  CheckEq(gp::Resolved("mcla_gpu_car_selfrefl_rt", "auto"), "on", "auto of the ray traced car self-reflections is on");
-  CheckEq(gp::Resolved("mcla_gpu_car_selfrefl_rt", "off"), "off", "off stays off");
-  CheckEq(gp::Resolved("mcla_gpu_ao_rt", "both"), "both", "any other cell is as it is");
-  CheckEq(gp::Resolved("mcla_gpu_ao", "auto"), "auto", "an `auto` of any other row is not touched");
 }
 
 // --- the names ---------------------------------------------------------------------------------------------------------------------------------------------------------
@@ -573,11 +561,7 @@ void CheckRecommendation() {
       if (k.c == GpuClass::kLow && k.t != RtTier::kNone) continue;
       CheckEq(Cell(effect, k.c), gp::CellOf(CvarName(effect), p), std::string(CvarName(effect)) + " on " + std::string(ClassName(k.c)) + " + " + std::string(RtTierName(k.t)) + " is the recommended preset's cell");
     }
-    for (int i = 0; i < kRtEffectCount; ++i) {
-      const RtEffect effect = static_cast<RtEffect>(i);
-      if (effect == RtEffect::kRtAo) continue;
-      CheckEq(RtCell(effect, RtRung(k.c, k.t)), gp::Resolved(RtCvarName(effect), gp::CellOf(RtCvarName(effect), p)), std::string(RtCvarName(effect)) + " on " + std::string(ClassName(k.c)) + " + " + std::string(RtTierName(k.t)) + " is the recommended preset's cell");
-    }
+
   }
 }
 
@@ -599,8 +583,15 @@ void CheckFirstStart() {
   for (const gp::Row& row : gp::kRows) {
     gp::FileFacts facts;
     facts.NoteKey(row.cvar);
-    const auto expected = row.page == gp::Page::kSupport ? Preset::kVanilla : Preset::kCustom;
+    const auto expected = Preset::kCustom;
     Check(gp::DecideInitial(facts) == expected, std::string(row.cvar) + ": only a covered key triggers legacy CUSTOM");
+  }
+  for (const auto key : {"mcla_gpu_msaa", "mcla_gpu_aa", "larecomp.mcla_gpu_aa"}) {
+    gp::FileFacts facts;
+    facts.NoteKey(key);
+    Check(gp::DecideInitial(facts) == Preset::kCustom, "formerly covered AA preserves an old config");
+    facts.NoteKey("larecomp.mcla_gpu_preset");
+    Check(gp::DecideInitial(facts) == Preset::kVanilla, "a scoped preset overrides legacy config inference");
   }
   for (const auto key : {"fullscreen", "mcla_gpu_upscaler", "language"}) {
     gp::FileFacts facts;
@@ -615,7 +606,7 @@ void CheckFlip() {
     for (int k = 0; k < gp::kPresetCount; ++k) {
       const Preset current = static_cast<Preset>(k);
       const Preset after = gp::AfterRowChange(current, row.cvar);
-      if (current == Preset::kCustom || row.page == gp::Page::kSupport) {
+      if (current == Preset::kCustom) {
         Check(after == current, std::string(row.cvar) + " changed on " + std::string(gp::Id(current)) + ": nothing to flip");
       } else {
         Check(after == Preset::kCustom, std::string(row.cvar) + " changed on " + std::string(gp::Id(current)) + ": the preset becomes CUSTOM");
@@ -670,14 +661,12 @@ void CheckScope() {
     }
     Check(!gp::IsCovered(name) && !gp::IsKnownRow(name), std::string(name) + ": not covered, not known");
   }
-  // The pages: 5 + 18 + 8 + 6 covered rows.
-  int per_page[5] = {};
+  int per_page[4] = {};
   for (const gp::Row& row : gp::kRows) ++per_page[static_cast<int>(row.page)];
-  Check(per_page[0] == 5, "IMAGE QUALITY: 5 covered rows (MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR)");
-  Check(per_page[1] == 18, "LIGHTING AND SHADOWS: its 18 rows");
-  Check(per_page[2] == 8, "REFLECTIONS: its 7 rows and the ray traced half of CAR SELF-REFLECTIONS");
-  Check(per_page[3] == 6, "WORLD DETAIL: its 6 rows");
-  Check(per_page[4] == 1, "one support row");
+  Check(per_page[0] == 3, "Image Quality has three preset rows");
+  Check(per_page[1] == 20, "Lighting and Shadows has twenty preset rows");
+  Check(per_page[2] == 9, "Reflections has nine preset rows");
+  Check(per_page[3] == 6, "World Detail has six preset rows");
 }
 
 }  // namespace

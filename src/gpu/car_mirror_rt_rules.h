@@ -115,15 +115,9 @@ inline const char* SettingName(Setting s) {
   return "auto";
 }
 
-// Whether the pass is wanted: `supported` is the device's answer (the car RT scene is ready and the pass's own layout and shaders were made), `cls` the ray tracing tier's class (rt_tier.h
-// CurrentRtClass: a weak card of the High class is Mid, none is Low, as every ray traced effect's budget reads it). auto is on only on the strong
-// class (High): the pass costs little, but it keeps the car's structures built in every frame, which a Mid class card only does where the owner asks for it. The Low class (no ray tracing,
-// or shared memory) never runs it, whatever the word says: the pause row is grey there (car_mirror_setting.h GateFor), and a grey row's setting does nothing.
+// The side mirrors trace only after the player selects RT and the GPU supports it.
 inline bool Wanted(Setting setting, bool supported, gpu_class::GpuClass cls) {
-  if (!supported || setting == Setting::kOff || cls == gpu_class::GpuClass::kLow) {
-    return false;
-  }
-  return setting == Setting::kOn || cls == gpu_class::GpuClass::kHigh;
+  return setting == Setting::kOn && supported && cls != gpu_class::GpuClass::kLow;
 }
 
 struct Limits {

@@ -73,29 +73,29 @@ tp::Mat4 RotationY(double angle) {
 // the setting
 // ---------------------------------------------------------------------------------------------------------------------
 void TestSetting() {
-  Check(ra::SettingOf("auto") == ra::Setting::kAuto, "auto is auto");
+  Check(ra::SettingOf("auto") == ra::Setting::kOff, "legacy Auto is off");
   Check(ra::SettingOf("off") == ra::Setting::kOff, "off is off");
   Check(ra::SettingOf("ao") == ra::Setting::kOcclusion, "ao is the occlusion only");
   Check(ra::SettingOf("contact") == ra::Setting::kContact, "contact is the sun ray only");
-  Check(ra::SettingOf("") == ra::Setting::kAuto && ra::SettingOf("ultra") == ra::Setting::kAuto && ra::SettingOf("OFF") == ra::Setting::kAuto,
+  Check(ra::SettingOf("") == ra::Setting::kOff && ra::SettingOf("ultra") == ra::Setting::kOff && ra::SettingOf("OFF") == ra::Setting::kOff,
         "a word that is none of them is auto (the settings' rule)");
   // The ray tracing tier's `auto` table (rt_tier.h kRtEffects) hands this setting "both" on a strong card and "contact" on a weak one: both terms are the default
-  Check(ra::SettingOf("both") == ra::Setting::kAuto && ra::SettingOf("contact") == ra::Setting::kContact, "the tier's cells: both is the default, contact the sun ray alone");
+  Check(ra::SettingOf("both") == ra::Setting::kBoth && ra::SettingOf("contact") == ra::Setting::kContact, "both terms and the sun term have explicit values");
 
   // Wanted(setting, device, occlusion, contact): the bounce light does not change it (its pass takes the traced term too)
-  Check(!ra::Wanted(ra::Setting::kAuto, false, true, true).any(), "a device that cannot trace the car: nothing");
+  Check(!ra::Wanted(ra::Setting::kBoth, false, true, true).any(), "a device that cannot trace the car: nothing");
   Check(!ra::Wanted(ra::Setting::kOff, true, true, true).any(), "off: nothing");
-  const ra::Terms both = ra::Wanted(ra::Setting::kAuto, true, true, true);
+  const ra::Terms both = ra::Wanted(ra::Setting::kBoth, true, true, true);
   Check(both.occlusion && both.contact, "auto with both effects on: both terms (with or without the bounce light)");
-  const ra::Terms occlusion_only = ra::Wanted(ra::Setting::kAuto, true, true, false);
+  const ra::Terms occlusion_only = ra::Wanted(ra::Setting::kBoth, true, true, false);
   Check(occlusion_only.occlusion && !occlusion_only.contact, "auto, the contact shadows off or gated: the occlusion term only");
-  const ra::Terms contact_only = ra::Wanted(ra::Setting::kAuto, true, false, true);
+  const ra::Terms contact_only = ra::Wanted(ra::Setting::kBoth, true, false, true);
   Check(!contact_only.occlusion && contact_only.contact, "auto, the occlusion off: the sun ray only");
   const ra::Terms ao_setting = ra::Wanted(ra::Setting::kOcclusion, true, true, true);
   Check(ao_setting.occlusion && !ao_setting.contact, "ao: the occlusion term only even with the contact shadows on");
   const ra::Terms contact_setting = ra::Wanted(ra::Setting::kContact, true, true, true);
   Check(!contact_setting.occlusion && contact_setting.contact, "contact: the sun ray only even with the occlusion on");
-  Check(!ra::Wanted(ra::Setting::kAuto, true, false, false).any(), "both effects off: nothing");
+  Check(!ra::Wanted(ra::Setting::kBoth, true, false, false).any(), "both effects off: nothing");
 
   // OcclusionOn(occlusion_on, rtao_runs, blend_car): the occlusion term the car pass records in this frame. An RTAO frame (the world trace sees the car's triangles from every pixel) records the
   // sun term only; the A/B arm mcla_gpu_rtao_blend_car keeps the occlusion; every frame without RTAO is the pass as it was (high and ultra to the bit). All eight cases, one by one:
@@ -113,12 +113,12 @@ void TestSetting() {
   }
   // What the pass then computes (the host hands OcclusionOn's result to Wanted): an RTAO frame keeps the sun ray for the contact march and drops the occlusion; the A/B arm has both; with the contact
   // shadows off an RTAO frame has nothing left to record.
-  const ra::Terms rtao_frame = ra::Wanted(ra::Setting::kAuto, true, ra::OcclusionOn(true, true, false), true);
+  const ra::Terms rtao_frame = ra::Wanted(ra::Setting::kBoth, true, ra::OcclusionOn(true, true, false), true);
   Check(!rtao_frame.occlusion && rtao_frame.contact, "an RTAO frame: the car pass records the sun term only");
-  const ra::Terms blend_frame = ra::Wanted(ra::Setting::kAuto, true, ra::OcclusionOn(true, true, true), true);
+  const ra::Terms blend_frame = ra::Wanted(ra::Setting::kBoth, true, ra::OcclusionOn(true, true, true), true);
   Check(blend_frame.occlusion && blend_frame.contact, "the A/B arm: the car pass records both terms");
-  Check(!ra::Wanted(ra::Setting::kAuto, true, ra::OcclusionOn(true, true, false), false).any(), "an RTAO frame without the contact shadows: the car pass records nothing");
-  const ra::Terms ultra_frame = ra::Wanted(ra::Setting::kAuto, true, ra::OcclusionOn(true, false, false), true);
+  Check(!ra::Wanted(ra::Setting::kBoth, true, ra::OcclusionOn(true, true, false), false).any(), "an RTAO frame without the contact shadows: the car pass records nothing");
+  const ra::Terms ultra_frame = ra::Wanted(ra::Setting::kBoth, true, ra::OcclusionOn(true, false, false), true);
   Check(ultra_frame.occlusion && ultra_frame.contact, "a frame without RTAO: both terms, as before");
 }
 

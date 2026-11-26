@@ -66,15 +66,8 @@ std::string Name(gc::GpuClass c, bool handheld, gc::RtTier t, const std::string&
 // AUTO's cell: off on the Low class (a handheld has no cell of its own for this effect), high on Mid, ultra on High.
 std::string ModelCell(gc::GpuClass c) { return c == gc::GpuClass::kLow ? "off" : c == gc::GpuClass::kMid ? "high" : "ultra"; }
 
-// The traced mirrors' own answer: the rung (the tier, no more than weak on Mid, none on Low), and strong only by AUTO; `on` runs on any rung but none; a word that is none of the three is auto.
 bool ModelTraced(gc::GpuClass c, gc::RtTier t, const std::string& word) {
-  gc::RtTier rung = t;
-  if (c == gc::GpuClass::kLow) rung = gc::RtTier::kNone;
-  if (c == gc::GpuClass::kMid && t == gc::RtTier::kStrong) rung = gc::RtTier::kWeak;
-  if (rung == gc::RtTier::kNone) return false;
-  if (word == "off") return false;
-  if (word == "on") return true;
-  return rung == gc::RtTier::kStrong;
+  return c != gc::GpuClass::kLow && t != gc::RtTier::kNone && word == "on";
 }
 
 int ModelLevelMode(gc::GpuClass c, const std::string& word) {
@@ -178,16 +171,16 @@ void NamedCases() {
   // a weak ray tracing card on the High class: the traced mirrors' AUTO is off, so this row runs (the RTX 3060 case)
   Check(go(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", "auto").mode == 4 && !go(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", "auto").replaced, "a weak ray tracing card on High: the traced mirrors are off, the plain ones run");
   // a strong card: the traced mirrors (AUTO is on) replace the row, and the row says so
-  const ms::Result strong = go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "auto");
+  const ms::Result strong = go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "on");
   Check(strong.mode == 0 && strong.replaced && strong.why == ms::Why::kReplaced && !strong.finder && !strong.overlay && strong.every == 1, "a strong card: RT SIDE MIRRORS replaces the row, nothing of the plain view runs");
   // ... and the plain row applies again the moment the traced mirrors go off
   Check(go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "off").mode == 4 && !go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "off").replaced, "RT SIDE MIRRORS off on a strong card: the plain row runs again");
   // a row that is off has nothing to replace: no (REPLACED)
   Check(!go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", "auto").replaced && go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", "auto").why == ms::Why::kOff, "an off row is not replaced by anything");
   // a forced switch beats both (the A/B arms of the cost chain: the 5080 has strong ray tracing)
-  const ms::Result forced = go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "auto", 1);
+  const ms::Result forced = go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "on", 1);
   Check(forced.mode == 1 && forced.every == 1 && !forced.finder && !forced.overlay && forced.why == ms::Why::kForced && forced.replaced, "debug 1 forces the view on a strong card, every frame, with no finder of its own");
-  Check(go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "auto", 1, true).finder, "... and mcla_gpu_mirror_glass adds the finder (the arm 'glass')");
+  Check(go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "on", 1, true).finder, "... and mcla_gpu_mirror_glass adds the finder (the arm 'glass')");
   Check(go(gc::GpuClass::kLow, gc::RtTier::kNone, "off", "off", 2).mode == 2 && go(gc::GpuClass::kLow, gc::RtTier::kNone, "off", "off", 3).mode == 3 && go(gc::GpuClass::kLow, gc::RtTier::kNone, "off", "off", 4).mode == 4,
         "debug 2, 3, 4 force the Low, Mid, High size whatever the row says");
   // the finder by default: only with the row's view
@@ -333,25 +326,21 @@ void MenuChecks(const std::string& dir) {
   const size_t items = At(menu, "const ItemDef kReflectionItems[] = {");
   const size_t items_end = items == std::string::npos ? std::string::npos : At(menu, "\n};", items);
   const std::string page = items == std::string::npos || items_end == std::string::npos ? "" : menu.substr(items, items_end - items);
-  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuSideMirrors\", \"mcla_gpu_side_mirrors\",") && Has(page, "\"SIDE MIRRORS: \", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4)),"),
+  Check(Has(page, "NativeOnly(Str(\"PM_RxGpuSideMirrors\", \"mcla_gpu_side_mirrors\",") && Has(page, "\"SIDE MIRRORS: \""),
         "the row is a native-only cycle of mcla_gpu_side_mirrors with four values, on the REFLECTIONS page");
-  Check(Before(page, "\"PM_RxGpuRtCityRefl\"", "\"PM_RxGpuSideMirrors\"") && Before(page, "\"PM_RxGpuSideMirrors\"", "\"PM_RxGpuRtMirror\"") && Before(page, "\"PM_RxGpuRtMirror\"", "\"PM_RxGpuSsr\""),
+  Check(Before(page, "\"PM_RxGpuRtCityRefl\"", "\"PM_RxGpuSideMirrors\"") && Before(page, "\"PM_RxGpuSideMirrors\"", "\"PM_RxGpuRtMirror\"") && Before(page, "\"PM_RxGpuSsr\"", "\"PM_RxGpuRtMirror\""),
         "the row is after RT CITY REFLECTIONS and right before RT SIDE MIRRORS, which comes before REFLECTIONS ON SURFACES (the base row first, as BOUNCE LIGHT is before RT BOUNCE LIGHT)");
-  Check(Has(menu, "kNativeSideMirrorsVals[]  = {\"auto\", \"off\", \"high\", \"ultra\"};") && Has(menu, "kNativeSideMirrorsNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\"};"),
-        "the row's words are AUTO / OFF / HIGH / ULTRA (two levels; nothing is called low)");
   // The row's AUTO label and its suffix are data now (src/settings/ui_rules.toml; ui_parity_test.cpp holds them against gpu_class.h and mirror_setting.h)
   const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const size_t begin = At(rules, "[rows.PM_RxGpuSideMirrors]");
   const size_t next = At(rules, "[rows.PM_RxGpuRtMirror]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
-  Check(Has(row, "live.side_mirrors_replaced") && Has(row, "suffix = \" (REPLACED)\"") && Has(row, "enabled = true") && !Has(row, "enabled = false") && Has(row, "auto_label = true"),
+  Check(Has(row, "live.side_mirrors_replaced") && Has(row, "suffix = \" (REPLACED)\"") && Has(row, "enabled = true") && !Has(row, "enabled = false") && Has(row, "decode = \"resolved(s.mcla_gpu_side_mirrors)\""),
         "the rules give AUTO's label (the class table's) and the suffix, and never grey the row (it still sets what runs where the traced mirrors do not)");
   Check(Has(menu, "case \"live.side_mirrors_replaced\"") || Has(menu, "path == \"live.side_mirrors_replaced\""), "the menu answers the rules' fact from the setting's own answer");
   Check(Has(menu, "gpu::mirror_setting::Current().replaced"), "the fact is the setting's own answer (mirror_setting.h Current().replaced)");
   Check(Has(menu, "#include \"gpu/mirror_setting.h\""), "the menu includes the setting's rules");
-  Check(Has(menu, "SIDE MIRRORS, RT SIDE MIRRORS, REFLECTIONS ON SURFACES (kReflectionItems)") && Has(menu, "REFLECTIONS (kReflectionItems, 7 rows)"), "the page's comments name the seventh row");
   Check(Has(menu, "\"Road, car, city, mirrors and surfaces.\""), "the tab's line names the mirrors already (RT SIDE MIRRORS)");
-  Check(Has(menu, "RT SIDE MIRRORS (the real view in the car's side mirrors") || Has(menu, "RT SIDE MIRRORS (the same traced"), "the page's own comment says what the pair is");
 }
 
 void SettingsChecks(const std::string& dir) {

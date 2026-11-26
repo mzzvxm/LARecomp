@@ -268,6 +268,7 @@ void CheckInvariants() {
 void CheckChoices() {
   Choice c = Choice::k32x9;
   Check(ParseChoice("auto", &c) && c == Choice::kAuto, "parse auto");
+  Check(ParseChoice("window", &c) && c == Choice::kAuto, "Fit Window uses the saved automatic framing behavior");
   Check(ParseChoice("16:9", &c) && c == Choice::k16x9, "parse 16:9");
   Check(ParseChoice("16:10", &c) && c == Choice::k16x10, "parse 16:10");
   Check(ParseChoice("21:9", &c) && c == Choice::k21x9, "parse 21:9");

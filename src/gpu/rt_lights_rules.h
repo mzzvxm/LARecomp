@@ -174,12 +174,12 @@ inline Mode ParseMode(std::string_view text) {
   if (t == "on" || t == "1" || t == "true" || t == "yes" || t == "force") {
     return Mode::kOn;
   }
-  return Mode::kAuto;  // "auto", "", "-1", anything else: follow the RT SHADOWS row
+  return Mode::kAuto;  // Legacy and unrecognized values are kept for diagnostics.
 }
 constexpr const char* ModeName(Mode m) { return m == Mode::kOff ? "off" : (m == Mode::kOn ? "on" : "auto"); }
 
-// Whether the setting wants the pass this frame: `rt_shadows_on` = the RT SHADOWS row's level (gpu class and its own word) is not off.
-constexpr bool Wanted(Mode mode, bool rt_shadows_on) { return mode == Mode::kOn || (mode == Mode::kAuto && rt_shadows_on); }
+// Only the explicit On setting enables RT light shadows.
+constexpr bool Wanted(Mode mode) { return mode == Mode::kOn; }
 
 // K: the setting (0 = the level's number) clamped to the channels; the level's number is one image (3) and, at the largest light shadows level, two (6).
 constexpr uint32_t AutoK(bool ultra) { return ultra ? kUltraK : kDefaultK; }
