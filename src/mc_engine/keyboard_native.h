@@ -68,6 +68,7 @@
 
 #include "mc_engine/input/input_state.h"
 #include "mc_engine/input/kbm_input.h"
+#include "gpu/pause_world_fx.h"
 
 // Before `lis r30` at 0x82614CFC: the end of the keystroke poll, reached on every
 // path out of sub_82614C70, ahead of the memcpy that publishes the key table.
@@ -111,6 +112,7 @@ bool GameEntered();
 // The name of the movie the game's UI has as its current one, as of the last input poll ("PAUSEMOVIE", "GARAGEMOVIE", "POPUPMOVIE", ... ; empty for none), copied into `out` (at most `capacity`
 // bytes with the end mark). Any thread.
 void CurrentMovieName(char* out, size_t capacity);
+mcla::gpu::gbuffer::MenuState CurrentMenuState();
 
 // Presses one of the menu's buttons for one input poll, as if a key mapped to it went down: the mouse in the menus (menu_mouse.cpp) does its clicks and wheel steps with this.
 // The button goes in through the game's own menu mapper (EnsureNavKeys binds an always-live entry per button), so it is exactly the pad button's press. Two calls before the same

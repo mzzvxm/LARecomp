@@ -1528,6 +1528,7 @@ std::string& g_ui_prev_name = larecomp::Leak<std::string>();  // the movie name 
 std::atomic<bool> g_screen_menu{true};      // what the last poll made of it, for larecomp::keyboard::MenuScreenUp (mouse look): a menu screen is up, or the game is not entered yet
 std::atomic<bool> g_screen_phone{false};    // ... and the Sidekick phone is the current movie (PhoneScreenUp)
 std::atomic<bool> g_entered_flag{false};    // g_game_entered for any thread (GameEntered)
+std::atomic<mcla::gpu::gbuffer::MenuState> g_menu_state{mcla::gpu::gbuffer::MenuState::kNone};
 std::mutex g_movie_name_mutex;              // the current movie's name for any thread (CurrentMovieName), copied when it changes
 std::string& g_movie_name_copy = larecomp::Leak<std::string>();
 
@@ -1637,6 +1638,9 @@ void PollPrompts(uint8_t* b) {
     // Which screen the game is on: three loads of FlashNavigator and the form stack. Read before the dictionary check below, because mouse look asks about the screen too
     // (MenuScreenUp / PhoneScreenUp) and must not depend on the glyph art being found.
     const larecomp::prompts::UiSignals ui = UiSignalsOf(b);
+    const GuestMenuView menu = ReadGuestMenuView(b);
+    // CHECK: Verify pause dialogs, photo capture and return to the full map with queued draws on both APIs.
+    g_menu_state.store(mcla::gpu::gbuffer::MenuStateOf(g_ui_movie_name, menu.paused, menu.photo), std::memory_order_relaxed);
     g_screen_menu.store(larecomp::prompts::ContextFor(g_game_entered, ui) == larecomp::prompts::Context::Menu, std::memory_order_relaxed);
     g_screen_phone.store(g_ui_movie_name.compare(0, 8, "SIDEKICK") == 0, std::memory_order_relaxed);
     g_entered_flag.store(g_game_entered, std::memory_order_relaxed);
@@ -1994,6 +1998,7 @@ bool PhoneScreenUp() { return g_screen_phone.load(std::memory_order_relaxed); }
 bool MouseDragButtonHeld() { return g_keys.Held(0x01) || g_keys.Held(0x02); }  // LMB, RMB (kbm_input.h kMouseKeys)
 
 bool GameEntered() { return g_entered_flag.load(std::memory_order_relaxed); }
+mcla::gpu::gbuffer::MenuState CurrentMenuState() { return g_menu_state.load(std::memory_order_relaxed); }
 
 void PressMenuKey(larecomp::kbm::MenuKey key) { g_keys.Pulse(larecomp::kbm::MenuKeyId(key)); }
 
@@ -2093,6 +2098,7 @@ bool PhoneScreenUp() { return false; }
 bool MouseDragButtonHeld() { return false; }
 
 bool GameEntered() { return false; }
+mcla::gpu::gbuffer::MenuState CurrentMenuState() { return mcla::gpu::gbuffer::MenuState::kNone; }
 void PressMenuKey(larecomp::kbm::MenuKey) {}
 void CurrentMovieName(char* out, size_t capacity) {
     if (out && capacity) out[0] = 0;

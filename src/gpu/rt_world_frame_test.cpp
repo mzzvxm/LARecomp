@@ -1488,7 +1488,7 @@ void TestSources(const std::string& src) {
     const size_t cascades = sc.find("rt_world_->SetSunCascades(cascades);");
     const size_t build = sc.find("car_rt_->OnResolve(record, summary, list, slot_);");
     const size_t fill = sc.find("rt_world_->OnTrigger(slot_);");
-    const size_t probe_field = sc.find("gi_integration_->OnResolve(summary, list, slot_);");
+    const size_t probe_field = sc.find("gi_integration_->OnResolve(summary, list, slot_, view, has_planes);");
     CHECK(begin != std::string::npos && cascades != std::string::npos && build != std::string::npos && fill != std::string::npos && probe_field != std::string::npos);
     CHECK(cascades < build && build < fill && fill < probe_field);
     CHECK(CountOf(sc, "rt_world_->OnTrigger(") == 1 && CountOf(sc, "rt_world_->BeginFrame(") == 1);

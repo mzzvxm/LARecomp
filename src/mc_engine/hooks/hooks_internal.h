@@ -19,6 +19,19 @@ inline uint32_t ReadGuestU32(const uint8_t* base, uint32_t addr) {
            (uint32_t(base[addr + 2]) << 8) | uint32_t(base[addr + 3]);
 }
 
+struct GuestMenuView {
+    bool paused = false;
+    bool photo = false;
+};
+
+inline GuestMenuView ReadGuestMenuView(const uint8_t* base) {
+    if (!base) return {};
+    const uint32_t pause = ReadGuestU32(base, 0x828CCEA0u);  // Game_IsPaused
+    const uint32_t hud = ReadGuestU32(base, 0x8286D8D4u);    // photo-mode byte read by sub_822C0320
+    return {pause >= 0x10000u && pause < 0xE0000000u && base[pause + 4] != 0 && base[pause + 10] == 0,
+            hud >= 0x10000u && hud < 0xE0000000u && base[hud + 0x51380u] != 0};
+}
+
 inline void WriteGuestU32(uint8_t* base, uint32_t addr, uint32_t val) {
     base[addr + 0] = (val >> 24) & 0xFF;
     base[addr + 1] = (val >> 16) & 0xFF;

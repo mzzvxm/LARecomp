@@ -32,7 +32,7 @@ class RtAo {
   void Initialize(Device&, FrameRing&, BindlessHeap&, HostPasses&, PassTiming&, CarRtScene&, CityRtScene*, RtSceneService&, bool listed_at_start);
   void Shutdown();
   bool available() const;
-  void BeginFrame(const rtao_setting::Decision&, bool play_view);
+  void BeginFrame(const rtao_setting::Decision&, bool view_supported);
   bool wanted() const { return wanted_; }
   void SetRawMode(bool raw) { raw_ = raw; }
   bool raw_frame() const { return plan_.raw; }
@@ -131,7 +131,7 @@ class RtAo {
   bool previous_ours_ = false, recorded_ = false;
   bool match_cabin_guide_ = false, previous_match_cabin_guide_ = false;
   bool listed_ = false, failed_[2] = {};
-  bool wanted_ = false, selected_ = false, play_view_ = false, raw_ = false;
+  bool wanted_ = false, selected_ = false, view_supported_ = false, raw_ = false;
   bool blend_car_ = false, cabin_screen_ = false, interior_ = false, cabin_closed_ = false;
   bool readback_busy_ = false, probe_due_ = false;
   uint64_t player_mesh_key_ = 0, mesh_epoch_ = 0, last_probe_ = 0;

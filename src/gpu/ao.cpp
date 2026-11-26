@@ -1121,6 +1121,10 @@ void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
     vs_pose_trusted_ = false;
     history_valid_ = false;
     contact_hist_.valid = false;
+    if (rtao_) {
+      rtao_->shared_history_valid_ = false;
+      rtao_->previous_ours_ = false;
+    }
   }
   pause_fx_ = pause_fx;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_ao_census.Get()));
@@ -1235,7 +1239,7 @@ void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
   }
   if (rtao_) {
     const auto d = rtao_setting::DecideFor(AoSetting().Get());
-    rtao_->BeginFrame(d, !have_previous_ || !previous_pause_);
+    rtao_->BeginFrame(d, gbuffer::SupportsCityEffects(have_previous_ && previous_pause_, pause_fx_));
   }
   if (city_shadow_) {
     // === CITY-RT BLOCK (city_rt_shadow.h, CITY-RT M1): the city's ray traced sun shadows are read by the contact march, so they are wanted where it runs (the same last-frame gate as above).
@@ -1840,7 +1844,10 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
                       : kContactViewBase + uint32_t(plan.contact.car_map_view || plan.contact.rt_view ? 2 : contact_view);
     }
   }
-  const bool legacy_rt = rtao_ && rtao_->selected_ && trigger_world_ == menu_world::World::kPlay &&
+  // CHECK: Verify the current city TLAS and camera align during a photo pan on both backends.
+  const auto published_view = gbuffer_ ? gbuffer_->published_pause_fx() : gbuffer::PauseFxView::kNone;
+  const bool rt_ao_view = gbuffer::SupportsCityEffects(trigger_pause_, published_view);
+  const bool legacy_rt = rtao_ && rtao_->selected_ && rt_ao_view &&
                          (rtao_->raw_ || !rtao_->want_shared_);
   const bool cheap_ao = plan.occlusion && !legacy_rt && larecomp::settings::mcla_gpu_ao_cheap.Get();
   if (cheap_ao) {
@@ -1928,7 +1935,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     in.bounce_quarter = plan.gi.quarter;
     in.half_above_ao = larecomp::settings::mcla_gpu_ao_half_above_1080.Get();
     in.half_above_bounce = plan.gi.half_above;
-    const bool rt_guide = rtao_ && rtao_->selected_ && trigger_world_ == menu_world::World::kPlay;
+    const bool rt_guide = rtao_ && rtao_->selected_ && rt_ao_view;
     const bool full_contact = contact && (in.contact_ultra || in.render_height > ao_size::kHalfAboveLines);
     const ao_size::Choice choice = plan.cheap && !rt_guide
         ? ao_size::Choice{false, true, false, full_contact}
@@ -2807,7 +2814,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     UpdateLook();
     const CarRtView& top_level = rtao_scene_->View();
     const float camera[3] = {};
-    rtao_->play_view_ = trigger_world_ == menu_world::World::kPlay;
+    const auto published_view = gbuffer_ ? gbuffer_->published_pause_fx() : gbuffer::PauseFxView::kNone;
+    rtao_->view_supported_ = gbuffer::SupportsCityEffects(trigger_pause_, published_view);
     rtao_in.render[0] = plan.render[0];
     rtao_in.render[1] = plan.render[1];
     rtao_in.stencil_ms = ms;
@@ -2889,7 +2897,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     } else {
       // This frame is the plain occlusion: its history is what EnsureImages left out for the test.
       plan.gi = GiPlan{};
-      if (plan_rtao && rtao_->play_view_) {
+      if (plan_rtao && rtao_->view_supported_) {
         plan.rtao.screen_pass = rtao::ScreenPassInPlay(rtao_->screen_, plan.rtao.on, rtao_->cabin_screen_);
       }
       if (gi_apply_) {
@@ -3553,7 +3561,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       screen_->SetQuarterLightGuide(gi_depth_[quarter_history_.index].slot, summary.host_sample);
     }
   }
-  const bool screen_disabled = plan_rtao && rtao_->play_view_ && rtao_->screen_ == rtao::Screen::kOff;
+  const bool screen_disabled = plan_rtao && rtao_->view_supported_ && rtao_->screen_ == rtao::Screen::kOff;
   const bool has_ao_term = plan.occlusion && (rtao_slot != kNoSlot || (screen_term && !screen_disabled));
   // The contact shadows: their march and its filter, into the two scratch images the occlusion has
   // finished with.

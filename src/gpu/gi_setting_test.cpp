@@ -285,10 +285,10 @@ void SceneChecks(const std::string& dir) {
   Check(Before(scene, "gi_apply_->BeginFrame();", "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);"), "ORDER: ... and the apply's before the G-buffer reads the wants it makes");
   // THE TRIGGER: the field's maintenance, update and weights before the occlusion plans (it asks for the screen-space bounce light's share), the apply after the occlusion's apply
   const std::string ao = "ao_->OnResolve(record, summary, list, UpscalerRunning());";
-  Check(Before(scene, "gi_integration_->OnResolve(summary, list, slot_);", ao), "ORDER: the field is published before the occlusion plans its frame (scene.cpp OnResolve)");
+  Check(Before(scene, "gi_integration_->OnResolve(summary, list, slot_, view, has_planes);", ao), "ORDER: the field is published before the occlusion plans its frame (scene.cpp OnResolve)");
   Check(Before(scene, ao, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi,"), "ORDER: ... and the apply still follows the occlusion's apply");
   // after the structures' build (the car scene's top level holds the city), which the probe update traces against
-  Check(Before(scene, "car_rt_->OnResolve(record, summary, list, slot_);", "gi_integration_->OnResolve(summary, list, slot_);"), "ORDER: the field's trigger work comes after the ray tracing structures' (the top level the update traces)");
+  Check(Before(scene, "car_rt_->OnResolve(record, summary, list, slot_);", "gi_integration_->OnResolve(summary, list, slot_, view, has_planes);"), "ORDER: the field's trigger work comes after the ray tracing structures' (the top level the update traces)");
   Check(Count(scene, "gi_integration_->") == 3 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start, at the trigger and (the game's camera cut) at the anchor, once each");
   // THE ANCHOR: a camera cut the game asked for (Scene::NoteAnchorCut sets anchor_cut_ first) goes to the field as a teleport at the next frame's start (CITY-RT-REVIEW M4)
   Check(Before(scene, "NoteAnchorCut(banks);", "gi_integration_->NoteRequestedCut();") && Has(scene, "if (gi_integration_ && anchor_cut_) {"),
@@ -304,9 +304,9 @@ void IntegrationChecks(const std::string& dir) {
   const size_t update = At(cpp, "update_(list, frame_slot, field_->update_frame());");
   const size_t finish = At(cpp, "field_->RecordFinish(list, frame_slot)");
   Check(maint != std::string::npos && update != std::string::npos && finish != std::string::npos && maint < update && update < finish, "ORDER: RecordMaintenance, the probe update, RecordFinish");
-  // the world: the first copy of the main view's depth, the 4 sample identity is not the play view
-  Check(Has(cpp, "temporal::MainDepthSamples(summary.source_key)") && Has(cpp, "trigger_frame_ == frame_") && Has(cpp, "samples != temporal::kPauseSamples") && Has(cpp, "summary.depth_copy"),
-        "the trigger is the first main view depth copy of a frame, and the 4 sample identity (pause, garage, map) is not the play view");
+  // Every view needs a main-depth trigger. A menu can use the city field if the current sidecar can consume it.
+  Check(Has(cpp, "temporal::MainDepthSamples(summary.source_key)") && Has(cpp, "trigger_frame_ == frame_") && Has(cpp, "gbuffer::SupportsCityEffects(samples == temporal::kPauseSamples, view)") && Has(cpp, "if (!has_planes || !field_->running())"),
+        "the main depth trigger publishes the field only for an eligible view with the apply planes");
   // BeginFrame: the published frame is read for the hint BEFORE the field's own BeginFrame empties it; the watchdog; the Inputs
   Check(Before(cpp, "gi_setting::NoteReplaced(gi_setting::ReplacedBy(field_->frame()));", "field_->BeginFrame(in);"), "ORDER: the hint is read from the last frame's published field before the field starts a new frame");
   Check(Has(cpp, "apply_->Starved()") && Has(cpp, "apply_->ClearStarved()") && Has(cpp, "frame >= idle_until_") && Has(cpp, "kStarvedHoldFrames"), "the watchdog idles the field and clears the count");
@@ -321,7 +321,7 @@ void IntegrationChecks(const std::string& dir) {
             Has(ReadFile(dir + "/gi_field_rules.h"), "constexpr CutKind CutFor(bool game_cut, bool hour_jump = false) { return game_cut ? CutKind::kTeleport : hour_jump ? CutKind::kRelight : CutKind::kNone; }"),
         "the integration takes the request and the rule maps it to a teleport (a game's cut wins over an hour jump's relight)");
   // THE HOUR JUMP (CITY-RT-REVIEW M4, G4g): the clock's count and the sun's step are tested at the play view's trigger, the relight is handed over with the next frame's Inputs and kept until a frame with a world
-  Check(Has(cpp, "if (world_play_ && relight_.Observe(frame_, mcla::gpu::world_clock::HourJumps(), light_ok, to_sun)) {") && Has(cpp, "relight_pending_ = true;") && Has(cpp, "#include \"world_clock.h\"") &&
+  Check(Has(cpp, "if (relight_.Observe(frame_, mcla::gpu::world_clock::HourJumps(), light_ok, to_sun)) {") && Has(cpp, "relight_pending_ = true;") && Has(cpp, "#include \"world_clock.h\"") &&
             Has(cpp, "if (in.world_ok) {\n    relight_pending_ = false;") && Has(cpp, "relight_.Reset();") && Has(cpp, "light_ok = true;"),
         "the integration pairs the clock's hour jumps with the sun's step at the play view's trigger, hands the relight to the next frame's Inputs and spends it where the field has a world");
   Check(Before(cpp, "LatchPoseAndLight();", "return field_->RecordFinish(list, frame_slot);") && Has(ReadFile(dir + "/gi_integration.h"), "gi_field::RelightDetector relight_;") && Has(ReadFile(dir + "/gi_integration.h"), "bool relight_pending_ = false;"),
