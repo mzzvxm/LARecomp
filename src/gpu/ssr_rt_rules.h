@@ -219,6 +219,12 @@ constexpr Resolved Resolve(const LevelFacts& f) {
   return r;
 }
 
+// Physical ray-query support decides availability. Every supported
+// device uses the selected level's same group mask, ray count and reach.
+constexpr Resolved ResolveFixed(Level ssr, Choice choice, bool ray_queries) {
+  return Resolve({ssr, choice, ray_queries ? gc::RtTier::kStrong : gc::RtTier::kNone});
+}
+
 // What the trigger knows beyond the setting.
 struct FrameFacts {
   Resolved resolved;

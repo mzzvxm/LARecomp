@@ -107,6 +107,7 @@
 #include "resolve.h"
 #include "rt_denoise.h"
 #include "screen_frame.h"
+#include "ssr_classify.h"
 #include "ssr_denoise_rules.h"
 #include "ssr_rt.h"
 #include "ssr_rules.h"
@@ -205,7 +206,8 @@ class ScreenReflections {
   }
   void Bind(plume::RenderCommandList* list) const;
   // The same sequence as HostPasses::DrawInto with this layout (128 bytes of push constants), into `image` at its own size.
-  void DrawPass(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline, const ssr::Push& push);
+  void DrawPass(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline,
+                const ssr::Push& push, bool compute_read = false);
   // `rt`: the frame follows the ray traced fallback: the trace image is a storage image too and the confidence image and the two target framebuffer exist (else they do not). `raw` (RR-4a): the frame is raw: the
   // accumulation's two images are not needed and the picture's size hit distance image is (`render_*`); the fallback's images are made for a raw frame all the same when `rt` (its compute passes run in it).
   bool EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw = false, uint32_t render_width = 0, uint32_t render_height = 0);
@@ -223,7 +225,15 @@ class ScreenReflections {
   plume::RenderPipeline* PrepareCaptureHit(bool rt, bool ms);
   void ReleaseCaptureHit();
 
-  plume::RenderDescriptorSet* UploadHandoff(const reflection_handoff::Frame& handoff);
+  plume::RenderDescriptorSet* UploadHandoff(const reflection_handoff::Frame& handoff, bool rt_tiles);
+
+  ReflectionClassifier classifier_;
+  ssr::HistoryKey classify_key_;
+  ssr::Level classify_level_ = ssr::Level::kOff;
+  bool classify_enabled_ = true;
+  bool classify_handoff_ = false;
+  bool classify_rt_ = false;
+  bool classify_raw_ = false;
 
   struct HandoffSlot {
     std::unique_ptr<plume::RenderBuffer> buffer;

@@ -120,6 +120,7 @@ add_library(larecomp_gpu OBJECT
     screen_lights.cpp
     screen_shared.cpp
     ssr.cpp
+    ssr_classify.cpp
     ssr_rt.cpp
     shaders.cpp
     shadow_atlas.cpp
@@ -485,6 +486,7 @@ add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
 # hlsl/ssr_rt_common.hlsli as C++ and compares it with the twins, and reads the fallback's sources) likewise:
 #   cmake --build <dir> --target larecomp_ssr_rt_rules_test, then run src/gpu/larecomp_ssr_rt_rules_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp)
+add_executable(larecomp_ssr_classify_test EXCLUDE_FROM_ALL ssr_classify_test.cpp)
 # RtDenoise (rt_denoise_rules.h: the radius law, the weights, the temporal rules; ssr_denoise_rules.h: the reflections' use, the decision, the setting, the census; it compiles
 # hlsl/rt_denoise_common.hlsli as C++ and compares it with the twins, runs a CPU model of the two stages on synthetic frames, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).
@@ -1247,6 +1249,8 @@ larecomp_gpu_host_shader(ssr_trace_reflhit_ps ps_6_0 SOURCE ssr_trace_ps DEFINES
 larecomp_gpu_host_shader(ssr_trace_reflhit_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_REFLHIT=1)
 larecomp_gpu_host_shader(ssr_trace_rt_reflhit_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1 SSR_REFLHIT=1)
 larecomp_gpu_host_shader(ssr_trace_rt_reflhit_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1 SSR_REFLHIT=1)
+larecomp_gpu_host_shader(ssr_classify_cs cs_6_0)
+larecomp_gpu_host_shader(ssr_classify_reproject_cs cs_6_0 SOURCE ssr_classify_cs DEFINES SSR_CLASSIFY_REPROJECT=1)
 larecomp_gpu_host_shader(ssr_rt_select_cs cs_6_0)
 larecomp_gpu_host_shader_rt(ssr_rt_trace_cs cs_6_5 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader_rt(ssr_rt_trace_ms_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=1)

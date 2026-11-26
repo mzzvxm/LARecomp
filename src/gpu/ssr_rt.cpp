@@ -238,15 +238,22 @@ bool ScreenReflectionsRt::PipelinesReady(bool multisampled) {
 // the frame
 // ---------------------------------------------------------------------------
 
-void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level) {
+void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level, bool classified) {
   ran_ = false;
   if (!ready_) {
     resolved_ = ssr_rt::Resolved{};
     shade_cars_ = false;
     return;
   }
-  const ssr_rt::Resolved now = ssr_rt::Resolve({ssr_level, ssr_rt::ParseChoice(Setting().Get()), gpu_class::CurrentRtRung()});
-  if (now.level != resolved_.level) {
+  // ready_ already establishes ray-query support. The classified path
+  // uses the chosen level's full, fixed work cap on every supported GPU.
+  const auto choice = ssr_rt::ParseChoice(Setting().Get());
+  const ssr_rt::Resolved now = classified ? ssr_rt::ResolveFixed(ssr_level, choice, ready_) :
+      ssr_rt::Resolve({ssr_level, choice, gpu_class::CurrentRtRung()});
+  if (now.level != resolved_.level || classified != classified_) {
+    classified_ = classified;
+    reset_pending_ = true;
+    logged_level_once_ = false;
     governor_.Reset();   // the cell changed: what the old one cost says nothing about the new
     ms_ = -1.0;
     logged_step_ = 0;
@@ -259,11 +266,12 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level) {
     if (now.level == ssr_rt::Level::kOff) {
       REXLOG_INFO("{} ray traced fallback off: {} (mcla_gpu_ssr_rt {}, live)", kPrefix, ssr_rt::WhyName(now.why), Setting().Get());
     } else {
-      REXLOG_INFO("{} ray traced fallback {} (mcla_gpu_ssr_rt {}, live): classes {}{}{}, at most {} rays a frame ({} a pixel), up to {:.0f} m, the governor holds its time to {:.2f} ms", kPrefix,
+      const std::string allocation = classified_ ? "fixed work per level" : std::format("timing budget {:.2f} ms", now.cell.budget_ms);
+      REXLOG_INFO("{} ray traced fallback {} (mcla_gpu_ssr_rt {}, live): classes {}{}{}, at most {} rays a frame ({} a pixel), up to {:.0f} m, {}", kPrefix,
                   ssr::LevelName(now.level), Setting().Get(), (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupBright)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupBright) : "",
                   now.cell.group_mask == (ssr_rt::GroupBit(ssr_rt::kGroupBright) | ssr_rt::GroupBit(ssr_rt::kGroupGround)) ? ", " : "",
                   (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupGround)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupGround) : "", now.cell.ray_cap, now.cell.rays, double(now.cell.reach),
-                  double(now.cell.budget_ms));
+                  allocation);
     }
   }
   if (wanted() && service_) {
@@ -380,14 +388,15 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
 
   // The governor: the cap's step for this frame (the passes' time of the frames before it, measured by the timestamps below).
   const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - clock_start_).count();
-  if (governor_.Update(now, double(cell.budget_ms))) {
+  if (!classified_ && governor_.Update(now, double(cell.budget_ms))) {
     totals_.step_changes = governor_.changes();
     REXLOG_INFO("{} the governor moves the cap to step {} of {} ({:.2f} ms average against {:.2f} ms): {} rays a frame", kPrefix, governor_.step(), ssr_rt::Governor::kMaxStep, governor_.ewma_ms(),
                 double(cell.budget_ms), ssr_rt::RayCap(cell, governor_.step()));
   }
   const bool single_ray = larecomp::settings::mcla_gpu_ssr_rt_single_ray.Get();
   const uint32_t rays = ssr_rt::RaysUsed(cell, std::max<uint32_t>(in.ssr_rays, 1), single_ray);
-  const uint32_t capacity = ssr_rt::CapacityFor(cell, governor_.step(), rays);
+  const uint32_t step = classified_ ? 0u : governor_.step();
+  const uint32_t capacity = ssr_rt::CapacityFor(cell, step, rays);
   if (capacity == 0) {
     return false;
   }
@@ -443,17 +452,25 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   const uint32_t tiles_y = (in.height + ssr_rt::kTile - 1) / ssr_rt::kTile;
   const plume::RenderBufferBarrier between[2] = {{ctl_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}, {list_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}};
   list->setPipeline(select_pipeline);
-  if (reset_pending_) {
-    // The first frame: the control words are not known, so a pass of its own clears them (the groups all return but the first, which writes zeros).
+  if (reset_pending_ || in.indirect) {
+    // A compact list may dispatch zero groups. Clear its rotating counters
+    // explicitly so an empty frame cannot leave a stale count behind.
     ssr::Push reset = push;
-    reset.Set(pk::kConf, ssr_rt::PackConf(in.confidence->slot, cell.group_mask, rays, flags | pk::kFlagReset));
+    if (reset_pending_) {
+      reset.Set(pk::kConf, ssr_rt::PackConf(in.confidence->slot, cell.group_mask, rays, flags | pk::kFlagReset));
+    }
+    reset.Set(pk::kCap, 0);
     list->setComputePushConstants(0, &reset, 0, sizeof(reset));
-    list->dispatch(tiles_x, tiles_y, 1);
+    list->dispatch(1, 1, 1);
     list->barriers(Stage::COMPUTE, between, 2);
     reset_pending_ = false;
   }
   list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch(tiles_x, tiles_y, 1);
+  if (in.indirect) {
+    in.indirect->Dispatch(*list);
+  } else {
+    list->dispatch(tiles_x, tiles_y, 1);
+  }
   list->barriers(Stage::COMPUTE, between, 2);
   list->setPipeline(trace_pipeline);
   list->setComputePushConstants(0, &push, 0, sizeof(push));
@@ -499,9 +516,9 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   line.group_mask = cell.group_mask;
   line.reach = cell.reach;
   line.capacity = capacity;
-  line.step = governor_.step();
+  line.step = step;
   line.rays_per_pixel = rays;
-  line.budget_ms = cell.budget_ms;
+  line.budget_ms = classified_ ? 0.0f : cell.budget_ms;
   line.ms = ms_;
   line.keep = 1.0f;
   if (stats) {
@@ -513,7 +530,7 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   }
   ++rt_frame_;
   ++totals_.frames_run;
-  totals_.step = governor_.step();
+  totals_.step = step;
   ran_ = true;
   idle_frames_ = 0;
   return true;

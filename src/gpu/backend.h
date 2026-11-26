@@ -301,6 +301,16 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 // D3D12: the ID3D12GraphicsCommandList*; Vulkan: the VkCommandBuffer. Null when `list` is null.
 void* NativeListHandle(plume::RenderCommandList* list);
 
+// A compute-written buffer of three group dimensions, consumed after the
+// caller has bound the compute pipeline and its descriptor sets.
+class IndirectCompute {
+ public:
+  virtual ~IndirectCompute() = default;
+  virtual plume::RenderBuffer* arguments() const = 0;
+  virtual void Dispatch(plume::RenderCommandList& list) const = 0;
+};
+std::unique_ptr<IndirectCompute> CreateIndirectCompute(plume::RenderDevice* device);
+
 // D3D12: the ID3D12Resource*; Vulkan: the VkImage (a handle in a pointer, 64-bit builds).
 void* NativeTextureHandle(const plume::RenderTexture* texture);
 

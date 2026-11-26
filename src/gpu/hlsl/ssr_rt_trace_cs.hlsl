@@ -27,6 +27,7 @@
 #include "ssr_pass.hlsli"
 #define SSR_HANDOFF_RT 1
 #include "ssr_handoff.hlsli"
+#include "ssr_classify.hlsli"
 #include "ssr_rt_common.hlsli"
 #include "rt_world_frame.hlsli"
 
@@ -250,13 +251,23 @@ void main(uint3 id : SV_DispatchThreadID) {
   const uint frame = SsrW(SSR_W_FRAME);
   const bool stable = SsrStableTrace();
   const bool handoff = SsrHandoffEnabled();
-  const uint pattern_rays = (stable || single_ray || handoff) ? SsrRays() : rays;
+  const bool classified = g_handoff.Load(140u) != 0u;
+  const uint pattern_rays = (stable || single_ray || handoff || classified) ? SsrRays() : rays;
   const float receiver_distance = length(r.pc);
   const float pixel_angle = 2.0f * tan_y / float(max(ssr.y, 1));
   const float cone_tan = r.alpha * kSsrConeScale;
   const float lift = SsrRtLift(r.pc.z, 2.0f * tan_y / float(max(h0.y, 1)));
   const float3 origin = r.pc + r.n * lift;
-  float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
+  float keep = SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u));
+  if (classified) {
+    const float4 history = SsrTileHistory(pix / int(kSsrTileSize));
+    const uint mode = SsrTileClass(uint(history.w));
+    if (!SsrTileKeepRt(mode, SsrTileAge(uint(history.w)), history.z, confidence, false)) {
+      keep *= SsrTileRtProbeShare(mode);
+    }
+  }
+  // Keep the same fourfold weight bound as the legacy cap.
+  float weight = SsrRtWeight(keep);
   if (stable || handoff) {
     weight *= SsrRtHistoryEdge(confidence, SsrF(SSR_W_RT_THRESHOLD));
   }

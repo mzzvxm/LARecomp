@@ -726,6 +726,51 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   return out;
 }
 
+namespace {
+
+class D3D12IndirectCompute final : public IndirectCompute {
+ public:
+  plume::RenderBuffer* arguments() const override { return buffer.get(); }
+
+  void Dispatch(plume::RenderCommandList& list) const override {
+    auto* native = static_cast<plume::D3D12CommandList&>(list).d3d;
+    const auto* args = static_cast<const plume::D3D12Buffer*>(buffer.get());
+    if (!native || !args || !args->d3d || !signature) return;
+    // Leave the resource in the UAV state tracked by Plume.
+    D3D12_RESOURCE_BARRIER barrier{};
+    barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    barrier.Transition = {args->d3d, D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES,
+                          D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT};
+    native->ResourceBarrier(1, &barrier);
+    native->ExecuteIndirect(signature.Get(), 1, args->d3d, 0, nullptr, 0);
+    std::swap(barrier.Transition.StateBefore, barrier.Transition.StateAfter);
+    native->ResourceBarrier(1, &barrier);
+  }
+
+  Microsoft::WRL::ComPtr<ID3D12CommandSignature> signature;
+  std::unique_ptr<plume::RenderBuffer> buffer;
+};
+
+}  // namespace
+
+std::unique_ptr<IndirectCompute> CreateIndirectCompute(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) return nullptr;
+  auto result = std::make_unique<D3D12IndirectCompute>();
+  D3D12_INDIRECT_ARGUMENT_DESC argument{};
+  argument.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+  D3D12_COMMAND_SIGNATURE_DESC description{};
+  description.ByteStride = sizeof(D3D12_DISPATCH_ARGUMENTS);
+  description.NumArgumentDescs = 1;
+  description.pArgumentDescs = &argument;
+  if (FAILED(dev->d3d->CreateCommandSignature(&description, nullptr, IID_PPV_ARGS(result->signature.GetAddressOf())))) return nullptr;
+  result->buffer = dev->createBuffer(plume::RenderBufferDesc::DefaultBuffer(description.ByteStride,
+      plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS));
+  if (IsNullBacked(result->buffer.get())) return nullptr;
+  result->buffer->setName("ssr tile dispatch arguments");
+  return result;
+}
+
 void* NativeListHandle(plume::RenderCommandList* list) {
   const auto* l = static_cast<const plume::D3D12CommandList*>(list);
   return l ? l->d3d : nullptr;

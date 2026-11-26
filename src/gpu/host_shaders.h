@@ -141,6 +141,8 @@
 #include "rt_denoise_vis_spatial_cs.hlsl.dxil.h"
 #include "rt_denoise_vis_temporal_cs.hlsl.dxil.h"
 #include "ssr_temporal_ps.hlsl.dxil.h"
+#include "ssr_classify_cs.hlsl.dxil.h"
+#include "ssr_classify_reproject_cs.hlsl.dxil.h"
 #include "ssr_rt_select_cs.hlsl.dxil.h"
 #include "ssr_rt_trace_cs.hlsl.dxil.h"
 #include "ssr_rt_trace_ms_cs.hlsl.dxil.h"
@@ -306,6 +308,8 @@
 #include "rt_denoise_vis_spatial_cs.hlsl.spirv.h"
 #include "rt_denoise_vis_temporal_cs.hlsl.spirv.h"
 #include "ssr_temporal_ps.hlsl.spirv.h"
+#include "ssr_classify_cs.hlsl.spirv.h"
+#include "ssr_classify_reproject_cs.hlsl.spirv.h"
 #include "ssr_rt_select_cs.hlsl.spirv.h"
 #include "ssr_rt_trace_cs.hlsl.spirv.h"
 #include "ssr_rt_trace_ms_cs.hlsl.spirv.h"
@@ -520,6 +524,10 @@ inline HostShaderBlob ScreenReflectionsPixelShader(uint32_t pass) {
 
 // The ray traced fallback's compute passes (ssr_rt.h, CITY-RT R4): 0 the candidates' tile list, 1 the rays into the city's top level, 2 the same over multisampled planes (inline ray queries: Shader Model 6.5,
 // SPIR-V 1.5 on Vulkan).
+inline HostShaderBlob SsrClassifyShader(bool reproject) {
+  return reproject ? MCLA_GPU_HOST_SHADER_BLOB(ssr_classify_reproject_cs) : MCLA_GPU_HOST_SHADER_BLOB(ssr_classify_cs);
+}
+
 inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
   switch (pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_select_cs);

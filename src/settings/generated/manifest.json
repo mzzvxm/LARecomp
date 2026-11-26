@@ -2451,6 +2451,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssr_classify": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Classify surface reflection tiles to concentrate rays where they are useful. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ssr_handoff": {
   "type": "bool",
   "default": "true",
