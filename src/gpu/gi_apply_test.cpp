@@ -699,6 +699,19 @@ void LayoutChecks() {
   Check(hlsl_shim::GiFade() == fld.frame.fade && hlsl_shim::GiCascadeCount() == 2, "BUFFER: and the field's own rows are where gi_common.hlsli reads them");
   // the push block's last word
   Check(ga::PackInfoW(ga::kFlagLowTraced | ga::kFlagVisibility, ga::kViewBounce) == (3u | (9u << 8)) && ((ga::PackInfoW(0, 11) & ga::kViewMask) >> ga::kViewShift) == 11u, "PUSH: the flags and the view share the last word");
+  Check(ga::UseQuarterLookup(true, true, 2160, true, false), "quarter lookup starts at 2160 render lines");
+  Check(!ga::UseQuarterLookup(false, true, 2160, true, false) && !ga::UseQuarterLookup(true, false, 2160, true, false) &&
+            !ga::UseQuarterLookup(true, true, 2159, true, false) && !ga::UseQuarterLookup(true, true, 2160, false, false) &&
+            !ga::UseQuarterLookup(true, true, 2160, true, true),
+        "quarter lookup preserves the full, pixel-detail, debug, raw and cabin paths");
+  Check(ga::QuarterLookupExtent(3840) == 960 && ga::QuarterLookupExtent(2161) == 541 && ga::QuarterLookupExtent(1) == 1,
+        "quarter lookup covers odd edges and single-pixel dimensions");
+  Check(hlsl_shim::GiaQuarterTap(0.5f, 0.25f) == 0.0f && hlsl_shim::GiaQuarterTap(0.5f, 0.375f) == 0.25f &&
+            hlsl_shim::GiaQuarterTap(0.5f, 1.0f) == 0.5f,
+        "quarter lookup rejects guide mismatches and preserves fully supported bilinear taps");
+  Check(hlsl_shim::GiaQuarterBlend(0.0f) == 0.0f && hlsl_shim::GiaQuarterBlend(0.125f) == 0.5f &&
+            hlsl_shim::GiaQuarterBlend(0.25f) == 1.0f,
+        "quarter lookup blends smoothly into the direct field answer");
   // the views
   Check(ga::IsApplyView(1) && ga::IsApplyView(6) && ga::IsApplyView(11) && !ga::IsApplyView(0) && !ga::IsApplyView(12), "VIEWS: this pass draws 1, 2, 3, 5, 6, 9, 10 and 11");
   bool disjoint = true;
@@ -878,6 +891,10 @@ void TextChecks(const std::string& dir) {
   const std::string cmake = ReadFile(dir + "/CMakeLists.txt");
   const std::string host = ReadFile(dir + "/host_shaders.h");
   Check(!common.empty() && !ps.empty() && !cmake.empty() && !host.empty(), "the sources are found");
+  Check(Has(ps, "min(p * (GiaQuarterLookup() ? 4 : 2), last)") &&
+            Has(ps, "all((pixel & 3) == 0) && all(pixel <= last)") && Has(ps, "Load(int3(pixel / 4, 0)).xyz") &&
+            Has(ps, "lerp(exact, radiance / max(weight, 1.0e-8f), GiaQuarterBlend(weight))"),
+        "the quarter lookup covers the original pixel centres and falls back at unsupported edges");
   // every number #define of the .hlsli against the C++ value
   const std::map<std::string, double> expected = {
       {"GIA_FORMAT_VERSION", double(ga::kFormatVersion)}, {"GIA_ROWS", double(ga::kApplyRows)},
@@ -887,7 +904,7 @@ void TextChecks(const std::string& dir) {
       {"GIA_DEPTH_TOLERANCE_FLOOR", double(ga::kDepthToleranceFloor)}, {"GIA_MIN_UPSAMPLE_WEIGHT", double(ga::kMinUpsampleWeight)},
       {"GIA_PAINT_FROM", double(ga::kPaintFrom)},        {"GIA_VIEW_SCALE", double(ga::kViewScale)},
       {"GIA_FLAG_LOW_TRACED", double(ga::kFlagLowTraced)}, {"GIA_FLAG_VISIBILITY", double(ga::kFlagVisibility)},
-      {"GIA_NO_SLOT", double(0xFFFFFFFFu)}};
+      {"GIA_FLAG_QUARTER_LOOKUP", double(ga::kFlagQuarterLookup)}, {"GIA_NO_SLOT", double(0xFFFFFFFFu)}};
   int defined = 0, wrong = 0;
   std::istringstream lines(common);
   for (std::string line; std::getline(lines, line);) {

@@ -22,6 +22,7 @@
 #include "gi_pixel.h"
 #include "host_shaders.h"
 #include "live_text.h"
+#include "mc_engine/camera/menu_camera.h"
 #include "pass_timing.h"
 #include "records.h"
 #include "screen_shared.h"
@@ -408,7 +409,21 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     }
     return false;
   }
-  if (!EnsureSlot(frame_slot) || (up && !passes_->EnsureImage(lookup_, sf.traced[0], sf.traced[1], kLookupFormat, "gi apply lookup"))) {
+  if (!EnsureSlot(frame_slot)) {
+    Count(ga::Skip::kNoBuffer);
+    return false;
+  }
+  // CHECK: compare thin geometry, curb edges and moving shadows in 4K DLAA.
+  // The quarter-size grid is for the field alone. AO and vehicle weights keep
+  // their half-size guides, and poorly supported pixels look up the field directly.
+  bool quarter = ga::UseQuarterLookup(larecomp::settings::mcla_gpu_rt_gi_quarter_lookup.Get(), up, sf.render[1],
+                                     gi::BudgetOf(gf.layout).pixel_rays_per_pixel == 0,
+                                     view_run || raw_requested || CurrentRenderedCameraRig() == 1);
+  if (quarter && !passes_->EnsureImage(lookup_, ga::QuarterLookupExtent(sf.render[0]), ga::QuarterLookupExtent(sf.render[1]),
+                                       kLookupFormat, "gi apply lookup")) {
+    quarter = false;
+  }
+  if (up && !quarter && !passes_->EnsureImage(lookup_, sf.traced[0], sf.traced[1], kLookupFormat, "gi apply lookup")) {
     Count(ga::Skip::kNoBuffer);
     return false;
   }
@@ -515,7 +530,9 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   push.info[0] = has_visibility ? ov.visibility_slot : ga::kNoSlot;
   push.info[1] = up ? lookup_.slot : ga::kNoSlot;
   push.info[2] = gb.sample0;
-  push.info[3] = gi_cabin::PackMaterialSlot(ga::PackInfoW((up ? ga::kFlagLowTraced : 0u) | (has_visibility ? ga::kFlagVisibility : 0u), view_), cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot);
+  const uint32_t flags = (up ? ga::kFlagLowTraced : 0u) | (has_visibility ? ga::kFlagVisibility : 0u) |
+                         (quarter ? ga::kFlagQuarterLookup : 0u);
+  push.info[3] = gi_cabin::PackMaterialSlot(ga::PackInfoW(flags, view_), cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot);
 
   if (up) {
     // The lookup, at the traced size, into the image (cleared on its first use: a new render target is initialised before it is drawn into, D3D12 debug layer id 1422).
@@ -571,8 +588,10 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     first_logged_ = true;
     REXLOG_INFO("{} frame {}: the first run: the field's {} ({} cascades, fade {:.2f}, safe range {:.0f} m), the screen-space bounce light ran at share {:.2f}, so the field's share is {:.2f}; the picture {}x{} at {} host samples, "
                 "the lookup {} ({}x{}), G-buffer planes {}, the occlusion's visibility {}, the camera {}; strength {:.2f}, cap {:.2f} x the frame's light (ambient {:.3f}, sun {:.3f}), view {}",
-                kPrefix, frame_, gi::LayoutName(gf.layout), gf.cascade_count, gf.fade, gf.safe_range_m, ssgi_ran_share_, field_share, gb.width, gb.height, gb.host_samples, up ? "at the traced size, upsampled" : "inline",
-                sf.traced[0], sf.traced[1], gb.valid, has_visibility ? "multiplies it" : "not in this frame", own_pose ? "the frame's own pose" : "the last frame's", fr.strength, fr.cap, fr.ambient, fr.sun, view_);
+                kPrefix, frame_, gi::LayoutName(gf.layout), gf.cascade_count, gf.fade, gf.safe_range_m, ssgi_ran_share_, field_share, gb.width, gb.height, gb.host_samples,
+                quarter ? "at quarter size, upsampled" : up ? "at the traced size, upsampled" : "inline",
+                up ? lookup_.width : sf.render[0], up ? lookup_.height : sf.render[1], gb.valid, has_visibility ? "multiplies it" : "not in this frame",
+                own_pose ? "the frame's own pose" : "the last frame's", fr.strength, fr.cap, fr.ambient, fr.sun, view_);
   }
   return true;
 }

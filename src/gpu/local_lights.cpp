@@ -677,7 +677,8 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
   // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
   const uint32_t draw_flags = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) |
-                              ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);
+                              ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact) |
+                              (larecomp::settings::mcla_gpu_local_lights_reach_mask.Get() ? ll::kPushReachMask : 0u);
   // CHECK: compare coverage and pass time for full-screen neon tubes in chase view.
   const bool use_far_depth = (draw_flags & ll::kPushLateReach) == 0 && larecomp::settings::mcla_gpu_local_lights_depth_bound.Get();
   uint32_t drawn = 0;

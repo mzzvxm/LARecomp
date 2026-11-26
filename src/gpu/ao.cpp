@@ -129,6 +129,8 @@ constexpr uint32_t kColourOneSampleFlag = 1u << 21;
 // pass's flags, bits 26-28, and its reach in extra.w (hlsl/ao_main_ps.hlsl).
 constexpr uint32_t kGiFarStepsShift = 26;
 constexpr uint32_t kGiFarStepsMask = 0x7u << kGiFarStepsShift;
+constexpr uint32_t kGiFastGatherFlag = 1u << 25;
+constexpr uint32_t kGiFastFilterPlaneFlag = 1u << 25;  // the a-trous pass has its own flags
 constexpr uint32_t kGiApplyViewBase = 15;
 // The frames the bounce light's images are kept after the last frame that used them: a pause spell (the
 // pause menu's and the map's world runs the plain occlusion) does not make them again.
@@ -3047,6 +3049,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       const uint32_t far_steps = plan.gi.reach > 0.0f ? std::min(plan.gi.far_steps, ssgi_light::kFarStepsMax) : 0u;
       gi_push.extra[3] = far_steps != 0 ? plan.gi.reach : 0.0f;
       gi_push.slots2[2] = (gi_push.slots2[2] & ~kGiFarStepsMask) | ((far_steps << kGiFarStepsShift) & kGiFarStepsMask);
+      if (larecomp::settings::mcla_gpu_ssgi_fast_gather.Get()) {
+        gi_push.slots2[2] |= kGiFastGatherFlag;
+      }
       // The pipeline with the slices, steps and ring steps this frame sends compiled in (FillPush sent the quality's; PrepareGi made it).
       DrawPass(list, gi_, MainGiPipeline(plan.gi), gi_push);
       main_out = &gi_;
@@ -3197,10 +3202,15 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         pass_timing_->Mark(list, "ssgi a-trous");
         plume::RenderPipeline* atrous = Pipeline(kVAtrous);
         HostImage* scratch[2] = {&gi_dn_, &history_in};
+        // CHECK: compare the filter around grazing planes and thin silhouette edges.
+        const bool fast_plane = larecomp::settings::mcla_gpu_ssgi_fast_filter_plane.Get();
         for (uint32_t i = 0; i < plan.gi.atrous; ++i) {
           Push filter = base;
           filter.slots2[3] = normals_.ao_slot;
           filter.slots2[2] &= ~0xFFu;
+          if (fast_plane) {
+            filter.slots2[2] |= kGiFastFilterPlaneFlag;
+          }
           filter.slots[2] = gi_bounce->slot;
           filter.slots[3] = Depth(0).slot;
           filter.slots2[0] = 1u << i;  // the taps' distance in pixels

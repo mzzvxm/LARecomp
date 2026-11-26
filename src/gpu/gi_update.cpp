@@ -463,9 +463,18 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   in.warmup_scale = field_->budget_scale();
   // CHECK: measure probe refresh during a fast drive, a sector load and a lighting change.
   in.reuse_coarse = larecomp::settings::mcla_gpu_rt_gi_reuse_coarse_probes.Get();
-  const rules::Plan plan = scheduler_.Make(field_->scheduler(), in, budget.max_probes);
+  rules::Plan plan = scheduler_.Make(field_->scheduler(), in, budget.max_probes);
   if (plan.Total() == 0) {
     return;
+  }
+  // CHECK: compare secondary-bounce noise and probe convergence during day/night
+  // transitions and streaming. Preserve the nominal ray cone for alpha cut-outs.
+  uint32_t full_count = plan.Total();
+  if (larecomp::settings::mcla_gpu_rt_gi_short_refresh_rays.Get() && budget.rays_per_probe == 64u && in.warmup_scale == 1.0f) {
+    const auto split = std::stable_partition(plan.words.begin(), plan.words.end(), [&](uint32_t word) {
+      return rules::RefreshRays(word, budget.rays_per_probe, in.warmup_scale, true) == budget.rays_per_probe;
+    });
+    full_count = uint32_t(split - plan.words.begin());
   }
 
   // The rows (the update frame's: the cascades, the textures' slots, the bounce weight) and the probe list, into the slot's upload buffers.
@@ -507,7 +516,6 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   push.tune[2] = gi::kHysteresis;
   push.tune[3] = gi::kHysteresisJump;
   push.tune2[0] = rules::RayConeTanHalf(budget.rays_per_probe);
-  push.control[1] = budget.rays_per_probe;
   push.control[3] = uf.frame_serial;
 
   if (stamps_ok_ && slot.stamps) {
@@ -515,33 +523,37 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     list->writeTimestamp(slot.stamps.get(), 0);
     slot.stamps_written = true;
   }
-  const std::vector<rules::Chunk> chunks = rules::ChunksOf(plan.Total(), budget.chunk_probes);
-  for (const rules::Chunk& chunk : chunks) {
-    push.control[0] = chunk.count;
-    push.control[2] = chunk.first;
-    // TRACE: the field's textures are sampled (the hit's second bounce: the field one frame old), the ray buffer, the state words and the counters are written by the last chunk's blend.
-    list->barriers(Stage::COMPUTE, buffers, 3, to_read, 3);
-    pass_timing_->Mark(list, "rt gi trace");
-    list->setComputePipelineLayout(trace_layout_.get());
-    list->setComputeDescriptorSet(heap_->texture_set(), rules::kTraceTextureSet);
-    list->setComputeDescriptorSet(heap_->sampler_set(), rules::kTraceSamplerSet);
-    list->setComputeDescriptorSet(slot.set.get(), rules::kTracePassSet);
-    list->setComputeDescriptorSet(view.set, rules::kTraceSceneSet);
-    list->setPipeline(trace);
-    list->setComputePushConstants(0, &push, 0, sizeof(push));
-    const rules::Dispatch trace_groups = rules::DispatchFor(rules::TraceGroups(chunk.count, budget.rays_per_probe));
-    list->dispatch(trace_groups.x, trace_groups.y, 1);
-    // BLEND: the ray records are read, the two atlases and the state words written as storage.
-    list->barriers(Stage::COMPUTE, buffers, 3, to_write, 3);
-    pass_timing_->Mark(list, "rt gi blend");
-    list->setComputePipelineLayout(blend_layout_.get());
-    list->setComputeDescriptorSet(slot.set.get(), rules::kBlendPassSet);
-    list->setPipeline(blend);
-    list->setComputePushConstants(0, &push, 0, sizeof(push));
-    const rules::Dispatch blend_groups = rules::DispatchFor(chunk.count);
-    list->dispatch(blend_groups.x, blend_groups.y, 1);
-    ++chunks_total_;
-  }
+  const auto record_batch = [&](uint32_t first, uint32_t count, uint32_t rays_per_probe) {
+    push.control[1] = rays_per_probe;
+    for (const rules::Chunk& chunk : rules::ChunksOf(count, budget.chunk_probes)) {
+      push.control[0] = chunk.count;
+      push.control[2] = first + chunk.first;
+      // Trace reads the field after the preceding chunk's blend and writes the ray records.
+      list->barriers(Stage::COMPUTE, buffers, 3, to_read, 3);
+      pass_timing_->Mark(list, "rt gi trace");
+      list->setComputePipelineLayout(trace_layout_.get());
+      list->setComputeDescriptorSet(heap_->texture_set(), rules::kTraceTextureSet);
+      list->setComputeDescriptorSet(heap_->sampler_set(), rules::kTraceSamplerSet);
+      list->setComputeDescriptorSet(slot.set.get(), rules::kTracePassSet);
+      list->setComputeDescriptorSet(view.set, rules::kTraceSceneSet);
+      list->setPipeline(trace);
+      list->setComputePushConstants(0, &push, 0, sizeof(push));
+      const rules::Dispatch trace_groups = rules::DispatchFor(rules::TraceGroups(chunk.count, rays_per_probe));
+      list->dispatch(trace_groups.x, trace_groups.y, 1);
+      // Blend reads the ray records and writes the atlases and state.
+      list->barriers(Stage::COMPUTE, buffers, 3, to_write, 3);
+      pass_timing_->Mark(list, "rt gi blend");
+      list->setComputePipelineLayout(blend_layout_.get());
+      list->setComputeDescriptorSet(slot.set.get(), rules::kBlendPassSet);
+      list->setPipeline(blend);
+      list->setComputePushConstants(0, &push, 0, sizeof(push));
+      const rules::Dispatch blend_groups = rules::DispatchFor(chunk.count);
+      list->dispatch(blend_groups.x, blend_groups.y, 1);
+      ++chunks_total_;
+    }
+  };
+  record_batch(0, full_count, budget.rays_per_probe);
+  record_batch(full_count, plan.Total() - full_count, 32u);
   // The blend's writes are done before the weights pass reads the state words and the readers sample the textures (RecordFinish).
   list->barriers(Stage::COMPUTE, buffers, 3, to_write, 3);
   if (stamps_ok_ && slot.stamps) {
@@ -549,8 +561,9 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   }
   recorded_frame_ = uf.frame_serial;
   ++frames_run_;
-  rays_planned_ += uint64_t(plan.Total()) * budget.rays_per_probe;
-  interval_planned_rays_ += uint64_t(plan.Total()) * budget.rays_per_probe;
+  const uint64_t planned_rays = uint64_t(full_count) * budget.rays_per_probe + uint64_t(plan.Total() - full_count) * 32u;
+  rays_planned_ += planned_rays;
+  interval_planned_rays_ += planned_rays;
   for (uint32_t c = 0; c < gi::kMaxCascades; ++c) {
     interval_probes_[c] += plan.per_cascade[c];
   }

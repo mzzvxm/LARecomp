@@ -19,6 +19,7 @@
 // Output: RGBA16F, the same layout.
 
 #include "ao_common.hlsli"
+#include "ssgi_filter_plane.hlsli"
 
 // The plane test's width as a share of the distance and its floor: tighter than the occlusion's (a bounce
 // colour changes at a corner, a visibility does not much).
@@ -45,6 +46,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The plane weight's reciprocal and the image's, made once for the pass: a division in each of the 24 taps otherwise.
   const float inv_plane_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
   const float2 clip_scale = 2.0f / size;
+  const bool fast_plane = (g_push.slots2.z & (1u << 25)) != 0u;
+  const float plane_at_centre = dot(normal, pc);
+  const float2 plane_steps = float2(normal.x * g_push.lens.x, -normal.y * g_push.lens.y) * clip_scale * float(step);
+  const float ray_at_centre = plane_at_centre / tc;
   float3 sum = centre.yzw * (kTap[0] * kTap[0]);
   float weights = kTap[0] * kTap[0];
   [unroll] for (int dy = -2; dy <= 2; ++dy) {
@@ -60,8 +65,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
       if (tq >= kAoSky * 0.5f) {
         continue;
       }
-      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, tq);
-      const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      float off_plane;
+      if (fast_plane) {
+        off_plane = SsgiFilterPlaneOffset(tq, tc, ray_at_centre,
+                                          float(dx) * plane_steps.x + float(dy) * plane_steps.y) * inv_plane_sigma;
+      } else {
+        const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, tq);
+        off_plane = dot(normal, pq - pc) * inv_plane_sigma;
+      }
       const float w = kTap[abs(dx)] * kTap[abs(dy)] * exp2(kAoNegHalfLog2e * off_plane * off_plane);
       sum += g_textures[source_slot].Load(int3(q, 0)).yzw * w;
       weights += w;

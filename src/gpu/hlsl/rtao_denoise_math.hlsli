@@ -1,6 +1,10 @@
 #ifndef MCLA_RTAO_DENOISE_MATH_HLSLI
 #define MCLA_RTAO_DENOISE_MATH_HLSLI
 
+bool RtAoReadSignalValidity(bool reuse_trace, bool temporal, uint iteration) {
+  return reuse_trace && (temporal || iteration > 0u);
+}
+
 bool RtAoAcceptTap(float depth, float expected, bool same_vehicle, float normal_dot) {
   return same_vehicle && normal_dot >= 0.8f && abs(depth - expected) <= 0.04f * expected + 0.02f;
 }

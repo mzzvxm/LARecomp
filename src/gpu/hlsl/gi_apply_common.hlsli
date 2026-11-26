@@ -32,7 +32,22 @@
 
 #define GIA_FLAG_LOW_TRACED 1u
 #define GIA_FLAG_VISIBILITY 2u
+#define GIA_FLAG_QUARTER_LOOKUP 4u
 #define GIA_NO_SLOT 0xFFFFFFFFu
+
+static const float kGiaQuarterSupport = 0.25f;
+
+float GiaQuarterTap(float bilinear, float agreement)
+{
+    float a = saturate((agreement - 0.25f) * 4.0f);
+    return bilinear * a * a * (3.0f - 2.0f * a);
+}
+
+float GiaQuarterBlend(float weight)
+{
+    float a = saturate(weight / kGiaQuarterSupport);
+    return a * a * (3.0f - 2.0f * a);
+}
 
 // The apply's rows come after the field's GI_FRAME_ROWS (20).
 #define GIA_ROW(i) GI_FRAME_ROW(GI_FRAME_ROWS + (i))

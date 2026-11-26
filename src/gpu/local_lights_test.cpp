@@ -1658,6 +1658,11 @@ void CostChecks() {
     hlsl_shim::LlLight off_row = row;
     off_row.range = 0.0f;
     Check(!hlsl_shim::LpReaches(off_row.pos, off_row.range, inside), "a light of no range reaches nothing");
+    const uint32_t mask = hlsl_shim::LpReachBit(0, row.pos, row.range, at_range) |
+                          hlsl_shim::LpReachBit(1, row.pos, row.range, inside) |
+                          hlsl_shim::LpReachBit(2, off_row.pos, off_row.range, inside) |
+                          hlsl_shim::LpReachBit(3, nan_row.pos, nan_row.range, at_range);
+    Check(mask == 0b1010u, "the shared reach test keeps the original light indices, boundary and NaN handling");
   }
 
   // ---- 4: the draws ------------------------------------------------------------------------------------------------------------------------------
@@ -1902,9 +1907,13 @@ void SourceChecks(const std::string& src) {
             Has(cpp, "push.info[3] = draw_flags | (use_far_depth ? ll::FarDepthBits(selection, draw, rows) : 0u);") &&
             Has(cpp, "ll::kPushLateReach : 0u") && Has(cpp, "ll::kPushFullContact : 0u") && Has(cpp, "0u : ll::kPushNoContact"),
         "the push carries the draw's light range, host sample, reach and contact flags, and the optional far depth");
-  Check(Has(ps, "float(g_push.info.w >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f)") && Has(ps, "far_depth > 0.0f && t > far_depth") &&
+  Check(Has(ps, "float((g_push.info.w & ~LP_PUSH_REACH_MASK) >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f)") && Has(ps, "far_depth > 0.0f && t > far_depth") &&
             Has(ps, "LpWorldAtDepth(g, p, 0.0f, world)"),
         "the shader uses the depth limit for the draw's reach test and leaves the shadow guides alone");
+  Check(Has(ps, "reach_mask = LpReachMask(first, count, world);") &&
+            Has(ps, "mask |= LpReachBit(i, row0.xyz, row0.w, world);") &&
+            Has(ps, "if ((reach_mask & (1u << i)) != 0u)") && Has(ps, "if ((reach_mask & (1u << i)) == 0u)"),
+        "the grouped reach test drives both lighting paths, in original light order");
   // GB-NEON-CONTACT: the setting is read live, with its A/B
   Check(Has(cpp, "const bool contact_on = st::mcla_gpu_neon_contact.Get();") && Has(cpp, "contact_on_ = contact_on;"), "the pass reads mcla_gpu_neon_contact live (the A/B of the contact term)");
   // GB-NEON-COST: the pass makes its draws from the plan (a car's tube is one) and reads the A/B's setting live
@@ -2317,7 +2326,7 @@ void ContactChecks(const std::string& src) {
   // GB-NEON-CONTACT: the term's switch and its cap in the shader: the push flags, the draw of three or four lights takes the capped path, every term is known before the first march, the marches are the
   // donors' (a light that is its own donor), the others copy, and the shadow runs after the visibility as in the single light's turn
   Check(Has(ps, "const bool contact = vehicle && (g_push.info.w & uint(LP_PUSH_NO_CONTACT)) == 0u;") &&
-            Has(ps, "const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;") && Has(ps, "if (capped) {\n    const float4 tube = LpCappedLights(first, count, g, flags, p, world, normal, albedo, rt2.w);"),
+            Has(ps, "const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;") && Has(ps, "if (capped) {\n    const float4 tube = LpCappedLights(first, count, reach_mask, g, flags, p, world, normal, albedo, rt2.w);"),
         "the shader: the contact term is the vehicle pixel's unless LP_PUSH_NO_CONTACT, and a draw of more than two lights takes the capped path unless LP_PUSH_FULL_CONTACT");
   {
     const size_t terms = At(ps, "add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));");

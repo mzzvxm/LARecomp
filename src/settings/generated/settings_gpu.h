@@ -1029,6 +1029,8 @@ class GPUSettings final : public rex::SettingOwner {
     "0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
   REX_SETTING(bool, mcla_gpu_rt_gi_reuse_coarse_probes, false, "Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_gi_short_refresh_rays, true, "Debug: Use fewer rays to refresh established RT bounce probes. Keep full coverage during warm-up and streaming. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_gi_quarter_lookup, true, "Debug: Sample the RT bounce field at quarter size in exterior 4K views and use the full field lookup at unsupported edges. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_rt_gi_dry_run, false, "Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. "
     "With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, "
@@ -1264,6 +1266,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_rtao_range, 0.0, "Debug: Maximum distance to a traced AO receiver in metres. 0 uses the scene's safe range up to 90 m. Live.", rex::kDebugOnly, rex::Range{0.0, 90.0});
   REX_SETTING(i32, mcla_gpu_rtao_scale, 0, "Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses the governor. Live.", rex::kDebugOnly, rex::Range{0, 4});
   REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, false, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rtao_reuse_trace_validity, true, "Debug: Use the RT ambient occlusion trace validity in the temporal and spatial filters. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_rtao_alpha, "auto", "Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.", rex::kDebugOnly, rex::Allowed("auto", "exact", "stochastic", "opaque", "exclude"));
   REX_SETTING(std::string, mcla_gpu_rtao_screen, "auto", "Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, and on takes the darker term. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
@@ -1573,6 +1576,8 @@ class GPUSettings final : public rex::SettingOwner {
     "(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_ssgi_residual_short_filter, false, "Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssgi_fast_gather, true, "Debug: Use the horizon cosine directly and skip radiance work for black samples in screen-space bounce light. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssgi_fast_filter_plane, true, "Debug: Calculate the plane distance directly in the screen-space bounce filter. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_ssgi_lights, true, "Diagnostic: the bounce light also takes the light the deferred light pass added in the last frame (neon, headlights, street lamps) as part of the "
     "radiance it gathers, reprojected into this frame with the camera's motion and the depth history, so a wall beside a neon car picks up its colour and a "
@@ -1837,6 +1842,7 @@ class GPUSettings final : public rex::SettingOwner {
     "0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
   REX_SETTING(bool, mcla_gpu_local_lights_depth_bound, false, "Debug: reject pixels beyond the reach of every light in a deferred draw before reconstructing their world positions. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_local_lights_reach_mask, true, "Debug: Reuse per-light reach tests in grouped deferred light draws. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_local_lights_sphere_scissor, false, "Debug: use tighter screen bounds for deferred local lights. Live.", rex::kDebugOnly);
 
@@ -2303,6 +2309,8 @@ inline auto& mcla_gpu_rt_gi_view = g_gpu.mcla_gpu_rt_gi_view;
 inline auto& mcla_gpu_rt_gi_daylight_recovery = g_gpu.mcla_gpu_rt_gi_daylight_recovery;
 inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
 inline auto& mcla_gpu_rt_gi_reuse_coarse_probes = g_gpu.mcla_gpu_rt_gi_reuse_coarse_probes;
+inline auto& mcla_gpu_rt_gi_short_refresh_rays = g_gpu.mcla_gpu_rt_gi_short_refresh_rays;
+inline auto& mcla_gpu_rt_gi_quarter_lookup = g_gpu.mcla_gpu_rt_gi_quarter_lookup;
 inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;
 inline auto& mcla_gpu_gi_cabin = g_gpu.mcla_gpu_gi_cabin;
 inline auto& mcla_gpu_ssr_strength = g_gpu.mcla_gpu_ssr_strength;
@@ -2358,6 +2366,7 @@ inline auto& mcla_gpu_rtao_reach = g_gpu.mcla_gpu_rtao_reach;
 inline auto& mcla_gpu_rtao_range = g_gpu.mcla_gpu_rtao_range;
 inline auto& mcla_gpu_rtao_scale = g_gpu.mcla_gpu_rtao_scale;
 inline auto& mcla_gpu_rtao_quarter_at_4k = g_gpu.mcla_gpu_rtao_quarter_at_4k;
+inline auto& mcla_gpu_rtao_reuse_trace_validity = g_gpu.mcla_gpu_rtao_reuse_trace_validity;
 inline auto& mcla_gpu_rtao_alpha = g_gpu.mcla_gpu_rtao_alpha;
 inline auto& mcla_gpu_rtao_screen = g_gpu.mcla_gpu_rtao_screen;
 inline auto& mcla_gpu_rtao_interior = g_gpu.mcla_gpu_rtao_interior;
@@ -2422,6 +2431,8 @@ inline auto& mcla_gpu_ssgi_clamp = g_gpu.mcla_gpu_ssgi_clamp;
 inline auto& mcla_gpu_ssgi_far_steps = g_gpu.mcla_gpu_ssgi_far_steps;
 inline auto& mcla_gpu_ssgi_half = g_gpu.mcla_gpu_ssgi_half;
 inline auto& mcla_gpu_ssgi_residual_short_filter = g_gpu.mcla_gpu_ssgi_residual_short_filter;
+inline auto& mcla_gpu_ssgi_fast_gather = g_gpu.mcla_gpu_ssgi_fast_gather;
+inline auto& mcla_gpu_ssgi_fast_filter_plane = g_gpu.mcla_gpu_ssgi_fast_filter_plane;
 inline auto& mcla_gpu_ssgi_lights = g_gpu.mcla_gpu_ssgi_lights;
 inline auto& mcla_gpu_ssgi_lights_gain = g_gpu.mcla_gpu_ssgi_lights_gain;
 inline auto& mcla_gpu_ssgi_lights_floor = g_gpu.mcla_gpu_ssgi_lights_floor;
@@ -2486,6 +2497,7 @@ inline auto& mcla_gpu_neon_light_reach = g_gpu.mcla_gpu_neon_light_reach;
 inline auto& mcla_gpu_neon_light_tuned = g_gpu.mcla_gpu_neon_light_tuned;
 inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
 inline auto& mcla_gpu_local_lights_depth_bound = g_gpu.mcla_gpu_local_lights_depth_bound;
+inline auto& mcla_gpu_local_lights_reach_mask = g_gpu.mcla_gpu_local_lights_reach_mask;
 inline auto& mcla_gpu_local_lights_sphere_scissor = g_gpu.mcla_gpu_local_lights_sphere_scissor;
 inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
 inline auto& mcla_gpu_gi_bounce_headlights = g_gpu.mcla_gpu_gi_bounce_headlights;
