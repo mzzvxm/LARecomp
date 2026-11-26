@@ -122,7 +122,9 @@ void TestMemory() {
     const gi::Budget& b = gi::BudgetOf(layout);
     const gf::Memory m = gf::MemoryOf(b, layout == gi::Layout::kExtended);
     const uint64_t design = uint64_t(b.cost.vram_mib) * gf::kMiB;
-    Check(m.Total() <= design && m.Total() + 8 * gf::kMiB > design, Num("%s: the total %.1f MiB is within 8 MiB under the design's %.0f", 0, double(m.Total()) / double(gf::kMiB), double(b.cost.vram_mib)) + " (" + std::string(gi::LayoutName(layout)) + ")");
+    // CHECK: Run the memory checks in the Linux test binary.
+    Check(m.Total() <= design && m.Total() + 8 * gf::kMiB > design,
+          std::string(gi::LayoutName(layout)) + Num(": the total %.1f MiB is within 8 MiB under the design's %.0f", double(m.Total()) / double(gf::kMiB), double(b.cost.vram_mib)));
     Check(m.Field() < design, std::string(gi::LayoutName(layout)) + ": what the owner allocates is under the design's total");
   }
   const gf::Memory ext_full = gf::MemoryOf(gi::BudgetOf(gi::Layout::kExtended), true);
