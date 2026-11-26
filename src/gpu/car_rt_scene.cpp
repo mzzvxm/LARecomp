@@ -17,7 +17,6 @@
 #include <rex/logging/log_category.h>
 
 #include "ao.h"
-#include "car_mirror_rt_rules.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_refl_rules.h"
 #include "city_rt_scene.h"
@@ -515,7 +514,6 @@ uint32_t CarRtScene::FinishStaged(uint64_t key, Staged&& staged_in) {
     return 0;
   }
   staged.has_bounds = car_rt_instances::BoundsOf(staged.positions, staged.bounds_min, staged.bounds_max);
-  staged.patch = car_mirror::MeasurePatch(staged.positions, staged.indices, staged.normals);  // a small flat mesh may be a mirror's glass (a big one is left at once)
   // The texture coordinates: one pair a vertex (the clean-up keeps every vertex), as half2 words for the shaders; the mesh's texel density for the mip level.
   if (staged.uv_floats.size() == vertices * 2) {
     staged.uvs.resize(size_t(vertices));
@@ -570,12 +568,10 @@ bool CarRtScene::WantsResolve(bool gate_unused) const {
 bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            uint32_t slot) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtBuild);
-  trigger_this_call_ = false;
   if (!ready_ || !list || slot >= kFramesInFlight || !IsTrigger(record, summary)) {
     return false;
   }
   trigger_seen_ = true;
-  trigger_this_call_ = true;
   ++stats_counts_.triggers;
   view_ = CarRtView{};
   check_due_ = false;
@@ -753,7 +749,6 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
         ref->has_bounds = it->second.has_bounds;
         ref->has_uv = it->second.has_uv;
         ref->uv_density = it->second.uv_density;
-        ref->patch = it->second.patch;
         return true;
       },
       &extra_cars_, &extra_draws_, instances_.ModelMode() != car_model_rt::Mode::kOff ? &paint_infos_ : nullptr);
@@ -894,13 +889,6 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.other_paint_instances = cars.other_paint_instances;
     view_.traffic_paint_instances = cars.traffic_paint_instances;
     view_.player_row = cars.player_row;
-    view_.mirror = cars.mirror;
-    view_.mirror_box[0] = cars.mirror_box[0];
-    view_.mirror_box[1] = cars.mirror_box[1];
-    if (!car_mirror::LensOf(frame.view, frame.view_projection, &view_.tan_x, &view_.tan_y)) {
-      view_.tan_x = 0.0;
-      view_.tan_y = 0.0;
-    }
     {
       const double world_up[3] = {0.0, 1.0, 0.0};
       car_rt_instances::ViewVector(frame.view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays
@@ -2073,7 +2061,6 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
     p.mesh.has_bounds = staged.has_bounds;
     p.mesh.has_uv = has_uv;
     p.mesh.uv_density = has_uv ? staged.uv_density : 0.0f;
-    p.mesh.patch = staged.patch;
     placed->push_back(std::move(p));
     done.push_back(key);
   }

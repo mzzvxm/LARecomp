@@ -38,6 +38,7 @@ extern const rex::ppc::PPCImage kPPCImageConfig;
 
 #include "settings/cli_rules.h"
 #include "settings/larecomp_settings.h"
+#include "gpu/mirror_setting.h"
 
 #include "achievement_metadata.h"
 #include "bootprogress/larecomp_boot_progress.h"
@@ -657,6 +658,14 @@ static void InstallTerminationSignals() {
 }
 
 rex::Result<void> LarecompApp::OnInit() {
+  // The SDK has finished loading the file. Store the legacy words in their
+  // canonical form so the menu, export and next configuration save agree.
+  auto& mirrors = larecomp::settings::mcla_gpu_side_mirrors;
+  const std::string mirror_value = mirrors.Get();
+  const std::string_view canonical_mirror = mcla::gpu::mirror_setting::CanonicalWord(mirror_value);
+  if (canonical_mirror != mirror_value) {
+    REX_TRY_VOID(mirrors.SetText(mirrors.GetLayer(), canonical_mirror));
+  }
   // The window is open, the systems run, app.* is frozen. The order below is the order the 0.10 start-up had.
   settings_config_path_ = rex::GetPathSettings().config_file.Get();
   NoteCrashLogFile();  // Linux: the crash reports append to the SDK's log file by name (the second half of the logger is in OnTitleLaunch)

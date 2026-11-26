@@ -58,7 +58,6 @@
 #include "car_dump.h"
 #include "car_frame.h"
 #include "headlight_rig.h"
-#include "car_mirror_rt.h"
 #include "mirror_glass.h"
 #include "car_rt_scene.h"
 #include "car_rt_refl.h"
@@ -366,7 +365,6 @@ class Renderer final : public RenderThread::Executor {
   RtSceneService rt_scene_;   // render thread; who wants the ray tracing scene and what its top level holds, car or no car (rt_scene_service.h; CITY-RT M2 H3)
   RtWorldFrame rt_world_;     // render thread; the world's rows and the lamps of every frame that has a top level, car or no car: t10 and t11 of car_rt_'s set (rt_world_frame.h; CITY-RT FRAME); it holds pointers to the AO, the car frame, the shared products and the city scene: Shutdown stops it first
   CityRtShadow city_shadow_;  // render thread; the city's ray traced sun shadows (city_rt_shadow.h), recorded by the occlusion's passes (ao.h)
-  CarMirrorRt car_mirror_;    // render thread; the player's side mirrors, ray traced (car_mirror_rt.h), reads car_rt_ (car_rt_scene.h)
   Scene scene_;               // render thread; the replay (holds no GPU object of its own)
   FrameTrace trace_;          // render thread; diagnostic dumps of chosen frames
   MemoryCensus census_;       // render thread; diagnostic, reads guest_memory_

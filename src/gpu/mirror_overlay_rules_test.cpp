@@ -241,7 +241,6 @@ std::vector<V3> PatchPoints(const Glass& g) {
 mo::Facts GoodFacts() {
   mo::Facts f;
   f.setting_on = true;
-  f.rt_mirrors_on = false;
   f.picture_whole = true;
   f.picture_age = 0;
   f.play_view = true;
@@ -261,38 +260,13 @@ void TestDecide() {
     Check(mo::Decide(f) == W::kSettingOff, "the setting off: nothing");
   }
   {
-    // the hand-off: the ray traced side mirrors win wherever they are on, whatever else is in place
-    mo::Facts f = GoodFacts();
-    f.rt_mirrors_on = true;
-    Check(mo::Decide(f) == W::kRtMirrors, "the ray traced side mirrors on: they win and the overlay does nothing");
-    f.needed_mask = 3;
-    f.picture_age = 0;
-    Check(mo::Decide(f) == W::kRtMirrors, "... also with both glasses needed and a fresh picture");
-    f.setting_on = false;
-    Check(mo::Decide(f) == W::kSettingOff, "... and the setting off still says off (it is the first thing asked)");
-    f = GoodFacts();
-    f.rt_mirrors_on = true;
-    f.picture_whole = false;
-    f.glass_found = false;
-    f.needed_mask = 0;
-    f.field_known = false;
-    f.pose_known = false;
-    f.play_view = false;
-    Check(mo::Decide(f) == W::kRtMirrors, "... whatever else is missing: the ray traced mirrors are the answer, not a reason to look further");
-  }
-  {
-    mo::Facts f = GoodFacts();
-    f.rt_mirrors_on = false;
-    Check(mo::Decide(f) == W::kDraw, "the ray traced mirrors off (a card without ray tracing, or the setting off): the overlay draws");
-  }
-  {
     mo::Facts f = GoodFacts();
     f.picture_whole = false;
     Check(mo::Decide(f) == W::kNoPicture, "no whole picture");
     f = GoodFacts();
-    f.picture_age = mv::kMaxHeldFrames;
+    f.picture_age = mv::kMaxHeldMs;
     Check(mo::Decide(f) == W::kDraw, "a picture as old as a held frame may be is drawn from");
-    f.picture_age = mv::kMaxHeldFrames + 1;
+    f.picture_age = mv::kMaxHeldMs + 1;
     Check(mo::Decide(f) == W::kStalePicture, "one frame older: stale");
     f = GoodFacts();
     f.play_view = false;
@@ -982,7 +956,7 @@ void TestFiles(const std::string& src) {
         "CMakeLists.txt builds the two stages, the host and the test");
 
   // the host: the pipeline, the layout, the draw
-  Check(Has(host, "rules::Decide(facts)") && Has(host, "facts.rt_mirrors_on = in.rt_mirrors_on;") && Has(host, "rules::MakePush("), "the host asks the rules for the decision and the push block");
+  Check(Has(host, "rules::Decide(facts)") && Has(host, "rules::MakePush("), "the host asks the rules for the decision and the push block");
   Check(Has(host, "rules::DepthTestOf(d->depth_word)") && Has(host, "blend.blendEnabled = true;") && Has(host, "if (!precache.Ready(PrecacheKey(variant))) {"), "the host repeats the glass draw's own depth test and blends");
   Check(Has(host, "desc.depthWriteEnabled = false;") && Has(host, "desc.depthEnabled = true;") && Has(host, "GREATER_EQUAL : plume::RenderComparisonFunction::LESS_EQUAL") && Has(host, "desc.cullMode = plume::RenderCullMode::NONE;"),
         "the pipeline tests depth with the equal case, never writes it, culls nothing");
@@ -1004,7 +978,7 @@ void TestFiles(const std::string& src) {
   Check(Has(view, "HostPrecache::Key(HostPrecache::kMirrorView, variant)") && Has(view, "precache.Add(PrecacheKey(variant)") && Has(view, "precache.AddLive(\"mirror view\"") && Has(view, "ListBase();") && Has(view, "ListLive(color, samples);"),
         "the view's average and stamp pipelines are listed with the host precache (at the start, or by the first redirected phase)");
   Check(Has(view, "if (!precache.Ready(PrecacheKey(variant))) {") && !Has(view, "passes_->CreatePipeline(*resolve_shader_, format, \"mirror view resolve\")") && !Has(view, "resolve_pipelines_") && !Has(view, "stamp_pipelines_"), "... and no longer made on the render thread at first use");
-  Check(Has(view, "overlay_armed_ = true;") && Has(view, "overlay_armed_ = whole_ && !failed && frame_ - picture_frame_ <= mirror_view::kMaxHeldFrames;") && Has(view_h, "bool OverlayArmed() const { return overlay_armed_; }") && Has(view, "MirrorView::Picture MirrorView::CurrentPicture() const"),
+  Check(Has(view, "overlay_armed_ = true;") && Has(view, "overlay_armed_ = whole_ && !failed && age <= mirror_view::kMaxHeldMs;") && Has(view_h, "bool OverlayArmed() const { return overlay_armed_; }") && Has(view, "MirrorView::Picture MirrorView::CurrentPicture() const"),
         "the view arms the overlay at the end marker (a fresh picture or a held one) and gives out its picture");
   Check(Has(host, "void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v) {") && !Has(host, "ReadViewField") &&
             Has(link, "#include <atomic>") && !Has(link, "ViewField"),
@@ -1025,7 +999,6 @@ void TestFiles(const std::string& src) {
   const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene");
   Check(stamp != std::string::npos && glass != std::string::npos && execute != std::string::npos && stamp < glass && glass < execute, "scene.cpp draws the glass after the stamp and before the copy reads the colour");
   Check(Has(scene, "mirror_overlay_ && mirror_overlay_->wanted() && mirror_view_ && mirror_view_->OverlayArmed() && list && RecordMirrorGlass(record, list)"), "the overlay runs only while it is wanted and the view armed it");
-  Check(Has(scene, "in.rt_mirrors_on = car_mirror_ && car_mirror_->active();"), "the hand-off with the ray traced side mirrors reads CarMirrorRt::active()");
   Check(Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);") && Has(scene, "mirror_view_->PictureField(&field_h, &field_v)") && Has(scene, "mirror_overlay_->BeginFrame();"),
         "the overlay is told of the frame's start and of a fresh picture's end marker (the camera it was drawn from and the field of that phase's camera: MV-J2)");
   Check(Has(scene, "frame.viewport = &d.viewport;") && Has(scene, "frame.depth_word = d.key.depth;") && Has(frame_h, "bool viewport_known = false;") && Has(frame_cpp, "out->viewport_known = true;"),

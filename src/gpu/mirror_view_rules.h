@@ -133,7 +133,7 @@ inline Extent ExtentOf(const Rig& rig, const V3* dirs, int count) {
 // the view's size
 // ---------------------------------------------------------------------------
 
-enum class Class : uint8_t { kLow, kMid, kHigh };
+enum class Class : uint8_t { kLow, kMid, kHigh, k1280, k2560 };
 
 struct Plan {
   uint32_t width = 0;
@@ -150,7 +150,15 @@ inline constexpr double kMinVerticalFov = 20.0;
 inline constexpr double kMaxVerticalFov = 45.0;
 
 inline constexpr double PixelsPerDegree(Class c) { return c == Class::kHigh ? 10.0 : c == Class::kMid ? 7.0 : 5.0; }
-inline constexpr uint32_t MaxWidth(Class c) { return c == Class::kHigh ? 768u : c == Class::kMid ? 512u : 384u; }
+inline constexpr uint32_t MaxWidth(Class c) {
+  switch (c) {
+    case Class::kLow: return 384;
+    case Class::kMid: return 512;
+    case Class::k1280: return 1280;
+    case Class::k2560: return 2560;
+    default: return 768;
+  }
+}
 inline constexpr uint32_t Cadence(Class c) { return c == Class::kHigh ? 1u : 2u; }
 
 inline uint32_t RoundUp16(double v) { return uint32_t(std::ceil(v / 16.0)) * 16u; }
@@ -191,20 +199,19 @@ inline Plan PlanView(Class c, double side_hfov_deg, double side_vfov_deg, double
 inline constexpr double kSideMirrorsHfovDeg = 59.0;
 inline constexpr double kSideMirrorsVfovDeg = 34.0;
 
-// The size of a view drawn with a requested field (the side mirrors' wider view, `Request::hfov_deg` / `vfov_deg`): the class's pixels per degree and width cap (as PlanView), the height from the field's
+// The requested field describes the projection of the shared view (`Request::hfov_deg` / `vfov_deg`): the class's pixels per degree and width cap (as PlanView), the height from the field's
 // own aspect, tan(h/2) / tan(v/2), which is the aspect the guest's camera is built with (rear_view_shared.h SharedCamera), to an even number. The viewport the phase's draws carry is the HUD rectangle,
 // which the host maps to the WHOLE view (MapViewport), so the picture is the camera's whatever the rectangle's own aspect is. The plan keeps the field: the stamp's crop and the lookups read it.
 inline Plan PlanForField(Class c, double hfov_deg, double vfov_deg) {
   Plan p;
-  constexpr double kPi = 3.14159265358979323846;
   if (!(hfov_deg > 1.0 && hfov_deg < 179.0) || !(vfov_deg > 1.0 && vfov_deg < 179.0)) {
     return p;
   }
   p.hfov_deg = hfov_deg;
   p.vfov_deg = vfov_deg;
-  p.width = RoundUp16(std::min(double(MaxWidth(c)), PixelsPerDegree(c) * hfov_deg));
-  const double h = double(p.width) * std::tan(vfov_deg * 0.5 * kPi / 180.0) / std::tan(hfov_deg * 0.5 * kPi / 180.0);
-  p.height = std::max(2u, uint32_t(std::lround(h / 2.0)) * 2u);
+  // Separate camera and raster aspects so a moving glass never reallocates the view.
+  p.width = MaxWidth(c);
+  p.height = p.width / 2u;
   p.every = Cadence(c);
   return p;
 }
@@ -302,15 +309,16 @@ inline Crop HudCrop(const Plan& view, double hud_hfov_deg, double stamp_aspect) 
 struct RequestFacts {
   bool enabled = false;    // mcla_gpu_mirror_view is on (MirrorView::enabled)
   bool blocked = false;    // the shaders failed or the images could not be made in the last attempts: the same word as BeginFacts::blocked
+  double side_hfov_deg = 0.0;
+  double side_vfov_deg = 0.0;
+  uint8_t side_mask = 0;
   bool side_need = false;  // MV3's flag: the glass pair found and wide enough on the picture (mirror_glass::SideNeed())
   // JOIN2:
-  bool rt_side_mirrors = false;   // the ray traced side mirrors are on (CarMirrorRt::active()): they win, nobody reads the view for the glass (the overlay's own hand-off, mirror_overlay_rules.h Decide)
   bool hud_stamp = true;          // the HUD mirror's stamp is drawn from this view (the guest's flag, StampWanted(): the HUD mirror on and its form visible; true is its default)
   Class cls = Class::kHigh;       // the card's class: the view's pixels per degree and width cap
   double retail_hfov_deg = 0.0;   // the field the HUD mirror shows across without any request (CameraFacts::retail_hfov_deg); 0 = no camera built yet
   double stamp_aspect = 0.0;      // the HUD rectangle's width over height (mirror_draws::Current()); 0 = no rectangle
   // MV6:
-  uint32_t every = 1;      // the cadence of the SIDE MIRRORS level (mirror_setting.h: HIGH 2, ULTRA 1; a debug force 1): the view is redrawn every Nth frame
 };
 
 // The field the guest builds the view's camera with for the side mirrors (what Request::hfov_deg / vfov_deg carry), or none (0, 0): the guest keeps the game's own.
@@ -323,7 +331,7 @@ struct Field {
   double vfov_deg = 0.0;
   bool asked() const { return hfov_deg > 0.0 && vfov_deg > 0.0; }
 };
-inline Field SideMirrorsField(Class c, bool hud_stamp, double retail_hfov_deg, double stamp_aspect) {
+inline Field SideMirrorsField(Class c, bool hud_stamp, double retail_hfov_deg, double stamp_aspect, double side_hfov_deg = kSideMirrorsHfovDeg, double side_vfov_deg = kSideMirrorsVfovDeg) {
   double hud_hfov = 0.0;
   if (hud_stamp) {
     if (!(retail_hfov_deg > 0.0) || !(stamp_aspect > 0.0) || retail_hfov_deg > kMaxHorizontalFov || StampVerticalFov(retail_hfov_deg, stamp_aspect) > kMaxVerticalFov) {
@@ -331,22 +339,20 @@ inline Field SideMirrorsField(Class c, bool hud_stamp, double retail_hfov_deg, d
     }
     hud_hfov = retail_hfov_deg;
   }
-  const Plan p = PlanView(c, kSideMirrorsHfovDeg, kSideMirrorsVfovDeg, hud_hfov, stamp_aspect > 0.0 ? stamp_aspect : 229.0 / 44.0);
+  const Plan p = PlanView(c, side_hfov_deg, side_vfov_deg, hud_hfov, stamp_aspect > 0.0 ? stamp_aspect : 229.0 / 44.0);
   return Field{p.hfov_deg, p.vfov_deg};
 }
 
-// What the host says to the guest this frame. `redirect` is the host's promise that a phase the guest marks goes into the view: without it the guest runs no side-only phase and keeps the game's own
-// camera-step clear (a phase nobody catches would draw an unframed mirror into the main picture). The side mirrors' need counts only with it (the guest ignores it otherwise too), and NOT where the ray
-// traced side mirrors win: MV3's finder does not know about them, and a side-only phase nobody reads would cost its draws for nothing (with the HUD mirror on the phase runs for the stamp as it always
-// did, with no field asked for and no racers added). The field is SideMirrorsField's. The cadence is the SIDE MIRRORS level's (MV6: HIGH every 2nd frame, ULTRA and a debug force every frame), asked only
-// while the phase is redirected (a request nobody follows asks for nothing).
+// The host redirects the phase only while its view is available.
 inline Request RequestFor(const RequestFacts& f) {
   Request r;
   r.redirect = f.enabled && !f.blocked;
-  r.side_need = r.redirect && f.side_need && !f.rt_side_mirrors;
-  r.every = r.redirect ? std::clamp<uint32_t>(f.every, 1, kMaxEvery) : 1;
+  r.side_need = r.redirect && f.side_need;
   if (r.side_need) {
-    const Field field = SideMirrorsField(f.cls, f.hud_stamp, f.retail_hfov_deg, f.stamp_aspect);
+    r.side_mask = f.side_mask;
+    const Field field = SideMirrorsField(f.cls, f.hud_stamp, f.retail_hfov_deg, f.stamp_aspect,
+                                         f.side_hfov_deg > 0.0 ? f.side_hfov_deg : kSideMirrorsHfovDeg,
+                                         f.side_vfov_deg > 0.0 ? f.side_vfov_deg : kSideMirrorsVfovDeg);
     r.hfov_deg = float(field.hfov_deg);
     r.vfov_deg = float(field.vfov_deg);
   }
@@ -487,7 +493,7 @@ inline constexpr bool AutoWanted(Class c) { return c != Class::kLow; }
 // ---------------------------------------------------------------------------
 
 inline constexpr int64_t kIdleDropMs = 3000;   // the images go after about 3 s without a phase asking for them
-inline constexpr uint32_t kMaxHeldFrames = 8;  // a stamp is drawn from a picture up to this many frames old (the guest's every-Nth-frame cadence holds it 1 to 3)
+inline constexpr uint32_t kMaxHeldMs = 100;  // a stamp is drawn from a picture up to this many frames old (the guest's every-Nth-frame cadence holds it 1 to 3)
 
 struct Lifetime {
   bool held = false;  // the images exist
@@ -500,9 +506,9 @@ struct Lifetime {
   bool ShouldDrop(int64_t now_ms) const { return held && (!ever_wanted || now_ms - last_wanted_ms > kIdleDropMs); }
 };
 
-// Whether a stamp is drawn at the end-of-scene copy of a frame: a picture is whole, it was finished `age_frames` frames ago (0: this frame) and a rectangle is up now.
-inline constexpr bool StampDue(bool whole, uint32_t age_frames, bool rect_valid, bool stamp_wanted) {
-  return whole && rect_valid && stamp_wanted && age_frames <= kMaxHeldFrames;
+// Whether a stamp is drawn at the end-of-scene copy of a frame: a picture is whole, it was finished `age_ms` frames ago (0: this frame) and a rectangle is up now.
+inline constexpr bool StampDue(bool whole, uint32_t age_ms, bool rect_valid, bool stamp_wanted) {
+  return whole && rect_valid && stamp_wanted && age_ms <= kMaxHeldMs;
 }
 
 // ---------------------------------------------------------------------------

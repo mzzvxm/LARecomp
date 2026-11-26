@@ -41,7 +41,7 @@ namespace rules = mirror_overlay;
 namespace sm = car_shadow_map;
 
 constexpr const char* kPrefix = "[mirror overlay]";
-constexpr plume::RenderFormat kColourFormat = plume::RenderFormat::R16G16B16A16_FLOAT;  // the main colour as a host texture (car_mirror_rt.cpp's kApplyFormat)
+constexpr plume::RenderFormat kColourFormat = plume::RenderFormat::R16G16B16A16_FLOAT;  // the main colour as a host texture
 constexpr plume::RenderFormat kDepthFormat = plume::RenderFormat::D32_FLOAT_S8_UINT;     // the format the renderer's own depth targets use (edram.cpp)
 constexpr uint8_t kWriteRgb = uint8_t(plume::RenderColorWriteEnable::RED) | uint8_t(plume::RenderColorWriteEnable::GREEN) | uint8_t(plume::RenderColorWriteEnable::BLUE);
 constexpr uint64_t kCensusFrames = 1800;
@@ -359,7 +359,6 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   const mirror_glass::Result& glass = in.glass->Current();
   rules::Facts facts;
   facts.setting_on = on_;
-  facts.rt_mirrors_on = in.rt_mirrors_on;
   facts.picture_whole = picture.whole && picture.slot != kInvalidBindlessSlot;
   facts.picture_age = picture.age;
   facts.play_view = in.play_view;

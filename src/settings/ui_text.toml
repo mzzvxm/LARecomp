@@ -248,10 +248,7 @@ native = "kRtCityDynamics"
 help = "Reflects streets and buildings in car paint."
 
 [rows.PM_RxGpuSideMirrors]
-help = "Shows the street and cars behind you in side mirrors."
-
-[rows.PM_RxGpuRtMirror]
-help = "Traces the view behind you in the side mirrors."
+help = "Show the street and racers behind you in the side mirrors. The optional HUD rear-view widget shares the same picture."
 
 [rows.PM_RxGpuSsr]
 native = "kSsrDynamics"

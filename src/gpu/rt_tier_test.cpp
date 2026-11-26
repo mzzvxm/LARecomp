@@ -637,8 +637,6 @@ const CellRow kCells[] = {
     {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "off", "off"},
     // The probe field's bounce light: strong cards only.
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "off"},
-    // The player's side mirrors traced: strong cards only (the car's structures are built in every frame for it; a weak card can set it by hand).
-    {RtEffect::kCarMirrorRt, "mcla_gpu_car_mirror_rt", "off", "off", "off"},
     {RtEffect::kRtAo, "mcla_gpu_ao", "", "", ""},
 };
 
@@ -646,7 +644,6 @@ const char* const kOwnChoices[] = {"off", "on", "high", "ultra", "rt", "ao", "co
 
 void CheckCells() {
   Check(sizeof(kCells) / sizeof(kCells[0]) == static_cast<std::size_t>(kRtEffectCount), "the test lists every ray traced effect");
-  Check(kRtEffects[5].cvar == "mcla_gpu_car_mirror_rt" && static_cast<int>(RtEffect::kCarMirrorRt) == 5 && static_cast<int>(RtEffect::kRtAo) == 6, "the side mirrors are the sixth effect (index 5), the occlusion the seventh (index 6)");
   Check(sizeof(kRtEffects) / sizeof(kRtEffects[0]) == static_cast<std::size_t>(kRtEffectCount), "kRtEffects has an entry for every effect");
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
   const RtTier tiers[] = {RtTier::kNone, RtTier::kWeak, RtTier::kStrong};
@@ -685,9 +682,6 @@ void CheckCells() {
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kWeak, RtEffect::kRtGi), "AUTO (OFF)", "label: RT bounce light weak");
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kStrong, RtEffect::kCarRtAo), "AUTO (OFF)", "label: car occlusion strong");
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kWeak, RtEffect::kCarRtAo), "AUTO (OFF)", "label: car occlusion weak");
-  CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kStrong, RtEffect::kCarMirrorRt), "AUTO (OFF)", "label: side mirrors strong");
-  CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kWeak, RtEffect::kCarMirrorRt), "AUTO (OFF)", "label: side mirrors weak");
-  CheckEq(AutoLabelRtFor(GpuClass::kMid, RtTier::kStrong, RtEffect::kCarMirrorRt), "AUTO (OFF)", "label: side mirrors, a Mid class card with a strong tier");
   // A cell is never a word the setting would refuse as a player's own choice, but the ones that are not in the cvar's list are the table's words for the
   // effect's own reading: "both" (car_rt_ao_rules.h reads any word that is not off, ao or contact as the default, which is both terms).
   // The rungs are the same everywhere the tier is read: the car effects' cells at the strong rung equal the old (pre-tier) behaviour, which was `on` / `both`.

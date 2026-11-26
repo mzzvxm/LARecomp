@@ -343,17 +343,7 @@ states = [
 ]
 
 [rows.PM_RxGpuSideMirrors]
-decode = "resolved(s.mcla_gpu_side_mirrors)"
-states = [
-  { when = "live.side_mirrors_replaced ?? false", enabled = true, suffix = " (REPLACED)" },
-]
-
-[rows.PM_RxGpuRtMirror]
-decode = "resolved(s.mcla_gpu_car_mirror_rt)"
-states = [
-  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT MIRRORS" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT MIRRORS" },
-]
+decode = { cases = [{ when = "s.mcla_gpu_side_mirrors == 'off'", value = "off" }, { value = "on" }] }
 
 [rows.PM_RxGpuCarSelfRefl]
 decode = "resolved(s.mcla_gpu_car_selfrefl)"

@@ -474,17 +474,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_gpu_car_selfrefl_rt, "off", "Reflects parts of a car in its own paint using ray tracing. Needs car self-reflections and ray queries. Live.", rex::Allowed("auto", "off", "on"));
 
-  REX_SETTING(std::string, mcla_gpu_car_mirror_rt, "off", "Traces the view behind you in the side mirrors. Needs ray queries. Live.", rex::Allowed("auto", "off", "on"));
 
-  REX_SETTING(i32, mcla_gpu_car_mirror_rt_pixels, 0, "Debug: the most pixels one side mirror's rectangle on the screen may cover for the ray traced side mirrors (mcla_gpu_car_mirror_rt), in thousands (0, the default: the graphics card's "
-    "class decides: 160 on the High class, 64 on the Mid class). A mirror over it is left to the game. Live.", rex::kDebugOnly, rex::Range{0, 262});
 
-  REX_SETTING(f64, mcla_gpu_car_mirror_rt_strength, 0.92, "Debug: the share of the game's own mirror glass the ray traced side mirrors replace (0.92, the default; 1 is all of it, 0 nothing). Live.", rex::kDebugOnly, rex::Range{0.0, 1.0});
 
-  REX_SETTING(std::string, mcla_gpu_car_mirror_rt_world, "auto", "Debug: what the ray traced side mirrors (mcla_gpu_car_mirror_rt) show where their ray finds none of the cars: auto (the default) is the city behind your car - the street, the buildings, the lamps, "
-    "shaded like the city in the car's paint reflections - where RT CITY REFLECTIONS is on (its auto is on a graphics card that traces quickly) and the game's environment map where it is off; env is the environment map only "
-    "(the mirrors as they were); city is the city on any card that can ray trace, whatever RT CITY REFLECTIONS says (a weaker card gets the smaller reach). The mirrors show the environment map until the city's data is ready, and "
-    "a mirror of a few pixels (a chase camera) always shows it. Live.", rex::Allowed("auto", "env", "city"), rex::kDebugOnly);
+
+
+
+
 
   REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_denoise, 2, "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
     "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
@@ -1161,17 +1157,11 @@ class GPUSettings final : public rex::SettingOwner {
     "mirrors do) and publishes whether a side mirror is on the picture and wide enough to be worth a view. Nothing is drawn by it. While it is off and the row's view is not running nothing is read and nothing "
     "is published. Live.", rex::kDebugOnly);
 
-  REX_SETTING(i32, mcla_gpu_mirror_view, 0, "Debug, MIRROR-VIEW (perf/MIRROR-VIEW.md, packages MV1 and MV6): forces the shared rear view on, whatever the SIDE MIRRORS row (mcla_gpu_side_mirrors) and RT SIDE MIRRORS say "
-    "(the A/B arms of the cost chain). The rear view mirror's phase draws into a small view of its own instead of the 229x44 rectangle of the main picture, and the picture is stamped into the rectangle "
-    "afterwards (the HUD mirror's look, with the world behind it left whole). 0 (the default): no force, the SIDE MIRRORS row decides (its off is the game's own mirror). 1: on, the view's size is the graphics "
-    "card's class (Low 384 wide, Mid 512, High 768). 2, 3, 4: on at the Low, Mid or High size, whatever the card; a forced view is redrawn every frame and runs the glass finder only with mcla_gpu_mirror_glass. "
-    "The draws of the phase that cannot go into the view (they carry the G-buffer's planes, or other formats) are left out and counted in the log's mirror view line. The markers that scope the phase come "
-    "from the guest hooks of package MV2: without them nothing changes. "
-    "Live.", rex::kDebugOnly, rex::Range{0, 4});
+  REX_SETTING(i32, mcla_gpu_mirror_view, 0, "Debug: force the shared rear view. 0 follows MIRRORS, 1 uses the production size, 2 to 4 choose the legacy test sizes, and 5 and 6 use 1280 or 2560 pixels. Live.", rex::kDebugOnly, rex::Range{0, 6});
 
   REX_SETTING(bool, mcla_gpu_mirror_overlay, false, "Debug, MIRROR-VIEW (perf/MIRROR-VIEW.md, package MV4): the car's two side mirror glasses are drawn again at the end of the scene, after the HUD "
     "mirror, showing the shared rear view where each pixel's reflected ray goes: a mirror that shows the street behind on a graphics card that cannot ray "
-    "trace. The SIDE MIRRORS row turns this on by itself while its view runs; this switch is for a forced view (mcla_gpu_mirror_view 1 to 4, which leave "
+    "trace. The MIRRORS row turns this on by itself while its view runs; this switch is for a forced view (mcla_gpu_mirror_view 1 to 4, which otherwise leave "
     "the overlay to it). Off (the default): the row decides. Needs the view and mcla_gpu_mirror_glass on (the row runs both) and the guest half of the shared "
     "view (the mirror camera's field of view); where the ray traced side mirrors are on they win and this does nothing. Live.", rex::kDebugOnly);
 
@@ -1519,12 +1509,7 @@ class GPUSettings final : public rex::SettingOwner {
     "for the maps being drawn). The sun's shadows show from 8 to 17 hours in clear weather. Live; "
     "the first time it changes the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "high", "ultra"));
 
-  REX_SETTING(std::string, mcla_gpu_side_mirrors, "auto", "The car's two side mirrors without ray tracing: the game's own rear view mirror camera is drawn once into a small picture of its own, and the glass of both side mirrors "
-    "(and the HUD's rear view mirror, when it is on) show that picture, so a mirror shows the street and the cars behind you instead of the game's blurred sky, mostly in the "
-    "first person cameras (cockpit, bumper), where the glass is big enough to read. auto picks by graphics card: off on integrated graphics (the game's own mirrors), high on a "
-    "mid range card and ultra on a fast one. high draws the picture 512 pixels wide every second frame, ultra 768 pixels wide every frame (sharper, costs more); off keeps the "
-    "game's own mirrors. Where RT SIDE MIRRORS is on (a graphics card that can ray trace) it takes the place of this setting. The pause menu's row is GRAPHICS, REFLECTIONS, "
-    "SIDE MIRRORS. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_side_mirrors, "on", "Show the street and racers behind you in the side mirrors. The optional HUD rear-view widget shares the same picture. Live.", rex::Allowed("off", "on", "auto", "high", "ultra"));
 
   REX_SETTING(std::string, mcla_gpu_skip_shaders, "", "Workaround for a driver that dies compiling one particular shader combination: a "
     "comma-separated list of shader identities (the 16 hex digits of the pack's keys). A "
@@ -2209,10 +2194,6 @@ inline auto& mcla_gpu_car_selfrefl_gain = g_gpu.mcla_gpu_car_selfrefl_gain;
 inline auto& mcla_gpu_car_selfrefl_history = g_gpu.mcla_gpu_car_selfrefl_history;
 inline auto& mcla_gpu_car_selfrefl_length = g_gpu.mcla_gpu_car_selfrefl_length;
 inline auto& mcla_gpu_car_selfrefl_rt = g_gpu.mcla_gpu_car_selfrefl_rt;
-inline auto& mcla_gpu_car_mirror_rt = g_gpu.mcla_gpu_car_mirror_rt;
-inline auto& mcla_gpu_car_mirror_rt_pixels = g_gpu.mcla_gpu_car_mirror_rt_pixels;
-inline auto& mcla_gpu_car_mirror_rt_strength = g_gpu.mcla_gpu_car_mirror_rt_strength;
-inline auto& mcla_gpu_car_mirror_rt_world = g_gpu.mcla_gpu_car_mirror_rt_world;
 inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_denoise;
 inline auto& mcla_gpu_car_rt_paint_one_ray = g_gpu.mcla_gpu_car_rt_paint_one_ray;
 inline auto& mcla_gpu_car_selfrefl_rt_resolve = g_gpu.mcla_gpu_car_selfrefl_rt_resolve;

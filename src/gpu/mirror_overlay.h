@@ -2,13 +2,12 @@
 // ===========================================================================
 // MCLA GPU renderer -- the side mirrors' glass overlay (perf/MIRROR-VIEW.md, package MV4)
 // ===========================================================================
-// The shared rear view (mirror_view.h) holds a small picture of the street behind the player. On a card that cannot ray trace (or with the ray traced side mirrors off) the car's two side mirror glasses are
+// The shared rear view (mirror_view.h) holds a small picture of the street behind the player. The car's two side mirror glasses are
 // drawn again at the end of the scene, into the main colour, with a pixel shader that reflects the eye's ray off the glass plane and reads that picture where the reflected ray goes: a planar mirror lookup
 // (mirror_view_rules.h UvForMirrorPixel, exact for what is the assumed distance beyond the glass: mcla_gpu_mirror_view_t0, 20 m; the error for nearer things is the design's section 2.3 table).
 //
 //   WHEN     Scene::OnResolve, at the first copy of the main colour after the phase's end marker, right AFTER the HUD stamp (frame_order.h kMirrorGlass), from MirrorView::OverlayArmed: a whole picture, drawn this
-//            frame or held (at most mirror_view::kMaxHeldFrames old), in the play view. The decision is mirror_overlay_rules.h Decide: the setting (mirror_setting.h Current().overlay: the SIDE MIRRORS row's view, or the debug switch mcla_gpu_mirror_overlay), the ray traced
-//            side mirrors (CarMirrorRt::active: where they are on, they win and the overlay does nothing), the picture, the finder's pair (MirrorGlass::Current: a glass needed), the view's field and pose.
+//            frame or held (at most mirror_view::kMaxHeldMs old), in the play view. The decision is mirror_overlay_rules.h Decide: the setting (mirror_setting.h Current().overlay: the SIDE MIRRORS row's view, or the debug switch mcla_gpu_mirror_overlay), the picture, the glass and the projection.
 //   WHAT     for each needed glass, one draw of the glass patch's own triangles (the host geometry its game draw read: CarFrame's Draw, as the car shadow map redraws the car), vertex stage
 //            hlsl/mirror_overlay_vs.hlsl, pixel stage hlsl/mirror_overlay_ps.hlsl (the arithmetic is hlsl/mirror_overlay.hlsli), into the main colour with the main depth bound: the glass draw's own depth test
 //            repeated with the equal case allowed (GREATER_EQUAL in the game's reverse-Z scene), the depth written never, the overlay pulled a few millimetres towards the eye along the view ray so that it lands on
@@ -75,7 +74,6 @@ class MirrorOverlay {
     const car_frame::Frame* frame = nullptr;  // this frame's camera and the player's draws
     MirrorGlass* glass = nullptr;             // the finder's pair
     const MirrorView* view = nullptr;         // the picture
-    bool rt_mirrors_on = false;               // CarMirrorRt::active()
     bool play_view = true;
     float jitter[2] = {0.0f, 0.0f};           // the frame's sub-pixel jitter in render pixels, +y down (TemporalSystem::FrameJitter), as the draws were moved by
   };

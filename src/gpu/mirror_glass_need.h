@@ -27,23 +27,28 @@ struct NeedState {
   bool found = false;      // a pair of mirror glasses is among this frame's draws
   uint8_t mask = 0;        // bit 0: the glass on the left of the picture is needed, bit 1: the one on the right
   uint16_t widest = 0;     // the widest needed glass, pixels at the reference picture (for the log)
+  uint16_t hfov_deg = 0;    // the needed readers' swept field, rounded out to whole degrees
+  uint16_t vfov_deg = 0;
   bool need() const { return mask != 0; }
   bool operator==(const NeedState&) const = default;
 };
 
-inline constexpr uint32_t Pack(const NeedState& s) {
-  return (s.found ? 1u : 0u) | (uint32_t(s.mask & 3u) << 1) | (uint32_t(s.widest) << 8);
+inline constexpr uint64_t Pack(const NeedState& s) {
+  return (s.found ? 1u : 0u) | (uint32_t(s.mask & 3u) << 1) | (uint32_t(s.widest) << 8) |
+         (uint64_t(s.hfov_deg) << 24) | (uint64_t(s.vfov_deg) << 40);
 }
 
-inline constexpr NeedState Unpack(uint32_t v) {
+inline constexpr NeedState Unpack(uint64_t v) {
   NeedState s;
   s.found = (v & 1u) != 0;
   s.mask = uint8_t((v >> 1) & 3u);
   s.widest = uint16_t((v >> 8) & 0xFFFFu);
+  s.hfov_deg = uint16_t(v >> 24);
+  s.vfov_deg = uint16_t(v >> 40);
   return s;
 }
 
-inline std::atomic<uint32_t> g_need{0};
+inline std::atomic<uint64_t> g_need{0};
 
 // The render thread, once a frame.
 inline void PublishNeed(const NeedState& s) { g_need.store(Pack(s), std::memory_order_relaxed); }

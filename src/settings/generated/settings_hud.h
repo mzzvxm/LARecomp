@@ -23,24 +23,18 @@ class HUDSettings final : public rex::SettingOwner {
     "again with the mirror's camera and draws it with the colour pass. Don't combine it with "
     "rearview_traffic: traffic draws the same cars as black silhouettes. Needs rearview on.");
 
-  REX_SETTING(i32, rearview_cars_lod, 0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the least detailed level of the racers' models in the mirror: "
-    "0 (the default) the level the game chose for the main view, 1 at least the middle one, 2 only the coarsest. Only makes a car coarser, never finer; "
-    "the main view's choice is put back after the mirror. Needs rearview_cars. Live.", rex::kDebugOnly, rex::Range{0, 2});
+  REX_SETTING(i32, rearview_cars_lod, 2, "Debug: minimum model level for racers in the shared rear view. 2 uses the coarsest, 1 uses medium or coarser, 0 uses the game choice. Live.", rex::kDebugOnly, rex::Range{0, 2});
 
-  REX_SETTING(i32, rearview_cars_max, 0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the most racers drawn in the mirror a frame: the first this many, in the game's own "
-    "list order, that the mirror's camera sees. 0 (the default) draws every one it sees. Needs rearview_cars. Live.", rex::kDebugOnly, rex::Range{0, 16});
+  REX_SETTING(i32, rearview_cars_max, 3, "Debug: maximum visible racers in the shared rear view, selected by distance. 0 draws every visible racer. Live.", rex::kDebugOnly, rex::Range{0, 16});
 
   REX_SETTING(bool, rearview_diag, false, "Log, every couple of seconds, how many objects each render client holds when the mirror's "
     "phase begins. For working out why cars and traffic do not draw in it.", rex::kDebugOnly);
 
-  REX_SETTING(i32, rearview_every, 1, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md E): the mirror's view is drawn every this many frames (1, the default, every frame). "
-    "A frame that skips it asks for no mirror phase at all, so it costs nothing. The held picture is not made yet (it needs the host to keep the "
-    "stamp's pixels): until it is, a skipped frame shows the main view in the mirror's rectangle, so this is a measuring switch. A camera cut (the eye "
-    "jumps more than 20 m between frames) draws the mirror at once. Live.", rex::kDebugOnly, rex::Range{1, 8});
+  REX_SETTING(i32, rearview_every, 1, "Debug: draw the shared rear view only every Nth frame when its timed refresh is disabled. 1 draws every frame. Live.", rex::kDebugOnly, rex::Range{1, 8});
 
-  REX_SETTING(f64, rearview_far, 0.0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): the far plane of the mirror's camera in metres; the game uses the main camera's. "
-    "0 (the default) leaves it. Only ever pulls the plane in (never beyond the main camera's), and never under 20 m. Takes effect when the "
-    "game next builds the mirror's camera (every frame the mirror is up). Live.", rex::Range{0.0, 5000.0}, rex::kDebugOnly);
+  REX_SETTING(i32, rearview_refresh_hz, 30, "Debug: shared rear view refreshes per second. 0 uses the frame interval. Camera cuts refresh immediately. Live.", rex::kDebugOnly, rex::Range{0, 240});
+
+  REX_SETTING(f64, rearview_far, 150.0, "Debug: limit the rear-view camera range in metres. 0 keeps the game camera range. Live.", rex::Range{0.0, 5000.0}, rex::kDebugOnly);
 
   REX_SETTING(f64, rearview_fov_scale, 1.0, "Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): a multiple of the mirror camera's field of view (the stamp is 5.2:1, so the "
     "game's own is very wide). 1.0 (the default) leaves it; 0.5 shows roughly half the angle, so the game's own culling keeps fewer draws. "
@@ -104,6 +98,7 @@ inline auto& rearview_far = g_hud.rearview_far;
 inline auto& rearview_fov_scale = g_hud.rearview_fov_scale;
 inline auto& rearview_frame = g_hud.rearview_frame;
 inline auto& rearview_lod_distance = g_hud.rearview_lod_distance;
+inline auto& rearview_refresh_hz = g_hud.rearview_refresh_hz;
 inline auto& rearview_position = g_hud.rearview_position;
 inline auto& rearview_shift_x = g_hud.rearview_shift_x;
 inline auto& rearview_shift_y = g_hud.rearview_shift_y;

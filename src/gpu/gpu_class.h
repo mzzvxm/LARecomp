@@ -101,7 +101,6 @@ enum class Effect : uint8_t {
   kRtShadows,             // mcla_gpu_rt_shadows         auto, off, high, ultra (city_rt_rules.h; the city's real geometry traced for the sun's shadows)
   kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
   kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
-  kSideMirrors,           // mcla_gpu_side_mirrors       auto, off, high, ultra (mirror_setting.h; the side mirrors without ray tracing, the row SIDE MIRRORS)
 };
 inline constexpr int kEffectCount = 16;
 
@@ -169,12 +168,6 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // light pass draws a few small scissored lights (4 / 9 / 16 a frame at most, by the LIGHT SHADOWS level, only while a car with a neon is lit: its G-buffer planes are made only then), so every
     // card but the integrated one (Low: the scene alone is 100+ ms there) gets it. The cost is the owner's to measure (RUNPLAN-gb-neon.txt, the cost runs); a cell is corrected from it.
     Derived("mcla_gpu_neon_light"),
-    // The car's two side mirrors without ray tracing (MIRROR-VIEW.md, mirror_setting.h; owner plan 2026-11-22): the game's own rear view mirror phase drawn once into a small view of its own, which the glass of both
-    // side mirrors and the HUD mirror read. Two levels, the view's size (MIRROR-VIEW.md 2.2): HIGH is 512 pixels wide and drawn every second frame, ULTRA 768 wide and every frame. The cost is the phase's draws (a
-    // second walk of the city and the racers from the mirror camera, after the cuts), not the pixels [E, nothing measured: 0.4 to 1.1 ms of graphics card time for 300 to 1,000 draws on a Mid card, 0.15 to 0.35 ms on a
-    // High card, 1 to 2.5 ms on the 2-CU iGPU; section 3.3]. So Low is OFF (the game's own mirrors: the stop rule of section 3.4 keeps the weakest card out), Mid HIGH, High ULTRA. Where RT SIDE MIRRORS runs it
-    // replaces the row (mirror_setting.h Resolve). FIRST GUESSES: the cost chain (chain-mirror-view.ps1) corrects a cell, and the stop rule (over about 800 draws a frame on Mid) turns Mid off.
-    Derived("mcla_gpu_side_mirrors"),
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little

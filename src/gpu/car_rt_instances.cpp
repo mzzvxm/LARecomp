@@ -61,9 +61,6 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
     list_.items.reserve(rr::kMaxInstances);
     list_.rows.reserve(rr::kMaxInstances + ci::kMaxCars);
   }
-  // SIDE MIRRORS (car_mirror_patch_rules.h): the small flat patches among the player's draws, with their meshes' boxes for the pair's boxes below.
-  std::vector<car_mirror::Candidate> mirror_candidates;
-  std::vector<ci::MeshRef> mirror_refs;
   // The player's car: the body draws whose mesh has a structure (the driver is not in the scene), in the draws' order.
   for (uint32_t i = 0; i < frame.draws.size() && list_.items.size() < rr::kMaxInstances; ++i) {
     const car_frame::Draw& draw = frame.draws[i];
@@ -84,13 +81,9 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
     item.mask = rr::InstanceMask(draw.vs == rr::kTyreVs, draw.after_world, glass_rule);
     list_.items.push_back(item);
     list_.rows.push_back(rr::MakeRow(ref.first_index, ref.first_vertex, item.mask, draw.after_world, i));
-    // The windows are glass a camera looks through; a small flat patch of a part that can be a mirror glass is a candidate for the pair chosen after the loop.
+    // A camera can look through the windows.
     if (car_mirror::IsSeeThroughShader(draw.ps)) {
       list_.rows.back().flags |= rr::kFlagSeeThrough;
-    }
-    if (car_mirror::IsPatchCandidate(ref.patch, uint8_t(draw.material.cls))) {
-      mirror_candidates.push_back(car_mirror::Place(uint32_t(list_.items.size() - 1), item.transform, ref.patch));
-      mirror_refs.push_back(ref);
     }
     {
       car_rt_material::InstanceMaterial im;
@@ -104,26 +97,6 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
       ci::GrowBox(&list_.player_box, item.transform, ref);
     } else {
       list_.player_box.complete = false;
-    }
-  }
-  // The pair of mirror glasses (two or none): their rows are flagged, their boxes in the frame's view space are kept for the pass's rectangles.
-  if (mirror_candidates.size() >= 2) {
-    float up[3];
-    const double world_up[3] = {0.0, 1.0, 0.0};
-    if (ci::ViewVector(frame.view, flip_z, world_up, up)) {
-      const car_mirror::Pick pick = car_mirror::ChoosePair(mirror_candidates, up);
-      if (pick.count == 2) {
-        list_.mirror = pick;
-        for (uint32_t k = 0; k < 2; ++k) {
-          list_.rows[pick.item[k]].flags |= rr::kFlagMirror;
-          for (size_t c = 0; c < mirror_candidates.size(); ++c) {
-            if (mirror_candidates[c].item == pick.item[k]) {
-              ci::GrowBox(&list_.mirror_box[k], list_.items[pick.item[k]].transform, mirror_refs[c]);
-              break;
-            }
-          }
-        }
-      }
     }
   }
   // The other cars: the nearest whole cars that fit the instance budget and the class's count of cars. The cars the camera does not see this frame

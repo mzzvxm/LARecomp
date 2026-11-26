@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- the side mirrors' glass found without ray tracing: the rules that need no renderer (MIRROR-VIEW MV3)
 // ===========================================================================
 // perf/MIRROR-VIEW.md 2.6 and 4 (MV3). The shared rear view's side mirror overlay (MV4) and the "is a mirror visible" need rule (mirror_glass_need.h) both need to know which two draws of the
-// player's car are the mirror glass. MIRROR-RT already finds it by SHAPE (car_mirror_patch_rules.h: a small flat patch, a pair across the car at one height facing back and inward) but takes
+// player's car are the mirror glass. The shape rules in car_mirror_patch_rules.h find small flat patches across the car at one height facing back and inward. The finder takes
 // the triangles from the ray traced scene's staged meshes, which a card without ray tracing does not have. CarFrame has them on every GPU (car_frame.h: the player's draws of a frame, each with its
 // matrix, its host geometry and a mesh key, and a MeshReader that reads one draw's triangles from guest memory). This header is the part of the listener that needs no renderer:
 //
@@ -12,7 +12,7 @@
 //   THE CACHE     GlassCache: a mesh is read and measured ONCE, by its mesh_key (a fingerprint of the mesh's own bytes: stable across frames and sessions). What is kept is the mesh's PatchStats and its
 //                 box, whether or not it is a patch, so a steady frame costs one hash probe a draw and no guest memory. An unreadable mesh is tried again after a while; keys no draw names for a long
 //                 while go (a car given up), and the cache has a cap.
-//   THE MEASURE   MeasureMesh: the ray traced scene's own clean-up (car_rt_scene_rules.h CleanMesh) and car_mirror::MeasurePatch: the numbers are the same ones the RT finder gets.
+//   THE MEASURE   MeasureMesh: the ray traced scene's own clean-up (car_rt_scene_rules.h CleanMesh) and car_mirror::MeasurePatch: the numbers used to select the mirror pair.
 //   THE PAIR      Finder::Choose: the candidates of the frame (a draw whose mesh is a patch and whose class may be a glass) placed in the frame's view space (car_rt_scene_rules.h PackInstanceTransform
 //                 with Frame::view's z forward), car_mirror::ChoosePair for the pair, then what the overlay and the guest need: each glass's box, its world centre and normal, the eye,
 //                 the lens, the box's rectangle on a reference picture, and whether it is wide enough to be worth a view (the need rule: kMinNeedWidth pixels at 1080 lines).
@@ -41,17 +41,39 @@
 #include <vector>
 
 #include "car_mirror_patch_rules.h"
-#include "car_mirror_rt_rules.h"
 #include "car_rt_instances_rules.h"
 #include "car_rt_material_rules.h"
 #include "car_rt_opp_refl_rules.h"
 #include "car_rt_scene_rules.h"
 #include "mirror_glass_need.h"
+#include "mirror_view_rules.h"
 #include "temporal_math.h"
 
 namespace mcla::gpu::mirror_glass {
 
 namespace cm = car_mirror;
+
+inline bool LensOf(const temporal::Mat4& view, const temporal::Mat4& view_projection, double* tan_x, double* tan_y) {
+  temporal::Mat4 inverse;
+  if (!tan_x || !tan_y || !temporal::Inverse(view, &inverse) || !temporal::Finite(view_projection)) {
+    return false;
+  }
+  const temporal::Mat4 p = temporal::Mul(inverse, view_projection);
+  const double px = std::fabs(p.m[0][0]);
+  const double py = std::fabs(p.m[1][1]);
+  if (!std::isfinite(px) || !std::isfinite(py) || !(px > 1e-6) || !(py > 1e-6)) {
+    return false;
+  }
+  const double tx = 1.0 / px;
+  const double ty = 1.0 / py;
+  if (!(tx >= 0.05 && tx <= 20.0 && ty >= 0.05 && ty <= 20.0)) {
+    return false;
+  }
+  *tan_x = tx;
+  *tan_y = ty;
+  return true;
+}
+
 namespace ci = car_rt_instances;
 namespace rr = car_rt_rules;
 
@@ -299,7 +321,7 @@ struct Glass {
   float normal_view[3] = {};  // unit, the way the glass faces (towards the driver)
   double centre_world[3] = {};  // the game's world: the draw's own model-to-world applied to the patch's centroid
   float normal_world[3] = {};   // unit, the patch's mean normal turned as a vector by the draw's matrix
-  ci::ViewBox box;         // the mesh's box through the draw's matrix, in the frame's view space (MV4 turns it into its own rectangle with the real picture size: car_mirror::RectFor)
+  ci::ViewBox box;         // the mesh's box through the draw's matrix, in the frame's view space
   car_rt_opp_refl::TexelRect rect;  // the box on the reference picture (kReferenceHeight lines): empty when off the picture
   int32_t px_wide = 0;     // rect's width, reference pixels
   bool needed = false;     // on the picture and at least kMinNeedWidth wide
@@ -340,7 +362,7 @@ struct Result {
   bool flip_z = false;      // the z rule the placements used (Camera::flip_z)
   double eye_world[3] = {}; // the camera's place in the world (the view's inverse)
   bool eye_known = false;
-  double tan_x = 0.0;       // tan of the half fields of view (car_mirror::LensOf)
+  double tan_x = 0.0;       // tan of the half fields of view (LensOf)
   double tan_y = 0.0;
   bool lens_known = false;
   float up_view[3] = {0.0f, 1.0f, 0.0f};  // the world's up in the frame's view space
@@ -348,6 +370,35 @@ struct Result {
   uint32_t candidates = 0;  // patches among the frame's draws (after the duplicates were dropped)
   NeedState need;           // what the guest is told for this frame (before the hold)
 };
+
+// Enclose the directions the overlay samples, using the bounds of each
+// needed glass in current view space. The rear rig is the main rig spun 180 degrees.
+// CHECK: verify the fitted field covers the live glass in both first-person rigs.
+inline void FitRearField(Result& result) {
+  namespace mv = mirror_view;
+  mv::Rig rear;
+  rear.forward = {0, 0, -1};
+  rear.up = {0, 1, 0};
+  rear.right = {-1, 0, 0};
+  mv::V3 rays[16];
+  int count = 0;
+  for (unsigned i = 0; i < 2; ++i) {
+    if (!(result.need.mask & (1u << i))) continue;
+    const auto& g = result.glass[i];
+    const auto& box = g.box;
+    if (!box.valid) continue;
+    const mv::V3 normal = mv::Normalize({g.normal_view[0], g.normal_view[1], g.normal_view[2]});
+    for (unsigned corner = 0; corner < 8; ++corner) {
+      const mv::V3 p{corner & 1 ? box.max[0] : box.min[0], corner & 2 ? box.max[1] : box.min[1], corner & 4 ? box.max[2] : box.min[2]};
+      rays[count++] = p + mv::Reflect(mv::Normalize(p), normal) * mv::kAssumedDistance;
+    }
+  }
+  if (count == 0) return;
+  const mv::Extent extent = mv::ExtentOf(rear, rays, count);
+  constexpr double kDegreesAcross = 360.0 / 3.14159265358979323846;
+  result.need.hfov_deg = uint16_t(extent.ok ? std::ceil(extent.half_h * kDegreesAcross) : mv::kMaxHorizontalFov);
+  result.need.vfov_deg = uint16_t(extent.ok ? std::ceil(extent.half_v * kDegreesAcross) : mv::kMaxVerticalFov);
+}
 
 // The box of a mesh through a placement (the eight corners, or the origin where the box is not known).
 inline void GrowViewBox(ci::ViewBox* box, const float transform[3][4], bool has_box, const float lo[3], const float hi[3]) {
@@ -548,7 +599,7 @@ class Finder {
       std::swap(r.glass[0], r.glass[1]);  // [0] is the glass on the left of the picture
     }
     r.eye_known = ci::CameraWorld(camera.view, r.eye_world);
-    r.lens_known = cm::LensOf(camera.view, camera.view_projection, &r.tan_x, &r.tan_y);
+    r.lens_known = LensOf(camera.view, camera.view_projection, &r.tan_x, &r.tan_y);
     if (!r.lens_known) {
       r.why = Why::kNoLens;
       r.need.found = true;
@@ -566,6 +617,7 @@ class Finder {
       }
     }
     r.need.found = true;
+    FitRearField(r);
     r.why = r.need.mask != 0 ? Why::kNeeded : (any_on ? Why::kTooSmall : Why::kOffPicture);
     return r;
   }

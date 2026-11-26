@@ -7,18 +7,15 @@
 // (mirror_view_link.h kMarkerBegin / kMarkerEnd, the one header both sides use; the guest calls NoteMirrorPhase, gpu.h; the host tells the guest what it does through mirror_view_link.h's Request, published in BeginFrame), and then stamps the finished picture into the rectangle at the end-of-scene copy of the main colour. The main
 // target is untouched by the phase: no clear of the rectangle, no mirror depth in the scene depth, no host effect seeing a second camera's draws.
 //
-// THE IMAGES (made by the phase's first draw or clear, from the formats and the host sample count its pipeline names, so the pipelines the draws already have fit the framebuffer; remade when the
-// samples change with the MSAA level, at the next phase; their size is the class's, PlanForRect):
-//   colour    the main colour's host format, the main target's host samples, a HostImage (slot read as a Texture2DMS above one sample)
-//   depth     the main depth's host format at the same samples
-//   resolved  one sample, the average of the colour's samples (hlsl/mirror_view_ps.hlsl): what the readers sample; the colour itself at one sample
+// THE IMAGES: one colour and one depth target in the main formats, both at
+// a single sample. The guest's viewport is mapped into their own allocation.
 // THE PHASE (mirror_view_rules.h PhaseTracker): BeginPhase from the begin marker, Use at the first draw or clear (barriers, the begin clear of the colour), the draws and the guest's clear land in the
 // framebuffer through the Scene (scene.cpp RecordMirrorDraw, OnClear), EndPhase from the end marker: the colour to the readable layout, the resolve, the picture whole. A phase never outlives its frame.
 // THE READER (this package): the HUD stamp, one quad into the rectangle of the main colour at the first copy of the main colour after the end marker (a held frame sends an empty phase: the stamp is
 // drawn from the held picture). The second reader, the side mirrors' glass overlay (mirror_overlay.h, package MV4), takes the same picture (CurrentPicture, OverlayArmed). The two pipelines (the average of the
 // samples, the stamp) are the host precache's (host_precache.h kMirrorView).
-// LIFETIME: the images are made when a redirected phase needs them and given back after about 3 s without one; the sizes are the class's (Low 384 wide, Mid 512, High 768; Low is the game's own
-// mirror by default: AutoWanted), 0.3 to 12 MiB at 1 to 8 samples (HeldBytes, counted in the log's held list).
+// LIFETIME: the images are made when a redirected phase needs them and given back after about 3 s without one; the production width is 768 pixels
+// The debug view can force a test size. The log accounts for held bytes.
 //
 // CHECK: nothing of this has run on a device (no build in the package): the first run says whether the pipelines of the phase's draws accept the framebuffer on D3D12 and on Vulkan, whether the
 // game's begin clear is seen (the census line counts the phases that had none), and what the stamp looks like.
@@ -58,10 +55,8 @@ class MirrorView {
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
 
-  // Scene::BeginFrame: reads mcla_gpu_mirror_view, publishes the request to the guest half (mirror_view_link.h: redirect, the side mirrors' need and the wider field they want, mirror_view_rules.h
-  // RequestFor), closes a phase the last frame left open, gives the images back after the idle time, writes the census line. `rt_side_mirrors`: the ray traced side mirrors are on (CarMirrorRt::active(),
-  // as of the last frame's start): they win, and the request does not ask for a side-only phase nobody would read.
-  void BeginFrame(bool rt_side_mirrors);
+  // Publish this frame's readers and retire the inactive view.
+  void BeginFrame();
   bool enabled() const { return mode_ != 0; }
   // The images or the shaders could not be made lately: no phase is redirected, and the request to the guest says so (mirror_view_rules.h RequestFor).
   bool Blocked() const { return frame_ < blocked_until_ || shaders_failed_; }
@@ -105,7 +100,7 @@ class MirrorView {
   // Said by the Scene when the first copy came and a stamp was not possible: the frame's stamp is given up.
   void DisarmStamp() { stamp_armed_ = false; }
 
-  // The side mirrors' glass overlay (mirror_overlay.h, package MV4) reads the same picture: whole, with the bindless slot of its single sample image and its age in frames (0: drawn this frame; a held
+  // The side mirrors' glass overlay (mirror_overlay.h, package MV4) reads the same picture: whole, with the bindless slot of its single sample image and its age in milliseconds (0: drawn this frame; a held
   // frame sends an empty phase and the picture of the last one stands). Armed, like the stamp, by the end marker of a phase and consumed by the first copy of the main colour after it; unlike the stamp
   // it does not care whether the HUD mirror is up.
   struct Picture {
@@ -200,7 +195,7 @@ class MirrorView {
   uint32_t samples_ = 1;
   bool colour_new_ = false;      // made since the last clear: the depth is cleared too (the first use of a new image)
   bool whole_ = false;           // a finished picture exists
-  uint64_t picture_frame_ = 0;   // the frame it was finished in
+  uint64_t picture_ms_ = 0;   // when the picture was finished
   bool stamp_armed_ = false;
   bool overlay_armed_ = false;   // the end marker of this frame came with a whole picture and the overlay's copy has not (MV4)
   mirror_view::Lifetime life_;

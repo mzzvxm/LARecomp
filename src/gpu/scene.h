@@ -118,7 +118,6 @@ class MirrorOverlay;
 class LocalShadow;
 class LightManager;
 class CarRtScene;
-class CarMirrorRt;
 class MirrorGlass;
 class GBuffer;
 class PostAa;
@@ -194,9 +193,6 @@ class Scene {
   // The player's car as ray tracing structures (car_rt_scene.h): told of the anchor, the composite and the present, and run at the mid-scene
   // depth copy (the top level is built there, before the car self-reflection's own pass). Null: none.
   void SetCarRtScene(CarRtScene* car_rt) { car_rt_ = car_rt; }
-  // The player's side mirrors, ray traced (car_mirror_rt.h): told of the frame's start and the present, and run at the same mid-scene depth copy, after the top level is built and the car
-  // self-reflection's own pass has recorded. Null: none.
-  void SetCarMirrorRt(CarMirrorRt* car_mirror) { car_mirror_ = car_mirror; }
   // The G-buffer's sidecar (gbuffer.h): the main view's lit draws carry a second colour target and, for the shaders that have the variant, write the
   // normal into it; told of the frame's start, the guest's clears of the main colour and the mid-scene depth copy. Null: none (no draw is touched).
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
@@ -591,7 +587,6 @@ class Scene {
   // The per-texture rows over those words (gbuffer_materials.h): the table files, hot reloaded, and the census of what the G-buffer's draws read (MCLA_GBUFFER_CENSUS=1).
   gbuffer::TextureMaterials gbuffer_texmat_;
   CarRtScene* car_rt_ = nullptr;
-  CarMirrorRt* car_mirror_ = nullptr;
   // The host MSAA level while the game runs (msaa_level.h): checked at every frame boundary.
   MsaaLevel msaa_;
   // The target the last pass mark named (PassTiming): a clear or a resolve in

@@ -148,8 +148,7 @@ inline constexpr Row kRows[] = {
     {"mcla_gpu_car_selfrefl", Page::kReflections, {"off", "on", "on", "on", "on"}},
     {"mcla_gpu_car_selfrefl_rt", Page::kReflections, {"off", "off", "off", "on", "on"}},
     {"mcla_gpu_rt_reflections", Page::kReflections, {"off", "off", "off", "on", "on"}},
-    {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "high", "ultra", "high", "ultra"}},
-    {"mcla_gpu_car_mirror_rt", Page::kReflections, {"off", "off", "off", "off", "on"}},
+    {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "on", "on", "on", "on"}},
 
     {"traffic_unspawn_dist", Page::kWorldDetail, {"400", "300", "400", "300", "400"}},
     {"ped_density_scale", Page::kWorldDetail, {"1", "0.75", "1", "0.75", "1"}},

@@ -1302,53 +1302,6 @@
   "comments": [],
   "pp_depth": 0
  },
- "mcla_gpu_car_mirror_rt": {
-  "type": "std::string",
-  "default": "\"off\"",
-  "category": "MCLA/GPU",
-  "help": "\"Traces the view behind you in the side mirrors. Needs ray queries. Live.\"",
-  "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"on\")"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
- "mcla_gpu_car_mirror_rt_pixels": {
-  "type": "i32",
-  "default": "0",
-  "category": "MCLA/GPU",
-  "help": "\"Debug: the most pixels one side mirror's rectangle on the screen may cover for the ray traced side mirrors (mcla_gpu_car_mirror_rt), in thousands (0, the default: the graphics card's \"\n    \"class decides: 160 on the High class, 64 on the Mid class). A mirror over it is left to the game. Live.\"",
-  "traits": [
-   "rex::kDebugOnly",
-   "rex::Range{0, 262}"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
- "mcla_gpu_car_mirror_rt_strength": {
-  "type": "f64",
-  "default": "0.92",
-  "category": "MCLA/GPU",
-  "help": "\"Debug: the share of the game's own mirror glass the ray traced side mirrors replace (0.92, the default; 1 is all of it, 0 nothing). Live.\"",
-  "traits": [
-   "rex::kDebugOnly",
-   "rex::Range{0.0, 1.0}"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
- "mcla_gpu_car_mirror_rt_world": {
-  "type": "std::string",
-  "default": "\"auto\"",
-  "category": "MCLA/GPU",
-  "help": "\"Debug: what the ray traced side mirrors (mcla_gpu_car_mirror_rt) show where their ray finds none of the cars: auto (the default) is the city behind your car - the street, the buildings, the lamps, \"\n    \"shaded like the city in the car's paint reflections - where RT CITY REFLECTIONS is on (its auto is on a graphics card that traces quickly) and the game's environment map where it is off; env is the environment map only \"\n    \"(the mirrors as they were); city is the city on any card that can ray trace, whatever RT CITY REFLECTIONS says (a weaker card gets the smaller reach). The mirrors show the environment map until the city's data is ready, and \"\n    \"a mirror of a few pixels (a chase camera) always shows it. Live.\"",
-  "traits": [
-   "rex::Allowed(\"auto\", \"env\", \"city\")",
-   "rex::kDebugOnly"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
  "mcla_gpu_car_selfrefl_rt_length": {
   "type": "f64",
   "default": "4.0",
@@ -3842,14 +3795,21 @@
  },
  "mcla_gpu_side_mirrors": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"on\"",
   "category": "MCLA/GPU",
-  "help": "\"The car's two side mirrors without ray tracing: the game's own rear view mirror camera is drawn once into a small picture of its own, and the glass of both side mirrors (and the HUD's rear view mirror, when it is on) show that picture, so a mirror shows the street and the cars behind you instead of the game's blurred sky, mostly in the first person cameras (cockpit, bumper), where the glass is big enough to read. auto picks by graphics card: off on integrated graphics (the game's own mirrors), high on a mid range card and ultra on a fast one. high draws the picture 512 pixels wide every second frame, ultra 768 pixels wide every frame (sharper, costs more); off keeps the game's own mirrors. Where RT SIDE MIRRORS is on (a graphics card that can ray trace) it takes the place of this setting. The pause menu's row is GRAPHICS, REFLECTIONS, SIDE MIRRORS. Live.\"",
+  "help": "\"Show the street and racers behind you in the side mirrors. The optional HUD rear-view widget shares the same picture. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+   "rex::Allowed(\"off\", \"on\", \"auto\", \"high\", \"ultra\")"
   ],
   "comments": [],
-  "pp_depth": 0
+  "pp_depth": 0,
+  "allowed": [
+   "off",
+   "on",
+   "auto",
+   "high",
+   "ultra"
+  ]
  },
  "mcla_gpu_split": {
   "type": "f64",
@@ -11844,9 +11804,9 @@
  },
  "rearview_cars_lod": {
   "type": "i32",
-  "default": "0",
+  "default": "2",
   "category": "MCLA/HUD",
-  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the least detailed level of the racers' models in the mirror: 0 (the default) the level the game chose for the main view, 1 at least the middle one, 2 only the coarsest. Only makes a car coarser, never finer; the main view's choice is put back after the mirror. Needs rearview_cars. Live.\"",
+  "help": "\"Debug: minimum model level for racers in the shared rear view. 2 uses the coarsest, 1 uses medium or coarser, 0 uses the game choice. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 2}"
@@ -11856,9 +11816,9 @@
  },
  "rearview_cars_max": {
   "type": "i32",
-  "default": "0",
+  "default": "3",
   "category": "MCLA/HUD",
-  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md D): the most racers drawn in the mirror a frame: the first this many, in the game's own list order, that the mirror's camera sees. 0 (the default) draws every one it sees. Needs rearview_cars. Live.\"",
+  "help": "\"Debug: maximum visible racers in the shared rear view, selected by distance. 0 draws every visible racer. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 16}"
@@ -11870,7 +11830,7 @@
   "type": "i32",
   "default": "1",
   "category": "MCLA/HUD",
-  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md E): the mirror's view is drawn every this many frames (1, the default, every frame). A frame that skips it asks for no mirror phase at all, so it costs nothing. The held picture is not made yet (it needs the host to keep the stamp's pixels): until it is, a skipped frame shows the main view in the mirror's rectangle, so this is a measuring switch. A camera cut (the eye jumps more than 20 m between frames) draws the mirror at once. Live.\"",
+  "help": "\"Debug: draw the shared rear view only every Nth frame when its timed refresh is disabled. 1 draws every frame. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{1, 8}"
@@ -11878,11 +11838,27 @@
   "comments": [],
   "pp_depth": 0
  },
+ "rearview_refresh_hz": {
+  "type": "i32",
+  "default": "30",
+  "category": "MCLA/HUD",
+  "help": "\"Debug: shared rear view refreshes per second. 0 uses the frame interval. Camera cuts refresh immediately. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 240}"
+  ],
+  "comments": [],
+  "pp_depth": 0,
+  "range": [
+   0,
+   240
+  ]
+ },
  "rearview_far": {
   "type": "f64",
-  "default": "0.0",
+  "default": "150.0",
   "category": "MCLA/HUD",
-  "help": "\"Debug, the cheap mirror (perf/MIRRORS-SURVEY.md B): the far plane of the mirror's camera in metres; the game uses the main camera's. 0 (the default) leaves it. Only ever pulls the plane in (never beyond the main camera's), and never under 20 m. Takes effect when the game next builds the mirror's camera (every frame the mirror is up). Live.\"",
+  "help": "\"Debug: limit the rear-view camera range in metres. 0 keeps the game camera range. Live.\"",
   "traits": [
    "rex::Range{0.0, 5000.0}",
    "rex::kDebugOnly"
@@ -11940,9 +11916,9 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Debug, MIRROR-VIEW (perf/MIRROR-VIEW.md, packages MV1 and MV6): forces the shared rear view on, whatever the SIDE MIRRORS row (mcla_gpu_side_mirrors) and RT SIDE MIRRORS say (the A/B arms of the cost chain). The rear view mirror's phase draws into a small view of its own instead of the 229x44 rectangle of the main picture, and the picture is stamped into the rectangle afterwards (the HUD mirror's look, with the world behind it left whole). 0 (the default): no force, the SIDE MIRRORS row decides (its off is the game's own mirror). 1: on, the view's size is the graphics card's class (Low 384 wide, Mid 512, High 768). 2, 3, 4: on at the Low, Mid or High size, whatever the card; a forced view is redrawn every frame and runs the glass finder only with mcla_gpu_mirror_glass. The draws of the phase that cannot go into the view (they carry the G-buffer's planes, or other formats) are left out and counted in the log's mirror view line. The markers that scope the phase come from the guest hooks of package MV2: without them nothing changes. Live.\"",
+  "help": "\"Debug: force the shared rear view. 0 follows MIRRORS, 1 uses the production size, 2 to 4 choose the legacy test sizes, and 5 and 6 use 1280 or 2560 pixels. Live.\"",
   "traits": [
-   "rex::Range{0, 4}",
+   "rex::Range{0, 6}",
    "rex::kDebugOnly"
   ],
   "comments": [],

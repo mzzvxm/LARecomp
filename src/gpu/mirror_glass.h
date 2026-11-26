@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- the side mirrors' glass found without ray tracing (MIRROR-VIEW MV3)
 // ===========================================================================
 // perf/MIRROR-VIEW.md 2.6 and 4. The shared rear view's side mirror overlay (MV4) and the "is a mirror visible" need rule need to know which two draws of the player's car are the mirror glass. On a
-// card with ray tracing MIRROR-RT finds them in the ray traced scene's meshes (car_mirror_patch_rules.h). This is the same finder for every GPU: a listener on CarFrame (car_frame.h), which every
+// card uses the same finder: a listener on CarFrame (car_frame.h), which every
 // GPU has (it feeds the car shadow map), reading the car's draws the way the ray traced scene does but keeping nothing of the ray traced scene.
 //
 //   LISTEN   OnPlayerDraw, inside CarFrame's call for a draw of the player's car: a small rigid draw of a class that may be a glass (mirror_glass_rules.h WhySkipped) whose mesh_key the cache does not

@@ -27,7 +27,6 @@
 #define CAR_RT_MASK_OTHER_PAINT 0x40   // ... and, in a draw of the paint's shader, this one: the opponents' reflection pass's primary ray finds it (car_rt_opp_refl.h)
 #define CAR_RT_MASK_ALL 0x7F          // every part of a car; the one bit left, 0x80, is the city's (city_rt_rules.h kMaskCity: the city's structures share this top level), which no car pass traces
 #define CAR_RT_FLAG_AFTER_WORLD 0x100  // the draw came after the frame's first world draw
-#define CAR_RT_FLAG_MIRROR 0x200       // one of the two mirror glasses of the player's car (car_mirror_patch_rules.h)
 #define CAR_RT_FLAG_SEE_THROUGH 0x400  // a pane of glass a camera looks through (a window): the mirror's primary ray goes on through it
 
 // The set, at registers t0..t3 of space CAR_RT_SPACE.

@@ -14,13 +14,47 @@
 
 #include <algorithm>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
+#include <optional>
 
 namespace larecomp::rearview_cheap {
+
+class RefreshClock {
+ public:
+  using Clock = std::chrono::steady_clock;
+
+  bool Draw(Clock::time_point now, int hz, bool changed) {
+    if (!last_ || changed || hz <= 0 || now - *last_ >= std::chrono::ceil<Clock::duration>(std::chrono::duration<double>(1.0 / hz))) {
+      last_ = now;
+      return true;
+    }
+    return false;
+  }
+
+  void Reset() { last_.reset(); }
+
+ private:
+  std::optional<Clock::time_point> last_;
+};
 
 inline constexpr float kMinFarMetres = 20.0f;        // a far plane under this would show nothing: the setting is raised to it
 inline constexpr double kMinFovScale = 0.1;          // the setting's own range
 inline constexpr float kCutMetres = 20.0f;           // the eye moved more than this between two frames: a camera cut
+struct RankedCar {
+  float metres_squared;
+  uint32_t item;
+
+  bool operator<(const RankedCar& other) const {
+    return metres_squared < other.metres_squared || (metres_squared == other.metres_squared && item < other.item);
+  }
+};
+
+inline bool InRange(float metres_squared, double far_metres) {
+  return std::isfinite(metres_squared) &&
+         (far_metres <= 0.0 || double(metres_squared) <= far_metres * far_metres);
+}
+
 inline constexpr int kLodCoarsest = 2;               // the car's model levels are 0 (finest) to 2
 
 // B. The far plane: the game's own (the main camera's), pulled in to `wanted` metres when that is set; never pushed out, never under kMinFarMetres.

@@ -7,8 +7,6 @@
 #include "gpu/city_rt_rules.h"
 #include "gpu/denoiser_setting.h"
 #include "gpu/gi_setting.h"
-#include "gpu/car_mirror_setting.h"
-#include "gpu/mirror_setting.h"
 #include "gpu/ray_regen_rules.h"
 #include "gpu/rtao_setting.h"
 #include "gpu/upscale_modes.h"
@@ -24,8 +22,6 @@ namespace gc = mcla::gpu::gpu_class;
 namespace city = mcla::gpu::city_refl_setting;
 namespace gi = mcla::gpu::gi_setting;
 namespace rtao = mcla::gpu::rtao_setting;
-namespace mirror = mcla::gpu::mirror_setting;
-namespace cmirror = mcla::gpu::car_mirror_setting;
 constexpr bool flags[] = {false, true};
 constexpr std::string_view levels[] = {"auto", "off", "high", "ultra"};
 constexpr std::string_view ao_levels[] = {"auto", "off", "high", "ultra", "rt"};
@@ -108,7 +104,7 @@ void Lighting(Fixture& f) {
         "PM_RxGpuContact", "PM_RxGpuSunShafts", "PM_RxGpuSsgi", "PM_RxGpuTrafficShadows", nullptr,
         nullptr /* the occlusion: its AUTO is the class cell or `rt` (rtao_setting.h), held below with the other labels */,
         "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics", nullptr,
-        "PM_RxGpuSsr", "PM_RxGpuNeonLight", "PM_RxGpuSideMirrors",
+        "PM_RxGpuSsr", "PM_RxGpuNeonLight",
     };
     static_assert(std::size(class_rows) == gc::kEffectCount);
     Check(Ids(f.Row("PM_RxGpuCarRefl")) == (std::vector<std::string>{"off", "on"}),
@@ -183,16 +179,6 @@ void Lighting(Fixture& f) {
                 if (rt == "auto") f.Decodes("PM_RxGpuRtGi", "off");
                 f.State("PM_RxGpuSsgiLevel", gi::AnyBounceLight(ao_on && (ss_word == "high" || ss_word == "ultra"), decision));
             }
-        for (bool replaced : flags) {
-            f.B("live.side_mirrors_replaced", replaced);
-            f.State("PM_RxGpuSideMirrors", true, mirror::RowSuffix(replaced));
-        }
-        {
-            const auto gate = cmirror::GateFor(cls, tier);
-            f.State("PM_RxGpuRtMirror", cmirror::RowEnabled(gate), cmirror::RowSuffix(gate), gate == cmirror::Gate::kRuns ? "" : cmirror::RowLabel(gate));
-            f.S("mcla_gpu_car_mirror_rt", "auto");
-            f.Decodes("PM_RxGpuRtMirror", "off");
-        }
         for (auto word : {"auto", "off", "on"}) {
             f.S("mcla_gpu_headlights", word);
             f.State("PM_RxGpuLightShadows", gc::ResolveFor(cls, handheld, gc::Effect::kHeadlights, word) == "on");

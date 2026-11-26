@@ -73,7 +73,6 @@
 #include "gpu/rtao_setting.h"
 #include "gpu/gpu.h"
 #include "gpu/gpu_class.h"
-#include "gpu/mirror_setting.h"
 #include "gpu/rt_tier.h"
 #include "gpu/latency.h"
 #include "gpu/local_shadow_rules.h"
@@ -1750,9 +1749,7 @@ const ItemDef kReflectionItems[] = {
                    kOnOffVals, kOnOffNames, 2)),
     NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections", "CITY IN CAR PAINT RT: ",
                    kOnOffVals, kOnOffNames, 2)),
-    NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors", "SIDE MIRRORS: ",
-                   kQualityVals, kQualityNames, 3)),
-    NativeOnly(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt", "SIDE MIRRORS RT: ",
+    NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors", "MIRRORS: ",
                    kOnOffVals, kOnOffNames, 2)),
 };
 #endif
@@ -1898,7 +1895,7 @@ const ItemDef kCamRearItems[] = {
     // out. It draws nothing while REAR VIEW is off; like REAR VIEW POS and FRAME above it is not
     // greyed with it (a grey reason would not fit the page: "CARS IN REAR VIEW (NO MIRROR)" 29 with
     // "MIDDLE FOOTER" 13 is 42 of 41).
-    Bool("PM_RxRearViewCars", "rearview_cars",     "CARS IN REAR VIEW: "),
+    XeniaOnly(Bool("PM_RxRearViewCars", "rearview_cars", "CARS IN REAR VIEW: ")),
 };
 
 // The full map's mouse (map_mouse.cpp), the launcher's Full map section: four live switches.
@@ -2266,7 +2263,6 @@ class PauseRuleEnv final : public expr::Env {
             return Value::Number(std::nearbyint(gpu::HdrAutoPeakNits()));
         if (path == "live.ultrawide_active") return Value::Bool(mc::ultrawide::Active());
         if (path == "live.rt_gi_replaces_bounce") return Value::Bool(gpu::RtGiReplacesBounceLight());
-        if (path == "live.side_mirrors_replaced") return Value::Bool(gpu::mirror_setting::Current().replaced);
         if (path == "live.rtao_pass_built") return Value::Bool(gpu::rtao_setting::PassBuilt());
         if (path == "live.msaa_switching") return Value::Bool(gpu::MsaaSwitching());
         if (path == "live.renderer_forced") return Value::Bool(RendererLaunchSets());

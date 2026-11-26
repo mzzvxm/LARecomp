@@ -97,7 +97,7 @@
 //                    hooks answer for the phase request, Patch_RearViewDrawAlpha keeps the frame hidden, TickRearView keeps the rectangle and the racers for the side-only case.
 //   the need rule's  TickRearView publishes the game's camera rig (camera_look.h CurrentCameraRig) with the other guest facts; the host decides the need (glass pair found, its size
 //   input            on the picture) and publishes it back.
-//   cadence          the view's rate is the larger of rearview_every and the host's (the class): a held frame keeps the host's last image (the picture IS held now).
+//   cadence          the shared view holds the last picture between timed refreshes.
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
@@ -107,6 +107,7 @@
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/function_dispatcher.h>
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -243,7 +244,7 @@ namespace cheap = larecomp::rearview_cheap;
 static thread_local bool g_in_mirror_phase = false;   // between the begin of the mirror's phase and its end, on the phase loop's thread
 static std::atomic<uint64_t> g_city_radius_cuts{0};   // sectors whose hi detail radius the hook cut
 static cheap::Cadence g_cadence;
-static cheap::CarBudget g_car_budget;
+static cheap::RefreshClock g_refresh_clock;
 static uint32_t g_masked_renderer = 0;                // the renderer whose +364 lost the mirror's bit on a held frame (put back at the phase's end)
 static float g_last_eye[3] = {0.0f, 0.0f, 0.0f};
 static bool g_have_last_eye = false;
@@ -264,6 +265,7 @@ static CheapStats g_stats_logged;
 
 struct CheapSwitches {
     int every = 1;
+    int hz = 0;
     double far_m = 0.0;
     double fov_scale = 1.0;
     double lod_m = 0.0;
@@ -275,6 +277,7 @@ struct CheapSwitches {
 
 static CheapSwitches ReadCheapSwitches() {
     CheapSwitches s;
+    s.hz = larecomp::settings::rearview_refresh_hz.Get();
     s.every = larecomp::settings::rearview_every.Get();
     s.far_m = larecomp::settings::rearview_far.Get();
     s.fov_scale = larecomp::settings::rearview_fov_scale.Get();
@@ -287,11 +290,11 @@ static CheapSwitches ReadCheapSwitches() {
 // One line every 600 frames the mirror was up (and one when the switches change), so a run's log says what each option did: the cost chain reads the
 // host's "mirror: N draws/frame" line for the draws and this one for what the guest side decided. Cheap on the frames in between: a few compares.
 static void LogCheapState() {
-    static CheapSwitches last{-1, -1.0, -1.0, -1.0, -1, -1};
+    static CheapSwitches last{-1, -1, -1.0, -1.0, -1.0, -1, -1};
     const CheapSwitches now = ReadCheapSwitches();
     if (!(now == last)) {
         last = now;
-        LARECOMP_APP_INFO("[RearView] cheap options: every {}, far {:g} m, field of view x{:g}, city radius {:g} m, cars max {}, cars level {}{}", now.every, now.far_m,
+        LARECOMP_APP_INFO("[RearView] cheap options: every {} ({} Hz), far {:g} m, field of view x{:g}, city radius {:g} m, cars max {}, cars level {}{}", now.every, now.hz, now.far_m,
                           now.fov_scale, now.lod_m, now.cars_max, now.cars_lod, now.AnyOn() ? "" : " (all off)");
     }
     g_stats.city_radius_cuts = g_city_radius_cuts.load(std::memory_order_relaxed);
@@ -403,7 +406,8 @@ static void ApplyMirrorMembership(uint8_t* base, bool mirror_on, const shared::M
     static constexpr MirrorClient kCars{7, 0x12E183F3u, "cars"};
     static constexpr MirrorClient kTraffic{9, 0x00118002u, "traffic"};
 
-    SetClientMirrorPhase(base, renderer, kCars, mirror_on && shared::CarsInView(mode, larecomp::settings::rearview_cars.Get()));
+    SetClientMirrorPhase(base, renderer, kCars, mirror_on && (mode.shared || larecomp::settings::rearview_cars.Get()));
+    // CHECK: the close-traffic blackout must be isolated before this debug arm is enabled by default.
     SetClientMirrorPhase(base, renderer, kTraffic, mirror_on && larecomp::settings::rearview_traffic.Get());
 }
 
@@ -551,106 +555,138 @@ void Patch_RearViewCullBits(PPCRegister& r3) {
     if (g_in_mirror_prep) r3.u64 &= ~uint64_t(0x14000000u);
 }
 
-struct SavedVisibility {
-    uint32_t item = 0;
-    uint16_t word = 0;
-    bool lod_saved = false;  // rearview_cars_lod made this car coarser: the main view's level is put back with the visibility word
-    uint32_t lod = 0;
-};
-static SavedVisibility g_saved_visibility[32];
+// Vehicle layout and render client links match the census in car_model_walk.cpp.
+static constexpr uint32_t kPlayerVehicle = 0x8288DCF8u;
+static constexpr uint32_t kVehicleVtable = 0x82047B14u;
+static constexpr uint32_t kVehicleEntity = 20u;
+static constexpr uint32_t kEntityRenderPosition = 208u + 48u;
+static constexpr uint32_t kVehicleForcedLod = 5996u;
+static constexpr uint32_t kVehicleBodyLod = 6004u;
+static constexpr uint32_t kVehiclePartLod = 6008u;
+static constexpr size_t kRacerListLimit = 256;
 
-static void RestoreCarVisibility(uint8_t* base, uint32_t item) {
-    for (auto& s : g_saved_visibility) {
-        if (s.item != item) continue;
-        base[item + kCarVisibleWord]     = uint8_t(s.word >> 8);
-        base[item + kCarVisibleWord + 1] = uint8_t(s.word);
-        if (s.lod_saved) WriteGuestU32(base, item + kCarLodWord, s.lod);
-        s.item = 0;
-        s.lod_saved = false;
-        return;
-    }
+struct CarState {
+    uint32_t item;
+    uint16_t visible;
+    uint32_t forced;
+    uint32_t body;
+    uint32_t parts;
+};
+static std::array<CarState, kRacerListLimit> g_mirror_cars{};
+static size_t g_mirror_car_count = 0;
+static bool g_cars_selected = false;
+
+static uint16_t CarVisibility(const uint8_t* base, uint32_t item) {
+    if (!base) return 0;
+    return uint16_t((uint32_t(base[item + kCarVisibleWord]) << 8) | base[item + kCarVisibleWord + 1]);
 }
 
-// `keep_lod`: rearview_cars_lod is on, so the car's model level is kept too (before the nested visibility run below, which works the level out again for the
-// mirror's camera; with the option off that level is left as it always was).
-static void SaveCarVisibility(uint8_t* base, uint32_t item, bool keep_lod) {
-    SavedVisibility* slot = nullptr;
-    for (auto& s : g_saved_visibility) {
-        if (s.item == item) return;  // already holding the main view's value
-        if (!slot && s.item == 0) slot = &s;
+static void RestoreCar(uint8_t* base, const CarState& car) {
+    if (!base || !PlausibleGuestPtr(car.item)) return;
+    base[car.item + kCarVisibleWord] = uint8_t(car.visible >> 8);
+    base[car.item + kCarVisibleWord + 1] = uint8_t(car.visible);
+    WriteGuestU32(base, car.item + kVehicleForcedLod, car.forced);
+    WriteGuestU32(base, car.item + kVehicleBodyLod, car.body);
+    WriteGuestU32(base, car.item + kVehiclePartLod, car.parts);
+}
+
+static void RestoreMirrorCars(uint8_t* base) {
+    for (size_t i = 0; i < g_mirror_car_count; ++i) RestoreCar(base, g_mirror_cars[i]);
+    g_mirror_car_count = 0;
+    g_cars_selected = false;
+}
+
+// Called from the first racer draw, when the rear camera is current. Rank
+// the renderer's list once and test visibility in order until the budget fills.
+// CHECK: the live mirror phase visits the same slot-7 items on both backends.
+static void SelectMirrorCars(uint8_t* base, PPCFunc* prep, bool shared_view) {
+    if (!base || !prep) return;
+    g_cars_selected = true;
+    const uint32_t renderer = ReadGuestU32(base, kRendererPtr);
+    if (!PlausibleGuestPtr(renderer)) return;
+    const uint32_t client = ReadGuestU32(base, renderer + kRendererClients + 4u * 7u);
+    if (!PlausibleGuestPtr(client)) return;
+    const uint32_t player = ReadGuestU32(base, kPlayerVehicle);
+    if (!PlausibleGuestPtr(player)) return;
+    float eye[3]{};
+    if (!MainEye(base, renderer, eye)) return;
+
+    const double far_m = shared_view ? larecomp::settings::rearview_far.Get() : 0.0;
+    std::array<cheap::RankedCar, kRacerListLimit> cars;
+    size_t count = 0;
+    size_t visited = 0;
+    size_t types = 0;
+    for (uint32_t t = ReadGuestU32(base, client + 8); PlausibleGuestPtr(t) && types++ < 64; t = ReadGuestU32(base, t + 12)) {
+        for (uint32_t item = ReadGuestU32(base, t + 20); PlausibleGuestPtr(item) && visited++ < cars.size(); item = ReadGuestU32(base, item + 8)) {
+            if (item == player || ReadGuestU32(base, item) != kVehicleVtable) continue;
+            const uint32_t entity = ReadGuestU32(base, item + kVehicleEntity);
+            if (!PlausibleGuestPtr(entity)) continue;
+            float metres_squared = 0.0f;
+            for (uint32_t axis = 0; axis < 3; ++axis) {
+                const float delta = ReadGuestF32(base, entity + kEntityRenderPosition + 4u * axis) - eye[axis];
+                metres_squared += delta * delta;
+            }
+            if (cheap::InRange(metres_squared, far_m)) cars[count++] = {metres_squared, item};
+        }
     }
-    if (!slot) return;
-    slot->item = item;
-    slot->word = uint16_t((uint32_t(base[item + kCarVisibleWord]) << 8) | base[item + kCarVisibleWord + 1]);
-    slot->lod_saved = false;
-    if (keep_lod) {
-        slot->lod = ReadGuestU32(base, item + kCarLodWord);
-        slot->lod_saved = true;
+    std::sort(cars.begin(), cars.begin() + count);
+
+    const int cap = shared_view ? larecomp::settings::rearview_cars_max.Get() : 0;
+    const int lod = shared_view ? larecomp::settings::rearview_cars_lod.Get() : 0;
+    for (size_t i = 0; i < count && (cap == 0 || g_mirror_car_count < size_t(cap)); ++i) {
+        const uint32_t item = cars[i].item;
+        if (i > 0 && cars[i - 1].item == item) continue;
+        const CarState saved{item, CarVisibility(base, item), ReadGuestU32(base, item + kVehicleForcedLod),
+                            ReadGuestU32(base, item + kVehicleBodyLod), ReadGuestU32(base, item + kVehiclePartLod)};
+        if (lod > 0) {
+            const int forced = int(int32_t(saved.forced));
+            WriteGuestU32(base, item + kVehicleForcedLod, uint32_t(std::max(lod, std::min(forced, cheap::kLodCoarsest))));
+        }
+        g_in_mirror_prep = true;
+        larecomp::guest::Call<uint32_t>(prep, item);
+        g_in_mirror_prep = false;
+        if (CarVisibility(base, item) == 0) {
+            RestoreCar(base, saved);
+            continue;
+        }
+
+        // Some parts have a separate forced LOD. Keep that override out of the
+        // shared view and put both chosen levels back as soon as the phase ends.
+        const int parts = int(int32_t(ReadGuestU32(base, item + kVehiclePartLod)));
+        const int coarse_parts = cheap::CarLevel(parts, lod);
+        if (parts != coarse_parts) WriteGuestU32(base, item + kVehiclePartLod, uint32_t(coarse_parts));
+        if (ReadGuestU32(base, item + kVehicleBodyLod) != saved.body || parts != coarse_parts) ++g_stats.cars_coarser;
+        g_mirror_cars[g_mirror_car_count++] = saved;
     }
+    g_stats.cars_seen += count;
+    g_stats.cars_turned_away += count - g_mirror_car_count;
 }
 
 void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
-    // The debug car model walk (gpu/car_model_walk.h, mcla_gpu_car_model_walk) learns which vehicles the game has from every call of Vehicle::Draw, in any
-    // phase and for any vehicle, culled or not: the entry itself carries Hook_SquashSelectVehicle (one hook per address), and this is the next instruction.
-    // One relaxed atomic load while the setting is off; reads and writes no guest memory.
-    mcla::gpu::car_model_walk::tap::NoteVehicle(static_cast<uint32_t>(r3.u64), static_cast<uint32_t>(r4.u64));
+    const uint32_t item = r3.u32;
+    const uint32_t phase = r4.u32;
+    mcla::gpu::car_model_walk::tap::NoteVehicle(item, phase);
+    if (phase != kMirrorPhase || !PlausibleGuestPtr(item)) return;
 
     auto* base = larecomp::guest::Membase();
     if (!base) return;
-    const uint32_t item = static_cast<uint32_t>(r3.u64);
-    const uint32_t phase = static_cast<uint32_t>(r4.u64);
-
-    if (phase != kMirrorPhase) {
-        if (PlausibleGuestPtr(item)) RestoreCarVisibility(base, item);
-        return;
+    if (!g_cars_selected) {
+        auto* rt = REX_RUNTIME();
+        if (rt) SelectMirrorCars(base, rt->FindFunction(kCarVisibilityPrep).value_or(nullptr), SharedViewOn());
     }
-    // The racers: the player's setting (CARS IN REAR VIEW), or the side mirrors' view while the host asks for it (shared::CarsInView: a side mirror that never shows the car alongside is not a mirror).
-    if (!shared::CarsInView(CurrentMode(), larecomp::settings::rearview_cars.Get()) || !PlausibleGuestPtr(item)) return;
-
-    auto* rt = REX_RUNTIME();
-    PPCFunc* prep = rt->FindFunction(kCarVisibilityPrep).value_or(nullptr);
-    if (!prep) return;
-    const int level_at_least = larecomp::settings::rearview_cars_lod.Get();
-    SaveCarVisibility(base, item, level_at_least > 0);
-    g_in_mirror_prep = true;
-    larecomp::guest::Call<uint32_t>(prep, item);
-    g_in_mirror_prep = false;
-
-    const uint16_t visible =
-        uint16_t((uint32_t(base[item + kCarVisibleWord]) << 8) | base[item + kCarVisibleWord + 1]);
-    if (visible) {
-        ++g_stats.cars_seen;
-        // The racers the mirror may draw (rearview_cars_max: the first N the camera sees, in the game's list order) and the coarsest model they may
-        // have (rearview_cars_lod: at least that level, never finer). A car turned away keeps the phase 0x1000000, for which the car draw draws nothing.
-        if (g_car_budget.Allow(larecomp::settings::rearview_cars_max.Get())) {
-            r4.u64 = 0x10000;
-            ++g_stats.cars_drawn;
-            if (level_at_least > 0) {
-                const int chosen = int(int32_t(ReadGuestU32(base, item + kCarLodWord)));
-                const int level = cheap::CarLevel(chosen, level_at_least);
-                if (level != chosen) {
-                    WriteGuestU32(base, item + kCarLodWord, uint32_t(level));
-                    ++g_stats.cars_coarser;
-                }
-            }
-        } else {
-            ++g_stats.cars_turned_away;
-        }
+    for (size_t i = 0; i < g_mirror_car_count; ++i) {
+        if (g_mirror_cars[i].item != item) continue;
+        r4.u64 = 0x10000;
+        ++g_stats.cars_drawn;
+        break;
     }
-
-    static std::atomic<uint64_t> calls{0};
-    const uint64_t n = calls.fetch_add(1, std::memory_order_relaxed);
-    if (larecomp::settings::rearview_diag.Get() && n % 23 == 0)
-        LARECOMP_APP_INFO("[RearView] car 0x{:08X}: visible in the mirror={}", item, visible);
 }
 
 // Hooked at the entry of the mirror phase's begin (sub_82308178, called from the phase
 // callback sub_82306500 for 0x1000000). Counts what each client holds at that moment:
 // client+8 is its list of render types and each type's +20 its list of instances.
 void Patch_RearViewDiag() {
-    // The begin of the mirror's phase, whatever the diag setting says: the racers' budget starts again and the city's radius cut (rearview_lod_distance) is in
-    // force until Patch_RearViewPhaseEnd.
-    g_car_budget.Reset();
+    // Debug city radius cuts apply until the phase ends.
     g_in_mirror_phase = true;
     // The caller has tested the renderer's mirror bit. The begin clear and end sky use the consumer byte even if r21 masks out the client loop.
 #if defined(LARECOMP_HAS_GPU)
@@ -708,7 +744,7 @@ void Patch_RearViewCamera(PPCRegister& f1, PPCRegister& f2, PPCRegister& f4) {
     const double fov_scale = larecomp::settings::rearview_fov_scale.Get();
     const double far_m = larecomp::settings::rearview_far.Get();
     const bool shared_on = SharedViewOn();
-    if (!shared_on && !(fov_scale < 1.0) && !(far_m > 0.0)) return;
+    if (!shared_on) return;
     ++g_stats.camera_builds;
     const float fov_was = float(f1.f64);
     const float aspect_was = float(f2.f64);
@@ -782,7 +818,7 @@ void Patch_RearViewCityLod(PPCRegister& f1) {
 // Hooked at 0x822E6634 in the renderer's phase loop (sub_822E6408), the `cmpwi cr6,r10,0` right after `and r21,r17,r11` (r17 = [r27+364], the phases the renderer
 // may run; r21 = r17 & the requested ones; r27 = the renderer). Once a frame, before the first phase. With rearview_every above 1 the frames in between the mirror's
 // turns are held: the mirror's bit leaves r17 and r21 (the clients' test) and renderer+364 (the begin steps' test, sub_82306500 for 0x10000 and 0x1000000), so no
-// part of the phase runs; Patch_RearViewPhaseEnd puts +364 back. A camera cut (the eye moved more than 20 m) draws the mirror at once.
+// part of the phase runs; Patch_RearViewPhaseEnd puts +364 back. A rig change, camera cut or newly visible reader redraws immediately.
 //
 // Without the guest half this does NOT keep the picture: the stamp's pixels are the main view's on a held frame (the host has no copy to put back yet), so the switch measures
 // the saving, it does not show the finished feature. With the guest half on the host keeps its last view image and both readers go on drawing from it, and the rate is the larger of
@@ -792,7 +828,8 @@ static void RearViewCadenceStep(PPCRegister& r17, PPCRegister& r21, PPCRegister&
     g_in_mirror_phase = false;  // a new frame: the city's radius cut never carries over
     g_frame_held = false;
     auto* base = larecomp::guest::Membase();
-    if (!base) return;
+    if (!base || !PlausibleGuestPtr(r27.u32)) return;
+    RestoreMirrorCars(base);  // also recovers a phase whose end hook was missed
     const uint32_t renderer = r27.u32;
     if (g_masked_renderer != 0) {  // the end hook did not run last frame: put the bit back before anything reads it
         const uint32_t now = ReadGuestU32(base, g_masked_renderer + kRendererPhaseMask);
@@ -801,23 +838,36 @@ static void RearViewCadenceStep(PPCRegister& r17, PPCRegister& r21, PPCRegister&
     }
     // The mirror is up when the HUD mirror is on or, with the guest half, the side mirrors ask for the view (a held frame is the view's too: the host keeps its image).
     const shared::Mode mode = CurrentMode();
-    if ((r17.u32 & kMirrorPhase) == 0 || !shared::PhaseWanted(mode) || !MirrorConsumerActive(base)) {
+    const auto request = vlink::CurrentRequest();
+    if (!mode.shared || !request.redirect || (r21.u32 & kMirrorPhase) == 0 || !shared::PhaseWanted(mode) || !MirrorConsumerActive(base)) {
         g_cadence.Reset();
+        g_refresh_clock.Reset();
+        g_have_last_eye = false;
         return;
     }
     float eye[3] = {0.0f, 0.0f, 0.0f};
     const bool have_eye = MainEye(base, renderer, eye);
-    const bool cut = !have_eye || cheap::EyeJumped(g_last_eye, eye, g_have_last_eye);
+    static int last_rig = -1;
+    static bool was_stamp_wanted = false;
+    static uint8_t previous_side_mask = 0;
+    const int rig = CurrentCameraRig();
+    const bool stamp_wanted = HudStampWanted();
+    const bool cut = rig != last_rig || (stamp_wanted && !was_stamp_wanted) ||
+                     ((request.side_mask & ~previous_side_mask) != 0) ||
+                     (have_eye && cheap::EyeJumped(g_last_eye, eye, g_have_last_eye));
+    last_rig = rig;
+    was_stamp_wanted = stamp_wanted;
+    previous_side_mask = request.side_mask;
     if (have_eye) {
         for (int i = 0; i < 3; ++i) g_last_eye[i] = eye[i];
     }
     g_have_last_eye = have_eye;
 
-    const uint64_t cut_before = g_cadence.cut_draws;
-    // The rate: the debug setting's, and with the guest half the host's (the class's cadence), whichever is larger.
-    const bool draw = g_cadence.Decide(shared::EffectiveEvery(larecomp::settings::rearview_every.Get(), mode.shared ? vlink::CurrentRequest() : vlink::Request{}, mode.shared), cut);
+    const int hz = larecomp::settings::rearview_refresh_hz.Get();
+    const bool draw = hz > 0 ? g_refresh_clock.Draw(cheap::RefreshClock::Clock::now(), hz, cut)
+                             : g_cadence.Decide(larecomp::settings::rearview_every.Get(), cut);
     ++g_stats.frames;
-    g_stats.cut_draws += g_cadence.cut_draws - cut_before;
+    if (draw && cut) ++g_stats.cut_draws;
     if (!draw) ++g_stats.held;
     if (mode.shared) {
         ++g_shared_stats.frames;
@@ -851,6 +901,7 @@ void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27)
 void Patch_RearViewPhaseEnd(PPCRegister& r30) {
     FinishEnvViewPhase(r30);
     if (r30.u32 != kMirrorPhase) return;
+    RestoreMirrorCars(larecomp::guest::Membase());
     g_in_mirror_phase = false;
     SendMirrorMarker(g_markers.OnEnd());  // the END of the draws the host redirects (one for every BEGIN sent; none for a phase that did not run)
     if (g_markers.OnHeldFrame(SharedViewOn(), g_frame_held)) {  // a held frame: the phase was not run, the host stamps the picture it kept: BEGIN and END back to back, where the phase would have ended

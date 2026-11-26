@@ -539,18 +539,15 @@ enum class RtEffect : uint8_t {
   kRtShadows,      // mcla_gpu_rt_shadows        auto, off, high, ultra (city_rt_rules.h, feat/city-rt-m1: the sun's shadows from the city's triangles)
   kRtReflections,  // mcla_gpu_rt_reflections    auto, off, high, ultra (CITY-RT-M2 R1 and R8: the city in the car's reflections; the pause row RT CITY REFLECTIONS, city_refl_setting.h)
   kRtGi,           // mcla_gpu_rt_gi             auto, off, high, ultra (CITY-RT-M3, not built yet: the probe field's bounce light)
-  kCarMirrorRt,    // mcla_gpu_car_mirror_rt     auto, off, on          (car_mirror_rt.h, car_mirror_setting.h: the side mirrors' real view; the pause row RT SIDE MIRRORS)
-  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion; the seventh effect, after the side mirrors)
+  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion)
 };
-inline constexpr int kRtEffectCount = 7;
+inline constexpr int kRtEffectCount = 6;
 
 struct RtEffectInfo {
   std::string_view cvar;
   std::string_view none, weak, strong;  // what `auto` stands for at each rung
 };
 
-// The cells are READ FROM THE PRESET TABLE (gfx_preset.h, GFX-PRESETS): the none rung is ENHANCED's cell (the ray traced rows are off there), the weak rung ENHANCED RT's and the strong
-// rung ENHANCED RT ULTRA's. A card's rung and the preset it is recommended (RecommendedPreset below) are one rule.
 // Legacy Auto for explicit RT selectors resolves to Off at every rung.
 // World AO's legacy Auto uses its raster class cell.
 inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
@@ -559,7 +556,6 @@ inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     {"mcla_gpu_rt_shadows", "off", "off", "off"},
     {"mcla_gpu_rt_reflections", "off", "off", "off"},
     {"mcla_gpu_rt_gi", "off", "off", "off"},
-    {"mcla_gpu_car_mirror_rt", "off", "off", "off"},
     {"mcla_gpu_ao", "", "", ""},
 };
 

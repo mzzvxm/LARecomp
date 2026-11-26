@@ -286,14 +286,14 @@ std::string PassTiming::TakeSummary() {
     // The resolve memory's labels among them, which compares
     // between runs however small they get, the host post's (the scene's anti-aliasing, FSR1) and the
     // occlusion's and the bounce light test's passes (ao.cpp: "ao ..." and "ssgi ..."), the car's ray tracing
-    // ("car rt build", "car rt refl", "car rt ao": a few tenths of a ms that the tests compare between runs), the ray traced side mirrors' ("car mirror rt", "car mirror apply": a few hundredths), the headlight shadow maps' ("headlight shadows") and the ray traced bounce light's
+    // ("car rt build", "car rt refl", "car rt ao": a few tenths of a ms that the tests compare between runs), the headlight shadow maps' ("headlight shadows") and the ray traced bounce light's
     // probe field ("gi reset", "gi weights", "gi lookup", "rt gi trace", "rt gi blend": the cost runs compare them).
     std::string memory;
     for (size_t i = kReportedLabels; i < order.size(); ++i) {
       const std::string& name = names_[order[i]];
       if (name.starts_with("resolve memory") || name.starts_with("aa ") ||
           name.starts_with("fsr1 ") || name.starts_with("ao ") || name.starts_with("ssgi ") ||
-          name.starts_with("car rt") || name.starts_with("car mirror") || name.starts_with("headlight shadow") || name.starts_with("rt gi") || name.starts_with("gi ") ||
+          name.starts_with("car rt") || name.starts_with("mirror ") || name.starts_with("headlight shadow") || name.starts_with("rt gi") || name.starts_with("gi ") ||
           name.starts_with("ssr ") || name.starts_with("planar ") || name.starts_with("ray regen ") ||
           name == "road reflection cars" || name == "capture road reflection" || name.starts_with("env map ") ||
           name.starts_with("520 4x k_2_10_10_10_FLOAT@416") ||

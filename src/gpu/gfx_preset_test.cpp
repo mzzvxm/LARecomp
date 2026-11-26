@@ -89,8 +89,7 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_car_selfrefl", "off|on"},
     {"mcla_gpu_car_selfrefl_rt", "off|on"},
     {"mcla_gpu_rt_reflections", "off|on"},
-    {"mcla_gpu_side_mirrors", "off|high|ultra"},
-    {"mcla_gpu_car_mirror_rt", "off|on"},
+    {"mcla_gpu_side_mirrors", "off|on"},
     {"mcla_gpu_ssr", "off|high|ultra"},
     {"mcla_gpu_ssr_rt", "off|high|ultra"},
     {"mcla_gpu_rt_lights", "off|on"},
@@ -150,7 +149,7 @@ void CheckTable() {
     Check(gp::FindRow(name) < 0, std::string(name) + ": a DISPLAY or UPSCALING setting has no row");
   }
 
-  Check(gp::kRowCount == 38, "all 38 native effects have preset cells");
+  Check(gp::kRowCount == 37, "all 37 native effects have preset cells");
   Check(gp::kExemptCount == 1, "the Xenia anisotropy row is outside native preset coverage");
   for (const gp::Note& e : gp::kExempt) {
     Check(gp::FindRow(e.cvar) < 0, std::string(e.cvar) + ": an exempt row is not in the table");
@@ -193,7 +192,6 @@ const Want kVanilla[] = {
     {"mcla_gpu_car_selfrefl_rt", "off"},
     {"mcla_gpu_rt_reflections", "off"},
     {"mcla_gpu_side_mirrors", "off"},
-    {"mcla_gpu_car_mirror_rt", "off"},
     {"mcla_gpu_ssr", "off"},
     {"mcla_gpu_ssr_rt", "off"},
     {"mcla_gpu_rt_lights", "off"},
@@ -246,7 +244,6 @@ const OldEffect kOldEffects[] = {
     {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "off"},  // the one class cell that is not read from the table (gpu_class.h)
     {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off"},  // the legacy class table keeps SSR off
     {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on"},
-    {Effect::kSideMirrors, "mcla_gpu_side_mirrors", "off", "high", "ultra"},
 };
 
 struct OldRtEffect {
@@ -263,7 +260,6 @@ const OldRtEffect kOldRt[] = {
     {RtEffect::kRtShadows, "mcla_gpu_rt_shadows", "off", "high", "high"},
     {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "on", "on"},
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
-    {RtEffect::kCarMirrorRt, "mcla_gpu_car_mirror_rt", "off", "off", "on"},
     {RtEffect::kRtAo, "mcla_gpu_ao", "", "", "rt"},
 };
 
@@ -410,7 +406,7 @@ const Top kTops[] = {
     {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_env_resolution", "on"},
     {"mcla_gpu_car_selfrefl", "on"},
-    {"mcla_gpu_side_mirrors", "ultra"},
+    {"mcla_gpu_side_mirrors", "on"},
     {"mcla_gpu_ssr", "ultra"},
     {"lod_city_scale", "2"},
 };
@@ -664,7 +660,7 @@ void CheckScope() {
   for (const gp::Row& row : gp::kRows) ++per_page[static_cast<int>(row.page)];
   Check(per_page[0] == 3, "Image Quality has three preset rows");
   Check(per_page[1] == 20, "Lighting and Shadows has twenty preset rows");
-  Check(per_page[2] == 9, "Reflections has nine preset rows");
+  Check(per_page[2] == 8, "Reflections has eight preset rows");
   Check(per_page[3] == 6, "World Detail has six preset rows");
 }
 

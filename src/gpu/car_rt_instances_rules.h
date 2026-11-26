@@ -437,8 +437,6 @@ struct MeshRef {
   // The mesh's texture coordinates (a half2 a vertex in the shared buffer from `first_vertex`) and their density (car_rt_material_rules.h MeshUvDensity); has_uv false: none.
   bool has_uv = false;
   float uv_density = 0.0f;
-  // The mesh as a candidate for a side mirror's glass (car_mirror_patch_rules.h): its patch numbers, made when the mesh was read. valid false: no (a big mesh is never measured).
-  car_mirror::PatchStats patch;
 };
 
 // A box in the frame's view space (x right, y up, z forward: the occlusion's own). `valid` is false until a point has been added.
@@ -586,10 +584,6 @@ struct List {
   uint32_t other_paint_instances = 0;
   uint32_t traffic_paint_instances = 0;  // ... of them the traffic paint's (RT-TRAFFIC-REFL); the rest are the customisable paint's
   uint32_t player_row = 0;
-  // SIDE MIRRORS (car_mirror_patch_rules.h, car_mirror_rt_rules.h): the pair of mirror glasses found among the player's instances this frame (count 0: none; `item` indexes `items`) and each
-  // one's box in the frame's view space. The two items' rows carry kFlagMirror; the rows of the player's see-through glass carry kFlagSeeThrough.
-  car_mirror::Pick mirror;
-  ViewBox mirror_box[2];
   ListStats stats;
   void Clear() {
     items.clear();
@@ -603,9 +597,6 @@ struct List {
     other_paint_instances = 0;
     traffic_paint_instances = 0;
     player_row = 0;
-    mirror = car_mirror::Pick{};
-    mirror_box[0] = ViewBox{};
-    mirror_box[1] = ViewBox{};
     stats = ListStats{};
   }
 };

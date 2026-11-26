@@ -35,7 +35,6 @@
 #include "local_lights.h"
 #include "rt_world_frame.h"
 #include "local_shadow.h"
-#include "car_mirror_rt.h"
 #include "mirror_glass.h"
 #include "car_rt_scene.h"
 #include "car_selfrefl.h"
@@ -807,7 +806,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   draw_sampler_.NextFrame();  // the statistic's timed draws move on by one each frame (render_cpu.h)
   edram_->BeginFrame(list, slot);
   if (mirror_view_) {
-    mirror_view_->BeginFrame(car_mirror_ && car_mirror_->active());  // reads mcla_gpu_mirror_view, publishes the request (where the ray traced side mirrors win: no side-only phase), closes a phase the last frame left open, gives the view's images back after their idle time (mirror_view.h)
+    mirror_view_->BeginFrame();
   }
   if (mirror_overlay_) {
     mirror_overlay_->BeginFrame();  // reads mcla_gpu_mirror_overlay and the assumed distance; the census line (mirror_overlay.h)
@@ -903,9 +902,6 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   if (vol_) {
     vol_->BeginFrame(pause_fx);
-  }
-  if (car_mirror_) {
-    car_mirror_->BeginFrame();  // the side mirrors' setting; asks for the car's structures where the pass is wanted (car_mirror_rt.h)
   }
   if (mirror_glass_) {
     mirror_glass_->BeginFrame();  // the side mirrors' glass finder (mirror_glass.h): reads its setting and asks CarFrame for the next frame's draws; BEFORE CarFrame::BeginFrame, which starts a requested frame
@@ -1800,8 +1796,11 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     memo.draw_scale = target_scale;
   }
   const Scale scale = target_scale.scale;
-  const uint32_t host_samples = target_scale.host_samples;
-  inputs.msaa_guest_samples = target_scale.msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
+  const bool mirror_redirect = mirror_view_ && mirror_view_->redirecting();
+  // CHECK: the single-sample mirror draw and clear must agree on both APIs
+  // when the main target uses MSAA.
+  const uint32_t host_samples = mirror_redirect ? 1u : target_scale.host_samples;
+  inputs.msaa_guest_samples = mirror_redirect ? 0u : target_scale.msaa_guest;  // Pipelines::Get remembers the pipeline for a level change
   d.scale = scale;
   d.scene = target_scale.scene;
   // The pipeline rasterizes at the targets' host samples (M6d.2).
@@ -1832,7 +1831,6 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // The G-buffer (gbuffer.h): a main view draw in the frame's window whose pixel shader has the variant takes it and carries the sidecar as a second colour
   // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
   // A draw of the rear view mirror's phase that redirects (mirror_view.h) goes into a framebuffer of one colour and a depth: no planes, and none of the second draws below.
-  const bool mirror_redirect = mirror_view_ && mirror_view_->redirecting();
   if (gbuffer_ && !gbuffer_->active() && !mirror_redirect && gbuffer_->tracks_pause_fx() && d.key.color_count != 0) {
     const uint32_t samples = temporal::MainColorSamples(ColorEdramKey(s, 0));
     if (samples != 0) gbuffer_->NoteDraw(gbuffer::Why::kWindowClosed, r.ps_identity, samples);
@@ -3823,7 +3821,7 @@ void Scene::ClearMirrorView(plume::RenderCommandList* list, uint32_t flags, cons
     ++window_.clears_failed;
     return;
   }
-  const MirrorView::Target target = mirror_view_->Use(list, colour->format, depth->format, colour->host_samples);
+  const MirrorView::Target target = mirror_view_->Use(list, colour->format, depth->format, 1u);
   if (!target.framebuffer) {
     ++window_.clears_failed;
     return;
@@ -3920,7 +3918,6 @@ bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandL
   in.frame = car_frame_ ? &car_frame_->Current() : nullptr;
   in.glass = mirror_glass_;
   in.view = mirror_view_;
-  in.rt_mirrors_on = car_mirror_ && car_mirror_->active();  // where the ray traced side mirrors are on they win (mirror_overlay_rules.h Decide)
   in.play_view = true;
   if (temporal_) {
     temporal_->FrameJitter(in.jitter);  // the sub-pixel offset the frame's gated draws were moved by: the overlay lands on the glass the game drew
@@ -4481,12 +4478,6 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // CITY-RT G6: the bounce light's per-pixel pass's hit distance image (only in a frame it ran raw; mcla_gpu_dlss_rr_rt_gi 2 leaves the hit distance out).
     temporal_->NoteRrBounceHit(gi_apply_ && rr::BounceHitWanted(int(larecomp::settings::mcla_gpu_dlss_rr_rt_gi.Get())) ? gi_apply_->RawHitImage() : nullptr);
   }
-  if (car_mirror_ && rt_resolve_wanted && car_rt_->TriggeredThisResolve()) {
-    // The side mirrors (car_mirror_rt.h): at the same trigger, after the car structures' step built the car's top level and the self-reflection's own pass is recorded; the traced mirror image is
-    // blended over the game's mirror glass in the main colour (its own pass, pipelines and target: the reset below forgets them too).
-    const bool car_mirror = car_mirror_->OnResolve(summary, list, car_refl_ ? car_refl_->exp_bias() : car_selfrefl::kMainTargetExpBias);
-    order_.Note(frame_order::Step::kCarMirror, car_mirror);
-  }
   if (gbuffer_ && gbuffer_->active()) {
     // The debug view replaces what the effects above drew with a plane of the G-buffer (mcla_gpu_gbuffer_view).
     gbuffer_->DrawView(summary, list);
@@ -4797,9 +4788,6 @@ void Scene::OnPresent() {
   }
   if (car_rt_) {
     car_rt_->OnPresent();  // the frame boundary: the top level is gone, the next request counts
-  }
-  if (car_mirror_) {
-    car_mirror_->OnPresent();  // the frame boundary: an image of a pass that showed nothing for a while goes back
   }
   {
     // The frame's passes at the trigger and the end-of-scene copy, held to the table in frame_order.h (LIGHT-UNIFY U9): the first frame of each set of passes that ran is logged with the order they
