@@ -92,7 +92,9 @@
 
 #include "settings/larecomp_settings.h"
 #include <rex/xenos/format.h>
+#include <rex/logging/log_category.h>
 
+#include "cascade_fit.h"
 #include "edram.h"
 #include "live_text.h"
 #include "side_views.h"
@@ -120,6 +122,13 @@ bool Matches(const EdramKey& key, uint32_t size_bits) {
   return size_bits == 0 || side_views::DeclaredSize(size_bits, kDeclared, kDeclared);
 }
 
+struct CascadeDensity {
+  double far_sum = 0, x_sum = 0, y_sum = 0;
+  unsigned count = 0;
+};
+thread_local std::array<CascadeDensity, 4> cascade_density{};
+thread_local uint32_t density_texels = 0;
+
 std::string Setting() {
   static LiveText text("mcla_gpu_shadow_resolution");  // the render thread does not read the cvar's string (live_text.h)
   return text.Get();
@@ -132,6 +141,26 @@ uint32_t HostSamples(Scale scale, uint32_t guest_samples) {
 }
 
 }  // namespace
+
+void BeginCascadeDensity(bool census, uint32_t texels) {
+  const uint32_t next = census ? texels : 0;
+  if (next != density_texels) cascade_density = {};
+  density_texels = next;
+}
+
+void NoteCascadeDensity(unsigned index, float fitted_far, double half_width, double half_height) {
+  if (!density_texels || index >= cascade_density.size()) return;
+  auto& density = cascade_density[index];
+  density.far_sum += fitted_far;
+  density.x_sum += 200.0 * half_width / density_texels;
+  density.y_sum += 200.0 * half_height / density_texels;
+  if (++density.count == 120) {
+    REXLOG_INFO("[shadow fit] cascade {} over {} fits: Far {:.2f} m, {:.2f} x {:.2f} cm per texel ({} texels)",
+                index + 1, density.count, density.far_sum / density.count,
+                density.x_sum / density.count, density.y_sum / density.count, density_texels);
+    density = {};
+  }
+}
 
 const SideViewRule kShadowRule = {
     .view = SideView::kShadow,

@@ -148,6 +148,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/cascade_schedule.cpp
+    src/mc_engine/hooks/cascade_fit.cpp
     src/mc_engine/hooks/guest_timing.cpp
     src/mc_engine/hooks/frame_timing.cpp
     src/mc_engine/hooks/frame_pacing.cpp

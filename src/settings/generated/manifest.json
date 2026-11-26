@@ -3230,6 +3230,15 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Reuse the car shadow map while the caster and sun stay within their update limits.\"",
+   "traits": ["rex::kDebugOnly"],
+   "comments": [],
+   "pp_depth": 0
+  },
+ "mcla_gpu_shadow_visible_far": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Fit enhanced sun cascade distances to recent visible depth. Live.\"",
   "traits": ["rex::kDebugOnly"],
   "comments": [],
   "pp_depth": 0
@@ -3239,6 +3248,15 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Size local shadow tiles by distance and reuse stable distant views.\"",
+   "traits": ["rex::kDebugOnly"],
+   "comments": [],
+   "pp_depth": 0
+  },
+ "mcla_gpu_shadow_stable_fit": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Align enhanced sun cascades to the world and snap them to shadow texels. Live.\"",
   "traits": ["rex::kDebugOnly"],
   "comments": [],
   "pp_depth": 0

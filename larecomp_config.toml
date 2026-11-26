@@ -25686,6 +25686,33 @@ address = 0x82311AF4
 name = "Patch_CascadeCollectorUpload"
 registers = []
 
+# Fit the cone with this tile's FarSlice, and restore it once the guest has
+# produced the corners. Keep the guest's viewport, ortho and collector path.
+[[midasm_hook]]
+address = 0x825F5AE8
+name = "Patch_CascadeConeBegin"
+registers = ["r3", "r4", "r7"]
+
+[[midasm_hook]]
+address = 0x825F532C
+name = "Patch_CascadeConeReady"
+registers = ["r1", "r29", "r31"]
+
+[[midasm_hook]]
+address = 0x825F5634
+name = "Patch_CascadeBox"
+registers = ["f6", "f7", "f8", "f9", "f10", "f11"]
+
+[[midasm_hook]]
+address = 0x825F5834
+name = "Patch_CascadeDensity"
+registers = ["f2", "f4"]
+
+[[midasm_hook]]
+address = 0x82312C50
+name = "Patch_CascadeCullMargin"
+registers = ["r20"]
+
 # Online: gate de compatibilidade de conteúdo (DLC) da sessão.
 #
 # sub_8238B7E0 (caminho de join/host) reconstrói uma máscara de 8 bits a partir

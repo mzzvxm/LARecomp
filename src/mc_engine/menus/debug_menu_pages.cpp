@@ -223,6 +223,8 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgGuestShadow", "mcla_fix_guest_shadow_work", "TRAFFIC SHADOW WORK: ")),
     NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
     NativeOnly(Bool("PM_RxDbgGiFieldSchedule", "mcla_gpu_rt_gi_field_schedule", "RT BOUNCE FIELD SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgShadowVisibleFar", "mcla_gpu_shadow_visible_far", "SUN CASCADE VISIBLE FAR: ")),
+    NativeOnly(Bool("PM_RxDbgShadowStableFit", "mcla_gpu_shadow_stable_fit", "SUN CASCADE STABLE FIT: ")),
     NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
     NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
     NativeOnly(Bool("PM_RxDbgVolAmortize", "mcla_gpu_vol_amortize", "REUSE VOLUME SAMPLES: ")),

@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <chrono>
 
+#include "gpu/cascade_fit.h"
 #include "gpu/cascade_schedule.h"
 #include "gpu/cycles.h"
 #include "gpu/side_views.h"
@@ -54,8 +55,10 @@ struct State {
   uint32_t manager = 0;
   uint32_t renderer = 0;
   uint32_t detail = 0;
+  uint32_t scale = 0;
   uint8_t held = 0;
   bool enabled = false;
+  bool fit_wanted = false;
   unsigned samples = 0;
   unsigned drive_samples = 0;
   double travel = 0, yaw = 0, max_travel = 0, max_yaw = 0;
@@ -78,7 +81,8 @@ cs::View ReadView(const uint8_t* base, uint32_t manager, uint32_t camera, uint32
   view.sun = ReadVec(base, basis + 32);
   view.fit = {ReadGuestF32(base, manager + 160), ReadGuestF32(base, manager + 164),
               ReadGuestF32(base, manager + 172), ReadGuestF32(base, manager + 176),
-              ReadGuestF32(base, viewport + 696)};
+              ReadGuestF32(base, viewport + 696), ReadGuestF32(base, viewport + 700),
+              ReadGuestF32(base, viewport + 672), ReadGuestF32(base, viewport + 676)};
   view.cut = cs::camera_cut.load(std::memory_order_relaxed);
   view.hour_jump = wc::HourJumps();
   view.weather = wc::Weather();
@@ -160,10 +164,13 @@ void Patch_CascadeFrame(PPCRegister& r21, PPCRegister& r27) {
   cs::capture_cascade = 0;
   cs::time_guest = daylight && larecomp::settings::mcla_gpu_shadow_ledger.Get();
   cs::time_draws = daylight && (cs::time_guest || larecomp::settings::mcla_gpu_pass_timing.Get());
+  const Scale scale = state.manager && detail_id ? ScaleOfLevel(side_views::LevelOf(SideView::kShadow)) : Scale{};
+  if (state.scale != scale.n) state.history = {};
+  state.scale = scale.n;
+  state.fit_wanted = cascade_fit::BeginFrame(state.manager, state.renderer, scale.Edge(640), cs::time_guest);
   bool enabled = daylight && state.manager && detail_id && larecomp::settings::mcla_gpu_shadow_schedule.Get();
   if (enabled) {
-    const auto expected = ScaleOfLevel(side_views::LevelOf(SideView::kShadow));
-    enabled = cs::atlas_ready_scale.load(std::memory_order_acquire) == expected.n;
+    enabled = cs::atlas_ready_scale.load(std::memory_order_acquire) == scale.n;
   }
   if (state.enabled && !enabled) state.history = {};
   state.enabled = enabled;
@@ -192,16 +199,17 @@ bool Patch_CascadeFit(PPCRegister& r3, PPCRegister& r4, PPCRegister& r5, PPCRegi
   if (r4.u32 >= 4) return false;
   cs::capture_cascade = cascade;
   if (cs::time_guest) ++state.counts[cascade - 1].fits;
-  if ((!state.enabled && !cs::time_guest) || (cascade < 3 && !cs::time_guest)) return false;
-
-  const auto* base = larecomp::guest::Membase();
+  if (!state.fit_wanted && !cs::time_guest && (!state.enabled || cascade < 3)) return false;
+  auto* base = larecomp::guest::Membase();
   if (!base || !state.manager || r3.u32 != state.manager) return false;
-  const cs::View view = ReadView(base, r3.u32, r5.u32, r6.u32);
+  cs::View view = ReadView(base, r3.u32, r5.u32, r6.u32);
   if (cs::time_guest && cascade == 1) NoteDrive(view);
-  if (cascade < 3) return false;
-
   const auto addresses = cs::ReadTileAddresses(state.manager, cascade,
       [base](uint32_t address) { return ReadGuestU32(base, address); });
+  if (state.fit_wanted) {
+    mcla::gpu::cascade_fit::PlanCascade(base, cascade, r5.u32, r6.u32, addresses, view);
+  }
+  if (cascade < 3 || (!state.enabled && !cs::time_guest)) return false;
   History& h = state.history[cascade - 1];
   cs::Reason reason = cs::Reason::kCold;
   if (state.enabled && addresses.Valid() && h.addresses == addresses) {
