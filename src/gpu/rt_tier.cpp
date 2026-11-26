@@ -21,8 +21,8 @@ constexpr int kNoOverride = -1;
 std::atomic<uint8_t> g_table_tier{static_cast<uint8_t>(RtTier::kNone)};  // what the tables (and the API) said
 std::atomic<bool> g_table_known{false};
 std::atomic<uint8_t> g_tier{static_cast<uint8_t>(RtTier::kNone)};  // the table's, after the benchmark
-std::atomic<bool> g_ready{false};                                  // InitializeRt has run
 std::atomic<bool> g_api_rt{false};
+std::atomic<bool> g_ready{false};                                  // InitializeRt has run
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;  // guards the strings and the key below
@@ -115,9 +115,9 @@ void InitializeRt(const plume::RenderDeviceDescription& description, const plume
   g_table_tier.store(static_cast<uint8_t>(verdict.tier), std::memory_order_relaxed);
   g_table_known.store(verdict.known, std::memory_order_relaxed);
   g_tier.store(static_cast<uint8_t>(verdict.tier), std::memory_order_relaxed);
-  g_api_rt.store(probe.api_rt, std::memory_order_relaxed);
 
   ApplyOverride(larecomp::settings::mcla_gpu_rt_tier.Get());
+  g_api_rt.store(probe.api_rt, std::memory_order_relaxed);
   g_ready.store(true, std::memory_order_release);
   // A change made while the game runs (the debug menu's F4 panel, the console) takes effect at once; a forced class changes the tier a test sees.
   static std::once_flag registered;
@@ -132,7 +132,7 @@ void InitializeRt(const plume::RenderDeviceDescription& description, const plume
 }
 
 void NoteRtBench(const rt_bench::Result& result) {
-  if (!g_ready.load(std::memory_order_acquire)) {
+  if (!g_ready.load(std::memory_order_acquire) || !g_api_rt.load(std::memory_order_relaxed)) {
     return;
   }
   const RtTier table = static_cast<RtTier>(g_table_tier.load(std::memory_order_relaxed));
@@ -163,15 +163,12 @@ std::string MachineRtReason(bool& benchmarked) {
 }
 
 RtTier CurrentRtTier() {
-  if (!g_ready.load(std::memory_order_acquire)) {
+  if (!g_ready.load(std::memory_order_acquire) || !g_api_rt.load(std::memory_order_relaxed)) {
     return RtTier::kNone;
   }
   const int forced = g_override.load(std::memory_order_relaxed);
   if (forced != kNoOverride) {
     return static_cast<RtTier>(forced);
-  }
-  if (ClassForced()) {
-    return TierForForcedClass(Current(), g_api_rt.load(std::memory_order_relaxed));
   }
   return static_cast<RtTier>(g_tier.load(std::memory_order_relaxed));
 }

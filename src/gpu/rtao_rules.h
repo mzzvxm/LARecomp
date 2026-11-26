@@ -27,11 +27,7 @@ struct Budget {
 };
 
 constexpr Budget BudgetFor(gpu_class::RtTier rung) {
-  switch (rung) {
-    case gpu_class::RtTier::kStrong: return {1, true, 0.50f, 32, true};
-    case gpu_class::RtTier::kWeak: return {1, false, 0.40f, 32, false};
-    default: return {};
-  }
+  return rung == gpu_class::RtTier::kNone ? Budget{} : Budget{1, true, 0.50f, 32, true};
 }
 
 constexpr Budget kSharedBudget = {1, false, 0.50f, 32, true};

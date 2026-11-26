@@ -17,7 +17,6 @@
 
 #include "gpu_class.h"
 #include "render_scale.h"
-#include "upscale_defaults.h"
 #include "upscale_modes.h"
 
 using namespace mcla::gpu::gpu_class;
@@ -54,55 +53,25 @@ void CheckNum(double got, double want, const std::string& what) {
 struct Row {
   Effect effect;
   const char* cvar;
-  const char* low;
-  const char* mid;
-  const char* high;
-  const char* label_low;  // the pause row's label for auto, per class
-  const char* label_mid;
-  const char* label_high;
+  const char* value;
 };
-
-// The table of GFX-UPGRADES-DESIGN.md section 9, in the order of the Effect enum.
-const Row kTable[] = {
-    {Effect::kShadowFilter, "mcla_gpu_shadow_filter", "game", "pcss", "pcss", "AUTO (GAME)",
-     "AUTO (PCSS)", "AUTO (PCSS)"},
-    {Effect::kShadowResolution, "mcla_gpu_shadow_resolution", "game", "high", "high", "AUTO (GAME)",
-     "AUTO (HIGH)", "AUTO (HIGH)"},
-    {Effect::kReflectionResolution, "mcla_gpu_reflection_resolution", "game", "high", "high",
-     "AUTO (GAME)", "AUTO (HIGH)", "AUTO (HIGH)"},
-    // The cells are the words of the settings, which are the words the player sees (nothing is called low: the contact shadows,
-    // the bounce light and the ambient occlusion are off / high / ultra).
-    {Effect::kContactShadows, "mcla_gpu_contact_shadows", "off", "high", "ultra", "AUTO (OFF)",
-     "AUTO (HIGH)", "AUTO (ULTRA)"},
-    {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "default", "default", "AUTO (OFF)",
-     "AUTO (DEFAULT)", "AUTO (DEFAULT)"},
-    // Bounce light: high on the High class only (about 0.75 ms at 4K on an RTX 5080), off on Mid and Low.
-    {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "high", "AUTO (OFF)", "AUTO (OFF)",
-     "AUTO (HIGH)"},
-    {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near", "AUTO (OFF)",
-     "AUTO (NEAR)", "AUTO (NEAR)"},
-    // The car self-reflections have one level, `on` (the older low and high cost the same: perf/out/FXCOST-B6.txt, owner 2026-11-14).
-    {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)",
-     "AUTO (ON)"},
-    // Ambient occlusion (AO-DESIGN.md section 5: ultra is about 3 ms at 1080p on a GTX 1050-class card,
-    // high about 1 ms; nothing on shared memory).
-    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "on", "on", "on", "AUTO (ON)", "AUTO (ON)", "AUTO (ON)"},
-    // The headlights have one level, `on`: the integrated class (Low) has none.
-    {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
-    // Light shadows (local_shadow.h; the headlights now, the street lamps later), the three level shape (owner 2026-11-20): medium on Mid (two maps of 512: one view for the player's car and one for the
-    // nearest other car), ultra on High (six of 1024: a view for each lamp of the player's car and the two nearest others), nothing on shared memory; high (the player's lamps, 512) is for the player to pick.
-    {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra", "AUTO (OFF)",
-     "AUTO (MEDIUM)", "AUTO (ULTRA)"},
-    // Volumetric light (VOLUMETRICS-SURVEY.md section 4.1): off on Low, medium on Mid, high on High (ultra is a deliberate pick).
-    {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high", "AUTO (OFF)", "AUTO (MEDIUM)",
-     "AUTO (HIGH)"},
-    // Ray traced sun shadows (CITY-RT M1, city_rt_rules.h): high on High only; a Mid card gets it by hand.
-    {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)", "AUTO (OFF)"},
-    // Reflections on surfaces (ssr_rules.h; the row REFLECTIONS ON SURFACES, GB-J): off on every class until the owner has seen the pictures. The prepared cells (gpu_class.h) are
-    // Low off, Mid high or off, High ultra or high, by the cost run's figures: switching them on is a change of this row and of CheckSsr.
-    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)", "AUTO (OFF)"},
-    // The cars' neon underglow in the light pass (GB-NEON): one level, `on`, nothing on the integrated class.
-    {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
+constexpr Row kTable[] = {
+    {Effect::kShadowFilter, "mcla_gpu_shadow_filter", "pcss"},
+    {Effect::kShadowResolution, "mcla_gpu_shadow_resolution", "high"},
+    {Effect::kReflectionResolution, "mcla_gpu_reflection_resolution", "high"},
+    {Effect::kContactShadows, "mcla_gpu_contact_shadows", "high"},
+    {Effect::kSunShafts, "mcla_gpu_sun_shafts", "default"},
+    {Effect::kSsgi, "mcla_gpu_ssgi", "off"},
+    {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "near"},
+    {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "on"},
+    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "on"},
+    {Effect::kHeadlights, "mcla_gpu_headlights", "on"},
+    {Effect::kLightShadows, "mcla_gpu_light_shadows", "medium"},
+    {Effect::kVolumetrics, "mcla_gpu_volumetrics", "medium"},
+    {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off"},
+    {Effect::kSsr, "mcla_gpu_ssr", "off"},
+    {Effect::kNeonLight, "mcla_gpu_neon_light", "on"},
+    {Effect::kCarShadowMap, "mcla_gpu_car_shadow_map", "ultra"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.
@@ -124,116 +93,17 @@ void CheckTable() {
     Check(static_cast<int>(row.effect) == i, name + ": the test is in the order of the enum");
     CheckEq(std::string(CvarName(row.effect)), name, name + ": cvar name");
 
-    const char* const want[] = {row.low, row.mid, row.high};
-    const char* const label[] = {row.label_low, row.label_mid, row.label_high};
     for (int k = 0; k < 3; ++k) {
       const GpuClass c = classes[k];
       const std::string cell = name + " on " + std::string(ClassName(c));
-      CheckEq(std::string(Cell(row.effect, c)), want[k], cell + ": cell");
-      CheckEq(ResolveFor(c, row.effect, "auto"), want[k], cell + ": Resolve(auto)");
-      CheckEq(AutoLabelFor(c, row.effect), label[k], cell + ": AutoLabel");
+      CheckEq(std::string(Cell(row.effect, c)), row.value, cell + ": cell");
+      CheckEq(ResolveFor(c, row.effect, "auto"), row.value, cell + ": Resolve(auto)");
+      CheckEq(AutoLabelFor(c, row.effect), AutoLabelOf(row.value), cell + ": AutoLabel");
       for (const char* own : kOwnChoices) {
         CheckEq(ResolveFor(c, row.effect, own), own, cell + ": Resolve('" + own + "') is unchanged");
       }
     }
   }
-}
-
-// Ambient occlusion's class-only `auto` (mcla_gpu_ao): off on shared memory, high on a small discrete card, ultra on
-// the rest; explicit values pass through for the AO resolver.
-void CheckAmbientOcclusion() {
-  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"on", "on", "on"};
-  const char* const own[] = {"off", "on", "high", "ultra", "rt"};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
-  int last = -1;
-  for (int k = 0; k < 3; ++k) {
-    const GpuClass c = classes[k];
-    const std::string at = "ambient occlusion on " + std::string(ClassName(c));
-    CheckEq(ResolveFor(c, Effect::kAmbientOcclusion, "auto"), want[k], at + ": auto");
-    for (const char* v : own) {
-      CheckEq(ResolveFor(c, Effect::kAmbientOcclusion, v), v, at + ": the saved '" + v + "' is kept");
-    }
-    // The classes only go up, and the look it gives (the base of the contact shadows' apply pass) is never
-    // below the contact shadows' own cell.
-    const int now = rank(Cell(Effect::kAmbientOcclusion, c));
-    Check(now >= last, at + ": not below the class under it");
-    last = now;
-    Check(now >= rank(Cell(Effect::kContactShadows, c)), at + ": not below the contact shadows' cell");
-  }
-}
-
-// Light shadows' `auto` (mcla_gpu_light_shadows, local_shadow.h): nothing on shared memory, one view for a car (medium) on Mid, a view for each lamp of three cars
-// (ultra) on High; high (the player's lamps) is never a cell. A value the player holds (off, medium, high, ultra) is kept in every class, the classes only go up, and nothing is called low.
-void CheckLightShadows() {
-  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"off", "medium", "ultra"};
-  const char* const own[] = {"off", "medium", "high", "ultra"};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "medium" ? 1 : v == "high" ? 2 : 3; };
-  int last = -1;
-  for (int k = 0; k < 3; ++k) {
-    const GpuClass c = classes[k];
-    const std::string at = "light shadows on " + std::string(ClassName(c));
-    CheckEq(ResolveFor(c, Effect::kLightShadows, "auto"), want[k], at + ": auto");
-    for (const char* v : own) {
-      CheckEq(ResolveFor(c, Effect::kLightShadows, v), v, at + ": the saved '" + v + "' is kept");
-    }
-    const int now = rank(Cell(Effect::kLightShadows, c));
-    Check(now >= last, at + ": not below the class under it");
-    Check(Cell(Effect::kLightShadows, c) != "high" && Cell(Effect::kLightShadows, c) != "low", at + ": auto never picks high (the player's own pick) or a level called low");
-    last = now;
-  }
-  CheckEq(AutoLabelFor(GpuClass::kMid, Effect::kLightShadows), "AUTO (MEDIUM)", "the Mid class's row says AUTO (MEDIUM)");
-  CheckEq(AutoLabelFor(GpuClass::kHigh, Effect::kLightShadows), "AUTO (ULTRA)", "the High class's row says AUTO (ULTRA)");
-  CheckEq(std::string(CvarName(Effect::kLightShadows)), "mcla_gpu_light_shadows", "the cvar's name");
-}
-
-// Volumetric light's `auto` (mcla_gpu_volumetrics): off on shared memory, medium on a small discrete card, high on the rest. Ultra is a
-// deliberate pick, never a cell; a value the player holds (off, medium, high, ultra) is kept in every class; nothing is called low.
-void CheckVolumetrics() {
-  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"off", "medium", "high"};
-  const char* const own[] = {"off", "medium", "high", "ultra"};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "medium" ? 1 : v == "high" ? 2 : 3; };
-  int last = -1;
-  for (int k = 0; k < 3; ++k) {
-    const GpuClass c = classes[k];
-    const std::string at = "volumetric light on " + std::string(ClassName(c));
-    CheckEq(ResolveFor(c, Effect::kVolumetrics, "auto"), want[k], at + ": auto");
-    for (const char* v : own) {
-      CheckEq(ResolveFor(c, Effect::kVolumetrics, v), v, at + ": the saved '" + v + "' is kept");
-    }
-    const int now = rank(Cell(Effect::kVolumetrics, c));
-    Check(now >= last, at + ": not below the class under it");
-    Check(now < 3, at + ": auto never picks ultra");
-    last = now;
-  }
-  CheckEq(AutoLabelFor(GpuClass::kMid, Effect::kVolumetrics), "AUTO (MEDIUM)", "the Mid class's row says AUTO (MEDIUM)");
-  Check(AutoLabelFor(GpuClass::kHigh, Effect::kVolumetrics).size() <= 13, "the longest value of the row fits the page");
-}
-
-// Reflections on surfaces' `auto` (mcla_gpu_ssr, GB-J): OFF ON EVERY CLASS until the owner approves the pictures, so the effect is off by default as before the row existed; a value the player
-// holds (off, high, ultra) is kept in every class; the classes never go down; nothing is called low. When the owner approves, the cells become the prepared ones (Low off, Mid high or off,
-// High ultra or high: gpu_class.h) and the "all off" check below is what changes.
-void CheckSsr() {
-  const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
-  int last = -1;
-  for (const GpuClass c : classes) {
-    const std::string at = "reflections on surfaces on " + std::string(ClassName(c));
-    CheckEq(ResolveFor(c, Effect::kSsr, "auto"), "off", at + ": auto is off until the pictures are approved");
-    for (const char* v : {"off", "high", "ultra"}) {
-      CheckEq(ResolveFor(c, Effect::kSsr, v), v, at + ": the saved '" + v + "' is kept");
-    }
-    CheckEq(AutoLabelFor(c, Effect::kSsr), "AUTO (OFF)", at + ": the row says AUTO (OFF)");
-    const int now = rank(Cell(Effect::kSsr, c));
-    Check(now >= last, at + ": not below the class under it");
-    last = now;
-    const std::string cell(Cell(Effect::kSsr, c));
-    Check(cell == "off" || cell == "high" || cell == "ultra", at + ": the cell '" + cell + "' is off, high or ultra");
-    Check(AutoLabelFor(c, Effect::kSsr).size() <= 12, at + ": the longest value of the row fits the page (AUTO (ULTRA) is 12)");
-  }
-  CheckEq(std::string(CvarName(Effect::kSsr)), "mcla_gpu_ssr", "the cvar's name");
 }
 
 void CheckLabels() {
@@ -266,24 +136,6 @@ void CheckWords() {
     Check(headlights == "off" || headlights == "on", "headlights on " + std::string(ClassName(c)) + ": the cell '" + headlights + "' is off or on");
     const std::string neon(Cell(Effect::kNeonLight, c));
     Check(neon == "off" || neon == "on", "neon light on " + std::string(ClassName(c)) + ": the cell '" + neon + "' is off or on");
-  }
-  // The neon light (GB-NEON): ON by default where the light pass runs (Mid and High), off on the integrated class, and a player's own off or on is kept.
-  CheckEq(std::string(Cell(Effect::kNeonLight, GpuClass::kLow)), "off", "neon light: off on Low");
-  CheckEq(std::string(Cell(Effect::kNeonLight, GpuClass::kMid)), "on", "neon light: on on Mid");
-  CheckEq(std::string(Cell(Effect::kNeonLight, GpuClass::kHigh)), "on", "neon light: on on High");
-  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
-    CheckEq(ResolveFor(c, Effect::kNeonLight, "on"), "on", "neon light: the saved on is kept");
-    CheckEq(ResolveFor(c, Effect::kNeonLight, "off"), "off", "neon light: the saved off is kept");
-  }
-  CheckEq(AutoLabelFor(GpuClass::kLow, Effect::kNeonLight), "AUTO (OFF)", "neon light: the integrated class's row says AUTO (OFF)");
-  CheckEq(AutoLabelFor(GpuClass::kHigh, Effect::kNeonLight), "AUTO (ON)", "neon light: the High class's row says AUTO (ON)");
-  // The headlights: on for Mid and High, off for Low (the integrated GPU), and a player's own off or on is kept in every class.
-  CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kLow)), "off", "headlights: off on Low");
-  CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kMid)), "on", "headlights: on on Mid");
-  CheckEq(std::string(Cell(Effect::kHeadlights, GpuClass::kHigh)), "on", "headlights: on on High");
-  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
-    CheckEq(ResolveFor(c, Effect::kHeadlights, "on"), "on", "headlights: the saved on is kept");
-    CheckEq(ResolveFor(c, Effect::kHeadlights, "off"), "off", "headlights: the saved off is kept");
   }
   // No label of an `auto` says low, in any class.
   for (int i = 0; i < kEffectCount; ++i) {
@@ -372,10 +224,10 @@ void CheckCityLod() {
     const char* what;
   };
   const State states[] = {
-      {false, GpuClass::kLow, 1.0, "AUTO (1X)", "class not known (Low default)"},
-      {false, GpuClass::kMid, 1.0, "AUTO (1X)", "class not known (Mid)"},
-      {false, GpuClass::kHigh, 1.0, "AUTO (1X)", "class not known (High default, as Current() is before Initialize)"},
-      {true, GpuClass::kLow, 1.0, "AUTO (1X)", "Low"},
+      {false, GpuClass::kLow, 2.0, "AUTO (2X)", "class not known (Low default)"},
+      {false, GpuClass::kMid, 2.0, "AUTO (2X)", "class not known (Mid)"},
+      {false, GpuClass::kHigh, 2.0, "AUTO (2X)", "class not known (High default, as Current() is before Initialize)"},
+      {true, GpuClass::kLow, 2.0, "AUTO (2X)", "Low"},
       {true, GpuClass::kMid, 2.0, "AUTO (2X)", "Mid"},
       {true, GpuClass::kHigh, 2.0, "AUTO (2X)", "High"},
   };
@@ -417,19 +269,17 @@ void CheckScales() {
   struct Cell {
     Scale scale;
     const char* cvar;
-    double low, mid, high;
+    double value;
     bool zero_is_auto;
     char unit;
-    const char* label_low;
-    const char* label_mid;
-    const char* label_high;
+    const char* label;
   };
   const Cell cells[] = {
-      {Scale::kCityLod, "lod_city_scale", 1.0, 2.0, 2.0, true, 'X', "AUTO (1X)", "AUTO (2X)", "AUTO (2X)"},
-      {Scale::kTrafficLod, "lod_traffic_scale", 1.5, 2.0, 3.0, true, 'X', "AUTO (1.5X)", "AUTO (2X)", "AUTO (3X)"},
-      {Scale::kTrafficRange, "traffic_unspawn_dist", 250.0, 300.0, 400.0, true, 'M', "AUTO (250M)", "AUTO (300M)", "AUTO (400M)"},
-      {Scale::kPedDensity, "ped_density_scale", 0.5, 0.75, 1.0, false, 'X', "AUTO (0.5X)", "AUTO (0.75X)", "AUTO (1X)"},
-      {Scale::kParkedDensity, "parked_car_scale", 0.5, 0.75, 1.0, false, 'X', "AUTO (0.5X)", "AUTO (0.75X)", "AUTO (1X)"},
+      {Scale::kCityLod, "lod_city_scale", 2.0, true, 'X', "AUTO (2X)"},
+      {Scale::kTrafficLod, "lod_traffic_scale", 2.0, true, 'X', "AUTO (2X)"},
+      {Scale::kTrafficRange, "traffic_unspawn_dist", 300.0, true, 'M', "AUTO (300M)"},
+      {Scale::kPedDensity, "ped_density_scale", 0.75, false, 'X', "AUTO (0.75X)"},
+      {Scale::kParkedDensity, "parked_car_scale", 0.75, false, 'X', "AUTO (0.75X)"},
   };
   CheckNum(kScaleCount, static_cast<double>(sizeof(cells) / sizeof(cells[0])), "every numeric auto setting is in the check");
 
@@ -440,28 +290,25 @@ void CheckScales() {
   for (const Cell& c : cells) {
     const std::string name = c.cvar;
     CheckEq(std::string(ScaleCvar(c.scale)), c.cvar, name + ": the cvar's name");
-    const double want[3] = {c.low, c.mid, c.high};
-    const char* const labels[3] = {c.label_low, c.label_mid, c.label_high};
 
     // The cells; a class never gets less than a weaker one.
     for (int i = 0; i < 3; ++i) {
-      CheckNum(ScaleCell(c.scale, classes[i]), want[i], name + ": the cell of " + class_names[i]);
-      CheckNum(ScaleAutoFor(c.scale, true, classes[i]), want[i], name + ": auto on " + class_names[i]);
+      CheckNum(ScaleCell(c.scale, classes[i]), c.value, name + ": the cell of " + class_names[i]);
+      CheckNum(ScaleAutoFor(c.scale, true, classes[i]), c.value, name + ": auto on " + class_names[i]);
       // Until the class is known, auto is the Low cell, whatever class Current() says (it says High before Initialize).
-      CheckNum(ScaleAutoFor(c.scale, false, classes[i]), c.low, name + ": auto before the class is known (" + class_names[i] + ")");
-      CheckEq(ScaleLabelFor(c.scale, true, classes[i], c.zero_is_auto ? 0.0 : -1.0), labels[i], name + ": the AUTO label on " + class_names[i]);
+      CheckNum(ScaleAutoFor(c.scale, false, classes[i]), c.value, name + ": auto before the class is known (" + class_names[i] + ")");
+      CheckEq(ScaleLabelFor(c.scale, true, classes[i], c.zero_is_auto ? 0.0 : -1.0), c.label, name + ": the AUTO label on " + class_names[i]);
     }
-    Check(c.low <= c.mid && c.mid <= c.high, name + ": a stronger class never gets less");
 
     // What is `auto`: the sentinel, anything below it, a value that is no number.
     const double autos[] = {-1.0, -0.5, -10.0, nan};
     for (const double v : autos) {
-      CheckNum(ScaleFor(c.scale, true, GpuClass::kHigh, v), c.high, name + ": " + std::to_string(v) + " is auto");
+      CheckNum(ScaleFor(c.scale, true, GpuClass::kHigh, v), c.value, name + ": " + std::to_string(v) + " is auto");
       Check(IsAutoValue(c.scale, v), name + ": IsAutoValue(" + std::to_string(v) + ")");
     }
     Check(IsAutoValue(c.scale, 0.0) == c.zero_is_auto, name + ": whether 0 is auto");
     if (c.zero_is_auto) {
-      CheckNum(ScaleFor(c.scale, true, GpuClass::kMid, 0.0), c.mid, name + ": 0 is auto");
+      CheckNum(ScaleFor(c.scale, true, GpuClass::kMid, 0.0), c.value, name + ": 0 is auto");
     } else {
       // 0 is "none" for a density: kept, on every class, and its label is its own.
       for (int i = 0; i < 3; ++i) {
@@ -494,35 +341,12 @@ void CheckScales() {
   CheckNum(ScaleFor(Scale::kTrafficRange, true, GpuClass::kLow, 700.0), 600.0, "traffic range: 700 is held to 600");
   CheckEq(ScaleLabelFor(Scale::kTrafficRange, true, GpuClass::kHigh, 50.0), "100M", "traffic range: the label of a held value");
 
-  // The Low cells of the three settings that were one value for every card are those values, so that a build with no class (the Xenia
-  // renderer) and a Low card keep what they had: 250 m, 0.5 and 0.5. The city LOD's Low cell is the game's own 1.
-  CheckNum(ScaleCell(Scale::kTrafficRange, GpuClass::kLow), 250.0, "the old traffic range is the Low cell");
-  CheckNum(ScaleCell(Scale::kPedDensity, GpuClass::kLow), 0.5, "the old pedestrian density is the Low cell");
-  CheckNum(ScaleCell(Scale::kParkedDensity, GpuClass::kLow), 0.5, "the old parked car density is the Low cell");
-  CheckNum(ScaleCell(Scale::kCityLod, GpuClass::kLow), 1.0, "the game's own city LOD is the Low cell");
-
-  // The ceilings: where more adds nothing, so that the best class is never given a number that only costs. The city is loaded to 600 m and
-  // seen in detail to 300 m x scale x up to 1.5; traffic at 1x keeps its middle model to about 155 m and the game draws a car to 500 m
-  // (a scale above 500 / 155 only moves a step past the cull); the game's own traffic range is 400 m; the game's own density is 1.
-  Check(300.0 * ScaleCell(Scale::kCityLod, GpuClass::kHigh) * 1.5 >= 600.0, "the High city LOD already shows every loaded sector (600 m)");
-  Check(300.0 * ScaleCell(Scale::kCityLod, GpuClass::kHigh) <= 600.0, "the High city LOD is not above what the 600 m radius can use");
-  Check(155.0 * ScaleCell(Scale::kTrafficLod, GpuClass::kHigh) <= 500.0, "the High traffic LOD ends the middle model before the 500 m cull");
-  Check(40.0 * ScaleCell(Scale::kTrafficLod, GpuClass::kHigh) >= 100.0, "the High traffic LOD keeps the most detailed model past 100 m");
-  Check(ScaleCell(Scale::kTrafficRange, GpuClass::kHigh) <= 400.0, "the High traffic range is the game's own at most");
-  Check(ScaleCell(Scale::kPedDensity, GpuClass::kHigh) <= 1.0, "the High pedestrian density is the game's own at most");
-  Check(ScaleCell(Scale::kParkedDensity, GpuClass::kHigh) <= 1.0, "the High parked car density is the game's own at most");
-  Check(ScaleCell(Scale::kTrafficRange, GpuClass::kLow) >= kTrafficRangeMin && ScaleCell(Scale::kTrafficRange, GpuClass::kHigh) <= kTrafficRangeMax,
-        "the traffic range cells are inside the range the menu offers");
 }
 
-// The sun shafts' ray steps are chosen by the class and are no setting: Mid 32, High 64, Low (a strength turned on by
-// hand there) the cheaper 32.
 void CheckSunShaftSteps() {
-  CheckNum(kSunShaftStepsMid, 32, "kSunShaftStepsMid");
-  CheckNum(kSunShaftStepsHigh, 64, "kSunShaftStepsHigh");
-  CheckNum(SunShaftSteps(GpuClass::kLow), 32, "sun shaft steps on Low");
-  CheckNum(SunShaftSteps(GpuClass::kMid), 32, "sun shaft steps on Mid");
-  CheckNum(SunShaftSteps(GpuClass::kHigh), 64, "sun shaft steps on High");
+  for (const auto cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    CheckNum(SunShaftSteps(cls), 64, "sun shafts use the same ray count");
+  }
 }
 
 // --- the speed table (kSpeedTable): GPU names that cap the class --------------------------------------
@@ -851,7 +675,6 @@ void CheckSpeedTable() {
   }
 }
 
-// ---- the Steam Deck: kLow with the handheld cells (gpu_class.h kHandheldCells; perf\COMPAT-AUDIT.md section 11.4, DECK1-NOTES.md R5) ----
 
 int g_handheld_row_hits[8] = {};
 
@@ -864,81 +687,8 @@ AdapterFacts DeckFacts(const char* name) {
 }
 
 void CheckHandheldCells() {
-  const GpuClass kL = GpuClass::kLow;
-  // The cells written out again: the Low column of the table above, except these three, which are the Mid values the Deck's GPU can run (soft for the
-  // sun shadow's filter, since the blocker search of Mid's pcss is not run on a Low class).
-  struct Want {
-    Effect effect;
-    const char* value;
-  };
-  const Want kWant[] = {
-      {Effect::kShadowFilter, "soft"},
-      {Effect::kShadowResolution, "high"},
-      {Effect::kReflectionResolution, "high"},
-  };
-  Check(kHandheldCellCount == static_cast<int>(sizeof(kWant) / sizeof(kWant[0])), "the handheld cells are the three of the test");
-  Check(sizeof(kHandheldCells) / sizeof(kHandheldCells[0]) == static_cast<std::size_t>(kHandheldCellCount), "kHandheldCellCount counts the cells");
-  for (int i = 0; i < kHandheldCellCount; ++i) {
-    for (int k = i + 1; k < kHandheldCellCount; ++k) {
-      Check(kHandheldCells[i].effect != kHandheldCells[k].effect, "no effect has two handheld cells");
-    }
-  }
-
-  for (int i = 0; i < kEffectCount; ++i) {
-    const Effect effect = static_cast<Effect>(i);
-    const std::string name(CvarName(effect));
-    std::string expected(Cell(effect, kL));
-    bool listed = false;
-    for (const Want& w : kWant) {
-      if (w.effect == effect) {
-        expected = w.value;
-        listed = true;
-      }
-    }
-    const std::string at = name + " on a handheld";
-    CheckEq(std::string(CellFor(effect, kL, true)), expected, at + ": cell");
-    CheckEq(ResolveFor(kL, true, effect, "auto"), expected, at + ": Resolve(auto)");
-    CheckEq(AutoLabelFor(kL, true, effect), AutoLabelOf(expected), at + ": AutoLabel");
-    // A handheld cell is not the Low cell (else it would not be a cell of its own), and a cell that is not listed is.
-    CheckEq(CellFor(effect, kL, true) == Cell(effect, kL) ? "same" : "different", listed ? "different" : "same",
-            at + ": differs from Low's cell exactly where a handheld cell is listed");
-    // A player's own choice is never touched, listed or not.
-    for (const char* own : kOwnChoices) {
-      CheckEq(ResolveFor(kL, true, effect, own), own, at + ": Resolve('" + own + "') is unchanged");
-    }
-    // Without the flag it is the Low column; and the flag does nothing to Mid or High (it only means anything on Low).
-    CheckEq(std::string(CellFor(effect, kL, false)), std::string(Cell(effect, kL)), name + " on Low without the flag: the Low cell");
-    CheckEq(ResolveFor(kL, effect, "auto"), std::string(Cell(effect, kL)), name + ": the three argument ResolveFor is the Low cell");
-    CheckEq(AutoLabelFor(kL, effect), AutoLabelFor(kL, false, effect), name + ": the two argument AutoLabelFor is the Low label");
-    for (const GpuClass c : {GpuClass::kMid, GpuClass::kHigh}) {
-      CheckEq(std::string(CellFor(effect, c, true)), std::string(Cell(effect, c)),
-              name + " on " + std::string(ClassName(c)) + ": the handheld flag changes nothing");
-      CheckEq(ResolveFor(c, true, effect, "auto"), std::string(Cell(effect, c)), name + " on " + std::string(ClassName(c)) + ": Resolve ignores the flag");
-    }
-    // No label of a handheld's `auto` says low.
-    Check(AutoLabelFor(kL, true, effect).find("LOW") == std::string::npos, at + ": no LOW in the label");
-  }
-
-  // Where the Deck can carry what Mid does: the resolutions are Mid's cells exactly; the filter is Mid's pcss without the blocker search.
-  CheckEq(std::string(CellFor(Effect::kShadowResolution, kL, true)), std::string(Cell(Effect::kShadowResolution, GpuClass::kMid)),
-          "the Deck's shadow detail is Mid's");
-  CheckEq(std::string(CellFor(Effect::kReflectionResolution, kL, true)), std::string(Cell(Effect::kReflectionResolution, GpuClass::kMid)),
-          "the Deck's reflection detail is Mid's");
-  CheckEq(std::string(Cell(Effect::kShadowFilter, GpuClass::kMid)), "pcss", "Mid's shadow filter is pcss, which the Deck cannot run (soft is its pcss)");
-
-  // What stays off or the game's on the Deck: every effect that costs the GPU more than these three, and the light stack's consumers (the headlights, the
-  // light shadows, the volumetric light, the reflections on surfaces, the ambient occlusion and the bounce light).
-  for (const Effect effect : {Effect::kContactShadows, Effect::kSunShafts, Effect::kSsgi, Effect::kTrafficShadows, Effect::kCarSelfRefl,
-                              Effect::kAmbientOcclusion, Effect::kHeadlights, Effect::kLightShadows, Effect::kVolumetrics, Effect::kSsr}) {
-    const auto expected = effect == Effect::kAmbientOcclusion ? "on" : "off";
-    CheckEq(std::string(CellFor(effect, kL, true)), expected, std::string(CvarName(effect)) + " has its expected legacy handheld value");
-  }
-
-  // The numbers that are the CPU's stay Low's: the Deck's four Zen 2 cores keep the game's city detail (the scales have no handheld cells).
-  for (int i = 0; i < kScaleCount; ++i) {
-    const Scale scale = static_cast<Scale>(i);
-    CheckNum(ScaleFor(scale, true, kL, scale == Scale::kPedDensity || scale == Scale::kParkedDensity ? -1.0 : 0.0), ScaleCell(scale, kL),
-             std::string(ScaleCvar(scale)) + ": a handheld keeps Low's number");
+  for (const Row& row : kTable) {
+    CheckEq(ResolveFor(GpuClass::kLow, true, row.effect, "auto"), row.value, row.cvar);
   }
 }
 
@@ -971,7 +721,6 @@ void CheckHandheldDetect() {
       Check(v.rule == Rule::kAdapterType, at + ": by adapter type, as every integrated GPU");
       Check(v.why.rfind("by adapter type: ", 0) == 0, at + ": the reason starts as an integrated GPU's: " + v.why);
       Check(v.why.find("Steam Deck") != std::string::npos, at + ": the reason names the Steam Deck: " + v.why);
-      Check(v.why.find("kHandheldCells") != std::string::npos, at + ": the reason names where the cells are: " + v.why);
     }
     const SpeedMatch m = MatchHandheld(kVendorAmd, name);
     Check(m.row >= 0 && kHandheldTable[m.row].cap == kL, at + ": a handheld row");
@@ -1038,72 +787,12 @@ void CheckHandheldDetect() {
   }
 }
 
-void CheckUpscaleDefaults() {
-  using namespace mcla::gpu;
-  using upscale_defaults::Path;
-  for (const GpuClass cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
-    Check(upscale_defaults::Select(cls, {}, true) ==
-              (cls == GpuClass::kLow ? Path::kFsr31 : Path::kUnchanged),
-          "only Low defaults to FSR 3.1");
-    Check(upscale_defaults::Select(cls, {}, false) ==
-              (cls == GpuClass::kLow ? Path::kFsr1 : Path::kUnchanged),
-          "only Low defaults to FSR 1 when FSR 3.1 is unavailable at startup");
-  }
-  const upscale_defaults::DisplayChoices explicit_paths[] = {
-      {.upscaler = true}, {.render_scale = true}, {.fsr1 = true}, {.fsr1_preset = true},
-  };
-  for (const auto& choice : explicit_paths) {
-    for (const bool fsr31 : {false, true}) {
-      Check(upscale_defaults::Select(GpuClass::kLow, choice, fsr31) == Path::kUnchanged,
-            "an explicit display path takes precedence on Low");
-    }
-  }
-  Upscaler upscaler;
-  UpscaleMode mode;
-  FsrPreset fsr1 = FsrPreset::kCustom;
-  const bool parsed_upscaler = upscale_modes::ParseUpscaler(upscale_defaults::kFsr31, &upscaler);
-  const bool parsed_mode = upscale_modes::ParseMode(upscale_defaults::kQuality, &mode);
-  Check(parsed_upscaler && upscaler == Upscaler::kFsr31, "the default selector requests FSR 3.1");
-  Check(parsed_mode && mode == UpscaleMode::kQuality, "the default mode requests Quality");
-  Check(ParseFsrPreset(upscale_defaults::kQuality, &fsr1) && fsr1 == FsrPreset::kQuality,
-        "the fallback uses FSR 1 Quality");
-  Check(upscale_defaults::kFsr31Sharpness == "0.4", "FSR 3.1 uses the 0.4 RCAS step");
-  Check(upscale_defaults::kFsr1Sharpness == "0.8", "FSR 1 uses 0.8 stops of RCAS reduction");
-
-  struct Size {
-    uint32_t output_width, output_height, scene_width, scene_height;
-  };
-  const Size sizes[] = {
-      {1280, 720, 832, 468}, {1920, 1080, 1280, 720},
-      {2560, 1440, 1728, 972}, {3840, 2160, 2560, 1440},
-  };
-  for (const auto& size : sizes) {
-    const auto output = ChooseUpscalerOutputScale(0.0, false, FsrPreset::kCustom,
-                                                 size.output_width, size.output_height);
-    const auto scene = ChooseSceneScale(output.scale, upscale_modes::InfoOf(upscaler, mode).ratio);
-    Check(scene.scale.Edge(kAssumedScreenWidth) == size.scene_width &&
-              scene.scale.Edge(kAssumedScreenHeight) == size.scene_height,
-          "FSR Quality scene dimensions at output height " + std::to_string(size.output_height));
-    const auto fallback = ChooseRenderScale(0.0, true, fsr1, size.output_width, size.output_height);
-    Check(fallback.scale == scene.scale, "FSR 1 Quality matches the scene size at output height " +
-                                            std::to_string(size.output_height));
-    const auto native = ChooseRenderScale(0.0, false, FsrPreset::kCustom, size.output_width,
-                                          size.output_height);
-    Check(native.scale.Edge(kAssumedScreenWidth) == size.output_width &&
-              native.scale.Edge(kAssumedScreenHeight) == size.output_height,
-          "the stock scale matches the output at height " + std::to_string(size.output_height));
-  }
-}
 
 }  // namespace
 
 int main() {
   CheckTable();
   CheckSunShaftSteps();
-  CheckAmbientOcclusion();
-  CheckLightShadows();
-  CheckVolumetrics();
-  CheckSsr();
   CheckLabels();
   CheckWords();
   CheckNames();
@@ -1112,7 +801,6 @@ int main() {
   CheckSpeedRows();
   CheckSeriesNumber();
   CheckSpeedTable();
-  CheckUpscaleDefaults();
   CheckHandheldCells();
   CheckHandheldDetect();
   CheckCityLod();

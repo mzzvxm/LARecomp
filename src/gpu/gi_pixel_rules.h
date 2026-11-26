@@ -411,9 +411,9 @@ inline void MotionRows(const CameraPose& cur, const CameraPose& prev, float out[
 constexpr float AssumedLength(uint32_t frames) { return float(std::min(frames + 1u, uint32_t(rt_denoise::kMaxLength))); }
 
 static_assert(kReachM == 12.0f && kPixelRows == 3, "the cell's numbers");
-static_assert(!CellFor(gi::Rung::kNone, gi::Level::kUltra).runs && !CellFor(gi::Rung::kWeak, gi::Level::kUltra).runs && !CellFor(gi::Rung::kStrong, gi::Level::kHigh).runs && !CellFor(gi::Rung::kStrong, gi::Level::kOff).runs &&
+static_assert(!CellFor(gi::Rung::kNone, gi::Level::kUltra).runs && CellFor(gi::Rung::kWeak, gi::Level::kUltra).runs && !CellFor(gi::Rung::kStrong, gi::Level::kHigh).runs && !CellFor(gi::Rung::kStrong, gi::Level::kOff).runs &&
                   CellFor(gi::Rung::kStrong, gi::Level::kUltra).runs,
-              "only the strong rung at ULTRA runs the per-pixel pass: every other cell is the identity");
+              "Ultra runs the per-pixel pass on both RT tiers");
 static_assert(kBufferAlloc >= kBufferBytes && kSetViews == 6, "the rows and the set");
 
 }  // namespace mcla::gpu::gi_pixel

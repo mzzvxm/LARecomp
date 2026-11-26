@@ -80,7 +80,7 @@ class Planner {
   const Counters& counters() const { return counters_; }
 
  private:
-  bool RoomOk(Device* device, uint64_t need);
+  void WarnOnMemoryPressure(Device* device, uint64_t need);
 
   Plan plan_;
   DenoiserKind chosen_ = DenoiserKind::kOurs;
@@ -99,9 +99,7 @@ class Planner {
   bool modes_logged_ = false;
   SignalModes modes_last_;
   // The video memory room (asked once a second where the plan would be on, then less often while there is none).
-  bool room_ok_ = true;
-  bool room_refused_logged_ = false;
-  uint64_t room_wait_ms_ = 0;
+  bool room_warned_ = false;
   uint64_t room_next_ms_ = 0;
   uint64_t room_last_need_ = 0;
   Counters counters_;

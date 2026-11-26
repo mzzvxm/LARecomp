@@ -276,7 +276,6 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
   recorded_ = false;
   instances_this_frame_ = 0;
   level_ = device_ ? level : city_rt::Level::kOff;
-  class_ = gpu_class::CurrentRtClass();  // the budgets follow the ray tracing tier (rt_tier.h: a weak card of the High class is Mid, none is Low), which the benchmark can move after Initialize
   budget_ = city_rt::WithRadius(city_rt::BudgetFor(class_, level_), radius_override);
   if (hit_ != nullptr) {
     budget_ = hit_->Adjust(budget_);  // the pool's cap and staging, when the pool is there

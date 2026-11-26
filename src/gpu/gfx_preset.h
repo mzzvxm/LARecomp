@@ -4,8 +4,7 @@
 // ===========================================================================
 // Named presets apply concrete values across Image Quality, Lighting and Shadows,
 // Reflections and World Detail. Display (including AA), upscaling and debug controls
-// are independent. GPU class and RT rung recommend a preset and set execution
-// budgets. Legacy raster Auto values use the compatibility cells in gpu_class.h.
+// are independent. GPU class and RT tier only select the recommendation.
 //
 // HOW A PRESET REACHES THE ROWS (gfx_preset_apply.h): the config keeps the preset's NAME. While a named preset is in force its values are held over the rows (the same hold the trailer
 // scenes use, so they are never written to larecomp.toml); the player changing any covered row in the pause menu turns the preset into CUSTOM (the rows keep the values they had, and
@@ -26,21 +25,19 @@
 namespace mcla::gpu::gfx_preset {
 
 // The order is the order of the pause row, the launcher's picker and presets.order in settings-ui.json.
-enum class Preset : uint8_t { kVanilla, kEnhanced, kEnhancedUltra, kEnhancedRt, kEnhancedRtUltra, kCustom };
-inline constexpr int kPresetCount = 6;
-inline constexpr int kNamedCount = 5;  // the presets that hold values: every one but CUSTOM
+enum class Preset : uint8_t { kVanilla, kEnhanced, kEnhancedRt, kCustom };
+inline constexpr int kPresetCount = 4;
+inline constexpr int kNamedCount = 3;  // the presets that hold values: every one but CUSTOM
 
 constexpr bool IsNamed(Preset p) { return p != Preset::kCustom; }
-constexpr bool NeedsRt(Preset p) { return p == Preset::kEnhancedRt || p == Preset::kEnhancedRtUltra; }
+constexpr bool NeedsRt(Preset p) { return p == Preset::kEnhancedRt; }
 
 // The stored word (mcla_gpu_preset in larecomp.toml, the command line and settings-ui.json).
 constexpr std::string_view Id(Preset p) {
   switch (p) {
     case Preset::kVanilla: return "vanilla";
     case Preset::kEnhanced: return "enhanced";
-    case Preset::kEnhancedUltra: return "enhanced_ultra";
     case Preset::kEnhancedRt: return "enhanced_rt";
-    case Preset::kEnhancedRtUltra: return "enhanced_rt_ultra";
     default: return "custom";
   }
 }
@@ -50,9 +47,7 @@ constexpr std::string_view Label(Preset p) {
   switch (p) {
     case Preset::kVanilla: return "VANILLA";
     case Preset::kEnhanced: return "ENHANCED";
-    case Preset::kEnhancedUltra: return "ENHANCED ULTRA";
     case Preset::kEnhancedRt: return "ENHANCED RT";
-    case Preset::kEnhancedRtUltra: return "ENHANCED RT ULTRA";
     default: return "CUSTOM";
   }
 }
@@ -63,13 +58,9 @@ constexpr std::string_view Help(Preset p) {
     case Preset::kVanilla:
       return "The game as it shipped on the console: none of the new effects, the original's look at your resolution and frame rate.";
     case Preset::kEnhanced:
-      return "The new effects at the settings that suit a mid-range graphics card. No ray tracing.";
-    case Preset::kEnhancedUltra:
-      return "The new effects at the settings that suit a high-end graphics card. No ray tracing.";
+      return "Enhanced graphics with screen-space effects.";
     case Preset::kEnhancedRt:
-      return "Enhanced, with ray traced effects at the settings that suit a mid-range ray tracing card.";
-    case Preset::kEnhancedRtUltra:
-      return "Enhanced Ultra, with ray traced effects at the settings that suit a high-end ray tracing card.";
+      return "Enhanced graphics with ray traced lighting and reflections.";
     default:
       return "Your own choices on the effect pages. Changing any single effect switches the preset to Custom.";
   }
@@ -80,6 +71,7 @@ constexpr std::string_view Needs(Preset p) { return NeedsRt(p) ? std::string_vie
 inline constexpr std::string_view kNeedsRtReason = "Needs a graphics card that can ray trace.";
 
 inline bool Parse(std::string_view text, Preset* out) {
+  if (!out) return false;
   for (int i = 0; i < kPresetCount; ++i) {
     if (text == Id(static_cast<Preset>(i))) {
       *out = static_cast<Preset>(i);
@@ -89,9 +81,16 @@ inline bool Parse(std::string_view text, Preset* out) {
   return false;
 }
 
+// Old saves and launch arguments may contain either of these retired preset IDs.
+constexpr std::string_view MigrateId(std::string_view id) {
+  if (id == "enhanced_ultra") return "enhanced";
+  if (id == "enhanced_rt_ultra") return "enhanced_rt";
+  return id;
+}
+
 // The pause row's own words, in the order of Preset (the row cycles them; settings-ui.json lists the same ids).
-inline constexpr const char* kIds[kPresetCount] = {"vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"};
-inline constexpr const char* kLabels[kPresetCount] = {"VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM"};
+inline constexpr const char* kIds[kPresetCount] = {"vanilla", "enhanced", "enhanced_rt", "custom"};
+inline constexpr const char* kLabels[kPresetCount] = {"VANILLA", "ENHANCED", "ENHANCED RT", "CUSTOM"};
 
 // The two settings. mcla_gpu_preset is the player's; mcla_gpu_preset_from is where a CUSTOM started (a named preset, or `none`: CUSTOM from a file written before presets, whose rows
 // that the file does not name stay at their own defaults, which is what they were).
@@ -107,7 +106,7 @@ enum class Page : uint8_t { kImageQuality, kLighting, kReflections, kWorldDetail
 struct Row {
   std::string_view cvar;
   Page page;
-  // VANILLA, ENHANCED, ENHANCED ULTRA, ENHANCED RT, ENHANCED RT ULTRA: the text the setting is written with.
+  // VANILLA, ENHANCED, ENHANCED RT: the text the setting is written with.
   std::string_view cell[kNamedCount];
 };
 
@@ -115,48 +114,48 @@ constexpr int Col(Preset p) { return static_cast<int>(p); }
 
 // Concrete settings in menu order.
 inline constexpr Row kRows[] = {
-    {"mcla_gpu_anisotropy", Page::kImageQuality, {"game", "game", "16", "game", "16"}},
-    {"disable_dof", Page::kImageQuality, {"false", "true", "true", "true", "true"}},
-    {"disable_motion_blur", Page::kImageQuality, {"false", "false", "false", "false", "false"}},
+    {"mcla_gpu_anisotropy", Page::kImageQuality, {"game", "game", "16"}},
+    {"disable_dof", Page::kImageQuality, {"false", "true", "true"}},
+    {"disable_motion_blur", Page::kImageQuality, {"false", "false", "false"}},
 
-    {"perf_no_shadows", Page::kLighting, {"false", "false", "false", "false", "false"}},
-    {"mcla_gpu_shadow_resolution", Page::kLighting, {"game", "high", "high", "high", "high"}},
-    {"mcla_gpu_shadow_filter", Page::kLighting, {"game", "pcss", "pcss", "pcss", "pcss"}},
-    {"disable_imposter_shadows", Page::kLighting, {"false", "true", "true", "true", "true"}},
-    {"mcla_gpu_traffic_shadows", Page::kLighting, {"off", "near", "near", "near", "near"}},
-    {"mcla_gpu_car_shadow_map", Page::kLighting, {"off", "ultra", "ultra", "ultra", "ultra"}},
-    {"mcla_gpu_contact_shadows", Page::kLighting, {"off", "high", "ultra", "high", "ultra"}},
-    {"mcla_gpu_rt_shadows", Page::kLighting, {"off", "off", "off", "high", "high"}},
-    {"mcla_gpu_ao", Page::kLighting, {"off", "on", "on", "rt", "rt"}},
-    {"mcla_gpu_ao_rt", Page::kLighting, {"off", "off", "off", "both", "both"}},
-    {"mcla_gpu_ao_intensity", Page::kLighting, {"default", "default", "default", "default", "default"}},
-    {"mcla_gpu_ssgi", Page::kLighting, {"off", "off", "high", "off", "high"}},
-    {"mcla_gpu_rt_gi", Page::kLighting, {"off", "off", "off", "off", "high"}},
-    {"mcla_gpu_ssgi_intensity", Page::kLighting, {"default", "default", "default", "default", "default"}},
-    {"mcla_gpu_headlights", Page::kLighting, {"off", "on", "on", "on", "on"}},
-    {"mcla_gpu_light_shadows", Page::kLighting, {"off", "medium", "ultra", "medium", "ultra"}},
-    {"mcla_gpu_rt_lights", Page::kLighting, {"off", "off", "off", "off", "on"}},
-    {"mcla_gpu_neon_light", Page::kLighting, {"off", "on", "on", "on", "on"}},
-    {"mcla_gpu_light_bounce", Page::kLighting, {"off", "on", "on", "on", "on"}},
-    {"mcla_gpu_sun_shafts", Page::kLighting, {"off", "default", "default", "default", "default"}},
-    {"mcla_gpu_volumetrics", Page::kLighting, {"off", "medium", "high", "medium", "high"}},
+    {"perf_no_shadows", Page::kLighting, {"false", "false", "false"}},
+    {"mcla_gpu_shadow_resolution", Page::kLighting, {"game", "high", "high"}},
+    {"mcla_gpu_shadow_filter", Page::kLighting, {"game", "pcss", "pcss"}},
+    {"disable_imposter_shadows", Page::kLighting, {"false", "true", "true"}},
+    {"mcla_gpu_traffic_shadows", Page::kLighting, {"off", "near", "near"}},
+    {"mcla_gpu_car_shadow_map", Page::kLighting, {"off", "ultra", "ultra"}},
+    {"mcla_gpu_contact_shadows", Page::kLighting, {"off", "high", "ultra"}},
+    {"mcla_gpu_rt_shadows", Page::kLighting, {"off", "off", "high"}},
+    {"mcla_gpu_ao", Page::kLighting, {"off", "on", "rt"}},
+    {"mcla_gpu_ao_rt", Page::kLighting, {"off", "off", "both"}},
+    {"mcla_gpu_ao_intensity", Page::kLighting, {"default", "default", "default"}},
+    {"mcla_gpu_ssgi", Page::kLighting, {"off", "off", "high"}},
+    {"mcla_gpu_rt_gi", Page::kLighting, {"off", "off", "high"}},
+    {"mcla_gpu_ssgi_intensity", Page::kLighting, {"default", "default", "default"}},
+    {"mcla_gpu_headlights", Page::kLighting, {"off", "on", "on"}},
+    {"mcla_gpu_light_shadows", Page::kLighting, {"off", "medium", "ultra"}},
+    {"mcla_gpu_rt_lights", Page::kLighting, {"off", "off", "on"}},
+    {"mcla_gpu_neon_light", Page::kLighting, {"off", "on", "on"}},
+    {"mcla_gpu_light_bounce", Page::kLighting, {"off", "on", "on"}},
+    {"mcla_gpu_sun_shafts", Page::kLighting, {"off", "default", "default"}},
+    {"mcla_gpu_volumetrics", Page::kLighting, {"off", "medium", "high"}},
 
-    {"mcla_gpu_reflection_resolution", Page::kReflections, {"game", "high", "high", "high", "high"}},
+    {"mcla_gpu_reflection_resolution", Page::kReflections, {"game", "high", "high"}},
     // CHECK: compare wet-road motion and pinned highlights with these preset levels.
-    {"mcla_gpu_ssr", Page::kReflections, {"off", "high", "ultra", "high", "ultra"}},
-    {"mcla_gpu_ssr_rt", Page::kReflections, {"off", "off", "off", "high", "high"}},
-    {"mcla_gpu_env_resolution", Page::kReflections, {"off", "on", "on", "on", "on"}},
-    {"mcla_gpu_car_selfrefl", Page::kReflections, {"off", "on", "on", "on", "on"}},
-    {"mcla_gpu_car_selfrefl_rt", Page::kReflections, {"off", "off", "off", "on", "on"}},
-    {"mcla_gpu_rt_reflections", Page::kReflections, {"off", "off", "off", "on", "on"}},
-    {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "on", "on", "on", "on"}},
+    {"mcla_gpu_ssr", Page::kReflections, {"off", "high", "ultra"}},
+    {"mcla_gpu_ssr_rt", Page::kReflections, {"off", "off", "high"}},
+    {"mcla_gpu_env_resolution", Page::kReflections, {"off", "on", "on"}},
+    {"mcla_gpu_car_selfrefl", Page::kReflections, {"off", "on", "on"}},
+    {"mcla_gpu_car_selfrefl_rt", Page::kReflections, {"off", "off", "on"}},
+    {"mcla_gpu_rt_reflections", Page::kReflections, {"off", "off", "on"}},
+    {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "on", "on"}},
 
-    {"traffic_unspawn_dist", Page::kWorldDetail, {"400", "300", "400", "300", "400"}},
-    {"ped_density_scale", Page::kWorldDetail, {"1", "0.75", "1", "0.75", "1"}},
-    {"parked_car_scale", Page::kWorldDetail, {"1", "0.75", "1", "0.75", "1"}},
-    {"global_max_draw_distance", Page::kWorldDetail, {"0", "0", "0", "0", "0"}},
-    {"lod_traffic_scale", Page::kWorldDetail, {"1", "2", "3", "2", "3"}},
-    {"lod_city_scale", Page::kWorldDetail, {"1", "2", "2", "2", "2"}},
+    {"traffic_unspawn_dist", Page::kWorldDetail, {"400", "300", "400"}},
+    {"ped_density_scale", Page::kWorldDetail, {"1", "0.75", "1"}},
+    {"parked_car_scale", Page::kWorldDetail, {"1", "0.75", "1"}},
+    {"global_max_draw_distance", Page::kWorldDetail, {"0", "0", "0"}},
+    {"lod_traffic_scale", Page::kWorldDetail, {"1", "2", "3"}},
+    {"lod_city_scale", Page::kWorldDetail, {"1", "2", "2"}},
 };
 inline constexpr int kRowCount = static_cast<int>(sizeof(kRows) / sizeof(kRows[0]));
 
@@ -172,8 +171,7 @@ inline constexpr Note kExempt[] = {
 };
 inline constexpr int kExemptCount = static_cast<int>(sizeof(kExempt) / sizeof(kExempt[0]));
 
-// The rows whose ENHANCED ULTRA cell is below the row's top level because that is what the High class's `auto` was (see the header), with the top level: the final pass raises them or
-// says why not. Traffic detail distance 3X is the preset ceiling.
+// ENHANCED RT uses these levels below the row maximum. Traffic detail distance 3X is its ceiling.
 inline constexpr Note kBelowMax[] = {
     {"mcla_gpu_shadow_resolution", "ultra"}, {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_ssgi", "ultra"}, {"mcla_gpu_volumetrics", "ultra"}, {"mcla_gpu_traffic_shadows", "all"},
@@ -255,24 +253,15 @@ constexpr double Number(std::string_view text) {
 }
 
 // --- the class -> preset map (the "Recommended for this GPU" tag) -----------------------------------------------------------------------
-// One table maps the class and the ray tracing rung to a preset (rt_tier.h RecommendedPreset is its code; kClassToPreset is the same rule as the settings-ui expressions the launcher
-// reads, in order, the first true one wins, the last is always true):
-//   a strong card of the High class      ENHANCED RT ULTRA
-//   a card at the weak rung              ENHANCED RT     (the mid-range RT cards: a Mid class card that traces, an RTX 3060-class High card)
-//   the High class                       ENHANCED ULTRA
-//   the Mid class                        ENHANCED
-//   everything else (Low: shared memory, software, the Steam Deck)  VANILLA
-// The first start stays VANILLA whatever this says: the tag is a recommendation.
+// RT is recommended for cards in the Mid and High classes that support ray tracing.
+// VANILLA remains the first-start preset on every GPU.
 struct ClassRule {
   std::string_view when;
   Preset preset;
 };
 inline constexpr ClassRule kClassToPreset[] = {
-    {"gpu.rt_rung == 'strong'", Preset::kEnhancedRtUltra},
-    {"gpu.rt_rung == 'weak'", Preset::kEnhancedRt},
-    {"gpu.class == 'high'", Preset::kEnhancedUltra},
-    {"gpu.class == 'mid'", Preset::kEnhanced},
-    {"true", Preset::kVanilla},
+    {"gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", Preset::kEnhancedRt},
+    {"true", Preset::kEnhanced},
 };
 inline constexpr int kClassRuleCount = static_cast<int>(sizeof(kClassToPreset) / sizeof(kClassToPreset[0]));
 

@@ -1341,7 +1341,8 @@ void SourceChecks(const std::string& src) {
           "both are in the manifest and the meta table");
   }
   // the class table: off on the integrated class, on elsewhere
-    Check(Has(class_h, "kNeonLight,") && Has(class_h, "Derived(\"mcla_gpu_neon_light\"),") && Has(ReadFile(gpu + "gfx_preset.h"), "{\"mcla_gpu_neon_light\", Page::kLighting, {\"off\", \"on\", \"on\", \"on\", \"on\"}},"),
+  Check(Has(class_h, "kNeonLight,") && Has(class_h, "Legacy(\"mcla_gpu_neon_light\"),") && Has(ReadFile(gpu + "gfx_preset.h"), "{\"mcla_gpu_neon_light\", Page::kLighting, {\"off\", \"on\", \"on\"}},") &&
+            Has(class_h, "static_cast<int>(Effect::kCount)"),
         "AUTO is off on Low and on on Mid and High (the cells are the preset table's: gfx_preset.h)");
   // the row: on the lighting page after LIGHT SHADOWS, no dependency
   {

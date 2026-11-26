@@ -55,11 +55,11 @@ struct Lcg {
 
 void TestBudgets() {
   using city_rt::Level;
-  CHECK(!PoolBudgetFor(GpuClass::kLow, Level::kHigh).on() && !PoolBudgetFor(GpuClass::kHigh, Level::kOff).on() && !PoolBudgetFor(GpuClass::kLow, Level::kUltra).on());
-  CHECK(PoolBudgetFor(GpuClass::kMid, Level::kHigh).capacity == 64 * kMiB && PoolBudgetFor(GpuClass::kMid, Level::kHigh).staged_bytes == 9 * kMiB);
+  CHECK(PoolBudgetFor(GpuClass::kLow, Level::kHigh).on() && !PoolBudgetFor(GpuClass::kHigh, Level::kOff).on() && PoolBudgetFor(GpuClass::kLow, Level::kUltra).on());
+  CHECK(PoolBudgetFor(GpuClass::kMid, Level::kHigh).capacity == 128 * kMiB && PoolBudgetFor(GpuClass::kMid, Level::kHigh).staged_bytes == 17 * kMiB);
   CHECK(PoolBudgetFor(GpuClass::kHigh, Level::kHigh).capacity == 128 * kMiB && PoolBudgetFor(GpuClass::kHigh, Level::kHigh).staged_bytes == 17 * kMiB);
   CHECK(PoolBudgetFor(GpuClass::kHigh, Level::kUltra).capacity == 256 * kMiB && PoolBudgetFor(GpuClass::kHigh, Level::kUltra).staged_bytes == 20 * kMiB);
-  CHECK(PoolBudgetFor(GpuClass::kMid, Level::kUltra).capacity == 128 * kMiB);
+  CHECK(PoolBudgetFor(GpuClass::kMid, Level::kUltra).capacity == 256 * kMiB);
   // the class budgets are the format header's "64 to 256 MiB", whole 16 byte units, under the 32 bit offsets
   for (const GpuClass cls : {GpuClass::kMid, GpuClass::kHigh}) {
     for (const Level level : {Level::kHigh, Level::kUltra}) {
@@ -83,7 +83,7 @@ void TestBudgets() {
   CHECK(WithPool(big, PoolBudgetFor(GpuClass::kHigh, Level::kHigh)).upload_bytes == 64 * kMiB);
   // H0's HitBudget fields
   const cf::HitBudget h = HitBudgetFor(GpuClass::kHigh, Level::kUltra);
-  CHECK(h.pool_bytes == 256 * kMiB && h.staged_bytes == 20 * kMiB && h.on() && !HitBudgetFor(GpuClass::kLow, Level::kUltra).on());
+  CHECK(h.pool_bytes == 256 * kMiB && h.staged_bytes == 20 * kMiB && h.on() && HitBudgetFor(GpuClass::kLow, Level::kUltra).on());
 }
 
 // ---------------------------------------------------------------------------

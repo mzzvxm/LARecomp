@@ -129,12 +129,10 @@ int main(int argc, char** argv) {
 
   // ---- the budget ---------------------------------------------------------------------------------------------------------
   {
-    Check(op::TexelBudget(GpuClass::kHigh, -1, 0) == 500000 && op::TexelBudget(GpuClass::kMid, -1, 0) == 200000 && op::TexelBudget(GpuClass::kLow, -1, 0) == 0,
-          "High 500k, Mid 200k, Low none");
-    Check(op::TexelBudget(GpuClass::kLow, 2, 0) == 500000 && op::TexelBudget(GpuClass::kLow, 0, 0) == 0 && op::TexelBudget(GpuClass::kLow, -1, 0) == 0,
-          "cars asked for by hand on the Low class: the High cell's budget (as LimitsFor), 0 cars or no ask: none");
+    for (const auto cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+      Check(op::TexelBudget(cls, -1, 0) == 500000, "the default texel budget is 500k on every class");
+    }
     Check(op::TexelBudget(GpuClass::kHigh, -1, 300) == 300000 && op::TexelBudget(GpuClass::kLow, -1, 100) == 100000, "the texel override is in thousands and wins");
-    Check(op::TexelBudget(GpuClass::kHigh, -1, 0) > op::TexelBudget(GpuClass::kMid, -1, 0), "the weaker the class the smaller the budget");
   }
 
   // ---- the rectangle of a box ---------------------------------------------------------------------------------------------------

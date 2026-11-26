@@ -1,6 +1,5 @@
 #pragma once
 
-#include "gpu/car_shadow_map_rules.h"
 #include "gpu/gpu_class.h"
 #include "gpu/rt_tier.h"
 #include "ui_expr.h"
@@ -11,7 +10,6 @@ using AutoCatalog = std::map<std::string, AutoDescriptor, std::less<>>;
 
 inline AutoCatalog MenuAutoDescriptors() {
     namespace gc = mcla::gpu::gpu_class;
-    namespace car = mcla::gpu::car_shadow_map;
     constexpr gc::GpuClass classes[] = {gc::GpuClass::kLow, gc::GpuClass::kMid, gc::GpuClass::kHigh};
     constexpr gc::RtTier rungs[] = {gc::RtTier::kNone, gc::RtTier::kWeak, gc::RtTier::kStrong};
     AutoCatalog result;
@@ -23,9 +21,6 @@ inline AutoCatalog MenuAutoDescriptors() {
         for (const auto cls : classes) {
             const std::string key(gc::ClassName(cls));
             descriptor.cells[key] = Value::String(std::string(gc::CellFor(effect, cls, false)));
-            const auto handheld = gc::CellFor(effect, cls, true);
-            if (handheld != descriptor.cells[key].s)
-                descriptor.handheld[key] = Value::String(std::string(handheld));
         }
     }
     for (int i = 0; i < gc::kScaleCount; ++i) {
@@ -49,10 +44,6 @@ inline AutoCatalog MenuAutoDescriptors() {
         for (const auto rung : rungs)
             descriptor.cells[std::string(gc::RtTierName(rung))] = Value::String(std::string(gc::RtCell(effect, rung)));
     }
-    auto& car_shadows = result["mcla_gpu_car_shadow_map"];
-    car_shadows.by = "class";
-    for (const auto cls : classes)
-        car_shadows.cells[std::string(gc::ClassName(cls))] = Value::String(std::string(car::LevelName(car::AutoLevel(cls))));
     return result;
 }
 

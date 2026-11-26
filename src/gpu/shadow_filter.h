@@ -51,38 +51,23 @@ constexpr Mode ModeOfCell(std::string_view cell) {
   return cell == "game" ? Mode::kGame : cell == "pcss" ? Mode::kPcss : Mode::kSoft;
 }
 
-// A Low class (an integrated GPU) never runs the blocker search: it is 8 more taps on the pixels near an edge, and
-// the table's own cell for Low is `game`; a hand set `pcss` there is soft, with its 8 taps.
-constexpr bool PcssAvailable(gpu_class::GpuClass cls) { return cls != gpu_class::GpuClass::kLow; }
+constexpr bool PcssAvailable(gpu_class::GpuClass) { return true; }
 
-// The mode a choice comes to on a class: `auto` is the table's cell (the handheld's, where `handheld` says the adapter is the Steam Deck and the
-// class is its Low: gpu_class.h CellFor), `pcss` is the contact hardening on a class that has the search and soft on one that has not.
 constexpr Mode ModeFor(gpu_class::GpuClass cls, Choice choice, bool handheld = false) {
-  Mode mode = Mode::kSoft;
   switch (choice) {
-    case Choice::kGame:
-      return Mode::kGame;
-    case Choice::kSoft:
-      return Mode::kSoft;
-    case Choice::kPcss:
-      mode = Mode::kPcss;
-      break;
-    default:
-      mode = ModeOfCell(gpu_class::CellFor(gpu_class::Effect::kShadowFilter, cls, handheld));
-      break;
+    case Choice::kGame: return Mode::kGame;
+    case Choice::kSoft: return Mode::kSoft;
+    case Choice::kPcss: return Mode::kPcss;
+    default: return ModeOfCell(gpu_class::CellFor(gpu_class::Effect::kShadowFilter, cls, handheld));
   }
-  return mode == Mode::kPcss && !PcssAvailable(cls) ? Mode::kSoft : mode;
 }
 
-// How many taps: 8 on a Low class (an integrated GPU that was given `soft` by hand), 16 on the others (the
-// game has 4); mcla_gpu_shadow_filter_taps (debug) forces any number from 4 to 32.
-inline constexpr int kTapsLow = 8;
-inline constexpr int kTapsOther = 16;
+// The debug setting can override the sample count for either filter.
+inline constexpr int kTaps = 16;
 inline constexpr int kMinTaps = 4;
 inline constexpr int kMaxTaps = 32;
-constexpr int TapsFor(gpu_class::GpuClass cls, int forced_taps) {
-  if (forced_taps > 0) return std::clamp(forced_taps, kMinTaps, kMaxTaps);
-  return cls == gpu_class::GpuClass::kLow ? kTapsLow : kTapsOther;
+constexpr int TapsFor(gpu_class::GpuClass, int forced_taps) {
+  return forced_taps > 0 ? std::clamp(forced_taps, kMinTaps, kMaxTaps) : kTaps;
 }
 
 // The `mode` bits of the constants (hlsl: `uint(g_ShadowFilter.w + 0.5)`).
@@ -146,7 +131,7 @@ constexpr ShadowFilterConstants MakeConstants(gpu_class::GpuClass cls, int force
   constants.noise_frame = temporal_frame_valid ? static_cast<float>(frame & 1023u) : 0.0f;
   uint32_t mode = gather ? kModeGather : 0u;
   if (temporal_frame_valid) mode |= kModeNoise | (blue_noise ? kModeBlueNoise : 0u);
-  if (pcss && PcssAvailable(cls)) mode |= kModePcss | (SunBits(sun_tuning) << kSunShift);
+  if (pcss) mode |= kModePcss | (SunBits(sun_tuning) << kSunShift);
   constants.mode = static_cast<float>(mode);
   return constants;
 }

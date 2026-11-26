@@ -61,10 +61,9 @@ struct PoolBudget {
 
 // M2 section 8: hit pool 17-40 / 33-61 (+17 for the far lod) / 88-133 (+17) MB of data at the three levels, staged 9 / 17 / 20 MiB a frame; the buffers are the sizes the format header
 // names, "64 to 256 MiB": the data at p90 is under half of each, the rest is room for the ring's movement and for fragmentation.
-constexpr PoolBudget PoolBudgetFor(gpu_class::GpuClass cls, Level level) {
-  if (level == Level::kOff || cls == gpu_class::GpuClass::kLow) return PoolBudget{};
-  if (cls == gpu_class::GpuClass::kHigh) return level == Level::kUltra ? PoolBudget{256 * kMiB, uint32_t(20 * kMiB)} : PoolBudget{128 * kMiB, uint32_t(17 * kMiB)};
-  return level == Level::kUltra ? PoolBudget{128 * kMiB, uint32_t(12 * kMiB)} : PoolBudget{64 * kMiB, uint32_t(9 * kMiB)};  // a Mid card asked for ultra by hand: the High class's high
+constexpr PoolBudget PoolBudgetFor(gpu_class::GpuClass, Level level) {
+  if (level == Level::kOff) return {};
+  return level == Level::kUltra ? PoolBudget{256 * kMiB, uint32_t(20 * kMiB)} : PoolBudget{128 * kMiB, uint32_t(17 * kMiB)};
 }
 
 // The share of the pool the streaming plan may fill: a first fit allocator over blocks of 0.3 to 12 MiB keeps its holes small, and the tenth that is left is what a hole the next block

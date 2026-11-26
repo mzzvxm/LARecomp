@@ -171,7 +171,6 @@ class CityTextureSet {
   city_texture::TextureBudget budget_;
   TextureScope scope_ = TextureScope::kNone;
   TextureScope applied_scope_ = TextureScope::kNone;
-  bool growth_allowed_ = true;
   uint64_t next_pressure_check_ = 0;
   uint32_t slots_held_ = 0;
   Stats stats_;

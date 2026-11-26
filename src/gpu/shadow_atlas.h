@@ -54,11 +54,6 @@ class ShadowAtlas {
   void RemoveProvider(ShadowProvider* provider);
   bool HasProvider(shadow_atlas::ProviderId id) const { return providers_[uint32_t(id)] != nullptr; }
 
-  // The level the memory allows: `wanted`, or a lower one when the atlas of `wanted` would take the video memory past the line the caches start releasing at (vram_budget.h HasRoomFor;
-  // only what is new is asked, nothing when the atlas held is already that big). The answer is kept for a while (kFitRetainFrames, longer after a refusal) so that the adapter is not
-  // asked every frame. Call before the frame's plan is made: the plan is for the level this returns. `frame` = the Scene's frame serial.
-  light_budget::Level FitLevel(light_budget::Level wanted, int views_per_car, uint64_t frame);
-
   // THE FRAME'S PLAN. Asks every provider for its pools (ProviderRequest), lays them out, tells each provider (OnLayout); returns the layout the texture is to have. Cheap: no GPU call.
   const shadow_atlas::Layout& Plan();
   // The texture for the planned layout: kept when its size is already that, else made (the old one goes after the lists that name it). False when it could not be made.
@@ -124,12 +119,7 @@ class ShadowAtlas {
 
   shadow_atlas::Published published_;
 
-  // FitLevel's memory
-  light_budget::Level fit_wanted_ = light_budget::Level::kOff;
-  light_budget::Level fit_level_ = light_budget::Level::kOff;
-  int fit_views_ = -1;
-  uint64_t fit_until_ = 0;
-  bool fit_logged_ = false;
+  bool memory_warned_ = false;
   bool create_failed_logged_ = false;
 };
 

@@ -80,28 +80,14 @@ struct Limits {
 //   High  4 cars within 20 m, every part, 60,000 triangles and 768 KiB a frame (about 2 frames).
 // The radius is the reflection's reach to another car (car_rt_hit_rules.h Level::others_reach: High 18 m, Mid 12 m) and a car's half length: a car whose near end the reflection
 // reaches is in the scene (RT-HIT-SHADING part two; it was 14 m and 10 m for a 4 m reach).
-inline Limits ClassLimits(gpu_class::GpuClass cls) {
+inline Limits ClassLimits(gpu_class::GpuClass) {
   Limits limits;
-  switch (cls) {
-    case gpu_class::GpuClass::kHigh:
-      limits.cars = 4;
-      limits.radius = 20.0;
-      limits.instances = 640;
-      limits.min_indices = 0;
-      limits.stage_triangles = 60000;
-      limits.content_bytes = 768u * 1024u;
-      break;
-    case gpu_class::GpuClass::kMid:
-      limits.cars = 2;
-      limits.radius = 14.0;
-      limits.instances = 320;
-      limits.min_indices = 45;
-      limits.stage_triangles = 30000;
-      limits.content_bytes = 384u * 1024u;
-      break;
-    case gpu_class::GpuClass::kLow:
-      break;
-  }
+  limits.cars = 4;
+  limits.radius = 20.0;
+  limits.instances = 640;
+  limits.min_indices = 0;
+  limits.stage_triangles = 60000;
+  limits.content_bytes = 768u * 1024u;
   return limits;
 }
 
@@ -111,9 +97,6 @@ inline Limits ClassLimits(gpu_class::GpuClass cls) {
 inline Limits LimitsFor(gpu_class::GpuClass cls, int cars_override, double radius_override) {
   Limits limits = ClassLimits(cls);
   if (cars_override >= 0) {
-    if (limits.cars == 0 && cars_override > 0) {
-      limits = ClassLimits(gpu_class::GpuClass::kHigh);
-    }
     limits.cars = uint32_t(std::min<int>(cars_override, int(kMaxCars)));
     limits.instances = std::max<uint32_t>(limits.instances, limits.cars * 160u);
   }

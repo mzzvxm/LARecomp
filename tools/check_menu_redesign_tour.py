@@ -8,11 +8,11 @@ import re
 def check(log):
     expected = (
         r"\[pause-menu\] opened 'GRAPHICS'",
-        r"\[preset\] enhanced_rt_ultra held over \d+ rows",
+        r"\[preset\] enhanced_rt held over \d+ rows",
         r"\[pause-menu\] opened 'DISPLAY'",
         r"\[pause-menu\] cvar 'mcla_gpu_aa' -> 'fxaa'",
         r"\[pause-menu\] opened 'IMAGE QUALITY'",
-        r"\[preset\] mcla_gpu_anisotropy changed by the player: enhanced_rt_ultra becomes custom",
+        r"\[preset\] mcla_gpu_anisotropy changed by the player: enhanced_rt becomes custom",
         r"\[pause-menu\] cvar 'mcla_gpu_anisotropy' -> 'game'",
         r"\[pause-menu\] opened 'LIGHTING AND SHADOWS'",
         r"\[pause-menu\] opened 'REFLECTIONS'",

@@ -129,17 +129,17 @@ void TestSettingAndBudgets() {
   // by hand: anywhere but Low
   CHECK(LevelFor(GpuClass::kMid, Choice::kHigh) == Level::kHigh && LevelFor(GpuClass::kMid, Choice::kUltra) == Level::kUltra);
   CHECK(LevelFor(GpuClass::kHigh, Choice::kUltra) == Level::kUltra && LevelFor(GpuClass::kHigh, Choice::kOff) == Level::kOff);
-  CHECK(LevelFor(GpuClass::kLow, Choice::kHigh) == Level::kOff && LevelFor(GpuClass::kLow, Choice::kUltra) == Level::kOff);
+  CHECK(LevelFor(GpuClass::kLow, Choice::kHigh) == Level::kHigh && LevelFor(GpuClass::kLow, Choice::kUltra) == Level::kUltra);
   CHECK(LevelName(Level::kOff) == "off" && LevelName(Level::kHigh) == "high" && LevelName(Level::kUltra) == "ultra");
 
-  CHECK(!BudgetFor(GpuClass::kHigh, Level::kOff).on() && !BudgetFor(GpuClass::kLow, Level::kUltra).on());
+  CHECK(!BudgetFor(GpuClass::kHigh, Level::kOff).on() && BudgetFor(GpuClass::kLow, Level::kUltra).on());
   const Budget mid = BudgetFor(GpuClass::kMid, Level::kHigh);
   const Budget high = BudgetFor(GpuClass::kHigh, Level::kHigh);
   const Budget ultra = BudgetFor(GpuClass::kHigh, Level::kUltra);
   CHECK(mid.on() && high.on() && ultra.on());
-  CHECK(mid.hi_radius == 150.0f && high.hi_radius == 300.0f && ultra.hi_radius == 600.0f);  // the survey's rings
-  CHECK(mid.memory_cap < high.memory_cap && high.memory_cap < ultra.memory_cap);
-  CHECK(mid.build_triangles < high.build_triangles && high.build_triangles < ultra.build_triangles);
+  CHECK(mid.hi_radius == 300.0f && high.hi_radius == 300.0f && ultra.hi_radius == 600.0f);  // the survey's rings
+  CHECK(mid.memory_cap == high.memory_cap && high.memory_cap < ultra.memory_cap);
+  CHECK(mid.build_triangles == high.build_triangles && high.build_triangles < ultra.build_triangles);
   CHECK(mid.far_radius > mid.hi_radius * 4 && high.far_radius > high.hi_radius * 4 && ultra.far_radius > ultra.hi_radius * 4);
   // the caps hold the survey's worst case (the ring's p90 triangles + the whole far lod) with room: Mid 0.5 M, High 1.5 M, Ultra 2.9 M hi triangles + 0.383 M lod
   CHECK(EstimateStructureBytes(500000 + 383000) < mid.memory_cap);
@@ -148,7 +148,7 @@ void TestSettingAndBudgets() {
   CHECK(EstimateStructureBytes(50000) == 50000 * 96ull);
   // a Mid card asked for ultra by hand gets the High class's ring with a smaller cap
   const Budget mid_ultra = BudgetFor(GpuClass::kMid, Level::kUltra);
-  CHECK(mid_ultra.hi_radius == 300.0f && mid_ultra.memory_cap < high.memory_cap);
+  CHECK(mid_ultra.hi_radius == 600.0f && mid_ultra.memory_cap == ultra.memory_cap);
   // the debug radius
   const Budget r = WithRadius(high, 100.0f);
   CHECK(r.hi_radius == 100.0f && r.far_radius >= 400.0f && r.far_radius >= high.far_radius && r.hysteresis >= 15.0f);
@@ -530,7 +530,7 @@ void TestAutoAndPackState() {
     // `auto` is the rung's cell (rt_tier.h kRtShadows: off, high, high), not the class table's (off for Mid): a Mid class card that traces runs it, with the Mid budget
     CHECK(LevelForRung(GpuClass::kMid, RtTier::kStrong, Choice::kAuto) == Level::kOff && LevelForRung(GpuClass::kMid, RtTier::kWeak, Choice::kAuto) == Level::kOff &&
           LevelForRung(GpuClass::kMid, RtTier::kNone, Choice::kAuto) == Level::kOff && LevelForRung(GpuClass::kMid, RtTier::kWeak, Choice::kHigh) == Level::kHigh);
-    CHECK(BudgetFor(gpu_class::RtClass(GpuClass::kMid, RtTier::kStrong), Level::kHigh).hi_radius == 150.0f && BudgetFor(gpu_class::RtClass(GpuClass::kMid, RtTier::kWeak), Level::kHigh).on());
+    CHECK(BudgetFor(gpu_class::RtClass(GpuClass::kMid, RtTier::kStrong), Level::kHigh).hi_radius == 300.0f && BudgetFor(gpu_class::RtClass(GpuClass::kMid, RtTier::kWeak), Level::kHigh).on());
     // every class and tier: the choice `auto` is exactly what rt_tier.h's table says at the class's rung, the menu's AUTO label is the same word, and a hand set level never lies about the tier none
     for (const GpuClass cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       for (const RtTier tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
@@ -543,12 +543,12 @@ void TestAutoAndPackState() {
         CHECK(!BudgetFor(gpu_class::RtClass(cls, tier), LevelForRung(cls, tier, Choice::kAuto)).on());
       }
     }
-    CHECK(LevelForRung(GpuClass::kLow, RtTier::kStrong, Choice::kHigh) == Level::kOff);
+    CHECK(LevelForRung(GpuClass::kLow, RtTier::kStrong, Choice::kHigh) == Level::kHigh);
     CHECK(AutoLevelForRung(GpuClass::kHigh, RtTier::kNone, true) == Level::kOff && AutoLevelForRung(GpuClass::kHigh, RtTier::kWeak, true) == Level::kOff &&
           AutoLevelForRung(GpuClass::kHigh, RtTier::kStrong, false) == Level::kOff);
     // a weak card of the High class is budgeted as Mid, a none card as Low (no structures at all)
     CHECK(BudgetFor(gpu_class::RtClass(GpuClass::kHigh, RtTier::kWeak), Level::kHigh).hi_radius == BudgetFor(GpuClass::kMid, Level::kHigh).hi_radius &&
-          !BudgetFor(gpu_class::RtClass(GpuClass::kHigh, RtTier::kNone), Level::kHigh).on());
+          LevelForRung(GpuClass::kHigh, RtTier::kNone, Choice::kHigh) == Level::kOff);
   }
   CHECK(AutoLevelFor(GpuClass::kHigh, true) == Level::kOff);
   CHECK(AutoLevelFor(GpuClass::kHigh, false) == Level::kOff);
@@ -559,7 +559,7 @@ void TestAutoAndPackState() {
   CHECK(LevelName(AutoLevelFor(GpuClass::kHigh, true)) == "off" && LevelName(AutoLevelFor(GpuClass::kHigh, false)) == "off");
   // an explicit level is the player's: it does not look at the device here (the pass is simply not there without ray queries), and Low never runs it
   CHECK(LevelFor(GpuClass::kMid, Choice::kHigh) == Level::kHigh && LevelFor(GpuClass::kMid, Choice::kUltra) == Level::kUltra);
-  CHECK(LevelFor(GpuClass::kLow, Choice::kUltra) == Level::kOff);
+  CHECK(LevelFor(GpuClass::kLow, Choice::kUltra) == Level::kUltra);
   // the three levels the row lists match the budgets: off has none, high and ultra do
   CHECK(!BudgetFor(GpuClass::kHigh, Level::kOff).on() && BudgetFor(GpuClass::kHigh, Level::kHigh).on() && BudgetFor(GpuClass::kHigh, Level::kUltra).on());
   CHECK(BudgetFor(GpuClass::kHigh, Level::kHigh).hi_radius == 300.0f && BudgetFor(GpuClass::kHigh, Level::kUltra).hi_radius == 600.0f);

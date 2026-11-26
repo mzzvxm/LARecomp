@@ -72,9 +72,8 @@ enum class Gate : uint8_t {
   kNotBuilt,  // the probe update (G2) is not in this renderer
 };
 
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool update_built) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier, bool update_built) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!update_built) return Gate::kNotBuilt;
   return Gate::kRuns;
 }

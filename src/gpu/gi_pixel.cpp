@@ -95,20 +95,6 @@ void GiPixel::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
     readback_.reset();
     return;
   }
-  // The timestamps of the governor: a pool of two a frame slot. Without them the pass stays at the traced size (said once in the log).
-  stamps_ok_ = backend::TimestampsSupported(device.device());
-  for (Slot& s : slots_) {
-    if (stamps_ok_) {
-      s.stamps = device.CreateQueryPool(2, "gi pixel timestamps");
-      stamps_ok_ = s.stamps != nullptr;
-    }
-  }
-  if (!stamps_ok_) {
-    for (Slot& s : slots_) {
-      s.stamps.reset();
-    }
-    REXLOG_INFO("{} no GPU timestamps: the per-pixel pass's governor holds the traced size", kPrefix);
-  }
   ready_ = true;
   passes.precache().Note("ray traced bounce light's per-pixel pass: made when first wanted (ULTRA on a strong ray tracing card)", 0);
 }
@@ -337,27 +323,6 @@ uint64_t GiPixel::HeldBytes() const {
 // the frame
 // ---------------------------------------------------------------------------
 
-void GiPixel::Harvest(Slot& s) {
-  if (!s.stamps_pending || !s.stamps) {
-    return;
-  }
-  s.stamps_pending = false;
-  s.stamps->queryResults();
-  const uint64_t* t = s.stamps->getResults();
-  if (t[1] >= t[0]) {
-    governor_.AddSample(float(double(t[1] - t[0]) / 1.0e6), rules::CellFor(gi::Rung::kStrong, gi::Level::kUltra).cap_ms);
-  }
-}
-
-void GiPixel::OnSubmitted(uint32_t frame_slot) {
-  if (frame_slot >= kFramesInFlight) {
-    return;
-  }
-  Slot& s = slots_[frame_slot];
-  s.stamps_pending = s.stamps_written;
-  s.stamps_written = false;
-}
-
 bool GiPixel::Begin(const Inputs& in) {
   plan_ = {};
   result_ = nullptr;
@@ -392,8 +357,7 @@ bool GiPixel::Begin(const Inputs& in) {
     plan = gi_pixel::Decide(facts);
   }
   if (plan.runs()) {
-    // the size: the traced size, or half of it on each axis where the governor has taken the pass down
-    divisor_ = governor_.divisor();
+    // Keep the per-pixel pass at the selected trace size.
     const uint32_t width = rules::PixelExtent(in.traced[0], divisor_);
     const uint32_t height = rules::PixelExtent(in.traced[1], divisor_);
     facts.resources_ok = width <= 0xFFFFu && height <= 0xFFFFu && EnsureImages(width, height) && EnsureSlot(in.frame_slot);
@@ -406,7 +370,6 @@ bool GiPixel::Begin(const Inputs& in) {
   }
   rayregen::NoteTraced(rayregen::Site::kBounce, image_width_, image_height_);
   Slot& slot = slots_[in.frame_slot];
-  Harvest(slot);
 
   // THE CAMERA and the history: the last run's pose and lens, valid when that run was the previous frame's at this size and the field did not cut.
   const gi_apply::Frame& cam = *in.camera;
@@ -482,11 +445,6 @@ void GiPixel::RecordTrace(plume::RenderCommandList* list) {
   const plume::RenderBufferBarrier buffers[1] = {{stats_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}};
   list->barriers(Stage::COMPUTE, buffers, 1, writes, 4);
   signal_.layout = normal_.layout = hit_.layout = depth_[parity_].layout = Layout::GENERAL;
-  if (stamps_ok_ && slot.stamps) {
-    list->resetQueryPool(slot.stamps.get(), 0, 2);
-    list->writeTimestamp(slot.stamps.get(), 0);
-    slot.stamps_written = true;
-  }
   rules::Push push = {};
   push.slots[0] = in_.depth_slot;
   push.slots[1] = in_.normal_slot;
@@ -569,9 +527,6 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   const plume::RenderTextureBarrier reads[2] = {{depth_[parity_].texture.get(), Layout::SHADER_READ}, {normal_.texture.get(), Layout::SHADER_READ}};
   list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, reads, 2);
   depth_[parity_].layout = normal_.layout = Layout::SHADER_READ;
-  if (stamps_ok_ && slot.stamps && slot.stamps_written) {
-    list->writeTimestamp(slot.stamps.get(), 1);
-  }
   // This run is the next frame's history, unless it was a raw one: the denoiser's own history image was not written in it, so the next frame (raw or plain) starts the denoiser again.
   have_prev_ = rules::KeepsHistory(plan_.raw) && !regen_ok;
   regen_previous_ = regen_ok ? regen_now_ : rgd::BounceHistoryKey{};
@@ -586,7 +541,6 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
   ran_since_present_ = true;
   ++frames_run_;
   frames_raw_ += plan_.raw ? 1u : 0u;
-  frames_reduced_ += divisor_ > 1 ? 1u : 0u;
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} {}", kPrefix, rules::FirstLine(uint32_t(in_.frame), image_width_, image_height_, divisor_, world_ != nullptr ? world_->current().decoded.emitter_count : 0u, rules::kReachM));
@@ -754,9 +708,9 @@ void GiPixel::ProcessReadback(uint64_t frame, uint64_t generation) {
 void GiPixel::LogInterval(uint64_t frame, const std::array<uint32_t, rules::kStatWords>& d, uint32_t frames) {
   const double traced = double(d[rules::kStatPixels]);
   const auto share = [&](uint32_t word) { return traced > 0.0 ? 100.0 * double(d[word]) / traced : 0.0; };
-  REXLOG_INFO("{} frame {}: census of every {} th frame in the last {}: {} pixels traced ({:.1f}% hit the city, {:.1f}% a car, {:.1f}% found nothing within {:.0f} m, {} hits without data), {} pixels left alone; the governor {} ({:.2f} ms)",
+  REXLOG_INFO("{} frame {}: census of every {} th frame in the last {}: {} pixels traced ({:.1f}% hit the city, {:.1f}% a car, {:.1f}% found nothing within {:.0f} m, {} hits without data), {} pixels left alone",
               kPrefix, frame, kStatsEvery, frames, d[rules::kStatPixels], share(rules::kStatHits), share(rules::kStatCarHits), share(rules::kStatMisses), double(rules::kReachM), d[rules::kStatNoData],
-              d[rules::kStatSkipped], governor_.reduced() ? "at half the traced size" : "at the traced size", double(governor_.ewma()));
+              d[rules::kStatSkipped]);
   if (pass_timing_ && pass_timing_->enabled()) {
     REXLOG_INFO("{} frame {}: timings: rt gi pixel {:.3f} ms, rt gi denoise {:.3f} ms a frame", kPrefix, frame, pass_timing_->LabelMsPerFrame("rt gi pixel"), pass_timing_->LabelMsPerFrame("rt gi denoise"));
   }
@@ -772,8 +726,8 @@ std::string GiPixel::CensusText() const {
       why += std::format("{}{} {}", why.empty() ? "" : ", ", rules::WhyName(rules::Why(i)), why_counts_[i]);
     }
   }
-  return std::format("; per-pixel pass: {} frames ({} reduced, {} raw), {:.1f} MiB held, governor {}{}; frames without it: {}", frames_run_, frames_reduced_, frames_raw_, double(HeldBytes()) / (1024.0 * 1024.0),
-                     governor_.reduced() ? "reduced" : "full", stamps_ok_ ? "" : " (no timestamps)", why.empty() ? std::string("none") : why);
+  return std::format("; per-pixel pass: {} frames ({} raw), {:.1f} MiB held; frames without it: {}", frames_run_, frames_raw_, double(HeldBytes()) / (1024.0 * 1024.0),
+                     why.empty() ? std::string("none") : why);
 }
 
 }  // namespace mcla::gpu

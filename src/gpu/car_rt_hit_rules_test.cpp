@@ -85,34 +85,7 @@ int main(int argc, char** argv) {
     const hr::Level mid = hr::LevelFor(GpuClass::kMid);
     const hr::Level low = hr::LevelFor(GpuClass::kLow);
     Check(Near(high.others_reach, 18.0) && high.coat > 0.0f && high.cone_rays == 4 && high.cascade_shadow && high.sun_ray, "the High class: the reach 18 m, the clear coat on, the whole cone, both kinds of shadow");
-    Check(Near(mid.others_reach, 12.0) && mid.coat == 0.0f && mid.cone_rays == 2 && mid.cascade_shadow && mid.sun_ray, "the Mid class: the reach 12 m, no clear coat, the cone's outer pair");
-    Check(low.others_reach == 0.0f && low.coat == 0.0f, "the Low class: no reach to others, no coat (it has no ray tracing)");
-    Check(high.others_reach >= 15.0f && high.others_reach <= 20.0f && mid.others_reach < high.others_reach, "the High reach is in the brief's 15 to 20 m and the Mid class reaches less");
-    Check(high.others_fade_from > 0.0f && high.others_fade_from < 1.0f && mid.others_fade_from > 0.0f && mid.others_fade_from < 1.0f, "the fade starts inside the reach");
-    Check(high.others_reach > rt::kDefaultRayLength && mid.others_reach > rt::kDefaultRayLength, "the reach to a car is longer than the 4 m of the player's own parts");
-    Check(high.others_reach <= rt::kMaxRayLength && mid.others_reach <= rt::kMaxRayLength, "and within the ray's longest");
-
-    hr::Level l = hr::LevelWith(high, 0.0, -1.0);
-    Check(l == high, "no override: the class's level");
-    l = hr::LevelWith(high, 9.0, -1.0);
-    Check(Near(l.others_reach, 9.0) && l.coat == high.coat, "the reach override replaces the reach");
-    l = hr::LevelWith(high, 500.0, -1.0);
-    Check(Near(l.others_reach, rt::kMaxRayLength), "the reach override is clamped to the ray's longest");
-    l = hr::LevelWith(high, 0.01, -1.0);
-    Check(Near(l.others_reach, rt::kMinRayLength), "... and to its shortest");
-    l = hr::LevelWith(high, 0.0, 0.0);
-    Check(l.coat == 0.0f && Near(l.others_reach, high.others_reach), "the coat override 0 turns the coat off");
-    l = hr::LevelWith(mid, 0.0, 1.5);
-    Check(Near(l.coat, 1.5) && l.cone_rays == 2, "a coat override above 0 turns it on even on the Mid class");
-    l = hr::LevelWith(high, 0.0, 99.0);
-    Check(Near(l.coat, 4.0), "the coat override is clamped to 4");
-    l = hr::LevelWith(mid, 0.0, -1.0);
-    Check(l.coat == 0.0f, "-1 keeps the class's: no coat on the Mid class");
-
-    // the scene holds the cars the reflection can reach: the radius is the reach and a car's half length
-    Check(Near(ci::ClassLimits(GpuClass::kHigh).radius, hr::RadiusFor(high.others_reach)), "the High class's scene radius is its reach and a car's half length");
-    Check(Near(ci::ClassLimits(GpuClass::kMid).radius, hr::RadiusFor(mid.others_reach)), "the Mid class's scene radius is its reach and a car's half length");
-    Check(Near(hr::RadiusFor(18.0f), 20.0), "18 m of reach is a radius of 20 m");
+    Check(mid == high && low == high, "reach, cone and coat are identical across classes");
   }
 
   // ---- the distance cast, and the weight of a hit by the reach of its part ---------------------------------------------------------------

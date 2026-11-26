@@ -155,11 +155,14 @@ fallback_values = [{id = "1", label = "100%"}]
     }
     check(doc["tabs"][1]["sections"][0]["rows"][0]["apply"].value_or("") == std::string_view("restart"),
           "launcher-only row uses setting lifecycle");
-    check(doc["settings"]["mcla_gpu_shadow_filter"]["auto"]["handheld"]["low"].value_or("") ==
-          std::string_view("soft"), "handheld override");
+    const auto shadow_auto = doc["settings"]["mcla_gpu_shadow_filter"]["auto"];
+    check(!shadow_auto["handheld"], "there is no handheld override");
+    for (const auto cls : {"low", "mid", "high"}) {
+        check(shadow_auto["cells"][cls].value_or("") == std::string_view("pcss"), "legacy Auto is the same across classes");
+    }
     check(doc["settings"]["mcla_gpu_rt_shadows"]["auto"]["by"].value_or("") ==
           std::string_view("rt_rung"), "RT overrides class descriptor");
-    check(doc["settings"]["traffic_unspawn_dist"]["auto"]["cells"]["low"].value_or(0.0) == 250.0,
+    check(doc["settings"]["traffic_unspawn_dist"]["auto"]["cells"]["low"].value_or(0.0) == 300.0,
           "numeric auto cells");
     check(!doc["settings"]["mcla_gpu_vendor_denoiser"], "a catalog without the toggle stays unchanged");
     auto denoiser_catalog = catalog;
@@ -187,15 +190,14 @@ fallback_values = [{id = "1", label = "100%"}]
     const auto preset_doc = BuildDocument(with_presets, menus, input);
     const auto presets = preset_doc["presets"];
     check(presets["setting"].value_or("") == std::string_view("mcla_gpu_preset"), "the presets name their setting");
-    check(presets["order"].as_array() && presets["order"].as_array()->size() == 6 && presets["order"][0].value_or("") == std::string_view("vanilla") &&
-          presets["order"][5].value_or("") == std::string_view("custom"), "six presets, VANILLA first, CUSTOM last");
+    check(presets["order"].as_array() && presets["order"].as_array()->size() == 4 && presets["order"][0].value_or("") == std::string_view("vanilla") &&
+          presets["order"][3].value_or("") == std::string_view("custom"), "four presets, VANILLA first, CUSTOM last");
     check(presets["first_start"].value_or("") == std::string_view("vanilla"), "a first start is VANILLA");
     check(presets["legacy_file_preset"].value_or("") == std::string_view("custom"),
           "a file with a covered setting and no preset starts as CUSTOM");
     check(presets["items"]["vanilla"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("off") &&
           presets["items"]["enhanced"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("on") &&
-          presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt") &&
-          presets["items"]["enhanced_rt_ultra"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt"), "the values are the table's");
+          presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt"), "the values are the table's");
     check(presets["items"]["enhanced_rt"]["needs"].value_or("") == std::string_view("gpu.rt_tier != 'none'") && presets["items"]["enhanced_rt"]["needs_reason"] &&
           !presets["items"]["enhanced"]["needs"], "only the RT presets need a ray tracing tier, and say why");
     check(!presets["items"]["custom"]["values"], "CUSTOM has no values of its own");
@@ -208,20 +210,20 @@ fallback_values = [{id = "1", label = "100%"}]
     };
     check(covered("mcla_gpu_ao"), "a saved AO setting triggers the exported legacy preset");
     check(covered("mcla_gpu_ao_rt") && presets["items"]["vanilla"]["values"]["mcla_gpu_ao_rt"].value_or("") == std::string_view("off") &&
-          presets["items"]["enhanced_rt_ultra"]["values"]["mcla_gpu_ao_rt"].value_or("") == std::string_view("both"),
+          presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ao_rt"].value_or("") == std::string_view("both"),
           "car occlusion RT has its own concrete preset cells");
     check(!covered("mcla_gpu_msaa") && !covered("mcla_gpu_aa"), "both Display AA settings are outside presets");
     check(covered("mcla_gpu_ssr_rt") && presets["items"]["enhanced"]["values"]["mcla_gpu_ssr_rt"].value_or("") == std::string_view("off") &&
-          presets["items"]["enhanced_rt_ultra"]["values"]["mcla_gpu_ssr_rt"].value_or("") == std::string_view("high"),
+          presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ssr_rt"].value_or("") == std::string_view("high"),
           "the surface-reflection fallback is explicit and independent");
     check(!presets["items"]["vanilla"]["values"]["fps_limit"] && !presets["items"]["vanilla"]["values"]["mcla_gpu_upscaler"], "a preset names no DISPLAY or UPSCALING setting");
-    check(presets["class_to_preset"].as_array() && presets["class_to_preset"].as_array()->size() == 5 && presets["class_to_preset"][4]["when"].value_or("") == std::string_view("true"),
+    check(presets["class_to_preset"].as_array() && presets["class_to_preset"].as_array()->size() == 2 && presets["class_to_preset"][1]["when"].value_or("") == std::string_view("true"),
           "the last recommendation rule always holds");
     check(presets["flip"]["to"].value_or("") == std::string_view("custom") && presets["flip"]["writes"][0]["setting"].value_or("") == std::string_view("mcla_gpu_preset_from"),
           "a change of a covered row flips to CUSTOM and remembers where it started");
-    bool rung = false;
-    for (const auto& fact : *preset_doc["facts_used"].as_array()) rung = rung || fact.value_or("") == std::string_view("gpu.rt_rung");
-    check(rung, "the recommendation's facts are in facts_used");
+    bool has_tier = false;
+    for (const auto& fact : *preset_doc["facts_used"].as_array()) has_tier = has_tier || fact.value_or("") == std::string_view("gpu.rt_tier");
+    check(has_tier, "the recommendation's facts are in facts_used");
     check(Json(preset_doc) == Json(BuildDocument(with_presets, menus, input)), "the presets are deterministic");
     auto changed = catalog;
     changed["step"].as_table()->insert_or_assign("default", "1");

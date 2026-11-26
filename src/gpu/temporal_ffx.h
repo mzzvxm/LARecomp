@@ -71,7 +71,6 @@ class FfxBackend final : public TemporalBackend {
   void Request(const BackendRequest& request) override;
   bool Ready(const BackendRequest& request) const override;
   uint32_t JitterPhaseCount() const override;
-  bool NoRoom(const BackendRequest& request) const override;
   void Prepare(const BackendRequest& next) override;
   bool PreparedReady(const BackendRequest& next) const override;
   bool Commit(const BackendRequest& next) override;

@@ -22,37 +22,9 @@
 // mcla_gpu_class (auto | low | mid | high, debug only, live) forces a class for tests; it wins over all
 // of the above.
 //
-// The Steam Deck is kLow with a few cells of its own (the handheld cells, kHandheldCells below). It is kLow for everything that is
-// the CPU's or the whole GPU's (every effect that is off on shared memory stays off, the LOD scales are the game's, no ray tracing),
-// but its GPU is 8 compute units of RDNA 2, four times the 2-CU iGPU the Low cells were written for, and the GPU-only cells that
-// cost the least (the sun shadow's filter and detail, the reflections' detail) get the Mid values. It is found by name
-// (kHandheldTable: RADV's "VANGOGH", AMD's "Custom GPU 0405" and "0932") on an adapter that shares memory, so ClassName() is
-// still "low" everywhere a class is read; only the `auto` cells differ (CellFor, ResolveFor and AutoLabelFor with `handheld`;
-// Resolve and AutoLabel pass it). mcla_gpu_class = low gives the plain Low cells on a Deck, mid and high the others (a forced class
-// is never a handheld: Handheld() is false then), so the A/B of DECK1-NOTES.md step 8 is the default against `--mcla_gpu_class=low`
-// and `=mid`. What the three cells cost on a Deck is not measured (no hardware): the numbers are perf\COMPAT-AUDIT.md section 11.4.
-//
-// The `auto` table: for each effect, the value `auto` stands for in each class (kEffects below, the
-// table of GFX-UPGRADES-DESIGN.md section 9). THE CELLS ARE NOT WRITTEN HERE ANY MORE (GFX-PRESETS, owner 2026-11-23): a class's `auto` is the
-// value of the preset the class maps to, and the presets are one table, gfx_preset.h kRows: Low is VANILLA's column, Mid normally ENHANCED's, High ENHANCED
-// ULTRA's (kEffects and kScales read them; rt_tier.h's kRtEffects reads the RT presets'). The comments below say why each effect's cells are what
-// they are; to change one, change its row in gfx_preset.h (gfx_preset_test.cpp pins today's values and lists the few that are not the table's). An effect's package keeps its own cvar and its own
-// values; at the place it reads the cvar it calls
-//     std::string mode = gpu_class::Resolve(gpu_class::Effect::kSunShafts, setting_text);
-// where setting_text is the cvar's text as the render thread may read it (live_text.h: LiveText; the
-// pause menu's thread writes the cvar's own string).
-// and gets the value to act on: the table's cell for `auto`, the user's own choice unchanged for
-// anything else (so `off` and `game` are never overridden). Its pause row shows what `auto` comes
-// to, like the low latency row's "AUTO (ON)":
-//     case 0: return gpu_class::AutoLabel(gpu_class::Effect::kSunShafts);   // "AUTO (DEFAULT)"
-//
-// Five settings are not a string table: the numbers whose `auto` is a number too (the city LOD scale, the traffic LOD scale, the traffic
-// range and the pedestrian and parked car densities), with their own table and rule below (kScales, ScaleFor, ScaleLabelFor; the city LOD
-// keeps its old names CityLodScaleFor and CityLodLabelFor).
-//
-// The ray traced effects have a second axis, how well the card traces rays (an RTX 3060 and an RTX 5080 are both High): the RT tier (none / weak /
-// strong) and the `auto` table of those effects (columns none / weak / strong) are rt_tier.h, which reads this file's class and name rules.
-//
+// Adapter facts describe the device and select the recommended preset.
+// Legacy Auto words and numeric sentinels resolve to fixed settings on all devices.
+
 // Everything that decides something is a pure inline function here (Classify, Cell, ResolveFor,
 // AutoLabelFor, ScaleFor), and this header includes nothing of Plume or ReXGlue:
 // gpu_class_test.cpp builds on its own and checks every cell of the table and the class rule.
@@ -101,71 +73,39 @@ enum class Effect : uint8_t {
   kRtShadows,             // mcla_gpu_rt_shadows         auto, off, high, ultra (city_rt_rules.h; the city's real geometry traced for the sun's shadows)
   kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
   kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
+  kCarShadowMap,         // mcla_gpu_car_shadow_map
   kCount,
 };
 inline constexpr int kEffectCount = static_cast<int>(Effect::kCount);
 
-// What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
+// Legacy Auto words use one concrete value per effect. The compatible cells in
+// settings-ui.json all publish that same value.
 struct EffectInfo {
   std::string_view cvar;
-  std::string_view low, mid, high;
+  std::string_view value;
 };
-// One effect's cells from the preset table: Low is VANILLA's value, Mid ENHANCED's, High ENHANCED ULTRA's (gfx_preset.h).
-constexpr EffectInfo Derived(std::string_view cvar, gfx_preset::Preset mid = gfx_preset::Preset::kEnhanced) {
-  const int row = gfx_preset::MustFindRow(cvar);
-  return {cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kVanilla), gfx_preset::CellAt(row, mid),
-          gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedUltra)};
+
+constexpr EffectInfo Legacy(std::string_view cvar) {
+  return {cvar, gfx_preset::CellAt(gfx_preset::MustFindRow(cvar), gfx_preset::Preset::kEnhanced)};
 }
 
 inline constexpr EffectInfo kEffects[kEffectCount] = {
-    // Contact hardening on Mid and High (owner, 2026-11-19: auto picks PCSS where the search runs; on Low it stays the game's own, and a hand set
-    // pcss there is soft: shadow_filter.h PcssAvailable). Kept only if the cost of pcss against soft on Mid is small (the check plan measures it).
-    Derived("mcla_gpu_shadow_filter"),
-    Derived("mcla_gpu_shadow_resolution"),
-    Derived("mcla_gpu_reflection_resolution"),
-    // Legacy Auto keeps the Mid look in these rows; ENHANCED has a leaner budget.
-    Derived("mcla_gpu_contact_shadows", gfx_preset::Preset::kEnhancedRt),
-    Derived("mcla_gpu_sun_shafts"),  // a strength, not a quality: DEFAULT where the GPU is not integrated
-    // Bounce light: high on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
-    // high (the one that was called low) costs about 0.75 ms and ultra about 1.1 ms at 4K on an RTX 5080. It was off on every
-    // class until that cost was known (owner, 2026-11-13); the owner agreed on 2026-11-14 to high on High, off on Mid
-    // and Low. This branch waits for the owner's look of the high level.
-    Derived("mcla_gpu_ssgi"),
-    // Traffic and AI cars cast into the sun shadow cascades: the nearest few on a discrete GPU (each car adds cascade draws,
-    // about 4 x a car's low-LOD draws, on the render thread), none on an integrated one (traffic_shadow.h).
-    Derived("mcla_gpu_traffic_shadows"),
-    // The player's car paint reflects its own car (the wing in the trunk lid, a mirror in the door). The cost at 3840x2160 on
-    // an RTX 5080 is about 0.1 ms a frame (final cost runs, perf/out/FXCOST-B6.txt: +0.107 ms for the specular occlusion alone,
-    // +0.095 ms for the occlusion and the reflection of the car's own colour: the same), so the setting has one level, `on`, and
-    // every discrete card gets it; an integrated GPU does without.
-    Derived("mcla_gpu_car_selfrefl"),
-    // Legacy Auto uses the single screen-space AO level on every adapter.
-    {"mcla_gpu_ao", "on", "on", "on"},
-    // The cars' headlights as real lights at night (headlight_rig.h): one extra term in the lit shaders of the pixels the beams reach (about 40 ALU there,
-    // the early-out box keeps every other pixel to a few), so the setting has one level, `on`: every card but the integrated one (Low: the scene alone is
-    // 100+ ms there) gets it. The cost is the owner's to measure (perf/HEADLIGHT-LIGHT-RUNPLAN.md), a cell is corrected from it.
-    Derived("mcla_gpu_headlights"),
-    // The local lights cast shadows (the headlights now, the street lamps later; local_shadow.h): the main view's opaque draws are drawn again, depth only, into a map of 768 (medium), 1024 (high)
-    // or 1280 (ultra) texels a view (HL-SHADOW-QUALITY: a texel stays 1.3 to 1.9 cm in the world at 10 m from the lamps). THREE LEVELS (the three level shape, local_shadow_rules.h kThreeLevelShape, owner 2026-11-20, after the cost runs of perf/out/HL-PER-LAMP.txt): medium
-    // shadows the player's car's headlights and the nearest other car's with one view for each car (2 views, 9 MiB); high gives the player's car a view for each HEADLAMP (a pole in front of
-    // a car casts a shadow from each of its two lamps) and the nearest other car one view (3 views, 24 MiB); ultra shadows the next nearest car's too and gives all three cars a view for each
-    // lamp (6 views of 1280, 75 MiB). Mid gets medium, High gets ultra, shared memory nothing (the scene alone is 100+ ms there). The cost of a view is about 0.02 ms of graphics card time
-    // (the size barely counts) and 0.05 to 0.1 ms of render thread time (a pass over the frame's draws), measured on the RTX 5080 (the headlights runs of 2026-11-20); a view for each lamp
-    // instead of one for the car adds 0.05 to 0.15 ms of graphics card time and 0.04 to 0.16 ms of render thread time there, and a weaker PC pays several times that, so the lamps' views
-    // are for the levels above Mid's cell.
-    Derived("mcla_gpu_light_shadows", gfx_preset::Preset::kEnhancedRt),
-    // Volumetric light (light beams under the lamps and headlights, fog and sun shafts: volumetrics.h; VOLUMETRICS-SURVEY.md section 4,
-    // estimated 0.13 / 0.19 / 0.30 ms at 4K and 0.06 / 0.12 / 0.23 ms at 1080p on an RTX 5080 for medium / high / ultra, about 0.5 ms
-    // for medium and 1.0 ms for high at 1080p on a GTX 1050-class card): medium on Mid, high on High, nothing on shared memory. Ultra is
-    // a deliberate pick: its cost is not "no visible loss" for the weakest cards of the High class (6 GB GTX 1060-class).
-    Derived("mcla_gpu_volumetrics", gfx_preset::Preset::kEnhancedRt),
-    // Compatibility values used by old files. Named presets apply their own cells.
-    {"mcla_gpu_rt_shadows", "off", "off", "off"},
-    {"mcla_gpu_ssr", "off", "off", "off"},
-    // A car's neon underglow lights the ground, the kerbs, the walls and the other cars near it (GB-NEON; neon_light.h; owner, 2026-11-21: ON BY DEFAULT where the light pass runs). One level, `on`: the
-    // light pass draws a few small scissored lights (4 / 9 / 16 a frame at most, by the LIGHT SHADOWS level, only while a car with a neon is lit: its G-buffer planes are made only then), so every
-    // card but the integrated one (Low: the scene alone is 100+ ms there) gets it. The cost is the owner's to measure (RUNPLAN-gb-neon.txt, the cost runs); a cell is corrected from it.
-    Derived("mcla_gpu_neon_light"),
+    Legacy("mcla_gpu_shadow_filter"),
+    Legacy("mcla_gpu_shadow_resolution"),
+    Legacy("mcla_gpu_reflection_resolution"),
+    Legacy("mcla_gpu_contact_shadows"),
+    Legacy("mcla_gpu_sun_shafts"),
+    Legacy("mcla_gpu_ssgi"),
+    Legacy("mcla_gpu_traffic_shadows"),
+    Legacy("mcla_gpu_car_selfrefl"),
+    Legacy("mcla_gpu_ao"),
+    Legacy("mcla_gpu_headlights"),
+    Legacy("mcla_gpu_light_shadows"),
+    Legacy("mcla_gpu_volumetrics"),
+    {"mcla_gpu_rt_shadows", "off"},
+    {"mcla_gpu_ssr", "off"},
+    Legacy("mcla_gpu_neon_light"),
+    {"mcla_gpu_car_shadow_map", "ultra"},
 };
 
 // A discrete GPU with less dedicated memory than this is kMid. A nominal 6 GB card reports a little
@@ -173,11 +113,8 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
 // card is kHigh, a 4 GB one kMid. A first guess for the owner to tune.
 inline constexpr uint64_t kMidBelowBytes = 5632ull << 20;
 
-// The ray quality of the sun shafts is not a setting. The blur marches each ray over the sky image (half the picture, capped at 960x540: shafts_image.h) in this many
-// steps, chosen by the class: 64 on High, 32 on Mid (and on Low, where the shafts are off unless the player turns a
-// strength on by hand: the cheaper one). The debug cvar mcla_gpu_sun_shafts_steps overrides it (shafts_level.h Steps).
-inline constexpr uint32_t kSunShaftStepsMid = 32;
-inline constexpr uint32_t kSunShaftStepsHigh = 64;
+// Sun shafts use the same ray steps at every strength. The debug override is in shafts_level.h.
+inline constexpr uint32_t kSunShaftSteps = 64;
 
 // --- the pure rules ----------------------------------------------------------------------------
 
@@ -214,52 +151,9 @@ constexpr const EffectInfo& Info(Effect effect) { return kEffects[static_cast<in
 // The cvar of an effect, for logs.
 constexpr std::string_view CvarName(Effect effect) { return Info(effect).cvar; }
 
-// What `auto` stands for in a class.
-constexpr std::string_view Cell(Effect effect, GpuClass c) {
-  const EffectInfo& info = Info(effect);
-  switch (c) {
-    case GpuClass::kLow:
-      return info.low;
-    case GpuClass::kMid:
-      return info.mid;
-    default:
-      return info.high;
-  }
-}
-
-// The handheld cells: the cells a handheld's GPU (the Steam Deck, found by name: kHandheldTable below) takes in place of the Low class's,
-// for the effects listed here and no other (every other cell of the Low column stays). The Deck's GPU is 8 compute units of RDNA 2 (about 1.6
-// TFLOPs, four times the 2-CU iGPU the Low column was written for) on 16 GB of shared memory, and what it can carry on top of Low is what
-// costs the least GPU time and little memory, at Mid's values (perf\COMPAT-AUDIT.md section 11.4, DECK1-NOTES.md R5): the sun shadow's
-// filter (Mid's cell is pcss, which a Low class cannot run, so soft: 8 taps, no blocker search), its detail and the reflections' detail (the
-// side views' targets at 2x, about 60 MiB in all, of the 16 GB). Everything else is what Low says: no contact shadows, ambient occlusion, sun
-// shafts, bounce light, headlights, light shadows, volumetric light or screen-space reflections, the game's own environment detail, the
-// game's LOD scales (the CPU is a 4-core Zen 2). A cell here is a guess at what fits in the Deck's frame (a shadow pass costs 1.2 to 1.4 ms on the
-// 2-CU iGPU at the game's own size; the Deck should be a third of that [inference]): it is measured by DECK1-NOTES.md step 8 and corrected
-// there, here and in gpu_class_test.cpp.
-struct HandheldCell {
-  Effect effect;
-  std::string_view value;  // what `auto` stands for on a handheld
-};
-inline constexpr HandheldCell kHandheldCells[] = {
-    {Effect::kShadowFilter, "soft"},
-    {Effect::kShadowResolution, "high"},
-    {Effect::kReflectionResolution, "high"},
-};
-inline constexpr int kHandheldCellCount = static_cast<int>(sizeof(kHandheldCells) / sizeof(kHandheldCells[0]));
-
-// What `auto` stands for in a class on this kind of device: a handheld (only meaningful in kLow; any other class ignores it) takes
-// kHandheldCells where it lists the effect and the Low cell otherwise.
-constexpr std::string_view CellFor(Effect effect, GpuClass c, bool handheld) {
-  if (handheld && c == GpuClass::kLow) {
-    for (const HandheldCell& cell : kHandheldCells) {
-      if (cell.effect == effect) {
-        return cell.value;
-      }
-    }
-  }
-  return Cell(effect, c);
-}
+// Compatibility signatures also serve the menu and the SDK-free tests.
+constexpr std::string_view Cell(Effect effect, GpuClass) { return Info(effect).value; }
+constexpr std::string_view CellFor(Effect effect, GpuClass, bool) { return Info(effect).value; }
 
 // `auto` -> the cell; anything else comes back unchanged.
 inline std::string ResolveFor(GpuClass c, bool handheld, Effect effect, std::string_view user_value) {
@@ -288,10 +182,7 @@ inline std::string AutoLabelOf(std::string_view shown) {
   return "AUTO (" + Upper(shown) + ")";
 }
 
-// The ray steps of the sun shafts' blur for a class (see kSunShaftStepsMid).
-constexpr uint32_t SunShaftSteps(GpuClass c) {
-  return c == GpuClass::kHigh ? kSunShaftStepsHigh : kSunShaftStepsMid;
-}
+constexpr uint32_t SunShaftSteps(GpuClass) { return kSunShaftSteps; }
 
 // "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value in capitals. The stored word is the word the player sees
 // (no graphics setting has a level called low: the ambient occlusion, the contact shadows and the bounce light are off / high / ultra,
@@ -345,28 +236,22 @@ inline constexpr int kScaleCount = 5;
 
 struct ScaleInfo {
   std::string_view cvar;
-  double low, mid, high;  // what `auto` stands for per class
-  bool zero_is_auto;      // 0 is `auto` too (no value of the setting is 0); else only a number below 0 is
-  char unit;              // the row's suffix: 'X' (a multiple) or 'M' (metres)
+  double value;
+  bool zero_is_auto;
+  char unit;
 };
 
-// Mid and High read the preset table (ENHANCED's and ENHANCED ULTRA's cells, gfx_preset.h); the Low cell is VANILLA's for the city LOD (the game's own 1) and a literal for the other
-// four: VANILLA is the stock game (400 m, 1x, 1x, traffic LOD 1) but the Low class's `auto` has been below stock since the owner's 2026-11-20 LOD pass (a weak PC keeps the performance
-// values, and with no renderer class known, the Xenia renderer included, `auto` is the Low cell), which is not VANILLA's call to undo. Folding them in is a final pass decision.
-constexpr ScaleInfo DerivedScale(std::string_view cvar, double low, bool zero_is_auto, char unit) {
-  const int row = gfx_preset::MustFindRow(cvar);
-  return {cvar, low, gfx_preset::Number(gfx_preset::CellAt(row, gfx_preset::Preset::kEnhanced)),
-          gfx_preset::Number(gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedUltra)), zero_is_auto, unit};
+constexpr ScaleInfo LegacyScale(std::string_view cvar, bool zero_is_auto, char unit) {
+  return {cvar, gfx_preset::Number(gfx_preset::CellAt(gfx_preset::MustFindRow(cvar), gfx_preset::Preset::kEnhanced)), zero_is_auto, unit};
 }
 inline constexpr ScaleInfo kScales[kScaleCount] = {
-    DerivedScale("lod_city_scale", gfx_preset::Number(gfx_preset::CellOf("lod_city_scale", gfx_preset::Preset::kVanilla)), true, 'X'),
-    DerivedScale("lod_traffic_scale", 1.5, true, 'X'),
-    DerivedScale("traffic_unspawn_dist", 250.0, true, 'M'),
-    DerivedScale("ped_density_scale", 0.5, false, 'X'),
-    DerivedScale("parked_car_scale", 0.5, false, 'X'),
+    LegacyScale("lod_city_scale", true, 'X'),
+    LegacyScale("lod_traffic_scale", true, 'X'),
+    LegacyScale("traffic_unspawn_dist", true, 'M'),
+    LegacyScale("ped_density_scale", false, 'X'),
+    LegacyScale("parked_car_scale", false, 'X'),
 };
 
-// The traffic range is held to the menu's range when it is set by hand (the setting accepts 0 to 600 so that 0 can be `auto`).
 inline constexpr double kTrafficRangeMin = 100.0;
 inline constexpr double kTrafficRangeMax = 600.0;
 
@@ -375,22 +260,10 @@ constexpr const ScaleInfo& ScaleOf(Scale scale) { return kScales[static_cast<int
 constexpr std::string_view ScaleCvar(Scale scale) { return ScaleOf(scale).cvar; }
 
 // What `auto` stands for in a class.
-constexpr double ScaleCell(Scale scale, GpuClass c) {
-  const ScaleInfo& info = ScaleOf(scale);
-  switch (c) {
-    case GpuClass::kLow:
-      return info.low;
-    case GpuClass::kMid:
-      return info.mid;
-    default:
-      return info.high;
-  }
-}
+constexpr double ScaleCell(Scale scale, GpuClass) { return ScaleOf(scale).value; }
 
 // What `auto` stands for now: `known` is whether the class has been found (Known()), `c` the class; until it is found, the Low cell.
-constexpr double ScaleAutoFor(Scale scale, bool known, GpuClass c) {
-  return ScaleCell(scale, known ? c : GpuClass::kLow);
-}
+constexpr double ScaleAutoFor(Scale scale, bool, GpuClass) { return ScaleOf(scale).value; }
 
 // Whether the cvar's value is `auto`: below 0 (and 0 where it is no value), and a value that is no number.
 constexpr bool IsAutoValue(Scale scale, double user_value) {
@@ -773,7 +646,7 @@ struct Verdict {
   GpuClass cls = GpuClass::kHigh;
   std::string why;  // one phrase for the log line: starts with "by adapter type:", "by memory:" or "by name:"
   Rule rule = Rule::kMemory;
-  bool handheld = false;  // a Steam Deck (kHandheldTable): cls is kLow, the `auto` cells are CellFor's with kHandheldCells
+  bool handheld = false;  // a Steam Deck (kHandheldTable): cls is kLow, legacy Auto uses the same values as other adapters
 };
 
 inline Verdict Classify(const AdapterFacts& facts) {
@@ -802,7 +675,7 @@ inline Verdict Classify(const AdapterFacts& facts) {
     if (deck.row >= 0) {
       shared.handheld = true;
       shared.why += "; by name: " + std::string(kHandheldTable[deck.row].family) +
-                    " is a handheld, so the sun shadow's filter and detail and the reflections' detail take the Mid values (kHandheldCells)";
+                    " is a handheld";
     }
     return shared;
   }

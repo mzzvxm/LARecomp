@@ -355,6 +355,20 @@ void CollectLeaves(const toml::table& table, const std::string& prefix, std::vec
 
 }  // namespace
 
+void MigrateGraphicsPresetIds() {
+  namespace gp = mcla::gpu::gfx_preset;
+  bool migrated = false;
+  for (const auto key : {gp::kPresetSetting, gp::kFromSetting}) {
+    if (auto* setting = Find(key)) {
+      const auto old = setting->GetText();
+      const auto current = gp::MigrateId(old);
+      if (current != old && setting->SetText(setting->GetLayer(), current)) migrated = true;
+    }
+  }
+  // CHECK: the SDK reloads larecomp.toml after OnConfigure. Check both flat and scoped keys in a game start.
+  if (migrated) REXLOG_INFO("[preset] migrated saved preset IDs: enhanced_ultra to enhanced, enhanced_rt_ultra to enhanced_rt");
+}
+
 int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::path& file) {
   std::error_code ec;
   if (file.empty() || !std::filesystem::exists(file, ec)) {
@@ -541,6 +555,12 @@ FlagEntry Build(rex::SettingBase& s) {
   e.constraints.min = c.min;
   e.constraints.max = c.max;
   e.constraints.allowed_values = c.allowed;
+  // The SDK file reader accepts retired IDs so that an older file can finish loading.
+  // Expose only the current choices to settings panels and settings-ui.json.
+  namespace gp = mcla::gpu::gfx_preset;
+  if (e.name == gp::kPresetSetting || e.name == gp::kFromSetting) {
+    std::erase_if(e.constraints.allowed_values, [](const std::string& word) { return gp::MigrateId(word) != word; });
+  }
   e.default_value = s.GetDefaultText();
   e.is_debug_only = c.debug_only || IsMarkedDebug(s.GetName(), e.name);
   e.source = SourceOf(s.GetLayer());

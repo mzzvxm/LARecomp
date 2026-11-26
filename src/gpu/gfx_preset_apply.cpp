@@ -93,7 +93,7 @@ void ReleaseLocked(bool restore) {
 // beat it). `none` (a larecomp.toml written before presets) leaves every row at its own default, which is what it was.
 void ApplyBaseLocked() {
   Preset from = Preset::kCustom;
-  if (!Parse(cv::GetFlagByName(kFromSetting), &from) || !IsNamed(from)) return;
+  if (!Parse(MigrateId(cv::GetFlagByName(kFromSetting)), &from) || !IsNamed(from)) return;
   const rex::SettingsBatch batch;
   const Writing writing;
   int based = 0;
@@ -108,7 +108,7 @@ void ApplyBaseLocked() {
 
 Preset PresetOfSetting() {
   Preset p = Preset::kCustom;
-  Parse(cv::GetFlagByName(kPresetSetting), &p);
+  Parse(MigrateId(cv::GetFlagByName(kPresetSetting)), &p);
   return p;
 }
 
@@ -116,7 +116,7 @@ Preset PresetOfSetting() {
 void OnPresetChanged(std::string_view value) {
   if (t_writing > 0) return;
   Preset picked = Preset::kCustom;
-  if (!Parse(value, &picked)) return;
+  if (!Parse(MigrateId(value), &picked)) return;
   const std::lock_guard<std::recursive_mutex> lock(g_mutex);
   if (!g_started) return;
   switch (OnPicked(g_held, picked, g_had_own)) {
@@ -160,7 +160,7 @@ Preset Current() { return PresetOfSetting(); }
 
 Preset Recommended() {
   namespace gc = gpu_class;
-  if (!gc::Known()) return Preset::kVanilla;
+  if (!gc::Known()) return Preset::kEnhanced;
   return gc::RecommendedPreset(gc::Current(), gc::CurrentRtTier());
 }
 

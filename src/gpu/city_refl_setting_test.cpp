@@ -60,9 +60,9 @@ std::string Name(gc::GpuClass c, gc::RtTier t, const std::string& word) {
 
 // The rung: no ray tracing for the Low class or a card that does not trace; a Mid class is at most weak; High is the card's own tier.
 enum class Rung { kNone, kWeak, kStrong };
-Rung RungOf(gc::GpuClass c, gc::RtTier t) {
-  if (c == gc::GpuClass::kLow || t == gc::RtTier::kNone) return Rung::kNone;
-  if (c == gc::GpuClass::kMid || t == gc::RtTier::kWeak) return Rung::kWeak;
+Rung RungOf(gc::GpuClass, gc::RtTier t) {
+  if (t == gc::RtTier::kNone) return Rung::kNone;
+  if (t == gc::RtTier::kWeak) return Rung::kWeak;
   return Rung::kStrong;
 }
 
@@ -75,9 +75,8 @@ cm::Level ExpectedLevel(Rung rung, const std::string& word) {
   return cm::Level::kOff;
 }
 
-crs::Gate ExpectedGate(gc::GpuClass c, gc::RtTier t, bool car_rt_on, bool wanted, crs::Data data) {
+crs::Gate ExpectedGate(gc::GpuClass, gc::RtTier t, bool car_rt_on, bool wanted, crs::Data data) {
   if (t == gc::RtTier::kNone) return crs::Gate::kNoRt;
-  if (c == gc::GpuClass::kLow) return crs::Gate::kTooSlow;
   if (!car_rt_on) return crs::Gate::kNeedsCarRt;
   if (wanted && data == crs::Data::kUnavailable) return crs::Gate::kNotReady;
   if (wanted && data == crs::Data::kBuilding) return crs::Gate::kBuilding;
@@ -127,7 +126,7 @@ void CellChecks() {
   Check(crs::DecidePaint(gc::GpuClass::kMid, gc::RtTier::kNone, "on", true, crs::Data::kReady).level == cm::Level::kOff,
         "city paint needs ray queries");
   Check(crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", true, crs::Data::kReady).level == cm::Level::kOff, "OFF is off on a strong card");
-  Check(crs::Decide(gc::GpuClass::kLow, gc::RtTier::kStrong, "ultra", true, crs::Data::kReady).level == cm::Level::kOff, "the Low class never runs it");
+  Check(crs::Decide(gc::GpuClass::kLow, gc::RtTier::kStrong, "ultra", true, crs::Data::kReady).level == cm::Level::kUltra, "the Low class can run the selected RT level");
   // the row's AUTO is the table's cell; the table is rt_tier.h's
   Check(std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kNone)) == "off" && std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kWeak)) == "off" &&
             std::string(gc::RtCell(gc::RtEffect::kRtReflections, gc::RtTier::kStrong)) == "off",

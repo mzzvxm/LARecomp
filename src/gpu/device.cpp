@@ -12,7 +12,6 @@
 #if defined(LARECOMP_HAS_FFX)
 #include "temporal_ffx.h"
 #endif
-#include "upscale_defaults.h"
 #include "vulkan_pipeline_cache.h"
 #include "windows_floor.h"
 
@@ -351,45 +350,8 @@ bool Device::Open(const Options& options) {
       !capabilities.empty()) {
     REXLOG_INFO("[gpu] capabilities: {}", capabilities);
   }
-  // The class (low, mid, high) the graphics upgrades' `auto` values follow, from the facts above
-  // (gpu_class.h): its own "[gpu] class: ..." line says which and why.
+  // Adapter classification is used for the recommended preset and diagnostics.
   gpu_class::Initialize(device_->getDescription(), caps);
-  const auto has_choice = [](std::string_view name) {
-    return larecomp::cvar::GetFlagSource(name) != larecomp::cvar::Source::kDefault;
-  };
-  const upscale_defaults::DisplayChoices chosen{
-      .upscaler = has_choice("mcla_gpu_upscaler"),
-      .render_scale = has_choice("mcla_gpu_resolution_scale"),
-      .fsr1 = has_choice("mcla_gpu_fsr"),
-      .fsr1_preset = has_choice("mcla_gpu_fsr_preset"),
-  };
-  const auto cls = gpu_class::Current();
-  using upscale_defaults::Path;
-  auto default_path = upscale_defaults::Select(cls, chosen, false);
-#if defined(LARECOMP_HAS_FFX)
-  if (default_path == Path::kFsr1 && FfxUpscalerCanStart(device_.get())) {
-    default_path = upscale_defaults::Select(cls, chosen, true);
-  }
-#endif
-  // The title layer keeps any saved FSR mode or sharpness. Seed it before
-  // ChooseStartRenderScale and the temporal backend read the settings.
-  // CHECK: first start, live Off and restart on D3D12 and Vulkan, including
-  // the selected mode, RCAS strength, scale and FSR 1 fallback.
-  if (default_path == Path::kFsr31) {
-    const rex::SettingsBatch batch;
-    larecomp::settings::SetDefault("mcla_gpu_upscaler", upscale_defaults::kFsr31);
-    larecomp::settings::SetDefault("mcla_gpu_fsr31_mode", upscale_defaults::kQuality);
-    larecomp::settings::SetDefault("mcla_gpu_upscaler_sharpness", upscale_defaults::kFsr31Sharpness);
-    REXLOG_INFO("[gpu] display defaults for Low: FSR 3.1 (mode {}, sharpness {})",
-                larecomp::settings::mcla_gpu_fsr31_mode.Get(),
-                larecomp::settings::mcla_gpu_upscaler_sharpness.Get());
-  } else if (default_path == Path::kFsr1) {
-    const rex::SettingsBatch batch;
-    larecomp::settings::SetDefault("mcla_gpu_fsr", "true");
-    larecomp::settings::SetDefault("mcla_gpu_fsr_preset", upscale_defaults::kQuality);
-    larecomp::settings::SetDefault("mcla_gpu_fsr_sharpness", upscale_defaults::kFsr1Sharpness);
-    REXLOG_INFO("[gpu] display defaults for Low: FSR 1 Quality (FidelityFX unavailable at startup)");
-  }
   // The ray tracing tier beside it (rt_tier.h): whether this renderer can trace rays on the device (the same answer the car's ray tracing asks for:
   // CarRtSupported), the PCI device id Plume's description does not carry, and the tables; its own "[gpu] ray tracing tier: ..." line says which and
   // why. The benchmark, if it runs, comes later (the renderer's start, rt_bench.h).

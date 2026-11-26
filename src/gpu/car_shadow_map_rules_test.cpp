@@ -108,7 +108,7 @@ void TestSetting() {
   cs::Choice low = cs::Resolve(gc::GpuClass::kLow, "auto");
   cs::Choice mid = cs::Resolve(gc::GpuClass::kMid, "auto");
   cs::Choice high = cs::Resolve(gc::GpuClass::kHigh, "auto");
-  Check(low.level == cs::Level::kHigh && low.size() == 1024 && low.automatic && !low.unknown, "auto on the Low class: high, 1024");
+  Check(low.level == cs::Level::kUltra && low.size() == 2048 && low.automatic && !low.unknown, "legacy auto on Low uses Ultra, 2048");
   Check(mid.level == cs::Level::kUltra && mid.size() == 2048 && mid.automatic, "auto on the Mid class: ultra, 2048");
   Check(high.level == cs::Level::kUltra && high.size() == 2048 && high.automatic, "auto on the High class: ultra, 2048");
   // the words
@@ -124,7 +124,7 @@ void TestSetting() {
   const cs::Choice old = cs::Resolve(gc::GpuClass::kMid, "low");
   Check(old.automatic && old.unknown && old.level == cs::Level::kUltra, "\"low\" is no value: it runs as auto and says so");
   const cs::Choice empty = cs::Resolve(gc::GpuClass::kLow, "");
-  Check(empty.automatic && empty.unknown && empty.level == cs::Level::kHigh, "an empty text runs as auto");
+  Check(empty.automatic && empty.unknown && empty.level == cs::Level::kUltra, "an empty text runs as auto");
   Check(cs::Describe(high, gc::GpuClass::kHigh).find("2048x2048") != std::string::npos, "the words of the log line name the size");
   Check(cs::Describe(cs::Resolve(gc::GpuClass::kHigh, "off"), gc::GpuClass::kHigh).find("2048") == std::string::npos,
         "an off map names no size");

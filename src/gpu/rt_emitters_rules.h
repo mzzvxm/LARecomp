@@ -104,9 +104,8 @@ inline constexpr uint32_t kStillSamples = 6;
 // Two samples of one light farther apart than this (s) are not a speed: the light was out of the list (a car out of range, a pause).
 inline constexpr double kMaxSampleGap = 0.5;
 
-// The tier of the light pass's budget table (local_lights_sources.h BudgetOf) the bounce light takes: ULTRA the ultra row, HIGH on a strong card the high row, anything lower (a weak card by hand) the
-// smallest. The bounce light's own AUTO has already kept a weak or a Low class out of it (gi_setting.h): this is only how much of the list a card that runs it takes.
-constexpr ll::Tier TierFor(bool ultra, bool weak) { return ultra ? ll::Tier::kUltra : (weak ? ll::Tier::kMedium : ll::Tier::kHigh); }
+// Match the emitter budget to the GI level.
+constexpr ll::Tier TierFor(bool ultra, bool) { return ultra ? ll::Tier::kUltra : ll::Tier::kHigh; }
 
 // ---------------------------------------------------------------------------
 // which group a light is of

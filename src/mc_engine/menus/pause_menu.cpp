@@ -1649,8 +1649,8 @@ const char* const kSideViewVals[] = {"game", "high", "ultra"};
 const char* const kSideViewNames[] = {"GAME", "HIGH", "ULTRA"};
 const char* const kNativeAnisoVals[] = {"game", "off", "2", "4", "8", "16"};
 const char* const kNativeAnisoNames[] = {"GAME", "OFF", "2X", "4X", "8X", "16X"};
-const char* const kGfxPresetVals[] = {"vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"};
-const char* const kGfxPresetNames[] = {"VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM"};
+const char* const kGfxPresetVals[] = {"vanilla", "enhanced", "enhanced_rt", "custom"};
+const char* const kGfxPresetNames[] = {"VANILLA", "ENHANCED", "ENHANCED RT", "CUSTOM"};
 
 struct LightShadowWords {
     const char* vals[mcla::gpu::local_shadow::kMenuWordMax] = {};
@@ -2033,11 +2033,8 @@ const ItemDef kUiItems[] = {
 const ItemDef kGfxHubItems[] = {
     Submenu("PM_RxSubVideo",  "DISPLAY",     "RxVideoMenu"),
 #if defined(LARECOMP_HAS_GPU)
-    // PRESET: the four pages below in one choice (gpu/gfx_preset.h): VANILLA, ENHANCED, ENHANCED ULTRA, ENHANCED RT, ENHANCED RT ULTRA, CUSTOM. It never changes DISPLAY. Live, NATIVE only.
-    // Picking a preset holds its values over the rows of IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS and WORLD DETAIL at once; changing one of those rows afterwards (CvarSet) makes it
-    // CUSTOM. The two RT presets are listed only where the card traces rays (the row's rules in ui_rules.toml say so, and " (NO RT GPU)" where a carried-over file holds one without).
-    // Width: "PRESET: " 8 and "ENHANCED RT ULTRA" 17, with " (NO RT GPU)" 12 or " (RECOMMENDED)" 14: 39 at most.
-    NativeOnly(Str("PM_RxGpuPreset", "mcla_gpu_preset", "PRESET: ", kGfxPresetVals, kGfxPresetNames, 6)),
+    // PRESET: the four effect pages. Offer ENHANCED RT on devices with ray tracing.
+    NativeOnly(Str("PM_RxGpuPreset", "mcla_gpu_preset", "PRESET: ", kGfxPresetVals, kGfxPresetNames, 4)),
 #endif
     Submenu("PM_RxSubImageQuality", "IMAGE QUALITY", "RxImageQualityMenu"),
     Submenu("PM_RxSubLighting", "LIGHTING AND SHADOWS", "RxLightingMenu"),
@@ -2249,14 +2246,12 @@ class PauseRuleEnv final : public expr::Env {
         namespace gpu = mcla::gpu;
         namespace gc = gpu::gpu_class;
         if (path == "gpu.class") return text(gc::ClassName(unprobed_world_scale_ ? gc::GpuClass::kLow : gc::Current()));
-        if (path == "live.rt_field_class") return text(gc::ClassName(gc::Known() ? gc::Current() : gc::GpuClass::kLow));
         if (path == "gpu.handheld") return Value::Bool(gc::Handheld());
         if (path == "gpu.rt_tier") return text(gc::RtTierName(gc::CurrentRtTier()));
         if (path == "gpu.rt_rung") return text(gc::RtTierName(gc::RtRung(gc::Current(), gc::CurrentRtTier())));
         if (path == "api.car_rt") return Value::Bool(gpu::CarRtReflAvailable());
         if (path == "api.city_rt_shadows") return Value::Bool(gpu::CityRtShadowsAvailable());
         if (path == "build.rt_gi_update_built") return Value::Bool(gpu::RtGiUpdateBuilt());
-        if (path == "features.pcss") return Value::Bool(gpu::shadow_filter::PcssRuns());
         if (path == "gpu.vram_warning") {
             const auto hint = gpu::vram_warning::CurrentHint();
             return hint.empty() ? Value{} : text(hint);

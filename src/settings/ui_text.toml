@@ -409,7 +409,7 @@ help = "On a wide picture, how far the HUD's corner pieces (the minimap, speedom
 value = { "0" = { "label" = "CENTERED" }, "50" = { "label" = "WIDER" }, "100" = { "label" = "FULL" } }
 
 [rows.PM_RxGpuPreset]
-help = "Sets the four effect pages together. Editing an effect switches to Custom. Display and upscaling stay as set."
+help = "Choose Vanilla, Enhanced or Enhanced RT for the four effect pages. Editing an effect switches to Custom."
 
 [rows.PM_RxSubVideo]
 help = "Open the display settings."

@@ -143,7 +143,7 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
     choice.unknown = s.unknown;
     choice.legacy = s.legacy;
     if (shafts_level::On(s.level)) {
-      choice.level = gpu_class::SunShaftSteps(cls) >= gpu_class::kSunShaftStepsHigh ? Level::kUltra : Level::kHigh;
+      choice.level = Level::kUltra;
     }
     return choice;
   }
@@ -154,9 +154,6 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
     text = "auto";
   }
   choice.automatic = text == "auto";
-  if (choice.automatic && pass == Pass::kBounce && !class_known) {
-    return choice;  // off
-  }
   std::string resolved = gpu_class::ResolveFor(cls, EffectOf(pass), text);
   if (pass == Pass::kCarRefl && resolved == "on") {
     // The car self-reflections have one level, `on`: the plan's top level. The debug cvar mcla_gpu_car_selfrefl_test still
@@ -205,7 +202,7 @@ inline Plan Decide(gpu_class::GpuClass cls, bool class_known, std::string_view o
 // "contact shadows high (auto on the mid class)", "ambient occlusion ultra (set)", "sun shafts off (auto
 // on the low class)", "sun shafts default ('hgih' is no value: taken as auto on the high class)", "sun shafts
 // strong (set)" (the shafts name their strength, the others their level; the car self-reflections say "on" for their one).
-inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass cls) {
+inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass) {
   std::string text(PassName(pass));
   text += ' ';
   if (pass == Pass::kShafts) {
@@ -223,15 +220,11 @@ inline std::string Describe(Pass pass, const Choice& choice, gpu_class::GpuClass
   } else if (choice.legacy) {
     text += "an old value of the setting (low or high): read as default";
   } else if (choice.unknown && choice.automatic) {
-    text += "not a value of the setting: taken as auto on the ";
-    text += gpu_class::ClassName(cls);
-    text += " class";
+    text += "unrecognized value: using the legacy default";
   } else if (choice.unknown) {
     text += "not a value of the setting: off";
   } else if (choice.automatic) {
-    text += "auto on the ";
-    text += gpu_class::ClassName(cls);
-    text += " class";
+    text += "legacy default";
   } else {
     text += "set";
   }

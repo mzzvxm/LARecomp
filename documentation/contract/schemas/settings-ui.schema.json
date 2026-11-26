@@ -77,7 +77,7 @@
         "by": { "enum": ["class", "rt_rung", "preset"] },
         "cells": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
         "handheld": { "type": "object", "additionalProperties": { "type": ["string", "number"] } },
-        "auto_value": { "type": "number", "description": "numeric rows: the number that stands for auto (0 or -1); cells then hold numbers" }
+        "auto_value": { "type": "number", "description": "Legacy numeric Auto sentinel (0 or -1). Current graphics exports put the same fixed value in every hardware cell." }
       }
     },
     "setting": {

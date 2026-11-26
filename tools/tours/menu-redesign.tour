@@ -1,7 +1,7 @@
 #@title Check the graphics layout and the preset boundary on a clean Native RT-capable run
 #@duration 75s
 #@default GRAPHICS_DOWNS=5
-#@default PRESET_STEPS=4
+#@default PRESET_STEPS=2
 #@default DISPLAY_STEPS=8
 #@default IMAGE_STEPS=2
 #@default EFFECT_PAGES=3
@@ -19,11 +19,11 @@ press a 4f
 wait 1500ms
 shot graphics
 
-# Select Enhanced RT Ultra, then open Display and change Post AA from Off to FXAA.
+# Select Enhanced RT, then open Display and change Post AA from Off to FXAA.
 press down 4f
 wait 600ms
 @repeat {PRESET_STEPS}: press right 4f ; wait 700ms
-shot enhanced-rt-ultra
+shot enhanced-rt
 press up 4f
 wait 600ms
 press a 4f

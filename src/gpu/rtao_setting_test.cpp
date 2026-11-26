@@ -32,32 +32,22 @@ constexpr RtTier kTiers[] = {RtTier::kNone, RtTier::kWeak, RtTier::kStrong};
 constexpr Choice kChoices[] = {Choice::kAuto, Choice::kOff, Choice::kHigh, Choice::kUltra, Choice::kRt, Choice::kOn};
 
 void CheckDecisions() {
-  constexpr Choice auto_choices[3][3] = {
-      {Choice::kOn, Choice::kOn, Choice::kOn},
-      {Choice::kOn, Choice::kOn, Choice::kOn},
-      {Choice::kOn, Choice::kOn, Choice::kOn},
-  };
-  constexpr RtTier rungs[3][3] = {
-      {RtTier::kNone, RtTier::kNone, RtTier::kNone},
-      {RtTier::kNone, RtTier::kWeak, RtTier::kWeak},
-      {RtTier::kNone, RtTier::kWeak, RtTier::kStrong},
-  };
   constexpr Level screen[] = {Level::kOff, Level::kOff, Level::kUltra, Level::kUltra, Level::kUltra, Level::kUltra};
   for (int c = 0; c < 3; ++c) {
     for (int t = 0; t < 3; ++t) {
       const auto cls = kClasses[c];
       const auto tier = kTiers[t];
-      const auto cell = ao::gc::RtCell(ao::gc::RtEffect::kRtAo, rungs[c][t]);
+      const auto cell = ao::gc::RtCell(ao::gc::RtEffect::kRtAo, tier);
       Check(cell.empty(), "RT Auto cell");
       for (const bool built : {false, true}) {
         const Gate gate = t == 0 ? Gate::kNoRt : built ? Gate::kRuns : Gate::kNotBuilt;
         Check(ao::GateFor(cls, tier, built) == gate, "capability gate and precedence");
         for (const Choice saved : kChoices) {
-          const Choice chosen = saved == Choice::kAuto ? auto_choices[c][t] : saved;
+          const Choice chosen = saved == Choice::kAuto ? Choice::kOn : saved;
           const auto d = ao::Decide(cls, true, tier, saved, built);
           Check(d.chosen == chosen, "resolved AO choice");
           Check(d.screen == screen[static_cast<int>(chosen)], "screen-space quality");
-          Check(d.rung == rungs[c][t], "effective RT rung");
+          Check(d.rung == tier, "effective RT rung");
           Check(d.gate == gate, "decision carries capability gate");
           Check(d.rt == (chosen == Choice::kRt && gate == Gate::kRuns), "only available RT runs");
         }
@@ -67,8 +57,8 @@ void CheckDecisions() {
   for (const auto cls : kClasses) {
     for (const auto tier : kTiers) {
       const auto unknown = ao::Decide(cls, false, tier, Choice::kAuto, true);
-      Check(unknown.screen == Level::kUltra && !unknown.rt && unknown.rung == RtTier::kNone,
-            "an unknown class uses the same raster Auto");
+      Check(unknown.screen == Level::kUltra && !unknown.rt && unknown.rung == tier,
+            "unknown GPU class uses the same Auto");
     }
   }
 }
@@ -97,7 +87,7 @@ void CheckLabels() {
     for (const auto tier : kTiers) {
       for (const bool built : {false, true}) {
         const auto label = ao::AutoLabel(ao::Decide(kClasses[c], true, tier, Choice::kAuto, built));
-        const auto expected = auto_labels[c];
+        const auto expected = auto_label;
         Check(label == expected && label.size() <= 14, "Auto labels show the effective level within width");
       }
     }

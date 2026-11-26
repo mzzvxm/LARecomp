@@ -167,10 +167,8 @@ class ScreenReflectionsRt {
   bool ran_ = false;
 
   // the governor and its timer
-  ssr_rt::Governor governor_;
   std::unique_ptr<Timer> timer_;
   double ms_ = -1.0;
-  std::chrono::steady_clock::time_point clock_start_ = std::chrono::steady_clock::now();
   uint32_t logged_step_ = 0;
 
   // the census

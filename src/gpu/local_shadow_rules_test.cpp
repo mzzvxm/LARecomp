@@ -81,18 +81,18 @@ void CheckTypes() {
 void CheckSetting() {
   const gc::GpuClass classes[] = {gc::GpuClass::kLow, gc::GpuClass::kMid, gc::GpuClass::kHigh};
   // The class table's cells: off on Low, medium on Mid, ultra on High (the cell of Mid comes to the next level up in a shape without medium).
-  const ls::Level want[] = {ls::Level::kOff, ls::Effective(ls::Level::kMedium), ls::Effective(ls::Level::kUltra)};
+  const ls::Level want = ls::Effective(ls::Level::kMedium);
   for (int k = 0; k < 3; ++k) {
     const ls::Choice c = ls::Resolve(classes[k], "auto");
     const std::string at = std::string("auto on ") + std::string(gc::ClassName(classes[k]));
-    Check(c.level == want[k] && c.automatic && !c.unknown, at + ": off / medium / ultra by class");
-    Check(ls::Resolve(classes[k], "AUTO").level == want[k], at + ": the word is case blind");
+    Check(c.level == want && c.automatic && !c.unknown, at + ": Medium across classes");
+    Check(ls::Resolve(classes[k], "AUTO").level == want, at + ": the word is case blind");
     Check(ls::Resolve(classes[k], "off").level == ls::Level::kOff && !ls::Resolve(classes[k], "off").automatic, at + ": off is kept");
     Check(ls::Resolve(classes[k], "high").level == ls::Level::kHigh, at + ": high is kept");
     Check(ls::Resolve(classes[k], "ultra").level == ls::Level::kUltra, at + ": ultra is kept");
     Check(ls::Resolve(classes[k], "medium").level == ls::Effective(ls::Level::kMedium) && !ls::Resolve(classes[k], "medium").unknown, at + ": medium is a word of the setting in either shape");
     const ls::Choice odd = ls::Resolve(classes[k], "low");
-    Check(odd.level == want[k] && odd.automatic && odd.unknown, at + ": the old word low is taken as auto");
+    Check(odd.level == want && odd.automatic && odd.unknown, at + ": the old word low is taken as auto");
   }
   // The level every class's cell comes to is a level the shape has (a cell the shape lacks takes the next one up).
   for (const gc::GpuClass cls : classes) {
@@ -115,7 +115,7 @@ void CheckSetting() {
   const ls::Choice mid = ls::Resolve(gc::GpuClass::kMid, "auto");
   const std::string text = ls::Describe(mid, gc::GpuClass::kMid);
   Check(text.find("768x768") != std::string::npos && text.find("auto on the mid class") != std::string::npos, "Describe says the size and why: " + text);
-  Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "auto"), gc::GpuClass::kLow).find("768") == std::string::npos, "an off level has no size in its line");
+  Check(ls::Describe(ls::Resolve(gc::GpuClass::kLow, "off"), gc::GpuClass::kLow).find("768") == std::string::npos, "an off level has no size in its line");
   // No level is called low.
   for (const char* c : {"off", "medium", "high", "ultra"}) {
     Check(std::string(ls::LevelName(ls::Resolve(gc::GpuClass::kHigh, c).level)).find("low") == std::string::npos, "no level is called low");

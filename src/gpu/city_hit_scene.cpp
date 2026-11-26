@@ -203,16 +203,13 @@ bool CityHitScene::MakePool() {
   // CHECK 3: the class's pool sizes (64 / 128 / 256 MiB) against the real working set: the census line says the blocks' MiB and the fragmentation; the p90 estimate is 29 / 50 / 120 MiB.
   const city_hit::PoolBudget want = city_hit::PoolBudgetFor(class_, level_);
   if (!want.on() || sector_count_ == 0 || !OpenFile()) return false;
-  const backend::VideoMemory memory = device_->QueryVideoMemory();
-  const uint64_t capacity = city_hit::FitCapacity(want.capacity, memory.used, memory.budget);
-  if (capacity == 0) {
-    retry_frame_ = frame_ + city_hit::kFileRetryFrames;
-    if (logged_state_ != 3) {
-      logged_state_ = 3;
-      REXLOG_WARN("{} no room in the video memory for the city hit pool ({} MiB of {} MiB used, the class's pool {} MiB, the smallest {} MiB): the hit data stays off, the shadows go on", kPrefix,
-                  memory.used >> 20, memory.budget >> 20, want.capacity >> 20, city_hit::kMinPoolBytes >> 20);
-    }
-    return false;
+  if (!device_ || !book_) return false;
+  const auto memory = device_->QueryVideoMemory();
+  const uint64_t capacity = want.capacity;
+  if (!vram_room::HasRoom(memory.used, memory.budget, capacity) && logged_state_ != 3) {
+    logged_state_ = 3;
+    REXLOG_WARN("{} video memory is nearly full ({} of {} MiB in use); allocating the selected {} MiB city hit pool",
+                kPrefix, memory.used >> 20, memory.budget >> 20, capacity >> 20);
   }
   std::unique_ptr<plume::RenderBuffer> pool =
       device_->CreateBuffer(plume::RenderBufferDesc::DefaultBuffer(capacity, plume::RenderBufferFlag::ACCELERATION_STRUCTURE_INPUT | plume::RenderBufferFlag::STORAGE), "city hit pool");
@@ -266,7 +263,6 @@ void CityHitScene::BeginFrame(city_rt::Level level, TextureScope textures) {
   ++frame_;
   if (!device_) return;
   level_ = level;
-  class_ = gpu_class::CurrentRtClass();  // the pool's and the textures' budgets follow the ray tracing tier as the structures' do (CityRtScene::BeginFrame)
   scope_ = level != city_rt::Level::kOff ? textures : TextureScope::kNone;
   copied_this_frame_ = false;
   if (level_ != city_rt::Level::kOff) {

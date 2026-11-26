@@ -22,7 +22,7 @@ constexpr int kNoOverride = -1;
 
 std::atomic<uint8_t> g_detected{static_cast<uint8_t>(GpuClass::kHigh)};
 std::atomic<bool> g_known{false};  // Initialize has run: g_detected is what the adapter said
-std::atomic<bool> g_handheld{false};  // the adapter is a handheld (a Steam Deck, Verdict::handheld): the cells of kHandheldCells, unless a class is forced
+std::atomic<bool> g_handheld{false};  // the adapter is a handheld (a Steam Deck, Verdict::handheld): reported in the machine facts
 std::atomic<int> g_override{kNoOverride};
 
 std::mutex g_text_mutex;     // guards the three strings of the log line
@@ -121,10 +121,9 @@ void LogClass() {
     REXLOG_INFO("[gpu] class: {} (forced by mcla_gpu_class={}; the adapter alone says {}: {}; {})",
                 ClassName(now), ClassName(now), ClassName(detected), why, adapter);
   }
-  // A handheld says so, and says when a forced class has put its cells away (the line the launcher and a tester's log read).
-  REXLOG_INFO("[gpu] class {}{}: auto is {}", ClassName(now),
-              handheld ? " (handheld cells)"
-              : g_handheld.load(std::memory_order_relaxed) ? " (a handheld, its own cells off while the class is forced)" : "",
+  // Handheld identification is diagnostic. Legacy graphics values are fixed.
+  REXLOG_INFO("[gpu] class {}{}: legacy auto is {}", ClassName(now),
+              handheld ? " (handheld)" : "",
               AutoSummary(now, handheld));
 }
 

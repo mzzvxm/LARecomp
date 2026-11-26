@@ -101,12 +101,6 @@ uint32_t ContextFlags(const BackendRequest& request) {
          (request.debug_view ? uint32_t(FFX_UPSCALE_ENABLE_DEBUG_VISUALIZATION) : 0u);
 }
 
-uint64_t NowMs() {
-  return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
-                      std::chrono::steady_clock::now().time_since_epoch())
-                      .count());
-}
-
 // The runtime's messages, from whatever thread it is on.
 void FfxMessage(uint32_t type, const wchar_t* message) {
   static std::atomic<uint32_t> lines{0};
@@ -185,7 +179,6 @@ struct FfxBackend::Impl {
   bool failed[3] = {};           // by Upscaler: a creation of that kind failed
   // Contexts refused for want of video memory (vram_room.h): a request is not asked of the worker while
   // its wait lasts (Request and Prepare), and NoRoom tells the caller so.
-  vram_room::RefusalBook<BackendRequest> refusals;
 
   // ---- the worker only: what the last context of each kind took, and the pixels of its output (the
   // estimate when the runtime does not answer the size query)
@@ -710,47 +703,14 @@ void FfxBackend::Impl::WorkerMain() {
     if (for_current || WantNextLocked()) {
       const BackendRequest request = for_current ? want_request : next_request;
       lock.unlock();
-      // Video memory first (vram_room.h): a context is the one thing the caches cannot be trimmed to make
-      // room for, and making one past the budget pages the process's other allocations out to system
-      // memory. Nothing is made when there is no room; the request waits (refusals) and is asked again.
       std::string why;
-      std::string no_room;
-      const bool room = RoomForContext(request, &no_room);
-      std::shared_ptr<Context> made;
-      if (room) {
-        made = CreateContext(request, &why);
+      std::string pressure;
+      if (!RoomForContext(request, &pressure)) {
+        REXLOG_WARN("{} video memory is nearly full; requesting the selected {} context: {}",
+                    kPrefix, UpscalerName(request.upscaler), pressure);
       }
+      auto made = CreateContext(request, &why);
       lock.lock();
-      if (!room) {
-        const uint64_t wait_ms = refusals.Refuse(request, NowMs());
-        if (want && want_request == request) {
-          want = false;
-        }
-        if (next_want && next_request == request) {
-          next_want = false;
-        }
-        lock.unlock();
-        REXLOG_INFO("{} no room for the {} context at {}x{} to {}x{}: {}. It is not made and the picture "
-                    "goes on without it; asked again after {} s{}",
-                    kPrefix, UpscalerName(request.upscaler), request.render_size[0],
-                    request.render_size[1], request.output_size[0], request.output_size[1], no_room,
-                    wait_ms / 1000,
-                    wait_ms >= vram_room::kMaxWaitMs ? " (and every minute after that)"
-                                                     : ", then less often");
-        lock.lock();
-        continue;
-      }
-      const bool was_refused = made && refusals.Known(request);
-      if (made) {
-        refusals.Clear(request);
-      }
-      if (was_refused) {
-        lock.unlock();
-        REXLOG_INFO("{} there is room for the {} context at {}x{} to {}x{} now: making it", kPrefix,
-                    UpscalerName(request.upscaler), request.render_size[0], request.render_size[1],
-                    request.output_size[0], request.output_size[1]);
-        lock.lock();
-      }
       if (!made) {
         FailLocked(lock, request.upscaler, false, std::format("its context could not be made: {}", why));
       } else if (for_current && want && want_request == request && !ctx && !stop) {
@@ -876,9 +836,6 @@ void FfxBackend::Request(const BackendRequest& request) {
     if (i.lazy_mode && i.lazy.Need()) {
       i.StartLazyWorkerLocked();
     }
-    if (i.refusals.Blocked(request, NowMs())) {
-      return;  // refused for want of video memory a moment ago: not asked again before its wait is over
-    }
     if (i.want && i.want_request == request) {
       return;
     }
@@ -896,12 +853,6 @@ bool FfxBackend::Ready(const BackendRequest& request) const {
   const Impl& i = *impl_;
   std::lock_guard lock(i.mu);
   return i.ctx && i.ctx->request == request && !i.status.failed;
-}
-
-bool FfxBackend::NoRoom(const BackendRequest& request) const {
-  const Impl& i = *impl_;
-  std::lock_guard lock(i.mu);
-  return i.refusals.Blocked(request, NowMs());
 }
 
 uint32_t FfxBackend::JitterPhaseCount() const {
@@ -924,11 +875,7 @@ void FfxBackend::Prepare(const BackendRequest& request) {
     if (i.lazy_mode && i.lazy.Need()) {
       i.StartLazyWorkerLocked();
     }
-    if (i.refusals.Blocked(request, NowMs())) {
-      // Refused for want of video memory a moment ago (the worker said so): nothing is prepared, and
-      // a prepared context for another request is not wanted any more either.
-      i.RetireNextLocked(&retire);
-    } else if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
+    if ((i.ctx && i.ctx->request == request) || (i.want && i.want_request == request)) {
       // The current context is, or is being made as, the one asked for: nothing to prepare beside it.
       i.RetireNextLocked(&retire);
     } else if (i.next_want && i.next_request == request) {

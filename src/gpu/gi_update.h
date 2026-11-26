@@ -36,7 +36,6 @@
 //   G2-d  the units: the trace shades in the paint's units (params.units = 1), the field's, as gi_frame.h says; the apply's baseline and cap are in the same units (gi_apply.h G3h)
 //   G2-e  the shadow rays of the hit shading see the cars in the top level (the library's sun and lamp rays use every mask): a car's shadow enters the probes beside it
 //   G2-f  the stale boxes: a built sector marks the probes near it in the scheduler's own set (not the field's dirty sets: they drive the field's fade), CityRtScene::DrainBuilt
-//   G2-g  the timestamps: a pool of two a frame slot, reset and written in the middle of the frame's list and read when the slot comes round, only for frames that were submitted (OnSubmitted)
 //   G2-h  the cost against M3 section 6 (trace 0.4 to 0.7 ms, blend 0.1 to 0.2 at HIGH on a 5080 at 4K): the first cost run decides every number marked COST PASS in gi_frame.h and gi_update_rules.h
 // ===========================================================================
 
@@ -87,12 +86,10 @@ class GiUpdate {
   // The probe update (gi_integration.h UpdateFn): records the frame's chunks on `list`. Does nothing where THE IDENTITY (above) says.
   void Record(plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame);
   // After FrameRing::Submit executed the slot's list (not after an abandoned one): the slot's timestamps are in.
-  void OnSubmitted(uint32_t frame_slot);
 
   // What the update has done (for the tests of the order and the log).
   bool recorded_this_frame() const { return recorded_frame_ == frame_; }
   uint64_t chunks() const { return chunks_total_; }
-  float governor_scale() const { return governor_.scale(); }
 
   uint64_t HeldBytes() const;
   std::string CensusText() const;
@@ -115,9 +112,6 @@ class GiUpdate {
     uint64_t list_bytes = 0;
     std::unique_ptr<plume::RenderDescriptorSet> set;
     uint64_t set_key = 0;  // what the set was made for (SetKey)
-    std::unique_ptr<plume::RenderQueryPool> stamps;
-    bool stamps_written = false;
-    bool stamps_pending = false;
   };
 
   bool MakeLayoutsAndShaders(CarRtScene& scene);
@@ -129,7 +123,6 @@ class GiUpdate {
   uint64_t SetKey() const;
   void RetireSets();
   void ReleaseBuffers();
-  void Harvest(Slot& slot);
   void DrainBuiltSectors();
   void ProcessReadback(uint64_t frame, uint64_t generation);
   void LogInterval(uint64_t frame, const gi_update::StatSummary& stats, uint32_t frames);
@@ -157,7 +150,6 @@ class GiUpdate {
   std::unique_ptr<plume::RenderShader> blend_shader_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<Slot, kFramesInFlight> slots_;
-  bool stamps_ok_ = false;
 
   // The buffers the passes share: the ray records (sized for the layout), the counters and their readback.
   std::unique_ptr<plume::RenderBuffer> rays_;
@@ -173,7 +165,6 @@ class GiUpdate {
 
   // The frame.
   gi_update::Scheduler scheduler_;
-  gi_update::Governor governor_;
   uint32_t scheduler_generation_ = 0;
   uint64_t frame_ = 0;
   uint64_t recorded_frame_ = ~uint64_t(0);

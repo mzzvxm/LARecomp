@@ -101,7 +101,7 @@ void ScreenReflectionsRt::Initialize(Device& device, FrameRing& frames, Bindless
     }
   }
   if (!timer_->ok) {
-    REXLOG_INFO("{} no timestamps on this device: the governor has no signal and holds the cell's cap", kPrefix);
+    REXLOG_INFO("{} no timestamps on this device: per-pass timing is unavailable", kPrefix);
   }
   reset_pending_ = true;
   ready_ = true;
@@ -245,16 +245,12 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level, bool classified) {
     shade_cars_ = false;
     return;
   }
-  // ready_ already establishes ray-query support. The classified path
-  // uses the chosen level's full, fixed work cap on every supported GPU.
   const auto choice = ssr_rt::ParseChoice(Setting().Get());
-  const ssr_rt::Resolved now = classified ? ssr_rt::ResolveFixed(ssr_level, choice, ready_) :
-      ssr_rt::Resolve({ssr_level, choice, gpu_class::CurrentRtRung()});
+  const auto now = ssr_rt::ResolveFixed(ssr_level, choice, ready_);
   if (now.level != resolved_.level || classified != classified_) {
     classified_ = classified;
     reset_pending_ = true;
     logged_level_once_ = false;
-    governor_.Reset();   // the cell changed: what the old one cost says nothing about the new
     ms_ = -1.0;
     logged_step_ = 0;
   }
@@ -266,12 +262,10 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level, bool classified) {
     if (now.level == ssr_rt::Level::kOff) {
       REXLOG_INFO("{} ray traced fallback off: {} (mcla_gpu_ssr_rt {}, live)", kPrefix, ssr_rt::WhyName(now.why), Setting().Get());
     } else {
-      const std::string allocation = classified_ ? "fixed work per level" : std::format("timing budget {:.2f} ms", now.cell.budget_ms);
-      REXLOG_INFO("{} ray traced fallback {} (mcla_gpu_ssr_rt {}, live): classes {}{}{}, at most {} rays a frame ({} a pixel), up to {:.0f} m, {}", kPrefix,
+      REXLOG_INFO("{} ray traced fallback {} (mcla_gpu_ssr_rt {}, live): classes {}{}{}, at most {} rays a frame ({} a pixel), up to {:.0f} m", kPrefix,
                   ssr::LevelName(now.level), Setting().Get(), (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupBright)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupBright) : "",
                   now.cell.group_mask == (ssr_rt::GroupBit(ssr_rt::kGroupBright) | ssr_rt::GroupBit(ssr_rt::kGroupGround)) ? ", " : "",
-                  (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupGround)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupGround) : "", now.cell.ray_cap, now.cell.rays, double(now.cell.reach),
-                  allocation);
+                  (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupGround)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupGround) : "", now.cell.ray_cap, now.cell.rays, double(now.cell.reach));
     }
   }
   if (wanted() && service_) {
@@ -386,17 +380,9 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
     REXLOG_INFO("{} frame {}: the fallback runs", kPrefix, in.frame);
   }
 
-  // The governor: the cap's step for this frame (the passes' time of the frames before it, measured by the timestamps below).
-  const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - clock_start_).count();
-  if (!classified_ && governor_.Update(now, double(cell.budget_ms))) {
-    totals_.step_changes = governor_.changes();
-    REXLOG_INFO("{} the governor moves the cap to step {} of {} ({:.2f} ms average against {:.2f} ms): {} rays a frame", kPrefix, governor_.step(), ssr_rt::Governor::kMaxStep, governor_.ewma_ms(),
-                double(cell.budget_ms), ssr_rt::RayCap(cell, governor_.step()));
-  }
   const bool single_ray = larecomp::settings::mcla_gpu_ssr_rt_single_ray.Get();
   const uint32_t rays = ssr_rt::RaysUsed(cell, std::max<uint32_t>(in.ssr_rays, 1), single_ray);
-  const uint32_t step = classified_ ? 0u : governor_.step();
-  const uint32_t capacity = ssr_rt::CapacityFor(cell, step, rays);
+  const uint32_t capacity = ssr_rt::CapacityFor(cell, 0, rays);
   if (capacity == 0) {
     return false;
   }
@@ -502,8 +488,7 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
       if (t[1] >= t[0]) {
         const double ms = double(t[1] - t[0]) * 1.0e-6;
         if (ms < 1000.0) {
-          governor_.Note(ms);
-          ms_ = governor_.ewma_ms();
+          ms_ = ms;
           totals_.ms = ms_;
         }
       }
@@ -516,9 +501,9 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   line.group_mask = cell.group_mask;
   line.reach = cell.reach;
   line.capacity = capacity;
-  line.step = step;
+  line.step = 0;
   line.rays_per_pixel = rays;
-  line.budget_ms = classified_ ? 0.0f : cell.budget_ms;
+  line.budget_ms = 0.0f;
   line.ms = ms_;
   line.keep = 1.0f;
   if (stats) {
@@ -530,7 +515,7 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   }
   ++rt_frame_;
   ++totals_.frames_run;
-  totals_.step = step;
+  totals_.step = 0;
   ran_ = true;
   idle_frames_ = 0;
   return true;
@@ -617,8 +602,8 @@ uint64_t ScreenReflectionsRt::HeldBytes() const {
 
 std::string ScreenReflectionsRt::CensusText() const {
   ssr_rt::Totals totals = totals_;
-  totals.step = governor_.step();
-  totals.step_changes = governor_.changes();
+  totals.step = 0;
+  totals.step_changes = 0;
   totals.ms = ms_;
   totals.last_why = last_why_;
   return ssr_rt::FormatTotals(totals);

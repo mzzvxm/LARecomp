@@ -63,10 +63,10 @@ void CheckResolve() {
     bool unknown;
   };
   const Row rows[] = {
-      {GpuClass::kLow, "auto", Level::kOff, true, false},
+      {GpuClass::kLow, "auto", Level::kMedium, true, false},
       {GpuClass::kMid, "auto", Level::kMedium, true, false},
-      {GpuClass::kHigh, "auto", Level::kHigh, true, false},
-      {GpuClass::kLow, "AUTO", Level::kOff, true, false},
+      {GpuClass::kHigh, "auto", Level::kMedium, true, false},
+      {GpuClass::kLow, "AUTO", Level::kMedium, true, false},
       {GpuClass::kMid, "Auto", Level::kMedium, true, false},
       // a hand set value is kept on every class, ultra on the Low class too (a deliberate pick)
       {GpuClass::kLow, "ultra", Level::kUltra, false, false},
@@ -78,8 +78,8 @@ void CheckResolve() {
       {GpuClass::kHigh, "medium", Level::kMedium, false, false},
       // a text that is no value is `auto`
       {GpuClass::kMid, "low", Level::kMedium, true, true},
-      {GpuClass::kHigh, "hgih", Level::kHigh, true, true},
-      {GpuClass::kLow, "", Level::kOff, true, true},
+      {GpuClass::kHigh, "hgih", Level::kMedium, true, true},
+      {GpuClass::kLow, "", Level::kMedium, true, true},
   };
   for (const Row& row : rows) {
     const Choice choice = Resolve(row.cls, row.text);
@@ -99,8 +99,8 @@ void CheckResolve() {
 }
 
 void CheckDescribe() {
-  CheckEq(Describe(GpuClass::kHigh, Resolve(GpuClass::kHigh, "auto")), "high (auto on the high class)", "describe auto on High");
-  CheckEq(Describe(GpuClass::kLow, Resolve(GpuClass::kLow, "auto")), "off (auto on the low class)", "describe auto on Low");
+  CheckEq(Describe(GpuClass::kHigh, Resolve(GpuClass::kHigh, "auto")), "medium (auto on the high class)", "describe auto on High");
+  CheckEq(Describe(GpuClass::kLow, Resolve(GpuClass::kLow, "auto")), "medium (auto on the low class)", "describe auto on Low");
   CheckEq(Describe(GpuClass::kMid, Resolve(GpuClass::kMid, "ultra")), "ultra (set)", "describe a set value");
   CheckEq(Describe(GpuClass::kMid, Resolve(GpuClass::kMid, "bogus")), "medium (not a value of the setting: taken as auto on the mid class)",
           "describe an unknown value");

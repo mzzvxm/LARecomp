@@ -262,7 +262,7 @@ void GroupChecks() {
   CHECK(re::SourcesOf(re::kGroupHeadlights) == (ll::kSourceFrame | ll::kSourceHeadLamps) && re::SourcesOf(re::kGroupNeon) == ll::kSourceNeon && re::SourcesOf(re::kGroupRear) == ll::kSourceRearLamps &&
         re::SourcesOf(re::kGroupOther) == (ll::kSourcePolice | ll::kSourceMod) && re::SourcesOf(0) == 0);
   // the tier: ULTRA the ultra row, a strong card at HIGH the high row, a weak one the smallest
-  CHECK(re::TierFor(true, false) == ll::Tier::kUltra && re::TierFor(true, true) == ll::Tier::kUltra && re::TierFor(false, false) == ll::Tier::kHigh && re::TierFor(false, true) == ll::Tier::kMedium);
+  CHECK(re::TierFor(true, false) == ll::Tier::kUltra && re::TierFor(true, true) == ll::Tier::kUltra && re::TierFor(false, false) == ll::Tier::kHigh && re::TierFor(false, true) == ll::Tier::kHigh);
 }
 
 void MotionChecks() {

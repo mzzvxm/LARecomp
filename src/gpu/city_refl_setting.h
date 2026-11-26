@@ -124,9 +124,8 @@ enum class Gate : uint8_t {
 };
 
 // `wanted`: the word comes to something above off (the data's state only matters then).
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool car_rt_on, bool wanted, Data data, bool one_ray = false) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier, bool car_rt_on, bool wanted, Data data) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (!one_ray && cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!car_rt_on) return Gate::kNeedsCarRt;
   if (wanted && data == Data::kUnavailable) return Gate::kNotReady;
   if (wanted && data == Data::kBuilding) return Gate::kBuilding;
@@ -205,7 +204,7 @@ inline Decision DecidePaint(gc::GpuClass cls, gc::RtTier tier, std::string_view 
   d.rung = tier;
   d.wanted = tier != gc::RtTier::kNone && word != "off" ? Level::kHigh : Level::kOff;
   d.data = data;
-  d.gate = GateFor(cls, tier, car_rt_on, d.wanted != Level::kOff, data, true);
+  d.gate = GateFor(cls, tier, car_rt_on, d.wanted != Level::kOff, data);
   d.level = (d.gate == Gate::kRuns && data == Data::kReady) ? d.wanted : Level::kOff;
   return d;
 }

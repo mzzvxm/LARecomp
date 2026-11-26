@@ -14,10 +14,18 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <iterator>
 
 #include "gfx_preset.h"
 #include "gpu_class.h"
 #include "rt_tier.h"
+#include "city_rt_rules.h"
+#include "gi_setting.h"
+#include "rtao_setting.h"
+
+namespace city_rt = mcla::gpu::city_rt;
+namespace gi_setting = mcla::gpu::gi_setting;
+namespace rtao_setting = mcla::gpu::rtao_setting;
 
 using namespace mcla::gpu::gpu_class;
 namespace gp = mcla::gpu::gfx_preset;
@@ -52,7 +60,7 @@ void CheckNum(double got, double want, const std::string& what) {
   }
 }
 
-constexpr Preset kNamed[gp::kNamedCount] = {Preset::kVanilla, Preset::kEnhanced, Preset::kEnhancedUltra, Preset::kEnhancedRt, Preset::kEnhancedRtUltra};
+constexpr Preset kNamed[gp::kNamedCount] = {Preset::kVanilla, Preset::kEnhanced, Preset::kEnhancedRt};
 constexpr GpuClass kClasses[3] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
 
 std::string Name(std::string_view cvar, Preset p) { return std::string(cvar) + " in " + std::string(gp::Id(p)); }
@@ -116,7 +124,7 @@ bool InList(std::string_view words, std::string_view cell) {
 // --- the table -------------------------------------------------------------------------------------------------------------------------------------------------
 void CheckTable() {
   Check(gp::kRowCount == static_cast<int>(sizeof(kAllowed) / sizeof(kAllowed[0])), "every row has a list of the words its setting takes in this test");
-  Check(gp::kPresetCount == 6 && gp::kNamedCount == 5, "six presets, five of them named");
+  Check(gp::kPresetCount == 4 && gp::kNamedCount == 3, "four presets, three of them named");
 
   for (int i = 0; i < gp::kRowCount; ++i) {
     const gp::Row& row = gp::kRows[i];
@@ -221,235 +229,102 @@ void CheckVanilla() {
   }
 }
 
-// --- the old `auto` tables, pinned: ENHANCED is today's Mid, ENHANCED ULTRA today's High, the RT presets today's rungs -----------------------------------------------------------
-struct OldEffect {
-  Effect effect;
-  const char* cvar;
-  const char* low;
-  const char* mid;
-  const char* high;
-};
-// gpu_class.h kEffects as it was before the table (the cells are the old file's literals).
-const OldEffect kOldEffects[] = {
-    {Effect::kShadowFilter, "mcla_gpu_shadow_filter", "game", "pcss", "pcss"},
-    {Effect::kShadowResolution, "mcla_gpu_shadow_resolution", "game", "high", "high"},
-    {Effect::kReflectionResolution, "mcla_gpu_reflection_resolution", "game", "high", "high"},
-    {Effect::kContactShadows, "mcla_gpu_contact_shadows", "off", "high", "ultra"},
-    {Effect::kSunShafts, "mcla_gpu_sun_shafts", "off", "default", "default"},
-    {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "high"},
-    {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near"},
-    {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "on", "on"},
-    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "on", "on", "on"},
-    {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on"},
-    {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra"},
-    {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high"},
-    {Effect::kRtShadows, "mcla_gpu_rt_shadows", "off", "off", "off"},  // the one class cell that is not read from the table (gpu_class.h)
-    {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off"},  // the legacy class table keeps SSR off
-    {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on"},
-};
-
-struct OldRtEffect {
-  RtEffect effect;
-  const char* cvar;
-  const char* none;
-  const char* weak;
-  const char* strong;
-};
-// rt_tier.h kRtEffects as it was before the table.
-const OldRtEffect kOldRt[] = {
-    {RtEffect::kCarSelfReflRt, "mcla_gpu_car_selfrefl_rt", "off", "on", "on"},
-    {RtEffect::kCarRtAo, "mcla_gpu_ao_rt", "off", "both", "both"},
-    {RtEffect::kRtShadows, "mcla_gpu_rt_shadows", "off", "high", "high"},
-    {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "on", "on"},
-    {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
-    {RtEffect::kRtAo, "mcla_gpu_ao", "", "", "rt"},
-};
-
-struct OldScaleCells {
-  Scale scale;
-  const char* cvar;
-  double low, mid, high;
-};
-// gpu_class.h kScales as it was.
-const OldScaleCells kOldScales[] = {
-    {Scale::kCityLod, "lod_city_scale", 1.0, 2.0, 2.0},
-    {Scale::kTrafficLod, "lod_traffic_scale", 1.5, 2.0, 3.0},
-    {Scale::kTrafficRange, "traffic_unspawn_dist", 250.0, 300.0, 400.0},
-    {Scale::kPedDensity, "ped_density_scale", 0.5, 0.75, 1.0},
-    {Scale::kParkedDensity, "parked_car_scale", 0.5, 0.75, 1.0},
-};
-
-// The rows that have no `auto` today: their ENHANCED cell is the row's default, and the table's other cells are decisions of this item (the numbers below are pinned so that a change
-// is deliberate). {cvar, ENHANCED = the default today, ENHANCED ULTRA}.
-struct NoAuto {
+// Pin both enhanced columns to the approved values, independently of runtime resolution.
+struct EnhancedValues {
   const char* cvar;
   const char* enhanced;
-  const char* ultra;
+  const char* enhanced_rt;
 };
-const NoAuto kNoAuto[] = {
+constexpr EnhancedValues kEnhanced[] = {
     {"mcla_gpu_anisotropy", "game", "16"},
     {"disable_dof", "true", "true"},
     {"disable_motion_blur", "false", "false"},
     {"perf_no_shadows", "false", "false"},
+    {"mcla_gpu_shadow_resolution", "high", "high"},
+    {"mcla_gpu_shadow_filter", "pcss", "pcss"},
     {"disable_imposter_shadows", "true", "true"},
-    {"mcla_gpu_car_shadow_map", "ultra", "ultra"},  // `auto` is car_shadow_map_rules.h AutoLevel: the 2048 map on a discrete card
+    {"mcla_gpu_traffic_shadows", "near", "near"},
+    {"mcla_gpu_car_shadow_map", "ultra", "ultra"},
+    {"mcla_gpu_contact_shadows", "high", "ultra"},
+    {"mcla_gpu_rt_shadows", "off", "high"},
+    {"mcla_gpu_ao", "on", "rt"},
+    {"mcla_gpu_ao_rt", "off", "both"},
     {"mcla_gpu_ao_intensity", "default", "default"},
+    {"mcla_gpu_ssgi", "off", "high"},
+    {"mcla_gpu_rt_gi", "off", "high"},
     {"mcla_gpu_ssgi_intensity", "default", "default"},
+    {"mcla_gpu_headlights", "on", "on"},
+    {"mcla_gpu_light_shadows", "medium", "ultra"},
+    {"mcla_gpu_rt_lights", "off", "on"},
+    {"mcla_gpu_neon_light", "on", "on"},
+    {"mcla_gpu_light_bounce", "on", "on"},
+    {"mcla_gpu_sun_shafts", "default", "default"},
+    {"mcla_gpu_volumetrics", "medium", "high"},
+    {"mcla_gpu_reflection_resolution", "high", "high"},
+    {"mcla_gpu_ssr", "high", "ultra"},
+    {"mcla_gpu_ssr_rt", "off", "high"},
+    {"mcla_gpu_env_resolution", "on", "on"},
+    {"mcla_gpu_car_selfrefl", "on", "on"},
+    {"mcla_gpu_car_selfrefl_rt", "off", "on"},
+    {"mcla_gpu_rt_reflections", "off", "on"},
+    {"mcla_gpu_side_mirrors", "on", "on"},
+    {"traffic_unspawn_dist", "300", "400"},
+    {"ped_density_scale", "0.75", "1"},
+    {"parked_car_scale", "0.75", "1"},
     {"global_max_draw_distance", "0", "0"},
+    {"lod_traffic_scale", "2", "3"},
+    {"lod_city_scale", "2", "2"},
 };
 
-void CheckAutoUnchanged() {
-  Check(sizeof(kOldEffects) / sizeof(kOldEffects[0]) == static_cast<std::size_t>(kEffectCount), "the old effects table is complete");
-  for (int i = 0; i < kEffectCount; ++i) {
-    const OldEffect& old = kOldEffects[i];
-    const std::string cvar = old.cvar;
-    Check(static_cast<int>(old.effect) == i, cvar + ": in the order of the enum");
-    CheckEq(CvarName(old.effect), cvar, cvar + ": kEffects names it");
-    CheckEq(Cell(old.effect, GpuClass::kLow), old.low, cvar + ": the Low cell is unchanged");
-    CheckEq(Cell(old.effect, GpuClass::kMid), old.mid, cvar + ": the Mid cell is unchanged");
-    CheckEq(Cell(old.effect, GpuClass::kHigh), old.high, cvar + ": the High cell is unchanged");
-    if (old.effect == Effect::kRtShadows) continue;  // the ray tracing rung's cells decide (below); the class cell is the old literal
-    if (old.effect == Effect::kSsr) {                // the other literal: `auto` is off on every class, the ULTRA presets are the explicit maximum
-      CheckEq(gp::CellOf(old.cvar, Preset::kVanilla), "off", "SSR in VANILLA");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), "high", "SSR in Enhanced");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "high", "SSR in EnhancedRt");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), "ultra", "SSR in EnhancedUltra");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "ultra", "SSR in EnhancedRtUltra");
-      continue;
-    }
-    if (old.effect == Effect::kAmbientOcclusion) {
-      for (const GpuClass c : kClasses) CheckEq(ResolveFor(c, old.effect, "auto"), "on", "legacy AO Auto uses one raster level");
-      continue;
-    }
-    // ENHANCED is the Mid class's `auto`, ENHANCED ULTRA the High class's, VANILLA the Low class's.
-    CheckEq(gp::CellOf(old.cvar, Preset::kVanilla), old.low, cvar + ": VANILLA is today's Low cell");
-    CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), old.mid, cvar + ": ENHANCED is today's Mid cell");
-    CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), old.high, cvar + ": ENHANCED ULTRA is today's High cell");
-    // The RT presets' non-RT rows are their non-RT sibling's (the ray traced rows are the ones that differ).
-    if (old.effect != Effect::kAmbientOcclusion) {
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), gp::CellOf(old.cvar, Preset::kEnhanced), cvar + ": ENHANCED RT is ENHANCED's cell where the row is not ray traced");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), gp::CellOf(old.cvar, Preset::kEnhancedUltra), cvar + ": ENHANCED RT ULTRA is ENHANCED ULTRA's cell where the row is not ray traced");
-    }
-    // And `auto` on a class resolves to the preset the class's family names.
-    for (const GpuClass c : kClasses) {
-      CheckEq(ResolveFor(c, old.effect, "auto"), std::string(Cell(old.effect, c)), cvar + ": Resolve(auto) is the cell");
-    }
-  }
-
-  // The Steam Deck keeps its three handheld cells (they are not in the table: a residue, listed in the report).
-  CheckEq(CellFor(Effect::kShadowFilter, GpuClass::kLow, true), "soft", "a handheld's shadow filter is unchanged");
-  CheckEq(CellFor(Effect::kShadowResolution, GpuClass::kLow, true), "high", "a handheld's shadow detail is unchanged");
-  CheckEq(CellFor(Effect::kReflectionResolution, GpuClass::kLow, true), "high", "a handheld's reflection detail is unchanged");
-
-  // The scales: Mid and High read the table, Low is the old number (the city LOD's is VANILLA's too).
-  for (const OldScaleCells& old : kOldScales) {
-    const std::string cvar = old.cvar;
-    CheckEq(ScaleCvar(old.scale), cvar, cvar + ": kScales names it");
-    CheckNum(ScaleCell(old.scale, GpuClass::kLow), old.low, cvar + ": the Low cell is unchanged");
-    CheckNum(ScaleCell(old.scale, GpuClass::kMid), old.mid, cvar + ": the Mid cell is unchanged");
-    CheckNum(ScaleCell(old.scale, GpuClass::kHigh), old.high, cvar + ": the High cell is unchanged");
-    CheckNum(gp::Number(gp::CellOf(old.cvar, Preset::kEnhanced)), old.mid, cvar + ": ENHANCED is today's Mid cell");
-    CheckNum(gp::Number(gp::CellOf(old.cvar, Preset::kEnhancedUltra)), old.high, cvar + ": ENHANCED ULTRA is today's High cell");
-  }
-  // The residue: VANILLA is the stock game, and four of the Low class's cells differ from stock (the owner's 2026-11-20 LOD pass): the traffic range and the two densities are
-  // below it (a weak PC's performance values), the traffic LOD multiple above it (1.5x the game's distances: a cheap detail gain kept for every class).
-  CheckNum(ScaleCell(Scale::kCityLod, GpuClass::kLow), gp::Number(gp::CellOf("lod_city_scale", Preset::kVanilla)), "the city LOD's Low cell is VANILLA's (the game's own)");
-  for (const Scale s : {Scale::kTrafficLod, Scale::kTrafficRange, Scale::kPedDensity, Scale::kParkedDensity}) {
-    const double low = ScaleCell(s, GpuClass::kLow), stock = gp::Number(gp::CellOf(ScaleCvar(s), Preset::kVanilla));
-    Check(s == Scale::kTrafficLod ? low > stock : low < stock,
-          std::string(ScaleCvar(s)) + ": the Low class's `auto` keeps its own number against VANILLA's stock one (the one place the Low class is not VANILLA)");
-  }
-  // The ray tracing rungs: none is ENHANCED's cell, weak ENHANCED RT's, strong ENHANCED RT ULTRA's.
-  Check(sizeof(kOldRt) / sizeof(kOldRt[0]) == static_cast<std::size_t>(kRtEffectCount), "the old ray traced table is complete");
-  for (int i = 0; i < kRtEffectCount; ++i) {
-    const OldRtEffect& old = kOldRt[i];
-    const std::string cvar = old.cvar;
-    Check(static_cast<int>(old.effect) == i, cvar + ": in the order of the RT enum");
-    CheckEq(RtCvarName(old.effect), cvar, cvar + ": kRtEffects names it");
-    const auto legacy = old.effect == RtEffect::kRtAo ? "" : "off";
-    for (const auto tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
-      CheckEq(RtCell(old.effect, tier), legacy, cvar + ": legacy Auto never enables RT");
-    }
-    if (old.effect == RtEffect::kCarRtAo) {
-      CheckEq(gp::CarAoAuto(Preset::kEnhanced, true), "off", "Enhanced keeps car AO off");
-      CheckEq(gp::CarAoAuto(Preset::kEnhancedRt, false), "both", "Enhanced RT uses both car terms");
-      CheckEq(gp::CarAoAuto(Preset::kEnhancedRtUltra, false), "both", "Enhanced RT Ultra uses both car terms");
-      CheckEq(gp::CarAoAuto(Preset::kCustom, true), "both", "Custom world RT enables car AO");
-      CheckEq(gp::CarAoAuto(Preset::kCustom, false), "off", "Custom screen AO keeps car RT off");
-    }
-    if (old.effect == RtEffect::kRtAo) {
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "rt", "ENHANCED RT selects world ray traced AO");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "rt", "the world's ambient occlusion is ray traced in ENHANCED RT ULTRA");
-      continue;
-    }
-    const auto resolved = [&](Preset p) { return gp::CellOf(old.cvar, p); };
-    CheckEq(resolved(Preset::kEnhanced), old.none, cvar + ": ENHANCED has the ray traced row off (the none rung)");
-    CheckEq(resolved(Preset::kEnhancedRt), old.weak, cvar + ": ENHANCED RT is the weak rung's cell");
-    CheckEq(resolved(Preset::kEnhancedRtUltra), old.strong, cvar + ": ENHANCED RT ULTRA is the strong rung's cell");
-    CheckEq(resolved(Preset::kEnhancedUltra), old.none, cvar + ": ENHANCED ULTRA has the ray traced row off too");
-    CheckEq(resolved(Preset::kVanilla), old.none, cvar + ": and VANILLA");
-  }
-
-  // The rows that had no `auto`.
-  for (const NoAuto& row : kNoAuto) {
+void CheckEnhanced() {
+  Check(std::size(kEnhanced) == gp::kRowCount, "both enhanced columns are covered");
+  for (const auto& row : kEnhanced) {
     CheckEq(gp::CellOf(row.cvar, Preset::kEnhanced), row.enhanced, Name(row.cvar, Preset::kEnhanced));
-    CheckEq(gp::CellOf(row.cvar, Preset::kEnhancedUltra), row.ultra, Name(row.cvar, Preset::kEnhancedUltra));
-    CheckEq(gp::CellOf(row.cvar, Preset::kEnhancedRt), row.enhanced, Name(row.cvar, Preset::kEnhancedRt));
-    CheckEq(gp::CellOf(row.cvar, Preset::kEnhancedRtUltra), row.ultra, Name(row.cvar, Preset::kEnhancedRtUltra));
+    CheckEq(gp::CellOf(row.cvar, Preset::kEnhancedRt), row.enhanced_rt, Name(row.cvar, Preset::kEnhancedRt));
   }
 }
 
-// ENHANCED ULTRA is the top level of a row where the row has levels and the High class's `auto` reached it; kBelowMax lists the rest.
-struct Top {
-  const char* cvar;
-  const char* top;
-};
-const Top kTops[] = {
-    {"mcla_gpu_anisotropy", "16"},
-    {"mcla_gpu_shadow_resolution", "ultra"},
-    {"mcla_gpu_shadow_filter", "pcss"},
-    {"mcla_gpu_contact_shadows", "ultra"},
-    {"mcla_gpu_traffic_shadows", "all"},
-    {"mcla_gpu_car_shadow_map", "ultra"},
-    {"mcla_gpu_ao", "on"},
-    {"mcla_gpu_ssgi", "ultra"},
-    {"mcla_gpu_headlights", "on"},
-    {"mcla_gpu_light_shadows", "ultra"},
-    {"mcla_gpu_neon_light", "on"},
-    {"mcla_gpu_light_bounce", "on"},
-    {"mcla_gpu_volumetrics", "ultra"},
-    {"mcla_gpu_reflection_resolution", "ultra"},
-    {"mcla_gpu_env_resolution", "on"},
-    {"mcla_gpu_car_selfrefl", "on"},
-    {"mcla_gpu_side_mirrors", "on"},
-    {"mcla_gpu_ssr", "ultra"},
-    {"lod_city_scale", "2"},
-};
-
-void CheckUltra() {
-  int below = 0;
-  for (const Top& t : kTops) {
-    const std::string_view ultra = gp::CellOf(t.cvar, Preset::kEnhancedUltra);
-    bool listed = false;
-    for (const gp::Note& n : gp::kBelowMax) {
-      if (n.cvar == t.cvar) {
-        listed = true;
-        CheckEq(n.text, t.top, std::string(t.cvar) + ": kBelowMax names the row's top level");
-      }
+void CheckNoClassDependence() {
+  for (const auto cls : kClasses) {
+    for (int i = 0; i < kEffectCount; ++i) {
+      const auto effect = static_cast<Effect>(i);
+      CheckEq(ResolveFor(cls, false, effect, "auto"), Cell(effect, GpuClass::kHigh), std::string(CvarName(effect)));
+      CheckEq(ResolveFor(cls, true, effect, "auto"), Cell(effect, GpuClass::kHigh), std::string(CvarName(effect)) + " on a handheld");
     }
-    if (ultra == t.top) {
-      Check(!listed, std::string(t.cvar) + ": ENHANCED ULTRA is at the top, so the row is not on the below-max list");
-    } else {
-      Check(listed, std::string(t.cvar) + ": ENHANCED ULTRA is below the top ('" + std::string(ultra) + "'), so the row is on the below-max list");
-      ++below;
+    for (int i = 0; i < kScaleCount; ++i) {
+      const auto scale = static_cast<Scale>(i);
+      const auto want = ScaleAutoFor(scale, true, GpuClass::kHigh);
+      CheckNum(ScaleAutoFor(scale, true, cls), want, std::string(ScaleCvar(scale)));
+      CheckNum(ScaleAutoFor(scale, false, cls), want, std::string(ScaleCvar(scale)) + " before the probe");
+    }
+    for (const auto tier : {RtTier::kWeak, RtTier::kStrong}) {
+      for (const auto word : {"off", "high", "ultra"}) {
+        const auto shadow = city_rt::ParseChoice(word);
+        const auto level = city_rt::LevelForRung(cls, tier, shadow);
+        const auto baseline = city_rt::LevelForRung(GpuClass::kHigh, RtTier::kStrong, shadow);
+        Check(level == baseline, "city shadow level");
+        const auto got = city_rt::BudgetFor(cls, level);
+        const auto want = city_rt::BudgetFor(GpuClass::kHigh, baseline);
+        Check(got.hi_radius == want.hi_radius && got.far_radius == want.far_radius && got.hysteresis == want.hysteresis &&
+              got.memory_cap == want.memory_cap && got.build_triangles == want.build_triangles &&
+              got.loads_in_flight == want.loads_in_flight && got.upload_bytes == want.upload_bytes, "city shadow budget");
+      }
+      const auto gi = gi_setting::Decide(cls, tier, "ultra", true);
+      Check(gi.layout == mcla::gpu::gi::Layout::kExtended && mcla::gpu::gi::PixelPassAllowed(gi.rung, gi.layout), "GI Ultra");
+      const auto ao = rtao_setting::Decide(cls, true, tier, rtao_setting::Choice::kRt, true);
+      Check(ao.rt, "RT AO capability");
     }
   }
-  Check(below == gp::kBelowMaxCount, "the below-max list is exactly the rows that are below their top (" + std::to_string(below) + ")");
-  // The ceilings of the LOD rows (gpu_class.h): the game's own range and densities, the city LOD that shows every loaded sector, the traffic LOD past which nothing is left to see.
-  CheckNum(gp::Number(gp::CellOf("traffic_unspawn_dist", Preset::kEnhancedUltra)), 400.0, "ENHANCED ULTRA has the game's own traffic range");
-  CheckNum(gp::Number(gp::CellOf("ped_density_scale", Preset::kEnhancedUltra)), 1.0, "ENHANCED ULTRA has the game's own pedestrians");
-  CheckNum(gp::Number(gp::CellOf("parked_car_scale", Preset::kEnhancedUltra)), 1.0, "ENHANCED ULTRA has the game's own parked cars");
-  CheckNum(gp::Number(gp::CellOf("lod_traffic_scale", Preset::kEnhancedUltra)), 3.0, "ENHANCED ULTRA has the traffic LOD ceiling");
+}
+
+void CheckRetiredIds() {
+  CheckEq(gp::MigrateId("enhanced_ultra"), "enhanced", "retired Enhanced Ultra ID");
+  CheckEq(gp::MigrateId("enhanced_rt_ultra"), "enhanced_rt", "retired Enhanced RT Ultra ID");
+  for (const auto id : gp::kIds) CheckEq(gp::MigrateId(id), id, "current ID stays canonical");
+  CheckEq(gp::MigrateId("none"), "none", "custom without a source preset");
+  CheckEq(gp::MigrateId("other"), "other", "unknown IDs stay available for validation");
+  Preset parsed;
+  Check(!gp::Parse("enhanced_ultra", &parsed) && !gp::Parse("enhanced_rt_ultra", &parsed), "retired IDs are absent from the picker");
 }
 
 // --- the numbers ---------------------------------------------------------------------------------------------------------------------------------------------------
@@ -467,8 +342,8 @@ void CheckNumber() {
 
 // --- the names ---------------------------------------------------------------------------------------------------------------------------------------------------------
 void CheckNames() {
-  const char* const ids[] = {"vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"};
-  const char* const labels[] = {"VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM"};
+  const char* const ids[] = {"vanilla", "enhanced", "enhanced_rt", "custom"};
+  const char* const labels[] = {"VANILLA", "ENHANCED", "ENHANCED RT", "CUSTOM"};
   for (int i = 0; i < gp::kPresetCount; ++i) {
     const Preset p = static_cast<Preset>(i);
     CheckEq(gp::Id(p), ids[i], "the id of preset " + std::to_string(i));
@@ -486,15 +361,15 @@ void CheckNames() {
   Check(gp::kFirstStart == Preset::kVanilla, "the first start is VANILLA");
   CheckEq(gp::kPresetSetting, "mcla_gpu_preset", "the preset setting's name");
   CheckEq(gp::kFromSetting, "mcla_gpu_preset_from", "the from setting's name");
-  Check(gp::IsNamed(Preset::kVanilla) && gp::IsNamed(Preset::kEnhancedRtUltra) && !gp::IsNamed(Preset::kCustom), "every preset but CUSTOM is named");
+  Check(gp::IsNamed(Preset::kVanilla) && gp::IsNamed(Preset::kEnhancedRt) && !gp::IsNamed(Preset::kCustom), "every preset but CUSTOM is named");
 }
 
 // --- RT presets need an RT tier ----------------------------------------------------------------------------------------------------------------------------------------
 void CheckRtNeeds() {
   for (int i = 0; i < gp::kPresetCount; ++i) {
     const Preset p = static_cast<Preset>(i);
-    const bool rt = p == Preset::kEnhancedRt || p == Preset::kEnhancedRtUltra;
-    Check(gp::NeedsRt(p) == rt, "only the two RT presets need ray tracing: " + std::string(gp::Id(p)));
+    const bool rt = p == Preset::kEnhancedRt;
+    Check(gp::NeedsRt(p) == rt, "only Enhanced RT need ray tracing: " + std::string(gp::Id(p)));
     CheckEq(gp::Needs(p), rt ? "gpu.rt_tier != 'none'" : "", "the expression that offers " + std::string(gp::Id(p)));
     Check(gp::Offered(p, true), std::string(gp::Id(p)) + " is offered where the card traces rays");
     Check(gp::Offered(p, false) == !rt, std::string(gp::Id(p)) + " is offered without ray tracing only if it is not an RT preset");
@@ -508,70 +383,18 @@ void CheckRtNeeds() {
 }
 
 // --- the class -> preset map ------------------------------------------------------------------------------------------------------------------------------------------------
-// The settings-ui expressions of kClassToPreset are plain: `true`, `gpu.class == 'x'` and `gpu.rt_rung == 'x'`; this reads them against a class and a tier, so the exported rule and
-// rt_tier.h's RecommendedPreset cannot differ.
-bool WhenHolds(std::string_view when, GpuClass c, RtTier t) {
-  if (when == "true") return true;
-  const std::string_view class_eq = "gpu.class == '";
-  const std::string_view rung_eq = "gpu.rt_rung == '";
-  if (when.substr(0, class_eq.size()) == class_eq) {
-    const std::string_view word = when.substr(class_eq.size(), when.size() - class_eq.size() - 1);
-    return word == ClassName(c);
-  }
-  if (when.substr(0, rung_eq.size()) == rung_eq) {
-    const std::string_view word = when.substr(rung_eq.size(), when.size() - rung_eq.size() - 1);
-    return word == RtTierName(RtRung(c, t));
-  }
-  std::printf("FAILED: an expression this test cannot read: %.*s\n", static_cast<int>(when.size()), when.data());
-  ++g_failed;
-  return false;
-}
-
-Preset ByExpressions(GpuClass c, RtTier t) {
-  for (const gp::ClassRule& rule : gp::kClassToPreset) {
-    if (WhenHolds(rule.when, c, t)) return rule.preset;
-  }
-  return Preset::kCustom;
-}
-
 void CheckRecommendation() {
-  Check(gp::kClassToPreset[gp::kClassRuleCount - 1].when == "true", "the last rule is always true: every PC has a recommendation");
-  struct Case {
-    GpuClass c;
-    RtTier t;
-    Preset want;
-  };
-  const Case cases[] = {
-      {GpuClass::kLow, RtTier::kNone, Preset::kVanilla},
-      {GpuClass::kLow, RtTier::kWeak, Preset::kVanilla},  // an iGPU or a Deck that has ray tracing units: nothing heavy runs on shared memory
-      {GpuClass::kLow, RtTier::kStrong, Preset::kVanilla},
-      {GpuClass::kMid, RtTier::kNone, Preset::kEnhanced},
-      {GpuClass::kMid, RtTier::kWeak, Preset::kEnhancedRt},
-      {GpuClass::kMid, RtTier::kStrong, Preset::kEnhancedRt},  // a Mid class card is at most weak
-      {GpuClass::kHigh, RtTier::kNone, Preset::kEnhancedUltra},
-      {GpuClass::kHigh, RtTier::kWeak, Preset::kEnhancedRt},
-      {GpuClass::kHigh, RtTier::kStrong, Preset::kEnhancedRtUltra},
-  };
-  for (const Case& k : cases) {
-    const std::string at = std::string(ClassName(k.c)) + " + " + std::string(RtTierName(k.t));
-    Check(RecommendedPreset(k.c, k.t) == k.want, at + ": recommended " + std::string(gp::Id(k.want)));
-    Check(ByExpressions(k.c, k.t) == k.want, at + ": the exported expressions say the same");
-    // A recommended preset is one the card is offered.
-    Check(gp::Offered(RecommendedPreset(k.c, k.t), RtRung(k.c, k.t) != RtTier::kNone), at + ": the recommendation is offered on that card");
-  }
-  // The recommendation and `auto` agree on every row they both hold, wherever one preset holds the whole of `auto`: Low (VANILLA), Mid + none (ENHANCED), Mid + weak (ENHANCED RT),
-  // High + none (ENHANCED ULTRA) and High + strong (ENHANCED RT ULTRA). High + weak is the one mixed case (the High class's cells with the weak rung's ray traced rows).
-  for (const Case& k : cases) {
-    const bool mixed = k.c == GpuClass::kHigh && k.t == RtTier::kWeak;
-    const Preset p = RecommendedPreset(k.c, k.t);
-    for (int i = 0; i < kEffectCount; ++i) {
-      const Effect effect = static_cast<Effect>(i);
-      if (effect == Effect::kRtShadows || effect == Effect::kAmbientOcclusion || effect == Effect::kSsr) continue;  // the three whose class cell is not the preset's (gpu_class.h)
-      if (mixed) continue;
-      if (k.c == GpuClass::kLow && k.t != RtTier::kNone) continue;
-      CheckEq(Cell(effect, k.c), gp::CellOf(CvarName(effect), p), std::string(CvarName(effect)) + " on " + std::string(ClassName(k.c)) + " + " + std::string(RtTierName(k.t)) + " is the recommended preset's cell");
+  Check(gp::kClassRuleCount == 2, "there are two recommendation rules");
+  CheckEq(gp::kClassToPreset[0].when, "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", "the exported RT recommendation");
+  Check(gp::kClassToPreset[0].preset == Preset::kEnhancedRt, "the exported RT preset");
+  CheckEq(gp::kClassToPreset[1].when, "true", "the exported fallback is unconditional");
+  Check(gp::kClassToPreset[1].preset == Preset::kEnhanced, "the exported fallback preset");
+  for (const auto tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
+    Check(RecommendedPreset(GpuClass::kLow, tier) == Preset::kEnhanced, "low class recommendation");
+    for (const auto cls : {GpuClass::kMid, GpuClass::kHigh}) {
+      const auto want = tier == RtTier::kNone ? Preset::kEnhanced : Preset::kEnhancedRt;
+      Check(RecommendedPreset(cls, tier) == want, "Mid and High recommendation");
     }
-
   }
 }
 
@@ -684,12 +507,9 @@ void CheckScope() {
 int main() {
   CheckTable();
   CheckVanilla();
-  for (const Preset preset : kNamed) {
-    const bool rt = preset == Preset::kEnhancedRt || preset == Preset::kEnhancedRtUltra;
-    CheckEq(gp::CellOf("mcla_gpu_ssr_rt", preset), rt ? "high" : "off", "surface RT follows the RT preset");
-  }
-  CheckAutoUnchanged();
-  CheckUltra();
+  CheckEnhanced();
+  CheckNoClassDependence();
+  CheckRetiredIds();
   CheckNumber();
   CheckNames();
   CheckRtNeeds();

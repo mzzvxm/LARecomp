@@ -465,54 +465,16 @@ inline BenchVerdict ApplyBench(RtTier table_tier, bool table_known, const rt_ben
   return v;
 }
 
-// --- the rung and the budget class -----------------------------------------------------------------------------------------------
+// Keep the probe's tier for diagnostics and the recommendation.
+constexpr RtTier RtRung(GpuClass, RtTier t) { return t; }
 
-// The tier the Auto table reads: gated by the class. Low (shared memory, software) is none, Mid is at most weak, High is the tier.
-constexpr RtTier RtRung(GpuClass c, RtTier t) {
-  switch (c) {
-    case GpuClass::kLow:
-      return RtTier::kNone;
-    case GpuClass::kMid:
-      return MinTier(t, RtTier::kWeak);
-    default:
-      return t;
-  }
+// Recommendation only. Support for the RT effects is independent of GPU class.
+constexpr GpuClass RtClass(GpuClass, RtTier t) {
+  return t == RtTier::kNone ? GpuClass::kLow : GpuClass::kHigh;
 }
 
-// The class a ray tracing package's own per-class budget table (car_rt_instances_rules.h ClassLimits, car_rt_opp_refl_rules.h TexelBudget,
-// city_rt_rules.h BudgetFor) is read with: strong is the class's own (High stays High), weak is at most Mid, none is Low (the table's "no ray
-// tracing" entry).
-constexpr GpuClass RtClass(GpuClass c, RtTier t) {
-  switch (RtRung(c, t)) {
-    case RtTier::kNone:
-      return GpuClass::kLow;
-    case RtTier::kWeak:
-      return c == GpuClass::kHigh ? GpuClass::kMid : c;
-    default:
-      return c;
-  }
-}
-
-// The preset the class and the ray tracing rung recommend (the "Recommended for this GPU" tag; gfx_preset.h kClassToPreset is the same rule as the settings-ui expressions): a strong
-// card ENHANCED RT ULTRA, a card at the weak rung ENHANCED RT, else the High class ENHANCED ULTRA, the Mid class ENHANCED and anything else (Low: shared memory, software, the
-// Steam Deck) VANILLA. The first start is VANILLA whatever this says.
 constexpr gfx_preset::Preset RecommendedPreset(GpuClass c, RtTier t) {
-  switch (RtRung(c, t)) {
-    case RtTier::kStrong:
-      return gfx_preset::Preset::kEnhancedRtUltra;
-    case RtTier::kWeak:
-      return gfx_preset::Preset::kEnhancedRt;
-    default:
-      break;
-  }
-  switch (c) {
-    case GpuClass::kHigh:
-      return gfx_preset::Preset::kEnhancedUltra;
-    case GpuClass::kMid:
-      return gfx_preset::Preset::kEnhanced;
-    default:
-      return gfx_preset::Preset::kVanilla;
-  }
+  return c != GpuClass::kLow && t != RtTier::kNone ? gfx_preset::Preset::kEnhancedRt : gfx_preset::Preset::kEnhanced;
 }
 
 // The tier a FORCED class stands for in a test (mcla_gpu_class): what the class's cells were meant to show. A card the API says cannot trace stays none.
@@ -548,8 +510,7 @@ struct RtEffectInfo {
   std::string_view none, weak, strong;  // what `auto` stands for at each rung
 };
 
-// Legacy Auto for explicit RT selectors resolves to Off at every rung.
-// World AO's legacy Auto uses its raster class cell.
+// Legacy Auto is Off for every RT selector. World AO uses its fixed raster value.
 inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     {"mcla_gpu_car_selfrefl_rt", "off", "off", "off"},
     {"mcla_gpu_ao_rt", "off", "off", "off"},
@@ -590,11 +551,11 @@ inline std::string AutoLabelRtFor(GpuClass c, RtTier t, RtEffect effect) {
 
 // The suffix a ray traced pause row shows where it cannot run (CITY-RT-M2 section 12): " (NO RT GPU)" where the card does not trace (tier none), " (GPU TOO
 // SLOW)" where it does but the class is Low (shared memory), else nothing. The row is grey with it.
-constexpr std::string_view RtRowSuffix(GpuClass c, RtTier t) {
+constexpr std::string_view RtRowSuffix(GpuClass, RtTier t) {
   if (t == RtTier::kNone) {
     return " (NO RT GPU)";
   }
-  return c == GpuClass::kLow ? std::string_view(" (GPU TOO SLOW)") : std::string_view();
+  return {};
 }
 
 // --- what the launcher and the log show --------------------------------------------------------------------------------------------
@@ -620,9 +581,9 @@ constexpr std::string_view LauncherText(RtTier t) {
     case RtTier::kNone:
       return "This graphics card does not trace rays, so the effects that use ray tracing keep their regular versions.";
     case RtTier::kWeak:
-      return "This graphics card traces rays at a moderate speed: the ray traced effects run at lighter levels, and some stay off.";
+      return "This graphics card traces rays at a moderate speed.";
     default:
-      return "This graphics card traces rays quickly: the ray traced effects run at their full levels.";
+      return "This graphics card traces rays quickly.";
   }
 }
 

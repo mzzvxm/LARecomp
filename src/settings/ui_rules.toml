@@ -32,8 +32,7 @@ frame_gen_on = "live.frame_generation_running ?? ((s.mcla_gpu_frame_generation =
 hdr_on = "live.hdr_active ?? (s.mcla_gpu_hdr == 'on' || (s.mcla_gpu_hdr == 'auto' && features.hdr.windows_hdr_on))"
 ao_on = "s.mcla_gpu_ao in ['auto','on','high','ultra','rt']"
 shadows_on = "!s.perf_no_shadows"
-rt_field_class = "live.rt_field_class ?? gpu.class"
-rt_gi_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && build.rt_gi_update_built"
+rt_gi_open = "gpu.rt_tier != 'none' && build.rt_gi_update_built"
 rtao_open = "gpu.rt_tier != 'none' && (live.rtao_pass_built ?? false)"
 bounce_on = "(d.ao_on && (resolved(s.mcla_gpu_ssgi) in ['high','ultra'])) || (d.rt_gi_open && (resolved(s.mcla_gpu_rt_gi) in ['high','ultra']))"
 shown_upscaler.cases = [
@@ -49,7 +48,7 @@ active_upscaler.cases = [
   { when = "d.shown_upscaler in ['fsr31','fsr4']", value = { expr = "d.shown_upscaler" } },
   { value = "off" },
 ]
-car_rt_runs = "api.car_rt && resolved(s.mcla_gpu_car_selfrefl) == 'on' && s.mcla_gpu_car_selfrefl_rt == 'on'"
+car_rt_runs = "api.car_rt && gpu.rt_tier != 'none' && resolved(s.mcla_gpu_car_selfrefl) == 'on' && s.mcla_gpu_car_selfrefl_rt == 'on'"
 ssr_on = "resolved(s.mcla_gpu_ssr) in ['high','ultra']"
 contact_on = "resolved(s.mcla_gpu_contact_shadows) in ['high','ultra']"
 rt_city_wanted = "s.mcla_gpu_rt_reflections != 'off'"
@@ -65,11 +64,8 @@ shown_per_rendered.cases = [
 ]
 # The preset this GPU is recommended: the same rule as presets.class_to_preset in the dump (gpu/gfx_preset.h kClassToPreset, rt_tier.h RecommendedPreset; tools/check_gfx_presets.py compares them).
 recommended_preset.cases = [
-  { when = "gpu.rt_rung == 'strong'", value = "enhanced_rt_ultra" },
-  { when = "gpu.rt_rung == 'weak'", value = "enhanced_rt" },
-  { when = "gpu.class == 'high'", value = "enhanced_ultra" },
-  { when = "gpu.class == 'mid'", value = "enhanced" },
-  { value = "vanilla" },
+  { when = "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", value = "enhanced_rt" },
+  { value = "enhanced" },
 ]
 
 [value_sets.fsr_modes]
@@ -116,20 +112,18 @@ states = [
   { when = "d.frame_gen_on", enabled = false, suffix = " (FRAME GEN)" },
 ]
 
-# PRESET (gpu/gfx_preset.h). The two RT presets are listed where the card traces rays, and for the one that is in force (a larecomp.toml carried to a PC without ray tracing keeps showing its
+# PRESET (gpu/gfx_preset.h). The RT preset is listed where the card traces rays, and for the one that is in force (a larecomp.toml carried to a PC without ray tracing keeps showing its
 # own preset, with the reason). The recommended preset says so after its name where it is the one in force.
 [rows.PM_RxGpuPreset]
 values = [
   { id = "vanilla", label = "VANILLA" },
   { id = "enhanced", label = "ENHANCED" },
-  { id = "enhanced_ultra", label = "ENHANCED ULTRA" },
   { id = "enhanced_rt", label = "ENHANCED RT", when = "gpu.rt_tier != 'none' || s.mcla_gpu_preset == 'enhanced_rt'" },
-  { id = "enhanced_rt_ultra", label = "ENHANCED RT ULTRA", when = "gpu.rt_tier != 'none' || s.mcla_gpu_preset == 'enhanced_rt_ultra'" },
   { id = "custom", label = "CUSTOM" },
 ]
 states = [
   { when = "known(gpu.vram_warning)", label = "PRESET (VRAM! {gpu.vram_warning})", reason = "The game detected high video memory use or a failed allocation. Review Render Scale, MSAA, Upscaling, Frame Generation, RT City Reflections, RT Bounce Light, or Light Shadows." },
-  { when = "gpu.rt_tier == 'none' && s.mcla_gpu_preset in ['enhanced_rt', 'enhanced_rt_ultra']", enabled = true, suffix = " (NO RT GPU)", reason = "Needs a graphics card that can ray trace." },
+  { when = "gpu.rt_tier == 'none' && s.mcla_gpu_preset == 'enhanced_rt'", enabled = true, suffix = " (NO RT GPU)", reason = "Needs a graphics card that can ray trace." },
   { when = "s.mcla_gpu_preset == d.recommended_preset", enabled = true, suffix = " (RECOMMENDED)" },
 ]
 
@@ -246,11 +240,6 @@ states = [
   { when = "!d.shadows_on", enabled = false, suffix = " (SUN OFF)" },
 ]
 
-[rows.PM_RxGpuShadowFilter.value."pcss"]
-label_rules = [
-  { when = "!features.pcss", label = "ULTRA (HIGH)" },
-]
-
 [rows.PM_RxGpuAo]
 decode = { cases = [{ when = "s.mcla_gpu_ao in ['auto','on','high','ultra']", value = "on" }, { value = { expr = "s.mcla_gpu_ao" } }] }
 values = [
@@ -311,7 +300,6 @@ states = [
 decode = "resolved(s.mcla_gpu_rt_shadows)"
 states = [
   { when = "!api.city_rt_shadows", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "gpu.class == 'low'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
   { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false, reason = "Contact Shadows is off." },
 ]
@@ -328,7 +316,6 @@ states = [
 decode = "resolved(s.mcla_gpu_rt_gi)"
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "!build.rt_gi_update_built", enabled = false, suffix = " (NOT READY)" },
 ]
 
@@ -373,7 +360,6 @@ states = [
 decode = { cases = [{ when = "s.mcla_gpu_rt_lights == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_rt_lights" } }] }
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "LIGHT RT" },
-  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)", label = "LIGHT RT" },
 ]
 
 [rows.PM_RxGpuSsrRt]

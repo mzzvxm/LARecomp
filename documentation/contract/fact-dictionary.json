@@ -28,7 +28,7 @@
     "gpu.class_forced": { "type": "string", "l0": false, "source": "mcla_gpu_class" },
     "gpu.handheld": { "type": "bool", "l0": false, "source": "gpu_class.h kHandheldTable", "used_by": "Auto cells of a handheld" },
     "gpu.rt_tier": { "type": "string", "enum": ["none", "weak", "strong"], "l0": false, "source": "rt_tier.h InitializeRt", "used_by": "RT rows, presets" },
-    "gpu.rt_rung": { "type": "string", "enum": ["none", "weak", "strong"], "l0": false, "source": "rt_tier.h RtRung", "used_by": "Auto cells of the RT effects" },
+    "gpu.rt_rung": { "type": "string", "enum": ["none", "weak", "strong"], "l0": false, "source": "rt_tier.h RtRung", "used_by": "Compatibility key for older settings-ui documents" },
     "gpu.rt_tier_why": { "type": "string", "l0": false, "source": "rt_tier.h" },
     "gpu.rt_benchmarked": { "type": "bool", "l0": false, "source": "rt_tier.h" },
     "api.name": { "type": "string", "enum": ["d3d12", "vulkan"], "l0": false, "source": "Plume device", "used_by": "Ray Regeneration row" },

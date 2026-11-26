@@ -112,10 +112,9 @@ inline constexpr Cell kHighCell = {GroupBit(kGroupBright) | GroupBit(kGroupGroun
 inline constexpr Cell kUltraCell = {GroupBit(kGroupBright) | GroupBit(kGroupGround), 1000000, 2, 300.0f, 0.50f};
 inline constexpr Cell kMidCell = {GroupBit(kGroupBright), 100000, 1, 60.0f, 0.30f};
 
-// The cell of a level on a card of this rung (the ray tracing tier gated by the class: rt_tier.h RtRung): a strong card has the level's own, a weak one the Mid cell whatever level it was given by hand.
+// The selected level sets the ray budget on any device that can trace.
 constexpr Cell CellFor(Level level, gc::RtTier rung) {
   if (level == Level::kOff || rung == gc::RtTier::kNone) return Cell{};
-  if (rung == gc::RtTier::kWeak) return kMidCell;
   return level == Level::kUltra ? kUltraCell : kHighCell;
 }
 

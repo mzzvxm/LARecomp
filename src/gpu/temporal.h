@@ -667,18 +667,6 @@ class TemporalSystem {
   bool SwitchPath(plume::RenderCommandList* list, Upscaler to, UpscaleMode mode,
                   const BackendRequest* request, Scale output);
   void CancelStage(const char* why);
-  // Video memory (vram_room.h). `chosen` with `*mode` and `*output` is the path UpdatePath wants; when its
-  // context was refused for want of room (TemporalBackend::NoRoom: the backend's worker found the use plus
-  // the context past the line the caches release at, and waits before it asks again):
-  //   - the same upscaler is running with a context (a new mode or output asked for): the running path
-  //     stays, `*mode` and `*output` become its own (`output_now`), as a render scale that could not be made
-  //     keeps the one that runs;
-  //   - else the next upscaler down that runs and has room is taken (FSR 4 -> FSR 3.1) with its own saved
-  //     mode, else none (Native AA in `*mode`).
-  // `*held` is true when the answer is not what was asked for. Logs once per change of the answer.
-  // Render thread.
-  Upscaler FitToRoom(Upscaler chosen, UpscaleMode* mode, Scale* output, Scale output_now,
-                     const uint32_t guest[2], bool* held);
   // The guest's frame size: the last accepted anchor's, else the game's screen; false until known.
   // `quiet`: a poll (PrewarmDlss) that must not log the game's unset screen size as an error.
   bool GuestFrameSize(uint32_t out[2], bool quiet = false) const;
@@ -709,9 +697,7 @@ class TemporalSystem {
   // RR-3. At the frame boundary, with the Super Resolution request the frame asks for (`base`): asks the DLSS backend for the Ray Reconstruction companion context (the same sizes and mode) while
   // the plan wants it, keeps it, releases it after the hold, and logs when it is asked for, made and released.
   void ManageRrContext(const BackendRequest& base);
-  // Whether video memory has room for the Ray Reconstruction context (rr::ContextNeedBytes against the adapter's use and budget, vram_room.h's line): checked until the context exists, at most
-  // every second, and after a refusal not again until the shared wait (5 s, 10 s ... one minute) is over; one log line each time the answer changes.
-  bool RrRoomOk();
+  void WarnOnRrMemoryPressure();
   // This frame's dispatch (rr::ChooseDispatch): the plan, a failure, this frame's guides, the context's readiness.
   rr::DispatchChoice ChooseRrDispatch() const;
   // After an upscale that recorded: what the frame was, for the census and the first-frame line. `used_rr`: the backend ran its companion.
@@ -796,13 +782,6 @@ class TemporalSystem {
   // The answer ResolveDlssMode last logged (the mode asked for, the mode it came to, the output),
   // 0 when the mode asked for runs: a line is written when it changes.
   uint64_t dlss_refusal_key_ = 0;
-  // The upscaler the settings choose was refused for want of video memory and another path runs (FitToRoom):
-  // set at the first refusal, cleared when the choice runs or changes (published as gpu.h
-  // UpscalerAvailability::no_room: the pause menu says NO ROOM). `room_key_` is the choice it is for,
-  // `room_logged_key_` the answer last logged (0: none).
-  bool room_lowered_ = false;
-  uint64_t room_key_ = 0;
-  uint64_t room_logged_key_ = 0;
   // The render scale the settings ask for (ReadRenderScale): the scale, what it came from (for the
   // log), and when it last changed. A change is taken once it has stood for kScaleSettle.
   Scale render_wanted_ = Scale::None();
@@ -849,16 +828,13 @@ class TemporalSystem {
   rr::Denoiser rr_setting_ = rr::Denoiser::kAuto;  // the row as the last plan read it (RawFrame::row_auto)
   // RR-3: the companion context. `rr_keeper_` holds it after the want stops; `rr_request_` is what it was asked for (the Super Resolution request with ray_reconstruction set);
   // `rr_context_asked_` it is asked for now; `rr_asked_at_` for the "made after" line; `rr_ready_reported_` that line was written. The room check's answer, when it is asked again
-  // (`rr_room_until_`), the wait of the current refusal series (`rr_room_wait_ms_`) and whether a refusal was logged (`rr_room_refused_logged_`).
   rr::ContextKeeper rr_keeper_;
   BackendRequest rr_request_;
   bool rr_context_asked_ = false;
   Clock::time_point rr_asked_at_{};
   bool rr_ready_reported_ = false;
-  bool rr_room_ok_ = true;
   Clock::time_point rr_room_until_{};
-  uint64_t rr_room_wait_ms_ = 0;
-  bool rr_room_refused_logged_ = false;
+  bool rr_room_warned_ = false;
   bool rr_first_frame_logged_ = false;
   uint32_t rr_test_errors_ = 0;  // the debug lever's injected evaluation errors made so far (rr::kTestErrorFrames, once)
   int rr_test_lever_ = 0;        // what NoteLeverChanges last saw of mcla_gpu_dlss_rr_test

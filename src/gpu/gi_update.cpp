@@ -85,20 +85,6 @@ void GiUpdate::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
     readback_.reset();
     return;
   }
-  // The timestamps of the governor: a pool of two a frame slot. Without them the scale stays 1 (said once in the log).
-  stamps_ok_ = backend::TimestampsSupported(device.device());
-  for (Slot& s : slots_) {
-    if (stamps_ok_) {
-      s.stamps = device.CreateQueryPool(2, "gi update timestamps");
-      stamps_ok_ = s.stamps != nullptr;
-    }
-  }
-  if (!stamps_ok_) {
-    for (Slot& s : slots_) {
-      s.stamps.reset();
-    }
-    REXLOG_INFO("{} no GPU timestamps: the update's governor holds its scale at 1", kPrefix);
-  }
   ready_ = true;
   if (listed_at_start) {
     uint32_t added = 0;
@@ -337,7 +323,7 @@ bool GiUpdate::EnsureSlot(uint32_t frame_slot, const rules::Budget& budget) {
 void GiUpdate::OnWant(gi::Level level) {
   if (world_ != nullptr) {
     // GI-BOUNCE-RT: the cars' lamps (neon, headlights, tail lamps ...) are lit surfaces' light too: the world frame makes the emitters while the bounce light runs, at the tier its level and rung say.
-    world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, gi_setting::Current().rung == gi::Rung::kWeak);
+    world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, false);
   }
   if (!ready_ || !service_ || level == gi::Level::kOff) {
     return;
@@ -349,27 +335,6 @@ void GiUpdate::OnWant(gi::Level level) {
   needs.hit = needs.city;
   needs.textures = TextureScope::kNone;
   service_->Want(rt_scene::Consumer::kCityGi, needs);
-}
-
-void GiUpdate::Harvest(Slot& s) {
-  if (!s.stamps_pending || !s.stamps) {
-    return;
-  }
-  s.stamps_pending = false;
-  s.stamps->queryResults();
-  const uint64_t* t = s.stamps->getResults();
-  if (t[1] >= t[0]) {
-    governor_.AddSample(float(double(t[1] - t[0]) / 1.0e6), buffers_for_.cap_ms);
-  }
-}
-
-void GiUpdate::OnSubmitted(uint32_t frame_slot) {
-  if (frame_slot >= kFramesInFlight) {
-    return;
-  }
-  Slot& s = slots_[frame_slot];
-  s.stamps_pending = s.stamps_written;
-  s.stamps_written = false;
 }
 
 void GiUpdate::DrainBuiltSectors() {
@@ -422,12 +387,10 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     return;
   }
   Slot& slot = slots_[frame_slot];
-  Harvest(slot);
 
-  // A new field (a layout, a size, the memory): the scheduler and the governor start again.
+  // A new field (a layout, a size, the memory): the scheduler starts again.
   if (field_->generation() != scheduler_generation_) {
     scheduler_.Start(field_->fit().budget);
-    governor_.Reset();
     scheduler_generation_ = field_->generation();
     have_last_words_ = false;
     interval_probes_ = {};
@@ -459,7 +422,7 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     in.camera[a] = uf.camera[a];
   }
   in.safe_range_m = uf.safe_range_m;
-  in.governor_scale = governor_.scale();
+  in.governor_scale = 1.0f;
   in.warmup_scale = field_->budget_scale();
   // CHECK: measure probe refresh during a fast drive, a sector load and a lighting change.
   in.reuse_coarse = larecomp::settings::mcla_gpu_rt_gi_reuse_coarse_probes.Get();
@@ -518,11 +481,6 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   push.tune2[0] = rules::RayConeTanHalf(budget.rays_per_probe);
   push.control[3] = uf.frame_serial;
 
-  if (stamps_ok_ && slot.stamps) {
-    list->resetQueryPool(slot.stamps.get(), 0, 2);
-    list->writeTimestamp(slot.stamps.get(), 0);
-    slot.stamps_written = true;
-  }
   const auto record_batch = [&](uint32_t first, uint32_t count, uint32_t rays_per_probe) {
     push.control[1] = rays_per_probe;
     for (const rules::Chunk& chunk : rules::ChunksOf(count, budget.chunk_probes)) {
@@ -556,9 +514,6 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   record_batch(full_count, plan.Total() - full_count, 32u);
   // The blend's writes are done before the weights pass reads the state words and the readers sample the textures (RecordFinish).
   list->barriers(Stage::COMPUTE, buffers, 3, to_write, 3);
-  if (stamps_ok_ && slot.stamps) {
-    list->writeTimestamp(slot.stamps.get(), 1);
-  }
   recorded_frame_ = uf.frame_serial;
   ++frames_run_;
   const uint64_t planned_rays = uint64_t(full_count) * budget.rays_per_probe + uint64_t(plan.Total() - full_count) * 32u;
@@ -626,7 +581,7 @@ void GiUpdate::LogInterval(uint64_t frame, const rules::StatSummary& stats, uint
   info.probes = interval_probes_;
   info.cascades = field_ ? field_->fit().budget.cascade_count : 0;
   info.cuts = cuts_;
-  info.budget_scale = governor_.scale();
+  info.budget_scale = 1.0f;
   info.finest_dirty_share = field_ ? double(field_->scheduler().DirtyShare(0)) : 0.0;
   REXLOG_INFO("{} {}", kPrefix, rules::IntervalLine(info, stats));
   if (pass_timing_ && pass_timing_->enabled() && frames > 0) {
@@ -652,9 +607,9 @@ std::string GiUpdate::CensusText() const {
   if (!ready_) {
     return {};
   }
-  return std::format("; probe update: {} frames ({} chunks), {:.1f} M rays planned, governor scale {:.2f}{}, {:.1f} MiB held, {} stale probes marked by {} built sectors; frames without it: {} not usable, {} without the top "
+  return std::format("; probe update: {} frames ({} chunks), {:.1f} M rays planned, {:.1f} MiB held, {} stale probes marked by {} built sectors; frames without it: {} not usable, {} without the top "
                      "level, {} without the world's rows, {} without the hit data's pool, {} waiting for the pipelines, {} without resources",
-                     frames_run_, chunks_total_, double(rays_planned_) / 1.0e6, double(governor_.scale()), stamps_ok_ ? "" : " (no timestamps)", double(HeldBytes()) / (1024.0 * 1024.0), stale_marked_,
+                     frames_run_, chunks_total_, double(rays_planned_) / 1.0e6, double(HeldBytes()) / (1024.0 * 1024.0), stale_marked_,
                      sectors_built_seen_, not_usable_, no_scene_, no_world_, no_hit_data_, not_ready_, no_resources_);
 }
 
