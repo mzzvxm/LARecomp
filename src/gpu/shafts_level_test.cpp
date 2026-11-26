@@ -103,7 +103,7 @@ void CheckLevels() {
 }
 
 void CheckAuto() {
-  // What `auto` comes to: OFF on Low (the game's own picture on weak GPUs), DEFAULT on Mid and High.
+  // Legacy Auto uses the ENHANCED preset value on every GPU.
   const Level want[] = {Level::kDefault, Level::kDefault, Level::kDefault};
   const char* const label[] = {"AUTO (DEFAULT)", "AUTO (DEFAULT)", "AUTO (DEFAULT)"};
   for (int k = 0; k < 3; ++k) {

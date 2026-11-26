@@ -221,6 +221,7 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
     NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
     NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
+    NativeOnly(Bool("PM_RxDbgVolAmortize", "mcla_gpu_vol_amortize", "REUSE VOLUME SAMPLES: ")),
     NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),
     NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),

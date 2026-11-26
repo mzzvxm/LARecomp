@@ -28,6 +28,7 @@
 #include "shaders.h"
 #include "texture_bytes.h"
 #include "vol_lamp_list.h"
+#include "volumetrics_amortize.h"
 #include "volumetrics_stable.h"
 
 namespace mcla::gpu {
@@ -133,6 +134,8 @@ std::string Volumetrics::VariantName(uint32_t variant) {
   switch (variant) {
     case kVInject: return "volumetrics inject";
     case kVIntegrate: return "volumetrics integrate";
+    case kVCull: return "volumetrics lamp cull";
+    case kVFused: return "volumetrics fused inject and integrate";
     default: break;
   }
   const bool merged = variant >= kVMergedBase;
@@ -166,7 +169,7 @@ bool Volumetrics::MakeLayoutAndShaders() {
   if (ready_) {
     return true;
   }
-  if (shaders_failed_ || !device_ || !passes_) {
+  if (shaders_failed_ || !device_ || !passes_ || !heap_) {
     return false;
   }
   cb_builder_.begin();
@@ -175,15 +178,33 @@ bool Volumetrics::MakeLayoutAndShaders() {
   uav_builder_.begin();
   uav_builder_.addReadWriteTexture(0);  // u0, space 3: the volume the pass writes
   uav_builder_.end();
-  plume::RenderPipelineLayoutBuilder builder;
-  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
-  builder.addDescriptorSet(heap_->texture_set_builder());  // set 0, space 0: Texture2D<float4>[]
-  builder.addDescriptorSet(heap_->sampler_set_builder());  // set 1, space 1: SamplerState[]
-  builder.addDescriptorSet(cb_builder_);                   // set 2, space 2: the constants
-  builder.addDescriptorSet(uav_builder_);                  // set 3, space 3: the output
-  builder.addPushConstant(0, 4, sizeof(ComputePush), plume::RenderShaderStageFlag::COMPUTE);  // b0, space 4
-  builder.end();
-  layout_ = device_->CreatePipelineLayout(builder, "volumetrics layout");
+  fused_uav_builder_.begin();
+  fused_uav_builder_.addReadWriteTexture(0);             // scatter
+  fused_uav_builder_.addReadWriteTexture(1);             // accumulated volume
+  fused_uav_builder_.addReadWriteByteAddressBuffer(2);   // lamp tiles
+  fused_uav_builder_.end();
+  auto make_layout = [&](const plume::RenderDescriptorSetBuilder& output, const char* name) {
+    plume::RenderPipelineLayoutBuilder builder;
+    builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+    builder.addDescriptorSet(heap_->texture_set_builder());  // set 0, space 0: Texture2D<float4>[]
+    builder.addDescriptorSet(heap_->sampler_set_builder());  // set 1, space 1: SamplerState[]
+    builder.addDescriptorSet(cb_builder_);                   // set 2, space 2: the constants
+    builder.addDescriptorSet(output);                        // set 3, space 3: the outputs
+    builder.addPushConstant(0, 4, sizeof(ComputePush), plume::RenderShaderStageFlag::COMPUTE);  // b0, space 4
+    builder.end();
+    return device_->CreatePipelineLayout(builder, name);
+  };
+  layout_ = make_layout(uav_builder_, "volumetrics layout");
+  fused_layout_ = make_layout(fused_uav_builder_, "volumetrics fused layout");
+  if (fused_layout_) {
+    const HostShaderBlob cull = VolumetricsCullShader();
+    const HostShaderBlob fused = VolumetricsFusedShader();
+    cull_shader_ = device_->CreateShader(cull.data, cull.size, "main", cull.name);
+    fused_shader_ = device_->CreateShader(fused.data, fused.size, "main", fused.name);
+  }
+  if (!fused_layout_ || !cull_shader_ || !fused_shader_) {
+    REXLOG_ERROR("{} froxel amortization shaders or layout could not be made. Set mcla_gpu_vol_amortize=false for the full-rate path", kPrefix);
+  }
   bool ok = layout_ != nullptr;
   if (ok) {
     const HostShaderBlob inject = VolumetricsInjectShader();
@@ -207,6 +228,9 @@ bool Volumetrics::MakeLayoutAndShaders() {
     REXLOG_ERROR("{} the layout or a shader could not be made: no volumetric light this session", kPrefix);
     inject_shader_.reset();
     integrate_shader_.reset();
+    cull_shader_.reset();
+    fused_shader_.reset();
+    fused_layout_.reset();
     for (auto& shader : apply_shaders_) {
       shader.reset();
     }
@@ -225,10 +249,17 @@ void Volumetrics::Shutdown() {
     passes_->precache().Stop();
   }
   // The GPU is idle and the heap goes later: the slots are not handed back (SunShafts::Shutdown).
+  for (auto& set : fused_sets_) {
+    set.reset();
+  }
+  lamp_tiles_.reset();
+  lamp_tile_bytes_ = 0;
   for (auto& image : scatter_) {
     image = HostImage{};
   }
   accum_ = HostImage{};
+  capture_ = HostImage{};
+  for (auto& pipeline : capture_pipelines_) pipeline.reset();
   for (auto& uav : uav_sets_) {
     uav = UavSet{};
   }
@@ -243,6 +274,9 @@ void Volumetrics::Shutdown() {
   }
   inject_shader_.reset();
   integrate_shader_.reset();
+  cull_shader_.reset();
+  fused_shader_.reset();
+  fused_layout_.reset();
   for (auto& shader : apply_shaders_) {
     shader.reset();
   }
@@ -261,6 +295,10 @@ std::vector<uint32_t> Volumetrics::Variants() const {
   // The compute passes and the composite for the play view's colour target at 1x, 2x and 4x (the host's MSAA level), 8x when the device has it,
   // so that a switch of the level waits for no pipeline.
   std::vector<uint32_t> variants = {kVInject, kVIntegrate, ApplyVariant(1), ApplyVariant(2), ApplyVariant(4)};
+  if (fused_layout_ && cull_shader_ && fused_shader_) {
+    variants.push_back(kVCull);
+    variants.push_back(kVFused);
+  }
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     variants.push_back(ApplyVariant(8));
   }
@@ -315,12 +353,18 @@ void Volumetrics::HoldUntilBuilt(Level* level) {
 }
 
 std::unique_ptr<plume::RenderPipeline> Volumetrics::MakePipeline(uint32_t variant) {
+  if (!device_ || !passes_) return nullptr;
   const std::string name = VariantName(variant);
   if (variant == kVInject) {
     return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(layout_.get(), inject_shader_.get(), 8, 8, 1), name.c_str());
   }
   if (variant == kVIntegrate) {
     return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(layout_.get(), integrate_shader_.get(), 8, 8, 1), name.c_str());
+  }
+  if (variant == kVCull || variant == kVFused) {
+    const auto* shader = variant == kVCull ? cull_shader_.get() : fused_shader_.get();
+    if (!fused_layout_ || !shader) return nullptr;
+    return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(fused_layout_.get(), shader, vol::kFusedSlices, 1, 1), name.c_str());
   }
   // The composite: into the scene colour (float16 RGBA) with the target's sample count, blend (ONE, SRC_ALPHA) on the colour, the alpha never written.
   const bool merged = variant >= kVMergedBase;
@@ -358,7 +402,10 @@ plume::RenderPipeline* Volumetrics::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
+void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view, bool capture) {
+  capture_wanted_ = capture;
+  captured_ = false;
+  if (!capture && passes_ && capture_.texture) passes_->ReleaseImage(capture_);
   if (menu_view_ != menu_view) {
     ground_valid_ = false;
     fog_seen_ = false;
@@ -373,10 +420,18 @@ void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
   menu_view_ = menu_view;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_vol_census.Get()));
   keep_cones_ = larecomp::settings::mcla_gpu_vol_keep_cones.Get();
-  stable_ = larecomp::settings::mcla_gpu_vol_stable.Get();
+  const bool stable = larecomp::settings::mcla_gpu_vol_stable.Get();
+  const bool amortize = stable && larecomp::settings::mcla_gpu_vol_amortize.Get();
+  if (amortize != amortize_ || stable != stable_) {
+    history_.valid = false;
+    REXLOG_INFO("{} froxel amortization {}", kPrefix, amortize ? "on" : "off");
+  }
+  stable_ = stable;
+  amortize_ = amortize;
   view_ = uint32_t(std::clamp(larecomp::settings::mcla_gpu_vol_view.Get(), 0, 3));
   const vol::Choice choice = ReadChoice();
   Level level = choice.level;
+  capture_off_ = level == Level::kOff;
   if (!ready_ && vol::On(level) && !shaders_failed_ && MakeLayoutAndShaders()) {
     REXLOG_INFO("{} the volumetric light was off at the start: its layout and shaders are made now", kPrefix);
   }
@@ -389,7 +444,7 @@ void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
     if (vol::On(level)) {
       REXLOG_INFO("{} volumetric light {} (mcla_gpu_volumetrics = {}: {}), live: {}x{}x{} froxels, {} lamps, {} headlights, {} m, history {}", kPrefix,
                   vol::Name(level), Setting().Get(), vol::Describe(gpu_class::Current(), choice), grid.nx, grid.ny, grid.nz, grid.lamps,
-                  grid.headlights, grid.far_m, grid.temporal ? "on" : "off");
+                grid.headlights, grid.far_m, (grid.temporal || amortize_) && larecomp::settings::mcla_gpu_vol_temporal.Get() ? "on" : "off");
     } else {
       REXLOG_INFO("{} volumetric light off (mcla_gpu_volumetrics = {}: {}), live", kPrefix, Setting().Get(), vol::Describe(gpu_class::Current(), choice));
     }
@@ -404,9 +459,14 @@ void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
   }
 }
 
+bool Volumetrics::CaptureEmpty() const {
+  return capture_off_ || outcome_ == Outcome::kWorld || outcome_ == Outcome::kGated ||
+         outcome_ == Outcome::kTooSmall;
+}
+
 uint64_t Volumetrics::HeldBytes() const {
-  uint64_t bytes = 0;
-  for (const HostImage* image : {&scatter_[0], &scatter_[1], &accum_}) {
+  uint64_t bytes = lamp_tile_bytes_;
+  for (const HostImage* image : {&scatter_[0], &scatter_[1], &accum_, &capture_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -422,9 +482,14 @@ void Volumetrics::RetireUav(UavSet& uav) {
 }
 
 void Volumetrics::ReleaseResources() {
-  if (!passes_) {
+  if (!passes_ || !frames_) {
     return;
   }
+  for (auto& set : fused_sets_) {
+    if (set) frames_->Retire(std::move(set));
+  }
+  if (lamp_tiles_) frames_->Retire(std::move(lamp_tiles_));
+  lamp_tile_bytes_ = 0;
   passes_->ReleaseImage(scatter_[0]);
   passes_->ReleaseImage(scatter_[1]);
   passes_->ReleaseImage(accum_);
@@ -471,10 +536,35 @@ bool Volumetrics::EnsureConstantSet(uint32_t slot) {
   return true;
 }
 
+bool Volumetrics::EnsureLampTiles(const vol::GridDesc& grid) {
+  if (lamp_tiles_) return true;
+  if (!device_ || !scatter_[0].texture || !scatter_[1].texture || !accum_.texture) return false;
+  const uint64_t bytes = uint64_t(vol::LampTiles(grid.nx)) * vol::LampTiles(grid.ny) * vol::LampTiles(grid.nz) * vol::kLampTileBytes;
+  auto buffer = device_->CreateBuffer(
+      plume::RenderBufferDesc::DefaultBuffer(bytes, plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS),
+      "volumetrics lamp tiles");
+  if (!buffer) return false;
+  decltype(fused_sets_) sets;
+  for (uint32_t i = 0; i < sets.size(); ++i) {
+    auto& set = sets[i];
+    set = device_->CreateDescriptorSet(fused_uav_builder_, 3, 0, "volumetrics fused output set");
+    if (!set) return false;
+    set->setTexture(0, scatter_[i].texture.get(), plume::RenderTextureLayout::GENERAL, scatter_[i].view.get());
+    set->setTexture(1, accum_.texture.get(), plume::RenderTextureLayout::GENERAL, accum_.view.get());
+    set->setBuffer(2, buffer.get(), bytes);
+  }
+  fused_sets_ = std::move(sets);
+  lamp_tiles_ = std::move(buffer);
+  lamp_tile_bytes_ = bytes;
+  return true;
+}
+
 bool Volumetrics::EnsureResources(const vol::GridDesc& grid) {
+  if (!passes_ || !device_) return false;
   const uint32_t w = grid.atlas_width();
   const uint32_t h = grid.atlas_height();
   const bool same = made_for_.nx == grid.nx && made_for_.ny == grid.ny && made_for_.nz == grid.nz && made_for_.tiles_x == grid.tiles_x;
+  if (!same && made_for_.valid()) ReleaseResources();
   const bool ok = passes_->EnsureImage(scatter_[0], w, h, kVolumeFormat, "volumetrics scatter A", kVolumeFlags) &&
                   passes_->EnsureImage(scatter_[1], w, h, kVolumeFormat, "volumetrics scatter B", kVolumeFlags) &&
                   passes_->EnsureImage(accum_, w, h, kVolumeFormat, "volumetrics accumulated", kVolumeFlags);
@@ -482,7 +572,9 @@ bool Volumetrics::EnsureResources(const vol::GridDesc& grid) {
     ReleaseResources();
     return false;
   }
-  if (!EnsureUavSet(0, scatter_[0]) || !EnsureUavSet(1, scatter_[1]) || !EnsureUavSet(2, accum_)) {
+  const bool sets_ok = amortize_ ? EnsureLampTiles(grid) :
+                                  EnsureUavSet(0, scatter_[0]) && EnsureUavSet(1, scatter_[1]) && EnsureUavSet(2, accum_);
+  if (!sets_ok) {
     ReleaseResources();
     return false;
   }
@@ -916,6 +1008,9 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   if (!list || !ready_ || !IsFirstPoint(record, summary)) {
     return false;
   }
+  if (amortize_ && (!fused_layout_ || !cull_shader_ || !fused_shader_)) {
+    return false;
+  }
   first_point_seen_ = true;
   ++triggers_;
   outcome_ = Outcome::kNoCamera;
@@ -955,7 +1050,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     census_sun_colour_[i] = light.colour[i];
   }
 
-  const vol::GridDesc grid = vol::ProofGrid(level_, larecomp::settings::mcla_gpu_vol_history_medium.Get(),
+  const vol::GridDesc grid = vol::ProofGrid(level_, amortize_ || larecomp::settings::mcla_gpu_vol_history_medium.Get(),
                                           float(larecomp::settings::mcla_gpu_vol_near.Get()));
   if (!grid.valid()) {
     return false;
@@ -1054,7 +1149,9 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     turn = std::acos(std::clamp(cosine, -1.0f, 1.0f));
     cut = step > kCutStepMetres || turn > kCutTurnRadians;
   }
-  const bool history_ok = history_wanted && history_.valid && history_frame_ + 1 == frame_ && history_level_ == level_ && history_.near_m == grid.near_m && !cut;
+  const bool hitch = amortize_ && clock_ms - history_clock_ms_ > 1000.0 * vol::kMaxFrameSeconds;
+  const bool history_ok = history_wanted && history_.valid && history_frame_ + 1 == frame_ && history_level_ == level_ &&
+                          history_.near_m == grid.near_m && !cut && !hitch;
   vol::HistoryUse use = history_;
   use.valid = history_ok;
   if (stable_) {
@@ -1069,6 +1166,13 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   last_weight_ = use.weight;
   vol::VolGpuConstants constants;
   vol::MakeGpuConstants(grid, *inputs, camera, use, uint32_t(frame_), &constants);
+  const bool use_history = use.valid && use.weight > 0.0f;
+  if (amortize_) {
+    constants.jitter[0] = vol::AmortizedJitter(uint32_t(frame_), 2, 0.618034f);
+    constants.jitter[1] = vol::AmortizedJitter(uint32_t(frame_), 3, 0.414214f);
+    constants.jitter[2] = vol::AmortizedJitter(uint32_t(frame_), 5, 0.732051f);
+    if (use_history) vol::MarkLampChanges(history_lamps_, history_lamp_count_, constants);
+  }
   plan.grid = grid;
   plan.far_m = constants.depth[1];
   plan.extinction_scale = inputs->world.scale[0];
@@ -1087,12 +1191,12 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   plan.colour.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);
   plan.colour.samples = summary.source_key.samples;
   // The pipelines of every pass first (a frame does not take the volume and then lose the composite).
-  if (!Pipeline(kVInject) || !Pipeline(kVIntegrate) || !Pipeline(ApplyVariant(plan.host_samples))) {
+  if (!Pipeline(amortize_ ? kVCull : kVInject) || !Pipeline(amortize_ ? kVFused : kVIntegrate) || !Pipeline(ApplyVariant(plan.host_samples))) {
     outcome_ = Outcome::kNotRecorded;
     return false;
   }
   const bool shadows = inputs->shadow_atlas_slot != vol::kNoSlot && inputs->shadow_view_count != 0;
-  if (!RecordVolume(list, frame_slot, plan, constants, use.valid && use.weight > 0.0f, shadows)) {
+  if (!RecordVolume(list, frame_slot, plan, constants, use_history, shadows)) {
     outcome_ = Outcome::kNotRecorded;
     return false;
   }
@@ -1106,6 +1210,10 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   }
   history_.valid = true;
   history_.camera = camera;
+  if (amortize_) {
+    history_lamp_count_ = constants.counts[0];
+    std::copy_n(constants.lamps.begin(), history_lamp_count_, history_lamps_.begin());
+  }
   // the headlights this volume was made with: the next frame's inject compares its own with them (a moving light leaves the history wrong where it was)
   history_.headlight_count = stable_ ? std::min(constants.counts[1], uint32_t(vol::kMaxHeadlights)) : 0u;
   for (uint32_t i = 0; i < history_.headlight_count; ++i) {
@@ -1130,11 +1238,11 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   }
   if (!first_logged_) {
     first_logged_ = true;
-    REXLOG_INFO("{} the first volume: frame {}, level {}, {}x{}x{} froxels, far {:.0f} m, {} lamps, {} headlights, {} shadow views, sun {}, camera {}, history {}, picture {}x{} ({} host "
+    REXLOG_INFO("{} the first volume: frame {}, level {}, {}x{}x{} froxels, far {:.0f} m, {} lamps, {} headlights, {} shadow views, sun {}, camera {}, history {}, amortization {}, picture {}x{} ({} host "
                 "samples); composited at {}; the debug cvars mcla_gpu_vol_* tune the look",
                 kPrefix, frame_, vol::Name(level_), grid.nx, grid.ny, grid.nz, plan.far_m, constants.counts[0], constants.counts[1], constants.counts[2],
                 inputs->sun_valid ? "through the cascades" : "unshadowed", current ? "this frame's" : "the previous frame's",
-                use.valid && use.weight > 0.0f ? "on" : "off", plan.render[0], plan.render[1], plan.host_samples,
+                use_history ? "on" : "off", amortize_ ? "on" : "off", plan.render[0], plan.render[1], plan.host_samples,
                 shafts_anchor::AnchorName(anchor_));
   }
   return true;
@@ -1142,6 +1250,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 
 bool Volumetrics::RecordVolume(plume::RenderCommandList* list, uint32_t frame_slot, const Pending& plan, const vol::VolGpuConstants& constants,
                                bool use_history, bool use_shadows) {
+  if (!list || !heap_ || !pass_timing_ || frame_slot >= kFramesInFlight || !cb_[frame_slot]) return false;
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
   const vol::GridDesc& g = plan.grid;
@@ -1166,35 +1275,50 @@ bool Volumetrics::RecordVolume(plume::RenderCommandList* list, uint32_t frame_sl
   std::memcpy(mapped, &constants, sizeof(constants));
   cb_[frame_slot]->unmap();
 
-  pass_timing_->Mark(list, "vol inject");
-  // The history is read by the compute shader (a layout it can read); the volumes it writes are storage images.
-  if (use_history) {
-    transition(Stage::COMPUTE, {{&read, Layout::SHADER_READ}});
-  }
-  transition(Stage::COMPUTE, {{&write, Layout::GENERAL}, {&accum_, Layout::GENERAL}});
-
   ComputePush push = {};
   push.slots[0] = use_history ? read.slot : 0u;
   push.slots[1] = write.slot;
   push.slots[2] = (use_history ? 1u : 0u) | (use_shadows ? 2u : 0u);
   push.slots[3] = (stable_ ? (vol::kInjectFlagSliceLamps | vol::kInjectFlagSteadyHeads) : 0u) | (larecomp::settings::mcla_gpu_noise_blue.Get() ? vol::kInjectFlagBlueNoise : 0u);
-  list->setComputePipelineLayout(layout_.get());
+  list->setComputePipelineLayout(amortize_ ? fused_layout_.get() : layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), 0);
   list->setComputeDescriptorSet(heap_->sampler_set(), 1);
   list->setComputeDescriptorSet(cb_set_[frame_slot].get(), 2);
-  list->setComputeDescriptorSet(uav_sets_[parity_].set.get(), 3);
-  list->setPipeline(Pipeline(kVInject));
-  list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch((g.nx + 7) / 8, (g.ny + 7) / 8, g.nz);
+  if (amortize_) {
+    // CHECK: confirm storage-buffer and image barriers under the D3D12 debug
+    // layer and Vulkan validation, including a live A/B switch and a resize.
+    pass_timing_->Mark(list, "vol cull");
+    list->barriers(Stage::COMPUTE, plume::RenderBufferBarrier(lamp_tiles_.get(), plume::RenderBufferAccess::WRITE));
+    transition(Stage::COMPUTE, {{&write, Layout::GENERAL}, {&accum_, Layout::GENERAL}});
+    list->setComputeDescriptorSet(fused_sets_[parity_].get(), 3);
+    list->setPipeline(Pipeline(kVCull));
+    list->setComputePushConstants(0, &push, 0, sizeof(push));
+    list->dispatch(vol::LampTiles(g.nx), vol::LampTiles(g.ny), vol::LampTiles(g.nz));
 
-  // The integrate reads what the inject wrote.
-  transition(Stage::COMPUTE, {{&write, Layout::SHADER_READ}});
-  pass_timing_->Mark(list, "vol integrate");
-  list->setComputeDescriptorSet(uav_sets_[2].set.get(), 3);
-  list->setPipeline(Pipeline(kVIntegrate));
-  push.slots[1] = write.slot;
-  list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch((g.nx + 7) / 8, (g.ny + 7) / 8, 1);
+    pass_timing_->Mark(list, "vol inject + integrate");
+    // Both stages access the mask through its UAV descriptor.
+    list->barriers(Stage::COMPUTE, plume::RenderBufferBarrier(lamp_tiles_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
+    if (use_history) transition(Stage::COMPUTE, {{&read, Layout::SHADER_READ}});
+    list->setPipeline(Pipeline(kVFused));
+    list->setComputePushConstants(0, &push, 0, sizeof(push));
+    list->dispatch(g.nx, g.ny, 1);
+  } else {
+    pass_timing_->Mark(list, "vol inject");
+    if (use_history) transition(Stage::COMPUTE, {{&read, Layout::SHADER_READ}});
+    transition(Stage::COMPUTE, {{&write, Layout::GENERAL}, {&accum_, Layout::GENERAL}});
+    list->setComputeDescriptorSet(uav_sets_[parity_].set.get(), 3);
+    list->setPipeline(Pipeline(kVInject));
+    list->setComputePushConstants(0, &push, 0, sizeof(push));
+    list->dispatch((g.nx + 7) / 8, (g.ny + 7) / 8, g.nz);
+
+    // The separate integrate reads what the inject wrote.
+    transition(Stage::COMPUTE, {{&write, Layout::SHADER_READ}});
+    pass_timing_->Mark(list, "vol integrate");
+    list->setComputeDescriptorSet(uav_sets_[2].set.get(), 3);
+    list->setPipeline(Pipeline(kVIntegrate));
+    list->setComputePushConstants(0, &push, 0, sizeof(push));
+    list->dispatch((g.nx + 7) / 8, (g.ny + 7) / 8, 1);
+  }
 
   // The composite (a pixel shader) reads the accumulated volume.
   transition(Stage::GRAPHICS, {{&accum_, Layout::SHADER_READ}});
@@ -1321,6 +1445,21 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after vol apply");
+  if (capture_wanted_) {
+    // CHECK: compare this plane with debug view 1 on both APIs, including MSAA depth edges.
+    const unsigned ms = depth->host_samples > 1;
+    auto& capture_pipeline = capture_pipelines_[ms];
+    if (!capture_pipeline && apply_shaders_[ms]) {
+      capture_pipeline = passes_->CreatePipeline(*apply_shaders_[ms], kVolumeFormat, "capture volume light");
+    }
+    if (capture_pipeline && passes_->EnsureImage(capture_, plan.render[0], plan.render[1], kVolumeFormat, "capture volume light")) {
+      push.slots[3] = vol::ApplyWord(plan.depth_sample, stable_, 1);
+      pass_timing_->Mark(list, "capture volume light");
+      passes_->DrawInto(list, capture_, capture_pipeline.get(), &push, sizeof(push));
+      pass_timing_->Mark(list, "after capture volume light");
+      captured_ = true;
+    }
+  }
   ++runs_;
   return true;
 }

@@ -236,6 +236,9 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
         const uint32_t stream_height = i == vis::kRoadRefl ? std::max(road.height, (max_height + 1) / 2) : max_height;
         vis::Place(vis::ScaleCrop(config.crop, width, height, stream_width, stream_height),
                    stream_width, stream_height, vis::kStreams[i].max_source_bytes, 0, false, capacity);
+        if (vis::kAtmosphereMask & (1u << i)) {
+          scratch += uint64_t(stream_width) * stream_height * vis::kStreams[i].max_source_bytes;
+        }
       }
     }
   } else if (!config.mask) {
@@ -293,6 +296,7 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
   uint64_t visual_used = 0;
   if (sample) {
     visual_frame.index = update - config.first;
+    visual_frame.empty = config.mask & visual_sources_.empty;
     if (config.mask & vis::Bit(vis::kClass)) {
       const auto layer = layers.presentable();
       TextureKey front;
@@ -307,7 +311,7 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
     }
     for (uint32_t i = 0; i < vis::kCount; ++i) {
       const uint32_t bit = 1u << i;
-      if (!(config.mask & bit)) continue;
+      if (!(config.mask & bit) || (visual_frame.empty & bit)) continue;
       const auto& src = visual_sources_.images[i];
       const uint32_t pixel_bytes = plume::RenderFormatSize(src.format);
       if (!src.texture || !src.width || !src.height || !pixel_bytes ||

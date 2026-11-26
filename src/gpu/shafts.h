@@ -73,8 +73,8 @@
 //
 // Settings: mcla_gpu_sun_shafts (auto, off, light, default, strong, stronger, strongest: how strong the shafts are,
 // x1 to x5 of the built-in strength, off being the game's own picture; the old low and high are read as
-// default; live; the pause menu's SUN SHAFTS row; `auto` is gpu_class.h's: DEFAULT on Mid and High, OFF on
-// Low; shafts_level.h has the rule) and the tuning cvars _intensity (a fine multiplier on top of the level),
+// default; live; the pause menu's SUN SHAFTS row; `auto` uses the ENHANCED preset value on every GPU)
+// and the tuning cvars _intensity (a fine multiplier on top of the level),
 // _steps (positive values select the legacy march for comparison), _density, _threshold, _sky_depth, _view,
 // _early, _cap (false: work at the full fraction of the picture at any size; true by default)
 // and _census, all debug-only.
@@ -135,7 +135,9 @@ class SunShafts {
   void Shutdown();
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame(gbuffer::PauseFxView menu_view);
+  void BeginFrame(gbuffer::PauseFxView menu_view, bool capture);
+  const HostImage* CaptureLight() const { return captured_ ? &capture_ : nullptr; }
+  bool CaptureEmpty() const;
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
 
@@ -304,6 +306,7 @@ class SunShafts {
   // `shine` is the image the add pass reads: the blurred one, or its average over frames (RecordTemporal).
   bool RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& colour,
                  const Pending& plan, const HostImage& shine);
+  void RecordCapture(plume::RenderCommandList* list, const Pending& plan, const HostImage& shine);
   // NOISE-RESOLVE: the blurred image averaged with the last frame's result (hlsl/shafts_temporal_ps.hlsl); the image holding the result, or null (no pipeline or images yet: the add pass takes the blurred one).
   const HostImage* RecordTemporal(plume::RenderCommandList* list, const Pending& plan);
   bool EnsureImages(const Pending& plan);
@@ -413,9 +416,14 @@ class SunShafts {
   std::array<bool, kVariantCount> pipeline_failed_{};
   bool listed_ = false;  // the pipelines are with the host precache (at the start, or since the switch)
   bool built_ = false;   // and all of them are made (HoldUntilBuilt asks no more)
-  HostImage sky_;    // R16_FLOAT, half the picture (capped, shafts_image.h): the sky's brightness
+  HostImage sky_;    // R16_FLOAT, quarter the picture (capped, shafts_image.h): the sky's brightness
   HostImage shaft_;  // R16_FLOAT, the blurred image
   HostImage blur_segment_;
+  HostImage capture_;
+  std::unique_ptr<plume::RenderPipeline> capture_pipeline_;
+  bool capture_wanted_ = false;
+  bool capture_off_ = false;
+  bool captured_ = false;
   // NOISE-RESOLVE (noise_resolve.h): the blurred image's history while no temporal upscaler runs, two R16_FLOAT images of the same size that take turns (the add pass reads the one written last), and what
   // the next frame needs to know of it: that it exists, which frame wrote it, where the sun was, how long a history it holds.
   HostImage hist_[2];
@@ -425,6 +433,7 @@ class SunShafts {
   bool hist_pause_ = false;
   float hist_sun_[2] = {};
   uint32_t hist_frames_ = 0;
+  uint32_t hist_legacy_steps_ = 0;
   noise_resolve::HistoryLifetime hist_life_;   // how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   uint64_t hist_used_ = 0;       // frames that averaged over it
   bool hist_logged_ = false;

@@ -101,22 +101,27 @@ float Sample(const Image& input, Point uv) {
                    std::lerp(input[y1 * kWidth + x0], input[y1 * kWidth + x1], x - x0), y - y0);
 }
 
-float Reference(unsigned scene, Point uv, Point sun, float density) {
+float March(unsigned scene, Point uv, Point sun, float density, unsigned taps) {
   const Point ray = sun - uv;
-  const Point step = ray * (std::min(density, ScreenReach(uv, ray)) / 64.0f);
+  const Point step = ray * (std::min(density, ScreenReach(uv, ray)) / float(taps));
+  const float decay = std::pow(0.96f, 64.0f / float(taps));
+  // The coarse alternative samples segment centres. Give it the same open-sky
+  // gain as the 64-step reference so the test compares kernel shape.
+  const float start = taps == 64 ? 1.5f : 0.5f;
   float sum = 0.0f;
   float weight = 1.0f;
-  for (unsigned tap = 0; tap < 64; ++tap) {
-    sum += weight * WeightedMask(scene, uv + step * (float(tap) + 1.5f), sun);
-    weight *= 0.96f;
+  for (unsigned tap = 0; tap < taps; ++tap) {
+    sum += weight * WeightedMask(scene, uv + step * (float(tap) + start), sun);
+    weight *= decay;
   }
-  return sum / 64.0f;
+  return sum * ((1.0f - decay) / (64.0f * 0.04f));
 }
 
 void CompareKernels(unsigned scene, Point sun, float density) {
   const float ratio = blur::SegmentRatio(density);
   const float extent = 1.0f - std::pow(ratio, float(blur::kTaps));
   Image segments{};
+  Image short_march{};
   std::array<float, blur::kTaps> weights{};
   float remaining = 1.0f;
   float mass = 0.0f;
@@ -140,10 +145,10 @@ void CompareKernels(unsigned scene, Point sun, float density) {
         sum += WeightedMask(scene, uv + step * (float(tap) + 0.5f), sun);
       }
       segments[y * kWidth + x] = sum / blur::kTaps;
+      short_march[y * kWidth + x] = March(scene, uv, sun, density, 16);
     }
   }
-  float peak = 0.0f;
-  float error = 0.0f;
+  Image compound{};
   for (unsigned y = 0; y < kHeight; ++y) {
     for (unsigned x = 0; x < kWidth; ++x) {
       const Point uv = Centre(x, y);
@@ -155,14 +160,26 @@ void CompareKernels(unsigned scene, Point sun, float density) {
         combined += weight * Sample(segments, uv + ray * (1.0f - left));
         left *= ratio;
       }
-      const float reference = Reference(scene, uv, sun, density);
-      peak = std::max(peak, reference);
-      error += std::abs(combined - reference);
+      compound[y * kWidth + x] = combined;
     }
   }
-  const float normalized = error / (float(kWidth * kHeight) * peak);
-  std::printf("mask %u, sun %.2f/%.2f, density %.2f, mean error / peak %.4f\n",
-              scene, sun.x, sun.y, density, normalized);
+  float peak = 0.0f;
+  float error = 0.0f;
+  float short_error = 0.0f;
+  // Judge both half-size candidates after the bilinear upscale onto the full-size grid.
+  for (unsigned y = 0; y < 2 * kHeight; ++y) {
+    for (unsigned x = 0; x < 2 * kWidth; ++x) {
+      const Point uv = Centre(x, y) * 0.5f;
+      const float reference = March(scene, uv, sun, density, 64);
+      peak = std::max(peak, reference);
+      error += std::abs(Sample(compound, uv) - reference);
+      short_error += std::abs(Sample(short_march, uv) - reference);
+    }
+  }
+  const float denominator = float(4 * kWidth * kHeight) * peak;
+  const float normalized = error / denominator;
+  std::printf("mask %u, sun %.2f/%.2f, density %.2f, mean error / peak: compound %.4f, 16-tap %.4f\n",
+              scene, sun.x, sun.y, density, normalized, short_error / denominator);
   // Synthetic regression ceiling. The live FLIP and temporal judges decide visual acceptance.
   Check(normalized < 0.035f, "compound mask error stays below 3.5% of reference peak");
 }
@@ -192,6 +209,9 @@ void CheckSources(const std::string& gpu) {
   const std::string segments = Read(gpu + "/hlsl/shafts_blur_ps.hlsl");
   const std::string scene = Read(gpu + "/scene.cpp");
   const std::string blend = Read(gpu + "/volumetrics.cpp");
+  const std::string shafts = Read(gpu + "/shafts.cpp");
+  const std::string add = Read(gpu + "/hlsl/shafts_add_ps.hlsl");
+  const std::string timing = Read(gpu + "/pass_timing.cpp");
   Check(apply.find("result.rgb += SampleShaftLight(uv, g_push.shafts_slot, g_push.shafts_tint);") != std::string::npos, "merged shader adds the shafts after computing transmittance");
   Check(apply.find("return float4(0.0, 0.0, 0.0, 1.0)") != std::string::npos, "near plane returns identity");
   Check(segments.find("static const uint kTaps = 8u;") != std::string::npos && blur::kTaps == 8, "eight taps per stage on both APIs");
@@ -199,6 +219,14 @@ void CheckSources(const std::string& gpu) {
             segments.find("float(i) + noise") != std::string::npos, "compound advances on the ray with frame-varying segment noise");
   Check(scene.find("shafts_->Composite(list, *shine, merged)") != std::string::npos, "successful merge suppresses the extra add");
   Check(blend.find("blend.dstBlend = plume::RenderBlend::SRC_ALPHA;") != std::string::npos, "volume alpha retains background transmittance");
+  Check(blend.find("push.slots[3] = vol::ApplyWord(plan.depth_sample, stable_, 1);") != std::string::npos,
+        "volume capture reuses the ordinary depth sample policy at unit gain");
+  Check(shafts.find("hist_legacy_steps_ == plan.legacy_steps") != std::string::npos,
+        "a change of blur kernel invalidates the history even at the same image size");
+  Check(add.find("view == 0u || view == 4u") != std::string::npos && add.find("view == 0u && !any(light > 0.0f)") != std::string::npos,
+        "shaft capture uses the apply threshold and writes every pixel");
+  Check(timing.find("name.starts_with(\"vol \") || name.starts_with(\"shafts \") || name == \"atmosphere apply\"") != std::string::npos,
+        "all atmosphere pass timings remain visible below the top labels");
 }
 
 }  // namespace

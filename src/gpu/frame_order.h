@@ -23,10 +23,10 @@
 //              published BEFORE the AO plans, which asks whether the screen-space bounce light may be skipped) |
 //              THE AO'S FRAME: depth chain, normals, colour_pre capture, ray traced occlusion, visibility, contact march, APPLY, screen publish (lin_depth, normal, colour_pre, Hi-Z) |
 //              probe field's apply (additive, after the AO's apply) | colour before the light pass (GI-BOUNCE-SS) | deferred local lights (additive, after both) | colour after the light pass (GI-BOUNCE-SS: the pair
-//              is the NEXT frame's colour chain's history of the lights) | sun shafts | volumetric light (inject, integrate) | car ray tracing check |
+//              is the NEXT frame's colour chain's history of the lights) | sun shafts | volumetric light (lamp cull, fused inject and integrate) | car ray tracing check |
 //              colour_post capture (after the apply and the lights) | SSR (additive, after the capture: the last pass that adds to the colour here but one) | car history + ray traced reflections (+ the
 //              player's windows' additive reflection of the city, CITY-RT M2 R3b: the very last add) | debug views
-//   end of scene   the volumetric composite, the sun shafts' composite
+//   end of scene   the atmosphere composite (volume and shafts share a blend when both are ready)
 //   anchor     (RR-2) the game's post chain starts at its motion blur draw, where the temporal system runs the upscaler: the Ray Reconstruction guide pass makes the five guide images from the planes
 //              (only while it is wanted), then the upscaler, then the guide debug view over its output
 //   present    world classification | screen products trade their capture with the history | light manager checks and uploads | the rig makes the next frame's lights
@@ -457,8 +457,9 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "sky pass into an image of its own, no data dependency on the steps around it: in the play view its composite is at the end-of-scene copy (after SSR). The design (LIGHT-UNIFY 5.3) lists it after "
              "SSR; the code runs it before the capture, as it did, and GB-I3 keeps that: the admitted menu worlds (and the debug switch, or a build with no copy at the end of the scene) composite the shafts "
              "right here, at the trigger, so the capture, the car history and, where it runs, SSR see them as the picture they are in. Moving the pass after SSR would drop them from the pause worlds' car history"},
-    {.step = Step::kVolume, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "volumetric light: inject and integrate", .call = "vol_->OnResolve(record, summary, list, slot_, UpscalerRunning())",
-     .label_file = "volumetrics.cpp", .label = "vol inject", .more_labels = {{"vol integrate"}}, .closing_label = "after vol integrate", .soft_reads = data::kShadowAtlas | data::kLights, .makes = data::kVolume,
+    {.step = Step::kVolume, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "volumetric light: lamp cull, inject and integrate", .call = "vol_->OnResolve(record, summary, list, slot_, UpscalerRunning())",
+     .label_file = "volumetrics.cpp", .label = "vol cull", .more_labels = {{"vol inject + integrate", "vol inject", "vol integrate"}},
+     .closing_label = "after vol integrate", .soft_reads = data::kShadowAtlas | data::kLights, .makes = data::kVolume,
      .note = "compute passes into the froxels, nothing written to the main colour (its composite is at the end-of-scene copy): they read this frame's maps (the replay's last barrier names the compute stage). "
              "The depth is the main depth plane read directly: it does not use lin_depth and does not Want it (screen::Consumer::kVolumetrics is never declared; the design said it would read lin_depth)"},
     {.step = Step::kAtmosphereMid, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "mid-scene atmosphere",

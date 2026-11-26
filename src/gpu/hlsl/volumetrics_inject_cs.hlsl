@@ -35,11 +35,16 @@
 // The shadow lookups are the stubs of the first version: a sun tap and a headlight tap; VOL-SHADERS refines them (calibration against the road's
 // pool of light, CHECK V7, and the shadow taps, V9).
 //
-// Shader Model 6.0, 8 x 8 x 1 threads: x, y the voxel in a tile, the dispatch's z the slice.
+// Shader Model 6.0. The A/B inject uses 8 x 8 x 1 threads and a separate integrate.
+// VOL_FUSED uses one group per column. The 64 lanes inject, retain history where
+// allowed, and integrate across slices with a shared-memory prefix scan.
 
 #include "volumetrics_common.hlsli"
 #include "nan_guard.hlsli"
 #include "volumetrics_noise.hlsli"
+#ifdef VOL_FUSED
+#include "volumetrics_amortize.hlsli"
+#endif
 
 // --- noise ------------------------------------------------------------------------------------------------------------------------
 
@@ -358,15 +363,49 @@ float CompensateHeadlightHistory(float3 old_rgb, float3 base, float3 term_now, f
   return 1.0 - significance * fall;
 }
 
-[numthreads(8, 8, 1)]
-void main(uint3 id : SV_DispatchThreadID) {
-  const uint4 grid = VolU4(kO_grid);
-  if (id.x >= grid.x || id.y >= grid.y || id.z >= grid.z) {
-    return;
+bool ReadVolHistory(float3 pc, uint4 grid, float near_z, float log_ratio, out float4 old) {
+  old = 0.0;
+  const float4 pp = VolF4(kO_prev_pos);
+  const float4 pr = VolF4(kO_prev_pos + 16u);
+  const float3 pu = VolF4(kO_prev_pos + 32u).xyz;
+  const float3 pf = VolF4(kO_prev_pos + 48u).xyz;
+  const float3 rel = pc - pp.xyz;
+  const float pz = dot(rel, pf);
+  if (!(pz > near_z)) return false;
+  const float2 puv = float2(0.5 * (dot(rel, pr.xyz) / (pz * pp.w) + 1.0), 0.5 * (1.0 - dot(rel, pu) / (pz * pr.w)));
+  const float s = float(grid.z) * log(pz / near_z) / log_ratio - 0.5;
+  if (!all(puv > 0.0) || !all(puv < 1.0) || !(s > -0.5 && s < float(grid.z) - 0.5)) return false;
+  const uint s0 = uint(clamp(floor(s), 0.0, float(grid.z) - 1.0));
+  const uint s1 = min(s0 + 1u, grid.z - 1u);
+  const float ft = clamp(s - float(s0), 0.0, 1.0);
+  const Texture2D<float4> tex = g_textures[g_push.slots.x];
+  const float4 a = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s0, grid), 0);
+  const float4 b = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s1, grid), 0);
+  old = lerp(a, b, ft);
+  return NgIsNumber4(old);
+}
+
+#ifdef VOL_FUSED
+float3 TiledLamps(uint2 mask, float3 cam, float3 ray, float s0, float s1, float g, float strength) {
+  float3 light = 0.0;
+  [unroll] for (uint word = 0u; word < 2u; ++word) {
+    uint bits = mask[word];
+    [loop] while (bits != 0u) {
+      const uint index = word * 32u + firstbitlow(bits);
+      light += LampSlice(kO_lamps + index * 64u, cam, ray, s0, s1, g, strength);
+      bits &= bits - 1u;
+    }
   }
-  const float4 depth = VolF4(kO_depth);       // near, far, ln(far / near), 1 / ln
+  return light;
+}
+#endif
+
+float4 InjectVolume(uint3 id, uint4 grid, float4 depth, float4 jitter, float3 slice_depths
+#ifdef VOL_FUSED
+                    , uint4 tile, bool retained_slice
+#endif
+) {
   const float4 history = VolF4(kO_history);   // history far, its ln ratio, weight
-  const float4 jitter = VolF4(kO_jitter);     // x, y, z the frame's offsets in 0..1, w the frame
   const float4 cam_pos = VolF4(kO_cam_pos);
   const float3 cam_right = VolF4(kO_cam_pos + 16u).xyz;
   const float3 cam_up = VolF4(kO_cam_pos + 32u).xyz;
@@ -376,11 +415,26 @@ void main(uint3 id : SV_DispatchThreadID) {
 
   // The voxel's nominal centre (the history's key) and its jittered sample (the frame's).
   const float2 cell = float2(id.xy) + 0.5;
+  const float2 uv_c = cell / float2(grid.xy);
+  const float3 dirvec = cam_right * ((2.0 * uv_c.x - 1.0) * tan_x) + cam_up * ((1.0 - 2.0 * uv_c.y) * tan_y) + cam_fwd;
+  const float3 pc = cam_pos.xyz + dirvec * slice_depths.y;
+
+#ifdef VOL_FUSED
+  float4 old;
+  // CHECK: verify disocclusions and pan stability at the cockpit's near field,
+  // and the moving headlight trail against the VOL-STABLE reference.
+  const bool history_ok = tile.w == 0u && (g_push.slots.z & 1u) != 0u &&
+                          ReadVolHistory(pc, grid, depth.x, history.y, old);
+  // Shadow visibility can change even when the shadowed light's geometry
+  // stays put. Sample those tiles at full rate, using the original filter.
+  const bool headlight_tile = (tile.z & kTileHeadlight) != 0u;
+  const bool full_rate = (tile.z & kTileHeadlightShadow) != 0u;
+  if (history_ok && retained_slice && !headlight_tile) return old;
+#endif
   const float3 jit = frac(jitter.xyz + VolVoxelNoise(int(id.x), int(id.y), int(id.z), jitter.w, (g_push.slots.w & kInjectFlagBlueNoise) != 0u)) - 0.5;
   const float2 uv = (cell + jit.xy * 0.9) / float2(grid.xy);
   const float slice = float(id.z) + 0.5 + jit.z * 0.9;
   const float z = depth.x * exp(depth.z * slice / float(grid.z));
-  const float zc = depth.x * exp(depth.z * (float(id.z) + 0.5) / float(grid.z));
   const float3 p = cam_pos.xyz + cam_right * ((2.0 * uv.x - 1.0) * tan_x * z) + cam_up * ((1.0 - 2.0 * uv.y) * tan_y * z) + cam_fwd * z;
   const float3 ray = normalize(p - cam_pos.xyz);
 
@@ -415,13 +469,13 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 lights = 0.0;
   float3 head_lights = 0.0;  // the headlights' share of `lights`
   // the grid's view depth bounds of this voxel's slice
-  const float z0 = depth.x * exp(depth.z * float(id.z) / float(grid.z));
-  const float z1 = depth.x * exp(depth.z * float(id.z + 1u) / float(grid.z));
+  const float z0 = slice_depths.x;
+  const float z1 = slice_depths.z;
+#ifdef VOL_FUSED
+  const float dir_len = length(dirvec);
+  lights = TiledLamps(tile.xy, cam_pos.xyz, dirvec / dir_len, z0 * dir_len, z1 * dir_len, mixv.z, scale.y);
+#else
   if ((g_push.slots.w & kInjectFlagSliceLamps) != 0u) {
-    // the lamps through the voxel's slice, along the ray through the voxel's CENTRE in x and y (the term is smooth over a voxel, so the jitter was noise only) and with no
-    // jitter in depth: the slice's own bounds
-    const float2 uv_c = cell / float2(grid.xy);
-    const float3 dirvec = cam_right * ((2.0 * uv_c.x - 1.0) * tan_x) + cam_up * ((1.0 - 2.0 * uv_c.y) * tan_y) + cam_fwd;
     const float dir_len = length(dirvec);
     const float3 ray_l = dirvec / dir_len;
     [loop] for (uint i = 0u; i < counts.x; ++i) {
@@ -432,11 +486,17 @@ void main(uint3 id : SV_DispatchThreadID) {
       lights += SpotLight(kO_lamps + i * 64u, p, ray, mixv.z, scale.y, false);
     }
   }
+#endif
   const bool steady_heads = (g_push.slots.w & kInjectFlagSteadyHeads) != 0u;
   // the ray of the jittered sample, for the taps of a shadowed headlight along the slice (the same line as `ray`, at other depths)
   const float3 dirvec_j = (p - cam_pos.xyz) / z;
   const float tap_u = jit.z + 0.5;
-  [loop] for (uint j = 0u; j < counts.y; ++j) {
+#ifdef VOL_FUSED
+  const uint head_count = headlight_tile ? counts.y : 0u;
+#else
+  const uint head_count = counts.y;
+#endif
+  [loop] for (uint j = 0u; j < head_count; ++j) {
     const uint offset = kO_headlights + j * 64u;
     if (steady_heads && int(g_vol.Load(offset + 48u)) >= 0 && (g_push.slots.z & 2u) != 0u) {
       // a shadowed headlight: the shadow map's taps in each part of the slice, averaged (an edge of a shadow inside the slice shares them by where it is)
@@ -459,55 +519,102 @@ void main(uint3 id : SV_DispatchThreadID) {
   // out of a lamp's law must not get in (min(now, 60000) below leaves a NaN to the API on Vulkan).
   float4 now = NgHeld4(float4(scatter, sigma), 60000.0);
 
-  // --- the history, trilinear in the previous camera's grid ---
-  if ((g_push.slots.z & 1u) != 0u && history.z > 0.0) {
+  // The headlight compensation also runs for a retained slice. If the
+  // beam has arrived since the last frame its weight drops to use new light.
+#ifdef VOL_FUSED
+  if (history_ok) {
+    float weight = VolHistoryWeight(history.z, retained_slice, full_rate);
+#else
+  float4 old;
+  if ((g_push.slots.z & 1u) != 0u && history.z > 0.0 && ReadVolHistory(pc, grid, depth.x, history.y, old)) {
     float weight = history.z;
-    const float3 pc = cam_pos.xyz + cam_right * ((2.0 * cell.x / float(grid.x) - 1.0) * tan_x * zc) +
-                      cam_up * ((1.0 - 2.0 * cell.y / float(grid.y)) * tan_y * zc) + cam_fwd * zc;
-    // the headlights' term (no shadow) at the voxel's centre: of this frame's lights and of the ones the history's volume was made with
+#endif
     const uint prev_count = VolU4(kO_prev_counts).x;
-    const bool compensate = steady_heads && (counts.y > 0u || prev_count > 0u);
-    float3 term_now = 0.0;
-    float3 term_then = 0.0;
+#ifdef VOL_FUSED
+    const bool compensate = steady_heads && headlight_tile;
+#else
+    const bool compensate = steady_heads && (head_count > 0u || prev_count > 0u);
+#endif
     if (compensate) {
       const float3 ray_c = normalize(pc - cam_pos.xyz);
-      [loop] for (uint k = 0u; k < counts.y; ++k) {
+      float3 term_now = 0.0;
+      float3 term_then = 0.0;
+      [loop] for (uint k = 0u; k < head_count; ++k) {
         term_now += SpotLightEx(kO_headlights + k * 64u, pc, ray_c, mixv.w, scale.z, true, false);
       }
       [loop] for (uint m = 0u; m < prev_count; ++m) {
         term_then += SpotLightEx(kO_prev_headlights + m * 64u, pc, ray_c, mixv.w, scale.z, true, false);
       }
+      const float3 base = scatter_haze + (lights - head_lights) * (sigma * kLightGain);
+      float3 old_rgb;
+      weight *= CompensateHeadlightHistory(old.rgb, base, term_now, term_then, sigma, old.w, kLightGain, old_rgb);
+      old = float4(old_rgb, old.w);
     }
-    const float4 pp = VolF4(kO_prev_pos);
-    const float3 pr = VolF4(kO_prev_pos + 16u).xyz;
-    const float3 pu = VolF4(kO_prev_pos + 32u).xyz;
-    const float3 pf = VolF4(kO_prev_pos + 48u).xyz;
-    const float ptan_y = VolF4(kO_prev_pos + 16u).w;
-    const float3 rel = pc - pp.xyz;
-    const float pz = dot(rel, pf);
-    if (pz > depth.x) {
-      const float2 puv = float2(0.5 * (dot(rel, pr) / (pz * pp.w) + 1.0), 0.5 * (1.0 - dot(rel, pu) / (pz * ptan_y)));
-      const float s = float(grid.z) * log(pz / depth.x) / history.y - 0.5;
-      if (all(puv > 0.0) && all(puv < 1.0) && s > -0.5 && s < float(grid.z) - 0.5) {
-        const uint s0 = uint(clamp(floor(s), 0.0, float(grid.z) - 1.0));
-        const uint s1 = min(s0 + 1u, grid.z - 1u);
-        const float ft = clamp(s - float(s0), 0.0, 1.0);
-        const Texture2D<float4> tex = g_textures[g_push.slots.x];
-        const float4 a = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s0, grid), 0);
-        const float4 b = tex.SampleLevel(g_samplers[kSamplerLinearClamp], AtlasUv(puv, s1, grid), 0);
-        float4 old = lerp(a, b, ft);
-        // a history texel that is not a number (a NaN in the trilinear footprint) is no history: this frame's light stays (select, not a branch: nan_guard.hlsli)
-        old = select(NgIsNumber4(old), old, now);
-        if (compensate) {
-          // the history's headlight part to where the lights are now; this frame's light of everything but the headlights is what the history's beam is told from
-          const float3 base = scatter_haze + (lights - head_lights) * (sigma * kLightGain);
-          float3 old_rgb;
-          weight *= CompensateHeadlightHistory(old.rgb, base, term_now, term_then, sigma, old.w, kLightGain, old_rgb);
-          old = float4(old_rgb, old.w);
-        }
-        now = lerp(now, old, weight);
-      }
-    }
+    now = lerp(now, old, weight);
   }
-  g_out[AtlasTexel(id.xy, id.z, grid)] = min(now, 60000.0);
+  return NgHeld4(now, 60000.0);
 }
+
+float3 SliceDepths(uint slice, uint slices, float4 depth) {
+  return depth.x * exp(depth.z * (float(slice) + float3(0.0, 0.5, 1.0)) / float(slices));
+}
+
+#ifdef VOL_FUSED
+#ifdef __spirv__
+[[vk::image_format("rgba16f")]] RWTexture2D<float4> g_accum : register(u1, space3);
+#else
+RWTexture2D<float4> g_accum : register(u1, space3);
+#endif
+
+groupshared float4 prefix_a[kFusedSlices];
+groupshared float4 prefix_b[kFusedSlices];
+
+[numthreads(kFusedSlices, 1, 1)]
+void main(uint3 column : SV_GroupID, uint lane : SV_GroupIndex) {
+  const uint4 grid = VolU4(kO_grid);
+  const float4 depth = VolF4(kO_depth);
+  const float4 jitter = VolF4(kO_jitter);
+  const uint z = CheckerSlice(lane, column.xy, uint(jitter.w));
+  const uint3 id = uint3(column.xy, z);
+  const uint2 texel = AtlasTexel(id.xy, id.z, grid);
+  float4 segment = float4(0.0, 0.0, 0.0, 1.0);
+  float4 first = segment;
+  if (z < grid.z) {
+    const float3 slice = SliceDepths(z, grid.z, depth);
+    const uint4 tile = g_lamp_tiles.Load4(LampTileOffset(id / kLampTileSide, grid.xyz));
+    const float4 sv = InjectVolume(id, grid, depth, jitter, slice, tile, lane >= kFusedSlices / 2u);
+    // Match the separate integrate's RGBA16F input before marching.
+    const float4 stored = f16tof32(f32tof16(sv));
+    g_out[texel] = stored;
+    first = VolumeSegment(stored, slice.y - slice.x);
+    segment = ComposeVolume(first, VolumeSegment(stored, slice.z - slice.y));
+  }
+  prefix_a[z] = segment;
+  GroupMemoryBarrierWithGroupSync();
+
+  // Ordered prefix scan over all slices. Inactive far slices still take
+  // part in the group barriers and contribute the identity segment.
+  [unroll] for (uint stride = 1u; stride < kFusedSlices; stride *= 4u) {
+    prefix_b[z] = z >= stride ? ComposeVolume(prefix_a[z - stride], prefix_a[z]) : prefix_a[z];
+    GroupMemoryBarrierWithGroupSync();
+    prefix_a[z] = z >= stride * 2u ? ComposeVolume(prefix_b[z - stride * 2u], prefix_b[z]) : prefix_b[z];
+    GroupMemoryBarrierWithGroupSync();
+  }
+  if (z < grid.z) {
+    const float4 centre = z == 0u ? first : ComposeVolume(prefix_a[z - 1u], first);
+    g_accum[texel] = float4(min(centre.rgb, 60000.0), centre.w);
+  }
+}
+
+#else
+
+[numthreads(8, 8, 1)]
+void main(uint3 id : SV_DispatchThreadID) {
+  const uint4 grid = VolU4(kO_grid);
+  if (any(id >= grid.xyz)) return;
+  const float4 depth = VolF4(kO_depth);
+  const float4 jitter = VolF4(kO_jitter);
+  g_out[AtlasTexel(id.xy, id.z, grid)] = InjectVolume(id, grid, depth, jitter, SliceDepths(id.z, grid.z, depth));
+}
+
+#endif

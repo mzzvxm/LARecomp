@@ -624,7 +624,9 @@ void CheckConstants() {
   Check(Offsets::counts == 688 && Offsets::shadow_atlas == 704 && Offsets::lamps == 720, "counts, shadow atlas, lamps offsets");
   Check(Offsets::headlights == 720 + 48 * 64 && Offsets::shadow_views == Offsets::headlights + 4 * 64, "headlights, shadow views offsets");
   Check(Offsets::prev_counts == Offsets::shadow_views + kMaxShadowViews * 96 && Offsets::prev_headlights == Offsets::prev_counts + 16, "the history's headlights follow the shadow views (VOL-STABLE-2: appended, so that no offset above moved)");
-  Check(sizeof(VolGpuConstants) == Offsets::prev_headlights + 4 * 64 && sizeof(VolGpuConstants) % 16 == 0 && kMaxShadowViews == 8, "the constants end with the history's headlights, after the eight shadow views");
+  Check(Offsets::lamp_changes == Offsets::prev_headlights + 4 * 64 && Offsets::retired_lamps == Offsets::lamp_changes + 16 &&
+            sizeof(VolGpuConstants) == Offsets::retired_lamps + kMaxLamps * 64 && kMaxShadowViews == 8,
+        "lamp change masks and retired lamps follow the previous headlights");
 
   // The builder.
   const GridDesc g = GridFor(Level::kMedium);
@@ -863,6 +865,7 @@ void CheckShaders(const std::string& folder) {
       {"sun_size", Offsets::sun + offsetof(VolSun, atlas_size)},        {"counts", Offsets::counts},           {"shadow_atlas", Offsets::shadow_atlas},
       {"lamps", Offsets::lamps},       {"headlights", Offsets::headlights}, {"shadow_views", Offsets::shadow_views},
       {"prev_counts", Offsets::prev_counts}, {"prev_headlights", Offsets::prev_headlights},
+      {"lamp_changes", Offsets::lamp_changes}, {"retired_lamps", Offsets::retired_lamps},
   };
   for (const auto& entry : want) {
     const auto found = offsets.find(entry.first);

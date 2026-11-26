@@ -13,8 +13,9 @@
 
 namespace mc::cinematic::capture::visual {
 
-enum Buffer : uint8_t { kFinal, kHdr, kAo, kRefl, kGi, kClass, kMotion, kReflHit, kRoadRefl, kCount };
+enum Buffer : uint8_t { kFinal, kHdr, kAo, kRefl, kGi, kClass, kMotion, kReflHit, kRoadRefl, kVol, kShafts, kCount };
 constexpr uint32_t Bit(Buffer buffer) { return 1u << buffer; }
+inline constexpr uint32_t kAtmosphereMask = Bit(kVol) | Bit(kShafts);
 
 struct Stream {
     const char* name;
@@ -34,6 +35,8 @@ inline constexpr std::array<Stream, kCount> kStreams = {{
     {"motion", "f16le", "motion-px", 2, 2, 4},
     {"reflhit", "u8", "class-id", 2, 1, 4},
     {"roadrefl", "f16le", "linear-scene", 2, 2, 4},
+    {"vol", "f16le", "linear-scene", 3, 2, 8},
+    {"shafts", "f16le", "linear-scene", 3, 2, 8},
 }};
 
 bool ParseBuffers(std::string_view text, uint32_t& mask);
@@ -74,6 +77,7 @@ struct Plane {
 };
 struct Frame {
     uint64_t index = 0;
+    uint32_t empty = 0;  // explicitly gated streams, distinct from missing readbacks
     std::array<Plane, kCount> planes{};
 };
 Plane Place(LumaCrop crop, uint32_t width, uint32_t height, uint32_t pixel_bytes,
@@ -89,6 +93,7 @@ private:
     struct Written {
         Plane plane;
         std::vector<uint64_t> frames;
+        std::vector<uint64_t> empty_frames;
     };
     std::filesystem::path root_;
     std::array<Written, kCount> streams_;
