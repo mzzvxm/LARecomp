@@ -70,9 +70,9 @@ struct Checks {
 
 void SettingsChecks(Checks& checks, const fs::path& src) {
   const auto definitions = Read(src / "settings/generated/settings_gpu.h");
-  checks.Expect(definitions.contains(std::string("REX_") + "SETTING(std::string, mcla_gpu_rtao_screen, \"auto\",") &&
+  checks.Expect(definitions.contains(std::string("REX_") + "SETTING(std::string, mcla_gpu_rtao_screen, \"world\",") &&
                     definitions.contains("rex::Allowed(\"auto\", \"off\", \"on\", \"world\")"),
-                "world blending is available with auto still the default");
+                "world blending is the default and auto stays available");
   std::map<std::string, unsigned> reads;
   const std::regex read(R"rx(\b(mcla_gpu_rtao_\w+|mcla_gpu_dlss_rr_rt_ao)\s*\.\s*Get\s*\()rx");
   for (const auto& file : fs::recursive_directory_iterator(src)) {

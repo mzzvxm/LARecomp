@@ -501,9 +501,9 @@
  },
  "mcla_gpu_rtao_screen": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"world\"",
   "category": "MCLA/GPU",
-  "help": "\"Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, world takes the darker term on world surfaces, and on takes it everywhere. Live.\"",
+  "help": "\"Debug: Screen-space contribution to traced AO. World (default) takes the darker term on world surfaces, auto uses it for fallback, off disables it, and on takes it everywhere. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"on\", \"world\")"
