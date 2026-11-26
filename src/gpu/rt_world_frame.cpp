@@ -525,6 +525,7 @@ bool RtWorldFrame::OnTrigger(uint32_t slot_index) {
   li.schedule = schedule_;
   const rt_scene::Level level = src_.service != nullptr ? src_.service->Needs().city : rt_scene::Level::kOff;
   li.budget = rt_world::BudgetFor(level == rt_scene::Level::kUltra ? rt_world::Tier::kUltra : (level == rt_scene::Level::kHigh ? rt_world::Tier::kHigh : rt_world::Tier::kMid));
+  li.track_probe_lamps = emitters_ != nullptr && emitters_->wanted && larecomp::settings::mcla_gpu_rt_gi_field_schedule.Get();
   rt_world::BuildLampFrame(li, &lamp_frame_);
   in.lamps = &lamp_frame_;
   if (emitters_ != nullptr && in.camera_known) {

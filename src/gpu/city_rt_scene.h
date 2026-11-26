@@ -122,15 +122,15 @@ class CityRtScene {
   // The camera's world position of the frame Prepare last saw.
   const double* camera() const { return camera_; }
 
-  // CITY-RT M3 G2: the structures built since the last call, as boxes in the world (the sector's box from the pack, metres), for the probe update: the probes near a built sector have data that is stale
-  // (their rays can meet geometry that was not there). At most kBuiltLogMax boxes are kept between two calls; `*dropped` (optional) is how many more were built.
-  static constexpr uint32_t kBuiltLogMax = 256;
-  struct BuiltBox {
+  // Geometry built or evicted since the last call, as world bounds for the GI scheduler.
+  // A dropped event tells the scheduler to wake the whole field.
+  static constexpr uint32_t kChangeLogMax = 256;
+  struct ChangedBox {
     double lo[3] = {0, 0, 0};
     double hi[3] = {0, 0, 0};
-    bool hi_detail = false;
+    bool evicted = false;
   };
-  void DrainBuilt(std::vector<BuiltBox>* out, uint32_t* dropped);
+  void DrainChanges(std::vector<ChangedBox>* out, uint32_t* dropped);
 
   struct Stats {
     uint32_t sectors = 0;        // in the pack
@@ -199,6 +199,7 @@ class CityRtScene {
   void WorkerMain();
   void ReleaseAll(const char* why);
   void Release(uint32_t sector, city_rt::Detail detail);
+  void NoteSectorChange(uint32_t sector, bool evicted);
   // A mesh read without the hit blob before the hit data's pool existed (city_rt::ReadBeforePool): the sector detail goes back to kNone and the plan asks again, with the blob.
   void GiveBackForReread(uint32_t sector, city_rt::Detail detail);
   void PollLoads();
@@ -238,8 +239,8 @@ class CityRtScene {
   bool recorded_ = false;
   double camera_[3] = {0, 0, 0};
   bool camera_known_ = false;
-  std::vector<BuiltBox> built_log_;  // see DrainBuilt
-  uint32_t built_dropped_ = 0;
+  std::vector<ChangedBox> changed_sectors_;
+  uint32_t dropped_changes_ = 0;
   uint64_t next_priority_frame_ = 0;  // the sectors' distances go to the hit data's texture set again at this frame (CITY-RT M1c)
 
   // The pack and what is built of it.

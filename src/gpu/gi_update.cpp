@@ -42,6 +42,32 @@ constexpr uint32_t kUploadAlign = 256;
 
 uint64_t AlignUp(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
 
+gi::Vec3 VectorOf(const float (&v)[3]) { return {v[0], v[1], v[2]}; }
+
+void CollectProbeLights(const RtWorldFrame::Current& world, std::vector<rules::ProbeLight>& lights) {
+  lights.clear();
+  if (world.lamps) {
+    for (const auto& lamp : world.lamps->probe_lamps) {
+      lights.push_back({lamp.key, VectorOf(lamp.position), lamp.reach});
+    }
+  }
+  // The static prefix feeds the probe shader. Moving lights use LT-6's
+  // per-frame virtual bounce and must not invalidate the slow field.
+  const uint32_t base = world.decoded.emitter_row_base;
+  constexpr uint32_t rows = rt_world::kEmitterRows;
+  if (world.lamp_words && base <= world.lamp_rows) {
+    const uint32_t count = std::min(world.decoded.emitter_static, (world.lamp_rows - base) / rows);
+    for (uint32_t i = 0; i < count; ++i) {
+      const uint32_t* words = world.lamp_words + (base + i * rows) * 4u;
+      uint64_t key = 14695981039346656037ull;
+      // Ignore the surface shadow-atlas metadata in the last two words.
+      for (uint32_t j = 0; j < rows * 4u - 2u; ++j) key = (key ^ words[j]) * 1099511628211ull;
+      lights.push_back({key, {rt_hit::FromBits(words[0]), rt_hit::FromBits(words[1]), rt_hit::FromBits(words[2])}, rt_hit::FromBits(words[3])});
+    }
+  }
+  std::sort(lights.begin(), lights.end());
+}
+
 }  // namespace
 
 GiUpdate::~GiUpdate() = default;
@@ -337,22 +363,25 @@ void GiUpdate::OnWant(gi::Level level) {
   service_->Want(rt_scene::Consumer::kCityGi, needs);
 }
 
-void GiUpdate::DrainBuiltSectors() {
-  std::vector<CityRtScene::BuiltBox> built;
+void GiUpdate::DrainSectorChanges(bool scheduled) {
+  if (!city_scene_ || !field_) return;
+  std::vector<CityRtScene::ChangedBox> changes;
   uint32_t dropped = 0;
-  city_scene_->DrainBuilt(&built, &dropped);
+  city_scene_->DrainChanges(&changes, &dropped);
   if (dropped > 0) {
     // more builds than the log keeps (a cut, a long stall): every probe may have met new geometry
     scheduler_.MarkAllStale();
   }
-  for (const CityRtScene::BuiltBox& b : built) {
+  for (const CityRtScene::ChangedBox& b : changes) {
+    if (!scheduled && b.evicted) continue;
     stale_marked_ += scheduler_.MarkStaleBox(field_->scheduler(), b.lo, b.hi);
+    ++sector_changes_seen_;
   }
-  sectors_built_seen_ += built.size() + dropped;
+  sector_changes_seen_ += dropped;
 }
 
 void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& uf) {
-  if (!ready_ || !list || frame_slot >= kFramesInFlight || !field_) {
+  if (!ready_ || !list || frame_slot >= kFramesInFlight || !field_ || !car_scene_ || !city_scene_ || !world_ || !hit_scene_ || !frames_) {
     return;
   }
   frame_ = uf.frame_serial;
@@ -387,21 +416,43 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     return;
   }
   Slot& slot = slots_[frame_slot];
+  // Map before committing the plan. A failed upload must leave dirty probes
+  // and the next phase pending.
+  void* mapped = slot.rows->map();
+  if (!mapped) {
+    ++no_resources_;
+    return;
+  }
+  const gi::GpuGiFrame rows = gi::MakeGpuFrame(uf);
+  std::memcpy(mapped, rows.words.data(), gi::kGpuFrameBytes);
+  slot.rows->unmap();
+  void* list_mapped = slot.list->map();
+  if (!list_mapped) {
+    ++no_resources_;
+    return;
+  }
 
   // A new field (a layout, a size, the memory): the scheduler starts again.
-  if (field_->generation() != scheduler_generation_) {
+  const bool new_field = field_->generation() != scheduler_generation_;
+  const bool scheduled = larecomp::settings::mcla_gpu_rt_gi_field_schedule.Get();
+  const gi_field::MoveReport& move = field_->move();
+  if (new_field || (scheduled && (move.cut || move.relight))) {
     scheduler_.Start(field_->fit().budget);
+    view_motion_ = {};
+    lighting_.reset();
+    previous_lights_.clear();
+  }
+  if (new_field) {
     scheduler_generation_ = field_->generation();
     have_last_words_ = false;
-    interval_probes_ = {};
     interval_frames_ = 0;
-    interval_planned_rays_ = 0;
     first_logged_ = false;
   }
-  // The sectors built since the last update: the probes near them are stale.
-  DrainBuiltSectors();
+  DrainSectorChanges(scheduled);
   // A cut: the field's own windows moved a whole window, a teleport or an hour jump was asked for, or this is the first move.
-  const gi_field::MoveReport& move = field_->move();
+  // Z components of the three world axes in view space give camera forward.
+  const gi::Vec3 forward = {rt_hit::FromBits(world.rows[5 * 4 + 2]), rt_hit::FromBits(world.rows[6 * 4 + 2]), rt_hit::FromBits(world.rows[7 * 4 + 2])};
+  const bool camera_moving = view_motion_.Observe({float(uf.camera[0]), float(uf.camera[1]), float(uf.camera[2])}, forward);
   if (move.cut || move.relight) {
     ++cuts_;
     double step = 0.0;
@@ -416,6 +467,29 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   }
   have_camera_ = true;
 
+  if (scheduled) {
+    const rules::Lighting light = {VectorOf(uf.sun_rgb), VectorOf(uf.ambient_up_rgb), VectorOf(uf.ambient_down_rgb), VectorOf(world.decoded.to_sun_world),
+                                  world.decoded.street, world.decoded.fill, world.decoded.weather};
+    const bool relight = lighting_ && rules::LightingChanged(*lighting_, light);
+    if (!lighting_ || relight) lighting_ = light;
+    CollectProbeLights(world, current_lights_);
+    if (relight) {
+      scheduler_.MarkAllStale();
+    } else if (!new_field && !move.cut && !move.relight) {
+      rules::VisitChangedLights(previous_lights_, current_lights_, [&](const rules::ProbeLight& changed) {
+        const double r = changed.reach;
+        if (!(r > 0.0) || !std::isfinite(r) || !std::isfinite(changed.centre.x) || !std::isfinite(changed.centre.y) || !std::isfinite(changed.centre.z)) return;
+        const double lo[3] = {changed.centre.x - r, changed.centre.y - r, changed.centre.z - r};
+        const double hi[3] = {changed.centre.x + r, changed.centre.y + r, changed.centre.z + r};
+        stale_marked_ += scheduler_.MarkStaleBox(field_->scheduler(), lo, hi);
+      });
+    }
+    previous_lights_.swap(current_lights_);
+  } else {
+    lighting_.reset();
+    previous_lights_.clear();
+  }
+
   // THE PLAN.
   rules::PlanInputs in;
   for (int a = 0; a < 3; ++a) {
@@ -424,10 +498,14 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   in.safe_range_m = uf.safe_range_m;
   in.governor_scale = 1.0f;
   in.warmup_scale = field_->budget_scale();
-  // CHECK: measure probe refresh during a fast drive, a sector load and a lighting change.
+  // CHECK: compare trace/blend, lamp and bounce recovery on both APIs across a
+  // fast turn, passing lit traffic, a sector boundary and the dusk sweep.
   in.reuse_coarse = larecomp::settings::mcla_gpu_rt_gi_reuse_coarse_probes.Get();
+  in.phased = scheduled;
+  in.camera_moving = camera_moving;
   rules::Plan plan = scheduler_.Make(field_->scheduler(), in, budget.max_probes);
   if (plan.Total() == 0) {
+    slot.list->unmap();
     return;
   }
   // CHECK: compare secondary-bounce noise and probe convergence during day/night
@@ -440,24 +518,8 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     full_count = uint32_t(split - plan.words.begin());
   }
 
-  // The rows (the update frame's: the cascades, the textures' slots, the bounce weight) and the probe list, into the slot's upload buffers.
-  {
-    const gi::GpuGiFrame rows = gi::MakeGpuFrame(uf);
-    void* mapped = slot.rows->map();
-    if (!mapped) {
-      ++no_resources_;
-      return;
-    }
-    std::memcpy(mapped, rows.words.data(), gi::kGpuFrameBytes);
-    slot.rows->unmap();
-    void* list_mapped = slot.list->map();
-    if (!list_mapped) {
-      ++no_resources_;
-      return;
-    }
-    std::memcpy(list_mapped, plan.words.data(), size_t(plan.Total()) * 4u);
-    slot.list->unmap();
-  }
+  std::memcpy(list_mapped, plan.words.data(), size_t(plan.Total()) * sizeof(uint32_t));
+  slot.list->unmap();
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
@@ -474,6 +536,8 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
 
   Push push = {};
   push.flags[0] = 1;
+  push.flags[1] = scheduled;
+  push.flags[2] = scheduled && in.warmup_scale == 1.0f;
   push.tune[0] = uf.bounce_weight;
   push.tune[1] = rules::RayReachM(uf.safe_range_m);
   push.tune[2] = gi::kHysteresis;
@@ -518,10 +582,6 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
   ++frames_run_;
   const uint64_t planned_rays = uint64_t(full_count) * budget.rays_per_probe + uint64_t(plan.Total() - full_count) * 32u;
   rays_planned_ += planned_rays;
-  interval_planned_rays_ += planned_rays;
-  for (uint32_t c = 0; c < gi::kMaxCascades; ++c) {
-    interval_probes_[c] += plan.per_cascade[c];
-  }
   ++interval_frames_;
 
   if (!first_logged_) {
@@ -536,7 +596,9 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     list->copyBufferRegion(plume::RenderBufferReference(readback_.get(), 0), plume::RenderBufferReference(stats_.get(), 0), rules::kStatBytes);
     readback_busy_ = true;
     next_readback_ = uf.frame_serial + rules::kReadbackEveryFrames;
-    frames_->RetireAction([this, frame = uf.frame_serial, generation = generation_] { ProcessReadback(frame, generation); });
+    frames_->RetireAction([this, frame = uf.frame_serial, generation = generation_, frames = std::exchange(interval_frames_, 0u), field_generation = scheduler_generation_] {
+      ProcessReadback(frame, generation, frames, field_generation);
+    });
   }
 }
 
@@ -544,13 +606,14 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
 // the census
 // ---------------------------------------------------------------------------
 
-void GiUpdate::ProcessReadback(uint64_t frame, uint64_t generation) {
+void GiUpdate::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t frames, uint32_t field_generation) {
   readback_busy_ = false;
-  if (generation != generation_ || !readback_) {
+  if (generation != generation_ || field_generation != scheduler_generation_ || !readback_) {
     return;
   }
   const void* mapped = readback_->map();
   if (!mapped) {
+    have_last_words_ = false;
     REXLOG_ERROR("{} the counters' readback of frame {} could not be mapped", kPrefix, frame);
     return;
   }
@@ -561,29 +624,25 @@ void GiUpdate::ProcessReadback(uint64_t frame, uint64_t generation) {
   if (!have_last_words_) {
     last_words_ = words;
     have_last_words_ = true;
-    interval_probes_ = {};
-    interval_frames_ = 0;
     return;
   }
   std::array<uint32_t, rules::kStatWords> delta;
   rules::StatDelta(words.data(), last_words_.data(), delta.data());
   last_words_ = words;
-  LogInterval(frame, rules::DecodeStats(delta.data()), uint32_t(interval_frames_));
-  interval_probes_ = {};
-  interval_frames_ = 0;
-  interval_planned_rays_ = 0;
+  LogInterval(frame, rules::DecodeStats(delta.data()), frames);
 }
 
 void GiUpdate::LogInterval(uint64_t frame, const rules::StatSummary& stats, uint32_t frames) {
   rules::IntervalInfo info;
   info.frame = frame;
   info.frames = frames;
-  info.probes = interval_probes_;
+  std::copy(stats.probes.begin(), stats.probes.end(), info.probes.begin());
   info.cascades = field_ ? field_->fit().budget.cascade_count : 0;
   info.cuts = cuts_;
   info.budget_scale = 1.0f;
   info.finest_dirty_share = field_ ? double(field_->scheduler().DirtyShare(0)) : 0.0;
   REXLOG_INFO("{} {}", kPrefix, rules::IntervalLine(info, stats));
+  REXLOG_INFO("{} frame {}: {} settled far probes slept, {} inside probes skipped", kPrefix, frame, stats.probes_sleeping, stats.probes_skipped);
   if (pass_timing_ && pass_timing_->enabled() && frames > 0) {
     const double trace_ms = pass_timing_->LabelMsPerFrame("rt gi trace");
     const double blend_ms = pass_timing_->LabelMsPerFrame("rt gi blend");
@@ -607,10 +666,10 @@ std::string GiUpdate::CensusText() const {
   if (!ready_) {
     return {};
   }
-  return std::format("; probe update: {} frames ({} chunks), {:.1f} M rays planned, {:.1f} MiB held, {} stale probes marked by {} built sectors; frames without it: {} not usable, {} without the top "
+  return std::format("; probe update: {} frames ({} chunks), {:.1f} M rays planned, {:.1f} MiB held, {} probes marked stale, {} sector changes; frames without it: {} not usable, {} without the top "
                      "level, {} without the world's rows, {} without the hit data's pool, {} waiting for the pipelines, {} without resources",
                      frames_run_, chunks_total_, double(rays_planned_) / 1.0e6, double(HeldBytes()) / (1024.0 * 1024.0), stale_marked_,
-                     sectors_built_seen_, not_usable_, no_scene_, no_world_, no_hit_data_, not_ready_, no_resources_);
+                     sector_changes_seen_, not_usable_, no_scene_, no_world_, no_hit_data_, not_ready_, no_resources_);
 }
 
 }  // namespace mcla::gpu

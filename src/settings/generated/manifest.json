@@ -2286,6 +2286,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_gi_field_schedule": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reuse settled distant RT bounce probes between scheduled refreshes.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rt_gi_dry_run": {
   "type": "bool",
   "default": "false",

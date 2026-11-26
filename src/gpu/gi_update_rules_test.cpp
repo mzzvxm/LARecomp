@@ -132,7 +132,7 @@ void TestNumbers() {
   Check(ray_sum < 4.0e9 && ray_sq < 4.0e9 && texel_sum < 4.0e9, Num("the group's fixed point sums fit 32 bits (%.0f, %.0f, %.0f of 4.29e9)", ray_sum, ray_sq, texel_sum));
   // the field's state layout the blend writes: the frame's low 14 bits go in the bits 18..31 the reset clears
   const uint32_t state = gu::StateAfterBlend(gf::MakeState(5, false, false, 0), false, 77, 0x12345);
-  Check(gf::StateUpdates(state) == 6 && !gf::StateInside(state) && !gf::StateNew(state) && gf::StateBack(state) == 77 && (state >> 18) == (0x12345u & 0x3FFFu), "the state after a blend: count up, back share, frame bits");
+  Check(gf::StateUpdates(state) == 6 && !gf::StateInside(state) && !gf::StateNew(state) && gf::StateBack(state) == 77 && (state >> 18) == (0x12345u & 0x3FFu), "the state after a blend: count up, back share, frame bits");
   const uint32_t inside = gu::StateAfterBlend(gf::MakeState(5, false, true, 0), true, 200, 9);
   Check(gf::StateUpdates(inside) == 5 && gf::StateInside(inside) && gf::StateNew(inside) && gf::StateBack(inside) == 200, "the state after an inside classification: count and new bit kept, inside bit, back share");
   const uint32_t again = gu::StateAfterBlend(inside, false, 10, 10);
@@ -798,10 +798,141 @@ void TestScheduler() {
 // ---------------------------------------------------------------------------
 // the dispatches and the budgets of the cells
 // ---------------------------------------------------------------------------
+void TestPhasedScheduler() {
+  const uint32_t settled = gu::StateAfterBlend(gf::MakeState(40, false, false), false, 77, 1023u, gu::kStableVisits);
+  Check(gu::StableVisits(settled) == 4 && gu::StableVisits(gf::kStateAfterReset) == 0 && gf::StateBack(settled) == 77, "settled streak and existing state fields have distinct bits");
+  uint32_t streak = 0;
+  for (uint32_t i = 0; i < 8; ++i) {
+    const uint32_t state = streak << gu::kStableShift;
+    streak = gu::NextStableVisits(state, false, 0.02f, 0.1f, 1.0f);
+    Check(streak == std::min(i + 1u, 4u) && streak == hlsl_shim::GiuNextStableVisits(state, false, 0.02f, 0.1f, 1.0f), "steady history saturates after four visits in the CPU and shader");
+  }
+  Check(gu::NextStableVisits(settled, true, 0.0f, 0.0f, 1.0f) == 0 &&
+        gu::NextStableVisits(settled, false, 0.1f, 0.0f, 1.0f) == 0 &&
+        gu::NextStableVisits(settled, false, 0.0f, 0.16f, 1.0f) == 0, "dirty history, irradiance change and noisy rays each wake the probe");
+  for (uint32_t flags = 0; flags < 8; ++flags) {
+    for (const bool inside : {false, true}) {
+      for (const uint32_t state : {0u, settled}) {
+        Check(hlsl_shim::GiuScheduledSkip(inside, state, flags) == gu::ScheduledSkip(inside, state, flags), "the shader and scheduler twin agree on every skip reason");
+      }
+    }
+  }
+  Check(gu::ScheduledSkip(false, settled, gu::kProbeMaySleep) == gu::kRaySleeping &&
+        gu::ScheduledSkip(false, 0, gu::kProbeMaySleep) == 0 &&
+        gu::ScheduledSkip(true, settled, 0) == gu::kRaySkipped &&
+        gu::ScheduledSkip(true, settled, gu::kProbeRetestInside) == 0 &&
+        gu::ScheduledSkip(true, settled, gu::kProbeDirty) == 0, "only settled far probes sleep and dirty work bypasses inside skips");
+
+  for (const gi::Layout layout : {gi::Layout::kStandard, gi::Layout::kExtended}) {
+    Rig rig(layout);
+    const gu::Budget budget = gu::BudgetOf(rig.budget);
+    auto in = rig.Inputs();
+    in.phased = true;
+    in.reuse_coarse = true;
+    const gu::Plan warm = rig.sched.Make(rig.state, in, budget.max_probes);
+    Check(warm.dirty_taken[0] == rig.budget.cascade[0].dims.Probes() && warm.Total() <= budget.max_probes &&
+          std::all_of(warm.words.begin(), warm.words.end(), [](uint32_t w) { return gu::ProbeFlags(w) == gu::kProbeDirty; }), "warm-up keeps its full priority budget and nominal ray count");
+    rig.Settle();
+    in = rig.Inputs();
+    in.phased = true;
+    in.reuse_coarse = true;
+    bool coverage = true, balanced = true, phase_bounds = true;
+    for (uint32_t c = 0; c < rig.budget.cascade_count; ++c) {
+      const auto& spec = rig.budget.cascade[c];
+      const uint32_t period = spec.interval_frames * (c != 0 ? 2u : 1u);
+      std::vector<uint32_t> seen(spec.dims.Probes());
+      for (uint32_t phase = 0; phase < period; ++phase) {
+        for (uint32_t block = 0; block * period < spec.dims.Probes(); ++block) ++seen[gu::CohortIndex(block, phase, period)];
+      }
+      for (uint32_t i = 0; i < seen.size(); ++i) {
+        coverage &= seen[i] == 1;
+        uint32_t traces = 0, inside_retests = 0;
+        for (uint32_t cycle = 0; cycle < 4; ++cycle) {
+          const uint32_t flags = gu::VisitFlags(cycle, i, true);
+          traces += gu::ScheduledSkip(false, settled, flags) == 0;
+          inside_retests += gu::ScheduledSkip(true, settled, flags) == 0;
+          phase_bounds &= (gu::VisitFlags(cycle, i, false) & gu::kProbeMaySleep) == 0;
+          phase_bounds &= gu::ScheduledSkip(false, settled, flags) == 0 ||
+                          gu::ScheduledSkip(false, settled, gu::VisitFlags(cycle + 1, i, true)) == 0;
+        }
+        balanced &= traces == 2 && inside_retests == 1;
+      }
+    }
+    Check(coverage && balanced && phase_bounds, "all slots have a fixed visit phase, one inside retest per four visits and a far age bound of two visits");
+
+    const gu::Plan held = rig.sched.Make(rig.state, in, budget.max_probes);
+    Check(std::any_of(held.words.begin(), held.words.end(), [](uint32_t w) { return (gu::ProbeFlags(w) & gu::kProbeMaySleep) != 0; }), "a held view can sleep its stable far probes");
+    in.camera_moving = true;
+    const gu::Plan turning = rig.sched.Make(rig.state, in, budget.max_probes);
+    Check(std::none_of(turning.words.begin(), turning.words.end(), [](uint32_t w) { return (gu::ProbeFlags(w) & gu::kProbeMaySleep) != 0; }), "camera motion wakes the regular cohort");
+    Rig busy(layout);
+    busy.Settle();
+    bool retained = true, bounded = true, unique = true;
+    const uint32_t period = busy.budget.cascade[0].interval_frames;
+    std::set<uint32_t> covered;
+    for (uint32_t phase = 0; phase < period; ++phase) {
+      busy.sched.MarkAllStale();
+      const gu::Plan plan = busy.sched.Make(busy.state, in, budget.max_probes);
+      std::set<uint32_t> frame;
+      for (uint32_t w : plan.words) {
+        if (gu::ProbeCascade(w) != 0) continue;
+        unique &= frame.insert(gu::ProbeIndex(w)).second;
+        covered.insert(gu::ProbeIndex(w));
+      }
+      retained &= plan.stale_taken[0] > 0;
+      bounded &= plan.Total() <= 2u * budget.probes_per_frame;
+    }
+    Check(retained && bounded && unique && covered.size() == busy.budget.cascade[0].dims.Probes(), "priority saturation cannot starve, duplicate or overflow the regular cohort");
+
+    rig.camera[0] += 8.0;
+    rig.state.Move(rig.camera);
+    in = rig.Inputs(34.0f);
+    in.phased = true;
+    const gu::Plan offset = rig.sched.Make(rig.state, in, budget.max_probes);
+    Check(offset.dirty_taken[0] > 0 && offset.left_dirty_out_of_range > 0 && rig.state.DirtyCount(0) > 0, "small offsets wake entering probes without consuming out-of-range slots");
+    rig.camera[0] += 400.0;
+    Check(rig.state.Move(rig.camera).cut, "teleport resets the field");
+    rig.sched.Start(rig.budget);
+    in = rig.Inputs();
+    in.phased = true;
+    const gu::Plan cut = rig.sched.Make(rig.state, in, budget.max_probes);
+    Check(cut.dirty_taken == warm.dirty_taken && cut.Total() == warm.Total(), "teleport restarts bounded full-rate warm-up");
+    rig.state.RequestCut(gf::CutKind::kRelight);
+    Check(rig.state.Move(rig.camera).relight && rig.state.TotalDirty() == gi::BudgetProbes(rig.budget), "hour jump clears probes for full relight");
+  }
+
+  gu::ViewMotion motion;
+  Check(!motion.Observe({}, {0, 0, 1}) && !motion.Observe({0.2f, 0, 0}, {0, 0, 1}) &&
+        motion.Observe({0.4f, 0, 0}, {0, 0, 1}), "small camera steps accumulate until the field wakes");
+  Check(motion.Observe({0.4f, 0, 0}, {0, 0, 1}) && motion.Observe({0.4f, 0, 0}, {0, 0, 1}) &&
+        motion.Observe({0.4f, 0, 0}, {0, 0, 1}) && !motion.Observe({0.4f, 0, 0}, {0, 0, 1}) &&
+        motion.Observe({0.4f, 0, 0}, {0.06f, 0, 0.9981984f}), "motion wake lasts four updates and can start again on a turn");
+  gu::Lighting a, b;
+  a.to_sun = b.to_sun = {0, 1, 0};
+  b.street = 0.03f;
+  Check(!gu::LightingChanged(a, b), "minor lamp changes can accumulate against the accepted lighting");
+  b.street = 0.07f;
+  Check(gu::LightingChanged(a, b), "a street lamp schedule step wakes the field");
+  b = a;
+  b.sun = {0.12f, 0.07f, 0.01f};
+  Check(gu::LightingChanged(a, b), "a meaningful irradiance change wakes the field");
+  b = a;
+  ++b.weather;
+  Check(gu::LightingChanged(a, b), "weather changes wake the field");
+  std::vector<gu::ProbeLight> old_lights = {{7, {7, 0, 0}, 4}, {1, {1, 0, 0}, 4}};
+  std::vector<gu::ProbeLight> new_lights = {{9, {9, 0, 0}, 6}, {7, {7, 0, 0}, 4}};
+  std::sort(old_lights.begin(), old_lights.end());
+  std::sort(new_lights.begin(), new_lights.end());
+  std::vector<uint64_t> wakes;
+  gu::VisitChangedLights(old_lights, new_lights, [&](const gu::ProbeLight& light) { wakes.push_back(light.key); });
+  Check(wakes == std::vector<uint64_t>{1, 9}, "turning a light off and another on wakes both footprints independent of list order");
+}
+
 void TestBudgets() {
   const uint32_t clean = gu::ProbeWord(0, 0, 170);
   const uint32_t dirty = gu::ProbeWord(1, gu::kProbeDirty, 170);
   Check(gu::RefreshRays(clean, 64, 1.0f, true) == 32, "steady probes use 32 rays");
+  Check(gu::RefreshRays(gu::ProbeWord(0, gu::kProbeRetestInside | gu::kProbeMaySleep, 1), 64, 1.0f, true) == 32, "regular schedule flags keep the established 32-ray refresh");
   Check(gu::RefreshRays(dirty, 64, 1.0f, true) == 64, "new and stale probes use 64 rays");
   Check(gu::RefreshRays(clean, 64, 4.0f, true) == 64, "warm-up keeps the full ray count");
   Check(gu::RefreshRays(clean, 64, 1.0f, false) == 64, "the A/B keeps the full ray count");
@@ -958,7 +1089,7 @@ void TestSources(const std::string& dir) {
   for (const std::string* t : {&trace, &blend}) {
     Check(Has(*t, "uint4 control;") && Has(*t, "uint4 flags;") && Has(*t, "float4 tune;") && Has(*t, "float4 tune2;"), "a shader's push block is four rows of 16 bytes (64)");
   }
-  Check(gu::kStatWords * 4 <= gu::kStatBytes && Has(trace, "4u * 4u, tracedSum") && Has(trace, "8u * 4u, lodSum") && Has(blend, "Count(9u,") && Has(blend, "Count(16u, 1u)") && Has(blend, "Count(18u + GiuHistBin(newMean), 1u)"),
+  Check(gu::kStatWords * 4 <= gu::kStatBytes && Has(trace, "4u * 4u, tracedSum") && Has(trace, "8u * 4u, lodSum") && Has(blend, "Count(9u,") && Has(blend, "Count(skipped == GIU_RAY_SLEEPING ? 17u : 16u, 1u)") && Has(blend, "Count(18u + GiuHistBin(newMean), 1u)"),
         "the shaders add to the counters' words the header names (4 .. 8 in the trace, 0 .. 3, 9 .. 16 and the histogram from 18 in the blend)");
   // the shaders include the library and the field's files they need
   Check(Has(trace, "#include \"city_hit_shade.hlsli\"") && Has(trace, "CITY_HIT_MODE_GI") && Has(trace, "CITY_HIT_P_SUN_RAY") && Has(trace, "CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_LAMP_SHADOW") &&
@@ -995,7 +1126,7 @@ void TestSources(const std::string& dir) {
   Check(Has(cpp, "to_read") && Has(cpp, "Layout::SHADER_READ") && Has(cpp, "to_write") && Has(cpp, "Layout::GENERAL"), "the field's textures are read by the trace and written by the blend");
   Check(Has(cpp, "kPrefix = \"[rt gi]\""), "the census lines carry the prefix the report reads");
   Check(Has(cpp, "hit_scene_->ready() || hit_scene_->stats().committed == 0") || Has(cpp, "!hit_scene_->ready() || hit_scene_->stats().committed == 0"), "the update waits for the hit data's pool (a field of zeros must never replace the screen-space bounce light)");
-  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainBuiltSectors();") && Has(cpp, "MarkStaleBox(") && Has(cpp, "in.governor_scale = 1.0f;") && !Has(cpp, "governor_.AddSample("), "the update plans with the field's scheduler, marks built sectors stale and uses the fixed probe budget");
+  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainSectorChanges(scheduled);") && Has(cpp, "MarkStaleBox(") && Has(cpp, "in.governor_scale = 1.0f;") && !Has(cpp, "governor_.AddSample("), "the update uses the fixed probe budget and wakes sectors that changed");
   const std::string renderer = ReadFile(dir + "/renderer.cpp");
   const std::string renderer_h = ReadFile(dir + "/renderer.h");
   Check(Has(renderer_h, "GiUpdate gi_update_;") && Has(renderer_h, "#include \"gi_update.h\""), "renderer.h owns the update");
@@ -1011,7 +1142,7 @@ void TestSources(const std::string& dir) {
   Check(Has(integ, "want_(decision.level);") && At(integ, "want_(decision.level);") < At(integ, "field_->BeginFrame(in);") && Has(integ, "update_(list, frame_slot, field_->update_frame());"),
         "the integration asks the update for its structures before the field's frame begins, and calls the update between the maintenance and the weights");
   const std::string city = ReadFile(dir + "/city_rt_scene.h") + ReadFile(dir + "/city_rt_scene.cpp");
-  Check(Has(city, "void DrainBuilt(std::vector<BuiltBox>* out, uint32_t* dropped);") && Has(city, "built_log_.push_back(box);"), "the city scene logs the sectors it builds for the update");
+  Check(Has(city, "NoteSectorChange(sector, true);") && Has(city, "NoteSectorChange(s.sector, false);"), "both evicting and building a sector wake the affected probes");
   const std::string timing = ReadFile(dir + "/pass_timing.h") + ReadFile(dir + "/pass_timing.cpp");
   Check(Has(timing, "double LabelMsPerFrame(std::string_view label) const;") && Has(timing, "name.starts_with(\"rt gi\")"), "the pass timing reads a label's time and lists the update's labels");
   // the library files the update uses are not edited (they are H4's and R7's)
@@ -1041,6 +1172,7 @@ int main(int argc, char** argv) {
   TestClassification();
   TestBlend();
   TestScheduler();
+  TestPhasedScheduler();
   TestBudgets();
   TestGovernor();
   TestCensus();

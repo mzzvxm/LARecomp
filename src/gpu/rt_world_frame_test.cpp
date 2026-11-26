@@ -483,6 +483,27 @@ void TestLampFrame() {
     CHECK(positions.size() == expected || positions.size() + 2 >= expected);
   }
 
+  // Capturing GI wake bounds leaves the GPU records alone and survives a view rotation.
+  {
+    rw::LampInput in = NightInput(&table, nullptr, false, cx, cz, 23.0f, rw::Tier::kHigh);
+    rw::LampFrame base, tracked, rotated;
+    rw::BuildLampFrame(in, &base);
+    in.track_probe_lamps = true;
+    rw::BuildLampFrame(in, &tracked);
+    CHECK(base.probe_lamps.empty() && tracked.probe_lamps.size() == base.lamp_count && base.lamp_count > 0);
+    CHECK(base.words == tracked.words);
+    in.axes[0][0] = 0.0f;
+    in.axes[0][2] = -1.0f;
+    in.axes[2][0] = 1.0f;
+    in.axes[2][2] = 0.0f;
+    rw::BuildLampFrame(in, &rotated);
+    CHECK(tracked.words != rotated.words && tracked.probe_lamps.size() == rotated.probe_lamps.size());
+    for (size_t i = 0; i < tracked.probe_lamps.size() && i < rotated.probe_lamps.size(); ++i) {
+      const auto& a = tracked.probe_lamps[i];
+      const auto& b = rotated.probe_lamps[i];
+      CHECK(a.key == b.key && a.reach == b.reach && a.reach > 0.0f && std::equal(a.position, a.position + 3, b.position));
+    }
+  }
   // the colour holds the activity over the schedule: a fill light at dusk, a street lamp on
   {
     const float hour = 17.7f;
@@ -1543,7 +1564,7 @@ void TestSources(const std::string& src) {
       CHECK(Has(cpp, "if (src_.lights != nullptr && src_.lights->active()) {") && Has(cpp, "bi.night = schedule_.fill;") && Has(cpp, "mcla_gpu_gi_bounce_headlights.Get()") && Has(cpp, "mcla_gpu_gi_bounce_neon.Get()") &&
             Has(cpp, "mcla_gpu_gi_bounce_rear.Get()") && Has(cpp, "mcla_gpu_gi_bounce_other.Get()"));
       CHECK(Has(header, "void WantEmitters(bool wanted, bool ultra, bool weak);") && Has(header, "LightManager* lights = nullptr;"));
-      CHECK(Has(ReadFile(src + "/gpu/gi_update.cpp"), "world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, gi_setting::Current().rung == gi::Rung::kWeak);"));
+  CHECK(Has(ReadFile(src + "/gpu/gi_update.cpp"), "world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, false);"));
       CHECK(Has(ReadFile(src + "/gpu/renderer.cpp"), "world_sources.lights = &light_manager_;"));
     }
   }
