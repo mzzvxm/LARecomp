@@ -25461,6 +25461,14 @@ name = "Patch_RearViewCamera"
 registers = ["f1", "f2", "f4"]
 after_instruction = false
 
+# 0x8230812C: sub_8217CE80 consumes the private, rotated camera matrix at r4.
+# Adjust its translation while the cabin mirror reads the shared rear view.
+[[midasm_hook]]
+address = 0x8230812C
+name = "Patch_RearViewCabinEye"
+registers = ["r4"]
+after_instruction = false
+
 # 0x82307F8C: the first `bl sub_82178C40` (a D3D Clear of the mirror's rectangle in the MAIN target: colour 0xFFFF0000, depth 0.0, stencil) in sub_82307F28, the mirror's camera step at the
 # colour pass's begin. True jumps to 0x82307F90, past the call: with the shared view's guest half on and the host redirecting the mirror's phase the rectangle is not the phase's any more
 # (the phase's own clear is the second sub_82178C40 call, in sub_82308178). Off, the game's own clear runs. hooks/rear_view.cpp.

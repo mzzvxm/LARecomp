@@ -277,8 +277,10 @@ void TestDecide() {
     f = GoodFacts();
     f.needed_mask = 0;
     Check(mo::Decide(f) == W::kNotNeeded, "a pair, but neither glass is worth a view");
+    f.needed_mask = 8;
+    Check(mo::Decide(f) == W::kNotNeeded, "bits beyond the three glasses are ignored");
     f.needed_mask = 4;
-    Check(mo::Decide(f) == W::kNotNeeded, "bits past the two glasses are nothing");
+    Check(mo::Decide(f) == W::kDraw, "the cabin glass alone is enough");
     f.needed_mask = 2;
     Check(mo::Decide(f) == W::kDraw, "the right glass alone is enough");
     f.needed_mask = 3;
@@ -950,7 +952,7 @@ void TestFiles(const std::string& src) {
   Check(Has(vs, "#include \"mirror_overlay.hlsli\"") && Has(ps, "#include \"mirror_overlay.hlsli\"") && Has(vs, "register(b0, space4)") && Has(ps, "register(b0, space4)") && Has(vs, "[[vk::push_constant]]") && Has(ps, "[[vk::push_constant]]"),
         "both stages take the one push block at (b0, space4) on D3D12 and as the push constant on Vulkan");
   Check(Has(vs, "[[vk::location(0)]] float3 position : POSITION;") && Has(vs, "float3 view_pos : TEXCOORD0;") && Has(ps, "float3 view_pos : TEXCOORD0;"), "the vertex stage's output and the pixel stage's input are the same");
-  Check(Has(ps, "g_samplers[kSamplerLinearClamp]") && Has(ps, "SampleLevel") && Has(ps, "asuint(p.delta.w)") && Has(ps, "NgFinite3(colour.rgb), alpha"), "the pixel stage reads the picture with the linear clamp sampler at the slot in the block and writes the edge fade as the alpha");
+  Check(Has(ps, "g_samplers[kSamplerLinearClamp]") && Has(ps, "SampleLevel") && Has(ps, "asuint(p.delta.w)") && Has(ps, "NgFinite3(colour.rgb)") && Has(ps, "MirrorOverlayEdgeFade(uv.xy)") && Has(ps, "alpha = open + coverage;"), "the pixel stage reads the picture with the linear clamp sampler at the slot in the block and writes the edge fade as the alpha");
   Check(Has(cmake, "larecomp_gpu_host_shader(mirror_overlay_vs vs_6_0)") && Has(cmake, "larecomp_gpu_host_shader(mirror_overlay_ps ps_6_0)") && Has(cmake, "mirror_overlay.cpp") &&
             Has(cmake, "add_executable(larecomp_mirror_overlay_rules_test EXCLUDE_FROM_ALL mirror_overlay_rules_test.cpp)"),
         "CMakeLists.txt builds the two stages, the host and the test");
@@ -963,10 +965,11 @@ void TestFiles(const std::string& src) {
   Check(Has(host, "blend.srcBlend = plume::RenderBlend::SRC_ALPHA;") && Has(host, "blend.dstBlend = plume::RenderBlend::INV_SRC_ALPHA;") && Has(host, "blend.renderTargetWriteMask = kWriteRgb;") &&
             Has(host, "blend.srcBlendAlpha = plume::RenderBlend::ZERO;") && Has(host, "blend.dstBlendAlpha = plume::RenderBlend::ONE;"),
         "the pipeline blends over the colour on the colour channels and leaves the alpha");
-  Check(Has(host, "builder.begin(/*isLocal=*/false, /*allowInputLayout=*/true);") && Has(host, "builder.addPushConstant(0, 4, rules::kPushBytes, plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);") &&
+  Check(Has(host, "builder.begin(/*isLocal=*/false, /*allowInputLayout=*/true);") && Has(host, "builder.addRootDescriptor(0, 4, plume::RenderRootDescriptorType::CONSTANT_BUFFER);") &&
+            Has(host, "builder.addPushConstant(0, 4, sizeof(uint64_t), plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);") &&
             Has(host, "for (uint32_t set = 0; set < 4; ++set)") && Has(host, "builder.addDescriptorSet(heap_->sampler_set_builder());"),
-        "the layout is the host pass layout's sets with a push block for both stages and an input layout");
-  Check(Has(host, "edram_->Framebuffer(only, 1, depth)") && Has(host, "pass_timing_->Mark(list, \"mirror glass\")") && Has(host, "pass_timing_->Mark(list, \"after mirror glass\")"), "the pass binds the main colour with the main depth and is timed");
+        "the layout binds draw constants on both APIs and keeps the host pass texture and sampler sets");
+  Check(Has(host, "edram_->Framebuffer(only, 1, depth)") && Has(host, "pass_timing_->Mark(list, \"mirror overlay\")") && Has(host, "pass_timing_->Mark(list, \"after mirror overlay\")"), "the pass binds the main colour with the main depth and is timed");
   Check(Has(host, "upscaler_math::JitterNdcOffset(in.jitter, d->viewport.viewport.width, d->viewport.viewport.height, push.jitter_ndc);") && Has(host, "push.ndc_scale[c] = d->viewport.ndc_scale[c];"),
         "the push block takes the glass draw's own viewport transform and the frame's jitter");
   Check(Has(host, "static_assert(uint32_t(plume::RenderComparisonFunction::LESS) == rules::kCmpLess"), "the rules' comparison values are checked against plume's enum at compile time");
@@ -980,7 +983,7 @@ void TestFiles(const std::string& src) {
   Check(Has(view, "if (!precache.Ready(PrecacheKey(variant))) {") && !Has(view, "passes_->CreatePipeline(*resolve_shader_, format, \"mirror view resolve\")") && !Has(view, "resolve_pipelines_") && !Has(view, "stamp_pipelines_"), "... and no longer made on the render thread at first use");
   Check(Has(view, "overlay_armed_ = true;") && Has(view, "overlay_armed_ = whole_ && !failed && age <= mirror_view::kMaxHeldMs;") && Has(view_h, "bool OverlayArmed() const { return overlay_armed_; }") && Has(view, "MirrorView::Picture MirrorView::CurrentPicture() const"),
         "the view arms the overlay at the end marker (a fresh picture or a held one) and gives out its picture");
-  Check(Has(host, "void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v) {") && !Has(host, "ReadViewField") &&
+  Check(Has(host, "void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v, uint32_t cabin_offset) {") && !Has(host, "ReadViewField") &&
             Has(link, "#include <atomic>") && !Has(link, "ViewField"),
         "the view's field of view comes through one function, the glue point with the guest half: NoteViewDrawn, given the field of the picture it describes (the link header has no overlay function)");
   {
@@ -999,7 +1002,7 @@ void TestFiles(const std::string& src) {
   const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene");
   Check(stamp != std::string::npos && glass != std::string::npos && execute != std::string::npos && stamp < glass && glass < execute, "scene.cpp draws the glass after the stamp and before the copy reads the colour");
   Check(Has(scene, "mirror_overlay_ && mirror_overlay_->wanted() && mirror_view_ && mirror_view_->OverlayArmed() && list && RecordMirrorGlass(record, list)"), "the overlay runs only while it is wanted and the view armed it");
-  Check(Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);") && Has(scene, "mirror_view_->PictureField(&field_h, &field_v)") && Has(scene, "mirror_overlay_->BeginFrame();"),
+  Check(Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v, tag);") && Has(scene, "mirror_view_->PictureField(&field_h, &field_v)") && Has(scene, "mirror_overlay_->BeginFrame();"),
         "the overlay is told of the frame's start and of a fresh picture's end marker (the camera it was drawn from and the field of that phase's camera: MV-J2)");
   Check(Has(scene, "frame.viewport = &d.viewport;") && Has(scene, "frame.depth_word = d.key.depth;") && Has(frame_h, "bool viewport_known = false;") && Has(frame_cpp, "out->viewport_known = true;"),
         "CarFrame keeps each player draw's viewport transform and depth word for the replay");
@@ -1009,7 +1012,7 @@ void TestFiles(const std::string& src) {
         "the renderer makes the overlay and gives it to the scene");
 
   // the frame order's row
-  Check(Has(order, "kMirrorGlass,") && Has(order, ".call = \"RecordMirrorGlass(record, list)\"") && Has(order, ".label_file = \"mirror_overlay.cpp\", .label = \"mirror glass\", .closing_label = \"after mirror glass\""), "frame_order.h has the glass row after the stamp");
+  Check(Has(order, "kMirrorGlass,") && Has(order, ".call = \"RecordMirrorGlass(record, list)\"") && Has(order, ".label_file = \"mirror_overlay.cpp\", .label = \"mirror overlay\", .closing_label = \"after mirror overlay\""), "frame_order.h has the glass row after the stamp");
 
   // the settings: debug, off, live, no row
   const auto setting = [&](const std::string& name, const std::string& type, const std::string& value) {

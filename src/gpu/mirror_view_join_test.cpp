@@ -940,7 +940,7 @@ void TestFiles(const std::string& src) {
     const size_t end = host.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
     Check(Has(body, "OnGuestSceneComposited(hud_stamp ? mirror_view::kMarkerBegin : mirror_view::kMarkerBeginNoStamp,") &&
-              Has(body, "mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));") && Has(body, "OnGuestSceneComposited(mirror_view::kMarkerEnd);"),
+              Has(body, "mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));") && Has(body, "OnGuestSceneComposited(mirror_view::kMarkerEnd, mirror_view::g_phase_cabin_offset);"),
           "the begin carries the phase camera's field and HUD eligibility, and the end carries nothing");
   }
   Check(Has(gpu_h, "void OnGuestSceneComposited(uint32_t bucket, uint32_t tag = 0);"), "MV-J2: gpu.h's composite entry takes the record's second word");
@@ -959,7 +959,7 @@ void TestFiles(const std::string& src) {
     Check(Has(trace, "r.bucket, r.tag, draws_);"), "... and the frame trace prints it");
   }
   Check(Has(scene, "if (mirror_view::IsBeginMarker(bucket)) {") && Has(scene, "mirror_view_->BeginPhase(mirror_draws::Current(), mirror_view::UnpackPhaseField(tag), bucket == mirror_view::kMarkerBegin)") &&
-            Has(scene, "const bool field_known = mirror_view_->PictureField(&field_h, &field_v);") && Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v);"),
+            Has(scene, "const bool field_known = mirror_view_->PictureField(&field_h, &field_v);") && Has(scene, "mirror_overlay_->NoteViewDrawn(car_frame_->Current(), frame_serial_, field_known, field_h, field_v, tag);"),
         "MV-J2: the scene hands the begin's tag to the view and the picture's own field to the overlay");
   {
     // nothing sizes, crops or places a picture by the guest's LATEST camera build any more: the host reads it in three places (the guest's own tag at NoteMirrorPhase, the request's retail field, the stamp's
@@ -981,7 +981,7 @@ void TestFiles(const std::string& src) {
     const std::string body = at == std::string::npos ? std::string() : rv.substr(at, end - at);
     Check(Has(body, "shared::EffectiveSideNeed(m.shared, vlink::CurrentRequest())") && !Has(rv, "mirror_glass::") && !Has(rv, "mirror_glass_need.h"), "the guest's need is the request's (MV3's flag is copied in by the host, the hooks do not include it)");
   }
-  Check(Has(rv, "vlink::SetStampWanted(hud_stamp);") && Has(rv, "vlink::SetStampWanted(true);"), "the request builder still reads the HUD stamp flag from TickRearView");
+  Check(Has(rv, "vlink::SetStampWanted(hud_stamp && !HideHudWithCabin());") && Has(rv, "vlink::SetStampWanted(true);"), "the request builder still reads the HUD stamp flag from TickRearView");
   Check(Has(host, "facts.hud_stamp = hud_stamp;") && Has(host, "phase_hud_stamp_ = hud_stamp;") &&
             Count(host, "rect_.valid(), phase_hud_stamp_)") == 2, "both fresh and held pictures use the phase marker for the HUD stamp");
   // the camera step's clear and the hooks' wiring

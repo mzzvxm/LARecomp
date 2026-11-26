@@ -3859,7 +3859,7 @@
   "type": "std::string",
   "default": "\"on\"",
   "category": "MCLA/GPU",
-  "help": "\"Show the street and racers behind you in the side mirrors. The optional HUD rear-view widget shares the same picture. Live.\"",
+  "help": "\"Show the street and racers behind you in the side and cabin mirrors. The HUD rear-view widget shares the picture and hides while the cabin mirror is visible. Live.\"",
   "traits": [
    "rex::Allowed(\"off\", \"on\", \"auto\", \"high\", \"ultra\")"
   ],
@@ -11979,6 +11979,28 @@
   "help": "\"Debug: limit the rear-view camera range in metres. 0 keeps the game camera range. Live.\"",
   "traits": [
    "rex::Range{0.0, 5000.0}",
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_interior": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/HUD",
+  "help": "\"Enable the functional cabin mirror when MIRRORS is on. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "rearview_hide_with_interior": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/HUD",
+  "help": "\"Hide the HUD rear view while the cabin mirror is drawn. Live.\"",
+  "traits": [
    "rex::kDebugOnly"
   ],
   "comments": [],

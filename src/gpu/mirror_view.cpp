@@ -82,7 +82,7 @@ void NoteMirrorPhase(bool begin, bool hud_stamp) {
     OnGuestSceneComposited(hud_stamp ? mirror_view::kMarkerBegin : mirror_view::kMarkerBeginNoStamp,
                           mirror_view::PackPhaseField(mirror_view::PhaseFieldOf(mirror_view::CurrentCamera())));
   } else if (g_open.exchange(false, std::memory_order_relaxed)) {
-    OnGuestSceneComposited(mirror_view::kMarkerEnd);
+    OnGuestSceneComposited(mirror_view::kMarkerEnd, mirror_view::g_phase_cabin_offset);
   }
 }
 

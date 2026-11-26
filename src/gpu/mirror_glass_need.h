@@ -25,7 +25,7 @@ inline constexpr uint32_t kNeedHoldFrames = 20;
 // What is published: whether a mirror pair was found at all, and which of the two glasses (the left one and the right one on the picture, MirrorGlass's order) is worth a view.
 struct NeedState {
   bool found = false;      // a pair of mirror glasses is among this frame's draws
-  uint8_t mask = 0;        // bit 0: the glass on the left of the picture is needed, bit 1: the one on the right
+  uint8_t mask = 0;        // bits 0 and 1: side glasses. Bit 2: cabin glass
   uint16_t widest = 0;     // the widest needed glass, pixels at the reference picture (for the log)
   uint16_t hfov_deg = 0;    // the needed readers' swept field, rounded out to whole degrees
   uint16_t vfov_deg = 0;
@@ -34,14 +34,14 @@ struct NeedState {
 };
 
 inline constexpr uint64_t Pack(const NeedState& s) {
-  return (s.found ? 1u : 0u) | (uint32_t(s.mask & 3u) << 1) | (uint32_t(s.widest) << 8) |
+  return (s.found ? 1u : 0u) | (uint32_t(s.mask & 7u) << 1) | (uint32_t(s.widest) << 8) |
          (uint64_t(s.hfov_deg) << 24) | (uint64_t(s.vfov_deg) << 40);
 }
 
 inline constexpr NeedState Unpack(uint64_t v) {
   NeedState s;
   s.found = (v & 1u) != 0;
-  s.mask = uint8_t((v >> 1) & 3u);
+  s.mask = uint8_t((v >> 1) & 7u);
   s.widest = uint16_t((v >> 8) & 0xFFFFu);
   s.hfov_deg = uint16_t(v >> 24);
   s.vfov_deg = uint16_t(v >> 40);

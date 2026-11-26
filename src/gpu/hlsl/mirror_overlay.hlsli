@@ -32,6 +32,15 @@ struct MirrorOverlayPush {
   float4 rot;
 };
 
+// Per-draw constants. Vulkan passes the address of the upload as an 8-byte
+// push constant. D3D12 binds the same bytes as a root CBV.
+struct MirrorOverlayDraw {
+  MirrorOverlayPush mirror;
+  float4 mask_u;
+  float4 mask_v;
+  float4 mask_meta;
+};
+
 // The vertex in the main camera's view space, eye-relative.
 float3 MirrorOverlayViewPos(MirrorOverlayPush p, float3 position) {
   return float3(position.x * p.col_x.x + position.y * p.col_x.y + position.z * p.col_x.z + p.col_x.w,

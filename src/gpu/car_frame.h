@@ -133,6 +133,7 @@ struct Frame {
   uint64_t guest_frame = 0;
   uint32_t player_id = 0;         // its stencil ID
   temporal::Mat4 player_world;    // its body's gWorld (the vehicle's root; row 3 = its position in the world)
+  temporal::Mat4 vehicle_to_world; // the player's entity axes (gWorld need not carry rotation)
   // The camera of this frame as the player's draws carry it (no jitter: that is added on the host): world -> view, the inverse
   // of the draws' c12-c15, and world -> clip, gWorld^-1 * gWorldViewProj of a body draw. View space is the AO's (x right,
   // y up, z forward = the linear depth t: ao_common.hlsli AoViewPos). The game's own view looks along -z; `view` is that with z

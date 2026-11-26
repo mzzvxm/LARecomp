@@ -7,9 +7,11 @@
 #include "mirror_overlay.hlsli"
 
 #ifdef __spirv__
-[[vk::push_constant]] ConstantBuffer<MirrorOverlayPush> g_push;
+struct DrawAddress { uint64_t address; };
+[[vk::push_constant]] ConstantBuffer<DrawAddress> g_address;
+#define g_draw vk::RawBufferLoad<MirrorOverlayDraw>(g_address.address, 16)
 #else
-ConstantBuffer<MirrorOverlayPush> g_push : register(b0, space4);
+ConstantBuffer<MirrorOverlayDraw> g_draw : register(b0, space4);
 #endif
 
 struct VsInput {
@@ -18,12 +20,16 @@ struct VsInput {
 
 struct VsOutput {
   float4 position : SV_Position;
+  float2 mask_uv : TEXCOORD1;
   float3 view_pos : TEXCOORD0;  // the point in the main camera's view space, eye-relative: what the pixel stage reflects
 };
 
 VsOutput main(VsInput input) {
-  const MirrorOverlayPush p = g_push;
+  const MirrorOverlayDraw draw = g_draw;
+  const MirrorOverlayPush p = draw.mirror;
   VsOutput o;
+  const float4 model = float4(input.position, 1.0);
+  o.mask_uv = float2(dot(model, draw.mask_u), dot(model, draw.mask_v));
   const float3 pv = MirrorOverlayViewPos(p, input.position);
   o.position = MirrorOverlayClip(p, pv);
   o.view_pos = pv;

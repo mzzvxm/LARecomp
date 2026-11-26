@@ -112,7 +112,7 @@ inline Why Decide(const Facts& f) {
   if (f.picture_age > mv::kMaxHeldMs) return Why::kStalePicture;
   if (!f.play_view) return Why::kNotPlayView;
   if (!f.glass_found) return Why::kNoGlass;
-  if ((f.needed_mask & 3u) == 0) return Why::kNotNeeded;
+  if ((f.needed_mask & 7u) == 0) return Why::kNotNeeded;
   if (!f.field_known) return Why::kNoField;
   if (!f.pose_known) return Why::kNoPose;
   return Why::kDraw;

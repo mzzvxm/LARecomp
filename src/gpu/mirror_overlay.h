@@ -35,6 +35,7 @@
 
 #include <plume_render_interface.h>
 
+#include "cabin_mask.h"
 #include "car_frame.h"
 #include "edram.h"
 #include "host_passes.h"
@@ -47,6 +48,7 @@ class Device;
 class FrameRing;
 class MirrorGlass;
 class MirrorView;
+class UploadRing;
 class PassTiming;
 
 class MirrorOverlay {
@@ -68,13 +70,16 @@ class MirrorOverlay {
 
   // The end marker of a phase that drew a FRESH picture (MirrorView::EndPhase true): the camera the picture was drawn from, with the field of THAT phase's camera (the begin marker's tag, MV-J2:
   // MirrorView::PictureField; `field_known` false = no camera had been built when the phase began: the overlay then draws nothing). `frame` is CarFrame's frame of this guest frame.
-  void NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v);
+  void NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_frame, bool field_known, float field_h, float field_v, uint32_t cabin_offset);
+  void OnPresent();
 
   struct Inputs {
     const car_frame::Frame* frame = nullptr;  // this frame's camera and the player's draws
     MirrorGlass* glass = nullptr;             // the finder's pair
     const MirrorView* view = nullptr;         // the picture
     bool play_view = true;
+    UploadRing* upload = nullptr;
+    uint32_t slot = 0;
     float jitter[2] = {0.0f, 0.0f};           // the frame's sub-pixel jitter in render pixels, +y down (TemporalSystem::FrameJitter), as the draws were moved by
   };
   // At the first copy of the main colour after the phase's end marker, after the stamp. `colour` and `depth` are the main view's targets as the copy found them (null: they were not there). True when the glass
@@ -82,6 +87,10 @@ class MirrorOverlay {
   bool Record(plume::RenderCommandList* list, const Inputs& in, EdramTargets::Target* colour, EdramTargets::Target* depth);
 
  private:
+  CabinMask cabin_mask_;
+  bool cabin_drawn_ = false;
+  bool cabin_pose_ = false;
+  bool cabin_logged_ = false;
   bool MakeShaders();
   void ListBase(bool at_start, const std::string& note);
   static uint64_t PrecacheKey(uint32_t variant);

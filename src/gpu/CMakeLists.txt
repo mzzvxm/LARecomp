@@ -32,6 +32,7 @@ add_library(larecomp_gpu OBJECT
     city_texture_set.cpp
     car_selfrefl.cpp
     car_shadow_map.cpp
+    cabin_mask.cpp
     mirror_view.cpp
     mirror_overlay.cpp
     local_shadow.cpp
@@ -852,6 +853,7 @@ add_executable(larecomp_mirror_view_rules_test EXCLUDE_FROM_ALL mirror_view_rule
 # the guest reads and its hold; and that the listener, the setting, the scene's calls and these build lines are there; perf/MIRROR-VIEW.md MV3) likewise:
 #   cmake --build <dir> --target larecomp_mirror_glass_rules_test, then run src/gpu/larecomp_mirror_glass_rules_test [<src dir>] (exit 0 = passed); `--table` prints the pair's verdict for a few cameras.
 add_executable(larecomp_mirror_glass_rules_test EXCLUDE_FROM_ALL mirror_glass_rules_test.cpp)
+add_executable(larecomp_cabin_mirror_rules_test EXCLUDE_FROM_ALL cabin_mirror_rules_test.cpp)
 # The JOIN of the shared rear view's three halves (mirror_view_join_test.cpp: the one switch over the guest's rules and the host's, the request published once a frame with the finder's need and its hold,
 # the racers, and that the files hold one link header, one publisher and one switch; perf/MIRROR-VIEW.md section 12) likewise:
 #   cmake --build <dir> --target larecomp_mirror_view_join_test, then run src/gpu/larecomp_mirror_view_join_test [<src dir>] (exit 0 = passed).
@@ -1409,6 +1411,7 @@ larecomp_gpu_host_shader(car_history_ms_shared_ps ps_6_0 SOURCE car_history_ps D
 # The player car's sun shadow map (car_shadow_map.h): the depth-only vertex shader of the car's own draws, the 4x1 matrix texture's pass,
 # and the debug view's square.
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)
+larecomp_gpu_host_shader(cabin_mask_ps ps_6_0)
 larecomp_gpu_host_shader(car_shadow_matrix_ps ps_6_0)
 larecomp_gpu_host_shader(car_shadow_view_ps ps_6_0)
 # The shared rear view (mirror_view.h, perf/MIRROR-VIEW.md): the average of the multisampled view's samples into the picture the readers sample, and the HUD stamp's quad into the main colour.
