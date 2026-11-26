@@ -436,7 +436,9 @@ void RunRowCases(const Json& tests) {
         for (const Json& k : list->a) {                     // first case whose when is true (a case with no when always matches)
           const Json* when = k.Find("when");
           if (!when || Matches(EvalText(when->s, env))) {
-            got = ToValue(k.Find("value"));
+            const Json* value = k.Find("value");
+            // a literal id, or {"expr": "..."}: the value is computed (as a def case's value is), e.g. the setting's own text or the effective number of a legacy 0
+            got = value && value->IsObject() && value->Find("expr") ? EvalText(value->Find("expr")->s, env) : ToValue(value);
             break;
           }
         }

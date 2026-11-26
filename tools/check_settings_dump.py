@@ -134,9 +134,9 @@ def write_fixture(out):
         normalized[name] = value
     # constants the tables name that the real files define as expressions of other game code: stand-ins with the same text.
     lines.extend([
-        'constexpr const char* kNativeLightShadowVals[] = {"auto","off","medium","high","ultra"};',
-        'constexpr const char* kNativeLightShadowNames[] = {"AUTO","OFF","MEDIUM","HIGH","ULTRA"};',
-        "constexpr struct { int count; } kLightShadowWords{5};",
+        'constexpr const char* kNativeLightShadowVals[] = {"off","medium","high","ultra"};',
+        'constexpr const char* kNativeLightShadowNames[] = {"OFF","MEDIUM","HIGH","ULTRA"};',
+        "constexpr struct { int count; } kLightShadowWords{4};",
         "constexpr int kNumLangs = std::size(kLangVals);",
         "constexpr auto kMenuCamSlots = [] { struct Slots { double v[64]; }; Slots out{}; for (int i = 0; i < 64; ++i) out.v[i] = i; return out; }();",
         'const char* CutsceneIdsStorage[] = {"cut_story_district_champs"}; const char* CutsceneLabelsStorage[] = {"DISTRICT CHAMPS"};',
