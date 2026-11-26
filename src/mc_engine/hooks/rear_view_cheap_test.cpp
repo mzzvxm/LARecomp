@@ -7,6 +7,7 @@
 // The compile by hand: clang++ -std=c++23 rear_view_cheap_test.cpp -o rear_view_cheap_test.exe
 
 #include <cmath>
+#include <iterator>
 #include <cstdint>
 #include <cstdio>
 #include <limits>
@@ -197,7 +198,39 @@ void TestCadence() {
 
 }  // namespace
 
+void TestTimedRefresh() {
+#define CHECK(condition) Check((condition), #condition)
+  using namespace std::chrono_literals;
+  RefreshClock refresh;
+  const auto t = RefreshClock::Clock::time_point{};
+  CHECK(refresh.Draw(t, 30, false));
+  CHECK(!refresh.Draw(t + 5ms, 30, false));
+  CHECK(!refresh.Draw(t + 33ms, 30, false));
+  CHECK(refresh.Draw(t + 34ms, 30, false));
+  CHECK(refresh.Draw(t + 35ms, 30, true));
+  CHECK(!refresh.Draw(t + 40ms, 30, false));
+  CHECK(refresh.Draw(t + 69ms, 30, false));
+  CHECK(refresh.Draw(t + 70ms, 0, false));
+  refresh.Reset();
+  CHECK(refresh.Draw(t + 71ms, 45, false));
+  CHECK(refresh.Draw(t + 94ms, 45, false));
+}
+
+void TestRacerRanking() {
+  RankedCar cars[] = {{900, 8}, {36, 2}, {49, 12}, {36, 1}};
+  std::sort(std::begin(cars), std::end(cars));
+  CHECK(cars[0].item == 1 && cars[1].item == 2 && cars[2].item == 12);
+  CHECK(InRange(22500, 150.0));
+  CHECK(!InRange(22501, 150.0));
+  CHECK(InRange(22501, 0.0));
+  CHECK(!InRange(std::nanf(""), 150.0));
+}
+
+#undef CHECK
+
 int main() {
+  TestTimedRefresh();
+  TestRacerRanking();
   TestFarPlane();
   TestFieldOfView();
   TestLodRadius();

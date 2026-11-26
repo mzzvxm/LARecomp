@@ -228,7 +228,6 @@ enum class Step : uint8_t {
   kColourPost,
   kSsr,
   kCarHistory,
-  kCarMirror,
   kGBufferView,
   kScreenView,
   // the end-of-scene copy (the same function, an earlier text: BeforeResolve)
@@ -478,19 +477,9 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
                                                                                                 "SSR's reflections by then, but the history keeps a vehicle's pixels only and SSR adds nothing to a vehicle's pixel (GB_FLAG_VEHICLE, the stub's stencil mark)"}}},
      .note = "the history image and the ray traced reflection of its texels (car_rt_refl.h, with this frame's top level) are read by the NEXT frame's car paint draws. "
              "CITY-RT M2 R3b: inside this step, right after the history pass, the player's windows' reflection of the city is traced (the glass variant of the ray traced pass, car_rt_glass_refl.h) and ADDED to the "
-             "main colour by one full-screen draw (labels 'car glass refl', 'car glass apply', closed by 'after car glass'); the history was made before it, so it holds no glass reflection, and nothing at the trigger "
-             "adds to the colour after it but the ray traced side mirrors (the next step, MIRROR-RT), which blend over the mirror glass. "
+             "main colour by one full-screen draw (labels 'car glass refl', 'car glass apply', closed by 'after car glass'); the history was made before it, so it holds no glass reflection, and the shared rear view is composed later at the end-of-scene copy. "
              "RR-4b: in a frame DLSS Ray Reconstruction takes (TemporalSystem::RawModes) the ray traced pass skips its filter and writes the hit distance image the guide pass reads (kRrHitCar). "
              "CHECK (run): the cars' pixels with the reflections on and off at 4K are the same (a car's glass over a road pixel could keep the road's class: the sidecar's mask rule)"},
-    {.step = Step::kCarMirror, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "ray traced side mirrors", .call = "car_mirror_->OnResolve(summary, list, car_refl_ ? car_refl_->exp_bias() : car_selfrefl::kMainTargetExpBias)",
-     .label_file = "car_mirror_rt.cpp", .label = "car mirror rt", .more_labels = {{"car mirror apply"}}, .closing_label = "after car mirror", .soft_reads = data::kCarStructures,
-     .deps = {{{Step::kCarHistory, "the history and the car reflections read the colour as the game drew it (the mirror's image is blended over the glass afterwards, so the next frame's history does not hold it); "
-                                    "nothing that adds to the colour follows it"}}},
-     .note = "MIRROR-RT: two compute dispatches (one per mirror rectangle: four primary rays a pixel through the windows, one mirror ray, the hit shaded by the car hit shading, the environment map on a miss) "
-             "into an image of its own, and one scissored draw per mirror that blends it over the game's mirror glass in the main colour. Runs only in a frame whose car structures were built (a soft read: the "
-             "pass itself checks the top level and says why it did not run), in the play view, with a mirror pair on the picture. It writes the main colour, so it stands after the last pass that reads the "
-             "colour the game drew (the capture, SSR, the car history). The city's structures share the top level but their mask bit is in no mirror ray, so the street behind is the environment map "
-             "(MirrorWorld(): the hook for the city's hit shading, not wired). Labels 'car mirror rt', 'car mirror apply', closed by 'after car mirror'"},
     {.step = Step::kGBufferView, .phase = Phase::kTrigger, .kind = Kind::kScanned, .name = "G-buffer debug view", .call = "gbuffer_->DrawView(summary, list)",
      .label_file = "gbuffer.cpp", .label = "gbuffer view", .reads = data::kPlanes, .deps = {{{Step::kCarHistory, "the view replaces what the effects above drew"}}},
      .note = "debug; drawn at every resolve while the planes are valid, so not noted as once-a-frame"},

@@ -249,10 +249,7 @@ native = "kRtCityDynamics"
 help = "The car paint reflects the real street, found by rays in the city's own triangles: the building across the road, the lamp posts, signs, the car beside you."
 
 [rows.PM_RxGpuSideMirrors]
-help = "The two side mirrors of your car show the street and the cars behind you, taken from the game's own rear view mirror camera. Works on any graphics card; where RT Side Mirrors runs it takes this row's place."
-
-[rows.PM_RxGpuRtMirror]
-help = "The two side mirrors show the real view behind, found by rays in the car's own shape: the cars beside you, your own flank and rear, and the sky and street. Shown in the cockpit and bumper cameras."
+help = "Show the street and racers behind you in the side mirrors. The optional HUD rear-view widget shares the same picture."
 
 [rows.PM_RxGpuSsr]
 native = "kSsrDynamics"

@@ -69,10 +69,10 @@ void MirrorGlass::BeginFrame() {
   if (!ready_ || !car_frame_) {
     return;
   }
-  // The finder runs where the SIDE MIRRORS row's view runs (never where the traced mirrors replace it) or where the debug switch mcla_gpu_mirror_glass says (mirror_setting.h: WHERE THE FINDER RUNS BY DEFAULT).
+  // The finder runs where the MIRRORS row is On or where the debug switch mcla_gpu_mirror_glass says (mirror_setting.h: WHERE THE FINDER RUNS BY DEFAULT).
   const bool wanted = mirror_setting::Current().finder;
   if (wanted != active_) {
-    REXLOG_INFO("{} the glass finder is {} (the SIDE MIRRORS row, or mcla_gpu_mirror_glass)", kPrefix, wanted ? "on" : "off");
+    REXLOG_INFO("{} the glass finder is {} (the MIRRORS row, or mcla_gpu_mirror_glass)", kPrefix, wanted ? "on" : "off");
     if (!wanted && published_) {
       mg::WithdrawNeed();  // the guest reads "no need" from the next frame on
       published_ = false;

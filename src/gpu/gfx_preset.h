@@ -189,8 +189,7 @@ inline constexpr Row kRows[] = {
     // rung's table turns into `on` where the card traces (Resolved below).
     {"mcla_gpu_car_selfrefl_rt", Page::kReflections, {"off", "off", "off", "auto", "auto"}},
     {"mcla_gpu_rt_reflections", Page::kReflections, {"off", "off", "off", "off", "high"}},
-    {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "high", "ultra", "high", "ultra"}},
-    {"mcla_gpu_car_mirror_rt", Page::kReflections, {"off", "off", "off", "off", "on"}},
+    {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "on", "on", "on", "on"}},
     // REFLECTIONS ON SURFACES: `auto` is off on every class (gpu_class.h kEffects: the owner held it, 2026-11-24, the reflections flicker in motion), so VANILLA, ENHANCED and ENHANCED RT are
     // off; the two ULTRA presets are the explicit maximum presets and hold the top level.
     {"mcla_gpu_ssr", Page::kReflections, {"off", "off", "off", "off", "off"}},

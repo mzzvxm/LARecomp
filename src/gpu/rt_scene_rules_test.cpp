@@ -89,7 +89,7 @@ void TestNeeds() {
   }
   CHECK(MaxLevel(Level::kHigh, Level::kOff) == Level::kHigh && MaxLevel(Level::kOff, Level::kUltra) == Level::kUltra && MaxLevel(Level::kUltra, Level::kHigh) == Level::kUltra);
   CHECK(ConsumerName(Consumer::kCityGi) == "city gi" && ConsumerName(Consumer::kCars) == "car effects");
-  CHECK(ConsumerName(Consumer::kRtAo) == "rtao" && size_t(Consumer::kRtAo) + 1 == kConsumerCount);
+  CHECK(ConsumerName(Consumer::kRtAo) == "rtao" && size_t(Consumer::kRtAo) == 7 && kConsumerCount == 8);
 }
 
 void TestWantLifecycle() {

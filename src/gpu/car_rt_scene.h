@@ -170,12 +170,6 @@ struct CarRtView {
   uint32_t other_paint_instances = 0;
   uint32_t traffic_paint_instances = 0;  // ... of them the TRAFFIC paint's (RT-TRAFFIC-REFL, car_rt_traffic_rules.h); the boxes' `traffic` flags say which cars
   uint32_t player_row = 0;
-  // SIDE MIRRORS (car_mirror_rt.h): the pair of mirror glasses found among the player's instances (count 0: none; `item` is the instance index in binding 1's table, whose rows carry
-  // CAR_RT_FLAG_MIRROR), each one's box in the frame's view space, and the frame's lens (tan of the half fields of view, car_mirror_rt_rules.h LensOf; 0: not known).
-  car_mirror::Pick mirror;
-  car_rt_instances::ViewBox mirror_box[2];
-  double tan_x = 0.0;
-  double tan_y = 0.0;
 };
 
 // The decision whether this device can run the ray traced car effects (D3D12: DXR 1.1 and Shader Model 6.5; Vulkan: Plume's rayQuery, that is
@@ -244,9 +238,6 @@ class CarRtScene final : public car_frame::Listener {
 
   // This frame's top level and its set (valid after OnResolve, until the present).
   const CarRtView& View() const { return view_; }
-  // True from an OnResolve call that was this frame's trigger (the game's mid-scene depth copy) until the next call: a pass that runs at the same copy, after this one built the top level
-  // (the side mirrors, car_mirror_rt.h), asks it once the call returned.
-  bool TriggeredThisResolve() const { return trigger_this_call_; }
   // The set's layout, for the caller's pipeline layout.
   const plume::RenderDescriptorSetDesc& SetDesc() const { return set_builder_.descriptorSetDesc; }
 
@@ -287,7 +278,6 @@ class CarRtScene final : public car_frame::Listener {
     float bounds_max[3] = {};
     bool has_bounds = false;
     bool walked = false;  // read from a car's model data (the walk), not from a draw: it has a build budget of its own
-    car_mirror::PatchStats patch;  // the mesh as a candidate for a side mirror's glass (car_mirror_patch_rules.h)
   };
   // A mesh in the shared buffers, with its bottom-level structure once built.
   struct Mesh {
@@ -305,7 +295,6 @@ class CarRtScene final : public car_frame::Listener {
     bool has_bounds = false;
     bool has_uv = false;       // its texture coordinates are in the shared buffer from first_vertex
     float uv_density = 0.0f;
-    car_mirror::PatchStats patch;  // the mesh as a candidate for a side mirror's glass (car_mirror_patch_rules.h)
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
   };
   // A shared buffer and what its last barrier left it for (Plume tracks the D3D12 state on the buffer itself; this says whether the next
@@ -461,7 +450,6 @@ class CarRtScene final : public car_frame::Listener {
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
   bool trigger_seen_ = false;
-  bool trigger_this_call_ = false;  // the last OnResolve call was the frame's trigger (TriggeredThisResolve)
   bool check_due_ = false;  // this frame's top level was built and the check is on: OnAfterOcclusion records it
   CarRtView view_;
   int flip_state_ = 0;  // 1: the frame's camera has z backward (the game's own) and is flipped; -1: z forward already; 0 not decided yet

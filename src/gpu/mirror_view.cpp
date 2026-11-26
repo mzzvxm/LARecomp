@@ -15,7 +15,6 @@
 #include "device.h"
 #include "frame.h"
 #include "gpu.h"
-#include "gpu_class.h"
 #include "mirror_glass_need.h"
 #include "mirror_setting.h"
 #include "pass_timing.h"
@@ -38,7 +37,7 @@ namespace mcla::gpu {
 namespace {
 
 constexpr const char* kPrefix = "[mirror view]";
-// The main colour's host format (k_2_10_10_10_FLOAT as a 16 bit float texture, car_mirror_rt.cpp's kApplyFormat too): the pipelines listed ahead are made for it; another format is made when first used.
+// The main colour's host format (k_2_10_10_10_FLOAT as a 16 bit float texture): the pipelines listed ahead are made for it; another format is made when first used.
 constexpr plume::RenderFormat kMainFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
 // Frames after a failed attempt at the images before the next phase may ask again (video memory short): 2 s at 60 FPS.
 constexpr uint64_t kRetryFrames = 120;
@@ -102,7 +101,7 @@ void MirrorView::Initialize(Device& device, FrameRing& frames, BindlessHeap& hea
   base_listed_ = false;
   // The two pipelines (the average of the view's samples, the HUD stamp) are the host precache's: listed here where the switch is on at the start, so that the render thread never compiles one between two
   // frames; with the switch off nothing is made until it is first wanted (the first redirected phase lists them for its formats, made in the background: Use).
-  const int32_t mode = mirror_setting::Current().mode;  // the SIDE MIRRORS row (or the debug force) as it stands at the start
+  const int32_t mode = MirrorViewMode();  // the SIDE MIRRORS row (or the debug force) as it stands at the start
   if (mode >= 1 && mode <= 4 && MakeShaders()) {
     ListBase();
   } else {
@@ -140,13 +139,9 @@ mirror_view::Class MirrorView::SizeClass() const {
   switch (mode_) {
     case 2: return mirror_view::Class::kLow;
     case 3: return mirror_view::Class::kMid;
-    case 4: return mirror_view::Class::kHigh;
+    case 5: return mirror_view::Class::k1280;
+    case 6: return mirror_view::Class::k2560;
     default: break;
-  }
-  switch (gpu_class::Current()) {
-    case gpu_class::GpuClass::kLow: return mirror_view::Class::kLow;
-    case gpu_class::GpuClass::kMid: return mirror_view::Class::kMid;
-    case gpu_class::GpuClass::kHigh: break;
   }
   return mirror_view::Class::kHigh;
 }
@@ -179,29 +174,28 @@ bool MirrorView::MakeShaders() {
 // the frame
 // ---------------------------------------------------------------------------
 
-void MirrorView::BeginFrame(bool rt_side_mirrors) {
+void MirrorView::BeginFrame() {
   ++frame_;
   const mirror_setting::Result setting = mirror_setting::Current();  // the SIDE MIRRORS row and the debug switches under it, once a frame (mirror_setting.h); the guest reads the same answer through MirrorViewMode()
   mirror_setting::LogIfChanged(setting);
-  mode_ = setting.mode;
-  if (mode_ < 0 || mode_ > 4) {
+  mode_ = setting.mode != 0 ? setting.mode : int(larecomp::settings::rearview.Get());
+  if (mode_ < 0 || mode_ > 6) {
     mode_ = 0;
   }
   {
-    // The host's request to the guest (mirror_view_link.h Request), once a frame, here and nowhere else: with the switch off it says "no redirect" (the guest half does what the game would do alone), and
-    // the side mirrors' need is MV3's flag (mirror_glass_need.h) unless the ray traced side mirrors win, which the guest reads only through this request, with the wider field they want (JOIN2:
-    // mirror_view_rules.h RequestFor, SideMirrorsField). MirrorView::Shutdown withdraws it.
     mirror_view::RequestFacts request;
     request.enabled = enabled();
     request.blocked = Blocked();
-    request.side_need = mirror_glass::SideNeed();
-    request.rt_side_mirrors = rt_side_mirrors;
+    const auto need = mirror_glass::CurrentNeed();
+    request.side_need = (setting.overlay || setting.finder) && need.need();
+    request.side_mask = need.mask;
+    request.side_hfov_deg = need.hfov_deg;
+    request.side_vfov_deg = need.vfov_deg;
     request.hud_stamp = mirror_view::StampWanted();
     request.cls = SizeClass();
     request.retail_hfov_deg = double(mirror_view::CurrentCamera().retail_hfov_deg);
     const mirror_draws::Rect hud = mirror_draws::Current();
     request.stamp_aspect = hud.valid() ? double(hud.w) / double(hud.h) : 0.0;
-    request.every = setting.every;  // the row's level: HIGH redraws every 2nd frame, ULTRA every frame (1 when the debug switch forces the view)
     mirror_view::PublishRequest(mirror_view::RequestFor(request));
   }
   phase_.FrameStart();  // a phase never outlives its frame: a lost end marker closes here (counted as unbalanced)
@@ -375,8 +369,9 @@ bool MirrorView::EndPhase(plume::RenderCommandList* list) {
   if (!was_used || failed) {
     // A phase with no draw and no clear (the guest's held frame sends the two markers back to back) or one whose images failed: the picture of the phase before stays, and the frame's stamp is drawn
     // from it (StampDue holds the age).
-    stamp_armed_ = whole_ && !failed && mirror_view::StampDue(whole_, uint32_t(std::min<uint64_t>(frame_ - picture_frame_, 0xFFFFFFFFu)), rect_.valid(), phase_hud_stamp_);
-    overlay_armed_ = whole_ && !failed && frame_ - picture_frame_ <= mirror_view::kMaxHeldFrames;
+    const uint32_t age = CurrentPicture().age;
+    stamp_armed_ = !failed && mirror_view::StampDue(whole_, age, rect_.valid(), phase_hud_stamp_);
+    overlay_armed_ = whole_ && !failed && age <= mirror_view::kMaxHeldMs;
     return false;
   }
   if (!list) {
@@ -417,7 +412,7 @@ bool MirrorView::EndPhase(plume::RenderCommandList* list) {
     whole_ = true;
     picture_plan_ = plan_;
     picture_field_ = phase_field_;
-    picture_frame_ = frame_;
+    picture_ms_ = NowMs();
     stamp_armed_ = mirror_view::StampDue(whole_, 0, rect_.valid(), phase_hud_stamp_);
     overlay_armed_ = true;
   }
@@ -579,7 +574,7 @@ plume::RenderPipeline* MirrorView::ResolvePipeline(plume::RenderFormat format, b
 plume::RenderPipeline* MirrorView::StampPipeline(plume::RenderFormat format, uint32_t host_samples, bool* pending) { return Pipeline(StampVariant(format, host_samples), pending); }
 
 bool MirrorView::PictureField(float* hfov_deg, float* vfov_deg) const {
-  if (!whole_ || !picture_field_.known()) {
+  if (!hfov_deg || !vfov_deg || !whole_ || !picture_field_.known()) {
     return false;
   }
   *hfov_deg = picture_field_.hfov_deg;
@@ -591,7 +586,7 @@ MirrorView::Picture MirrorView::CurrentPicture() const {
   Picture p;
   p.whole = whole_ && (samples_ > 1 ? resolved_.texture != nullptr : colour_.texture != nullptr);
   p.slot = PictureSlot();
-  p.age = uint32_t(std::min<uint64_t>(frame_ - picture_frame_, 0xFFFFFFFFu));
+  p.age = uint32_t(std::min<uint64_t>(NowMs() - picture_ms_, 0xFFFFFFFFu));
   p.width = colour_.width;
   p.height = colour_.height;
   return p;

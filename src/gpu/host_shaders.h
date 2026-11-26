@@ -53,8 +53,6 @@
 #include "car_history_ms_ps.hlsl.dxil.h"
 #include "car_history_ms_shared_ps.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
-#include "car_mirror_apply_ps.hlsl.dxil.h"
-#include "car_mirror_rt_cs.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
 #include "city_rt_shadow_cs.hlsl.dxil.h"
 #include "rtao_trace_cs.hlsl.dxil.h"
@@ -210,8 +208,6 @@
 #include "car_history_ms_ps.hlsl.spirv.h"
 #include "car_history_ms_shared_ps.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
-#include "car_mirror_apply_ps.hlsl.spirv.h"
-#include "car_mirror_rt_cs.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
 #include "city_rt_shadow_cs.hlsl.spirv.h"
 #include "rtao_trace_cs.hlsl.spirv.h"
@@ -825,16 +821,6 @@ inline HostShaderBlob CarGlassApplyShader() {
 
 inline HostShaderBlob CarRtViewPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_view_ps);
-}
-
-// The player's side mirrors, ray traced (car_mirror_rt.h): the trace, a compute shader with inline ray queries (Shader Model 6.5, SPIR-V 1.5 for Vulkan 1.2, built with larecomp_gpu_host_shader_rt), and
-// the apply, an ordinary pixel shader that blends the trace's image over the main colour.
-inline HostShaderBlob CarMirrorRtShader() {
-  return MCLA_GPU_HOST_SHADER_BLOB(car_mirror_rt_cs);
-}
-
-inline HostShaderBlob CarMirrorApplyShader() {
-  return MCLA_GPU_HOST_SHADER_BLOB(car_mirror_apply_ps);
 }
 
 // A texture level decoded from the resolve memory (resolve_memory_ps.hlsl).

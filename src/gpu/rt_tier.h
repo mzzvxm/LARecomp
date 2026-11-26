@@ -539,10 +539,9 @@ enum class RtEffect : uint8_t {
   kRtShadows,      // mcla_gpu_rt_shadows        auto, off, high, ultra (city_rt_rules.h, feat/city-rt-m1: the sun's shadows from the city's triangles)
   kRtReflections,  // mcla_gpu_rt_reflections    auto, off, high, ultra (CITY-RT-M2 R1 and R8: the city in the car's reflections; the pause row RT CITY REFLECTIONS, city_refl_setting.h)
   kRtGi,           // mcla_gpu_rt_gi             auto, off, high, ultra (CITY-RT-M3, not built yet: the probe field's bounce light)
-  kCarMirrorRt,    // mcla_gpu_car_mirror_rt     auto, off, on          (car_mirror_rt.h, car_mirror_setting.h: the side mirrors' real view; the pause row RT SIDE MIRRORS)
-  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion; the seventh effect, after the side mirrors)
+  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion)
 };
-inline constexpr int kRtEffectCount = 7;
+inline constexpr int kRtEffectCount = 6;
 
 struct RtEffectInfo {
   std::string_view cvar;
@@ -575,9 +574,6 @@ inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     // The probe field's bounce light (CITY-RT-M3, section 6): +2.5 to 4 ms on an RTX 3060, so a weak card keeps the screen-space bounce light (mcla_gpu_ssgi,
     // which this replaces only where it runs); HIGH on a strong card.
     RtDerived("mcla_gpu_rt_gi"),
-    // The player's side mirrors traced (car_mirror_rt.h): 0.03 to 0.1 ms on an RTX 5080 (estimated) and the car's ray tracing structures built in every frame, which a weak card keeps for
-    // the car's own passes only, so `auto` is on a strong card alone (the owner's rule: a weaker card gets it off by itself); a weak card can switch it on by hand (the Mid class's smaller cap).
-    RtDerived("mcla_gpu_car_mirror_rt"),
     // World ambient occlusion uses the class table unless a High-class card traces rays quickly: the none and weak rungs say nothing (an empty cell: the class table decides), the strong rung
     // is ENHANCED RT ULTRA's cell (`rt`).
     {"mcla_gpu_ao", "", "", gfx_preset::CellOf("mcla_gpu_ao", gfx_preset::Preset::kEnhancedRtUltra)},

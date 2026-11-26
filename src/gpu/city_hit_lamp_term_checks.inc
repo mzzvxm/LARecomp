@@ -645,98 +645,6 @@ void ReflectionGlueChecks(const City& city, const std::vector<uint32_t>& words, 
   Check(on_differs > 0 && on_differs * 2 > on_lit, Num2("a lamp-lit hit is lit differently without the lamp term (%.0f of %.0f)", on_differs, on_lit));
 }
 
-// MIRROR-CITY: the city hit the player's side mirrors shade (hlsl/car_mirror_rt_cs.hlsl MirrorCityHit, car_mirror_city_rules.h): the reflection passes' library call without the picture, the sun's ray SHARP
-// (kSunTan 0) and no lamp shadow ray, the world's wetness. It makes the three claims the mirror's design rests on, through the twin's Shade on random hits and random worlds:
-//   (1) no noise is read: the colour and the glow do not change with the three noise numbers (the mirror image has no history to average a jitter, and a pattern could not vary: the mirror has none);
-//   (2) the lamp decision is the reflections' (LampTermFor, LampFlags): the same flags for the same switch and world rows;
-//   (3) a hit the library cannot shade (the frame holds no light: valid false) is a layer that is not there, and the mirror then shows the environment, never a black hit (Compose).
-void MirrorGlueChecks(const City& city, const std::vector<uint32_t>& words, Lcg& rng, int rounds) {
-  namespace cr = mcla::gpu::city_refl;
-  namespace cmc = mcla::gpu::car_mirror_city;
-  int cases = 0, wrong_noise = 0, wrong_flags = 0, invalid = 0, wrong_invalid = 0, shown_valid = 0, wrong_shown = 0, lamp_cases = 0, lamp_differs = 0;
-  std::vector<hlsl_shim::uint4> frame_rows;
-  const float env[3] = {0.25f, 0.5f, 0.75f};
-  for (int round = 0; round < rounds; ++round) {
-    Case k = RandomCase(rng, uint32_t(city.sectors.size()));
-    k.frame.camera_known = true;
-    for (int c = 0; c < 3; ++c) k.frame.camera_world[c] = rng.Range(-300.0f, 300.0f);
-    const bool lamps_flag = rng.Below(2) == 0;
-    const bool valid = rng.Below(4) != 0;
-    const float sun_schedule = rng.Below(3) == 0 ? 0.0f : rng.Range(0.0f, 1.0f);
-    const cs::V3 hit = k.ray.origin + k.ray.direction * k.ray.t;
-    const float view[3] = {hit.x, hit.y, hit.z};
-    float centre[3];
-    rh::WorldPoint(k.frame.camera_world, k.frame.world_axes_view, view, centre);
-    GridWorld w;
-    MakeGridWorld(&w, k.frame, LampsAround(rng, centre, rng.Below(30), rng.Below(12), rng.Range(10.0f, 60.0f), 15.0f, 90.0f), rng.Range(21.0f, 23.5f), rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f),
-                  rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f), false);
-    const uint32_t world_flags = valid ? w.decoded.flags : 0u;
-    const cr::LampTerm term = cr::LampTermFor(lamps_flag, world_flags, w.decoded.lamp_factor, sun_schedule);
-    BindFrame(k.frame, &frame_rows);
-    const Decoded d = DecodeCaseWith(city, words, k);
-    // the mirror's params, as MirrorCityHit sets them
-    Case now = k;
-    now.p.mode = cs::kModeReflect;
-    now.p.flags = cs::kPSunRay | cs::kPEmissive | (term.world ? cs::kPLamps : 0u);
-    now.p.sun_reach = 0.0f;
-    now.p.sun_tan = cmc::kSunTan;
-    now.p.ao_mix = cmc::kAoMix;
-    now.p.lod_bias = 0.0f;
-    now.p.bounce = 0.0f;
-    now.p.wet = cmc::WetFor(world_flags, rng.Range(0.0f, 1.0f));
-    now.p.lamp_factor = term.lamp_factor;
-    now.p.lamp_first = 0;
-    now.p.lamp_count = 0;
-    // (2) the lamp flags are the reflections' for the same switch and rows
-    if (now.p.flags != (cr::LampFlags(cr::ParamFlags(false, false, lamps_flag), term) & ~cs::kPScreen)) ++wrong_flags;
-    TwinCensus census;
-    GridCoverage cov;
-    cs::Reads reads = term.world ? MakeGridReads(now, w, &census, &cov) : MakeReads(now);
-    reads.glow_factor = [&](uint32_t kind) { return cr::GlowFactorFor(term, kind, w.decoded.street, w.decoded.fill); };
-    const cs::Shaded a = cs::Shade(now.p, now.frame, now.ray, now.inst, d.hit, d.material, d.texture, reads, nullptr);
-    // (1) the same hit with three other noise numbers
-    Case other = now;
-    other.p.noise[0] = rng.Next();
-    other.p.noise[1] = rng.Next();
-    other.p.noise[2] = rng.Next();
-    const cs::Shaded b = cs::Shade(other.p, other.frame, other.ray, other.inst, d.hit, d.material, d.texture, reads, nullptr);
-    ++cases;
-    if (!(a.valid == b.valid && a.colour.x == b.colour.x && a.colour.y == b.colour.y && a.colour.z == b.colour.z && a.glow == b.glow)) ++wrong_noise;
-    // (3) what the mirror makes of it: a hit that cannot be shaded is no layer, a shaded one is the layer of its colour at full weight
-    cmc::CityLayer layer;
-    layer.valid = a.valid;
-    layer.weight = 1.0f;
-    layer.rgb[0] = a.colour.x;
-    layer.rgb[1] = a.colour.y;
-    layer.rgb[2] = a.colour.z;
-    const cmc::Pixel p = cmc::Compose(true, env, layer, cmc::CarLayer{});
-    if (!a.valid) {
-      ++invalid;
-      if (!(p.shown && p.rgb[0] == env[0] && p.rgb[1] == env[1] && p.rgb[2] == env[2])) ++wrong_invalid;
-    } else {
-      ++shown_valid;
-      const bool finite = std::isfinite(a.colour.x) && std::isfinite(a.colour.y) && std::isfinite(a.colour.z);
-      if (finite && !(p.shown && std::fabs(p.rgb[0] - a.colour.x) <= 1e-5f * std::max(1.0f, std::fabs(a.colour.x)))) ++wrong_shown;
-    }
-    // a lamp-lit hit is lit differently without the lamp flag (the term does something in the mirror too)
-    if (a.valid && term.world && cov.lit_cases != 0) {
-      ++lamp_cases;
-      Case dark = now;
-      dark.p.flags &= ~cs::kPLamps;
-      TwinCensus census_dark;
-      GridCoverage cov_dark;
-      const cs::Shaded none = cs::Shade(dark.p, dark.frame, dark.ray, dark.inst, d.hit, d.material, d.texture, MakeGridReads(dark, w, &census_dark, &cov_dark), nullptr);
-      lamp_differs += (none.colour.x != a.colour.x || none.colour.y != a.colour.y || none.colour.z != a.colour.z) ? 1 : 0;
-    }
-  }
-  std::printf("mirror glue: %d hits shaded twice with other noise (%d without a frame light), %d lit by a lamp (%d changed by it)\n", cases, invalid, lamp_cases, lamp_differs);
-  Check(cases > 2000 && shown_valid > 800 && invalid > 40 && lamp_cases > 40, Num2("the mirror's random hits covered shaded hits, hits with no frame light and lamp-lit hits (shaded %.0f, no light %.0f)", shown_valid, invalid));
-  Check(wrong_noise == 0, Num("the mirror's hit shading does not read the noise: the same colour and glow for other noise numbers (%.0f differ)", wrong_noise));
-  Check(wrong_flags == 0, Num("the mirror's lamp flags are the reflections' for the same switch and world rows (%.0f differ)", wrong_flags));
-  Check(wrong_invalid == 0, Num("a hit that cannot be shaded leaves the environment, not a black hit (%.0f wrong)", wrong_invalid));
-  Check(wrong_shown == 0, Num("a hit that is shaded shows its colour at full weight (%.0f wrong)", wrong_shown));
-  Check(lamp_differs * 2 > lamp_cases, Num2("a lamp-lit hit is lit differently without the lamp term in the mirror (%.0f of %.0f)", lamp_differs, lamp_cases));
-}
 
 // The lamp term's library text and the consumers: what the host and the other passes rely on.
 void LampTermTextChecks(const std::string& src) {
@@ -866,7 +774,6 @@ void LampTermChecks(const City& city, Lcg& rng, const std::string& src) {
   GridCapChecks(rng);
   GlowKindChecks();
   ReflectionGlueChecks(city, words, rng, 3000);
-  MirrorGlueChecks(city, words, rng, 3000);
   Check(hlsl_shim::gCityMaterials.errors == 0 && hlsl_shim::gRtWorld.errors == 0 && hlsl_shim::gRtLamps.errors == 0, "no misaligned or out of range load on the world rows or the lamps");
   // the table back as the first part of the test had it
   hlsl_shim::gCityMaterials.data = city.material_rows.data();

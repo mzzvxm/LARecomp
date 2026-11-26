@@ -1110,7 +1110,32 @@ void PrintTable() {
 
 }  // namespace
 
+void TestReaderExtent() {
+  namespace mg = mcla::gpu::mirror_glass;
+  mg::Result glass;
+  glass.need.mask = 1;
+  glass.glass[0].box.valid = true;
+  glass.glass[0].box.min[0] = -0.1f;
+  glass.glass[0].box.max[0] = 0.1f;
+  glass.glass[0].box.min[1] = -0.1f;
+  glass.glass[0].box.max[1] = 0.1f;
+  glass.glass[0].box.min[2] = glass.glass[0].box.max[2] = 1.0f;
+  glass.glass[0].normal_view[2] = 1.0f;
+  glass.glass[1] = glass.glass[0];
+  glass.glass[1].normal_view[0] = 0.235f;
+  glass.glass[1].normal_view[2] = 0.972f;
+
+  mg::FitRearField(glass);
+  Check(glass.need.hfov_deg == 13 && glass.need.vfov_deg == 13, "the centred flat glass fits its reflected corners");
+  const auto one = glass.need;
+  glass.need.mask = 3;
+  mg::FitRearField(glass);
+  Check(glass.need.hfov_deg > one.hfov_deg, "the more oblique glass widens the union only while needed");
+  Check(mg::Unpack(mg::Pack(glass.need)) == glass.need, "both fields travel with the need mask");
+}
+
 int main(int argc, char** argv) {
+  TestReaderExtent();
   if (argc > 1 && std::string(argv[1]) == "--table") {
     PrintTable();
     return 0;

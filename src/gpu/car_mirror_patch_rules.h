@@ -21,7 +21,7 @@
 // normal near zero and is not found; a mirror that is part of a larger mesh is not found either). The first log line of a pair ("[car mirror]") says what was found: area, normals,
 // separation and height.
 //
-// This header includes nothing of the renderer: car_mirror_rt_rules_test.cpp builds on its own.
+// This header includes nothing of the renderer: mirror_glass_rules_test.cpp builds on its own.
 // ===========================================================================
 
 #include <algorithm>

@@ -71,6 +71,7 @@ struct Request {
   bool redirect = false;    // the host redirects the mirror's phase into its own view this frame (the switch is on, the shaders made, the images not blocked). FALSE unless the host says so: with it false the
                             // guest runs no phase for the side mirrors (it would draw an unframed mirror into the main picture) and leaves the game's own camera-step clear alone
   bool side_need = false;   // the car's side mirrors need the view this frame (MV3's need rule: the glass pair found, wide enough on the picture, held 20 frames); counts only with `redirect`
+  uint8_t side_mask = 0;     // active glass readers, used to refresh immediately as a reader appears
   uint32_t every = 1;       // the view is redrawn every Nth frame (the class's cadence); 1 = every frame
   float hfov_deg = 0.0f;    // the field of view the view is drawn with, across and up (0 = none asked for: the guest keeps the game's own)
   float vfov_deg = 0.0f;
@@ -89,6 +90,7 @@ inline float FromCenti(uint32_t centi) { return float(centi) * 0.01f; }
 
 inline uint64_t Pack(const Request& r) {
   uint64_t v = (r.side_need ? 1u : 0u) | (r.redirect ? 2u : 0u);
+  v |= uint64_t(r.side_mask & 7u) << 2;
   v |= uint64_t(std::clamp<uint32_t>(r.every, 1, 255)) << 8;
   v |= uint64_t(ToCenti(r.hfov_deg)) << 16;
   v |= uint64_t(ToCenti(r.vfov_deg)) << 32;
@@ -98,6 +100,7 @@ inline Request UnpackRequest(uint64_t v) {
   Request r;
   r.side_need = (v & 1u) != 0;
   r.redirect = (v & 2u) != 0;
+  r.side_mask = uint8_t((v >> 2) & 7u);
   r.every = std::clamp<uint32_t>(uint32_t((v >> 8) & 0xFFu), 1, kMaxEvery);
   r.hfov_deg = FromCenti(uint32_t((v >> 16) & 0xFFFFu));
   r.vfov_deg = FromCenti(uint32_t((v >> 32) & 0xFFFFu));

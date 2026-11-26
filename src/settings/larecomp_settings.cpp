@@ -15,6 +15,7 @@
 #include <toml++/toml.hpp>
 
 #include "gpu/gfx_preset.h"
+#include "gpu/mirror_setting.h"
 #include "gpu/denoiser_setting.h"
 #include "settings/immortal.h"
 #include "settings/watch_table.h"
@@ -46,6 +47,10 @@ constexpr const char* kRemovedNames[] = {
     "host_present_from_non_ui_thread",
     "mcla_gpu",
     "mcla_native_gfx_nocp",
+    "mcla_gpu_car_mirror_rt",
+    "mcla_gpu_car_mirror_rt_pixels",
+    "mcla_gpu_car_mirror_rt_strength",
+    "mcla_gpu_car_mirror_rt_world",
 };
 
 // Keys of the file ApplyPlayerConfig converts itself: their VALUE meaning changed, so applying the text to a setting of
@@ -135,6 +140,9 @@ rex::Result<void> RegisterAll(rex::ISettingsRegistry& registry) {
   }
   for (const char* removed : kRemovedNames) {
     registry.AddAlias(removed, "");
+    if (std::string_view(removed).starts_with("mcla_gpu_car_mirror_rt")) {
+      registry.AddAlias(std::string("larecomp.") + removed, "");
+    }
   }
   return rex::Ok();
 }
@@ -413,10 +421,31 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
       }
     }
   }
+  const auto& mirror = mcla_gpu_side_mirrors;
+  const auto has_mirror = std::any_of(leaves.begin(), leaves.end(), [&](const auto& leaf) {
+    return leaf.first == "mcla_gpu_side_mirrors" || leaf.first == mirror.GetName();
+  });
+  bool migrated_rt_mirror = false;
+  if (!has_mirror) {
+    for (const auto& [name, text] : leaves) {
+      if (name == "mcla_gpu_car_mirror_rt" || name == "larecomp.mcla_gpu_car_mirror_rt") {
+        if (const auto value = mcla::gpu::mirror_setting::LegacyRtWord(text)) {
+          put_title(mirror.GetName(), std::string(*value));
+          migrated_rt_mirror = true;
+        }
+      }
+    }
+  }
   int refused = 0;
   mcla::gpu::gfx_preset::FileFacts preset_facts;  // what the file says about the graphics presets (gpu/gfx_preset.h DecideInitial)
   for (const auto& [name, text] : leaves) {
     preset_facts.NoteKey(name);
+    // The SDK reads these aliases when it loads the file after OnConfigure.
+    // Leave the removal notice to that pass so it appears once per key.
+    if (std::string_view(name).starts_with("mcla_gpu_car_mirror_rt") ||
+        std::string_view(name).starts_with("larecomp.mcla_gpu_car_mirror_rt")) {
+      continue;
+    }
     if (std::any_of(std::begin(kConvertedKeys), std::end(kConvertedKeys), [&](const char* k) { return name == k; })) {
       continue;
     }
@@ -434,6 +463,7 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
       REXLOG_WARN("larecomp.toml: {} = {} was not used ({}); the default stays", name, text, result.error().GetDescription());
     }
   }
+  if (migrated_rt_mirror) preset_facts.NoteKey("mcla_gpu_side_mirrors");
   // A file with a covered value and no preset line starts on CUSTOM. Otherwise the setting defaults to VANILLA.
   // The title-layer default stays below the file and command line layers and is never written back.
   if (mcla::gpu::gfx_preset::DecideInitial(preset_facts) == mcla::gpu::gfx_preset::Preset::kCustom) {

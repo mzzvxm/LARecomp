@@ -4,7 +4,7 @@
 // ===========================================================================
 // WHAT THE OVERLAY IS. The player's two side mirror glasses, drawn again into the main colour at the end of the scene, after the HUD stamp, with a pixel shader that reflects the eye's ray off the
 // glass plane and reads the shared rear view (mirror_view.h) where the reflected ray goes: a planar mirror lookup (mirror_view_rules.h UvForMirrorPixel, the reference this file's math is checked
-// against). Where the ray traced side mirrors (car_mirror_rt.h) are on, they win and the overlay does nothing (Decide). Everything here is plain numbers: mirror_overlay.cpp and scene.cpp only ask
+// against). Everything here is plain numbers: mirror_overlay.cpp and scene.cpp only ask
 // these functions and do what they answer; hlsl/mirror_overlay.hlsli is the shader's own text of the same arithmetic (mirror_overlay_rules_test.cpp compiles it as C++ and holds the two together).
 //
 // THE SPACE THE SHADER WORKS IN. The main camera's own view space, EYE-RELATIVE (the matrix Frame::view: x right, y up, z forward = the distance along the view, the origin the eye): a point of the
@@ -56,7 +56,6 @@ inline double ClampDistance(double t0) { return std::isfinite(t0) ? std::clamp(t
 enum class Why : uint8_t {
   kDraw,          // the glass is drawn
   kSettingOff,    // the overlay is not wanted: the SIDE MIRRORS row's view is not running and mcla_gpu_mirror_overlay is off
-  kRtMirrors,     // the ray traced side mirrors are on: they win
   kNoPicture,     // the shared view has no whole picture (no phase ran, the images failed)
   kStalePicture,  // the picture is older than a held frame may be
   kNotPlayView,   // the pause view or the garage: the game's mirrors
@@ -77,7 +76,6 @@ inline const char* WhyName(Why w) {
   switch (w) {
     case Why::kDraw: return "drawn";
     case Why::kSettingOff: return "setting off";
-    case Why::kRtMirrors: return "the ray traced side mirrors are on";
     case Why::kNoPicture: return "no picture";
     case Why::kStalePicture: return "picture too old";
     case Why::kNotPlayView: return "not the play view";
@@ -98,9 +96,8 @@ inline const char* WhyName(Why w) {
 
 struct Facts {
   bool setting_on = false;       // mirror_setting::Current().overlay: the SIDE MIRRORS row's view runs, or mcla_gpu_mirror_overlay is on
-  bool rt_mirrors_on = false;    // the ray traced side mirrors are on (CarMirrorRt::active): where they are, they win
   bool picture_whole = false;    // MirrorView holds a finished picture
-  uint32_t picture_age = 0;      // frames since it was drawn (0: this frame)
+  uint32_t picture_age = 0;      // milliseconds since the picture was drawn (0: this frame)
   bool play_view = false;        // the main colour is the play view's
   bool glass_found = false;      // MirrorGlass found a pair
   uint32_t needed_mask = 0;      // bit k: glass k is on the picture and wide enough
@@ -108,12 +105,11 @@ struct Facts {
   bool pose_known = false;       // the camera the view was drawn from is known
 };
 
-// The hand-off with the ray traced side mirrors, and the rest in the order a person would ask: the setting, then whose mirror it is, then whether there is anything to show.
+// Decide whether the frame has a visible glass and a usable picture.
 inline Why Decide(const Facts& f) {
   if (!f.setting_on) return Why::kSettingOff;
-  if (f.rt_mirrors_on) return Why::kRtMirrors;
   if (!f.picture_whole) return Why::kNoPicture;
-  if (f.picture_age > mv::kMaxHeldFrames) return Why::kStalePicture;
+  if (f.picture_age > mv::kMaxHeldMs) return Why::kStalePicture;
   if (!f.play_view) return Why::kNotPlayView;
   if (!f.glass_found) return Why::kNoGlass;
   if ((f.needed_mask & 3u) == 0) return Why::kNotNeeded;

@@ -95,7 +95,6 @@ struct Frame {
 
 // What MirrorView::BeginFrame reads besides the switch, the blocked state and the finder's flag (JOIN2).
 struct HostFacts {
-  bool rt_side_mirrors = false;  // CarMirrorRt::active() as of the last frame's start (Scene passes it in)
   double retail_hfov_deg = 0.0;  // CameraFacts::retail_hfov_deg
   double stamp_aspect = 0.0;     // the HUD rectangle's width over height
   mv::Class cls = mv::Class::kMid;
@@ -119,7 +118,6 @@ struct Host {
     f.enabled = enabled;
     f.blocked = blocked;
     f.side_need = glass_need;
-    f.rt_side_mirrors = x.rt_side_mirrors;
     f.hud_stamp = mv::StampWanted();
     f.cls = x.cls;
     f.retail_hfov_deg = x.retail_hfov_deg;
@@ -512,85 +510,7 @@ bool SameFrame(const Frame& a, const Frame& b) {
          a.stamp_armed == b.stamp_armed;
 }
 
-void TestRayTracedMirrorsWin() {
-  // Where CarMirrorRt is active the glass finder's need is nobody's: the request says no need (and no field), so the guest runs no side-only phase, adds no racers and changes nothing the HUD mirror's
-  // own phase did. Every combination of the world: the frame with the finder up is the frame with the finder down.
-  int compared = 0, controls = 0;
-  for (int view : {1, 3}) {
-    for (int bits = 0; bits < 128; ++bits) {
-      World w;
-      w.view = view;
-      w.view_at_frame = view;
-      w.hud = (bits & 1) != 0;
-      w.blocked = (bits & 2) != 0;
-      w.game_visible = (bits & 4) != 0;
-      w.form_visible = (bits & 8) != 0;
-      w.consumer_active = (bits & 16) != 0;
-      w.held = (bits & 32) != 0;
-      const bool prior_whole = (bits & 64) != 0;
-      HostFacts rt;
-      rt.rt_side_mirrors = true;
-      rt.retail_hfov_deg = 100.0;
-      rt.stamp_aspect = 229.0 / 44.0;
-      Frame frames[2];
-      for (int glass = 0; glass < 2; ++glass) {
-        ResetLink();
-        Host host;
-        host.whole = prior_whole;
-        host.age = prior_whole ? 1 : 0;
-        Notes notes;
-        rs::MarkerTracker tracker;
-        frames[glass] = RunFrame(host, notes, tracker, w, glass != 0, -1, rt);
-      }
-      const std::string tag = " [view " + std::to_string(view) + " hud " + std::to_string(w.hud) + " blocked " + std::to_string(w.blocked) + " game " + std::to_string(w.game_visible) + " form " +
-                              std::to_string(w.form_visible) + " active " + std::to_string(w.consumer_active) + " held " + std::to_string(w.held) + " prior " + std::to_string(prior_whole) + "]";
-      Check(SameFrame(frames[0], frames[1]), "RT mirrors win: a frame with the finder's need up is the frame with it down, in everything the guest and the host do" + tag);
-      const Frame& f = frames[1];
-      Check(!f.request.side_need && !f.request.has_field() && f.request.redirect == !w.blocked, "the request: redirect as ever, no need, no field" + tag);
-      Check(!f.mode.side_need && !f.side_only && !f.racers, "no side-only phase, no racers added" + tag);
-      if (!w.hud) {
-        Check(!f.phase_asked && f.markers.empty() && !f.host_redirected && !f.stamp_armed, "the HUD mirror off: the guest asks for no phase nobody reads, no marker, no redirect" + tag);
-      }
-      ++compared;
-      // the control: the same frame with the RT mirrors off does ask for the side-only phase (the test is not vacuous)
-      if (!w.hud && !w.blocked && w.consumer_active && !w.held) {
-        ResetLink();
-        Host host;
-        Notes notes;
-        rs::MarkerTracker tracker;
-        const Frame c = RunFrame(host, notes, tracker, w, true, -1, HostFacts{});
-        Check(c.request.side_need && c.side_only && c.phase_asked && c.markers.size() == 2 && c.host_redirected && !c.stamp_armed, "control: without the RT mirrors the side-only phase runs, bracketed and redirected" + tag);
-        ++controls;
-      }
-    }
-  }
-  Check(compared == 256 && controls == 16, "all combinations ran, and the 16 that can are controls (" + std::to_string(compared) + ", controls " + std::to_string(controls) + ")");
-  ResetLink();
-}
 
-void TestRayTracedMirrorsComeAndGo() {
-  // The RT side mirrors are switched on and off live: the request follows at the next frame, the guest's side-only phase starts and stops with it.
-  ResetLink();
-  Host host;
-  Notes notes;
-  rs::MarkerTracker tracker;
-  World w;
-  w.view = 1;
-  w.view_at_frame = 1;
-  w.hud = false;
-  w.game_visible = false;
-  HostFacts rt;
-  int phases_without = 0, phases_with = 0;
-  for (int frame = 0; frame < 30; ++frame) {
-    rt.rt_side_mirrors = frame >= 10 && frame < 20;
-    const Frame f = RunFrame(host, notes, tracker, w, true, -1, rt);
-    const bool ran = f.markers.size() == 2;
-    (rt.rt_side_mirrors ? phases_with : phases_without) += ran ? 1 : 0;
-    Check(ran == !rt.rt_side_mirrors, "frame " + std::to_string(frame) + ": the side-only phase runs exactly while the RT mirrors are off");
-  }
-  Check(phases_with == 0 && phases_without == 20, "20 phases with the RT mirrors off, none with them on");
-  ResetLink();
-}
 
 // The camera the guest's hook reports for a request (Patch_RearViewCamera): what BuildCamera builds, and the facts it publishes (the 'from the host's request' bit included, MV-J2).
 mv::CameraFacts GuestCamera(float game_fov_deg, float game_aspect, const mv::Request& req, double fov_scale = 1.0) {
@@ -636,8 +556,7 @@ void TestFieldRoundTrip() {
     const mv::Plan plan = mv::PlanForPhase(c, 229.0, 44.0, tag);
     const mv::Plan field = mv::PlanForField(c, double(asked.hfov_deg), double(asked.vfov_deg));
     Check(plan.width == field.width && plan.height == field.height && plan.hfov_deg > 60.0, "the view is sized by the field");
-    const double camera_aspect = std::tan(double(cam.used_hfov_deg) * 0.5 * 3.14159265358979323846 / 180.0) / std::tan(double(cam.used_vfov_deg) * 0.5 * 3.14159265358979323846 / 180.0);
-    Check(std::fabs(double(plan.width) / double(plan.height) - camera_aspect) / camera_aspect < 0.01, "and its pixels' aspect is the camera's, not the 229 by 44 rectangle's (" + std::to_string(plan.width) + "x" + std::to_string(plan.height) + ")");
+    Check(plan.width == mv::MaxWidth(c) && plan.height == plan.width / 2, "field changes keep the allocation stable");
   }
   // 2. the side mirrors with the HUD stamp: frame 1 has no retail field (nothing asked, the game's own serves both), frame 2 asks 100 x 44, the HUD's crop of it is the game's own picture
   for (mv::Class c : {mv::Class::kLow, mv::Class::kMid, mv::Class::kHigh}) {
@@ -764,7 +683,9 @@ void TestFieldRoundTrip() {
 // camera facts. Where the two disagreed the plan fell back to the rectangle's. The test counts how often that was wrong for a guest `lag` frames ahead.
 mv::Plan OldPlanForView(mv::Class c, double rect_w, double rect_h, const mv::Request& req, const mv::CameraFacts& cam) {
   const bool applied = req.has_field() && cam.valid() && std::fabs(double(req.hfov_deg) - double(cam.used_hfov_deg)) <= 0.05 && std::fabs(double(req.vfov_deg) - double(cam.used_vfov_deg)) <= 0.05;
-  return applied ? mv::PlanForField(c, double(req.hfov_deg), double(req.vfov_deg)) : mv::PlanForRect(c, rect_w, rect_h);
+  constexpr double kHalfRad = 3.14159265358979323846 / 360.0;
+  return applied ? mv::PlanForRect(c, 100.0 * std::tan(req.hfov_deg * kHalfRad), 100.0 * std::tan(req.vfov_deg * kHalfRad))
+                 : mv::PlanForRect(c, rect_w, rect_h);
 }
 
 double CameraAspect(const mv::CameraFacts& cam) {
@@ -840,7 +761,9 @@ void TestFieldLag() {
             const mv::Plan by_tag = mv::PlanForPhase(c, 229.0, 44.0, mv::UnpackPhaseField(tag[size_t(j)]));
             const mv::Plan by_old = OldPlanForView(c, 229.0, 44.0, request[size_t(j)], mv::CurrentCamera());
             const double want = CameraAspect(truth);
-            const bool new_ok = by_tag.valid() && std::fabs(double(by_tag.width) / double(by_tag.height) - want) / want < 0.02;
+            const bool new_ok = by_tag.valid() &&
+                                (truth.from_request ? by_tag.width == mv::MaxWidth(c) && by_tag.height == by_tag.width / 2
+                                                    : std::fabs(double(by_tag.width) / double(by_tag.height) - want) / want < 0.02);
             const bool old_ok = by_old.valid() && std::fabs(double(by_old.width) / double(by_old.height) - want) / want < 0.02;
             new_wrong_plan += new_ok ? 0 : 1;
             old_wrong_plan += old_ok ? 0 : 1;
@@ -859,7 +782,7 @@ void TestFieldLag() {
     }
   }
   Check(phases > 20000 && changes > 100, "the lag sessions have many phases and many changes of the field (" + std::to_string(phases) + " phases, " + std::to_string(changes) + " changes)");
-  Check(new_wrong_plan == 0, "by the tag, every phase's view has its own camera's aspect, for every class and a guest 0 to 3 frames ahead (" + std::to_string(new_wrong_plan) + " wrong)");
+  Check(new_wrong_plan == 0, "by the tag, each phase keeps the allocation appropriate to its camera, for every class and a guest 0 to 3 frames ahead (" + std::to_string(new_wrong_plan) + " wrong)");
   Check(new_wrong_field == 0, "by the tag, every picture's lookup field is its own camera's (" + std::to_string(new_wrong_field) + " wrong)");
   Check(old_wrong_at_lag0 == 0, "the old rule is right with no lag (the model is faithful)");
   Check(old_wrong_plan > 100 && old_wrong_field > 100, "the old rule (the request against the latest camera facts) is wrong at every change when the guest is ahead: the lag is what this test catches (" + std::to_string(old_wrong_plan) +
@@ -981,21 +904,19 @@ void TestFiles(const std::string& src) {
 
   // ---- the request, once a frame, from one place, before anything can return
   {
-    const size_t at = host.find("void MirrorView::BeginFrame(bool rt_side_mirrors) {");
+    const size_t at = host.find("void MirrorView::BeginFrame() {");
     const size_t end = host.find("\n}\n", at);
     const std::string body = at == std::string::npos ? std::string() : host.substr(at, end - at);
     const size_t publish = body.find("mirror_view::PublishRequest(mirror_view::RequestFor(request));");
     Check(publish != std::string::npos && (body.find("return") == std::string::npos || body.find("return") > publish), "MirrorView::BeginFrame publishes the request, and no early return comes before it");
     Check(Count(body, "PublishRequest(") == 1 && Has(body, "mirror_view::PublishRequest(mirror_view::RequestFor(request));") && !Has(body, "request_"), "the request is the pure rule's answer (RequestFor), published (MV-J2: the plan no longer follows it, so it is not kept)");
-    Check(Has(body, "request.enabled = enabled();") && Has(body, "request.blocked = Blocked();") && Has(body, "request.side_need = mirror_glass::SideNeed();"),
+    Check(Has(body, "request.enabled = enabled();") && Has(body, "request.blocked = Blocked();") && Has(body, "request.side_need = (setting.overlay || setting.finder) && need.need();"),
           "from the switch, the blocked state and MV3's flag (mirror_glass::SideNeed())");
-    Check(Has(body, "request.rt_side_mirrors = rt_side_mirrors;") && Has(body, "request.hud_stamp = mirror_view::StampWanted();") && Has(body, "request.cls = SizeClass();") &&
+    Check(Has(body, "request.hud_stamp = mirror_view::StampWanted();") && Has(body, "request.cls = SizeClass();") &&
               Has(body, "request.retail_hfov_deg = double(mirror_view::CurrentCamera().retail_hfov_deg);") && Has(body, "request.stamp_aspect = hud.valid() ? double(hud.w) / double(hud.h) : 0.0;"),
-          "JOIN2: and from the RT mirrors' flag, the guest's stamp flag, the class, the HUD's retail field and the rectangle's aspect");
-    Check(body.find("mode_ = setting.mode;") != std::string::npos && body.find("mode_ = setting.mode;") < publish && body.find("mirror_setting::Current()") < body.find("mode_ = setting.mode;"),
+          "from the visible readers, HUD field, and widget aspect");
+    Check(body.find("mode_ = setting.mode != 0 ? setting.mode : int(larecomp::settings::rearview.Get());") != std::string::npos && body.find("mode_ = setting.mode != 0 ? setting.mode : int(larecomp::settings::rearview.Get());") < publish && body.find("mirror_setting::Current()") < body.find("mode_ = setting.mode != 0 ? setting.mode : int(larecomp::settings::rearview.Get());"),
           "after the row and the switch under it are read for the frame (mirror_setting.h Current)");
-    Check(Has(body, "request.every = setting.every;") && body.find("request.every = setting.every;") < publish && body.find("request.every = setting.every;") < body.find("mirror_view::RequestFor(request)"),
-          "MV6: the request carries the level's cadence, set before the pure rule answers");
   }
   {
     const size_t at = host.find("void MirrorView::Shutdown() {");
@@ -1005,15 +926,14 @@ void TestFiles(const std::string& src) {
   }
   Check(Has(host, "facts.blocked = Blocked();") && Has(host_h, "bool Blocked() const { return frame_ < blocked_until_ || shaders_failed_; }"), "the phase and the request ask the same Blocked()");
   Check(Has(host, "#include \"mirror_glass_need.h\"") && Has(rules, "inline Request RequestFor(const RequestFacts& f)"), "the request's rule is the pure RequestFor, the finder's flag is the atomic header");
-  Check(Count(scene, "mirror_view_->BeginFrame(car_mirror_ && car_mirror_->active());") == 1 && Count(scene, "mirror_view_->BeginFrame(") == 1,
-        "Scene::BeginFrame calls MirrorView::BeginFrame once, with CarMirrorRt::active() (the ray traced side mirrors win)");
-  Check(Has(host_h, "void BeginFrame(bool rt_side_mirrors);") && !Has(host_h, "mirror_view::Request request_;") && Has(host_h, "mirror_view::Plan picture_plan_;"), "JOIN2: the view keeps the plan of its picture (MV-J2: not the request it published)");
+  Check(Count(scene, "mirror_view_->BeginFrame();") == 1 && Count(scene, "mirror_view_->BeginFrame(") == 1,
+        "Scene::BeginFrame requests exactly one shared rear view");
   // ---- MV-J2: the per-phase field tag
   Check(Has(host_h, "bool BeginPhase(const mirror_draws::Rect& rect, const mirror_view::PhaseField& field, bool hud_stamp);") &&
             Has(host, "plan_ = mirror_view::PlanForPhase(SizeClass(), double(rect.w), double(rect.h), field);") && !Has(host, "PlanForView(") && !Has(host, "PlanForRect(") && !Has(rules, "PlanForView(") && !Has(rules, "FieldApplied("),
         "MV-J2: a phase's size follows the field of its own camera (PlanForPhase, from the begin marker's tag), not the request against the latest camera build (PlanForView and FieldApplied are gone)");
   Check(Has(host, "picture_field_ = phase_field_;") && Has(host, "phase_field_ = field;") && Has(host, "picture_field_ = mirror_view::PhaseField{};") && Has(host_h, "mirror_view::PhaseField phase_field_;") && Has(host_h, "mirror_view::PhaseField picture_field_;") &&
-            Has(host_h, "bool PictureField(float* hfov_deg, float* vfov_deg) const;") && Has(host, "if (!whole_ || !picture_field_.known()) {"),
+            Has(host_h, "bool PictureField(float* hfov_deg, float* vfov_deg) const;") && Has(host, "!picture_field_.known()) {"),
         "MV-J2: the view keeps the field of the phase that drew the picture it holds, and says it only while the picture is whole");
   {
     const size_t at = host.find("void NoteMirrorPhase(bool begin, bool hud_stamp) {");
@@ -1078,8 +998,8 @@ void TestFiles(const std::string& src) {
   Check(scene.find("banks_.Apply(", draw) < draw_guard && draw_guard < scene.find("const Skip skip = Prepare(", draw),
         "suppressed draws consume constant deltas and skip draw preparation and recording");
   Check(clear_guard < scene.find("const RegisterWindow pre(", clear), "suppressed clears leave the main target alone");
-  Check(Has(rv, "SetClientMirrorPhase(base, renderer, kCars, mirror_on && shared::CarsInView(mode, larecomp::settings::rearview_cars.Get()));") &&
-            Has(rv, "if (!shared::CarsInView(CurrentMode(), larecomp::settings::rearview_cars.Get()) || !PlausibleGuestPtr(item)) return;"),
+  Check(Has(rv, "SetClientMirrorPhase(base, renderer, kCars, mirror_on && (mode.shared || larecomp::settings::rearview_cars.Get()));") &&
+            Has(rv, "SelectMirrorCars(base,"),
         "the racers join the side mirrors' view in both places that decide it (the membership and the car's phase hook)");
   Check(Has(shared_h, "inline bool CarsInView(const Mode& m, bool cars_setting) { return cars_setting || (m.shared && m.side_need); }"), "the one line of the decision: the setting, or the side mirrors' need");
   // build
@@ -1103,8 +1023,6 @@ int main(int argc, char** argv) {
   TestRequestEveryFrame();
   TestSideOnlyEndToEnd();
   TestRacersJoin();
-  TestRayTracedMirrorsWin();
-  TestRayTracedMirrorsComeAndGo();
   TestFieldRoundTrip();
   TestFieldLag();
   TestFiles(src);

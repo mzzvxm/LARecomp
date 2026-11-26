@@ -103,8 +103,6 @@ const Row kTable[] = {
     {Effect::kSsr, "mcla_gpu_ssr", "off", "off", "off", "AUTO (OFF)", "AUTO (OFF)", "AUTO (OFF)"},
     // The cars' neon underglow in the light pass (GB-NEON): one level, `on`, nothing on the integrated class.
     {Effect::kNeonLight, "mcla_gpu_neon_light", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
-    // The side mirrors without ray tracing (MIRROR-VIEW.md, mirror_setting.h): off on the integrated class (the game's own mirrors), high (512 wide, every second frame) on Mid, ultra (768 wide, every frame) on High.
-    {Effect::kSideMirrors, "mcla_gpu_side_mirrors", "off", "high", "ultra", "AUTO (OFF)", "AUTO (HIGH)", "AUTO (ULTRA)"},
 };
 
 // Every value a player's own choice can have, across the effects: none of them is touched.

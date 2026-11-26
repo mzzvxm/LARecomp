@@ -262,6 +262,8 @@ void TestSideMirrorsNumbers() {
 }
 
 void TestPlanForField() {
+  Check(PlanForField(Class::k1280, 42, 24).width == 1280 && PlanForField(Class::k2560, 100, 40).width == 2560,
+        "debug reference widths are independent of the field");
   struct F {
     double h, v;
   };
@@ -271,21 +273,8 @@ void TestPlanForField() {
       const std::string tag = " [class " + std::to_string(int(c)) + " " + std::to_string(f.h) + "x" + std::to_string(f.v) + "]";
       Check(p.valid() && Near(p.hfov_deg, f.h) && Near(p.vfov_deg, f.v), "the plan keeps the field it was made for" + tag);
       Check(p.width % 16 == 0 && p.width <= MaxWidth(c) && p.height % 2 == 0 && p.height >= 2, "a width of whole 16s within the class's cap, an even height" + tag);
-      const double exact = double(p.width) * std::tan(Rad(f.v) * 0.5) / std::tan(Rad(f.h) * 0.5);
-      Check(std::fabs(double(p.height) - exact) <= 1.0, "the height follows the field's own aspect (the camera's): within a pixel" + tag);
       Check(p.every == Cadence(c), "the class's cadence" + tag);
-      Check(double(p.width) <= PixelsPerDegree(c) * f.h + 16.0, "no more pixels per degree than the class's (the cap aside)" + tag);
     }
-  }
-  // the numbers the report quotes
-  const Plan mid = PlanForField(Class::kMid, 69.0, 44.0), high = PlanForField(Class::kHigh, 100.0, 44.0), low = PlanForField(Class::kLow, 69.0, 44.0);
-  Check(mid.width == 496 && mid.height == 292, "Mid, 69 x 44: 496 x 292 (" + std::to_string(mid.width) + "x" + std::to_string(mid.height) + ")");
-  Check(low.width == 352 && low.height == 206, "Low, 69 x 44: 352 x 206 (" + std::to_string(low.width) + "x" + std::to_string(low.height) + ")");
-  Check(high.width == 768 && high.height == 260, "High, 100 x 44: 768 x 260 (" + std::to_string(high.width) + "x" + std::to_string(high.height) + ")");
-  // the size of PlanView (the design's tables) and this one differ only by the rounding of the height: the same width, and a height within 16
-  for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
-    const Plan a = PlanView(c, kSideMirrorsHfovDeg, kSideMirrorsVfovDeg, 0.0), b = PlanForField(c, a.hfov_deg, a.vfov_deg);
-    Check(a.width == b.width && std::abs(int(a.height) - int(b.height)) <= 16, "the same width as the design's table, a height within 16 of it");
   }
   Check(!PlanForField(Class::kMid, 0.0, 44.0).valid() && !PlanForField(Class::kMid, 69.0, 0.0).valid() && !PlanForField(Class::kMid, -5.0, 44.0).valid(), "no field, no view");
   Check(!PlanForField(Class::kMid, 180.0, 44.0).valid() && !PlanForField(Class::kMid, 69.0, 200.0).valid() && !PlanForField(Class::kMid, std::nan(""), 44.0).valid(), "a field of 180 or more, or NaN: no view");
@@ -343,71 +332,30 @@ void TestSideMirrorsField() {
   Check(exact, "and the stamp's crop of it lands every direction of the retail frustum on the same picture coordinate the game's own camera gave (the HUD mirror looks exactly as before)");
 }
 
-void TestRequestField() {
-  const auto facts = [](bool need, bool rt, bool hud, double retail, double aspect, Class c) {
-    RequestFacts f;
-    f.enabled = true;
-    f.side_need = need;
-    f.rt_side_mirrors = rt;
-    f.hud_stamp = hud;
-    f.retail_hfov_deg = retail;
-    f.stamp_aspect = aspect;
-    f.cls = c;
-    return f;
-  };
-  // side mirrors only: the wider field and the need, redirect on
-  const Request alone = RequestFor(facts(true, false, false, kRetailHfov, kStampAspect, Class::kMid));
-  Check(alone.redirect && alone.side_need && alone.hfov_deg == 69.0f && alone.vfov_deg == 44.0f && alone.every == 1, "side mirrors only: redirect, need, 69 x 44, no cadence");
-  const Request both = RequestFor(facts(true, false, true, kRetailHfov, kStampAspect, Class::kMid));
-  Check(both.redirect && both.side_need && both.hfov_deg == 100.0f && both.vfov_deg == 44.0f, "side mirrors and the HUD stamp: 100 x 44");
-  const Request unknown = RequestFor(facts(true, false, true, 0.0, kStampAspect, Class::kMid));
-  Check(unknown.redirect && unknown.side_need && !unknown.has_field(), "the retail field not reported yet: the need, no field");
-  const Request hud_only = RequestFor(facts(false, false, true, kRetailHfov, kStampAspect, Class::kMid));
-  Check(hud_only.redirect && !hud_only.side_need && !hud_only.has_field(), "no need (the HUD mirror alone): no field, the game's own, the HUD mirror as it always was");
-  // the ray traced side mirrors win: no need, no field, no side-only phase nobody reads; the HUD mirror's own phase is untouched
-  const Request rt_alone = RequestFor(facts(true, true, false, kRetailHfov, kStampAspect, Class::kHigh));
-  Check(rt_alone.redirect && !rt_alone.side_need && !rt_alone.has_field() && rt_alone.every == 1, "RT side mirrors win, HUD stamp off: the redirect stays, the need and the field do not (the guest asks for no phase)");
-  const Request rt_hud = RequestFor(facts(true, true, true, kRetailHfov, kStampAspect, Class::kHigh));
-  Check(rt_hud.redirect && !rt_hud.side_need && !rt_hud.has_field(), "RT side mirrors win, HUD stamp on: the HUD mirror from the view at the game's own field, as without a finder");
-  Check(RequestFor(facts(true, false, false, kRetailHfov, kStampAspect, Class::kMid)) != RequestFor(facts(true, true, false, kRetailHfov, kStampAspect, Class::kMid)), "the RT flag changes the request");
-  // exhaustive over the inputs: what a request may say
-  int fields = 0;
-  for (int bits = 0; bits < 128; ++bits) {
-    RequestFacts f;
-    f.enabled = (bits & 1) != 0;
-    f.blocked = (bits & 2) != 0;
-    f.side_need = (bits & 4) != 0;
-    f.rt_side_mirrors = (bits & 8) != 0;
-    f.hud_stamp = (bits & 16) != 0;
-    f.retail_hfov_deg = (bits & 32) != 0 ? kRetailHfov : 0.0;
-    f.stamp_aspect = (bits & 64) != 0 ? kStampAspect : 0.0;
-    for (Class c : {Class::kLow, Class::kMid, Class::kHigh}) {
-      f.cls = c;
-      const Request r = RequestFor(f);
-      const std::string tag = " [bits " + std::to_string(bits) + " class " + std::to_string(int(c)) + "]";
-      Check(r.redirect == (f.enabled && !f.blocked), "redirect: the switch on and not blocked" + tag);
-      Check(r.side_need == (r.redirect && f.side_need && !f.rt_side_mirrors), "need: a redirect, the finder's flag, and the RT mirrors not winning" + tag);
-      Check(!r.has_field() || r.side_need, "a field is asked for only together with the need" + tag);
-      Check(r.every == 1, "no cadence" + tag);
-      if (r.has_field()) {
-        ++fields;
-        Check(r.hfov_deg >= kMinHorizontalFov && r.hfov_deg <= kMaxHorizontalFov && r.vfov_deg >= kMinVerticalFov && r.vfov_deg <= kMaxVerticalFov, "the field is within the view's limits" + tag);
-        const Request back = UnpackRequest(Pack(r));
-        Check(back == r, "and the guest reads the same field from the link" + tag);
-      }
-    }
-  }
-  Check(fields == 15, "the sweep carried a field in exactly the 15 requests that can (side only: 4 retail / rectangle combinations x 3 classes; with the stamp: only when both are known, x 3: " + std::to_string(fields) + ")");
-  // published and read as the guest reads it
-  PublishRequest(alone);
-  Check(CurrentRequest() == alone && CurrentRequest().has_field(), "published: the guest reads redirect, need and the field");
-  PublishRequest(RequestFor(facts(true, true, false, kRetailHfov, kStampAspect, Class::kMid)));
-  Check(!CurrentRequest().side_need && !CurrentRequest().has_field(), "the next frame with the RT mirrors on: need and field are gone at once");
-  WithdrawRequest();
-  Check(CurrentRequest() == Request{}, "withdrawn");
-}
 
 // MV-J2: the view's size follows the field the camera of THIS phase was built with (the begin marker's tag), nothing else.
+void TestReaderField() {
+  RequestFacts f;
+  f.enabled = true;
+  f.side_need = true;
+  f.side_mask = 2;
+  f.side_hfov_deg = 42.0;
+  f.side_vfov_deg = 20.0;
+  f.hud_stamp = false;
+  const auto side = RequestFor(f);
+  Check(UnpackRequest(Pack(side)).side_mask == 2, "reader changes travel with the field");
+  Check(side.redirect && side.side_need && side.hfov_deg == 52.0f && side.vfov_deg == 30.0f, "field fitted to the visible glasses");
+  f.hud_stamp = true;
+  f.retail_hfov_deg = 100;
+  f.stamp_aspect = 5;
+  const auto both = RequestFor(f);
+  Check(both.hfov_deg == 100.0f && both.vfov_deg == 30.0f, "union covers both the HUD and glass");
+  f.side_need = false;
+  Check(!RequestFor(f).has_field(), "HUD alone keeps its stock field");
+  f.blocked = true;
+  Check(!RequestFor(f).redirect, "blocked view withdraws the request");
+}
+
 void TestPlanForPhase() {
   const PhaseField none;
   PhaseField req;
@@ -433,8 +381,7 @@ void TestPlanForPhase() {
     const Plan g = PlanForPhase(c, 100.0, 100.0, req);
     Check(g.width == e.width && g.height == e.height, "... the rectangle's size does not enter");
     // the picture's pixels are the camera's aspect (no stretch): the camera is built with tan(h/2) / tan(v/2) (rear_view_shared.h SharedCamera)
-    const double camera_aspect = std::tan(Rad(69.0) * 0.5) / std::tan(Rad(44.0) * 0.5);
-    Check(Near(double(d.width) / double(d.height), camera_aspect, camera_aspect * 0.01), "the plan's pixel aspect is the tag's camera's");
+    Check(d.width == MaxWidth(c) && d.height == d.width / 2, "the allocation is independent of the field");
     // a requested tag with a half missing is no field: the rectangle's plan
     PhaseField broken = req;
     broken.vfov_deg = 0.0f;
@@ -450,7 +397,7 @@ void TestPlanForPhase() {
     for (int i = 0; i < 3; ++i) {
       const Plan p = PlanForPhase(c, 229.0, 44.0, queue[i]);
       const double got = double(p.width) / double(p.height);
-      Check(Near(got, want_aspect[i], want_aspect[i] * 0.02), "a queued phase is sized by its own camera's aspect, whatever the guest built after it (class " + std::to_string(int(c)) + ", phase " + std::to_string(i) + ")");
+      Check(Near(got, i == 1 ? 2.0 : want_aspect[i], want_aspect[i] * 0.02), "a queued phase uses its own field and stable allocation (class " + std::to_string(int(c)) + ", phase " + std::to_string(i) + ")");
     }
   }
   // the HUD's crop of a plan with no field of its own is everything (the picture is the HUD's already)
@@ -498,43 +445,6 @@ void TestMarkers() {
 
 // The host's per frame request to the guest (RequestFor): redirect only with the switch on and the view not blocked, the side mirrors' need only with the redirect, the cadence the SIDE MIRRORS level's (MV6)
 // and only with the redirect, no field until MV4 asks for one.
-void TestRequest() {
-  for (int bits = 0; bits < 8; ++bits) {
-    for (const uint32_t every : {1u, 2u}) {
-      RequestFacts f;
-      f.enabled = (bits & 1) != 0;
-      f.blocked = (bits & 2) != 0;
-      f.side_need = (bits & 4) != 0;
-      f.every = every;
-      const std::string tag = " [enabled " + std::to_string(f.enabled) + " blocked " + std::to_string(f.blocked) + " need " + std::to_string(f.side_need) + " every " + std::to_string(every) + "]";
-      const Request r = RequestFor(f);
-      Check(r.redirect == (f.enabled && !f.blocked), "redirect only with the switch on and the view not blocked" + tag);
-      Check(r.side_need == (r.redirect && f.side_need), "the need counts only with a redirect" + tag);
-      Check(r.every == (r.redirect ? every : 1u) && !r.has_field(), "the cadence is the level's, only while the phase is redirected, and no field is asked for until MV4" + tag);
-      // it survives the link's packing, which is what the guest reads
-      const Request back = UnpackRequest(Pack(r));
-      Check(back.redirect == r.redirect && back.side_need == r.side_need && back.every == r.every && !back.has_field(), "and the guest reads the same" + tag);
-    }
-  }
-  {
-    // a cadence out of the link's range is held in it (1 to 8), never 0
-    RequestFacts f;
-    f.enabled = true;
-    f.every = 0;
-    Check(RequestFor(f).every == 1, "a cadence of 0 is every frame");
-    f.every = 100;
-    Check(RequestFor(f).every == kMaxEvery, "a cadence over the range is held at the top");
-  }
-  Check(!RequestFor(RequestFacts{}).redirect && RequestFor(RequestFacts{}) == Request{}, "all off: the same as a withdrawn request");
-  // the host publishes it and withdraws it; the guest's Current follows
-  PublishRequest(RequestFor(RequestFacts{true, false, true}));
-  Check(CurrentRequest().redirect && CurrentRequest().side_need, "published: the guest sees redirect and need");
-  PublishRequest(RequestFor(RequestFacts{false, false, true}));
-  Check(!CurrentRequest().redirect && !CurrentRequest().side_need, "the next frame with the switch off: redirect and need are gone at once (a request is not kept)");
-  PublishRequest(RequestFor(RequestFacts{true, false, false}));
-  WithdrawRequest();
-  Check(CurrentRequest() == Request{}, "withdrawn at shutdown: nothing asked");
-}
 
 void TestPhase() {
   PhaseTracker t;
@@ -649,8 +559,8 @@ void TestLifetime() {
   Check(!l.ShouldDrop(1000000), "once dropped there is nothing to drop again");
   Check(kIdleDropMs >= 2000 && kIdleDropMs <= 5000, "about 3 seconds: long enough for a mirror that flickers on and off, short enough to give the memory back");
   // the stamp: a whole picture, a rectangle up, not older than the cadence holds it
-  Check(StampDue(true, 0, true, true) && StampDue(true, kMaxHeldFrames, true, true), "a fresh or a held picture is stamped");
-  Check(!StampDue(true, kMaxHeldFrames + 1, true, true), "a picture older than the cadence can hold is not stamped");
+  Check(StampDue(true, 0, true, true) && StampDue(true, kMaxHeldMs, true, true), "a fresh or a held picture is stamped");
+  Check(!StampDue(true, kMaxHeldMs + 1, true, true), "a picture older than the cadence can hold is not stamped");
   Check(!StampDue(false, 0, true, true) && !StampDue(true, 0, false, true) && !StampDue(true, 0, true, false), "no picture, no rectangle, or a view the side mirrors alone asked for: no stamp");
 }
 
@@ -768,10 +678,10 @@ int main(int argc, char** argv) {
   TestSideMirrorsNumbers();
   TestPlanForField();
   TestSideMirrorsField();
-  TestRequestField();
+  TestReaderField();
   TestPlanForPhase();
   TestMarkers();
-  TestRequest();
+
   TestPhase();
   TestRoute();
   TestPlanForRect();

@@ -2,7 +2,6 @@
   "live.dlss_waits_for_restart": { "type": "bool", "l0": false, "source": "UpscalerAvailability.dlss_after_restart when DLSS is unavailable" },
   "live.kept_upscaler": { "type": "string", "enum": ["off", "fsr31", "fsr4", "dlss"], "l0": false, "source": "UpscalerAvailability.kept" },
   "live.output_size": { "type": "string", "l0": false, "source": "The current compositor-controlled window size" },
-  "live.side_mirrors_replaced": { "type": "bool", "l0": false, "source": "mirror_setting::Current().replaced: the traced side mirrors run and replace the plain SIDE MIRRORS" },
   "live.rtao_pass_built": { "type": "bool", "l0": false, "source": "rtao_setting::PassBuilt(): the renderer built the ray traced occlusion pass" },
   "live.rt_field_class": { "type": "string", "enum": ["low", "mid", "high"], "l0": false, "source": "The GPU class used by the RT city and bounce light gates, low until class detection has completed" },
   "live.renderer_forced": { "type": "bool", "l0": false, "source": "Whether the environment or command line set gpu.driver" },

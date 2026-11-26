@@ -338,8 +338,6 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // and before the precache starts.
     car_rt_refl_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, car_refl_.ListedAtStart());
     car_refl_.SetCarRtRefl(&car_rt_refl_);
-    // The side mirrors, ray traced (car_mirror_rt.h): the same structures, listed with the start's precache where the pass is wanted at the start.
-    car_mirror_.Initialize(device_, frames_, heap_, passes_, pass_timing_, edram_, car_rt_);
     // And the ray traced occlusion and sun term around the car (ao.h, car_rt_ao.h): the occlusion's own pass, with the same structures.
     ao_.InitializeCarRt(&car_rt_, &car_frame_);
     // === CITY-RT BLOCK (city_rt_scene.h, city_rt_shadow.h; CITY-RT M1): the city's geometry (the city pack the launcher builds, in the shader pack folder's `city` folder) as ray tracing
@@ -377,7 +375,6 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       }
       car_rt_.SetCityScene(&city_rt_);
       car_rt_.SetService(&rt_scene_, &city_hit_);
-      car_mirror_.SetService(&rt_scene_);  // MIRROR-CITY: the side mirrors' wants of the city (car_mirror_rt.h, Consumer::kCityMirror)
       city_shadow_.Initialize(device_, frames_, heap_, passes_, pass_timing_, &car_rt_, &city_rt_, &rt_scene_, /*listed_at_start=*/true);
       ao_.SetCityRtShadow(&city_shadow_);
       // CITY-RT R4: the screen-space reflections' ray traced fallback (ssr_rt.h): the SSR host pass layout with the output set and this scene's ray tracing set; nothing is made where the device cannot trace.
@@ -453,7 +450,6 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetGiIntegration(&gi_integration_);
     scene_.SetRtWorldFrame(&rt_world_);
     scene_.SetCarRtScene(&car_rt_);
-    scene_.SetCarMirrorRt(&car_mirror_);
     car_rt_.SetTextureCache(&textures_);  // the car ray tracing's materials ask it for the textures of the cars beside the player (TextureCache::Peek2D)
     ok = post_.Initialize(device_, heap_, upload_, passes_, edram_, pass_timing_) &&
          present_.Initialize(device_, frames_, heap_, upload_, passes_, textures_, pass_timing_,
@@ -569,7 +565,6 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     city_rt_.Shutdown();
     city_hit_.Shutdown();  // after the structures that evicted their blocks from it
     car_rt_refl_.Shutdown();
-    car_mirror_.Shutdown();  // after the host builder was stopped (CarRtRefl::Shutdown): its functions name this object's layout and shaders
     car_rt_.Shutdown();
     mirror_glass_.Shutdown();
     car_frame_.Shutdown();
@@ -776,7 +771,6 @@ void Renderer::Shutdown(bool fast_exit) {
   city_rt_.Shutdown();
   city_hit_.Shutdown();
   car_rt_refl_.Shutdown();
-  car_mirror_.Shutdown();  // after the host builder was stopped (CarRtRefl::Shutdown): its functions name this object's layout and shaders
   car_rt_.Shutdown();
   mirror_glass_.Shutdown();
   car_frame_.Shutdown();
@@ -2111,8 +2105,6 @@ void Renderer::ReportFrameStats() {
                                                                                                : std::string()) +
                            // CITY-RT M2 H2: the resident city textures, as the allocator counts them (city_texture_rules.h AllocationBytes; the census line "[city tex]" has the rest)
                            (city_hit_.texture_set().HeldBytes() != 0 ? ", city textures " + mib(city_hit_.texture_set().HeldBytes()) : std::string()) +
-                           (car_mirror_.HeldBytes() != 0 ? ", side mirrors " + mib(car_mirror_.HeldBytes())
-                                                         : std::string()) +
                            (fg_.active() ? ", frame generation " + mib(fg_.HeldBytes())
                                          : std::string()) +
                            (dlssg_.active() ? ", DLSS frame generation " + mib(dlssg_.HeldBytes())

@@ -404,26 +404,6 @@ label_rules = [
   { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
 ]
 
-[rows.PM_RxGpuSideMirrors]
-states = [
-  { when = "live.side_mirrors_replaced ?? false", enabled = true, suffix = " (REPLACED)" },
-]
-
-[rows.PM_RxGpuSideMirrors.value."auto"]
-auto_label = true
-
-[rows.PM_RxGpuRtMirror]
-states = [
-  { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT MIRRORS" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT MIRRORS" },
-]
-
-[rows.PM_RxGpuRtMirror.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
-]
-
 [rows.PM_RxGpuCarSelfRefl]
 reads = ["mcla_gpu_car_selfrefl", "mcla_gpu_car_selfrefl_rt"]
 decode = "d.car_selfrefl_choice"
