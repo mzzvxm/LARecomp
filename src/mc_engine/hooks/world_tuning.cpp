@@ -9,13 +9,14 @@
 #include <rex/kernel/title_runtime.h>
 #include <cstdint>
 #include <cstdlib>
-#include <map>
 #include <mutex>
 #include <string>
 
 #include "ambient_density.h"
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
+#include "guest_work_rules.h"
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
 #include "mc_engine/core/world_detail.h"
@@ -45,7 +46,6 @@ using mcla::ambient::ZoneDensity;
 using mcla::ambient::ZoneState;
 
 static std::mutex g_density_mutex;
-static std::map<uint32_t, ZoneState>& g_density_zones = larecomp::Leak<std::map<uint32_t, ZoneState>>();  // zone address -> state
 static uint32_t g_density_manager = 0;
 
 // The ambient manager singleton (dword_8286D8E4), built by sub_822D3D38 and
@@ -57,6 +57,8 @@ static constexpr uint32_t kAmbientManagerPtr = 0x8286D8E4u;
 static constexpr uint32_t kAmbientZoneBase   = 225904u;
 static constexpr uint32_t kAmbientZoneStride = 5936u;
 static constexpr uint32_t kAmbientZoneCount  = 31u;
+using DensityZones = mc::guest_work::ZoneLookup<ZoneState, kAmbientZoneCount>;
+static DensityZones& g_density_zones = larecomp::Leak<DensityZones>();
 
 // Last cvar state pushed, so unchanged frames only compare guest floats.
 static bool g_density_logged_state = false;
@@ -117,10 +119,10 @@ static void ReadDensityCvars(bool& enabled, DensityWant& want) {
 // scale is always applied to the XML value and never compounds (ambient_density.h
 // StepZone). Caller holds g_density_mutex. Returns true when the zone was
 // (re)captured from the game.
-static bool ReconcileZone(uint8_t* base, uint32_t a, bool enabled,
+static bool ReconcileZone(ZoneState& zone, uint8_t* base, uint32_t a, bool enabled,
                           const DensityWant& want, bool force) {
     const mcla::ambient::ZoneStep step =
-        mcla::ambient::StepZone(g_density_zones[a], ReadZoneValues(base, a), enabled, want, force);
+        mcla::ambient::StepZone(zone, ReadZoneValues(base, a), enabled, want, force);
     if (step.write) WriteZoneValues(base, a, step.out);
     return step.captured;
 }
@@ -129,6 +131,7 @@ static bool ReconcileZone(uint8_t* base, uint32_t a, bool enabled,
 // sub_826F5B18. r3 holds the ambient zone. Only registers the zone early; the
 // XML parse that follows overwrites these fields and the tick below re-captures.
 void MCLAAmbientDensityTuning(PPCRegister& r3) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kDensity);
     const uint32_t a = static_cast<uint32_t>(r3.u64);
     if (a == 0) return;
 
@@ -140,7 +143,7 @@ void MCLAAmbientDensityTuning(PPCRegister& r3) {
     ReadDensityCvars(enabled, want);
 
     std::lock_guard<std::mutex> lock(g_density_mutex);
-    ReconcileZone(base, a, enabled, want, true);
+    ReconcileZone(g_density_zones.At(a), base, a, enabled, want, true);
 }
 
 // Global enables of the ambient spawners (bytes written by sub_826D5D90 /
@@ -181,32 +184,31 @@ static void UpdateSpawnGate(uint8_t* base, SpawnGate& g, bool close, const char*
     }
 }
 
-// Per-frame: walks the 31 zones of the live manager. Costs ~155 guest float
+// Per-frame: walks the 31 zones of the live manager. Costs 217 guest float
 // compares and writes only what the game or a cvar changed.
 void ApplyAmbientDensityTuning() {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kDensity);
     auto* base = larecomp::guest::Membase();
     if (!base) return;
 
     const uint32_t mgr = ReadGuestU32(base, kAmbientManagerPtr);
 
     std::lock_guard<std::mutex> lock(g_density_mutex);
-    {
-        bool en = false;
-        DensityWant w;
-        ReadDensityCvars(en, w);
-        UpdateSpawnGate(base, g_traffic_gate, mcla::ambient::ShutsSpawner(en, w.traffic), "traffic");
-        UpdateSpawnGate(base, g_ped_gate, mcla::ambient::ShutsSpawner(en, w.ped), "pedestrian");
-        UpdateSpawnGate(base, g_parked_gate, mcla::ambient::ShutsSpawner(en, w.parked), "parked car");
-    }
+    // CHECK: live-disable/enable and enter a new city while watching the zone recapture log.
+    const bool indexed = larecomp::settings::mcla_fix_guest_density_work.Get();
+    bool enabled = false;
+    DensityWant want;
+    ReadDensityCvars(enabled, want);
+    UpdateSpawnGate(base, g_traffic_gate, mcla::ambient::ShutsSpawner(enabled, want.traffic), "traffic");
+    UpdateSpawnGate(base, g_ped_gate, mcla::ambient::ShutsSpawner(enabled, want.ped), "pedestrian");
+    UpdateSpawnGate(base, g_parked_gate, mcla::ambient::ShutsSpawner(enabled, want.parked), "parked car");
     if (mgr != g_density_manager) {
-        g_density_zones.clear();  // a new manager: nothing captured applies to it
+        g_density_zones.Reset();  // a new manager: nothing captured applies to it
         g_density_manager = mgr;
     }
     if (mgr == 0) return;
 
-    bool enabled = false;
-    DensityWant want;
-    ReadDensityCvars(enabled, want);
+    if (!indexed) ReadDensityCvars(enabled, want);
 
     const bool cvars_moved = !g_density_logged_state || g_density_last_enabled != enabled ||
                              g_density_last_want != want;
@@ -218,8 +220,9 @@ void ApplyAmbientDensityTuning() {
     ZoneDensity first{};
     for (uint32_t i = 0; i < kAmbientZoneCount; ++i) {
         const uint32_t a = mgr + kAmbientZoneBase + i * kAmbientZoneStride;
-        if (ReconcileZone(base, a, enabled, want, cvars_moved)) {
-            if (recaptured == 0) first = g_density_zones[a].orig;
+        ZoneState& zone = g_density_zones.At(a, i, indexed);
+        if (ReconcileZone(zone, base, a, enabled, want, cvars_moved)) {
+            if (recaptured == 0) first = zone.orig;
             ++recaptured;
         }
     }
@@ -272,6 +275,7 @@ static FragTuneField g_frag_tune[] = {
 };
 
 void ApplyFragTuneOverrides() {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kPropDetail);
     auto* base = larecomp::guest::Membase();
     if (!base) return;
 

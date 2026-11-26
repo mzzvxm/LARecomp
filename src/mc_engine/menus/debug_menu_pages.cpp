@@ -193,7 +193,6 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgNeonPulse",  "mcla_fix_neon_30hz",        "NEON PULSE 30 HZ: "),
     // The smoke of a closed race checkpoint fades at the console's rate at every frame rate (hooks/checkpoint_effect_fade.cpp).
     Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
-    NativeOnly(Bool("PM_RxDbgHudMapHold", "mcla_gpu_hud_map_hold", "HUD RADAR HOLD: ")),
     // The process ends right after the orderly shutdown, without the destructors of the exit (exit_fast.h); read when the game closes.
     Bool("PM_RxDbgFastExit",   "mcla_fast_exit",           "FAST EXIT: "),
     Bool("PM_RxDbgSkipGpuTear", "mcla_skip_gpu_teardown",   "SKIP GPU TEARDOWN: "),
@@ -204,10 +203,8 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
-    NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
-    NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
-    NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
-    NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),
+    Bool("PM_RxDbgGuestDensity", "mcla_fix_guest_density_work", "DENSITY LOOKUP: "),
+    Bool("PM_RxDbgGuestMirror", "mcla_fix_guest_mirror_work", "MIRROR CAR LOOKUP: "),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 
@@ -217,6 +214,12 @@ constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
 
 // CHECK: open Renderer Fixes and toggle a reflection switch in the live menu.
 const ItemDef kDebugRendererFixesItems[] = {
+    NativeOnly(Bool("PM_RxDbgHudMapHold", "mcla_gpu_hud_map_hold", "HUD RADAR HOLD: ")),
+    NativeOnly(Bool("PM_RxDbgGuestShadow", "mcla_fix_guest_shadow_work", "TRAFFIC SHADOW WORK: ")),
+    NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
+    NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
+    NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),
     NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
     NativeOnly(Bool("PM_RxDbgRtDenoiseV2", "mcla_gpu_rt_denoise_v2", "RT DENOISE V2: ")),
@@ -513,6 +516,7 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgLbDiag",      "leaderboards_diag",     "LEADERBOARDS DIAG: "),
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
     Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
+    Bool("PM_RxDbgGuestTiming", "mcla_guest_timing",     "GUEST TIMING: "),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Str("PM_RxDbgCrashDiag", "mcla_gpu_crash_diag", "GPU CRASH DIAG (RESTART): ",
                    kCrashDiagVals, kCrashDiagNames, Len(kCrashDiagVals))),

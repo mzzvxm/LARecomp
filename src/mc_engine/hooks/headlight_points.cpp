@@ -33,6 +33,7 @@
 #include "gpu/headlight_points.h"
 #include "gpu/light_points.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 
 namespace {
 
@@ -52,6 +53,7 @@ struct GuestMemory {
 
 // 0x8237AFB8, one light point of a vehicle (larecomp_config.toml). Registers as the comment at the top of the file says.
 void MCLAHeadlightPoint(PPCRegister& r17, PPCRegister& r20, PPCRegister& r26, PPCRegister& r29, PPCRegister& r30, PPCRegister& r31) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kLights);
     namespace hp = mcla::gpu::headlight_points;
     namespace lp = larecomp::gpu::light_points;
     const bool rig = hp::Wanted();

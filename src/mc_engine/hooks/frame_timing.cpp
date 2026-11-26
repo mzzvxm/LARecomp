@@ -33,6 +33,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "mc_engine/camera/camera_trace.h"
 #include "settings/step_cap.h"
 #include "../cinematic/capture_mode.h"
@@ -593,6 +594,7 @@ void MCLAFrameDelta(PPCRegister& r8) {
         EnforceFrameLimit();
     }
     g_timer_since_swap.store(true, std::memory_order_relaxed);  // see HoldUntimedSwap
+    if (game_thread) mc::guest_timing::BeginUpdate();
     UpdateCityLODMemory();
     RecordFrameTime();
     TickGuestProfiler();

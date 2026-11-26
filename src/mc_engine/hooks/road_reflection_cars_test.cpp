@@ -52,6 +52,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "larecomp_log.h"
 #include "mc_engine/input/adaptive_triggers.h"
 
@@ -170,6 +171,7 @@ void ResetCounts() {
 
 // Once a frame: the log of a change of the switch, and the 600-frame counts while it is on.
 void TickRoadReflCars() {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kPlanarCarTest);
     const int mode = std::clamp<int>(larecomp::settings::mcla_gpu_road_reflection_cars_test.Get(), 0, 2);
     static int s_mode = 0;
     static uint32_t s_frames = 0;
@@ -189,6 +191,7 @@ void TickRoadReflCars() {
 // 0x823606A0 in sub_82360518: the `lbz r11,593(r30)` of the phase-2 branch (reached only with bit 2 of the phase
 // set). r30 = the vehicle, r28 = the phase, r13 = the guest's thread register.
 void Hook_RoadReflCarsEnter(PPCRegister& r30, PPCRegister& r28, PPCRegister& r13) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kPlanarCarTest);
     t_open = false;
     if (larecomp::settings::mcla_gpu_road_reflection_cars_test.Get() <= 0) return;
     if (r28.u32 != kReflectionPhase) return;
@@ -253,12 +256,14 @@ void Hook_RoadReflCarsEnter(PPCRegister& r30, PPCRegister& r28, PPCRegister& r13
 
 // 0x823606B4 in sub_82360518: the `cmplwi cr6,r10,0` right after `lbz r10,-29347(r11)` loaded the gate byte.
 void Hook_RoadReflCarsGate(PPCRegister& r10) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kPlanarCarTest);
     if (t_open) r10.u64 = 1;
 }
 
 // 0x8236076C in sub_82360518, after the `lfs f0,332(r9)`: the plane the mirror is built about. Straight-line
 // code from the gate to here, so a vehicle opened above always arrives; the flag is used up here.
 void Hook_RoadReflCarsPlane(PPCRegister& f0) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kPlanarCarTest);
     if (!t_open) return;
     t_open = false;
     f0.f64 = static_cast<double>(t_plane);

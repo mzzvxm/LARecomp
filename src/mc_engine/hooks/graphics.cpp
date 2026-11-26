@@ -13,6 +13,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "larecomp_log.h"
 #include "mc_engine/core/world_detail.h"
 #include "mc_engine/display/ultrawide.h"
@@ -227,6 +228,7 @@ void Patch_DofComposite(PPCRegister& r3) {
 // scale in force: the player's own value, or, for 0 (auto), what the GPU class gives (gpu/gpu_class.h kScales: 3 on High, 2 on Mid, 1.5
 // on Low and until the class is known). Called for every traffic car of every frame: one atomic read of the class and no string.
 void Patch_ScaleTrafficLOD(PPCRegister& f0) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kTrafficLod);
     f0.f64 = f0.f64 * mcla::world_detail::InForce(mcla::gpu::gpu_class::Scale::kTrafficLod,
                                                   larecomp::settings::lod_traffic_scale.Get());
 }
@@ -247,6 +249,7 @@ static double CityLodInForce(double user_value) {
 // A second hook at 0x822D5BC4 (Patch_ScaleCityLOD) ran after the multiply it targets and changed
 // nothing; it is removed.
 void UpdateCityLODMemory() {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kCityDetail);
     auto* base = larecomp::guest::Membase();
     if (!base) return;
 

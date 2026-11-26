@@ -148,6 +148,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/world_tuning.cpp
     src/mc_engine/hooks/render_phases.cpp
     src/mc_engine/hooks/cascade_schedule.cpp
+    src/mc_engine/hooks/guest_timing.cpp
     src/mc_engine/hooks/frame_timing.cpp
     src/mc_engine/hooks/frame_pacing.cpp
     src/mc_engine/hooks/timer_precision.cpp
@@ -549,6 +550,9 @@ add_executable(larecomp_title_road_plane_test EXCLUDE_FROM_ALL
 target_include_directories(larecomp_title_road_plane_test PRIVATE src/mc_engine/hooks)
 # The rules of the rear view mirror's cheap options (src/mc_engine/hooks/rear_view_cheap.h: the far plane, the field of view, the city radius, the racers, the camera cut and the every-Nth-frame cadence) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_rear_view_cheap_test, then run <build dir>/larecomp_rear_view_cheap_test (exit 0 = passed).
+add_executable(larecomp_guest_timing_test EXCLUDE_FROM_ALL src/mc_engine/hooks/guest_timing_test.cpp)
+target_compile_features(larecomp_guest_timing_test PRIVATE cxx_std_20)
+
 add_executable(larecomp_rear_view_cheap_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/rear_view_cheap_test.cpp)
 target_include_directories(larecomp_rear_view_cheap_test PRIVATE src/mc_engine/hooks)
