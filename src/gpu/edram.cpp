@@ -13,13 +13,14 @@
 #include <rex/xenos/format.h>
 #include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
-#include <rex/kernel/title_runtime.h>
 
 #include "descriptors.h"
 #include "device.h"
 #include "format.h"
 #include "frame.h"
 #include "gpu.h"
+#include "guest_screen_size.h"
+#include "larecomp_guest.h"
 #include "msaa_plan.h"
 #include "records.h"
 #include "render_scale.h"
@@ -29,13 +30,6 @@
 namespace mcla::gpu {
 
 namespace {
-
-// The game's screen size: grcDevice's width and height (IDB: 0x827D4274 and
-// 0x827D4278, set at start; the render setup sub_822E47E0 makes the scene's
-// tiling buffers that size and the post-processing sizes FrameBufferSize from
-// it, sub_8260E9A0).
-constexpr uint32_t kGuestScreenWidthAddress = 0x827D4274;
-constexpr uint32_t kGuestScreenHeightAddress = 0x827D4278;
 
 constexpr uint32_t AlignUp(uint32_t value, uint32_t alignment) {
   return (value + alignment - 1) / alignment * alignment;
@@ -56,14 +50,15 @@ uint32_t BytesPerPixel(plume::RenderFormat format) {
 }  // namespace
 
 bool EdramTargets::ScreenSize(uint32_t* width, uint32_t* height, bool quiet) {
+  if (!width || !height) {
+    return false;
+  }
   if (screen_width_ == 0) {
-    rex::kernel::TitleRuntime* runtime = REX_RUNTIME();
-    const uint8_t* base = runtime ? runtime->GetMembase().GetBase() : nullptr;
-    if (!base) {
+    uint32_t w = 0, h = 0;
+    // CHECK: exercise idle presents before the image is mapped in repeated game launches.
+    if (!ReadGuestScreenSize(larecomp::guest::AddressSpace(), w, h)) {
       return false;
     }
-    const uint32_t w = LoadBe32(base + kGuestScreenWidthAddress);
-    const uint32_t h = LoadBe32(base + kGuestScreenHeightAddress);
     // Static 1x1 until the game sets it at start.
     if (w < 64 || h < 64 || w > kMaxExtent || h > kMaxExtent) {
       if (!quiet && !screen_unset_logged_) {

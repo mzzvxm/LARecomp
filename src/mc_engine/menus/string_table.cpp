@@ -15,6 +15,8 @@
 #include <mutex>
 
 #include "settings/larecomp_settings.h"
+#include "larecomp_guest.h"
+#include <rex/kernel/memory_view.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/title_paths.h>
 
@@ -39,11 +41,6 @@ Dumper* ActiveDumper() {
 }
 
 constexpr uint32_t kStringTableGlobal = 0x8286D7FC;
-
-uint8_t* GetMembase() {
-    auto* rt = REX_RUNTIME();
-    return rt ? rt->GetMembase().GetBase() : nullptr;
-}
 
 uint32_t ReadBE32(uint8_t* base, uint32_t ea) {
     uint8_t* p = base + ea;
@@ -113,10 +110,13 @@ ScanStats ScanHashMap(uint8_t* base, uint32_t hashmap_ea, Dumper& dumper,
 }
 
 void ScanMCLAStringTable(bool trigger_rescan = false) {
-    uint8_t* base = GetMembase();
+    const auto* memory = larecomp::guest::AddressSpace();
+    if (!memory) return;
+    const rex::kernel::MemoryView view(*memory);
+    uint8_t* base = view.GetVirtualMembase();
     if (!base) return;
-
-    uint32_t table = ReadBE32(base, kStringTableGlobal);
+    // CHECK: boot with string dumping enabled and verify the scan after table creation.
+    const uint32_t table = view.TryLoad<uint32_t>(kStringTableGlobal).value_or(0);
     if (!table) return;
 
     Dumper* active = ActiveDumper();
