@@ -714,6 +714,17 @@ rex::Result<void> LarecompApp::OnInit() {
   mc::LimitLogicalProcessors(cpu_limit);
 #endif
 
+#if defined(_WIN32)
+  // CHECK: confirm the ROG's startup log on AC and on battery.
+  SYSTEM_POWER_STATUS power{};
+  const char* ac_line = "unknown";
+  if (GetSystemPowerStatus(&power)) {
+    if (power.ACLineStatus == 0) ac_line = "offline";
+    if (power.ACLineStatus == 1) ac_line = "online";
+  }
+  LARECOMP_APP_INFO("[power] AC line {} at startup", ac_line);
+#endif
+
   InstallTerminationSignals();  // Linux: from here on, before the long steps (the boot build pumps the frame loop and ends on a quit)
   MoveUserDataIfNeeded();
 

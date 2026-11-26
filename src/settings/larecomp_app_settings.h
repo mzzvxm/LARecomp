@@ -90,6 +90,11 @@ class AppSettings final : public rex::SettingOwner {
               "Read at startup.",
               rex::kInitOnly, rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_test_d3d12_latency_one, false,
+              "Test DXGI maximum frame latency of one on the D3D12 swap chain. "
+              "Requires debug_menu. Read at startup. Applies with frame generation off.",
+              rex::kInitOnly, rex::kDebugOnly);
+
   ValidatedString frame_step_cap{
       this, "frame_step_cap", "adaptive",
       "How far one frame may advance the game's clock after a stall (a texture-streaming hitch, a "
@@ -117,6 +122,7 @@ inline auto& render_wait_mode = g_app.render_wait_mode;
 inline auto& mcla_gpu_vk_present_pacing = g_app.mcla_gpu_vk_present_pacing;
 inline auto& cpu_limit_lp = g_app.cpu_limit_lp;
 inline auto& mcla_test_present_nowait = g_app.mcla_test_present_nowait;
+inline auto& mcla_test_d3d12_latency_one = g_app.mcla_test_d3d12_latency_one;
 inline auto& frame_step_cap = g_app.frame_step_cap;
 inline auto& rmr_server_port = g_app.rmr_server_port;
 

@@ -23,6 +23,10 @@ void Check(bool ok, const char* what) {
 int main() {
   using namespace mcla::gpu;
   using namespace std::chrono_literals;
+  Check(SwapChainFrameLatency(2, false, false) == 2, "normal frame latency follows the frame ring");
+  Check(SwapChainFrameLatency(2, false, true) == 1, "the D3D12 test requests one frame");
+  Check(SwapChainFrameLatency(2, true, false) == 3, "the proxy has room for generated frames");
+  Check(SwapChainFrameLatency(2, true, true) == 3, "the test leaves proxy latency alone");
   constexpr int32_t kOccluded = 0x087A0001;
   constexpr int32_t kDeviceRemoved = static_cast<int32_t>(0x887A0005u);
   Check(ClassifyDxgiPresentNowait(0) == PresentResult::kPresented, "S_OK presents");

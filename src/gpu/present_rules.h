@@ -8,6 +8,13 @@ namespace mcla::gpu {
 
 enum class PresentResult : uint8_t { kPresented, kDropped, kFailed };
 
+constexpr uint32_t SwapChainFrameLatency(uint32_t in_flight, bool wrapped, bool test_latency_one) {
+  if (wrapped) {
+    return in_flight + 1;
+  }
+  return test_latency_one ? 1 : in_flight;
+}
+
 // Keep the rules test independent of platform headers. The D3D12 backend checks the value.
 inline constexpr int32_t kDxgiWasStillDrawing = static_cast<int32_t>(0x887A000Au);
 

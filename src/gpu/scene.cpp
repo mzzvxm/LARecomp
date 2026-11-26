@@ -2881,9 +2881,12 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
     }
     return out;
   };
-  GBufferWord chosen = pick_word(d.key.ps_variant);
-  facts.variant_word = chosen.word;
-  gbuffer::DrawDecision decision = gbuffer::Decide(facts);
+  // CHECK: compare draw census and preparation time in the ROG race on both APIs.
+  GBufferWord chosen;
+  gbuffer::DrawDecision decision = gbuffer::Decide(facts, [&] {
+    chosen = pick_word(facts.ps_variant_before);
+    return chosen.word;
+  });
   // The headlight route `pass` (headlight_pass_rules.h, GB-H2-FOLLOW): the draw asked for the forward headlight (WantedFeatures keeps it in this route), and it keeps it unless the deferred pass lights its
   // pixels: then the draw is the one the first version of the route made (the word without the headlight, with the G-buffer's stage when it writes), so that every pixel is lit once.
   bool forward_dropped = false;
@@ -2893,11 +2896,13 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
     if (chain::FeaturesOf(without) != 0 && !(d.ps && d.ps->HasWord(without))) {
       without = chain::SpecOf(without);  // the pack has no word of the other features alone: the main pack's shader
     }
-    const GBufferWord pass_word = pick_word(without);
     gbuffer::DrawFacts pass_facts = facts;
     pass_facts.ps_variant_before = without;
-    pass_facts.variant_word = pass_word.word;
-    const gbuffer::DrawDecision pass_decision = gbuffer::Decide(pass_facts);
+    GBufferWord pass_word;
+    const gbuffer::DrawDecision pass_decision = gbuffer::Decide(pass_facts, [&] {
+      pass_word = pick_word(without);
+      return pass_word.word;
+    });
     hp::DrawCover cover;
     switch (pass_decision.mode) {
       case gbuffer::PlaneMode::kWrite: cover.carry = hp::Carry::kWrite; break;
