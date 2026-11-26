@@ -169,6 +169,8 @@
 #include "shafts_blur_accumulate_ps.hlsl.dxil.h"
 #include "volumetrics_inject_cs.hlsl.dxil.h"
 #include "volumetrics_integrate_cs.hlsl.dxil.h"
+#include "volumetrics_cull_cs.hlsl.dxil.h"
+#include "volumetrics_fused_cs.hlsl.dxil.h"
 #include "smaa_blend_ps.hlsl.dxil.h"
 #include "smaa_edges_ps.hlsl.dxil.h"
 #include "smaa_weights_ps.hlsl.dxil.h"
@@ -330,6 +332,8 @@
 #include "shafts_blur_accumulate_ps.hlsl.spirv.h"
 #include "volumetrics_inject_cs.hlsl.spirv.h"
 #include "volumetrics_integrate_cs.hlsl.spirv.h"
+#include "volumetrics_cull_cs.hlsl.spirv.h"
+#include "volumetrics_fused_cs.hlsl.spirv.h"
 #include "smaa_blend_ps.hlsl.spirv.h"
 #include "smaa_edges_ps.hlsl.spirv.h"
 #include "smaa_weights_ps.hlsl.spirv.h"
@@ -738,6 +742,8 @@ inline HostShaderBlob VolumetricsInjectShader() {
 inline HostShaderBlob VolumetricsIntegrateShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(volumetrics_integrate_cs);
 }
+inline HostShaderBlob VolumetricsCullShader() { return MCLA_GPU_HOST_SHADER_BLOB(volumetrics_cull_cs); }
+inline HostShaderBlob VolumetricsFusedShader() { return MCLA_GPU_HOST_SHADER_BLOB(volumetrics_fused_cs); }
 inline HostShaderBlob VolumetricsApplyShader(bool multisampled, bool shafts) {
   if (shafts) {
     return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(atmosphere_apply_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(atmosphere_apply_ps);

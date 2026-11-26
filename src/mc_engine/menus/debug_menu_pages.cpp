@@ -201,6 +201,7 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
     NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
     NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
+    NativeOnly(Bool("PM_RxDbgVolAmortize", "mcla_gpu_vol_amortize", "REUSE VOLUME SAMPLES: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

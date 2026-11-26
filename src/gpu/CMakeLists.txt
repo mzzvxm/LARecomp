@@ -317,6 +317,7 @@ target_include_directories(larecomp_volumetrics_inputs_test PRIVATE ${CMAKE_SOUR
 #   cmake --build <dir> --target larecomp_volumetrics_stable_test, then run src/gpu/larecomp_volumetrics_stable_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_stable_test EXCLUDE_FROM_ALL volumetrics_stable_test.cpp)
 target_include_directories(larecomp_volumetrics_stable_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
+add_executable(larecomp_volumetrics_amortize_test EXCLUDE_FROM_ALL volumetrics_amortize_test.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
@@ -1348,6 +1349,8 @@ larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)
 # APIs) and the composite (plain or multisampled depth plane).
 larecomp_gpu_host_shader(volumetrics_inject_cs cs_6_0)
 larecomp_gpu_host_shader(volumetrics_integrate_cs cs_6_0)
+larecomp_gpu_host_shader(volumetrics_cull_cs cs_6_0)
+larecomp_gpu_host_shader(volumetrics_fused_cs cs_6_0 SOURCE volumetrics_inject_cs DEFINES VOL_FUSED=1)
 larecomp_gpu_host_shader(volumetrics_apply_ps ps_6_0 DEFINES APPLY_MS=0)
 larecomp_gpu_host_shader(volumetrics_apply_ms_ps ps_6_0 SOURCE volumetrics_apply_ps DEFINES APPLY_MS=1)
 larecomp_gpu_host_shader(atmosphere_apply_ps ps_6_0 SOURCE volumetrics_apply_ps DEFINES APPLY_MS=0 ATM_SHAFTS=1)

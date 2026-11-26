@@ -3757,6 +3757,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_vol_amortize": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reuse alternating froxel samples, cull lamps per tile, and integrate in the same pass. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_vol_history_medium": {
   "type": "bool",
   "default": "false",
@@ -3784,7 +3795,7 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: blends each frame's volume with the last frame's, moved to where the camera is now (high and \"\n    \"ultra; medium has none). Off: the volume shows its noise. Live.\"",
+  "help": "\"Reproject volumetric lighting history. Off updates every froxel each frame. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
