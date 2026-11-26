@@ -232,7 +232,9 @@ class Scene {
 
   // `list`: the frame's open list, null when the device is lost (the banks are
   // still applied: the deltas are incremental).
-  void OnDraw(const uint8_t* payload, plume::RenderCommandList* list);
+  void OnDraw(const uint8_t* payload, plume::RenderCommandList* list, bool held_radar = false);
+  void BeforeHudMapReplay(plume::RenderCommandList* list);
+  bool AnchorCut() const { return anchor_cut_; }
   // A draw record queued behind the one being executed (stream sequence `sequence`): the textures
   // its shaders read, as its fetch constants name them, are offered to TextureCache::Prefetch
   // (decode ahead on the pool). Changes nothing the draw itself will do.

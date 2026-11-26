@@ -6,6 +6,7 @@
 // windows, offsets and event set here are this game's; no code was copied.
 
 #include "guest_capture.h"
+#include "hud_map_hold.h"
 
 #include <algorithm>
 #include <bit>
@@ -1486,6 +1487,18 @@ void GuestCapture::Composite(uint32_t bucket, uint32_t tag) {
   r->bucket = bucket;
   r->tag = tag;
   CountRecord(sizeof(CompositeRecord));
+  frame_.capture_cycles += ElapsedCycles(t0);
+  writer.Commit(Publication::kBatched);
+}
+
+void GuestCapture::HudMapSample(const view_hold::MapSample& sample) {
+  const uint64_t t0 = cycles::Now();
+  CommandStream::Writer writer(stream_);
+  uint8_t* payload = writer.Begin(RecordType::kComposite, sizeof(hud_map_hold::SampleRecord));
+  if (!payload) return;
+  auto* record = new (payload) hud_map_hold::SampleRecord();
+  record->sample = sample;
+  CountRecord(sizeof(*record));
   frame_.capture_cycles += ElapsedCycles(t0);
   writer.Commit(Publication::kBatched);
 }

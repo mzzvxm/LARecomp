@@ -1,5 +1,6 @@
 #include "view_hold_rules.h"
 #include "env_hold_link.h"
+#include "side_view_ui_map.h"
 
 #include <cstdio>
 #include <limits>
@@ -116,11 +117,119 @@ void MovingAndSettling() {
   now.camera.position[0] -= 0.02f;
   Check(Decide(limits, capture, now, true) == Decision::kHold, "settling around the old threshold does not oscillate");
 }
+
+void MapRefreshRules() {
+  const MapSample capture{.car = {{0, 0, 0}, {0, 0, 1}, {0, 1, 0}},
+                          .zoom = {1, 1, 1}, .owner = 1, .has_transform = true};
+  constexpr int64_t deadline = 33'333'333;
+  const auto check = [&](const MapSample& now, Decision want, const char* message) {
+    Check(DecideMap(capture, now, deadline, true) == want, message);
+  };
+  Check(DecideMap(capture, capture, deadline, false) == Decision::kMissing,
+        "missing or incompatible resolve replays the radar draws");
+  MapSample now = capture;
+  now.time_ns = deadline - 1;
+  check(now, Decision::kHold, "parked holds until 30 Hz");
+  ++now.time_ns;
+  check(now, Decision::kAge, "parked redraws moving markers at 30 Hz");
+  now.time_ns = 1;
+  now.car.position[0] = 2.0f;
+  now.car.forward = Yaw(2.99f);
+  check(now, Decision::kHold, "small travel and steering stay held before the deadline");
+  now.car.position[0] = 2.01f;
+  check(now, Decision::kTravel, "fast travel forces an immediate update");
+  now.car.position[0] = 0.0f;
+  now.car.forward = Yaw(3.01f);
+  check(now, Decision::kTurn, "heading forces an immediate update");
+  now = capture;
+  now.angles[1] = 0.053f;
+  check(now, Decision::kTurn, "movie rotation can change on its own");
+  now.angles[1] = 2.0f * std::numbers::pi_v<float> - 0.015f;
+  check(now, Decision::kHold, "a heading wrapping around north stays held");
+  now.origin[2] += 2.01f;
+  check(now, Decision::kTravel, "the movie can pan while the car stands still");
+  now = capture;
+  now.zoom[2] += 0.00005f;
+  check(now, Decision::kHold, "ignore zoom noise");
+  now.zoom[2] += 0.001f;
+  check(now, Decision::kWorld, "zoom refreshes immediately");
+  now = capture;
+  now.has_transform = false;
+  check(now, Decision::kWorld, "the map's transform availability changed");
+  now = capture;
+  now.zoom[0] = std::numeric_limits<float>::quiet_NaN();
+  check(now, Decision::kMissing, "invalid projection redraws the view");
+  Check(DecideMap(now, capture, deadline, true) == Decision::kMissing,
+        "a missing old projection redraws even if the new one is valid");
+  now = capture;
+  now.car.forward = {0, 1, 0};
+  now.car.up = {0, 0, -1};
+  check(now, Decision::kMissing, "no heading in the map plane");
+  now = capture;
+  now.owner++;
+  check(now, Decision::kWorld, "a replacement movie cannot reuse the product");
+  now = capture;
+  now.world = 1;
+  check(now, Decision::kWorld, "a pause or photo transition refreshes");
+  now = capture;
+  now.cut = true;
+  check(now, Decision::kCut, "scripted cut refreshes");
+  now = capture;
+  now.clock_epoch++;
+  check(now, Decision::kCut, "scene clock epoch change refreshes");
+  now.time_ns = 10;
+  Check(DecideMap(now, capture, deadline, true) == Decision::kCut, "clock regression refreshes");
+
+  for (int64_t fps : {24, 30, 40, 60, 90, 120, 144}) {
+    now = capture;
+    MapSample last = now;
+    int64_t due = MapDeadline(now, 0, Decision::kMissing);
+    int captures = 0;
+    for (int64_t frame = 1; frame <= fps; ++frame) {
+      now.time_ns = frame * 1'000'000'000 / fps;
+      const auto decision = DecideMap(last, now, due, true);
+      if (decision != Decision::kHold) {
+        last = now;
+        due = MapDeadline(now, due, decision);
+        ++captures;
+      }
+    }
+    Check(captures == std::min<int64_t>(fps, 30), "30 Hz on even and uneven frame rates");
+  }
+  now.time_ns = 1'000'000'000;
+  Check(MapDeadline(now, deadline, Decision::kAge) == now.time_ns + deadline,
+        "no catch-up burst after a hitch");
+  Check(MapDeadline(now, deadline, Decision::kTurn) == now.time_ns + deadline,
+        "a forced draw restarts cadence");
+}
+
+void RadarIdentity() {
+  using mcla::gpu::ui_map_views::RadarTarget;
+  struct Key {
+    uint16_t base_tiles = 168, pitch = 240;
+    uint8_t depth = 0, format = 0, samples = 4, reserved = 0;
+  };
+  constexpr uint32_t size = (219u << 18) | (219u << 3);
+  Check(RadarTarget(Key{}, size), "the 220x220 radar alone is eligible");
+  Check(!RadarTarget(Key{}, 0), "a missing declaration fails open");
+  Check(!RadarTarget(Key{}, size + 8), "foreign use of the radar key fails open");
+  Check(!RadarTarget(Key{.base_tiles = 169}, size), "a different EDRAM tile fails open");
+  Check(!RadarTarget(Key{.pitch = 238}, size), "a different framebuffer pitch fails open");
+  Check(!RadarTarget(Key{.base_tiles = 0, .pitch = 760}, size), "expanded map stays live");
+  Check(!RadarTarget(Key{.base_tiles = 224, .pitch = 160}, size), "impostor refresh stays live");
+  Check(!RadarTarget(Key{.base_tiles = 224, .pitch = 280}, size), "256x256 refresh stays live");
+  Check(!RadarTarget(Key{.depth = 1}, size), "depth cannot share the radar hold");
+  Check(!RadarTarget(Key{.format = 1}, size), "a different color format fails open");
+  Check(!RadarTarget(Key{.samples = 2}, size), "a different sample count fails open");
+  Check(!RadarTarget(Key{.reserved = 1}, size), "a different EDRAM layer fails open");
+}
 }  // namespace
 
 int main() {
   RefreshRules();
   MovingAndSettling();
+  MapRefreshRules();
+  RadarIdentity();
   Check(Resolution("game") == "off" && Resolution("off") == "off", "keep the guest resolution preference");
   for (const auto value : {"auto", "high", "ultra", "on"}) {
     Check(Resolution(value) == "on", "higher and Auto resolutions migrate to the fixed 2x mode");

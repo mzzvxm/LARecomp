@@ -63,6 +63,8 @@
 
 namespace mcla::gpu {
 
+namespace view_hold { struct MapSample; }
+
 class GuestCapture {
  public:
   static constexpr uint32_t kMaxRawVariants = 8;
@@ -138,6 +140,7 @@ class GuestCapture {
   // composite record, batched behind the draws that composed it. Guest render
   // thread.
   void Composite(uint32_t bucket, uint32_t tag = 0);  // `tag`: the record's second word (the rear view mirror's begin marker: the phase's field)
+  void HudMapSample(const view_hold::MapSample& sample);
 
   // D3DQuery::Issue's sample count event (sub_824302F0), before the original: the
   // begin or the end of the guest's occlusion query `query`. Writes what the console's

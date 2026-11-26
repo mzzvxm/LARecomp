@@ -7,6 +7,10 @@ void StopFreezeWatchdog();
 void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer);
 void FinishEnvViewPhase(const PPCRegister& phase);
 bool Patch_SkipHeldEnvironmentPhase(PPCRegister& phase);
+void BeginHudMapPass(const PPCRegister& movie);
+void SampleHudMapTransform(const PPCRegister& stack, const PPCRegister& zoom);
+void ResolveHudMapPass();
+void EndHudMapPass();
 
 bool Patch_AspectRatio_82233EB4(PPCRegister& f0, PPCRegister& f30);
 bool Patch_AspectRatio_82214BB8(PPCRegister& f10);

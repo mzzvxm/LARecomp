@@ -811,6 +811,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   ++frame_serial_;
   sample_env_light_ = false;
+  anchor_cut_ = false;
   visual_mask_ = mc::cinematic::CaptureVisualMask();
   visual_hdr_rows_ = 0;
   const bool capture_class = (visual_mask_ & vis::Bit(vis::kClass)) != 0;
@@ -1284,7 +1285,7 @@ void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
   }
 }
 
-void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
+void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list, bool held_radar) {
   // The prepare statistic sums the time of every draw: one draw in seven is timed and counted seven times (render_cpu.h), not
   // every draw (two TSC reads, 7 ns each, on ~3800 draws a frame).
   const bool timed = draw_sampler_.Take();
@@ -1316,6 +1317,8 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       }
     }
   }
+
+  if (held_radar) return;  // Later draws still need every constant bank delta.
 
   // Consume the bank deltas even when the view is unavailable and the HUD mirror is hidden.
   // CHECK: exercise a buffered hidden phase while switching the raster view off or while its images are blocked.
@@ -4358,6 +4361,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   }
   // It bound its own layout, pipeline and push constants: the next draw binds
   // everything again.
+  ResetListState();
+  marked_framebuffer_ = nullptr;
+}
+
+void Scene::BeforeHudMapReplay(plume::RenderCommandList* list) {
+  if (list && bound_.framebuffer) list->setFramebuffer(nullptr);
   ResetListState();
   marked_framebuffer_ = nullptr;
 }

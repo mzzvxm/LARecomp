@@ -25496,6 +25496,31 @@ registers = ["r30"]
 after_instruction = false
 jump_address_on_true = 0x822E6908
 
+# sub_827254B0 has selected the radar or expanded map, before binding its target.
+[[midasm_hook]]
+address = 0x827255BC
+name = "BeginHudMapPass"
+registers = ["r31"]
+after_instruction = false
+
+# sub_82723120 has read the map movie's rotation, translation and scale.
+[[midasm_hook]]
+address = 0x82723188
+name = "SampleHudMapTransform"
+registers = ["r1", "r26"]
+after_instruction = false
+
+# Bracket the map's final resolve at the vtable call in sub_827254B0.
+[[midasm_hook]]
+address = 0x82725AE8
+name = "ResolveHudMapPass"
+after_instruction = false
+
+[[midasm_hook]]
+address = 0x82725AEC
+name = "EndHudMapPass"
+after_instruction = false
+
 # 0x822E6908: the phase increment in sub_822E6408, after both end calls. The mirror's callback draws the sky before restoring the main camera.
 # r30 still names the finished phase. For 0x1000000 close the shared view and restore the bit a held frame took out of renderer+364.
 [[midasm_hook]]

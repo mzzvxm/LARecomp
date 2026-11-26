@@ -3464,6 +3464,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_hud_map_hold": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Refresh the HUD radar at 30 Hz or sooner when the map changes. \"\n    \"Turn off to draw it every frame for comparison. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_reflection_resolution": {
   "type": "std::string",
   "default": "\"auto\"",

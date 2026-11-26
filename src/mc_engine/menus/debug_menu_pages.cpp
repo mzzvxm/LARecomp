@@ -190,6 +190,7 @@ const ItemDef kDebugFixesItems[] = {
     // The smoke of a closed race checkpoint fades at the console's rate at every frame rate (hooks/checkpoint_effect_fade.cpp).
     Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
     NativeOnly(Bool("PM_RxDbgEnvHold", "mcla_gpu_env_hold", "ENVIRONMENT MAP HOLD: ")),
+    NativeOnly(Bool("PM_RxDbgHudMapHold", "mcla_gpu_hud_map_hold", "HUD RADAR HOLD: ")),
     // The process ends right after the orderly shutdown, without the destructors of the exit (exit_fast.h); read when the game closes.
     Bool("PM_RxDbgFastExit",   "mcla_fast_exit",           "FAST EXIT: "),
     Bool("PM_RxDbgSkipGpuTear", "mcla_skip_gpu_teardown",   "SKIP GPU TEARDOWN: "),

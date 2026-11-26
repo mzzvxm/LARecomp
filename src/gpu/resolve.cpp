@@ -9,6 +9,7 @@
 
 #include "resolve.h"
 #include "env_hold_link.h"
+#include "hud_map_hold.h"
 
 #include <algorithm>
 #include <bit>
@@ -33,6 +34,7 @@
 #include "draw_decode.h"
 #include "draw_state.h"
 #include "edram.h"
+#include "side_view_ui_map.h"
 #include "format.h"
 #include "pass_timing.h"
 #include "resolve_memory.h"
@@ -544,6 +546,10 @@ ResolveCache::Product* ResolveCache::Find(const TextureKey& key, uint32_t image_
     return nullptr;
   }
   ++stats_.found;
+  if (hud_map_held_frame_ == frame_ && p->key.base_page == hud_map_hold::kPage &&
+      p->key.width == ui_map_views::kRadarExtent && p->key.height == ui_map_views::kRadarExtent) {
+    ++stats_.hud_map_reads;
+  }
   p->last_frame = frame_;
   for (uint32_t level = 0; level < key.levels() && level < p->coverage.size(); ++level) {
     if ((level == 0 && key.base_page == 0) || p->coverage[level].complete()) {
@@ -607,6 +613,102 @@ bool ResolveCache::EnvProductsReady(Scale map_scale, bool refreshed) {
   return valid(map, env_hold::kMapPage, 512, 256, 4) && map->own_scale &&
          map->scale == map_scale && map->key.mip_page == env_hold::kMipPage &&
          valid(spec, env_hold::kSpecPage, 64, 32, 1);
+}
+
+std::optional<ResolveCache::HudMapCopy> ResolveCache::DescribeHudMapCopy(const ResolveRecord& r) {
+  constexpr uint32_t kUnreadable = kEventSurfaceUnreadable | kEventRectUnreadable |
+      kEventPointUnreadable | kEventDestUnreadable | kEventStackUnreadable | kEventInsideEndTiling;
+  if ((r.flags & kUnreadable) || !(r.flags & kEventHasDest) ||
+      (r.resolve_flags & (0x2000u | 0x200u | 7u)) || r.dest_level || r.dest_slice) return {};
+  const RegisterWindow pre(r.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  if (!pre.DeviceDword(guest::kDevColorSurfaces)) return {};
+  xreg::RB_SURFACE_INFO surface;
+  surface.value = pre.Register(guest::reg::kRbSurfaceInfo);
+  xreg::RB_SURFACE_INFO header_surface;
+  header_surface.value = LoadBe32(r.state.surfaces[0] + 0x18);
+  if (header_surface.msaa_samples != surface.msaa_samples) return {};
+  xreg::RB_COLOR_INFO info;
+  info.value = LoadBe32(r.state.surfaces[0] + 0x1C);
+  const EdramKey source{.base_tiles = uint16_t(info.color_base | (info.color_base_bit_11 << 11)),
+                        .pitch = uint16_t(surface.surface_pitch),
+                        .format = uint8_t(info.color_format),
+                        .samples = uint8_t(MsaaSampleCount(surface.msaa_samples))};
+  if (!ui_map_views::RadarTarget(source, LoadBe32(r.state.surfaces[0] + guest::kSurfaceSizeBitsOffset))) return {};
+  constexpr int32_t extent = ui_map_views::kRadarExtent;
+  if (r.flags & kEventHasRect) {
+    const int32_t x1 = int32_t(LoadBe32(r.src_rect + 8));
+    const int32_t y1 = int32_t(LoadBe32(r.src_rect + 12));
+    if (LoadBe32(r.src_rect) || LoadBe32(r.src_rect + 4) ||
+        x1 < extent || x1 > 224 || y1 < extent || y1 > 224) return {};
+  }
+  if ((r.flags & kEventHasPoint) && (LoadBe32(r.dest_point) || LoadBe32(r.dest_point + 4))) return {};
+  uint32_t words[6];
+  for (uint32_t i = 0; i < 6; ++i) {
+    words[i] = LoadBe32(r.dest_header + guest::kTextureFetchOffset + 4 * i);
+  }
+  const TextureFetch dest = ReadTextureFetch(words);
+  const TextureKey& key = dest.key;
+  if (!dest.is_texture || key.base_page != hud_map_hold::kPage || key.mip_page ||
+      key.mip_max_level || key.width != extent || key.height != extent ||
+      key.format != uint32_t(xe::TextureFormat::k_8_8_8_8) ||
+      key.dimension != uint8_t(xe::DataDimension::k2DOrStacked) || key.stacked) return {};
+  return HudMapCopy{key, r.resolve_flags, info.value, (dest.swizzle & 7) != 0};
+}
+
+uint64_t ResolveCache::HudMapWritten(const HudMapCopy& copy) {
+  const auto it = products_.find(copy.key);
+  if (it == products_.end()) return 0;
+  const Product& p = *it->second;
+  if (!p.active || !p.own_scale || p.depth_source || p.coverage.size() != 1 ||
+      !p.coverage[0].complete() || p.coverage[0].last_write_frame != frame_) return 0;
+  ++stats_.hud_map_drawn;
+  return frame_;
+}
+
+bool ResolveCache::ReplayHudMap(const HudMapCopy& copy, uint64_t written,
+                               plume::RenderCommandList* list) {
+  if (!list || !written || !edram_ || !device_ || !heap_ || !resolve_memory_) return false;
+  DrainInvalidations();
+  const auto it = products_.find(copy.key);
+  if (it == products_.end()) return false;
+  Product& p = *it->second;
+  if (!p.texture || !p.own_scale || p.depth_source || p.coverage.size() != 1 ||
+      !p.coverage[0].complete() || p.coverage[0].last_write_frame != written ||
+      p.layout != plume::RenderTextureLayout::SHADER_READ ||
+      p.scale != edram_->side_scales()[SideView::kUiMap]) return false;
+  const uint32_t slot = p.views.Slot(*device_, *heap_, *p.texture, p.format, 1,
+                                    format::kHostSwizzleRGBA, "resolve product view");
+  if (slot == kInvalidBindlessSlot) return false;
+
+  // Scene depth and the expanded map write the same guest pages. Restore
+  // the already resolved radar at its original point in the stream and run
+  // the ordinary guest-memory encode so reinterpretations and locks see it.
+  // CHECK: inspect an aliased held frame through a quick-map or photo transition.
+  constexpr int32_t extent = ui_map_views::kRadarExtent;
+  resolve_memory_->BeforeResolve(list, copy.key, 0, 0, 0, extent, extent);
+  ResolveMemory::Copy encode;
+  encode.key = &copy.key;
+  encode.x1 = encode.y1 = extent;
+  encode.mode = resolve_variants::CopyConversion(copy.key.format, false).mode;
+  if (copy.swap_rb) encode.mode |= kFlagSwapRedBlue;
+  encode.product_slot = slot;
+  encode.resolution_scale = p.scale;
+  if (!resolve_memory_->Encode(list, encode)) return false;
+
+  const bool was_active = p.active;
+  std::string why;
+  if (!Activate(copy.key, p.format, p.scale, list, &why)) return false;
+  if (!was_active) {
+    // Activate clears the coverage of an aliased product. The texture itself
+    // is still the complete image made by the last real radar resolve.
+    Product::Coverage& coverage = p.coverage[0];
+    std::fill(coverage.bits.begin(), coverage.bits.end(), ~uint64_t(0));
+    coverage.covered = coverage.cells_x * coverage.cells_y;
+  }
+  hud_map_held_frame_ = frame_;
+  ++stats_.hud_map_held;
+  if (pass_timing_) pass_timing_->Mark(list, "HUD radar held");
+  return true;
 }
 
 void ResolveCache::OnLock(const LockRecord& record,
@@ -1956,6 +2058,10 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
     text += std::format(" | depth copies at a fractional scale encoded at once, the pass did not "
                         "write the pixels they read: {:.1f}/frame",
                         double(stats_.depth_fractional_kept) / f);
+  }
+  if (stats_.hud_map_drawn || stats_.hud_map_held) {
+    text += std::format(" | HUD radar: {} drawn, {} held, {} held-product reads",
+                        stats_.hud_map_drawn, stats_.hud_map_held, stats_.hud_map_reads);
   }
   stats_ = Stats{};
   return text;
