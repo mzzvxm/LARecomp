@@ -15,6 +15,9 @@
 // only when the compilation says so), slots.z the ratio of the source to this image (1 or 2); sizes.xy this image's size, sizes.zw the source's.
 
 #include "host_pass_common.hlsli"
+#include "gbuffer_common.hlsli"
+#include "ao_gbuffer_normal.hlsli"
+#include "ssgi_quarter.hlsli"
 
 #ifndef SCREEN_COLOUR_PASS
 #define SCREEN_COLOUR_PASS 0
@@ -52,6 +55,17 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const int ratio = int(max(g_push.slots.z, 1u));
   const int2 base = int2(position.xy) * ratio;
   const int2 last = int2(g_push.sizes.zw) - 1;
+  if (ratio == 4) {
+    const int2 pixel = int2(position.xy);
+    const float depth = g_textures[g_push.slots.w].Load(int3(pixel, 0)).r;
+    const int2 p = SsgiQuarterSource(pixel, AoGbSourceOf(depth), last);
+#if SCREEN_COLOUR_MS
+    const float3 colour = g_textures_ms[g_push.slots.x].Load(p, g_push.slots.y).rgb;
+#else
+    const float3 colour = g_textures[g_push.slots.x].Load(int3(p, 0)).rgb;
+#endif
+    return float4(HeldColour(colour), 1.0f);
+  }
 #if SCREEN_COLOUR_MS
   const uint samples = max(g_push.slots.y, 1u);
 #endif

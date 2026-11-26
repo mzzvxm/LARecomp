@@ -38,6 +38,8 @@
 #include "ao_main_3x3_ps.hlsl.dxil.h"
 #include "ao_main_gi_2x2_far1_exact_ps.hlsl.dxil.h"
 #include "ao_main_gi_2x2_far1_ps.hlsl.dxil.h"
+#include "ao_main_gi_2x4_far1_ps.hlsl.dxil.h"
+#include "ao_main_gi_2x4_far1_exact_ps.hlsl.dxil.h"
 #include "ao_main_gi_3x3_far2_exact_ps.hlsl.dxil.h"
 #include "ao_main_gi_3x3_far2_ps.hlsl.dxil.h"
 #include "ao_main_gi_ps.hlsl.dxil.h"
@@ -195,6 +197,8 @@
 #include "ao_main_3x3_ps.hlsl.spirv.h"
 #include "ao_main_gi_2x2_far1_exact_ps.hlsl.spirv.h"
 #include "ao_main_gi_2x2_far1_ps.hlsl.spirv.h"
+#include "ao_main_gi_2x4_far1_ps.hlsl.spirv.h"
+#include "ao_main_gi_2x4_far1_exact_ps.hlsl.spirv.h"
 #include "ao_main_gi_3x3_far2_exact_ps.hlsl.spirv.h"
 #include "ao_main_gi_3x3_far2_ps.hlsl.spirv.h"
 #include "ao_main_gi_ps.hlsl.spirv.h"
@@ -718,6 +722,8 @@ inline HostShaderBlob AmbientOcclusionPixelShader(uint32_t pass) {
     case 26: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_gi_2x2_far1_exact_ps);
     case 27: return MCLA_GPU_HOST_SHADER_BLOB(ao_normal_ps);
     case 28: return MCLA_GPU_HOST_SHADER_BLOB(ao_normal_ms_ps);
+    case 29: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_gi_2x4_far1_ps);
+    case 30: return MCLA_GPU_HOST_SHADER_BLOB(ao_main_gi_2x4_far1_exact_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(ao_contact_ps);
   }
 }

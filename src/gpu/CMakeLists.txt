@@ -175,6 +175,9 @@ add_executable(larecomp_ao_stable_test EXCLUDE_FROM_ALL ao_stable_test.cpp)
 # constants are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ssgi_stable_test, then run src/gpu/larecomp_ssgi_stable_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_ssgi_stable_test EXCLUDE_FROM_ALL ssgi_stable_test.cpp)
+# Quarter trace sizing, history and bilateral filter math, plus shader and render wiring.
+#   cmake --build <build dir> --target larecomp_ssgi_quarter_test, then run src/gpu/larecomp_ssgi_quarter_test <src/gpu dir>.
+add_executable(larecomp_ssgi_quarter_test EXCLUDE_FROM_ALL ssgi_quarter_test.cpp)
 # The cheaper forms of the occlusion's and the bounce light's shader maths (ao_fast.h: the polynomial acos and its error in sectors, the
 # blur's one exponential, the variants' counts; on the twins of the passes the cheaper arithmetic against before; given the src/gpu folder
 # it also checks that the shaders', CMake's and ao.cpp's constants are the header's) likewise:
@@ -1313,6 +1316,10 @@ larecomp_gpu_host_shader(ao_main_gi_3x3_far2_ps ps_6_0 SOURCE ao_main_ps
                          DEFINES AO_GI=1 AO_SLICES=3 AO_STEPS=3 AO_FAR_STEPS=2 AO_FAST_ACOS=1)
 larecomp_gpu_host_shader(ao_main_gi_2x2_far1_ps ps_6_0 SOURCE ao_main_ps
                          DEFINES AO_GI=1 AO_SLICES=2 AO_STEPS=2 AO_FAR_STEPS=1 AO_FAST_ACOS=1)
+larecomp_gpu_host_shader(ao_main_gi_2x4_far1_ps ps_6_0 SOURCE ao_main_ps
+                         DEFINES AO_GI=1 AO_SLICES=2 AO_STEPS=4 AO_FAR_STEPS=1 AO_FAST_ACOS=1)
+larecomp_gpu_host_shader(ao_main_gi_2x4_far1_exact_ps ps_6_0 SOURCE ao_main_ps
+                         DEFINES AO_GI=1 AO_SLICES=2 AO_STEPS=4 AO_FAR_STEPS=1)
 larecomp_gpu_host_shader(ao_main_gi_3x3_far2_exact_ps ps_6_0 SOURCE ao_main_ps
                          DEFINES AO_GI=1 AO_SLICES=3 AO_STEPS=3 AO_FAR_STEPS=2)
 larecomp_gpu_host_shader(ao_main_gi_2x2_far1_exact_ps ps_6_0 SOURCE ao_main_ps

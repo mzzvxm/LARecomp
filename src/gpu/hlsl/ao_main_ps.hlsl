@@ -117,6 +117,7 @@
 #endif
 
 #include "ao_common.hlsli"
+#include "ssgi_quarter.hlsli"
 
 #ifndef AO_GI
 #define AO_GI 0
@@ -328,6 +329,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 size = g_push.sizes.zw;
   const int2 isize = int2(size);
   const float tc = AoLoadLinear(g_push.slots.z, pixel);
+  const bool quarter = (g_push.slots2.z & kSsgiQuarterFlag) != 0u;
   const bool player_receiver = g_push.lin.z != 0.0f && CabinMarkedDepth(asuint(tc));
   // The sky, and what is past where the effect fades out entirely: nothing to occlude, nothing blocks.
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
@@ -341,8 +343,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float radius = g_push.lens.z;
   const float pixels_per_unit = 0.5f * size.y / (g_push.lens.y * tc);
   const float radius_px = min(radius * pixels_per_unit, kMaxRadiusShare * size.y);
-  if (radius_px < kMinOffsetPixels + 0.5f) {
-    return float4(1.0f, 0.0f, 0.0f, 0.0f);  // the effect would be inside the pixel
+  const bool near_ring = radius_px >= kMinOffsetPixels + 0.5f;
+  if (!quarter && !near_ring) {
+    return float4(1.0f, 0.0f, 0.0f, 0.0f);
   }
   const float falloff_ratio = max(g_push.lens.w, 0.01f);
   const float falloff_mul = -1.0f / (falloff_ratio * radius);
@@ -364,7 +367,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 clip_scale = 2.0f / size;
   const float2 spatial = AoSpatialNoise(pixel);
   const float2 noise = frac(spatial + AoNoiseShift());
-  const float min_offset = kMinOffsetPixels / radius_px;
+  const float min_offset = kMinOffsetPixels / max(radius_px, 1e-5f);
 
   // The far ring: from where the near samples end to the reach, if it goes meaningfully farther.
   const float far_reach = max(g_push.extra.w, 0.0f);
@@ -376,6 +379,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float near_end_px = radius_px * (1.0f + min_offset);
   const float far_px = min(far_reach * pixels_per_unit, kSsgiFarMaxRadiusShare * size.y);
   const bool far_ring = far_steps > 0u && far_px > near_end_px * kSsgiFarMinGrowth + kSsgiFarMinExtraPx;
+  if (!near_ring && !far_ring) {
+    return float4(1.0f, 0.0f, 0.0f, 0.0f);
+  }
   const float far_falloff_mul = -1.0f / (falloff_ratio * max(far_reach, 1e-3f));
 
   float visibility = 0.0f;
@@ -404,6 +410,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     uint occupied = 0u;
     float3 light = float3(0.0f, 0.0f, 0.0f);
     AO_UNROLL for (uint s = 0u; s < steps; ++s) {
+      if (!near_ring) {
+        break;
+      }
       const float step_noise = frac(noise.y + float(slice + s * slices) * 0.6180339887f);
       float share = (float(s) + step_noise) / float(steps);
       share = share * share + min_offset;
@@ -443,13 +452,18 @@ float4 main(float4 position : SV_Position) : SV_Target {
     // plain pass weighs it. The open sectors are the visibility, the radiance of the closed ones the
     // bounce.
     const float weight = projected_len * total;
-    visibility += weight * float(kSectors - countbits(occupied_near)) * (1.0f / float(kSectors));
+    if (!quarter) {
+      visibility += weight * float(kSectors - countbits(occupied_near)) * (1.0f / float(kSectors));
+    }
     bounce += weight * light;
     open_sum += weight;
   }
   // The weighted mean over the slices (the plain pass's ratio): an open surface is 1 exactly, and a
   // surface that is all radiance gets that radiance, whatever the slices' angles are.
   const float inv_open = 1.0f / max(open_sum, 1e-3f);
+  if (quarter) {
+    return float4(1.0f, NgHeld3(bounce * inv_open, 60000.0f));
+  }
   visibility = saturate(NgNumberOr(visibility * inv_open, 1.0f));   // a NaN is no occlusion, decided by the bits (nan_guard.hlsli): saturate(NaN) is 0 on D3D12 and open on Vulkan
   visibility = max(pow(visibility, g_push.shape.x), g_push.shape.y);
   if ((g_push.slots2.z & kRtOcclusionFlag) != 0u) {

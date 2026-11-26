@@ -34,6 +34,7 @@ namespace mcla::gpu::ao_size {
 inline constexpr uint32_t kHalfAboveLines = 1080;
 
 constexpr uint32_t Half(uint32_t n) { return (n + 1) / 2; }
+constexpr uint32_t Quarter(uint32_t n) { return n / 4 + (n % 4 != 0); }
 
 // What the rule looks at.
 struct Inputs {
@@ -47,6 +48,7 @@ struct Inputs {
   bool bounce_half = false;      // mcla_gpu_ssgi_low 1 or 2 at the bounce light's high: half size by the old setting
   bool half_above_ao = true;     // mcla_gpu_ao_half_above_1080
   bool half_above_bounce = true; // mcla_gpu_ssgi_half
+  bool bounce_quarter = false;  // the independent bounce trace does not size AO
 };
 
 struct Choice {
@@ -59,12 +61,13 @@ struct Choice {
 constexpr Choice Decide(const Inputs& in) {
   Choice c;
   const bool contact_ultra = in.contact && in.contact_ultra;
-  c.legacy_low = !(in.occlusion && in.occlusion_ultra) && !contact_ultra && !(in.bounce && in.bounce_ultra);
-  if (in.bounce && in.bounce_half && !contact_ultra) {
+  const bool shared_bounce = in.bounce && !in.bounce_quarter;
+  c.legacy_low = !(in.occlusion && in.occlusion_ultra) && !contact_ultra && !(shared_bounce && in.bounce_ultra);
+  if (shared_bounce && in.bounce_half && !contact_ultra) {
     c.legacy_low = true;  // the bounce light's high at half the size, whatever the occlusion's own quality
   }
   // With the bounce light on its images give the occlusion's visibility too, so its setting decides.
-  const bool enabled = in.occlusion && (in.bounce ? in.half_above_bounce : in.half_above_ao);
+  const bool enabled = in.occlusion && (shared_bounce ? in.half_above_bounce : in.half_above_ao);
   c.by_height = !c.legacy_low && enabled && in.render_height > kHalfAboveLines;
   c.low = c.legacy_low || c.by_height;
   c.contact_full = c.by_height && in.contact;
@@ -133,6 +136,7 @@ struct Frame {
   bool contact = false;
   bool contact_fast = true;   // mcla_gpu_contact_shadows_fast: the apply pass does the contact filter (at the picture's size)
   bool bounce = false;
+  bool bounce_quarter = false;
   bool debug_weight = false;  // the picture of debug view 6 / 9 (not counted)
 };
 
@@ -181,7 +185,7 @@ constexpr Held Bytes(const Frame& f) {
   if (levels) {
     h.levels = ImageBytes(s.level0[0], s.level0[1], kBytesR16) + ImageBytes(s.level1[0], s.level1[1], kBytesR16);
   }
-  const bool ao_scratch = f.occlusion && !f.bounce;
+  const bool ao_scratch = f.occlusion && (!f.bounce || f.bounce_quarter);
   const bool contact_scratch = f.contact && !split;
   const bool in_apply = ContactFilterInApply(f.contact_fast, f.choice);
   if (f.apply) {
@@ -192,7 +196,7 @@ constexpr Held Bytes(const Frame& f) {
       h.scratch += ImageBytes(s.ao[0], s.ao[1], kBytesR16);
     }
   }
-  if (f.occlusion && !f.bounce) {
+  if (ao_scratch) {
     h.history = 2 * ImageBytes(s.ao[0], s.ao[1], kBytesRG16);
   }
   if (split) {
@@ -201,7 +205,12 @@ constexpr Held Bytes(const Frame& f) {
       h.contact += ImageBytes(f.render[0], f.render[1], kBytesR16);
     }
   }
-  if (f.bounce) {
+  if (f.bounce_quarter && f.bounce) {
+    const uint32_t w = Quarter(f.render[0]), hgt = Quarter(f.render[1]);
+    h.bounce = ImageBytes(w, hgt, 5 * kBytesRGBA16 + 2 * kBytesR32) +
+               ImageBytes(Half(w), Half(hgt), kBytesRGBA16 + kBytesR16) +
+               ImageBytes(Quarter(w), Quarter(hgt), kBytesRGBA16 + kBytesR16);
+  } else if (f.bounce) {
     h.bounce = ImageBytes(s.ao[0], s.ao[1], kBytesRGBA16) + ImageBytes(s.level0[0], s.level0[1], kBytesRGBA16) +
                ImageBytes(s.level1[0], s.level1[1], kBytesRGBA16) +
                4 * ImageBytes(s.ao[0], s.ao[1], kBytesRGBA16) +  // gi_, gi_dn_, the two history images
@@ -216,6 +225,7 @@ constexpr Held BytesBefore(Frame f) {
   c.legacy_low = f.choice.legacy_low;
   c.low = f.choice.legacy_low;
   f.choice = c;
+  f.bounce_quarter = false;
   Held h;
   const Sizes s = SizesOf(f.render, f.choice);
   const bool levels = f.occlusion || f.probe;

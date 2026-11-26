@@ -80,6 +80,7 @@
 // debug view 6 run writes the confidence in x).
 
 #include "ao_common.hlsli"
+#include "ssgi_quarter.hlsli"
 #include "nan_guard.hlsli"
 
 // The plane test's width as a share of the distance (the denoise's), the depth agreement, the
@@ -173,6 +174,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint depth_slot = g_push.slots.w;
   const float tc = AoLoadLinear(depth_slot, pixel);
   const float4 current = g_textures[current_slot].Load(int3(pixel, 0));
+  const bool quarter = (g_push.slots2.z & kSsgiQuarterFlag) != 0u;
   const uint view = AoView();
   // The sky, and what is past where the effect fades out entirely: nothing to occlude, no bounce.
   if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
@@ -188,7 +190,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion, as in the plain pass.
   bool no_history = false;
-  const uint vehicle = AoVehicleId(pixel, tc);
+  const uint vehicle = quarter ? SsgiQuarterVehicle(tc) : AoVehicleId(pixel, tc);
   if (vehicle != 0u && !AoVehiclesAsWorld()) {
     no_history = true;
     const uint table = g_push.slots.x;
@@ -223,8 +225,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
         if (q.x < 0 || q.y < 0 || q.x >= isize.x || q.y >= isize.y) {
           continue;
         }
-        const float4 texel = g_textures[history_slot].Load(int3(q, 0));
         const float texel_depth = AoLoadLinear(depth_history_slot, q);
+        if (quarter && (texel_depth >= kAoSky * 0.5f || SsgiQuarterVehicle(texel_depth) != vehicle)) {
+          continue;
+        }
+        const float4 texel = g_textures[history_slot].Load(int3(q, 0));
         const float3 ph = AoHistoryPos(float2(q) + 0.5f, size, texel_depth, tan_half);
         const float off_plane = dot(ne, ph - pe) / sigma;
         float w = exp(-0.5f * off_plane * off_plane);
@@ -254,10 +259,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   for (int dy = -1; dy <= 1; ++dy) {
     for (int dx = -1; dx <= 1; ++dx) {
       const int2 q = clamp(pixel + int2(dx, dy), int2(0, 0), isize - 1);
+      const float tq = AoLoadLinear(depth_slot, q);
+      if (quarter && (tq >= kAoSky * 0.5f || SsgiQuarterVehicle(tq) != vehicle)) {
+        continue;
+      }
       const float4 v = g_textures[current_slot].Load(int3(q, 0));
       lo = min(lo, v.x);
       hi = max(hi, v.x);
-      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, AoLoadLinear(depth_slot, q));
+      const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, tq);
       const float off_plane = dot(normal, pq - pc) * inv_plane_sigma;
       const float w = exp2(kAoNegHalfLog2e * off_plane * off_plane);
       m1 += v.yzw * w;
@@ -268,11 +277,20 @@ float4 main(float4 position : SV_Position) : SV_Target {
   m1 /= wsum;
   const float3 spread = sqrt(max(m2 / wsum - m1 * m1, 0.0f));
   const float3 half_box = g_push.lens.w * spread + kBounceBoxFloor * m1 + AoClipHistoryShare() * history.yzw;
-  history.x = clamp(history.x, lo - kClampMargin, hi + kClampMargin);
+  if (!quarter) {
+    history.x = clamp(history.x, lo - kClampMargin, hi + kClampMargin);
+  }
   history.yzw = clamp(history.yzw, max(m1 - half_box, 0.0f), m1 + half_box);
 
   // Where the history does not hold, the wide blur of this frame instead of its own value.
   float4 fresh = current;
+  if (quarter) {
+    // x stores the per-texel effective sample count. Rejection restarts its
+    // convergence even while the rest of the frame has mature history.
+    const float length = SsgiQuarterLength(history.x, confidence, g_push.lens.z);
+    const float3 bounce = lerp(current.yzw, history.yzw, 1.0f - 1.0f / length);
+    return float4(length, NgHeld3(bounce, 60000.0f));
+  }
   if (confidence < 1.0f) {
     const float4 wide = AoBilateral4(current_slot, depth_slot, pixel, isize, tc, pc, normal, AoWideRadius());
     fresh = lerp(wide, current, confidence);

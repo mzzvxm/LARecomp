@@ -747,7 +747,7 @@ void SourceChecks(const std::string& gpu) {
   // ---- ao.cpp calls the owner where it recorded these passes ----
   Check(order(ao_cpp, {"if (extract) {", "screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);", "} else {", "pass_timing_->Mark(list, \"ao depth\");",
                        "screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));", "RecordNormals(list, plan, base, normals_);",
-                       "screen_->RecordColourPre(list, chain, base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot));", "screen_->CapturePre([&] { RecordColourChain(", "CarRtAo::Result rt;"}),
+                       "screen_->RecordColourPre(list, GiFrame(plan), base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot, gi_normal_slot));", "screen_->CapturePre([&] { RecordColourChain(", "CarRtAo::Result rt;"}),
         "ao.cpp calls the owner for the depth chain, the normals and the colour chain at the places it recorded them from, the old recording beside each");
   Check(Has(ao_cpp, "const bool extract = Extracting();") && Has(ao_cpp, "bool AmbientOcclusion::Extracting() const {\n  return screen_ && screen_->extract_on();\n}") &&
             Has(shared_h, "bool extract_on() const { return extract_ && wide_layout_ != nullptr; }") &&
@@ -755,8 +755,8 @@ void SourceChecks(const std::string& gpu) {
         "the switch is read by the owner once a frame and the AO asks it (an owner without its layout and shaders leaves the old path)");
   Check(Has(manifest, "\"mcla_gpu_screen_extract\": {\n  \"type\": \"bool\",\n  \"default\": \"true\",") && Has(manifest, "\"mcla_gpu_screen_extract\"") && Has(shared_cpp, "mcla_gpu_screen_extract"),
         "the A/B switch is a debug-only bool, on by default");
-  Check(Has(ao_cpp, "screen_->EndDepthChain(plan.gi.on);") && Has(ao_cpp, "linear_depth_image_ = screen_->FrameDepth0();"),
-        "the bounce light's ping-pong of the depth image is the owner's (the swap and the frame's level 0)");
+  Check(Has(ao_cpp, "screen_->EndDepthChain(plan.SharedGi());") && Has(ao_cpp, "linear_depth_image_ = screen_->FrameDepth0();"),
+        "the shared trace swaps the owner's depth history; the quarter trace keeps its own guide pair");
   Check(Has(cmake, "    screen_extract.cpp\n") && Has(cmake, "add_executable(larecomp_screen_extract_test EXCLUDE_FROM_ALL screen_extract_test.cpp)"), "the owner's second file and this test are in the build");
   // the AO no longer holds the images
   Check(!Has(ao_h, "HostImage depth_[3]") && !Has(ao_h, "HostImage depth_full_;") && !Has(ao_h, "HostImage depth_prev_;") && !Has(ao_h, "HostImage normal_;") && !Has(ao_h, "HostImage normal_full_;"),

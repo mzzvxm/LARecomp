@@ -29,6 +29,7 @@
 #include "screen_frame.h"
 #include "screen_rules.h"
 #include "ssgi_lights.h"
+#include "ssgi_level.h"
 #include "hlsl/interior_camera_rules.hlsli"
 
 namespace mcla::gpu::screen::extract {
@@ -182,6 +183,7 @@ struct ColourRecipe {
   uint32_t sample = 0;           // the depth's host sample (base.slots[1]), used when one_sample
   bool match_depth = false;
   uint32_t matched_depth_slot = 0;
+  bool quarter = false;
   // GI-BOUNCE-SS (ssgi_lights.h, hlsl/ao_color_ps.hlsl LightsHistory): the last frame's light, added to the level 0 texels. Off unless the frame has a usable light history; then the push block carries what the pass
   // reprojects with and the flag, and nothing else of the block changes.
   struct Lights {
@@ -216,6 +218,10 @@ inline AoPush ColourLevel0Push(const AoPush& base, const Frame& f, const ColourR
     // Half size (above 1080 lines): the texel is the mean of the 2x2 pixels' one sample each, the depth's own host sample.
     push.slots2[2] |= kColourOneSampleFlag;
     push.slots2[0] = c.sample;
+  }
+  if (c.quarter) {
+    push.slots2[2] = (push.slots2[2] & ~kLowFlag) | ssgi_level::kQuarterFlag;
+    push.slots2[1] = c.matched_depth_slot;
   }
   if (c.match_depth) {
     push.slots2[2] |= interior_camera::kSsgiMatchColour;

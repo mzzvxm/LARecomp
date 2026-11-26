@@ -19,6 +19,7 @@
 // Output: RGBA16F, the same layout.
 
 #include "ao_common.hlsli"
+#include "ssgi_quarter.hlsli"
 
 // The plane test's width as a share of the distance and its floor: tighter than the occlusion's (a bounce
 // colour changes at a corner, a visibility does not much).
@@ -42,6 +43,32 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float4 centre = g_textures[source_slot].Load(int3(pixel, 0));
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
   const float3 normal = AoNormalAt(g_push.slots2.w, depth_slot, pixel, isize, tc, pc);
+  if ((g_push.slots2.z & kSsgiQuarterFlag) != 0u) {
+    // One bilateral pass over the unfiltered history, wider on disocclusion.
+    const int radius = SsgiQuarterStep(centre.x);
+    const uint vehicle = SsgiQuarterVehicle(tc);
+    float3 sum = 4.0f * centre.yzw;
+    float weights = 4.0f;
+    [unroll] for (int y = -1; y <= 1; ++y) {
+      [unroll] for (int x = -1; x <= 1; ++x) {
+        const int2 q = pixel + int2(x, y) * radius;
+        if ((x == 0 && y == 0) || any(q < 0) || any(q >= isize)) {
+          continue;
+        }
+        const float td = AoLoadLinear(depth_slot, q);
+        if (td >= kAoSky * 0.5f || SsgiQuarterVehicle(td) != vehicle) {
+          continue;
+        }
+        const float3 p = AoViewPos(float2(q) + 0.5f, size, td);
+        // Use the plane for same-surface taps even along a grazing road.
+        const float w = (x == 0 || y == 0 ? 2.0f : 1.0f) *
+                        SsgiQuarterWeight(tc, tc, dot(normal, p - pc));
+        sum += g_textures[source_slot].Load(int3(q, 0)).yzw * w;
+        weights += w;
+      }
+    }
+    return float4(centre.x, sum / weights);
+  }
   // The plane weight's reciprocal and the image's, made once for the pass: a division in each of the 24 taps otherwise.
   const float inv_plane_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
   const float2 clip_scale = 2.0f / size;

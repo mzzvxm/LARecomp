@@ -12,6 +12,7 @@
 
 #include <rex/logging/log_category.h>
 
+#include "ao_size.h"
 #include "backend.h"
 #include "pass_timing.h"
 #include "records.h"
@@ -58,6 +59,7 @@ void ScreenShared::ReleaseLights() {
 
 void ScreenShared::LightsBeginFrame() {
   // Called from BeginFrame: the wants are the last frame's until the AO says this frame's (it plans after this). The images go back after a couple of seconds without a want.
+  lights_quarter_ = false;
   lights_before_done_ = false;
   lights_after_done_ = false;
   if (lights_wanted_) {
@@ -73,10 +75,10 @@ bool ScreenShared::CaptureLightsInto(HostImage& image, const char* label, const 
   if (!list || !passes_ || !edram_ || !summary.source || !LightsFrameMade()) {
     return false;  // no AO frame with the bounce light ran at this trigger (or, for a residual pair, no screen frame)
   }
-  const uint32_t width = frame_.traced[0];
-  const uint32_t height = frame_.traced[1];
   const uint32_t render_w = frame_.render[0];
   const uint32_t render_h = frame_.render[1];
+  const uint32_t width = lights_quarter_ ? ao_size::Quarter(render_w) : frame_.traced[0];
+  const uint32_t height = lights_quarter_ ? ao_size::Quarter(render_h) : frame_.traced[1];
   if (width == 0 || height == 0 || render_w < kLightsMinRenderSize || render_h < kLightsMinRenderSize) {
     return false;
   }
@@ -120,6 +122,15 @@ bool ScreenShared::CaptureLightsInto(HostImage& image, const char* label, const 
   push.slots[0] = colour_slot;
   push.slots[1] = depth.host_samples;
   push.slots[2] = (frame_.flags & screen::kFrameHalfTraced) != 0 ? 2u : 1u;
+  if (lights_quarter_) {
+    // CHECK: Compare the residual before/after pair on both APIs with moving lights.
+    if (lights_quarter_sample_ >= depth.host_samples) {
+      return false;
+    }
+    push.slots[1] = lights_quarter_sample_;
+    push.slots[2] = 4u;
+    push.slots[3] = lights_quarter_depth_slot_;
+  }
   push.sizes[0] = width;
   push.sizes[1] = height;
   push.sizes[2] = render_w;

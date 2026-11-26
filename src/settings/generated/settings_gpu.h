@@ -1563,6 +1563,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_ssgi_far_steps, -1, "Diagnostic: the far ring's samples on each side of each direction, 0 to 7 (0: no ring). -1: by the bounce "
     "light's quality (2 at ultra, 1 at high). Live.", rex::kDebugOnly, rex::Range{-1, 7});
 
+  REX_SETTING(bool, mcla_gpu_ssgi_quarter, true, "Use a quarter-width and quarter-height trace for screen-space bounce light. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssgi_half, true, "Diagnostic: above 1080 lines of render height the bounce light (every quality, high and ultra) runs at half the "
     "picture's size, like mcla_gpu_ao_half_above_1080 does the occlusion, and its colour chain takes one of the "
     "colour target's MSAA samples a pixel (the four pixels of a 2x2 block give the texel) instead of all of them: the "
@@ -2416,6 +2417,7 @@ inline auto& mcla_gpu_split_effects = g_gpu.mcla_gpu_split_effects;
 inline auto& mcla_gpu_ssgi = g_gpu.mcla_gpu_ssgi;
 inline auto& mcla_gpu_ssgi_clamp = g_gpu.mcla_gpu_ssgi_clamp;
 inline auto& mcla_gpu_ssgi_far_steps = g_gpu.mcla_gpu_ssgi_far_steps;
+inline auto& mcla_gpu_ssgi_quarter = g_gpu.mcla_gpu_ssgi_quarter;
 inline auto& mcla_gpu_ssgi_half = g_gpu.mcla_gpu_ssgi_half;
 inline auto& mcla_gpu_ssgi_lights = g_gpu.mcla_gpu_ssgi_lights;
 inline auto& mcla_gpu_ssgi_lights_gain = g_gpu.mcla_gpu_ssgi_lights_gain;

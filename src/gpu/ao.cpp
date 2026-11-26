@@ -503,6 +503,8 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVTemporalGi: return "ssgi temporal";
     case kVTemporalGiMs: return "ssgi temporal (multisampled)";
     case kVAtrous: return "ssgi a-trous";
+    case kVMainGiQuarterHigh: return "ssgi quarter 2x4+1";
+    case kVMainGiQuarterHighExact: return "ssgi quarter 2x4+1 (exact acos)";
     case kVNormal: return "ao normals";
     case kVNormalMs: return "ao normals (multisampled)";
     default: break;
@@ -693,6 +695,15 @@ void AmbientOcclusion::Shutdown() {
     image = HostImage{};
   }
   gi_weight_ = HostImage{};
+  for (HostImage& image : gi_depth_) {
+    image = HostImage{};
+  }
+  for (HostImage& image : gi_depth_mip_) {
+    image = HostImage{};
+  }
+  gi_normal_ = HostImage{};
+  quarter_history_ = {};
+  gi_quarter_logged_[0] = gi_quarter_logged_[1] = gi_quarter_logged_[2] = 0;
   vehicle_table_ = HostImage{};
   car_sun_lookup_ = HostImage{};
   // The contact skip's block image and the statistics' image and readback: left out of this list they outlived the device, which
@@ -797,6 +808,12 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
       }
       variants.push_back(variant);
     }
+    if (larecomp::settings::mcla_gpu_ssgi_quarter.Get()) {
+      variants.push_back(kVDepth);
+      variants.push_back(kVDepthMs);
+      variants.push_back(kVMip);
+      variants.push_back(fast_math ? kVMainGiQuarterHigh : kVMainGiQuarterHighExact);
+    }
     if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
       variants.push_back(GiApplyVariant(false, 8));
     }
@@ -882,6 +899,8 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVTemporalGi: return make(kPassTemporalGi, kGiFormat, copy, 1);
     case kVTemporalGiMs: return make(kPassTemporalGiMs, kGiFormat, copy, 1);
     case kVAtrous: return make(kPassAtrous, kGiFormat, copy, 1);
+    case kVMainGiQuarterHigh: return make(kPassMainGiQuarterHigh, kGiFormat, copy, 1);
+    case kVMainGiQuarterHighExact: return make(kPassMainGiQuarterHighExact, kGiFormat, copy, 1);
     case kVNormal: return make(kPassNormal, plume::RenderFormat::R16G16_UNORM, copy, 1);
     case kVNormalMs: return make(kPassNormalMs, plume::RenderFormat::R16G16_UNORM, copy, 1);
     case kVVehicleTable:
@@ -1043,8 +1062,12 @@ void AmbientOcclusion::HoldUntilBuilt(Mode* occlusion, Mode* contact, Mode* boun
 }
 
 plume::RenderPipeline* AmbientOcclusion::MainGiPipeline(const GiPlan& gi) {
-  plume::RenderPipeline* pipeline =
-      Pipeline(MainGiVariant(gi.fewer, gi.FarStepsSent(), larecomp::settings::mcla_gpu_ao_fast_math.Get()));
+  const bool fast = larecomp::settings::mcla_gpu_ao_fast_math.Get();
+  const uint32_t far_steps = gi.FarStepsSent();
+  const uint32_t variant = gi.quarter && gi.fewer
+      ? (far_steps == 1u ? (fast ? kVMainGiQuarterHigh : kVMainGiQuarterHighExact) : kVMainGi)
+      : MainGiVariant(gi.fewer, far_steps, fast);
+  plume::RenderPipeline* pipeline = Pipeline(variant);
   // The compilation that reads the counts, if the one for them could not be made (it said why): the push block carries them.
   return pipeline ? pipeline : Pipeline(kVMainGi);
 }
@@ -1256,6 +1279,13 @@ uint64_t AmbientOcclusion::HeldBytes() const {
     add(image);
   }
   add(gi_weight_);
+  for (const HostImage& image : gi_depth_) {
+    add(image);
+  }
+  for (const HostImage& image : gi_depth_mip_) {
+    add(image);
+  }
+  add(gi_normal_);
   add(vehicle_table_);
   add(car_sun_lookup_);
   if (rt_ao_) {
@@ -1496,6 +1526,7 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks, bool requeste
     const temporal::Cut cut =
         temporal::TestCut(camera, previous_, have_last_step_ ? last_step_ : nullptr);
     if (cut.fires || requested_cut) {
+      quarter_history_.valid = false;
       history_valid_ = false;
       history_cut_ = true;
       have_last_step_ = false;
@@ -1837,6 +1868,7 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     in.bounce = plan.gi.on;
     in.bounce_ultra = plan.gi.on && plan.gi.mode == Mode::kUltra;
     in.bounce_half = plan.gi.on && plan.gi.half;
+    in.bounce_quarter = plan.gi.quarter;
     in.half_above_ao = larecomp::settings::mcla_gpu_ao_half_above_1080.Get();
     in.half_above_bounce = plan.gi.half_above;
     const ao_size::Choice choice = ao_size::Decide(in);
@@ -1882,7 +1914,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   // The visibility passes' two images are read by the plain occlusion (the bounce light has its own images) and the contact shadows'
   // march and filter pass (the filter pass is not run where the apply does the filter): nothing else, so they are not held otherwise.
   const bool screen_ao = plan.occlusion && plan.rtao.screen_pass;
-  const bool ao_scratch = plan.apply && screen_ao && !plan.gi.on;
+  const bool ao_scratch = plan.apply && screen_ao && !plan.SharedGi();
   const bool raw_needed = ao_scratch || contact_scratch;
   const bool denoised_needed = ao_scratch || (contact_scratch && !in_apply);
   // The depth chain's images (level 0, the coarser levels while the occlusion or the probe runs, the contact shadows' full size depth beside a half size trace) are the shared screen products'
@@ -1936,7 +1968,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   }
   // The bounce light test keeps its own history (RGBA16F, EnsureGiImages) and the occlusion's is not made
   // while it runs: a frame that turns out not to have the test asks again with the test off (Run).
-  if (ok && screen_ao && !plan.gi.on) {
+  if (ok && screen_ao && !plan.SharedGi()) {
     ok = passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
                               plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
          passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
@@ -1954,7 +1986,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
     history_cut_ = false;
   }
   // The picture of debug view 6, made only while that view is shown.
-  if (ok && screen_ao && !plan.gi.on && plan.view == 6u) {
+  if (ok && screen_ao && !plan.SharedGi() && plan.view == 6u) {
     ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_FLOAT,
                               "ao history weight");
   } else if (plan.rtao.screen_pass && weight_.texture) {
@@ -1976,7 +2008,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
                                : (plan.low ? ", half size by the quality's own rule" : ""),
                 levels ? " with two coarser levels" : "",
                 raw_needed ? (denoised_needed ? ", visibility R16_FLOAT x2" : ", visibility R16_FLOAT") : "",
-                plan.occlusion && !plan.gi.on ? ", history R16G16_FLOAT x2" : "",
+                plan.occlusion && !plan.SharedGi() ? ", history R16G16_FLOAT x2" : "",
                 split ? std::format(", the contact shadows keep the picture's size ({}x{}: their own depth R32_FLOAT and "
                                     "visibility R16_FLOAT{})",
                                     plan.render[0], plan.render[1], in_apply ? "" : " x2")
@@ -2102,7 +2134,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // The occlusion's own quality picks the slices and steps; the images are at half the picture's size
   // (the flag the shaders read) when nothing that is on asks for more (Plan::low).
   // (the bounce light's own quality when it runs: its main pass is the occlusion's)
-  const bool ao_fewer = plan.gi.on ? plan.gi.fewer : plan.mode == Mode::kHigh;
+  const bool ao_fewer = plan.SharedGi() ? plan.gi.fewer : plan.mode == Mode::kHigh;
   const bool low = plan.low;
   // (the counts the main pass's pipelines have compiled in: ao_fast.h, MainVariant and MainGiVariant pick the one that fits)
   const uint32_t slices = ao_fewer ? ao_fast::kHighSlices : ao_fast::kUltraSlices;
@@ -2123,7 +2155,7 @@ void AmbientOcclusion::FillPush(Push* push, const ResolveCache::Summary& summary
   // down -z): tan of the half field of view from its x and y scales, the depth rows for the
   // linearisation (t = (P32 - ndc P33) / (P22 - ndc P23), ndc = 1 - stored depth).
   const temporal::Mat4& p = previous_.projection;
-  const float radius = look_.radius * (plan.gi.on ? plan.gi.radius : 1.0f);
+  const float radius = look_.radius * (plan.SharedGi() ? plan.gi.radius : 1.0f);
   const float fade_end = float(std::clamp(larecomp::settings::mcla_gpu_ao_fade_end.Get(), 20.0, 1000.0));
   push->lens[0] = float(1.0 / std::max(std::fabs(p.m[0][0]), 1e-9));
   push->lens[1] = float(1.0 / std::max(std::fabs(p.m[1][1]), 1e-9));
@@ -2291,9 +2323,9 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) c
     use.why = HistoryWhy::kView;
   } else if (history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]) {
     use.why = HistoryWhy::kSize;
-  } else if (history_gi_ != plan.gi.on) {
+  } else if (history_gi_ != plan.SharedGi()) {
     use.why = HistoryWhy::kKind;
-  } else if (history_gi_cabin_id_ != plan.gi.cabin_id) {
+  } else if (plan.SharedGi() && history_gi_cabin_id_ != plan.gi.cabin_id) {
     use.why = HistoryWhy::kView;
   } else {
     bool cut = false;
@@ -2668,11 +2700,15 @@ void AmbientOcclusion::RecordNormals(plume::RenderCommandList* list, const Plan&
 bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            const Plan& requested) {
   // The frame's plan, which the SSGI test may take its part out of (PrepareGi).
+  if (!summary.source || !list) {
+    return false;
+  }
   Plan plan = requested;
   EdramTargets::Target& depth_target = *summary.source;
   const bool ms = depth_target.host_samples > 1;
+  plan.gi.sample_key = (depth_target.host_samples << 8) | summary.host_sample;
   RtAo::Inputs rtao_in;
-  const bool plan_rtao = rtao_ && plan.occlusion && rtao_->selected_;
+  const bool plan_rtao = rtao_ && rtao_scene_ && plan.occlusion && rtao_->selected_;
   if (plan_rtao) {
     UpdateLook();
     const CarRtView& top_level = rtao_scene_->View();
@@ -2686,7 +2722,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     rtao_in.interior = rtao::InsideBox(camera, top_level.player_box, rtao::kCabinPad);
     rtao_in.cockpit = interior_camera::IsCockpit(CurrentRenderedCameraRig());
     rtao_in.frame = frame_;
-    plan.rtao = rtao_->PlanFrame(rtao_in, top_level, plan.gi.on);
+    plan.rtao = rtao_->PlanFrame(rtao_in, top_level, plan.SharedGi());
   }
   const bool screen_ao = plan.occlusion && plan.rtao.screen_pass;
   // Everything that can fail before anything is recorded. The coarser depth levels are the
@@ -2740,14 +2776,16 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (plan.gi.on) {
     if (PrepareGi(summary, list, plan, &gi_colour, &gi_colour_slot)) {
       gi_idle_frames_ = 0;
-      // The test has a history of its own: the occlusion's is given back (made again if the test goes).
-      for (HostImage& image : history_) {
-        if (image.texture) {
-          passes_->ReleaseImage(image);
+      if (plan.SharedGi()) {
+        quarter_history_.valid = false;
+        for (HostImage& image : history_) {
+          if (image.texture) {
+            passes_->ReleaseImage(image);
+          }
         }
-      }
-      if (weight_.texture) {
-        passes_->ReleaseImage(weight_);
+        if (weight_.texture) {
+          passes_->ReleaseImage(weight_);
+        }
       }
     } else {
       // This frame is the plain occlusion: its history is what EnsureImages left out for the test.
@@ -2831,7 +2869,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   normals_.depth_source_bits = plan.low && (normals_.on || plan.rtao.on || plan.gi.cabin_id != 0u);
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
-  if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
+  if (plan.SharedGi() && larecomp::settings::mcla_gpu_ao_stable.Get()) {
     plan.gi.atrous = uint32_t(ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1]));
   }
 
@@ -2894,10 +2932,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       RecordNormals(list, plan, base, normals_);
     }
   }
-  if (plan.gi.on) {
+  uint32_t gi_normal_slot = 0;
+  if (plan.gi.on && gi_colour) {
+    if (plan.gi.quarter) {
+      gi_normal_slot = RecordGiGuides(list, summary, plan, base);
+    }
     if (extract) {
       // The bounce light's colour chain (colour_pre, capped), recorded by the shared screen products too: the colour_pre step of frame_order.h's table.
-      screen_->RecordColourPre(list, chain, base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot));
+      screen_->RecordColourPre(list, GiFrame(plan), base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot, gi_normal_slot));
     } else {
       // The old path: the capture is the shared screen products' (they keep the chain's images and count it made this frame: screen_shared.h CapturePre); the pass body, its pipelines and its
       // constants are this class's, so what is recorded, and where, is what it was.
@@ -3015,7 +3057,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   const HostImage* screen_term = nullptr;
   const auto record_visibility = [&] {
     // The visibility from the chain.
-    pass_timing_->Mark(list, plan.gi.on ? "ssgi visibility" : "ao visibility");
+    pass_timing_->Mark(list, plan.SharedGi() ? "ssgi visibility" : "ao visibility");
     push = base;
     // The normal image's slot (0: none): in lin.y for the main pass (a number, as the traced image's in lin.x; the pass reads no projection row) and in slots2.w for the denoise passes
     // below (hlsl/ao_common.hlsli AoPush); the bounce light's push copy sets its own slots2.w after this.
@@ -3044,7 +3086,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // facing weight (shape.z, shape.w), and writes (visibility, bounce) into gi_, whose x channel the
     // first denoise pass below reads in place of raw_.
     HostImage* main_out = &raw_;
-    if (plan.gi.on) {
+    if (plan.SharedGi()) {
       Push gi_push = push;
       gi_push.slots[0] = Colour(0).slot;
       gi_push.slots[1] = Colour(1).slot;
@@ -3070,16 +3112,16 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // The history's two images take turns as the one this frame reads and the one it writes: the
     // test's (RGBA16F) or the occlusion's (RG16F).
     const uint32_t out_index = 1 - history_index_;
-    HostImage* history_pair = plan.gi.on ? gi_hist_ : history_;
+    HostImage* history_pair = plan.SharedGi() ? gi_hist_ : history_;
     HostImage& history_in = history_pair[history_index_];
     HostImage& history_out = history_pair[out_index];
     // The denoise: once with a history to average into, twice (the second pass back into the first
     // one's input image) without. It is never left out, whatever the quality or the upscaler.
-    pass_timing_->Mark(list, plan.gi.on ? "ssgi denoise" : "ao denoise");
+    pass_timing_->Mark(list, plan.SharedGi() ? "ssgi denoise" : "ao denoise");
     push.slots[2] = main_out->slot;
     push.slots[3] = Depth(0).slot;
     HostImage* visibility = nullptr;
-    if (plan.gi.on) {
+    if (plan.SharedGi()) {
       // The same blur over the four channels. The test's second pass (a frame with no history) goes into
       // the history's idle image: nothing reads it this frame before the accumulation writes the other.
       plume::RenderPipeline* denoise_gi = Pipeline(kVDenoiseGi);
@@ -3106,14 +3148,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // depth target (Texture2D<uint4> / Texture2DMS<uint4>) in the depth target's SHADER_READ
     // layout. The census line "history:" counts the frames that used a history against the resets
     // and where the camera's motion came from.
-    pass_timing_->Mark(list, plan.gi.on ? "ssgi temporal" : "ao temporal");
+    pass_timing_->Mark(list, plan.SharedGi() ? "ssgi temporal" : "ao temporal");
     push = base;
     push.slots[1] = ao_gbuffer::PackHigh(base.slots[1], normals_.ao_slot);  // the host sample, and the normal image's slot in the high half
     push.slots[2] = visibility->slot;
     push.slots[3] = Depth(0).slot;
     // Without a history the slot is any readable image: the shader does not read it.
     push.slots2[0] = use.on ? history_in.slot : Depth(0).slot;
-    if (plan.gi.on) {
+    if (plan.SharedGi()) {
       // The test's accumulation: the last frame's depth is the image the depth pass wrote then (slots2.y
       // carried the frame number, which this pass does not read), the weight the bounce's history keeps
       // (its own number of frames) and the width of its clip.
@@ -3135,7 +3177,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     uint32_t vehicle_slot = kNoSlot;
     VehicleTableOut drawn_vehicles;
     uint32_t vehicle_rows;
-    if (plan.rtao.on && use.on && VehicleTableNow(&drawn_vehicles)) {
+    if ((plan.rtao.on || plan.gi.quarter) && use.on && VehicleTableNow(&drawn_vehicles)) {
       vehicle_slot = drawn_vehicles.slot;
       vehicle_rows = drawn_vehicles.ids;
     } else {
@@ -3188,15 +3230,15 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // view.
     // The test's weight picture is also what its debug view 9 shows.
     plume::RenderPipeline* accumulate =
-        plan.gi.on ? Pipeline(ms ? kVTemporalGiMs : kVTemporalGi) : temporal_pipeline;
-    HostImage& weight_image = plan.gi.on ? gi_weight_ : weight_;
-    if (plan.view == 6u || (plan.gi.on && plan.gi.view == 9u)) {
+        plan.SharedGi() ? Pipeline(ms ? kVTemporalGiMs : kVTemporalGi) : temporal_pipeline;
+    HostImage& weight_image = plan.SharedGi() ? gi_weight_ : weight_;
+    if (plan.view == 6u || (plan.SharedGi() && plan.gi.view == 9u)) {
       push.slots2[2] = (push.slots2[2] & ~0xFFu) | 6u;
       DrawPass(list, weight_image, accumulate, push);
     }
     push.slots2[2] &= ~0xFFu;  // the frame's own run writes no debug picture
     DrawPass(list, history_out, accumulate, push);
-    if (plan.gi.on) {
+    if (plan.SharedGi()) {
       // The a-trous filter of the bounce over the history, into the two images nothing needs now (the
       // denoised image and the history's idle one), each iteration reading the last one's output: the
       // history itself is never filtered.
@@ -3235,9 +3277,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     history_tan_[1] = base.lens[1];
     // The test's bounce averages over more frames than the visibility does: its age runs on to its cap.
     history_age_ =
-        use.on ? std::min(use.age + 1, plan.gi.on ? std::max(use.cap, plan.gi.history) : use.cap)
+        use.on ? std::min(use.age + 1, plan.SharedGi() ? std::max(use.cap, plan.gi.history) : use.cap)
                : 0u;
-    history_gi_ = plan.gi.on;
+    history_gi_ = plan.SharedGi();
     history_gi_cabin_id_ = plan.gi.cabin_id;
     screen_term = &(plan.view == 6u ? weight_image : history_out);
     ao_slot = screen_term->slot;
@@ -3276,6 +3318,21 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
           rt_contact_slot_ = city_sun;
         record_visibility();
       }
+    }
+  }
+  if (plan.gi.on && plan.gi.quarter) {
+    // CHECK: Verify temporal convergence, cuts and the independent RTAO/AO inputs in game.
+    const HistoryUse use = ChooseQuarterHistory(plan);
+    uint32_t vehicle_slot = kNoSlot;
+    VehicleTableOut vehicles;
+    if (use.on && VehicleTableNow(&vehicles)) {
+      vehicle_slot = vehicles.slot;
+    } else {
+      RecordVehicleTable(list, use, &vehicle_slot);
+    }
+    RecordQuarterGi(list, plan, base, summary.stencil_slot, ms, gi_normal_slot, vehicle_slot, gi_history, gi_bounce);
+    if (screen_ && gi_bounce) {
+      screen_->SetQuarterLightGuide(gi_depth_[quarter_history_.index].slot, summary.host_sample);
     }
   }
   const bool screen_disabled = plan_rtao && rtao_->play_view_ && rtao_->screen_ == rtao::Screen::kOff;
@@ -3362,7 +3419,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // (x, as the history kept it) and the bounce, the colour chain's level 0 the pixel's own colour (and
       // whether it is a source of light); the strength rides in shape.y, the gain limit in the flags' bits 8-15 and
       // the cap (the ceiling) in bits 26-31.
-      push.slots[2] = rtao_slot != kNoSlot ? rtao_slot : gi_bounce->slot;
+      if (plan.gi.quarter) {
+        push.slots[1] |= ssgi_level::kQuarterApplyFlag;
+        push.slots[2] = ao_gbuffer::PackHigh(ao_slot, gi_bounce->slot);
+        push.slots2[0] = ao_gbuffer::PackHigh(push.slots2[0], gi_depth_[quarter_history_.index].slot);
+        push.slots2[3] = ao_gbuffer::PackHigh(push.slots2[3], summary.stencil_slot & 0xFFFFu);
+      } else {
+        push.slots[2] = rtao_slot != kNoSlot ? rtao_slot : gi_bounce->slot;
+      }
       push.slots2[1] |= Colour(0).slot;
       push.shape[1] = plan.gi.strength;
       push.slots2[2] = (push.slots2[2] & ~(ssgi_light::kLimitMask | ssgi_light::kCapMask)) |
@@ -3372,7 +3436,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         push.slots2[2] = (push.slots2[2] & ~0xFFu) | (kGiApplyViewBase + plan.gi.apply_view);
       }
     }
-    if (plan.gi.on && plan.gi.view != 0) {
+    if (plan.gi.on && plan.gi.view != 0 && gi_history && gi_bounce) {
       // The test's debug picture in place of the apply: an image of the test over the colour target
       // (hlsl/ao_color_ps.hlsl pass 2): 1 the bounce, 2-4 the chain's levels, 5 the bounce cleaned,
       // 6 the visibility.
@@ -3381,6 +3445,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                                : v == 7           ? *gi_history
                                : v == 8           ? *gi_bounce
                                : v == 9           ? gi_weight_
+                               : v == 6 && plan.gi.quarter && screen_term ? *screen_term
                                                   : gi_;
       push = base;
       push.slots[2] = shown.slot;
@@ -3403,7 +3468,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (applied && plan.view == 0u && plan.gi.view == 0u && plan.gi.apply_view == 0u) {  // not under one of the occlusion's own debug pictures
       occlusion_view_.valid = true;
       occlusion_view_.has_visibility = has_ao_term;
-      occlusion_view_.visibility_slot = rtao_slot != kNoSlot ? rtao_slot : (plan.gi.apply && gi_bounce) ? gi_bounce->slot : ao_slot;
+      occlusion_view_.visibility_slot = rtao_slot != kNoSlot ? rtao_slot : (plan.SharedGi() && plan.gi.apply && gi_bounce) ? gi_bounce->slot : ao_slot;
       occlusion_view_.traced[0] = plan.ao[0];
       occlusion_view_.traced[1] = plan.ao[1];
       occlusion_view_.render[0] = plan.render[0];
@@ -3414,14 +3479,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       occlusion_view_.paint_power = ao_paint::PowerOf(look_.paint_code);
       capture_ao_ = !has_ao_term ? nullptr
                     : rtao_slot != kNoSlot && rtao_ ? rtao_->ComposedImage(rtao_slot)
-                    : plan.gi.apply && gi_bounce ? gi_bounce : screen_term;
+                    : plan.SharedGi() && plan.gi.apply && gi_bounce ? gi_bounce : screen_term;
       capture_bounce_ = plan.gi.apply && gi_bounce
-                            ? (rtao_slot != kNoSlot && rtao_ ? rtao_->ComposedImage(rtao_slot) : gi_bounce)
+                            ? (plan.SharedGi() && rtao_slot != kNoSlot && rtao_ ? rtao_->ComposedImage(rtao_slot) : gi_bounce)
                             : nullptr;
     }
   }
   if (plan.gi.on) {
-    if (gi_runs_ == 0) {
+    if (gi_runs_ == 0 && !plan.gi.quarter) {
       REXLOG_INFO("[gpu] ssgi: the first frame of the bounce light test: the colour chain {}x{} and "
                   "two coarser levels (RGBA16F) from the {}-sample main colour target, the "
                   "visibility bitmask in place of the GTAO horizons ({}), thickness {:.2f} ({}), a "
@@ -3442,7 +3507,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                   plan.gi.history, plan.gi.clamp_width, 100.0 * double(plan.gi.clip_history), plan.gi.atrous,
                   plan.ao[1]);
     }
-    if (plan.gi.apply && !gi_apply_logged_) {
+    if (plan.gi.apply && !plan.gi.quarter && !gi_apply_logged_) {
       gi_apply_logged_ = true;
       REXLOG_INFO("[gpu] ssgi: the bounce light is added to the picture ({} from {}): {} slices and {} steps "
                   "at {}x{} for the {}x{} picture, plus {} far ring step(s) a side out to {:.1f} m, strength "
@@ -3552,7 +3617,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   }
   // The depth image of this frame is the next frame's depth history with the bounce light: level 0 and the history trade places now that nothing of this frame reads level 0 again (the next frame's
   // depth pass writes the other); this frame's linear depth, for the passes that read it after these (FrameLinearDepth), is the history image then. The owner keeps both (SS-2).
-  screen_->EndDepthChain(plan.gi.on);
+  screen_->EndDepthChain(plan.SharedGi());
   linear_depth_image_ = screen_->FrameDepth0();
   linear_depth_tan_[0] = base.lens[0];
   linear_depth_tan_[1] = base.lens[1];
@@ -4469,9 +4534,12 @@ void AmbientOcclusion::ProcessContactStat(uint64_t frame, uint64_t generation, u
 void AmbientOcclusion::PlanGi(Plan* plan) {
   plan->gi = GiPlan{};
   plan->lights_residual = false;
-  // The game view, the pause menu's world and the garage have it; the map (the 4x view seen from 9 km: the
-  // bounce's few metres are under a pixel) runs the plain occlusion (menu_world.h RulesFor).
-  if (!gi_active_ || !plan->occlusion || !plan->apply || !menu_world::RulesFor(trigger_world_).bounce) {
+  // Keep the screen trace available in the map as well as in play, pause and garage. The depth fade
+  // still leaves the far overhead map view untouched.
+  const bool quarter = larecomp::settings::mcla_gpu_ssgi_quarter.Get();
+  const bool view_has_bounce = menu_world::RulesFor(trigger_world_).bounce ||
+                               (quarter && trigger_world_ == menu_world::World::kMap);
+  if (!gi_active_ || !plan->occlusion || !plan->apply || !view_has_bounce) {
     return;
   }
   // The albedo estimate divides a pixel's colour by the light the game's constants say fell on it: with no light
@@ -4484,6 +4552,7 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   }
   GiPlan& g = plan->gi;
   g.on = true;
+  g.quarter = quarter;
   // What the albedo estimate divides by, once for each world the bounce light first runs in (the garage's lamps are the
   // question: if its ambient and sun are near nothing the estimate reads every pixel as bright, and this line says so).
   if (const size_t world_index = size_t(trigger_world_); world_index < std::size(gi_light_logged_) && !gi_light_logged_[world_index]) {
@@ -4501,7 +4570,7 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   // 3 at the picture's size and its high is cheaper by fewer directions, by half the size, or both
   // (mcla_gpu_ssgi_low, named for the level that was called low).
   const int low_how = std::clamp(larecomp::settings::mcla_gpu_ssgi_low.Get(), 0, 2);
-  g.fewer = gi_test_ ? plan->mode == Mode::kHigh : (g.mode == Mode::kHigh && low_how != 1);
+  g.fewer = g.mode == Mode::kHigh && (quarter || gi_test_ || low_how != 1);
   g.half = !gi_test_ && g.mode == Mode::kHigh && low_how >= 1;
   g.half_above = larecomp::settings::mcla_gpu_ssgi_half.Get();  // above 1080 lines, every quality (ao_size.h)
   // GI-BOUNCE-SS: the lights' share of the radiance (ssgi_lights.h): on wherever the bounce light runs, from the owner's extraction; the debug switch is the chain as it was (live).
@@ -4627,12 +4696,13 @@ bool AmbientOcclusion::PrepareGi(const ResolveCache::Summary& summary,
     const bool colour_ready = Extracting() ? screen_->ChainReady(screen::extract::KindsFor(false, false, false, true, ms, false))
                                            : (Pipeline(ms ? kVColorMs : kVColor) != nullptr && Pipeline(kVColorMip) != nullptr);
     plume::RenderPipeline* view = plan.gi.view != 0 ? Pipeline(GiViewVariant(depth.host_samples)) : main;
-    plume::RenderPipeline* denoise = Pipeline(kVDenoiseGi);
+    plume::RenderPipeline* denoise = plan.gi.quarter ? main : Pipeline(kVDenoiseGi);
     plume::RenderPipeline* temporal = Pipeline(ms ? kVTemporalGiMs : kVTemporalGi);
-    plume::RenderPipeline* atrous = plan.gi.atrous != 0 ? Pipeline(kVAtrous) : main;
+    plume::RenderPipeline* atrous = plan.gi.quarter || plan.gi.atrous != 0 ? Pipeline(kVAtrous) : main;
+    const bool guides_ready = !plan.gi.quarter || (Pipeline(ms ? kVDepthMs : kVDepth) && Pipeline(kVMip));
     plume::RenderPipeline* apply =
         plan.gi.apply ? Pipeline(GiApplyVariant(plan.gi.apply_view != 0, depth.host_samples)) : main;
-    if (!main || !colour_ready || !view || !denoise || !temporal || !atrous || !apply) {
+    if (!main || !colour_ready || !view || !denoise || !temporal || !atrous || !apply || !guides_ready) {
       why = "a pipeline of the test could not be made";
     } else if (!EnsureGiImages(plan)) {
       why = "an image of the test could not be made";
@@ -4653,19 +4723,39 @@ bool AmbientOcclusion::PrepareGi(const ResolveCache::Summary& summary,
 }
 
 bool AmbientOcclusion::EnsureGiImages(const Plan& plan) {
-  // The colour chain's images are the owner's (the same sizes, format and names as before).
-  const uint32_t colour_sizes[screen::kColourPreLevels][2] = {{plan.ao[0], plan.ao[1]}, {plan.level[0][0], plan.level[0][1]}, {plan.level[1][0], plan.level[1][1]}};
-  bool ok =
-      screen_ && screen_->EnsureColourPre(colour_sizes, kGiFormat) &&
-      passes_->EnsureImage(gi_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi visibility and bounce") &&
-      passes_->EnsureImage(gi_dn_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi denoised") &&
-      passes_->EnsureImage(gi_hist_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 0") &&
-      passes_->EnsureImage(gi_hist_[1], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 1") &&
-      screen_->EnsureDepthHistory(plan.ao[0], plan.ao[1]);  // the owner's image: the partner of the depth chain's level 0
+  if (!passes_ || !screen_) {
+    return false;
+  }
+  const screen::extract::Frame frame = GiFrame(plan);
+  const auto [width, height] = frame.traced;
+  const uint32_t colour_sizes[screen::kColourPreLevels][2] = {
+      {width, height}, {frame.level[0][0], frame.level[0][1]}, {frame.level[1][0], frame.level[1][1]}};
+  bool ok = screen_->EnsureColourPre(colour_sizes, kGiFormat) &&
+      passes_->EnsureImage(gi_, width, height, kGiFormat, "ssgi visibility and bounce") &&
+      passes_->EnsureImage(gi_dn_, width, height, kGiFormat, "ssgi denoised") &&
+      passes_->EnsureImage(gi_hist_[0], width, height, kGiFormat, "ssgi history 0") &&
+      passes_->EnsureImage(gi_hist_[1], width, height, kGiFormat, "ssgi history 1");
+  if (ok && plan.gi.quarter) {
+    screen_->ReleaseDepthHistory();  // the independent trace has its own depth pair
+    constexpr auto guide_format = plume::RenderFormat::R32_FLOAT;
+    constexpr auto mip_format = plume::RenderFormat::R16_FLOAT;
+    ok = passes_->EnsureImage(gi_depth_[0], width, height, guide_format, "ssgi quarter depth 0") &&
+         passes_->EnsureImage(gi_depth_[1], width, height, guide_format, "ssgi quarter depth 1") &&
+         passes_->EnsureImage(gi_depth_mip_[0], frame.level[0][0], frame.level[0][1], mip_format, "ssgi depth 1/2") &&
+         passes_->EnsureImage(gi_depth_mip_[1], frame.level[1][0], frame.level[1][1], mip_format, "ssgi depth 1/4");
+  } else if (ok) {
+    ok = screen_->EnsureDepthHistory(width, height);
+    for (HostImage* image : {&gi_depth_[0], &gi_depth_[1], &gi_depth_mip_[0], &gi_depth_mip_[1], &gi_normal_}) {
+      passes_->ReleaseImage(*image);
+    }
+  }
+  if (!ok) {
+    quarter_history_.valid = false;
+  }
   // The picture of the history weight (debug view 9, or the occlusion's own view 6 while the test runs),
   // made only while one of them is shown.
-  if (ok && (plan.gi.view == 9u || plan.view == 6u)) {
-    ok = passes_->EnsureImage(gi_weight_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi history weight");
+  if (ok && (plan.gi.view == 9u || (plan.SharedGi() && plan.view == 6u))) {
+    ok = passes_->EnsureImage(gi_weight_, width, height, kGiFormat, "ssgi history weight");
   } else if (gi_weight_.texture) {
     passes_->ReleaseImage(gi_weight_);
   }
@@ -4682,11 +4772,13 @@ void AmbientOcclusion::ReleaseGiImages() {
   if (screen_) {
     screen_->ReleaseDepthHistory();
   }
-  for (HostImage* image : {&gi_, &gi_dn_, &gi_hist_[0], &gi_hist_[1], &gi_weight_}) {
+  for (HostImage* image : {&gi_, &gi_dn_, &gi_hist_[0], &gi_hist_[1], &gi_weight_,
+                           &gi_depth_[0], &gi_depth_[1], &gi_depth_mip_[0], &gi_depth_mip_[1], &gi_normal_}) {
     if (image->texture) {
       passes_->ReleaseImage(*image);
     }
   }
+  quarter_history_ = {};
   // A history of the test's kind goes with its images (a plain history is made again when it is asked for).
   if (history_gi_) {
     history_valid_ = false;
@@ -4737,7 +4829,8 @@ screen::extract::NormalRecipe AmbientOcclusion::NormalRecipeFor(const NormalPlan
   return recipe;
 }
 
-screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan, const Push& base, const EdramTargets::Target& colour, uint32_t colour_slot) const {
+screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan, const Push& base, const EdramTargets::Target& colour,
+                                                                          uint32_t colour_slot, uint32_t quarter_normal) const {
   screen::extract::ColourRecipe recipe;
   recipe.colour_slot = colour_slot;
   recipe.host_samples = colour.host_samples;
@@ -4746,9 +4839,13 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
   recipe.source_start = ssgi_light::SourceStart(base.light[3], base.extra[0]);
   // Half size (above 1080 lines): the texel is the mean of the 2x2 pixels' one sample each, the depth's own host sample, not of every sample of them (the bounce is a smooth signal, blurred and
   // filtered over many pixels after this; half the colour target's reads).
-  recipe.one_sample = colour.host_samples > 1 && plan.OneSampleColour();
+  recipe.one_sample = colour.host_samples > 1 && (plan.gi.quarter || plan.OneSampleColour());
+  recipe.quarter = plan.gi.quarter;
+  if (recipe.quarter) {
+    recipe.matched_depth_slot = gi_depth_[1u - quarter_history_.index].slot;
+  }
   recipe.sample = base.slots[1];
-  if (plan.gi.cabin_id != 0u) {
+  if (!recipe.quarter && plan.gi.cabin_id != 0u) {
     recipe.match_depth = true;
     recipe.matched_depth_slot = Depth(0).slot;
   }
@@ -4756,18 +4853,21 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
   // The history is chosen here as the accumulation pass chooses it below (ChooseHistory is a pure function of the frame's state, so the two agree).
   // GI-BOUNCE-JOIN: where the probe field stands (plan.gi.lights_only) the chain's radiance is the lights' share alone, from the RESIDUAL pair; with no usable history it is black.
   recipe.lights.only = plan.gi.lights_only;
-  if (plan.gi.on && plan.gi.lights && screen_ && Extracting() && DepthPrev().texture) {
-    const HistoryUse use = ChooseHistory(plan);
-    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on,
-                                                                     plan.gi.lights_only ? ssgi_lights::Partition::kResidual : ssgi_lights::Partition::kAll);
+  if (plan.gi.on && plan.gi.lights && screen_ && Extracting()) {
+    const HostImage& previous = recipe.quarter ? gi_depth_[quarter_history_.index] : DepthPrev();
+    const HistoryUse use = recipe.quarter ? ChooseQuarterHistory(plan) : ChooseHistory(plan);
+    const screen::extract::Frame gi_frame = GiFrame(plan);
+    const ScreenShared::LightHistory last = screen_->LightHistoryFor(
+        trigger_pause_, gi_frame.traced[0], gi_frame.traced[1], use.on && previous.texture,
+        plan.gi.lights_only ? ssgi_lights::Partition::kResidual : ssgi_lights::Partition::kAll);
     if (last.usable) {
       screen::extract::ColourRecipe::Lights& lights = recipe.lights;
       lights.on = true;
       lights.post_slot = last.post_slot;
       lights.pre_slot = last.pre_slot;
-      lights.depth_slot = Depth(0).slot;
-      lights.depth_prev_slot = DepthPrev().slot;
-      lights.normal_slot = normals_.on ? normals_.ao_slot : 0u;
+      lights.depth_slot = recipe.quarter ? recipe.matched_depth_slot : Depth(0).slot;
+      lights.depth_prev_slot = previous.slot;
+      lights.normal_slot = recipe.quarter ? quarter_normal : normals_.ao_slot;
       // The camera's motion into the last frame in this renderer's view space (x right, y up, z forward: S G S with S = diag(1, 1, -1, 1)), the three rows of the 3x4 as the accumulation pass is given them
       // (FillPush's lin, shape, light there; lin, light, extra in the colour pass).
       for (int k = 0; k < 4; ++k) {
@@ -4776,8 +4876,9 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
           lights.motion[j * 4 + k] = float(sign * use.motion.m[k][j]);
         }
       }
-      lights.tan_prev[0] = history_tan_[0];
-      lights.tan_prev[1] = history_tan_[1];
+      const float* tan_half = recipe.quarter ? quarter_history_.tan_half : history_tan_;
+      lights.tan_prev[0] = tan_half[0];
+      lights.tan_prev[1] = tan_half[1];
       lights.gain = plan.gi.lights_gain;
       lights.cap_floor = plan.gi.lights_floor;
       if (!lights_logged_) {
@@ -4804,12 +4905,185 @@ screen::extract::Frame AmbientOcclusion::ExtractFrame(const Plan& plan) const {
   return frame;
 }
 
+screen::extract::Frame AmbientOcclusion::GiFrame(const Plan& plan) const {
+  screen::extract::Frame frame = ExtractFrame(plan);
+  if (plan.gi.quarter) {
+    for (int axis = 0; axis < 2; ++axis) {
+      frame.traced[axis] = ao_size::Quarter(plan.render[axis]);
+      frame.level[0][axis] = ao_size::Half(frame.traced[axis]);
+      frame.level[1][axis] = ao_size::Quarter(frame.traced[axis]);
+    }
+  }
+  return frame;
+}
+
+uint32_t AmbientOcclusion::RecordGiGuides(plume::RenderCommandList* list, const ResolveCache::Summary& summary,
+                                          const Plan& plan, const Push& base) {
+  // CHECK: Compare guide/colour alignment on odd sizes and MSAA pause views on both APIs.
+  if (!list || !summary.source || !passes_ || !pass_timing_) {
+    return 0u;
+  }
+  const screen::extract::Frame frame = GiFrame(plan);
+  HostImage& depth = gi_depth_[1u - quarter_history_.index];
+  const bool ms = summary.source->host_samples > 1;
+  plume::RenderPipeline* depth_pipeline = Pipeline(ms ? kVDepthMs : kVDepth);
+  plume::RenderPipeline* mip = Pipeline(kVMip);
+  if (!depth_pipeline || !mip) {
+    return 0u;
+  }
+  Push guide = screen::extract::DepthPush(base, frame, summary.stencil_slot, true);
+  guide.slots2[2] = ssgi_level::kQuarterFlag;
+  guide.lens[2] *= plan.gi.radius;
+  pass_timing_->Mark(list, "ssgi depth");
+  DrawPass(list, depth, depth_pipeline, guide);
+  DrawPass(list, gi_depth_mip_[0], mip, screen::extract::DepthMipPush(guide, frame, 1, depth.slot));
+  DrawPass(list, gi_depth_mip_[1], mip, screen::extract::DepthMipPush(guide, frame, 2, gi_depth_mip_[0].slot));
+
+  if (!normals_.on) {
+    if (gi_normal_.texture) {
+      passes_->ReleaseImage(gi_normal_);
+    }
+    return 0u;
+  }
+  plume::RenderPipeline* normal_pipeline = pipelines_[normals_.plane_samples > 1 ? kVNormalMs : kVNormal].get();
+  if (!normal_pipeline ||
+      !passes_->EnsureImage(gi_normal_, depth.width, depth.height, plume::RenderFormat::R16G16_UNORM, "ssgi normals")) {
+    return 0u;
+  }
+  Push normal = screen::extract::NormalPush(guide, frame, NormalRecipeFor(normals_), depth.slot);
+  normal.extra[0] = float(plan.render[0]);
+  normal.extra[1] = float(plan.render[1]);
+  pass_timing_->Mark(list, "ssgi normals");
+  DrawPass(list, gi_normal_, normal_pipeline, normal);
+  return gi_normal_.slot;
+}
+
+AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseQuarterHistory(const Plan& plan) const {
+  HistoryUse use;
+  if (!ssgi_stable::QuarterHistoryMatches(quarter_history_.valid, quarter_history_.frame, frame_,
+                                        quarter_history_.render, plan.render) ||
+      quarter_history_.world != trigger_world_ || quarter_history_.mode != plan.gi.mode ||
+      quarter_history_.cabin_id != plan.gi.cabin_id || quarter_history_.far_steps != plan.gi.FarStepsSent() ||
+      quarter_history_.lights_only != plan.gi.lights_only || quarter_history_.sample_key != plan.gi.sample_key) {
+    return use;
+  }
+  bool cut = false;
+  use.on = FrameMotion(&use.motion, &use.pose, &cut) && !cut;
+  return use;
+}
+
+void AmbientOcclusion::RecordQuarterGi(plume::RenderCommandList* list, const Plan& plan, const Push& base,
+                                        uint32_t stencil_slot, bool ms, uint32_t normal_slot, uint32_t vehicle_slot,
+                                        HostImage*& history, HostImage*& bounce) {
+  if (!list || !pass_timing_ || !screen_) {
+    return;
+  }
+  plume::RenderPipeline* main = MainGiPipeline(plan.gi);
+  plume::RenderPipeline* temporal = Pipeline(ms ? kVTemporalGiMs : kVTemporalGi);
+  plume::RenderPipeline* spatial = Pipeline(kVAtrous);
+  if (!main || !temporal || !spatial) {
+    return;
+  }
+  const uint32_t in = quarter_history_.index;
+  const uint32_t out = 1u - in;
+  const HostImage& depth = gi_depth_[out];
+
+  Push trace = base;
+  trace.sizes[0] = trace.sizes[2] = float(depth.width);
+  trace.sizes[1] = trace.sizes[3] = float(depth.height);
+  trace.slots[0] = Colour(0).slot;
+  trace.slots[1] = Colour(1).slot;
+  trace.slots[2] = depth.slot;
+  trace.slots[3] = gi_depth_mip_[0].slot;
+  trace.slots2[0] = gi_depth_mip_[1].slot;
+  // The blue tile's R2 shift has a longer period than the bounce's history.
+  trace.slots2[1] = ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), false, true);
+  const uint32_t slices = plan.gi.fewer ? ssgi_level::kQuarterHighSlices : ao_fast::kUltraSlices;
+  const uint32_t steps = plan.gi.fewer ? ssgi_level::kQuarterHighSteps : ao_fast::kUltraSteps;
+  const uint32_t far_steps = plan.gi.FarStepsSent();
+  trace.slots2[2] = ssgi_level::kQuarterFlag | (slices << 8) | (steps << 12) | (far_steps << kGiFarStepsShift);
+  trace.slots2[3] = Colour(2).slot;
+  trace.lin[1] = float(normal_slot);
+  trace.lin[2] = plan.gi.cabin_id != 0u ? 1.0f : 0.0f;
+  trace.lens[2] *= plan.gi.radius;
+  trace.shape[2] = plan.gi.thickness;
+  trace.shape[3] = plan.gi.facing;
+  trace.extra[0] = look_.car_reach;
+  trace.extra[3] = plan.gi.reach;
+  pass_timing_->Mark(list, "ssgi visibility");
+  DrawPass(list, gi_, main, trace);
+
+  const HistoryUse use = ChooseQuarterHistory(plan);
+  Push accum = base;
+  std::copy_n(trace.sizes, 4, accum.sizes);
+  accum.slots[0] = vehicle_slot;
+  accum.slots[1] = ao_gbuffer::PackHigh(base.slots[1], normal_slot);
+  accum.slots[2] = gi_.slot;
+  accum.slots[3] = depth.slot;
+  accum.slots2[0] = use.on ? gi_hist_[in].slot : depth.slot;
+  accum.slots2[1] = use.on ? gi_depth_[in].slot : depth.slot;
+  accum.slots2[2] = ssgi_level::kQuarterFlag |
+                    (ssgi_stable::ClipHistoryCode(plan.gi.clip_history) << ssgi_stable::kClipHistoryShift) |
+                    (use.on ? kHistoryFlag : 0u) | (trigger_pause_ ? kVehiclesAsWorldFlag : 0u);
+  accum.slots2[3] = stencil_slot;
+  accum.lens[2] = float(plan.gi.history);
+  accum.lens[3] = plan.gi.clamp_width;
+  accum.extra[0] = quarter_history_.tan_half[0];
+  accum.extra[2] = quarter_history_.tan_half[1];
+  for (int k = 0; k < 4; ++k) {
+    accum.lin[k] = float((k == 2 ? -1.0 : 1.0) * use.motion.m[k][0]);
+    accum.shape[k] = float((k == 2 ? -1.0 : 1.0) * use.motion.m[k][1]);
+    accum.light[k] = float((k == 2 ? 1.0 : -1.0) * use.motion.m[k][2]);
+  }
+  pass_timing_->Mark(list, "ssgi temporal");
+  if (plan.gi.view == 9u) {
+    accum.slots2[2] |= 6u;
+    DrawPass(list, gi_weight_, temporal, accum);
+    accum.slots2[2] &= ~0xFFu;
+  }
+  DrawPass(list, gi_hist_[out], temporal, accum);
+
+  Push filter = base;
+  std::copy_n(trace.sizes, 4, filter.sizes);
+  filter.slots[2] = gi_hist_[out].slot;
+  filter.slots[3] = depth.slot;
+  filter.slots2[2] = ssgi_level::kQuarterFlag;
+  filter.slots2[3] = normal_slot;
+  pass_timing_->Mark(list, "ssgi a-trous");
+  DrawPass(list, gi_dn_, spatial, filter);
+  history = &gi_hist_[out];
+  bounce = &gi_dn_;
+
+  quarter_history_ = {frame_, out, {plan.render[0], plan.render[1]}, {base.lens[0], base.lens[1]},
+                      trigger_world_, plan.gi.mode, plan.gi.cabin_id, far_steps, plan.gi.sample_key, plan.gi.lights_only, true};
+  gi_history_runs_ += use.on;
+  const uint32_t log_key = (uint32_t(trigger_world_) << 8) | (uint32_t(plan.gi.mode) << 4) | far_steps;
+  if (gi_quarter_logged_[0] != depth.width || gi_quarter_logged_[1] != depth.height || gi_quarter_logged_[2] != log_key) {
+    gi_quarter_logged_[0] = depth.width;
+    gi_quarter_logged_[1] = depth.height;
+    gi_quarter_logged_[2] = log_key;
+    REXLOG_INFO("[gpu] ssgi: quarter trace {} {}x{} for {}x{} in {}, {}x{} near taps and {} far steps per side, {} history frames, one bilateral pass",
+                ModeName(plan.gi.mode), depth.width, depth.height, plan.render[0], plan.render[1], menu_world::Name(trigger_world_), slices, steps, far_steps, plan.gi.history);
+  }
+}
+
 void AmbientOcclusion::RecordColourChain(plume::RenderCommandList* list, const Plan& plan,
                                          const Push& base, EdramTargets::Target& colour,
                                          uint32_t colour_slot) {
   // The colour target is read as a texture: after the opaque draws it is in its write layout; the
   // apply pass (or the game's next draw) moves it back.
   edram_->Transition(list, colour, plume::RenderTextureLayout::SHADER_READ);
+  if (plan.gi.quarter) {
+    pass_timing_->Mark(list, "ssgi colour chain");
+    const bool ms = colour.host_samples > 1;
+    const screen::extract::Frame frame = GiFrame(plan);
+    const auto recipe = ColourRecipeFor(plan, base, colour, colour_slot);
+    DrawPass(list, Colour(0), Pipeline(ms ? kVColorMs : kVColor), screen::extract::ColourLevel0Push(base, frame, recipe));
+    plume::RenderPipeline* mip = Pipeline(kVColorMip);
+    DrawPass(list, Colour(1), mip, screen::extract::ColourMipPush(base, frame, 1, Colour(0).slot));
+    DrawPass(list, Colour(2), mip, screen::extract::ColourMipPush(base, frame, 2, Colour(1).slot));
+    return;
+  }
   pass_timing_->Mark(list, "ssgi colour chain");
   const bool ms = colour.host_samples > 1;
   // Level 0: the colour target's mean over the pixels and samples a texel covers, each sample capped at
