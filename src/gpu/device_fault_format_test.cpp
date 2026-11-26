@@ -9,6 +9,7 @@
 // The expected strings are written out again here on purpose: a name or a wording changed in the
 // header alone fails the check, and changing one on purpose means changing it here too.
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -19,6 +20,10 @@
 #include "crash_diag_rules.h"
 #include "device_fault_format.h"
 #include "dred_format.h"
+
+#if defined(_WIN32)
+#include "d3d12_query_readback.h"
+#endif
 
 using namespace mcla::gpu::device_fault;
 
@@ -328,6 +333,53 @@ void TestCrashDiagnostics() {
   std::filesystem::remove(marker, error);
 }
 
+#if defined(_WIN32)
+void TestD3D12QueryReadback() {
+  using mcla::gpu::backend::d3d12::ReadQueryBytes;
+  struct FakeReadback {
+    HRESULT status = S_OK;
+    void* mapped = nullptr;
+    size_t read_bytes = 0;
+    bool unmapped = false;
+
+    HRESULT Map(UINT subresource, const D3D12_RANGE* read, void** data) {
+      CheckNum(subresource, 0, "map query readback subresource");
+      CheckNum(read != nullptr && read->Begin == 0, true, "read range starts at zero");
+      read_bytes = read ? read->End : 0;
+      *data = mapped;
+      return status;
+    }
+
+    void Unmap(UINT subresource, const D3D12_RANGE* written) {
+      CheckNum(subresource, 0, "unmap query readback subresource");
+      CheckNum(written != nullptr && written->Begin == 0 && written->End == 0, true,
+               "unmap declares no CPU writes");
+      unmapped = true;
+    }
+  };
+
+  std::array<uint64_t, 2> results{7, 8};
+  std::array<uint64_t, 2> gpu_data{100, 900};
+  FakeReadback buffer{DXGI_ERROR_DEVICE_REMOVED};
+  CheckNum(ReadQueryBytes(buffer, results), DXGI_ERROR_DEVICE_REMOVED, "preserve map failure HRESULT");
+  CheckNum(buffer.unmapped, false, "failed map is not unmapped");
+  CheckNum(results[0], 7, "failed map leaves the previous values alone");
+
+  buffer.status = S_OK;
+  CheckNum(ReadQueryBytes(buffer, results), E_POINTER, "successful map without an address fails");
+  CheckNum(buffer.unmapped, true, "successful map is balanced even without an address");
+  CheckNum(results[0], 7, "null address leaves the previous values alone");
+
+  buffer.unmapped = false;
+  buffer.mapped = gpu_data.data();
+  CheckNum(ReadQueryBytes(buffer, results), S_OK, "mapped query data reads successfully");
+  CheckNum(buffer.read_bytes, sizeof(gpu_data), "map covers every query");
+  CheckNum(results[0], 100, "first query read");
+  CheckNum(results[1], 900, "last query read");
+  CheckNum(buffer.unmapped, true, "successful read unmaps");
+}
+#endif
+
 }  // namespace
 
 int main() {
@@ -341,6 +393,9 @@ int main() {
   TestDredHistory();
   TestDredPageFault();
   TestCrashDiagnostics();
+#if defined(_WIN32)
+  TestD3D12QueryReadback();
+#endif
   if (g_failed != 0) {
     std::printf("%d of %d checks FAILED\n", g_failed, g_checks);
     return 1;

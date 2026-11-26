@@ -1619,12 +1619,15 @@ void EdramTargets::EndCoverageCheck(plume::RenderCommandList* list, uint32_t che
 
 void EdramTargets::HarvestCoverage(uint32_t slot) {
   std::vector<CoverageCheck>& checks = coverage_checks_[slot];
-  if (checks.empty() || !coverage_pools_[slot]) {
+  if (checks.empty() || !device_) {
     checks.clear();
     return;
   }
-  coverage_pools_[slot]->queryResults();
-  const uint64_t* passed = coverage_pools_[slot]->getResults();
+  const uint64_t* passed = device_->ReadQueryResults(coverage_pools_[slot].get());
+  if (!passed) {
+    checks.clear();
+    return;
+  }
   for (size_t i = 0; i < checks.size(); ++i) {
     const CoverageCheck& c = checks[i];
     if (!c.recorded) {
@@ -1688,7 +1691,7 @@ void EdramTargets::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   slot_ = slot;
   HarvestCoverage(slot);
-  if (!list) {
+  if (!list || (device_ && device_->IsLost())) {
     return;
   }
   if (coverage_wanted_ > coverage_capacity_ && device_) {

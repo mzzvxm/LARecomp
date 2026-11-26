@@ -60,9 +60,8 @@ void GpuTiming::Harvest(uint32_t slot) {
     return;
   }
   pending_[slot] = false;
-  pools_[slot]->queryResults();
-  const uint64_t* t = pools_[slot]->getResults();
-  if (t[kFrameEnd] < t[kFrameBegin] || t[kOverlayEnd] < t[kOverlayBegin]) {
+  const uint64_t* t = device_ ? device_->ReadQueryResults(pools_[slot].get()) : nullptr;
+  if (!t || t[kFrameEnd] < t[kFrameBegin] || t[kOverlayEnd] < t[kOverlayBegin]) {
     // A counter that ran backwards (a GPU clock reset, a TDR recovery) gives
     // no duration; counting it would poison the average.
     ++discarded_;
@@ -74,10 +73,13 @@ void GpuTiming::Harvest(uint32_t slot) {
 }
 
 void GpuTiming::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
-  if (!available_ || !list) {
+  if (!available_ || !list || !device_) {
     return;
   }
   Harvest(slot);
+  if (device_->IsLost()) {
+    return;
+  }
   city_triangles_[slot] = 0;
   list->resetQueryPool(pools_[slot].get(), 0, kTimestamps);
   list->writeTimestamp(pools_[slot].get(), kFrameBegin);
@@ -132,10 +134,8 @@ void GpuTiming::EndCityBuild(plume::RenderCommandList* list, uint32_t slot, uint
 GpuTiming::CityBuild GpuTiming::ReadCityBuild(uint32_t slot, bool device_lost) {
   if (!city_pending_[slot]) return {};
   city_pending_[slot] = false;
-  auto* pool = city_pools_[slot].get();
-  if (device_lost || !pool) return {};
-  pool->queryResults();
-  const uint64_t* timestamps = pool->getResults();
+  if (device_lost || !device_) return {};
+  const uint64_t* timestamps = device_->ReadQueryResults(city_pools_[slot].get());
   if (!timestamps || timestamps[1] <= timestamps[0]) return {};
   return {timestamps[1] - timestamps[0], city_triangles_[slot]};
 }

@@ -79,6 +79,7 @@ bool IsNullBacked(const plume::RenderPipelineLayout* layout);
 bool IsNullBacked(const plume::RenderShader* shader);
 bool IsNullBacked(const plume::RenderSampler* sampler);
 bool IsNullBacked(const plume::RenderQueryPool* pool);
+QueryReadback ReadQueryResults(plume::RenderQueryPool& pool);
 bool IsNullBacked(const plume::RenderCommandQueue* queue);
 bool IsNullBacked(const plume::RenderFramebuffer* framebuffer);
 bool DescriptorSetAllocated(const plume::RenderDescriptorSet* set, uint32_t view_count,

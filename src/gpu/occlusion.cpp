@@ -407,9 +407,8 @@ void GuestOcclusion::OnSlotReady(uint32_t slot_index) {
     return;
   }
   const uint64_t* results = nullptr;
-  if (slot.submitted && !(device_ && device_->IsLost())) {
-    slot.pool->queryResults();
-    results = slot.pool->getResults();
+  if (slot.submitted && device_) {
+    results = device_->ReadQueryResults(slot.pool.get());
   }
   for (size_t i = 0; i < slot.items.size(); ++i) {
     const auto it = uses_.find(slot.items[i].serial);

@@ -29,6 +29,8 @@
 
 #include <plume_d3d12.h>
 
+#include "d3d12_query_readback.h"
+
 namespace plume {
 extern std::unique_ptr<RenderInterface> CreateD3D12Interface();
 }  // namespace plume
@@ -275,6 +277,26 @@ bool IsNullBacked(const plume::RenderQueryPool* pool) {
   }
   const auto* p = static_cast<const plume::D3D12QueryPool*>(pool);
   return p->d3d == nullptr || IsNullBacked(p->readbackBuffer.get());
+}
+
+QueryReadback ReadQueryResults(plume::RenderQueryPool& pool) {
+  auto& native = static_cast<plume::D3D12QueryPool&>(pool);
+  auto* buffer = static_cast<plume::D3D12Buffer*>(native.readbackBuffer.get());
+  if (!buffer || !buffer->d3d || !native.device || native.results.empty()) {
+    return {nullptr, static_cast<uint32_t>(E_POINTER)};
+  }
+  // Plume's queryResults copies unconditionally from Map, whose pointer can be null.
+  // CHECK: capture the native Map HRESULT and removal reason on the iGPU repro.
+  const HRESULT hr = ReadQueryBytes(*buffer->d3d, native.results);
+  if (FAILED(hr)) {
+    return {nullptr, static_cast<uint32_t>(hr)};
+  }
+  if (native.type == plume::RenderQueryType::TIMESTAMP) {
+    for (uint64_t& result : native.results) {
+      result = uint64_t(double(result) / double(native.device->timestampFrequency) * 1e9);
+    }
+  }
+  return {native.results.data()};
 }
 
 bool IsNullBacked(const plume::RenderCommandQueue* queue) {

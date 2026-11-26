@@ -128,6 +128,7 @@ class Device {
   std::unique_ptr<plume::RenderQueryPool> CreateQueryPool(
       uint32_t query_count, const char* name,
       plume::RenderQueryType type = plume::RenderQueryType::TIMESTAMP);
+  const uint64_t* ReadQueryResults(plume::RenderQueryPool* pool);
   std::unique_ptr<plume::RenderFramebuffer> CreateFramebuffer(
       const plume::RenderFramebufferDesc& desc, const char* name);
 
@@ -243,6 +244,7 @@ class Device {
   bool crash_diagnostics_requested_ = false;
   bool crash_diagnostics_ = false;  // selected backend could enable diagnostics
   bool force_removal_attempted_ = false;  // render thread
+  bool query_readback_warned_ = false;    // render thread
   std::filesystem::path loss_marker_path_;
   std::filesystem::path loss_report_path_;
   std::mutex loss_report_mutex_;

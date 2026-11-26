@@ -222,6 +222,16 @@ bool IsNullBacked(const plume::RenderQueryPool* pool) {
   return MCLA_GPU_ACTIVE(IsNullBacked(pool));
 }
 
+QueryReadback ReadQueryResults(plume::RenderQueryPool& pool) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    return d3d12::ReadQueryResults(pool);
+  }
+#endif
+  pool.queryResults();
+  return {pool.getResults()};
+}
+
 bool IsNullBacked(const plume::RenderCommandQueue* queue) {
   return MCLA_GPU_ACTIVE(IsNullBacked(queue));
 }

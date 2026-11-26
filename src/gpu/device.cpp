@@ -192,6 +192,7 @@ bool Device::Initialize(const Options& options) {
 }
 
 bool Device::Open(const Options& options) {
+  query_readback_warned_ = false;
   if (options.force_refusal) {
     // The test of the compatibility renderer offer: the failure path as a PC that cannot run the renderer takes it, nothing created.
     REXLOG_WARN("[gpu] mcla_gpu_force_refusal: {} is refused on purpose (a test of the compatibility renderer offer)", BackendName());
@@ -553,6 +554,22 @@ std::unique_ptr<plume::RenderQueryPool> Device::CreateQueryPool(uint32_t query_c
     return nullptr;
   }
   return pool;
+}
+
+const uint64_t* Device::ReadQueryResults(plume::RenderQueryPool* pool) {
+  if (!pool || IsLost()) {
+    return nullptr;
+  }
+  const auto readback = backend::ReadQueryResults(*pool);
+  if (!readback.values) {
+    const bool lost = CheckLost("query readback");
+    if (!query_readback_warned_ || lost) {
+      REXLOG_WARN("[gpu] query readback failed ({:#010x}, {} queries)",
+                  readback.error, pool->getCount());
+      query_readback_warned_ = true;
+    }
+  }
+  return readback.values;
 }
 
 std::unique_ptr<plume::RenderFramebuffer> Device::CreateFramebuffer(

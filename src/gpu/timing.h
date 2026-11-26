@@ -19,8 +19,8 @@
 // recorded again -- then resets the pool (vkCmdResetQueryPool must sit outside
 // a render pass, and Plume does not close one for it; on D3D12 it is a no-op)
 // and writes timestamp 0. A slot is only read back if its frame was submitted:
-// an abandoned list never wrote its timestamps. Plume's queryResults()
-// converts to nanoseconds on both backends.
+// an abandoned list never wrote its timestamps. The backend read returns
+// nanoseconds or no sample if the data could not be read.
 //
 // When timestamps are unsupported (backend::TimestampsSupported) or the pools
 // cannot be created, the renderer runs without them and the statistics line
@@ -101,7 +101,7 @@ class GpuTiming {
   uint64_t frame_ns_ = 0;
   uint64_t overlay_ns_ = 0;
   uint64_t frames_ = 0;
-  uint64_t discarded_ = 0;  // samples whose timestamps went backwards
+  uint64_t discarded_ = 0;  // unreadable samples or timestamps that went backwards
 };
 
 }  // namespace mcla::gpu

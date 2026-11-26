@@ -166,6 +166,13 @@ bool IsNullBacked(const plume::RenderQueryPool* pool);
 bool IsNullBacked(const plume::RenderCommandQueue* queue);
 bool IsNullBacked(const plume::RenderFramebuffer* framebuffer);
 
+struct QueryReadback {
+  const uint64_t* values = nullptr;
+  uint32_t error = 0;
+};
+// Read after the submission's fence. A failed D3D12 map returns its HRESULT.
+QueryReadback ReadQueryResults(plume::RenderQueryPool& pool);
+
 // Whether a descriptor set really got its descriptors. Plume's D3D12 set reports
 // a full shader-visible heap only on stderr and keeps a zero-sized allocation
 // (plume_d3d12.cpp D3D12DescriptorSet ctor), so the counts the set was built

@@ -142,8 +142,11 @@ void PassTiming::Harvest(uint32_t slot) {
   if (!enabled_ || labels.size() < 2) {
     return;
   }
-  pools_[slot]->queryResults();
-  const uint64_t* t = pools_[slot]->getResults();
+  const uint64_t* t = device_ ? device_->ReadQueryResults(pools_[slot].get()) : nullptr;
+  if (!t) {
+    ++discarded_;
+    return;
+  }
   for (size_t i = 1; i < labels.size(); ++i) {
     if (t[i] < t[i - 1]) {
       // A counter that ran backwards (a GPU clock reset, a TDR recovery).
@@ -163,6 +166,9 @@ void PassTiming::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     return;
   }
   Harvest(slot);
+  if (device_ && device_->IsLost()) {
+    return;
+  }
   slot_ = slot;
   labels_[slot].clear();
   if (enabled_) {

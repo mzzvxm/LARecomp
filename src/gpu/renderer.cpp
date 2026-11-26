@@ -1384,9 +1384,17 @@ plume::RenderCommandList* Renderer::OpenFrameList() {
   // Outside any render pass: timestamp pool reset, one-time heap transitions.
   timing_.BeginFrame(list, slot);
   pass_timing_.BeginFrame(list, slot);
+  if (device_.IsLost()) {
+    frames_.Abandon();
+    return nullptr;
+  }
   heap_.RecordPendingBarriers(list);
   occlusion_.BeginFrame(list, slot);
   scene_.BeginFrame(list, slot);
+  if (device_.IsLost()) {
+    frames_.Abandon();
+    return nullptr;
+  }
   // After the caches' own frame start, before any record of the frame: what
   // the budget releases is retired behind this frame's submission.
   vram_.BeginFrame();
