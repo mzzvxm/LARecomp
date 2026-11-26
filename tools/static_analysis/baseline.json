@@ -4985,6 +4985,94 @@
         108
       ],
       "check": "concurrency-mt-unsafe"
+    },
+    {
+      "id": "931a18c6f49389803944df37ae92231c1e9eee40be9188d358be66ca1a721271",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "Only the output vector is reused after appending a breadcrumb report. The loop retains a DRED node pointer and owns the report's strings separately from the vector.",
+      "path": "src/gpu/backend_d3d12.cpp",
+      "lines": [
+        724
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "8bfe823da88a8f0957557683b7be9303aa82832fbba55e5dee21c525ea31914f",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The loop iterates a separate vector returned by DescribePageFault. Appending to the output vector cannot invalidate that input or the output vector reference.",
+      "path": "src/gpu/backend_d3d12.cpp",
+      "lines": [
+        769
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "c320fb32dfc8650cc0ed1c8d8d8c8d1ea8f3de962dc61916db1d62367243ca90",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The fixture appends coordinates to the caller's vector and obtains end() anew for each insert. It does not retain a pointer, reference or iterator to a coordinate.",
+      "path": "src/gpu/cabin_mirror_rules_test.cpp",
+      "lines": [
+        43
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "a6cff2945971722c9049c0374ab8522b7c13f8d7e7fa109478edcb29f3c93f9b",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The fixture appends indices to the caller's vector and obtains end() anew for each insert. The triangle indices are integer values independent of the vector's storage.",
+      "path": "src/gpu/cabin_mirror_rules_test.cpp",
+      "lines": [
+        43
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "297984b21a53aa189d564318404af9a351ca32edc5f57b14854b4c56c57a3dde",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The fixture appends normals to the caller's vector and obtains end() anew for each insert. It does not retain a pointer, reference or iterator to a normal.",
+      "path": "src/gpu/cabin_mirror_rules_test.cpp",
+      "lines": [
+        43
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "4e9c6535ac4d4a731d3e439d451715c23d14b5992596f93df55f228cc2efee30",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "CarRects clears, reserves and appends to the caller's rectangle vector. It retains only a pointer to the vector object, and each appended rectangle is a local value.",
+      "path": "src/gpu/car_rt_opp_refl.cpp",
+      "lines": [
+        52
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "247a4667988cae7507b14867a24bc542ad1fbc7d03b45ea0fd8befe722b2c155",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "CarRects clears the caller's box-index vector and appends integer indices from the input view. No reference or iterator to a vector element crosses a mutation.",
+      "path": "src/gpu/car_rt_opp_refl.cpp",
+      "lines": [
+        52
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "e4358242b3ab1afa7d6790a60d0624979db0391617af97fd748dad9cca95335f",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "MergeNeon appends each locally computed beam to the output vector. The loop reads the separate input vector and never borrows an element from the output vector.",
+      "path": "src/gpu/vpl.cpp",
+      "lines": [
+        56
+      ],
+      "check": "-Wlifetime-safety-invalidation"
     }
   ]
 }
