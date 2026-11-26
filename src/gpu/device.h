@@ -29,9 +29,11 @@
 
 #include <atomic>
 #include <cstdint>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <string>
 #include <unordered_map>
 
@@ -50,6 +52,7 @@ class Device {
     // Passed to RenderInterface::createDevice; empty picks Plume's default.
     std::string preferred_adapter;
     bool debug_layer = false;
+    bool game_session = false;  // prebuild devices do not consume or set the game's loss marker
     // The backend asked for (graphics_backend); must be compiled.
     Backend backend = kDefaultBackend;
     // A test (mcla_gpu_force_refusal): every backend is refused on purpose, before anything is created, so the box that offers the
@@ -139,6 +142,7 @@ class Device {
   // there from the start, a capture cannot ask for them afterwards). Off, a
   // caller that formats a name for each creation passes null instead.
   bool object_names() const { return names_; }
+  bool crash_diagnostics() const { return crash_diagnostics_; }
 
   // A texture or buffer whose creation failed with the device alive is not
   // asked for again -- the same description, from anywhere -- for kBackoffFrames
@@ -177,6 +181,10 @@ class Device {
   // call, Vulkan: one status call on a probe fence), so FrameRing asks again
   // right after each submit and wait, which is what names the failing call.
   bool CheckLost(const char* context);
+  // Render thread, after a real submission. The debug switch attempts removal at most once.
+  void MaybeForceRemoval();
+  // Add the renderer's in-flight pass trail after CheckLost publishes the driver report.
+  void AppendLossReport(std::span<const std::string> lines);
 
   backend::VideoMemory QueryVideoMemory() const;
 
@@ -232,6 +240,14 @@ class Device {
   Backend requested_backend_ = kDefaultBackend;
   bool debug_layer_ = false;
   bool names_ = false;  // object_names(); set by Open, before any creation or second thread
+  bool crash_diagnostics_requested_ = false;
+  bool crash_diagnostics_ = false;  // selected backend could enable diagnostics
+  bool force_removal_attempted_ = false;  // render thread
+  std::filesystem::path loss_marker_path_;
+  std::filesystem::path loss_report_path_;
+  std::mutex loss_report_mutex_;
+  // Caller holds loss_report_mutex_.
+  void WriteLossReport(std::span<const std::string> lines, bool append);
   std::atomic<bool> lost_{false};
   // What backend::DeviceRemovedReason polls (Vulkan: a fence that is never
   // signalled); made after the queue, given back before the device goes.

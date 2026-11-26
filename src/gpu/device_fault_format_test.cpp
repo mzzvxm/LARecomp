@@ -9,12 +9,16 @@
 // The expected strings are written out again here on purpose: a name or a wording changed in the
 // header alone fails the check, and changing one on purpose means changing it here too.
 
+#include <chrono>
 #include <cstdint>
 #include <cstdio>
+#include <fstream>
 #include <string>
 #include <vector>
 
+#include "crash_diag_rules.h"
 #include "device_fault_format.h"
+#include "dred_format.h"
 
 using namespace mcla::gpu::device_fault;
 
@@ -226,6 +230,104 @@ void TestLabelTrail() {
   CheckEq(FormatLabelTrail({"a", "b"}, 0), "(1 earlier) ... > b", "a limit of 0 keeps the last one");
 }
 
+void TestDredBreadcrumbs() {
+  DredBreadcrumbs list{"graphics\nqueue", "frame slot 1 list 0", 12, 7, "DrawInstanced",
+                       "Dispatch", {{0, "scene"}, {5, "ao\tdepth"}, {9, "present"}}};
+  CheckEq(DescribeBreadcrumbs(list),
+          "DRED breadcrumbs: queue 'graphics queue', list 'frame slot 1 list 0': "
+          "7/12 operations completed; last completed op DrawInstanced; "
+          "last completed pass 'scene'; first unfinished op Dispatch; possible faulting pass 'ao depth'",
+          "progress in a named pass");
+  list.completed = 5;
+  list.first_unfinished_operation = "SetMarker";
+  CheckEq(DescribeBreadcrumbs(list),
+          "DRED breadcrumbs: queue 'graphics queue', list 'frame slot 1 list 0': "
+          "5/12 operations completed; last completed op DrawInstanced; "
+          "last completed pass 'scene'; first unfinished op SetMarker; possible faulting pass 'ao depth'",
+          "all operations before the next pass marker completed");
+  list.completed = 12;
+  CheckEq(DescribeBreadcrumbs(list),
+          "DRED breadcrumbs: queue 'graphics queue', list 'frame slot 1 list 0': "
+          "12/12 operations completed; last completed op DrawInstanced; last completed pass 'present'",
+          "fully completed list has no fault candidate");
+  list.completed = 13;
+  CheckEq(DescribeBreadcrumbs(list),
+          "DRED breadcrumbs: queue 'graphics queue', list 'frame slot 1 list 0': progress unavailable",
+          "invalid progress count");
+  list.completed.reset();
+  CheckEq(DescribeBreadcrumbs(list),
+          "DRED breadcrumbs: queue 'graphics queue', list 'frame slot 1 list 0': progress unavailable",
+          "missing progress counter");
+  list = {};
+  list.operation_count = 1;
+  list.completed = 0;
+  list.first_unfinished_operation = "Dispatch";
+  CheckEq(DescribeBreadcrumbs(list),
+          "DRED breadcrumbs: queue '<unnamed>', list '<unnamed>': "
+          "0/1 operations completed; last completed op <unknown>; last completed pass '<unknown>'; "
+          "first unfinished op Dispatch; possible faulting pass '<unknown>'",
+          "older runtime with no contexts and zero progress");
+}
+
+void TestDredHistory() {
+  CheckEq(std::string(DredPassLabel("LARecomp pass: ao depth")), "ao depth", "decode pass context");
+  CheckEq(std::string(DredPassLabel("PIX marker: ao depth")), "", "ignore other markers");
+  auto indices = DredHistoryIndices(100, 0);
+  CheckNum(indices.last_completed.has_value(), false, "no last operation at zero progress");
+  CheckNum(indices.first_unfinished.value_or(UINT32_MAX), 0, "first operation at zero progress");
+  indices = DredHistoryIndices(100, 100);
+  CheckNum(indices.last_completed.value_or(UINT32_MAX), 99, "last operation after completion");
+  CheckNum(indices.first_unfinished.has_value(), false, "fully completed history");
+  indices = DredHistoryIndices(65539, 2);
+  CheckNum(indices.last_completed.has_value(), false, "last completed op overwritten");
+  CheckNum(indices.first_unfinished.has_value(), false, "first unfinished op also overwritten");
+  indices = DredHistoryIndices(65539, 3);
+  CheckNum(indices.last_completed.has_value(), false, "the previous op was overwritten");
+  CheckNum(indices.first_unfinished.value_or(UINT32_MAX), 3, "oldest retained op");
+  indices = DredHistoryIndices(65539, 65536);
+  CheckNum(indices.last_completed.value_or(UINT32_MAX), 65535, "last op before wrap");
+  CheckNum(indices.first_unfinished.value_or(UINT32_MAX), 0, "first op after wrap");
+  indices = DredHistoryIndices(10, 11);
+  CheckNum(indices.last_completed.has_value(), false, "invalid completed count");
+  CheckNum(indices.first_unfinished.has_value(), false, "invalid first unfinished index");
+}
+
+void TestDredPageFault() {
+  CheckLines(DescribePageFault(0, {}), {"DRED page fault: no GPU virtual address reported"},
+             "no GPU page fault VA");
+  CheckLines(DescribePageFault(0x4400, {}),
+             {"DRED page fault VA: 0x0000000000004400",
+              "  DRED found no matching existing or recently freed allocation"},
+             "unmapped page fault VA");
+  CheckLines(DescribePageFault(0x4400, {{"skin\ncache", "resource", false}, {"", "heap", true}}),
+             {"DRED page fault VA: 0x0000000000004400",
+              "  existing allocation: resource 'skin cache'",
+              "  recently freed allocation: heap '<unnamed>'"},
+             "existing and freed allocation matches");
+}
+
+void TestCrashDiagnostics() {
+  CheckNum(CrashDiagnosticsEnabled("auto", false), false, "auto on a normal launch");
+  CheckNum(CrashDiagnosticsEnabled("auto", true), true, "auto after a device loss");
+  CheckNum(CrashDiagnosticsEnabled("on", false), true, "on without a device loss");
+  CheckNum(CrashDiagnosticsEnabled("on", true), true, "on after a device loss");
+  CheckNum(CrashDiagnosticsEnabled("off", false), false, "off without a device loss");
+  CheckNum(CrashDiagnosticsEnabled("off", true), false, "off after a device loss");
+  CheckNum(CrashDiagnosticsEnabled("invalid", true), false, "unknown mode");
+
+  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+  const auto marker = std::filesystem::temp_directory_path() /
+      std::format("larecomp_device_fault_test_{}.loss", stamp);
+  std::error_code error;
+  const bool created = static_cast<bool>(std::ofstream(marker));
+  CheckNum(created, true, "create the previous session's marker");
+  CheckNum(ConsumeLossMarker(marker, error), true, "one session consumes the marker");
+  CheckNum(bool(error), false, "marker consumed successfully");
+  CheckNum(ConsumeLossMarker(marker, error), false, "next session sees no marker");
+  CheckNum(bool(error), false, "missing marker is normal");
+  std::filesystem::remove(marker, error);
+}
+
 }  // namespace
 
 int main() {
@@ -235,6 +337,10 @@ int main() {
   TestAddressTypes();
   TestFaultReport();
   TestLabelTrail();
+  TestDredBreadcrumbs();
+  TestDredHistory();
+  TestDredPageFault();
+  TestCrashDiagnostics();
   if (g_failed != 0) {
     std::printf("%d of %d checks FAILED\n", g_failed, g_checks);
     return 1;

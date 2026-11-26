@@ -8,6 +8,7 @@
 
 #include "backend_impl.h"
 
+#include "dred_format.h"
 #include "present_rules.h"
 #include "swap_chain_rules.h"
 #include "temporal_dlss.h"
@@ -508,14 +509,242 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device, void*) {
   return FAILED(reason) ? static_cast<int64_t>(static_cast<uint32_t>(reason)) : 0;
 }
 
-std::vector<std::string> DescribeDeviceFault(plume::RenderDevice*) {
-  // DRED has to be enabled before the device is made (ID3D12DeviceRemovedExtendedDataSettings),
-  // which this renderer does not do; the reason code is all there is.
-  return {};
+bool ConfigureDred() {
+  using Microsoft::WRL::ComPtr;
+  ComPtr<ID3D12DeviceRemovedExtendedDataSettings1> contexts;
+  if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&contexts))) && contexts) {
+    contexts->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    contexts->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    contexts->SetBreadcrumbContextEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    return true;
+  }
+  ComPtr<ID3D12DeviceRemovedExtendedDataSettings> settings;
+  if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&settings))) && settings) {
+    settings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    settings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+    REXLOG_WARN("[gpu] DRED breadcrumb contexts are unavailable on this runtime");
+    return true;
+  }
+  REXLOG_WARN("[gpu] DRED settings are unavailable on this runtime");
+  return false;
 }
 
-std::string DescribeLossReporting(plume::RenderDevice*, void*) {
-  return "a loss is read from GetDeviceRemovedReason; no removal data (DRED) is collected";
+void NameCrashQueue(plume::RenderCommandQueue* queue) {
+  auto* commands = static_cast<plume::D3D12CommandQueue*>(queue);
+  if (commands && commands->d3d) {
+    commands->d3d->SetName(L"LARecomp graphics queue");
+  }
+}
+
+void NameCrashList(plume::RenderCommandList* list, uint32_t slot, uint32_t batch) {
+  auto* commands = static_cast<plume::D3D12CommandList*>(list);
+  if (commands && commands->d3d) {
+    commands->d3d->SetName(std::format(L"LARecomp frame slot {} list {}", slot, batch).c_str());
+  }
+}
+
+void RecordCrashPass(plume::RenderCommandList* list, std::string_view label) {
+  auto* commands = static_cast<plume::D3D12CommandList*>(list);
+  if (!commands || !commands->d3d) {
+    return;
+  }
+  // Same UTF-16 PIX encoding as Plume's BeginEvent. A point marker makes the
+  // pass boundary self-contained when a logical frame uses multiple lists.
+  // CHECK: verify the runtime returns the UTF-16 marker in DRED contexts.
+  std::wstring text(device_fault::kDredPassPrefix.begin(), device_fault::kDredPassPrefix.end());
+  text.append(label.begin(), label.end());
+  commands->d3d->SetMarker(0, text.c_str(), UINT((text.size() + 1) * sizeof(wchar_t)));
+}
+
+bool ForceDeviceRemoval(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  Microsoft::WRL::ComPtr<ID3D12Device5> removable;
+  if (!dev || !dev->d3d || FAILED(dev->d3d->QueryInterface(IID_PPV_ARGS(&removable))) ||
+      !removable) {
+    return false;
+  }
+  // CHECK: exercise actual removal and the loss report with work submitted.
+  removable->RemoveDevice();
+  return true;
+}
+
+namespace {
+
+std::string DredName(const wchar_t* wide, const char* narrow = nullptr) {
+  if (!wide || !*wide) {
+    return narrow ? std::string(narrow) : std::string();
+  }
+  std::string result;
+  for (const wchar_t character : std::wstring_view(wide)) {
+    result.push_back(character < 0x80 ? static_cast<char>(character) : '?');
+  }
+  return result;
+}
+
+std::string DredOperation(D3D12_AUTO_BREADCRUMB_OP op) {
+  switch (op) {
+    case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return "SetMarker";
+    case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return "BeginEvent";
+    case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return "EndEvent";
+    case D3D12_AUTO_BREADCRUMB_OP_DRAWINSTANCED: return "DrawInstanced";
+    case D3D12_AUTO_BREADCRUMB_OP_DRAWINDEXEDINSTANCED: return "DrawIndexedInstanced";
+    case D3D12_AUTO_BREADCRUMB_OP_EXECUTEINDIRECT: return "ExecuteIndirect";
+    case D3D12_AUTO_BREADCRUMB_OP_DISPATCH: return "Dispatch";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYBUFFERREGION: return "CopyBufferRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYTEXTUREREGION: return "CopyTextureRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_COPYRESOURCE: return "CopyResource";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCE: return "ResolveSubresource";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVESUBRESOURCEREGION: return "ResolveSubresourceRegion";
+    case D3D12_AUTO_BREADCRUMB_OP_CLEARRENDERTARGETVIEW: return "ClearRenderTargetView";
+    case D3D12_AUTO_BREADCRUMB_OP_CLEARUNORDEREDACCESSVIEW: return "ClearUnorderedAccessView";
+    case D3D12_AUTO_BREADCRUMB_OP_CLEARDEPTHSTENCILVIEW: return "ClearDepthStencilView";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOURCEBARRIER: return "ResourceBarrier";
+    case D3D12_AUTO_BREADCRUMB_OP_PRESENT: return "Present";
+    case D3D12_AUTO_BREADCRUMB_OP_RESOLVEQUERYDATA: return "ResolveQueryData";
+    case D3D12_AUTO_BREADCRUMB_OP_BEGINSUBMISSION: return "BeginSubmission";
+    case D3D12_AUTO_BREADCRUMB_OP_ENDSUBMISSION: return "EndSubmission";
+    case D3D12_AUTO_BREADCRUMB_OP_WRITEBUFFERIMMEDIATE: return "WriteBufferImmediate";
+    case D3D12_AUTO_BREADCRUMB_OP_BUILDRAYTRACINGACCELERATIONSTRUCTURE:
+      return "BuildRaytracingAccelerationStructure";
+    case D3D12_AUTO_BREADCRUMB_OP_DISPATCHRAYS: return "DispatchRays";
+    default: return std::format("DRED op {}", static_cast<uint32_t>(op));
+  }
+}
+
+std::string DredAllocationKind(D3D12_DRED_ALLOCATION_TYPE type) {
+  switch (type) {
+    case D3D12_DRED_ALLOCATION_TYPE_RESOURCE: return "resource";
+    case D3D12_DRED_ALLOCATION_TYPE_HEAP: return "heap";
+    case D3D12_DRED_ALLOCATION_TYPE_DESCRIPTOR_HEAP: return "descriptor heap";
+    case D3D12_DRED_ALLOCATION_TYPE_QUERY_HEAP: return "query heap";
+    case D3D12_DRED_ALLOCATION_TYPE_COMMAND_QUEUE: return "command queue";
+    case D3D12_DRED_ALLOCATION_TYPE_COMMAND_LIST: return "command list";
+    case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR: return "command allocator";
+    case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE: return "pipeline state";
+    case D3D12_DRED_ALLOCATION_TYPE_STATE_OBJECT: return "state object";
+    default: return std::format("DRED type {}", static_cast<uint32_t>(type));
+  }
+}
+
+template <typename Node>
+void ReadBreadcrumbs(std::vector<std::string>& lines, const Node* node) {
+  constexpr size_t kMaxLists = 32;
+  for (size_t i = 0; node && i < kMaxLists; ++i, node = node->pNext) {
+    device_fault::DredBreadcrumbs report;
+    report.queue = DredName(node->pCommandQueueDebugNameW, node->pCommandQueueDebugNameA);
+    report.list = DredName(node->pCommandListDebugNameW, node->pCommandListDebugNameA);
+    report.operation_count = node->BreadcrumbCount;
+    if (node->pLastBreadcrumbValue) {
+      const uint32_t completed = *node->pLastBreadcrumbValue;
+      report.completed = completed;
+      if (node->pCommandHistory) {
+        const auto indices = device_fault::DredHistoryIndices(report.operation_count, completed);
+        if (indices.last_completed) {
+          report.last_completed_operation =
+              DredOperation(node->pCommandHistory[*indices.last_completed]);
+        }
+        if (indices.first_unfinished) {
+          report.first_unfinished_operation =
+              DredOperation(node->pCommandHistory[*indices.first_unfinished]);
+        }
+      }
+      if constexpr (requires { node->pBreadcrumbContexts; }) {
+        if (node->pBreadcrumbContexts) {
+          for (UINT j = 0; j < node->BreadcrumbContextsCount; ++j) {
+            const auto& context = node->pBreadcrumbContexts[j];
+            if (context.BreadcrumbIndex > completed) {
+              break;
+            }
+            const std::string text = DredName(context.pContextString);
+            const std::string_view label = device_fault::DredPassLabel(text);
+            if (!label.empty()) {
+              report.markers.push_back({context.BreadcrumbIndex, std::string(label)});
+            }
+          }
+        }
+      }
+    }
+    lines.push_back(device_fault::DescribeBreadcrumbs(report));
+  }
+  if (node) {
+    lines.emplace_back("DRED breadcrumbs: more command lists omitted");
+  }
+}
+
+template <typename Output>
+void ReadPageFault(std::vector<std::string>& lines, const Output& fault) {
+  // CHECK: a hardware-reported page fault resolves to the named allocation in the report.
+  std::vector<device_fault::DredAllocation> allocations;
+  constexpr size_t kMaxAllocations = 32;
+  bool truncated = false;
+  const auto read = [&](auto* node, bool freed) {
+    for (size_t i = 0; node && i < kMaxAllocations; ++i, node = node->pNext) {
+      allocations.push_back({DredName(node->ObjectNameW, node->ObjectNameA),
+                             DredAllocationKind(node->AllocationType), freed});
+    }
+    truncated |= node != nullptr;
+  };
+  if (fault.PageFaultVA) {
+    read(fault.pHeadExistingAllocationNode, false);
+    read(fault.pHeadRecentFreedAllocationNode, true);
+  }
+  for (std::string& line : device_fault::DescribePageFault(fault.PageFaultVA, allocations)) {
+    lines.push_back(std::move(line));
+  }
+  if (truncated) {
+    lines.emplace_back("  DRED omitted more matching allocations");
+  }
+}
+
+template <typename Crumbs, typename Fault, typename ReadCrumbs, typename ReadFault>
+std::vector<std::string> ReadDred(ReadCrumbs get_crumbs, ReadFault get_fault) {
+  std::vector<std::string> lines;
+  Crumbs crumbs{};
+  const HRESULT breadcrumbs = get_crumbs(&crumbs);
+  if (SUCCEEDED(breadcrumbs) && crumbs.pHeadAutoBreadcrumbNode) {
+    lines.emplace_back("DRED GPU progress is approximate");
+    ReadBreadcrumbs(lines, crumbs.pHeadAutoBreadcrumbNode);
+  } else {
+    lines.push_back(std::format("DRED breadcrumbs: no command lists reported ({:#010x})",
+                                static_cast<uint32_t>(breadcrumbs)));
+  }
+  Fault fault{};
+  const HRESULT page_fault = get_fault(&fault);
+  if (SUCCEEDED(page_fault)) {
+    ReadPageFault(lines, fault);
+  } else {
+    lines.push_back(std::format("DRED page fault data unavailable ({:#010x})",
+                                static_cast<uint32_t>(page_fault)));
+  }
+  return lines;
+}
+
+}  // namespace
+
+std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d) {
+    return {};
+  }
+  using Microsoft::WRL::ComPtr;
+  ComPtr<ID3D12DeviceRemovedExtendedData1> dred1;
+  if (SUCCEEDED(dev->d3d->QueryInterface(IID_PPV_ARGS(&dred1))) && dred1) {
+    return ReadDred<D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT1, D3D12_DRED_PAGE_FAULT_OUTPUT1>(
+        [&](auto* out) { return dred1->GetAutoBreadcrumbsOutput1(out); },
+        [&](auto* out) { return dred1->GetPageFaultAllocationOutput1(out); });
+  }
+  ComPtr<ID3D12DeviceRemovedExtendedData> dred;
+  if (SUCCEEDED(dev->d3d->QueryInterface(IID_PPV_ARGS(&dred))) && dred) {
+    return ReadDred<D3D12_DRED_AUTO_BREADCRUMBS_OUTPUT, D3D12_DRED_PAGE_FAULT_OUTPUT>(
+        [&](auto* out) { return dred->GetAutoBreadcrumbsOutput(out); },
+        [&](auto* out) { return dred->GetPageFaultAllocationOutput(out); });
+  }
+  return {"DRED report interface is unavailable"};
+}
+
+std::string DescribeLossReporting(plume::RenderDevice*, void*, bool diagnostics) {
+  return diagnostics ? "a loss is read from GetDeviceRemovedReason; DRED is on"
+                     : "a loss is read from GetDeviceRemovedReason; DRED is off";
 }
 
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {

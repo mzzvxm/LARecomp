@@ -16,7 +16,7 @@ Reads, under <src dir> (default: the src folder next to tools\):
 Fails (exit 1) on:
   1. an untagged cvar with no row and not on the exception list (a new cvar must be classified when it is written);
   2. a tagged cvar that a normal (non-debug) row uses, unless it is on the pending list; also a tagged cvar on the exception list;
-  3. a cvar that a debug table names and that is not tagged, or whose chain says kRequiresRestart / kInitOnly (a debug row cannot be restart-only);
+  3. a cvar that a debug table names and that is not tagged, or is restart-only without a documented debug_restart_row exception;
   4. a cvar defined twice (the Linux stubs, the legacy runtime) with the tag on one definition and not on the other.
 The rules say nothing about the function-key menus: F4 lists every setting for everyone (only the pause menu is cleaned up), so the exception list is
 only "a setting that is not debug-only and has no row".
@@ -435,6 +435,7 @@ def main():
     exceptions = names_of(cfg, "exception")
     launcher = names_of(cfg, "launcher_row")
     pending = {} if args.ignore_pending else names_of(cfg, "pending")
+    debug_restart = names_of(cfg, "debug_restart_row")
 
     checked = sorted(n for n, ds in defs.items() if any(in_dirs(d["file"], dirs) for d in ds))
     problems = []
@@ -458,7 +459,7 @@ def main():
         for f, line, kind, debug in debug_rows:
             if not is_tagged:
                 problems.append(f"{name}: a debug table row ({f}:{line}) names it, and it is not {DBG}")
-            elif any(d["restart"] for d in ds):
+            elif any(d["restart"] for d in ds) and not debug_restart.get(name):
                 problems.append(f"{name}: a debug table row ({f}:{line}) names it, and its lifecycle is restart-only ({where})")
         if is_tagged:
             tagged.append(name)
@@ -483,6 +484,9 @@ def main():
                 problems.append(f"{name}: no {DBG}, no row and not on the exception list ({where})")
 
     if not dirs:
+        for name, reason in debug_restart.items():
+            if not reason or not any(d["restart"] for d in defs.get(name, [])) or not any(r[3] for r in rows.get(name, [])):
+                warnings.append(f"unused or undocumented debug_restart_row exception: {name}")
         for key, label in (("exception", "exception list"), ("launcher_row", "launcher row list"), ("pending", "pending list")):
             if key == "pending" and args.ignore_pending:
                 continue

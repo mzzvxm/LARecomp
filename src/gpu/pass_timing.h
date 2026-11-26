@@ -49,12 +49,15 @@ class PassTiming {
   void Shutdown();
 
   bool enabled() const { return enabled_; }
+  bool records_labels() const { return enabled_ || crash_labels_; }
 
   // Outside any render pass, on a freshly opened list for `slot`: harvests the
   // slot's previous frame, resets the pool, marks the frame start.
   void BeginFrame(plume::RenderCommandList* list, uint32_t slot);
   // A pass boundary on the frame being recorded: what follows is `label`.
   void Mark(plume::RenderCommandList* list, std::string_view label);
+  // Carry an open pass into the next command list of the same frame.
+  void ResumeList(plume::RenderCommandList* list);
   // Outside any render pass, before the frame's last list is submitted: the
   // frame end, then the rest of the pool.
   void CompleteFrame(plume::RenderCommandList* list, uint32_t slot);
@@ -68,8 +71,8 @@ class PassTiming {
 
   // The passes of the frames whose command lists may still have been on the GPU, in the order
   // they were recorded -- the oldest frame in flight first, the frame being recorded last: what
-  // the log lists when the device is lost (Renderer::ReportDeviceLost). Only a measured run
-  // (mcla_gpu_pass_timing) has the labels: empty without it. A frame lists its marks as they
+  // the crash report lists when the device is lost (Renderer::ReportDeviceLost). Pass timing
+  // and crash diagnostics both retain labels. A frame lists its marks as they
   // were written, so the GPU's own position in it is unknown; the last label is the newest pass
   // of that frame. Render thread.
   struct RecordedFrame {
@@ -87,6 +90,9 @@ class PassTiming {
 
   Device* device_ = nullptr;
   bool enabled_ = false;
+  bool crash_labels_ = false;
+  bool dred_markers_ = false;
+  uint16_t last_marker_id_ = 0;
   uint32_t wanted_ = 0;  // queries the next pools need (more after an overflow)
   std::unique_ptr<plume::RenderQueryPool> pools_[kFramesInFlight];
   std::vector<uint16_t> labels_[kFramesInFlight];  // label of each query written

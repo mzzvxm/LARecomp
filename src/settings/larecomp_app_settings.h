@@ -59,6 +59,17 @@ class AppSettings final : public rex::SettingOwner {
               "of starting. Read at start. Debug only: use it as a launch argument; it is never saved.",
               rex::kInitOnly, rex::kDebugOnly);
 
+  REX_SETTING(std::string, mcla_gpu_crash_diag, "auto",
+              "GPU crash diagnostics: auto enables detailed capture for the launch after a GPU device loss. "
+              "On always captures and off keeps only the basic loss report. Microsoft measured a 2-5% cost "
+              "for D3D12 auto-breadcrumbs. Restart with --mcla_gpu_crash_diag=on or =off to override auto.",
+              rex::Allowed("auto", "on", "off"), rex::kRequiresRestart, rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_force_device_removal, false,
+              "D3D12 test: remove the game's graphics device after a submitted frame, once from frame 120 onward. "
+              "The picture stops and the game needs a restart. Live. Vulkan requires an external driver reset.",
+              rex::kDebugOnly);
+
   REX_SETTING(std::string, render_wait_mode, "auto",
               "How the Plume render thread waits. auto (the default) and wait block until work or the present deadline. "
               "spin restores the previous polling behavior for A/B tests. Takes effect on the next wait.",
@@ -100,6 +111,8 @@ inline AppSettings& g_app = larecomp::Leak<AppSettings>();
 inline auto& graphics_backend = g_app.graphics_backend;
 inline auto& debug_menu = g_app.debug_menu;
 inline auto& mcla_gpu_force_refusal = g_app.mcla_gpu_force_refusal;
+inline auto& mcla_gpu_crash_diag = g_app.mcla_gpu_crash_diag;
+inline auto& mcla_gpu_force_device_removal = g_app.mcla_gpu_force_device_removal;
 inline auto& render_wait_mode = g_app.render_wait_mode;
 inline auto& mcla_gpu_vk_present_pacing = g_app.mcla_gpu_vk_present_pacing;
 inline auto& cpu_limit_lp = g_app.cpu_limit_lp;

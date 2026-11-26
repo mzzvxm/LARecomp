@@ -3340,7 +3340,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     m.height = target_height;
     m.framebuffer = framebuffer;
   }
-  if (pass_timing_->enabled() && marked_framebuffer_ != framebuffer) {
+  if (pass_timing_ && pass_timing_->records_labels() && marked_framebuffer_ != framebuffer) {
     pass_timing_->Mark(list, PassLabel(colors, d.key.color_count, depth));
     marked_framebuffer_ = framebuffer;
   }

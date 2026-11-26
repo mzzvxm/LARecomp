@@ -46,6 +46,9 @@ bool FrameRing::Initialize(Device& device) {
     if (!s.lists.back() || !s.fence || !s.acquire) {
       return fail("the objects of a frame slot");
     }
+    if (device.crash_diagnostics()) {
+      backend::NameCrashList(s.lists.back().get(), i, 0);
+    }
   }
   idle_list_ = queue->createCommandList();
   idle_fence_ = dev->createCommandFence();
@@ -83,6 +86,9 @@ plume::RenderCommandList* FrameRing::OpenNextList() {
       REXLOG_ERROR("[gpu] frame ring: could not create batch list {} of slot {}", s.next_list,
                    slot_);
       return nullptr;
+    }
+    if (device_->crash_diagnostics()) {
+      backend::NameCrashList(list.get(), slot_, s.next_list);
     }
     s.lists.push_back(std::move(list));
   }
@@ -145,6 +151,7 @@ bool FrameRing::Submit(plume::RenderCommandSemaphore** waits, uint32_t wait_coun
                                         s.fence.get());
   s.submitted = true;
   s.serial = next_serial_++;
+  device_->MaybeForceRemoval();
   // As in FlushBatch: a loss met by this very submit. False is the answer the callers already
   // handle for a loss noticed before it (nothing presented, the slot's fence is never waited).
   return !device_->CheckLost("after frame submit");

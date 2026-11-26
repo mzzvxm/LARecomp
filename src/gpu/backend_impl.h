@@ -21,6 +21,11 @@ struct RenderingAdapter {
 #if defined(LARECOMP_GPU_HAS_D3D12)
 namespace d3d12 {
 bool EnableDebugLayer();
+bool ConfigureDred();
+void NameCrashQueue(plume::RenderCommandQueue* queue);
+void NameCrashList(plume::RenderCommandList* list, uint32_t slot, uint32_t batch);
+void RecordCrashPass(plume::RenderCommandList* list, std::string_view label);
+bool ForceDeviceRemoval(plume::RenderDevice* device);
 void InstallDebugMessageSink(plume::RenderDevice* device);
 // LiveObjectReport: the device's debug interface (an ID3D12DebugDevice*), or null.
 void* CaptureDebugDevice(plume::RenderDevice* device);
@@ -51,7 +56,7 @@ void* CreateLossProbe(plume::RenderDevice* device);
 void DestroyLossProbe(plume::RenderDevice* device, void* probe);
 int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
 std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
-std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe, bool diagnostics);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
 bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_recovery);
 PresentResult PresentNowait(plume::RenderSwapChain* swap_chain);
@@ -106,7 +111,7 @@ void* CreateLossProbe(plume::RenderDevice* device);
 void DestroyLossProbe(plume::RenderDevice* device, void* probe);
 int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
 std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
-std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe, bool diagnostics);
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
 bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_recovery);
 std::string DefaultAdapterName();

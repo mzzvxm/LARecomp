@@ -2,6 +2,7 @@
 
 #include "device.h"
 
+#include "crash_diag_rules.h"
 #include "device_fault_format.h"
 #include "format.h"
 #include "car_rt_scene.h"
@@ -15,9 +16,11 @@
 #include "vulkan_pipeline_cache.h"
 #include "windows_floor.h"
 
+#include <fstream>
 #include <mutex>
 
 #include "settings/larecomp_settings.h"
+#include "spdlog_console.h"
 #include <rex/logging/log_category.h>
 
 #if defined(_WIN32)
@@ -134,6 +137,26 @@ bool Device::Initialize(const Options& options) {
   if (device_) {
     return true;
   }
+  if (options.game_session) {
+    loss_report_path_ = LarecompLogFile();
+    const std::filesystem::path log_dir = loss_report_path_.empty()
+        ? LarecompLogFolder() : loss_report_path_.parent_path();
+    loss_marker_path_ = log_dir / "gpu-device-lost";
+    if (loss_report_path_.empty()) {
+      loss_report_path_ = log_dir / "larecomp.log";
+    }
+    loss_report_path_.replace_extension(".gpu-crash.txt");
+    std::error_code marker_error;
+    // CHECK: after a real loss, Auto enables capture for exactly one clean restart.
+    const bool previous_loss = device_fault::ConsumeLossMarker(loss_marker_path_, marker_error);
+    if (marker_error) {
+      REXLOG_WARN("[gpu] could not consume device-loss marker: {}", marker_error.message());
+    }
+    const std::string mode = larecomp::settings::mcla_gpu_crash_diag.Get();
+    crash_diagnostics_requested_ = device_fault::CrashDiagnosticsEnabled(mode, previous_loss);
+    REXLOG_INFO("[gpu] crash diagnostics: {} -> {} (previous device loss: {})", mode,
+                crash_diagnostics_requested_ ? "on" : "off", previous_loss ? "yes" : "no");
+  }
   requested_backend_ = options.backend;
   // The backend asked for, then the other one the build has. Running another
   // than the one asked for is never quiet: logged here, and the caller tells
@@ -182,6 +205,7 @@ bool Device::Open(const Options& options) {
   if (debug_layer) {
     REXLOG_INFO("[gpu] {} debug layer enabled (mcla_gpu_debug_layer)", BackendName());
   }
+  crash_diagnostics_ = crash_diagnostics_requested_ && backend::EnableCrashDiagnostics();
 
   // NVIDIA Streamline on Vulkan has to start before the instance exists (only when DLSS is the
   // saved choice, on an NVIDIA GPU; nothing otherwise, and nothing on D3D12).
@@ -241,7 +265,8 @@ bool Device::Open(const Options& options) {
   if (debug_layer_) {
     backend::InstallDebugMessageSink(device_.get());
   }
-  const char* names_reason = ObjectNamesReason(debug_layer_);
+  const char* names_reason =
+      crash_diagnostics_ ? "GPU crash diagnostics" : ObjectNamesReason(debug_layer_);
   names_ = names_reason != nullptr;
   if (names_) {
     REXLOG_INFO("[gpu] object names on ({})", names_reason);
@@ -292,6 +317,9 @@ bool Device::Open(const Options& options) {
     interface_.reset();
     return false;
   }
+  if (crash_diagnostics_) {
+    backend::NameCrashQueue(queue_.get());
+  }
 
   if (ActiveBackend() == Backend::kVulkan &&
       larecomp::settings::mcla_gpu_vulkan_pipeline_cache.Get()) {
@@ -302,7 +330,8 @@ bool Device::Open(const Options& options) {
   }
 
   loss_probe_ = backend::CreateLossProbe(device_.get());
-  REXLOG_INFO("[gpu] device loss: {}", backend::DescribeLossReporting(device_.get(), loss_probe_));
+  REXLOG_INFO("[gpu] device loss: {}",
+              backend::DescribeLossReporting(device_.get(), loss_probe_, crash_diagnostics_));
 
   const auto& caps = device_->getCapabilities();
   const auto vram = QueryVideoMemory();
@@ -658,17 +687,71 @@ bool Device::CheckLost(const char* context) {
   if (reason == 0) {
     return false;
   }
+  const std::lock_guard lock(loss_report_mutex_);
   if (!lost_.exchange(true, std::memory_order_acq_rel)) {
-    // The first thread to see it logs, once; the others already see IsLost().
-    REXLOG_ERROR("[gpu] device lost, noticed at {}: reason {} (frame {}, {} on {})",
-                 context ? context : "?",
-                 device_fault::RemovedReasonText(ActiveBackend() == Backend::kVulkan, reason),
-                 frame(), BackendName(), device_->getDescription().name);
-    for (const std::string& line : backend::DescribeDeviceFault(device_.get())) {
-      REXLOG_ERROR("[gpu] {}", line);
+    // Persist the loss before asking the driver for details. The renderer can
+    // append its own trail later, even if another thread first detected loss.
+    if (!loss_marker_path_.empty()) {
+      std::ofstream marker(loss_marker_path_, std::ios::binary);
+      marker.close();
+      if (!marker) {
+        REXLOG_WARN("[gpu] could not write device-loss marker");
+      }
     }
+    const std::string summary = std::format(
+        "device lost, noticed at {}: reason {} (frame {}, {} on {})",
+        context ? context : "?",
+        device_fault::RemovedReasonText(ActiveBackend() == Backend::kVulkan, reason),
+        frame(), BackendName(), device_->getDescription().name);
+    WriteLossReport(std::span(&summary, 1), false);
+    rex::log::Flush();
+    if (crash_diagnostics_ || (loss_report_path_.empty() && ActiveBackend() == Backend::kVulkan)) {
+      WriteLossReport(backend::DescribeDeviceFault(device_.get()), true);
+    }
+    if (!loss_report_path_.empty()) {
+      REXLOG_ERROR("[gpu] device-loss report: {}", loss_report_path_.filename().string());
+    }
+    rex::log::Flush();
   }
   return true;
+}
+
+void Device::WriteLossReport(std::span<const std::string> lines, bool append) {
+  if (lines.empty()) {
+    return;
+  }
+  for (const std::string& line : lines) {
+    REXLOG_ERROR("[gpu] {}", line);
+  }
+  if (loss_report_path_.empty()) {
+    return;
+  }
+  std::ofstream report(loss_report_path_, append ? std::ios::app : std::ios::trunc);
+  for (const std::string& line : lines) {
+    report << line << '\n';
+  }
+  report.close();
+  if (!report) {
+    REXLOG_WARN("[gpu] could not write device-loss report");
+  }
+}
+
+void Device::AppendLossReport(std::span<const std::string> lines) {
+  const std::lock_guard lock(loss_report_mutex_);
+  WriteLossReport(lines, true);
+  rex::log::Flush();
+}
+
+void Device::MaybeForceRemoval() {
+  if (force_removal_attempted_ || loss_report_path_.empty() || frame() < 120 ||
+      !larecomp::settings::mcla_gpu_force_device_removal.Get() || !device_ || IsLost()) {
+    return;
+  }
+  force_removal_attempted_ = true;
+  REXLOG_WARN("[gpu] mcla_gpu_force_device_removal: requesting removal after frame submit");
+  if (!backend::ForceDeviceRemoval(device_.get())) {
+    REXLOG_WARN("[gpu] this backend or runtime cannot force device removal");
+  }
 }
 
 namespace {
