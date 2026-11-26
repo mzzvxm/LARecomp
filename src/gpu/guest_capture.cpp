@@ -1569,6 +1569,18 @@ void GuestCapture::HudMapSample(const view_hold::MapSample& sample) {
   writer.Commit(Publication::kBatched);
 }
 
+void GuestCapture::EnvMarker(uint32_t bucket, uint32_t renderer, const env_hold::Eye& eye) {
+  if (!enabled()) return;
+  const uint64_t t0 = cycles::Now();
+  CommandStream::Writer writer(stream_);
+  uint8_t* payload = writer.Begin(RecordType::kComposite, sizeof(EnvMarkerRecord));
+  if (!payload) return;
+  new (payload) EnvMarkerRecord{{bucket, renderer}, eye};
+  CountRecord(sizeof(EnvMarkerRecord));
+  frame_.capture_cycles += ElapsedCycles(t0);
+  writer.Commit(Publication::kBatched);
+}
+
 // ---------------------------------------------------------------------------
 // occlusion queries
 // ---------------------------------------------------------------------------

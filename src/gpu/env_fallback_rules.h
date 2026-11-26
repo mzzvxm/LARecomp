@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "env_hold_link.h"
+
 namespace mcla::gpu {
 
 class BindlessHeap;
@@ -17,13 +19,15 @@ namespace env_fallback {
 // half, the host width of one hemisphere in the high half. Zero means the
 // map cannot take any of the reflection weight this frame.
 uint32_t MapWord(ResolveCache& resolves, const EdramTargets& edram, Device& device,
-                 BindlessHeap& heap, uint32_t frame_serial);
+                 BindlessHeap& heap, uint64_t written);
+bool Enabled();
 
 // Shader handoff (hlsl/env_fallback.hlsli): EnvFallbackSample(word,
 // probeToReceiverWorld, reflectedWorld, perceptualRoughness, groundReceiver).
 // The ray is unit length and both vectors are in the game's world axes (+Y
 // up). The first vector is relative to the capture eye, in metres; for the
-// current camera-centered capture it is the rotated view-space position.
+// camera-centered capture it is the rotated view-space position plus the
+// current view eye's displacement from the eye that rendered the map.
 // The result is unexposed map radiance. Apply the scene's exposure once
 // before blending it with exposure-scaled SSR/RT radiance.
 
@@ -49,6 +53,43 @@ struct Vec3 {
 
 struct Vec2 {
   float x, y;
+};
+
+constexpr bool LevelMatches(uint64_t written, uint64_t level_write, bool complete) {
+  return written != 0 && level_write == written && complete;
+}
+
+// A hold can reuse only the complete capture whose origin we recorded. Each
+// frame still needs its own marker, so views without an env pass cannot
+// inherit a probe from the previous view.
+class ProbeFrame {
+ public:
+  void EndFrame() { sampled_ = false; }
+
+  void Note(uint32_t renderer, uint64_t written, bool refreshed, const env_hold::Eye& eye) {
+    if (refreshed) {
+      renderer_ = renderer;
+      written_ = written;
+      origin_ = eye;
+    }
+    sampled_ = renderer != 0 && renderer == renderer_ && LevelMatches(written_, written, true);
+    view_ = eye;
+  }
+
+  uint64_t written() const { return sampled_ ? written_ : 0; }
+  bool has_origin() const { return sampled_ && origin_.valid && view_.valid; }
+  std::array<float, 3> CameraDelta() const {
+    if (!has_origin()) return {};
+    return {view_.position[0] - origin_.position[0], view_.position[1] - origin_.position[1],
+            view_.position[2] - origin_.position[2]};
+  }
+
+ private:
+  uint32_t renderer_ = 0;
+  uint64_t written_ = 0;
+  bool sampled_ = false;
+  env_hold::Eye origin_;
+  env_hold::Eye view_;
 };
 
 inline float Smooth(float lo, float hi, float value) {

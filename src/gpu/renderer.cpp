@@ -1171,7 +1171,12 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload,
         return;
       }
       if (env_hold::IsMarker(bucket)) {
-        scene_.OnEnvMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, OpenFrameList());
+        const auto& marker = *reinterpret_cast<const CompositeRecord*>(payload);
+        env_hold::Eye eye;
+        if (header.size >= sizeof(RecordHeader) + sizeof(EnvMarkerRecord)) {
+          eye = reinterpret_cast<const EnvMarkerRecord*>(payload)->eye;
+        }
+        scene_.OnEnvMarker(bucket, marker.tag, eye, OpenFrameList());
         return;
       }
       if (mirror_view::IsMarker(bucket)) {
@@ -2895,6 +2900,12 @@ void OnGuestSceneComposited(uint32_t bucket, uint32_t tag) {
 void hud_map_hold::SubmitSample(const view_hold::MapSample& sample) {
   if (GuestCapture* capture = g_capture_active.load(std::memory_order_acquire)) {
     capture->HudMapSample(sample);
+  }
+}
+
+void env_hold::SubmitMarker(uint32_t bucket, uint32_t renderer, const Eye& eye) {
+  if (GuestCapture* capture = g_capture_active.load(std::memory_order_acquire)) {
+    capture->EnvMarker(bucket, renderer, eye);
   }
 }
 

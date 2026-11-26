@@ -222,9 +222,13 @@ class ResolveCache {
   // An active product whose guest range shares a byte with [start, start +
   // length), or null (the reinterpretation report).
   const Product* FindOverlap(uint32_t start, uint32_t length);
-  // Both environment products have to be complete before the guest can hold
-  // them. On a refresh every level must also have been written this frame.
-  bool EnvProductsReady(Scale map_scale, bool refreshed);
+  // A capture's resolve write token, and whether the guest can also hold its
+  // specular copy. A refresh must have written every mip this resolve frame.
+  struct EnvProducts {
+    uint64_t map_write = 0;
+    bool ready_to_hold = false;
+  };
+  EnvProducts CheckEnvProducts(Scale map_scale, bool refreshed);
 
   struct HudMapCopy {
     TextureKey key;

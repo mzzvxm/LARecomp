@@ -146,39 +146,29 @@ const SideViewRule kEnvRule = {
     .host_samples = HostSamples,
 };
 
+bool env_fallback::Enabled() { return g_env_fallback_settings.mcla_gpu_env_fallback.Get(); }
+
 uint32_t env_fallback::MapWord(ResolveCache& resolves, const EdramTargets& edram, Device& device,
-                              BindlessHeap& heap, uint32_t frame_serial) {
-  if (!g_env_fallback_settings.mcla_gpu_env_fallback.Get()) {
-    return 0;
-  }
-
-  // The existing GPU measurements cover the whole capture (0.067-0.082 ms at
-  // 1x). Keep both halves current on every class until an alternating cadence
-  // has measured CPU savings and passes the moving reflection checks.
-  const EdramKey source{.base_tiles = kColorBase,
-                        .pitch = kPitch,
-                        .format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT),
-                        .samples = kSamples};
-  const EdramTargets::Target* target = edram.Find(source);
-  if (!target || !target->texture || target->side_view != SideView::kEnv ||
-      uint32_t(target->drawn_frame) != frame_serial) {
-    return 0;
-  }
-
-  // The EDRAM target also hosts the three mip draws. Read the resolved texture
-  // with all four populated levels, using its own scale and existing view cache.
-  // CHECK: at the SSR trigger, verify this product on both APIs at game/high/ultra,
-  // also after a view or resolution change, and verify the probe follows that eye.
+                              BindlessHeap& heap, uint64_t written) {
+  if (!written) return 0;
+  // Recheck after the marker in case the guest since aliased or rewrote the
+  // texture. A read can update Product::last_frame without changing its mips.
+  // CHECK: verify this binding and probe alignment on fresh and held captures,
+  // during cuts, live scale changes and menu transitions, on both APIs.
+  resolves.Sync();
   const ResolveCache::Product* found = resolves.FindOverlap(kMapBase, 1);
   if (!found || !found->active || !found->texture || !found->own_scale || found->depth_source ||
       found->layout != plume::RenderTextureLayout::SHADER_READ ||
-      found->format != plume::RenderFormat::R16G16B16A16_FLOAT || found->scale != target->scale ||
-      uint32_t(found->last_frame) != frame_serial || found->key.base_page != (kMapBase >> 12) ||
+      found->format != plume::RenderFormat::R16G16B16A16_FLOAT || found->scale != edram.side_scales()[SideView::kEnv] ||
+      found->key.base_page != (kMapBase >> 12) ||
       found->key.mip_page != (kMapMips >> 12) || found->key.width != kDeclaredWidth ||
       found->key.height != kDeclaredHeight || found->key.levels() != kLevels ||
       found->coverage.size() != kLevels ||
       !std::all_of(found->coverage.begin(), found->coverage.end(),
-                   [](const ResolveCache::Product::Coverage& level) { return level.complete(); })) {
+                   [written](const ResolveCache::Product::Coverage& level) {
+                     return LevelMatches(written, level.last_write_frame,
+                                         level.cells_x && level.cells_y && level.complete());
+                   })) {
     return 0;
   }
   ResolveCache::Product* product = resolves.Find(found->key, found->key.base_page);

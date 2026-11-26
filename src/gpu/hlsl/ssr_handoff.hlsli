@@ -51,7 +51,9 @@ SsrFallback SsrSurfaceFallback(uint cls, int2 texel, float3 pc, float3 normal, f
     result.has_env = EnvFallbackAvailable(env_word);
     if (result.has_env) {
       const float3 dir = reflect(normalize(pc), normal);
-      result.env = clamp(NgFinite3(EnvFallbackSample(env_word, SsrViewToWorld(pc), normalize(SsrViewToWorld(dir)), 1.0f - smoothness, ground) *
+      const bool correct_ground = ground && g_handoff.Load(164u) != 0u;
+      const float3 probe_to_receiver = correct_ground ? SsrViewToWorld(pc) + asfloat(g_handoff.Load3(152u)) : 0.0f;
+      result.env = clamp(NgFinite3(EnvFallbackSample(env_word, probe_to_receiver, normalize(SsrViewToWorld(dir)), 1.0f - smoothness, correct_ground) *
                                     asfloat(g_handoff.Load(8u))), 0.0f, cap);
       // CHECK: compare glass energy against the guest view in both day and night.
       // Glass already shows the guest environment. Use the same probe as

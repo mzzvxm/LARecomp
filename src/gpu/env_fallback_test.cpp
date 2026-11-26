@@ -59,6 +59,43 @@ void TestMapAndMip() {
   }
 }
 
+void TestCapture() {
+  constexpr mcla::gpu::env_hold::Eye capture{{20.0f, 8.0f, -30.0f}, true};
+  constexpr mcla::gpu::env_hold::Eye moved{{22.0f, 7.0f, -26.0f}, true};
+  rules::ProbeFrame probe;
+  probe.Note(1, 12, false, moved);
+  Check(probe.written() == 0, "a hold cannot introduce a capture");
+  probe.Note(1, 12, true, capture);
+  Check(probe.written() == 12 && probe.has_origin() && probe.CameraDelta() == std::array{0.0f, 0.0f, 0.0f},
+        "a complete fresh capture starts at the current eye");
+  probe.EndFrame();
+  Check(probe.written() == 0 && !probe.has_origin(), "a view without an environment marker cannot use the map");
+  probe.Note(1, 12, false, moved);
+  Check(probe.written() == 12 && probe.CameraDelta() == std::array{2.0f, -1.0f, 4.0f},
+        "a held map keeps its original eye as the view moves");
+  probe.Note(1, 12, false, {});
+  Check(probe.written() == 12 && !probe.has_origin() && probe.CameraDelta() == std::array{0.0f, 0.0f, 0.0f},
+        "a missing view pose still permits an infinity lookup");
+  probe.Note(2, 12, false, moved);
+  Check(probe.written() == 0, "another renderer cannot use the old probe");
+  probe.Note(1, 13, false, moved);
+  Check(probe.written() == 0, "a later write cannot use the old probe eye");
+  probe.Note(2, 14, true, {});
+  probe.Note(2, 14, false, moved);
+  Check(probe.written() == 14 && !probe.has_origin(), "a held map with an unknown capture eye stays directional");
+  probe.Note(2, 0, true, capture);
+  probe.Note(2, 14, false, moved);
+  Check(probe.written() == 0, "a failed refresh invalidates older captures");
+  probe.Note(0, 15, true, capture);
+  Check(probe.written() == 0, "a probe needs an owning renderer");
+
+  Check(rules::LevelMatches(24, 24, true), "a complete mip written with the capture is reusable");
+  Check(!rules::LevelMatches(24, 23, true), "a stale mip cannot join a fresh map");
+  Check(!rules::LevelMatches(24, 25, true), "a rewritten mip invalidates the old probe");
+  Check(!rules::LevelMatches(24, 24, false), "a partial mip cannot join a complete map");
+  Check(!rules::LevelMatches(0, 0, true), "an unwritten mip has no capture token");
+}
+
 void TestDirection() {
   const float3 origin{0.0f, 0.0f, 0.0f};
   const float3 ray{1.0f, 0.0f, 0.0f};
@@ -142,6 +179,7 @@ void TestAtlas() {
 
 int main() {
   TestMapAndMip();
+  TestCapture();
   TestDirection();
   TestAtlas();
   std::printf("environment fallback: %d checks, %d failed\n", checked, failed);
