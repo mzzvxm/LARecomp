@@ -1,6 +1,7 @@
-// Standalone check for the headless present test and its wait totals.
+// Standalone checks for present topology, backpressure, and wait totals.
 
 #include <cstdio>
+#include <initializer_list>
 
 #include "present_rules.h"
 #include "thread_load.h"
@@ -18,11 +19,69 @@ void Check(bool ok, const char* what) {
   }
 }
 
+void CheckBackpressurePolicy() {
+  using namespace mcla::gpu;
+  using enum PresentPath;
+  using enum PresentTopology;
+  constexpr uint64_t render = 0x100000014;
+  constexpr uint64_t output = 0x200000014;
+  Check(ClassifyPresentTopology(render, output) == kCrossAdapter, "compare both parts of the LUID");
+  Check(ClassifyPresentTopology(render, render + 1) == kCrossAdapter, "a different low word also differs");
+  Check(ClassifyPresentTopology(render, render) == kSameAdapter, "matching LUIDs are same-adapter");
+  Check(ClassifyPresentTopology(render, 0) == kUnknown, "unknown display");
+  Check(ClassifyPresentTopology(0, output) == kUnknown, "unknown render device");
+  Check(ClassifyPresentTopology(0, 0) == kUnknown, "unknown LUIDs cannot prove a match");
+
+  const PresentPolicy dxgi{.d3d12 = true, .enabled = true, .vsync = false, .present_wait = false,
+                           .frame_generation = false, .capture_frame = false, .dxgi_nowait_test = false};
+  PresentPolicy vk = dxgi;
+  vk.d3d12 = false;
+  Check(ChoosePresentPath(kCrossAdapter, dxgi) == kDxgiNowait, "DXGI uses non-blocking present");
+  Check(ChoosePresentPath(kCrossAdapter, vk) == kVulkanTryAcquire, "Vulkan polls for an image");
+  for (PresentPolicy policy : {dxgi, vk}) {
+    Check(ChoosePresentPath(kSameAdapter, policy) == kDefault, "same-adapter uses standard pacing");
+    Check(ChoosePresentPath(kUnknown, policy) == kDefault, "unknown topology uses standard pacing");
+    policy.enabled = false;
+    Check(ChoosePresentPath(kCrossAdapter, policy) == kDefault, "debug A/B bypasses the fix");
+    policy.enabled = true;
+    policy.vsync = true;
+    Check(ChoosePresentPath(kCrossAdapter, policy) == kDefault, "keep VSync pacing");
+    policy.vsync = false;
+    policy.present_wait = true;
+    Check(ChoosePresentPath(kCrossAdapter, policy) == kDefault, "keep explicit present wait");
+    policy.present_wait = false;
+    policy.frame_generation = true;
+    Check(ChoosePresentPath(kCrossAdapter, policy) == kDefault, "generation keeps its own pacing");
+  }
+  vk.capture_frame = true;
+  Check(ChoosePresentPath(kCrossAdapter, vk) == kDefault, "Vulkan capture needs a back buffer");
+  auto policy = dxgi;
+  policy.capture_frame = true;
+  Check(ChoosePresentPath(kCrossAdapter, policy) == kDxgiNowait, "DXGI capture precedes the present");
+
+  policy = dxgi;
+  policy.dxgi_nowait_test = true;
+  policy.enabled = false;
+  Check(ChoosePresentPath(kSameAdapter, policy) == kDxgiNowait, "legacy debug test forces DXGI nowait");
+  policy.frame_generation = true;
+  Check(ChoosePresentPath(kSameAdapter, policy) == kDefault, "debug test leaves generation alone");
+  vk.dxgi_nowait_test = true;
+  Check(ChoosePresentPath(kSameAdapter, vk) == kDefault, "legacy test never forces Vulkan");
+
+  Check(ClassifyVulkanAcquire(0) == AcquireResult::kAcquired, "VK_SUCCESS acquired");
+  Check(ClassifyVulkanAcquire(1000001003) == AcquireResult::kAcquired, "VK_SUBOPTIMAL_KHR acquired");
+  Check(ClassifyVulkanAcquire(1) == AcquireResult::kUnavailable, "VK_NOT_READY skips");
+  Check(ClassifyVulkanAcquire(2) == AcquireResult::kUnavailable, "VK_TIMEOUT skips");
+  Check(ClassifyVulkanAcquire(-1000001004) == AcquireResult::kFailed, "VK_ERROR_OUT_OF_DATE_KHR recovers");
+  Check(ClassifyVulkanAcquire(-4) == AcquireResult::kFailed, "VK_ERROR_DEVICE_LOST recovers");
+}
+
 }  // namespace
 
 int main() {
   using namespace mcla::gpu;
   using namespace std::chrono_literals;
+  CheckBackpressurePolicy();
   Check(SwapChainFrameLatency(2, false, false) == 2, "normal frame latency follows the frame ring");
   Check(SwapChainFrameLatency(2, false, true) == 1, "the D3D12 test requests one frame");
   Check(SwapChainFrameLatency(2, true, false) == 3, "the proxy has room for generated frames");

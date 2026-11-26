@@ -21,6 +21,7 @@
 #include <plume_vulkan.h>
 
 #include "device_fault_format.h"
+#include "present_rules.h"
 #include "swap_chain_rules.h"
 #include "temporal_dlss.h"
 #include "uma_budget.h"
@@ -681,6 +682,23 @@ bool QueryPresentStatistics(plume::RenderSwapChain*, PresentStatistics&) {
   return false;
 }
 
+AcquireResult TryAcquireImage(plume::RenderSwapChain* swap_chain,
+                              plume::RenderCommandSemaphore* signal, uint32_t* image) {
+  const auto* chain = static_cast<const plume::VulkanSwapChain*>(swap_chain);
+  const auto* semaphore = static_cast<const plume::VulkanCommandSemaphore*>(signal);
+  if (!chain || !chain->vk || !chain->commandQueue || !chain->commandQueue->device ||
+      !chain->commandQueue->device->vk || !semaphore || !semaphore->vk || !image ||
+      !vkAcquireNextImageKHR) {
+    return AcquireResult::kFailed;
+  }
+  static_assert(VK_SUCCESS == 0 && VK_NOT_READY == kVkNotReady && VK_TIMEOUT == kVkTimeout &&
+                VK_SUBOPTIMAL_KHR == kVkSuboptimal);
+  // CHECK: confirm zero-timeout misses leave the semaphore reusable on the ROG with validation.
+  // The normal Plume present still consumes the per-image semaphore and supplies Reflex present IDs.
+  return ClassifyVulkanAcquire(vkAcquireNextImageKHR(
+      chain->commandQueue->device->vk, chain->vk, 0, semaphore->vk, VK_NULL_HANDLE, image));
+}
+
 // Plume's Vulkan rule stands; the D3D12 choice is made from DXGI's adapters.
 std::string DefaultAdapterName() {
   return {};
@@ -693,6 +711,20 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
     out.device = reinterpret_cast<void*>(dev->vk);
     out.physical_device = reinterpret_cast<void*>(dev->physicalDevice);
     out.get_device_proc_addr = reinterpret_cast<void*>(vkGetDeviceProcAddr);
+#if defined(_WIN32)
+    if (dev->physicalDevice && vkGetPhysicalDeviceProperties2) {
+      VkPhysicalDeviceIDProperties id{};
+      id.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES;
+      VkPhysicalDeviceProperties2 properties{};
+      properties.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
+      properties.pNext = &id;
+      vkGetPhysicalDeviceProperties2(dev->physicalDevice, &properties);
+      if (id.deviceLUIDValid) {
+        static_assert(sizeof(out.adapter_luid) == VK_LUID_SIZE);
+        std::memcpy(&out.adapter_luid, id.deviceLUID, sizeof(out.adapter_luid));
+      }
+    }
+#endif
   }
   return out;
 }

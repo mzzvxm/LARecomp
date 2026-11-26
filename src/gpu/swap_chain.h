@@ -75,7 +75,7 @@ class SwapChain {
     bool test_d3d12_latency_one = false;
   };
 
-  SwapChain() = default;
+  SwapChain();
   ~SwapChain();
   SwapChain(const SwapChain&) = delete;
   SwapChain& operator=(const SwapChain&) = delete;
@@ -125,15 +125,18 @@ class SwapChain {
   bool empty() const;
 
   // Acquires the next back buffer, signalling `signal` when it is writable.
-  // False when the chain is out of date or empty; the caller rebuilds and
-  // retries once, and must not wait on `signal` after a failure (Vulkan does
-  // not signal it then).
-  bool Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image);
-  // Presents `image` once its render-finished semaphore is signalled. The D3D12
-  // headless test can drop the present when DXGI's queue is full.
-  PresentResult Present(uint32_t image, bool do_not_wait = false);
+  // On failure the caller can rebuild and retry once. An unavailable image
+  // leaves the chain intact. Only kAcquired signals the Vulkan semaphore.
+  AcquireResult Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image,
+                        PresentPath path = PresentPath::kDefault);
+  // Presents `image` once its render-finished semaphore is signalled. DXGI
+  // nowait can drop the present when the compositor is busy.
+  PresentResult Present(uint32_t image, PresentPath path = PresentPath::kDefault);
 
   void SetVsync(bool vsync);
+  void RefreshPresentTopology();
+  PresentTopology present_topology() const { return present_topology_; }
+  bool present_wait_enabled() const { return present_wait_; }
   void WaitForPresentSlot();  // no-op unless present wait is active
   // HDR10 chains: what the display is told about the content (the peak). False otherwise, or when
   // the backend cannot pass it on.
@@ -188,6 +191,11 @@ class SwapChain {
   std::vector<std::unique_ptr<plume::RenderCommandSemaphore>> render_semaphores_;
   bool present_wait_ = false;
   bool test_d3d12_latency_one_ = false;
+  PresentTopology present_topology_ = PresentTopology::kUnknown;
+#if defined(_WIN32)
+  struct DisplayProbe;
+  std::unique_ptr<DisplayProbe> display_probe_;
+#endif
   bool (*factory_wrapper_)(void** factory) = nullptr;
   bool through_wrapper_ = false;
 };

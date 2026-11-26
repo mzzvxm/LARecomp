@@ -1260,7 +1260,7 @@ int64_t FrameGeneration::PresentImage(HostImage& image, uint32_t lane_index, int
   Lane& lane = lanes_[lane_index];
   uint32_t back = 0;
   const int64_t acquire_begin_us = NowUs();
-  if (!swap_chain_->Acquire(lane.acquire.get(), &back)) {
+  if (swap_chain_->Acquire(lane.acquire.get(), &back) != AcquireResult::kAcquired) {
     return fail();  // out of date: the render thread rebuilds the chain
   }
   const int64_t record_begin_us = NowUs();

@@ -309,6 +309,10 @@ const ItemDef kDebugPictureFixesItems[] = {
 // not rows. CHEAP CAR SHADOW (perf_fast_vehicle_shadows) is here since the game was found to read its
 // switch at every car shadow draw (render_phases.cpp).
 const ItemDef kDebugPerformanceItems[] = {
+#if defined(LARECOMP_HAS_GPU) && defined(_WIN32)
+    NativeOnly(Bool("PM_RxDbgCrossAdapterPresent", "mcla_gpu_cross_adapter_present",
+                    "CROSS-ADAPTER PRESENT FIX: ")),
+#endif
     // The Plume renderer's frame pacing (frame_pacing.cpp); the cvar is 0 or 1.
     NativeOnly(Str("PM_RxDbgFramePacing", "frame_pacing",   "FRAME PACING: ",
                    kOffOnVals, kOffOnNames, Len(kOffOnVals))),

@@ -355,6 +355,20 @@ PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain) {
   return PresentResult::kFailed;
 }
 
+AcquireResult TryAcquireVulkanImage(plume::RenderSwapChain* swap_chain,
+                                    plume::RenderCommandSemaphore* signal, uint32_t* image) {
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+  if (ActiveBackend() == Backend::kVulkan) {
+    return vulkan::TryAcquireImage(swap_chain, signal, image);
+  }
+#else
+  (void)swap_chain;
+  (void)signal;
+  (void)image;
+#endif
+  return AcquireResult::kFailed;
+}
+
 NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(NativeDeviceOf(device));
 }

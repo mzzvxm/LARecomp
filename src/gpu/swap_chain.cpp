@@ -12,7 +12,73 @@
 #include "latency.h"
 #include "thread_load.h"
 
+#if defined(_WIN32)
+#include <chrono>
+#include <cstring>
+#include <dxgi1_2.h>
+#include <wrl/client.h>
+#endif
+
 namespace mcla::gpu {
+
+#if defined(_WIN32)
+namespace {
+
+using Microsoft::WRL::ComPtr;
+
+uint64_t FindOutputLuid(IDXGIFactory1& factory, HMONITOR monitor) {
+  uint64_t owner = 0;
+  for (UINT a = 0;; ++a) {
+    ComPtr<IDXGIAdapter1> adapter;
+    const HRESULT enumerated = factory.EnumAdapters1(a, &adapter);
+    if (enumerated == DXGI_ERROR_NOT_FOUND) {
+      return owner;
+    }
+    if (FAILED(enumerated) || !adapter) {
+      return 0;
+    }
+    for (UINT o = 0;; ++o) {
+      ComPtr<IDXGIOutput> output;
+      const HRESULT found = adapter->EnumOutputs(o, &output);
+      if (found == DXGI_ERROR_NOT_FOUND) {
+        break;
+      }
+      if (FAILED(found) || !output) {
+        return 0;
+      }
+      DXGI_OUTPUT_DESC desc{};
+      if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop || desc.Monitor != monitor) {
+        continue;
+      }
+      DXGI_ADAPTER_DESC1 adapter_desc{};
+      if (FAILED(adapter->GetDesc1(&adapter_desc))) {
+        return 0;
+      }
+      uint64_t luid = 0;
+      static_assert(sizeof(luid) == sizeof(adapter_desc.AdapterLuid));
+      std::memcpy(&luid, &adapter_desc.AdapterLuid, sizeof(luid));
+      if (owner && owner != luid) {
+        return 0;  // Ambiguous output ownership.
+      }
+      owner = luid;
+      break;
+    }
+  }
+}
+
+}  // namespace
+
+struct SwapChain::DisplayProbe {
+  using Clock = std::chrono::steady_clock;
+  Clock::time_point next_poll = Clock::time_point::min();
+  ComPtr<IDXGIFactory1> factory;
+  HMONITOR monitor = nullptr;
+  uint64_t render_luid = 0;
+  uint64_t output_luid = 0;
+};
+#endif
+
+SwapChain::SwapChain() = default;
 
 SwapChain::~SwapChain() {
   Shutdown();
@@ -35,7 +101,50 @@ bool SwapChain::Initialize(Device& device, plume::RenderWindow window, const Opt
     device_ = nullptr;
     return false;
   }
+#if defined(_WIN32)
+  display_probe_ = std::make_unique<DisplayProbe>();
+  display_probe_->render_luid = backend::NativeDeviceOf(device.device()).adapter_luid;
+  RefreshPresentTopology();
+#endif
   return true;
+}
+
+void SwapChain::RefreshPresentTopology() {
+#if defined(_WIN32)
+  if (!display_probe_) {
+    return;
+  }
+  auto& probe = *display_probe_;
+  const auto now = DisplayProbe::Clock::now();
+  if (now < probe.next_poll) {
+    return;
+  }
+  const bool first = probe.next_poll == DisplayProbe::Clock::time_point::min();
+  probe.next_poll = now + std::chrono::seconds(1);
+  // CHECK: verify the owner changes when the game moves to the ROG's direct dGPU output.
+  const HMONITOR monitor = window_ ? MonitorFromWindow(window_, MONITOR_DEFAULTTONEAREST) : nullptr;
+  if (probe.render_luid && monitor) {
+    const bool refresh_factory = !probe.factory || !probe.factory->IsCurrent();
+    if (refresh_factory &&
+        FAILED(CreateDXGIFactory1(IID_PPV_ARGS(probe.factory.ReleaseAndGetAddressOf())))) {
+      probe.factory.Reset();
+    }
+    if (refresh_factory || monitor != probe.monitor || !probe.output_luid) {
+      probe.output_luid = probe.factory ? FindOutputLuid(*probe.factory.Get(), monitor) : 0;
+    }
+  } else {
+    probe.output_luid = 0;
+  }
+  probe.monitor = monitor;
+  const auto topology = ClassifyPresentTopology(probe.render_luid, probe.output_luid);
+  if (first || topology != present_topology_) {
+    const char* name = topology == PresentTopology::kCrossAdapter ? "cross-adapter"
+                       : topology == PresentTopology::kSameAdapter ? "same-adapter" : "unknown";
+    REXLOG_INFO("[gpu] present topology: {} (render LUID {:#x}, output LUID {:#x})",
+                name, probe.render_luid, probe.output_luid);
+  }
+  present_topology_ = topology;
+#endif
 }
 
 plume::RenderCommandQueue* SwapChain::Queue() const {
@@ -148,6 +257,10 @@ void SwapChain::Shutdown() {
   framebuffers_.clear();
   render_semaphores_.clear();
   swap_chain_.reset();
+#if defined(_WIN32)
+  display_probe_.reset();
+#endif
+  present_topology_ = PresentTopology::kUnknown;
   device_ = nullptr;
   queue_ = nullptr;
 }
@@ -186,9 +299,10 @@ bool SwapChain::empty() const {
   return !swap_chain_ || swap_chain_->isEmpty() || framebuffers_.empty();
 }
 
-bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) {
+AcquireResult SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image,
+                                PresentPath path) {
   if (!image || empty()) {
-    return false;
+    return AcquireResult::kFailed;
   }
   const ScopedGpuWait wait;  // may block for a free image
   // Vulkan: the acquire needs the chain to itself, so the latency reducer's calls on the update
@@ -196,14 +310,17 @@ bool SwapChain::Acquire(plume::RenderCommandSemaphore* signal, uint32_t* image) 
   const latency::SwapChainUse use;
   const std::lock_guard lock(use_mutex_);
   const ScopedGpuWaitDetail detail(GpuWaitKind::kAcquire);
-  if (!swap_chain_->acquireTexture(signal, image)) {
+  const AcquireResult result = path == PresentPath::kVulkanTryAcquire
+      ? backend::TryAcquireVulkanImage(swap_chain_.get(), signal, image)
+      : (swap_chain_->acquireTexture(signal, image) ? AcquireResult::kAcquired
+                                                   : AcquireResult::kFailed);
+  if (result == AcquireResult::kFailed) {
     recovery_requested_.store(true, std::memory_order_release);
-    return false;
   }
-  return true;
+  return result;
 }
 
-PresentResult SwapChain::Present(uint32_t image, bool do_not_wait) {
+PresentResult SwapChain::Present(uint32_t image, PresentPath path) {
   if (!swap_chain_ || image >= render_semaphores_.size()) {
     return PresentResult::kFailed;
   }
@@ -213,7 +330,7 @@ PresentResult SwapChain::Present(uint32_t image, bool do_not_wait) {
   const latency::SwapChainUse use;
   const std::lock_guard lock(use_mutex_);
   PresentResult result;
-  if (do_not_wait) {
+  if (path == PresentPath::kDxgiNowait) {
     result = backend::PresentD3D12Nowait(swap_chain_.get());
   } else {
     plume::RenderCommandSemaphore* waits[] = {render_semaphores_[image].get()};
