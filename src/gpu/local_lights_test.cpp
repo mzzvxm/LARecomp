@@ -1979,7 +1979,7 @@ void SourceChecks(const std::string& src) {
   const size_t pass = At(scene, "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);");
   const size_t shafts = At(scene, "shafts_->OnResolve(record, summary, list, UpscalerRunning());");
   Check(ao != std::string::npos && pass != std::string::npos && shafts != std::string::npos && ao < pass && pass < shafts, "the pass runs after the AO's apply and before the sun shafts");
-  Check(Has(scene, "gbuffer_published = gbuffer_->OnResolve(record, summary, list);"), "the Scene hands the pass the G-buffer's own answer for the resolve");
+  Check(Has(scene, "gbuffer_published = gbuffer_->OnResolve(record, summary, list, scene_marker_seen_);"), "the Scene hands the pass the G-buffer's own answer for the resolve");
   Check(Has(scene, "local_lights_->OnMainDraw(banks, draw.match.color);") && Has(scene, "local_lights_->OnPresent();"), "the draws' constants and the present reach the pass");
   Check(Has(scene_h, "void SetLocalLights(LocalLights* local_lights)") && Has(renderer, "scene_.SetLocalLights(&local_lights_);") && Has(renderer, "local_lights_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_);") &&
             Count(renderer, "local_lights_.Shutdown();") == 2,

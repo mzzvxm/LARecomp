@@ -89,6 +89,7 @@ class GBuffer {
   // The effects that read the planes say which they want while they are on (gbuffer_rules.h Consumer; 0 withdraws). Sticky: set it when the effect's setting changes. Read at the
   // next frame boundary.
   void Want(gbuffer::Consumer consumer, uint32_t planes) { wants_.Set(consumer, planes); }
+  void WantPauseNormals(bool on) { pause_normals_wanted_ = on; }
   // The cutscene director's camera ran (the hook of the guest's cutscene camera calls this every frame a cutscene is on): the frames that follow carry no sidecar. Any thread.
   static void NoteCutsceneCamera();
 
@@ -108,16 +109,25 @@ class GBuffer {
   // What the window says for the draw being prepared.
   gbuffer::Window::Gate Gate() const { return window_.GateForDraw(); }
   // One prepared main view draw's outcome, for the counts and the family picture.
-  void NoteDraw(gbuffer::Why why, uint64_t ps_identity);
+  void NoteDraw(gbuffer::Why why, uint64_t ps_identity, uint32_t main_samples);
+  gbuffer::PauseFxView pause_fx_candidate() const { return pause_fx_candidate_; }
+  bool tracks_pause_fx() const { return !suppressed_ && gbuffer::IsPauseFx(pause_fx_candidate_); }
+  bool has_pause_fx_camera() const { return pause_fx_ready_ && !suppressed_; }
+  gbuffer::PauseFxView published_pause_fx() const { return published_pause_fx_; }
+  bool AllowsMainSamples(uint32_t samples) const;
+  bool CarriesPauseSidecar() const { return gbuffer::IsPauseWorld(window_samples_) && !tally_.mixed(); }
+  void NotePauseWrite() { pause_written_ = true; }
   // A draw whose sidecar pipeline was still being made went without the sidecar (Scene: the key falls back to the guest's).
   void NoteFallbackDraw() { ++fallback_draws_; }
   // The game's motion blur draw (the anchor) was met in a frame this class tracks: reads the frame's camera from its pixel constants (`ps_bank`: 256 registers of raw big endian
-  // bytes, as temporal::ExtractCamera takes them) and keeps it for the next frame when this one is the play view's (gbuffer_rules.h CameraKeeper). The G-buffer reads it itself, so the
+  // bytes, as temporal::ExtractCamera takes them) and keeps it for the next frame of the same view (gbuffer_rules.h CameraKeeper). The G-buffer reads it itself, so the
   // derivative normal's camera exists with or without a temporal upscaler.
   void OnAnchor(const uint8_t* ps_bank);
   // The camera the frame's draws hand their shaders (the derivative normal, a fragment's world point): the last frame's; null when there is none this frame (the first frame, a
-  // cutscene's or the pause world's before it, an anchor whose constants gave none).
-  const gbuffer::CameraAxes* camera() const { return camera_.Previous(); }
+  // different view's frame before it, an anchor whose constants gave none).
+  const gbuffer::CameraAxes* camera(uint32_t guest_samples) const {
+    return camera_.Previous(gbuffer::IsPauseWorld(guest_samples) ? pause_fx_candidate_ : gbuffer::PauseFxView::kNone);
+  }
   // A writer's constants were filled, with the camera rows (true) or without (false: the shaders that need them write "no data"); for the log.
   void NoteCameraRows(bool had) { ++(had ? camera_rows_ : camera_missing_); }
   // Changes whenever the sidecar's textures are replaced; part of the Scene's framebuffer memo. 0 while there is no sidecar.
@@ -130,9 +140,9 @@ class GBuffer {
   // The guest cleared the main view's colour in the rectangle `guest_rect` (guest pixels) of `colour0`: the same rectangle of every plane is cleared. The
   // list has no framebuffer bound that it needs afterwards (the planes' own is left bound: the caller forgets its binding).
   void OnColorClear(plume::RenderCommandList* list, EdramTargets::Target& colour0, const plume::RenderRect& guest_rect);
-  // A resolve, after ResolveCache::Execute made its copy, `list` outside any render pass: the first depth copy of the main view's play frame at the AO's
+  // A resolve, after ResolveCache::Execute made its copy, `list` outside any render pass: the first depth copy of an eligible main view at the AO's
   // trigger closes the window and publishes the frame. True when the frame was published (a barrier was recorded).
-  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
+  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool composite_seen);
   // Right after the other effects of the same trigger (the AO's apply, the sun shafts, the car passes) so that the picture replaces what they drew: the debug view,
   // when mcla_gpu_gbuffer_view asks for one and the frame was published. True when passes were recorded (the caller's list state is gone).
   bool DrawView(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
@@ -171,7 +181,7 @@ class GBuffer {
   bool EnsureImages(uint32_t width, uint32_t height, uint32_t samples);
   void ReleaseImages();
   void Transition(plume::RenderCommandList* list, plume::RenderTextureLayout layout);
-  void ClearRect(plume::RenderCommandList* list, const plume::RenderRect& host);
+  bool ClearRect(plume::RenderCommandList* list, const plume::RenderRect& host);
   void FillSidecar(Sidecar* out) const;
   bool CheckAffordable(const EdramTargets::Target& colour0);
   plume::RenderPipeline* ViewPipelineFor(plume::RenderFormat format, uint32_t samples, bool source_ms);
@@ -203,6 +213,15 @@ class GBuffer {
   gbuffer::Window window_;
   gbuffer::GBufferFrame frame_;
   uint64_t frame_serial_ = 0;
+  gbuffer::PauseFxView pause_fx_candidate_ = gbuffer::PauseFxView::kNone;
+  gbuffer::PauseFxView published_pause_fx_ = gbuffer::PauseFxView::kNone;
+  gbuffer::PauseFxView last_published_pause_fx_ = gbuffer::PauseFxView::kNone;
+  uint32_t window_samples_ = 0;
+  bool pause_fx_ready_ = false;
+  bool pause_normals_wanted_ = false;
+  bool anchor_seen_ = false;
+  bool pause_contents_ = false;
+  bool pause_written_ = false;
 
   std::array<std::unique_ptr<plume::RenderShader>, 2> view_shaders_;  // one sample, multisampled
   bool view_shaders_failed_ = false;

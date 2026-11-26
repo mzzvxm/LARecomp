@@ -60,6 +60,7 @@
 #include "host_passes.h"
 #include "light_frame.h"
 #include "local_lights_rules.h"
+#include "pause_world_fx.h"
 #include "rt_denoise.h"
 #include "rt_lights_rules.h"
 #include "vol_lamp_list.h"
@@ -80,6 +81,7 @@ class RtLights {
   struct Inputs {
     uint64_t frame = 0;                  // the light pass's frame counter (consecutive frames' histories are valid)
     uint32_t frame_slot = 0;
+    gbuffer::PauseFxView pause_fx = gbuffer::PauseFxView::kNone;
     float position[3] = {};              // the camera's place, and the axes of its pose in the world (right, up, forward)
     float right[3] = {1, 0, 0};
     float up[3] = {0, 1, 0};
@@ -217,6 +219,7 @@ class RtLights {
   uint32_t parity_ = 0;                                // the depth guide this frame's trace writes
   bool stats_frame_ = false;
   bool history_ok_ = false;                            // this frame may read the last frame's result (the previous frame, the same size, no cut)
+  gbuffer::PauseFxView prev_pause_fx_ = gbuffer::PauseFxView::kNone;
   bool raw_frame_ = false;                             // this frame is raw: Ray Reconstruction is the denoiser (SetRawMode, taken at Plan)
   uint64_t frame_ = 0;
   uint64_t ran_frame_ = ~uint64_t(0);

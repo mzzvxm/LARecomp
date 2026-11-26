@@ -2284,6 +2284,13 @@ void CheckSharedWork() {
 }  // namespace
 
 int main() {
+  Check(ls::ReplayViewMatches(false, false, false, false) && ls::ReplayViewMatches(false, false, true, false),
+        "play keeps its trigger with or without casters");
+  Check(ls::ReplayViewMatches(true, true, false, true), "replay the eligible pause/photo casters");
+  Check(!ls::ReplayViewMatches(true, false, false, true), "a four-sample replay needs an admitted city camera");
+  Check(!ls::ReplayViewMatches(true, true, false, false), "a four-sample replay needs its own casters");
+  Check(!ls::ReplayViewMatches(true, true, true, true) && !ls::ReplayViewMatches(false, true, true, true),
+        "a mixed list cannot be replayed into either view");
   // LU-3: the whole suite runs twice, once with the unified picker (light_pick.h, the default) and once with the legacy code of ViewPicker (mcla_gpu_light_pick = legacy).
   for (const mcla::gpu::light_pick::PickMode mode : {mcla::gpu::light_pick::PickMode::kUnified, mcla::gpu::light_pick::PickMode::kLegacy}) {
     mcla::gpu::light_pick::DefaultMode() = mode;

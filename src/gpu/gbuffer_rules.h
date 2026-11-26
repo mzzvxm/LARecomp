@@ -9,7 +9,7 @@
 //
 // Part 2 (the host's rules, GB-A's: gbuffer.cpp and Scene call them): which planes a frame makes and which of them a draw carries, which draws of the frame get the
 // sidecar and what each does to it (writes it, clears the pixels it covers, leaves them), the frame window the sidecar lives in (cleared with the guest's clear of the
-// main colour, closed at the mid-scene depth copy), the trigger, the views that never write (the pause world, a cutscene, a mirror), the memory, the consumers' requests
+// main colour, closed at the mid-scene depth copy), the trigger, the view exclusions, the memory, the consumers' requests
 // and the setting's words. Pure: no Plume, no renderer, so they are tested alone.
 //
 // The window of a frame (survey 3.2 and 3.4):
@@ -32,6 +32,7 @@
 #include <string_view>
 
 #include "gbuffer_types.h"
+#include "pause_world_fx.h"
 
 namespace mcla::gpu::gbuffer {
 
@@ -487,11 +488,11 @@ inline FramePlan PlanFrame(Setting setting, uint32_t consumer_planes, uint32_t s
 inline View ViewOf(int value) { return (value > 0 && value < int(View::kCount)) ? View(value) : View::kOff; }
 
 // ---------------------------------------------------------------------------
-// The views that never write
+// View exclusions
 // ---------------------------------------------------------------------------
 
-// The pause menu's, the race pause's, the garage's and the map's world is the main view's identity at 4 guest samples: Decide says kPauseView (the sidecar at 4 samples
-// would be 133 MB at 4K for the normal alone, and the consumers have the depth fallback there). The side views (the sun's cascades, the environment map, the road
+// The pause menu, photo mode, garage and map share the main view's 4-guest-sample identity. Only an admitted pause/photo window can carry the sidecar.
+// The side views (the sun's cascades, the environment map, the road
 // reflection, the headlight shadow atlas, the car passes) are other EDRAM identities: kNotMainView. Two kinds of draw land in the main identity and are not the play
 // view, and are told apart by what they have:
 //   a cutscene: the same keys and the same samples; the cutscene director's camera runs (the hook of the guest's cutscene camera, GBuffer::NoteCutsceneCamera, counts
@@ -531,6 +532,19 @@ class CutsceneGate {
 // The mid-scene depth copy of the main view where the consumers run (the AO's trigger: ao.h kTriggerDestination).
 inline constexpr uint32_t kTriggerDestination = 0x078B0000;
 
+inline constexpr uint32_t kPauseGuestSamples = 4;
+constexpr bool IsPauseWorld(uint32_t guest_samples) { return guest_samples == kPauseGuestSamples; }
+
+// One sidecar backs the window. A pause clear or draw must never reuse a play
+// window, or vice versa, even when the host sizes and samples agree.
+constexpr bool MainSamplesAllowed(uint32_t samples, uint32_t window_samples, bool pause_allowed) {
+  if (samples == 0) return false;
+  if (IsPauseWorld(samples)) {
+    return pause_allowed && (window_samples == 0 || IsPauseWorld(window_samples));
+  }
+  return !IsPauseWorld(window_samples);
+}
+
 struct TriggerFacts {
   bool depth_copy = false;          // the resolve copied an EDRAM depth target
   uint32_t main_depth_samples = 0;  // temporal::MainDepthSamples of its source (1, 2 or 4; 0 not the main depth)
@@ -538,11 +552,13 @@ struct TriggerFacts {
   bool clears_depth = false;        // the call also clears the depth after the copy
   bool inside_end_tiling = false;
   bool first_this_frame = true;     // no trigger before it in the frame
+  bool pause_trigger = false;       // eligible window and the shared screen trigger's full-picture checks
 };
-// Whether a resolve is the frame's trigger for the play view: the AO's judgement (ao.cpp Judge) without its rectangle rules. The pause world (4
-// samples) has no sidecar, so it never triggers.
+// The play view uses its original copy rule. The eligible pause/photo view
+// must also pass the shared trigger's rectangle, phase and tiling checks.
 inline bool IsTrigger(const TriggerFacts& f) {
-  return f.depth_copy && (f.main_depth_samples == 1 || f.main_depth_samples == 2) && f.dest_address == kTriggerDestination && !f.clears_depth &&
+  const bool main = f.main_depth_samples == 1 || f.main_depth_samples == 2 || (IsPauseWorld(f.main_depth_samples) && f.pause_trigger);
+  return f.depth_copy && main && f.dest_address == kTriggerDestination && !f.clears_depth &&
          !f.inside_end_tiling && f.first_this_frame;
 }
 
@@ -583,9 +599,6 @@ constexpr PlaneBlend BlendFor(PlaneMode mode, Plane plane) {
 // The GUEST's sample count of the pause menu's, the race pause's, the garage's and the map's world (temporal::kPauseSamples). It is the guest's, not the host's: the play view has 1 or 2
 // guest samples whatever the host's MSAA level is (mcla_gpu_msaa 4 or 8 gives the same play view that many HOST samples, and the sidecar the same), so a run at host MSAA 4 is the
 // play view with a 4 sample sidecar and carries it; only the 4x guest world is the pause world (GB-INTEGRATE-1 read its dx-day-m4 run, host MSAA 4, as the pause world and was wrong).
-inline constexpr uint32_t kPauseGuestSamples = 4;
-constexpr bool IsPauseWorld(uint32_t guest_samples) { return guest_samples == kPauseGuestSamples; }
-
 // Why a main view draw did what it did (the counts of the log).
 enum class Why : uint8_t {
   kWrites,              // carried, and the pixel shader's variant writes the planes
@@ -613,6 +626,7 @@ struct DrawFacts {
   bool suppressed = false;           // a view that never writes (a cutscene's frame)
   bool window_open = false;          // Window::Gate() said kOpen (or the clear was just made)
   uint32_t main_samples = 0;         // temporal::MatchMainView: 1, 2 or 4 samples of the main view's colour, 0 not the main view
+  bool pause_fx = false;              // the pause/photo window already has a usable sidecar
   uint32_t guest_color_count = 0;
   bool has_depth = false;
   bool depth_is_main = true;         // the depth target is the main view's depth identity at the colour's samples (a main colour with another depth is not the view)
@@ -652,7 +666,7 @@ inline DrawDecision Decide(const DrawFacts& f) {
   if (!f.active) return not_carried(Why::kOff);
   if (f.suppressed) return not_carried(Why::kSuppressed);
   if (f.main_samples == 0) return not_carried(Why::kNotMainView);
-  if (IsPauseWorld(f.main_samples)) return not_carried(Why::kPauseView);
+  if (IsPauseWorld(f.main_samples) && !f.pause_fx) return not_carried(Why::kPauseView);
   if (f.guest_color_count != 1) return not_carried(Why::kNotOneColor);
   if (!f.window_open) return not_carried(Why::kWindowClosed);
   if (!f.rt0_writes) return masked(Why::kMaskedNoColor, PlaneMode::kMask);
@@ -715,10 +729,9 @@ inline bool MakeCameraRows(Vec3 right, Vec3 up, Vec3 forward, float tan_half_x, 
   return true;
 }
 
-// A draw of the play view: the sidecar was asked about it and it is not the pause world's, a side view's or a draw before the view's own clear. (kNotOneColor and kWindowClosed are draws
-// of the main view's identity too: Decide returns them after the pause world and the side views were told apart.)
-constexpr bool IsPlayViewWhy(Why why) {
-  return why == Why::kWrites || IsMasked(why) || why == Why::kNotOneColor || why == Why::kWindowClosed;
+// A decision reached after identifying a draw of the main view.
+constexpr bool IsMainViewOutcome(Why why) {
+  return why == Why::kPauseView || why == Why::kWrites || IsMasked(why) || why == Why::kNotOneColor || why == Why::kWindowClosed;
 }
 
 // One frame's draws of the main view by kind, from the outcomes the Scene reports (GBuffer::NoteDraw): the pause world's draws (4 guest samples) and the play view's. A frame is
@@ -726,11 +739,9 @@ constexpr bool IsPlayViewWhy(Why why) {
 struct ViewTally {
   uint32_t play = 0;
   uint32_t pause = 0;
-  void Note(Why why) {
-    if (why == Why::kPauseView) {
-      ++pause;
-    } else if (IsPlayViewWhy(why)) {
-      ++play;
+  void Note(Why why, uint32_t samples) {
+    if (IsMainViewOutcome(why)) {
+      ++(IsPauseWorld(samples) ? pause : play);
     }
   }
   bool play_world() const { return play != 0 && pause == 0; }
@@ -741,8 +752,7 @@ struct ViewTally {
 // The camera for the shaders that have no normal of their own (the derivative normal: store interiors, the traffic signals, the foliage fallback) and for a world point of a
 // fragment (GbWorldPoint): the previous frame's, read from the game's motion blur draw (the anchor), whose pixel constants hold the view inverse (right, up, backward), the
 // projection and the frame's size (temporal_camera.h). It is read by the G-buffer itself at every anchor of a frame it tracks, so it exists with or without a temporal upscaler (GB-
-// INTEGRATE-1's run found the derivative families writing "no data" without one: the rows came from the upscaler's own history). One frame late: a fast pan turns the world normal a
-// degree or two at most, a cut shows for one frame. Only a play frame's camera is kept: the pause world's lens differs.
+// INTEGRATE-1's run found the derivative families writing "no data" without one: the rows came from the upscaler's own history). The camera is keyed by view.
 struct CameraAxes {
   Vec3 right;
   Vec3 up;
@@ -756,23 +766,25 @@ class CameraKeeper {
  public:
   // The frame's serial at its start (the Scene's guest frame count: one more each frame the renderer runs).
   void BeginFrame(uint64_t serial) { serial_ = serial; }
-  // At the frame's anchor: `camera` is what its constants gave (null: nothing sane), `tally` the frame's draws of the main view so far. The camera is kept for the next frame when
-  // this frame is the play view's; any other frame (pause world, no main view, both) leaves the next frame with none.
-  void OnAnchor(const CameraAxes* camera, const ViewTally& tally) {
-    if (camera == nullptr || !tally.play_world()) {
+  // Only an unambiguous main view can supply the next frame's camera.
+  void OnAnchor(const CameraAxes* camera, const ViewTally& tally, PauseFxView pause_fx = PauseFxView::kNone) {
+    if (camera == nullptr || !(tally.play_world() || (tally.pause_world() && IsPauseFx(pause_fx)))) {
       have_ = false;
       return;
     }
     camera_ = *camera;
     kept_serial_ = serial_;
+    kept_view_ = tally.pause_world() ? pause_fx : PauseFxView::kNone;
     have_ = true;
   }
-  // The camera the draws of this frame use: the last frame's, when it gave one and this frame follows it directly (a gap of frames, a cutscene's, the pause world's: none).
-  const CameraAxes* Previous() const { return have_ && kept_serial_ + 1 == serial_ ? &camera_ : nullptr; }
+  const CameraAxes* Previous(PauseFxView view = PauseFxView::kNone) const {
+    return have_ && kept_serial_ + 1 == serial_ && kept_view_ == view ? &camera_ : nullptr;
+  }
 
  private:
   uint64_t serial_ = 0;
   uint64_t kept_serial_ = 0;
+  PauseFxView kept_view_ = PauseFxView::kNone;
   bool have_ = false;
   CameraAxes camera_;
 };

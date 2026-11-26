@@ -64,6 +64,12 @@ namespace mcla::gpu::local_shadow {
 
 namespace tp = ::mcla::gpu::temporal;
 
+// The caster list is shared by the replays. A four-sample list needs the
+// preceding anchor of the same pause/photo city, even if no sidecar is used.
+constexpr bool ReplayViewMatches(bool pause, bool pause_ready, bool play_casters, bool pause_casters) {
+  return pause ? pause_ready && pause_casters && !play_casters : !pause_casters;
+}
+
 // ---------------------------------------------------------------------------
 // the setting
 // ---------------------------------------------------------------------------

@@ -453,12 +453,13 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   ssr::FrameFacts facts;
   facts.level = level_;
   facts.pause_view = (sf.flags & screen::kFramePause) != 0;
+  facts.pause_fx = facts.pause_view ? gbuffer_->published_pause_fx() : gbuffer::PauseFxView::kNone;
   facts.has_lens = (sf.camera.flags & screen::kCameraValid) != 0 && sf.camera.tan_half_fov[0] > 0.0f && sf.camera.tan_half_fov[1] > 0.0f && sf.camera.lin[0] != 0.0f;
   facts.has_hiz = sf.Has(screen::kHizMin);
   facts.hiz_levels = sf.hiz_levels;
   facts.has_colour = sf.Has(screen::kColourPost);
   facts.colour_levels = sf.colour_post_levels;
-  const bool gbuffer_current = gf.frame_serial == sf.frame_serial;
+  const bool gbuffer_current = gf.frame_serial == sf.frame_serial && gbuffer::MatchesPauseFxView(facts.pause_view, gbuffer_->published_pause_fx());
   facts.has_rt1 = gbuffer_current && gf.Has(gbuffer::kPlaneNormal);
   facts.has_rt2 = gbuffer_current && gf.Has(gbuffer::kPlaneAlbedo);
   facts.has_rt3 = gbuffer_current && gf.Has(gbuffer::kPlaneMaterial) && !force_stub_;
@@ -515,6 +516,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // the one Ray Reconstruction takes, its radiance in the trace image and its hit distance in the alpha, which the hit pass turns into the guide): RtDenoise does not run in a raw frame, RR is the denoiser.
   plume::RenderPipeline* trace_rt_pipeline = nullptr;
   bool rt = false;
+  // CHECK: on RT hardware in both APIs, the four-sample world builds a
+  // matching TLAS and the fallback uses it while the photo camera pans.
   if (rt_.wanted() && !decision.stub) {
     trace_rt_pipeline = Pipeline(ms ? kVTraceRtMs : kVTraceRt);
     rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);
@@ -608,9 +611,11 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   now.frame = screen_->frame_count();
   now.size[0] = width;
   now.size[1] = height;
-  now.generation = sf.generation;
+  now.generation = facts.pause_view ? gf.generation : sf.generation;
+  now.pause_fx = facts.pause_fx;
+  // CHECK: on D3D12 and Vulkan at 1x and 2x host MSAA, hold and slowly pan
+  // the photo camera, then cut back to the menu and check for stale reflections.
   const float history_weight = history_override_ >= 0.0f ? history_override_ : numbers.history_weight;
-  const bool use_history = ssr::HistoryUsable(last_key_, now, motion_known) && last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
   if (!camera_logged_) {
     camera_logged_ = true;
     REXLOG_INFO("{} the camera's axes come from {}; the history {}", kPrefix,
@@ -643,6 +648,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // GB-I2, the off-screen fallback: the game's own road reflection view (the whole screen drawn with the roads' mirrored geometry into a 256 x 256 target, side_views.h), which the trace reads at the
   // pixel's screen position to take out of the road where it finds a reflection of its own (hlsl/ssr_trace_ps.hlsl). It is the host target of the view's identity, read as it stands at the trigger: the
   // game drew and resolved it before the roads that read it. Found by the identity (ssr_rules.h roadview::), accepted only when the side view classification made it and this frame drew into it.
+  // CHECK: isolate the photo-mode green/magenta blocks with SSR and the
+  // upscaler off, comparing the guest 256x256 and scaled 768x768 products.
   ssr::RoadViewFacts road;
   road.share = ssr::FallbackShare(fallback_setting_, wet_strength_);
   EdramKey road_key;
@@ -776,6 +783,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   } else {
     DrawPass(list, trace_, trace_pipeline, trace_push);
   }
+  now.ray_traced = rt_recorded;
+  const bool use_history = ssr::HistoryUsable(last_key_, now, motion_known) && last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
 
   // RG-3: the signal and its guides, the runtime's dispatch. Refused (no camera rows, an image, the plan of the dispatch, the runtime): the effect's own accumulation runs below, this frame.
   bool regen_ok = false;

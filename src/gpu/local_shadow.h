@@ -128,6 +128,7 @@
 #include "light_pick_record.h"
 #include "local_shadow_rules.h"
 #include "local_shadow_types.h"
+#include "pause_world_fx.h"
 #include "pipelines.h"
 #include "records.h"
 #include "resolve.h"
@@ -216,7 +217,7 @@ class LocalShadow final : public ShadowProvider {
   void CollectViews(shadow_atlas::ShadowFrameBuilder* builder) const override;
 
   // The Scene opened a frame's first list: reads the settings, forgets the last frame's draws.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView pause_fx, bool pause_ready);
   // True while Scene::OnDraw should offer the main view's draws: every frame while a headlight is lit, one frame in a few otherwise (the pipelines are
   // listed from them).
   bool wants_draws() const { return offering_; }
@@ -346,6 +347,10 @@ class LocalShadow final : public ShadowProvider {
   bool anchor_seen_ = false;
   bool composite_seen_ = false;
   bool trigger_seen_ = false;
+  gbuffer::PauseFxView pause_fx_ = gbuffer::PauseFxView::kNone;
+  bool pause_ready_ = false;
+  bool play_casters_ = false;
+  bool pause_casters_ = false;
   bool trigger_last_frame_ = false;
   std::vector<Caster> casters_;
   std::vector<float> banks_;            // host order, 1024 floats (a register bank) per distinct bank version

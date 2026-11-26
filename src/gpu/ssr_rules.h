@@ -217,7 +217,7 @@ enum class Why : uint8_t {
   kUsed,          // runs
   kOff,           // the setting is off
   kNoShaders,     // a shader or a pipeline is not made (yet: a frame never waits for a compile) or could not be
-  kPause,         // the pause menu's, the garage's or the map's world: no sidecar, no history
+  kPause,         // this four-guest-sample world has no admitted pause/photo sidecar
   kNoHiz,         // the frame has no Hi-Z (the depth chain did not run, its pipeline is still being made)
   kNoColour,      // the frame has no colour_post with its mips
   kNoNormals,     // the G-buffer's normal plane is not in the frame (a cutscene, the first frame, the sidecar over the memory cap)
@@ -249,6 +249,7 @@ struct FrameFacts {
   Level level = Level::kOff;
   bool shaders_ready = false;
   bool pause_view = false;
+  gbuffer::PauseFxView pause_fx = gbuffer::PauseFxView::kNone;
   bool has_lens = false;
   bool has_hiz = false;
   uint32_t hiz_levels = 0;
@@ -281,7 +282,7 @@ inline Decision Decide(const FrameFacts& f) {
     d.why = Why::kNoShaders;
     return d;
   }
-  if (f.pause_view) {
+  if (f.pause_view && !gbuffer::IsPauseFx(f.pause_fx)) {
     d.why = Why::kPause;
     return d;
   }
@@ -324,10 +325,14 @@ struct HistoryKey {
   bool valid = false;
   uint64_t frame = 0;
   uint32_t size[2] = {0, 0};
-  uint32_t generation = 0;   // the products' generation (screen_frame.h): the Hi-Z, the colour and the planes are the same images as at the last frame
+  uint32_t generation = 0;   // pause/photo uses the sidecar's generation to reject replaced images
+  gbuffer::PauseFxView pause_fx = gbuffer::PauseFxView::kNone;
+  bool ray_traced = false;
 };
 constexpr bool HistoryUsable(const HistoryKey& last, const HistoryKey& now, bool camera_motion_known) {
-  return camera_motion_known && last.valid && now.valid && last.frame + 1 == now.frame && last.size[0] == now.size[0] && last.size[1] == now.size[1];
+  return camera_motion_known && last.valid && now.valid && last.frame + 1 == now.frame && last.size[0] == now.size[0] && last.size[1] == now.size[1] &&
+         last.pause_fx == now.pause_fx &&
+         (!gbuffer::IsPauseFx(now.pause_fx) || (last.generation == now.generation && last.ray_traced == now.ray_traced));
 }
 
 // ---------------------------------------------------------------------------

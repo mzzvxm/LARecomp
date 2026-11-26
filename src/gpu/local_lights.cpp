@@ -400,7 +400,11 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 
   // The camera: the frame's own pose where the AO trusts the vertex constants for it, else the last frame's; the lens and the projection's depth rows from the shared products' camera.
   const screen::ScreenFrame& sf = screen_->Frame();
-  if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial || (sf.flags & screen::kFramePause) != 0 || !(sf.camera.tan_half_fov[0] > 0.0f) ||
+  const bool pause = (sf.flags & screen::kFramePause) != 0;
+  const gbuffer::PauseFxView pause_fx = gbuffer_->published_pause_fx();
+  // CHECK: the photo camera receives neon and local shadows with matching
+  // depth, normals and albedo while still and during a slow pan.
+  if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial || !gbuffer::MatchesPauseFxView(pause, pause_fx) || !(sf.camera.tan_half_fov[0] > 0.0f) ||
       !(sf.camera.tan_half_fov[1] > 0.0f)) {
     Count(Skip::kNoCamera);
     return false;
@@ -511,6 +515,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     RtLights::Inputs rin;
     rin.frame = frame_;
     rin.frame_slot = frame_slot;
+    rin.pause_fx = pause_fx;
     for (int i = 0; i < 3; ++i) {
       rin.position[i] = rows.position[i];
       rin.right[i] = rows.right[i];

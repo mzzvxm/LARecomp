@@ -209,6 +209,7 @@ const ItemDef kDebugFixesItems[] = {
 // stochastic effects), each with the switch that turns it off. The rows were the second half of FIXES, which had 30 rows against the 24 a page can
 // hold. Every row is NativeOnly, so the hub lists the page only while the Plume renderer runs.
 const ItemDef kDebugPictureFixesItems[] = {
+    NativeOnly(Bool("PM_RxDbgPauseFx", "mcla_gpu_pause_world_fx", "PAUSE AND PHOTO FX: ")),
     NativeOnly(Str("PM_RxDbgCabinSun", "mcla_gpu_cabin_sun_shadow", "CABIN SUN FIX: ",
                    kCabinSunVals, kCabinSunNames, Len(kCabinSunVals))),
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),

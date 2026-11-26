@@ -333,7 +333,14 @@ plume::RenderPipeline* Volumetrics::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void Volumetrics::BeginFrame() {
+void Volumetrics::BeginFrame(gbuffer::PauseFxView pause_fx) {
+  if (gbuffer::PauseFxCameraChanged(previous_pause_, pause_fx_, pause_fx)) {
+    have_previous_ = false;
+    have_older_ = false;
+    vs_pose_trusted_ = false;
+    history_.valid = false;
+  }
+  pause_fx_ = pause_fx;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_vol_census.Get()));
   keep_cones_ = larecomp::settings::mcla_gpu_vol_keep_cones.Get();
   stable_ = larecomp::settings::mcla_gpu_vol_stable.Get();
@@ -540,6 +547,7 @@ void Volumetrics::OnMainDraw(const temporal::MainMatch& match, const ConstantBan
 
 void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
+  pause_lens_steady_ = false;
   if (play_view_ == pause_view_) {
     have_previous_ = false;
     have_older_ = false;
@@ -564,6 +572,12 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
     return;
   }
   const bool same_kind = have_previous_ && previous_frame_ + 1 == frame_ && previous_pause_ == pause;
+  pause_lens_steady_ = same_kind && pause && menu_world::LensSteady(true, menu_world::LensStep(camera, previous_));
+  const bool pause_cut = same_kind && pause && gbuffer::IsPauseFx(pause_fx_) &&
+                         (!pause_lens_steady_ || temporal::TestCut(camera, previous_, nullptr).fires);
+  if (pause_cut) {
+    history_.valid = false;
+  }
   // Whether this frame's vertex constants held this frame's view inverse: trusted once they did in a frame the camera moved in, dropped as soon as
   // they differ (ao.cpp, shafts.cpp).
   if (same_kind && vs_view_inverse_draws_ != 0) {
@@ -584,8 +598,8 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
     vs_pose_trusted_ = false;
   }
   // The camera of the frame before the previous one, for the volume that has to guess this frame's camera (VOL-STABLE-2: volumetrics_stable.h ExtrapolateCamera).
-  have_older_ = same_kind;
-  if (same_kind) {
+  have_older_ = same_kind && !pause_cut;
+  if (have_older_) {
     cam_older_ = CameraOf(previous_);
   }
   previous_ = camera;
@@ -837,7 +851,7 @@ void Volumetrics::PictureSize(const ResolveCache::Summary& summary, uint32_t* wi
 
 bool Volumetrics::IsFirstPoint(const ResolveRecord& record, const ResolveCache::Summary& summary) const {
   // The ambient occlusion's trigger (ao.cpp Judge, shafts.cpp IsFirstPoint): the first copy of the main depth that is no end-of-scene copy, into
-  // 078B0000, before the anchor, whose rectangle starts at the origin and stays inside the picture. Only the play view here.
+  // 078B0000, before the anchor, with a rectangle inside the picture.
   if (!summary.depth_copy || !summary.source || first_point_seen_) {
     return false;
   }
@@ -878,13 +892,16 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   ++triggers_;
   outcome_ = Outcome::kNoCamera;
   const bool pause = temporal::MainDepthSamples(summary.source_key) == temporal::kPauseSamples;
-  if (pause) {
-    // The pause menu's, the race pause's and the garage's world and the map have no volume (survey V10): nothing is recorded.
+  if (pause && (!pause_view_ || play_view_ || !gbuffer::IsPauseFx(pause_fx_))) {
     outcome_ = Outcome::kWorld;
     return false;
   }
-  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_) {
+  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != pause || (pause && !pause_lens_steady_)) {
     ++skipped_no_camera_;
+    return false;
+  }
+  if (pause && !menu_world::PauseFxRuns(menu_world::Classify(true, menu_world::LensOf(&previous_), menu_world::GarageLighting()), pause_fx_)) {
+    outcome_ = Outcome::kWorld;
     return false;
   }
   outcome_ = Outcome::kNoLight;
@@ -1065,6 +1082,9 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   pending_ = plan;
   pending_.valid = true;  // the composite is still to be recorded
   outcome_ = Outcome::kSkyOnly;
+  // CHECK: the pause/photo tiles show the mid-scene composite once over the
+  // whole picture. Use the same point as the shafts in these views.
+  anchor_ = pause ? shafts_anchor::Anchor::kMidScene : policy_.Choose(larecomp::settings::mcla_gpu_vol_early.Get());
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first volume: frame {}, level {}, {}x{}x{} froxels, far {:.0f} m, {} lamps, {} headlights, {} shadow views, sun {}, camera {}, history {}, picture {}x{} ({} host "
@@ -1074,7 +1094,6 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
                 use.valid && use.weight > 0.0f ? "on" : "off", plan.render[0], plan.render[1], plan.host_samples,
                 shafts_anchor::AnchorName(anchor_));
   }
-  anchor_ = policy_.Choose(larecomp::settings::mcla_gpu_vol_early.Get());
   if (anchor_ == shafts_anchor::Anchor::kMidScene) {
     // Here, before the fog and the particles: the debug switch, or the fall-back of a build or a scene that gives no copy of the main colour at the
     // second point. The copy is still watched there.
@@ -1260,7 +1279,7 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
 const char* Volumetrics::OutcomeName(Outcome outcome) {
   switch (outcome) {
     case Outcome::kNoTrigger: return "no resolve of the frame was the first point (the mid-scene depth copy)";
-    case Outcome::kWorld: return "the world has none (the pause menu's, the map, the garage): nothing recorded";
+    case Outcome::kWorld: return "this view is outside the volumetric light's city world";
     case Outcome::kNoCamera: return "no previous frame's camera";
     case Outcome::kNoLight: return "no usable light constants in the main view's draws, or no inputs";
     case Outcome::kGated: return "nothing to show now (a medium too thin, no sun, no lamp, no headlight): nothing recorded";
@@ -1284,7 +1303,9 @@ std::string Volumetrics::LevelName() const { return std::string(vol::Name(level_
 void Volumetrics::EndFrame() {
   if (recorded_this_frame_) {
     const bool was_fallen_back = policy_.fallen_back();
-    policy_.EndOfFrame(anchor_, copy_seen_);
+    if (pending_.colour.samples != temporal::kPauseSamples) {
+      policy_.EndOfFrame(anchor_, copy_seen_);
+    }
     if (!composited_) {
       ++lost_;
     }

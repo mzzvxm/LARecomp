@@ -317,7 +317,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "which costs nothing (the plan is made from the guides of the frame before anyway)"},
     {.step = Step::kBeginScreen, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "screen products read their wants, make the frame's plan", .call = "screen_->BeginFrame(frame_serial_)",
      .reads_wants = want::kScreen},
-    {.step = Step::kBeginAo, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "AO declares its wants", .call = "ao_->BeginFrame()", .declares_for = Step::kAo,
+    {.step = Step::kBeginAo, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "AO declares its wants", .call = "ao_->BeginFrame(", .declares_for = Step::kAo,
        .note = "after the screen owner's BeginFrame, which it needs: it asks the plan whether a consumer outside its family wants the depth chain. "
                "RtAo::BeginFrame declares the structures' want and the RR consumer here"},
     {.step = Step::kBeginCarRefl, .phase = Phase::kBegin, .kind = Kind::kScanned, .name = "car self-reflection declares its wants", .call = "car_refl_->BeginFrame()", .declares_for = Step::kCarHistory},
@@ -339,7 +339,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "It stands late in the draws (the phase runs after the world and the cars), before the trigger's resolve or after it: the game's own order decides, the stamp below waits for the copy of the colour. "
              "Debug only (mcla_gpu_mirror_view, off by default); the labels 'mirror view' (the pass) and 'mirror view resolve' are its own time, 'after mirror view' closes the span"},
     // ======================================================== the trigger (Scene::OnResolve) =======================================================
-    {.step = Step::kGBufferPublish, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "G-buffer publish", .call = "gbuffer_->OnResolve(record, summary, list)",
+    {.step = Step::kGBufferPublish, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "G-buffer publish", .call = "gbuffer_->OnResolve(record, summary, list, scene_marker_seen_)",
      .reads = data::kPlanesDrawn, .makes = data::kPlanes,
      .note = "closes the sidecar's window at the mid-scene depth copy and publishes the planes, before the effects that read them"},
     {.step = Step::kCarSunMap, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car sun shadow map", .call = "car_shadow_->OnResolve(record, summary, list)",

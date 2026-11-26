@@ -505,6 +505,10 @@ void RuleChecks() {
     Check(gb::IsTrigger(u), "and without MSAA");
     u.main_depth_samples = 4;
     Check(!gb::IsTrigger(u), "the pause world's copy is not");
+    u.pause_trigger = true;
+    Check(gb::IsTrigger(u), "an admitted pause copy triggers");
+    u.inside_end_tiling = true;
+    Check(!gb::IsTrigger(u), "an admitted pause copy inside end tiling is still refused");
     u = t;
     u.dest_address = 0x06ACD000;
     Check(!gb::IsTrigger(u), "the end-of-scene copy is not");
@@ -810,6 +814,32 @@ gb::CameraAxes MakeAxes(float yaw_degrees) {
 }
 void PauseAndCameraChecks() {
   using gb::Why;
+  using gb::PauseFxView;
+  Check(gb::PauseFxViewOf(false, "PHOTOALBUMMOVIE", false) == PauseFxView::kNone, "off refuses photo mode");
+  Check(gb::PauseFxViewOf(true, "PHOTOALBUMMOVIE", false) == PauseFxView::kPhoto, "photo movie");
+  Check(gb::PauseFxViewOf(true, "PAUSEMOVIE", false) == PauseFxView::kPause, "pause movie");
+  Check(gb::PauseFxViewOf(true, "PAUSEMOVIE", true) == PauseFxView::kNone, "garage lighting excludes the garage during a movie transition");
+  Check(gb::PauseFxViewOf(true, "GARAGEMOVIE", false) == PauseFxView::kNone &&
+        gb::PauseFxViewOf(true, "NAVSYSMOVIE", false) == PauseFxView::kNone &&
+        gb::PauseFxViewOf(true, "", false) == PauseFxView::kNone, "garage, map and unknown movies are excluded");
+  for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto}) {
+    Check(gb::MatchesPauseFxView(true, view) && !gb::MatchesPauseFxView(false, view),
+          "a published pause/photo sidecar belongs to the four-sample view");
+    Check(gb::PauseFxCameraChanged(true, PauseFxView::kNone, view) &&
+          gb::PauseFxCameraChanged(true, view, PauseFxView::kNone),
+          "toggling the switch in a menu invalidates the preceding menu camera");
+    Check(!gb::PauseFxCameraChanged(true, view, view) && !gb::PauseFxCameraChanged(false, PauseFxView::kNone, view),
+          "holding photo/pause keeps its camera and a movie cannot relabel a play camera");
+  }
+  Check(gb::MatchesPauseFxView(false, PauseFxView::kNone) && !gb::MatchesPauseFxView(true, PauseFxView::kNone),
+        "the legacy play sidecar is for play");
+  Check(gb::PauseFxCameraChanged(true, PauseFxView::kPause, PauseFxView::kPhoto) &&
+        gb::PauseFxCameraChanged(true, PauseFxView::kPhoto, PauseFxView::kPause),
+        "photo and pause start new camera histories in either direction");
+  Check(gb::MainSamplesAllowed(4, 0, true) && gb::MainSamplesAllowed(4, 4, true), "pause can open a new window or reuse its own");
+  Check(!gb::MainSamplesAllowed(4, 0, false) && !gb::MainSamplesAllowed(4, 2, true), "pause cannot open when disabled or reuse a play window");
+  Check(gb::MainSamplesAllowed(2, 0, false) && gb::MainSamplesAllowed(2, 1, true) &&
+        !gb::MainSamplesAllowed(2, 4, true) && !gb::MainSamplesAllowed(0, 0, true), "play and pause cannot share a window");
   // K9: the pause world is told by the guest's samples. The host's MSAA level (mcla_gpu_msaa 1, 2, 4, 8) is not an input of the decision: the play view at 2 guest samples is the
   // play view at every host level, and a sidecar at 4 host samples (what the dx-day-m4 run had) belongs to it.
   Check(gb::kPauseGuestSamples == 4 && gb::IsPauseWorld(4) && !gb::IsPauseWorld(1) && !gb::IsPauseWorld(2) && !gb::IsPauseWorld(8) && !gb::IsPauseWorld(0), "only the guest's 4 samples are the pause world");
@@ -821,26 +851,30 @@ void PauseAndCameraChecks() {
     f.main_samples = 4;
     f.masked_attach = true;
     Check(gb::Decide(f).why == Why::kPauseView && !gb::Decide(f).attach(), Num("the pause world carries nothing, with a host MSAA of %.0f and the non writers carried", double(host)));
+    f.pause_fx = true;
+    Check(gb::Decide(f).writes(), "an admitted pause world can write");
+    f.window_open = false;
+    Check(!gb::Decide(f).attach(), "an admitted pause world cannot write after its window closes");
   }
   for (Why why : {Why::kWrites, Why::kMaskedBlended, Why::kMaskedNoVariant, Why::kMaskedOtherVariant, Why::kMaskedNoColor, Why::kMaskedNoDepth, Why::kMaskedOtherDepth,
-                  Why::kMaskedSubView, Why::kMaskedNarrowMask, Why::kNotOneColor, Why::kWindowClosed}) {
-    Check(gb::IsPlayViewWhy(why), "an outcome of a play view draw is the play view's");
+                  Why::kMaskedSubView, Why::kMaskedNarrowMask, Why::kNotOneColor, Why::kWindowClosed, Why::kPauseView}) {
+    Check(gb::IsMainViewOutcome(why), "the outcome identifies a main view draw");
   }
-  for (Why why : {Why::kOff, Why::kNotMainView, Why::kPauseView, Why::kSuppressed}) {
-    Check(!gb::IsPlayViewWhy(why), "off, a side view, the pause world and a cutscene's frame are not the play view's");
+  for (Why why : {Why::kOff, Why::kNotMainView, Why::kSuppressed}) {
+    Check(!gb::IsMainViewOutcome(why), "these outcomes do not identify a main view draw");
   }
   gb::ViewTally pause;
-  pause.Note(Why::kPauseView);
-  pause.Note(Why::kPauseView);
-  pause.Note(Why::kNotMainView);
+  pause.Note(Why::kPauseView, 4);
+  pause.Note(Why::kWrites, 4);
+  pause.Note(Why::kNotMainView, 0);
   Check(pause.pause_world() && !pause.play_world() && !pause.mixed() && pause.pause == 2 && pause.play == 0, "a frame of pause draws (and side views) is the pause world's");
   gb::ViewTally play;
-  play.Note(Why::kWrites);
-  play.Note(Why::kMaskedBlended);
-  play.Note(Why::kNotMainView);
+  play.Note(Why::kWrites, 2);
+  play.Note(Why::kMaskedBlended, 2);
+  play.Note(Why::kNotMainView, 0);
   Check(play.play_world() && !play.pause_world() && !play.mixed() && play.play == 2, "a frame of play draws is the play view's");
   gb::ViewTally both = play;
-  both.Note(Why::kPauseView);
+  both.Note(Why::kWrites, 4);
   Check(both.mixed() && !both.play_world() && !both.pause_world(), "a frame with both kinds is neither (and is counted)");
   const gb::ViewTally none;
   Check(!none.play_world() && !none.pause_world() && !none.mixed(), "a frame with no main view draw is neither");
@@ -882,6 +916,14 @@ void PauseAndCameraChecks() {
   keeper.OnAnchor(nullptr, play);
   keeper.BeginFrame(110);
   Check(keeper.Previous() == nullptr, "an anchor whose constants gave no camera keeps none");
+  keeper.OnAnchor(&a, pause, PauseFxView::kPhoto);
+  keeper.BeginFrame(111);
+  Check(keeper.Previous(PauseFxView::kPhoto) != nullptr, "photo mode can keep its own anchor camera");
+  Check(keeper.Previous(PauseFxView::kPause) == nullptr && keeper.Previous() == nullptr,
+        "pause and play never borrow the photo camera");
+  keeper.OnAnchor(&b, both, PauseFxView::kPhoto);
+  keeper.BeginFrame(112);
+  Check(keeper.Previous(PauseFxView::kPhoto) == nullptr, "mixed views cannot supply a photo camera");
   keeper.OnAnchor(&a, none);
   keeper.BeginFrame(111);
   Check(keeper.Previous() == nullptr, "a frame with no main view keeps none");

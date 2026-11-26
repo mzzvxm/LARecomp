@@ -603,8 +603,11 @@ void LocalShadow::EvaluatePlace(const ConstantBanks::Banks& banks) {
 // the frame
 // ---------------------------------------------------------------------------
 
-void LocalShadow::BeginFrame() {
+void LocalShadow::BeginFrame(gbuffer::PauseFxView pause_fx, bool pause_ready) {
   ++frame_;
+  const bool view_changed = pause_fx != pause_fx_;
+  pause_fx_ = pause_fx;
+  pause_ready_ = pause_ready;
   // LU-5: whether this frame records into the one shadow atlas (mcla_gpu_light_frame bit 8; the manager answers false when it is off or its frame is not open: the replay's own atlas then).
   // A change (live) gives the images of the other code up: one frame without maps, the same as a level change.
   {
@@ -622,6 +625,8 @@ void LocalShadow::BeginFrame() {
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
+  play_casters_ = false;
+  pause_casters_ = false;
   casters_.clear();
   banks_.clear();
   shared_.clear();
@@ -634,7 +639,10 @@ void LocalShadow::BeginFrame() {
   early_camera_ = rules::Camera{};
   early_tries_ = 0;
   eval_have_ = false;
-  if (!had_trigger) {
+  if (view_changed) {
+    last_camera_ = rules::Camera{};
+  }
+  if (!had_trigger || view_changed) {
     // The frame before had no trigger (a menu, a movie): its map is not the world the draws of this frame are of.
     const bool had_map = published_.count != 0 || atlas_info_.valid;
     published_ = larecomp::gpu::LocalShadowFrame{};
@@ -729,7 +737,12 @@ void LocalShadow::OnMainDraw(const MainDraw& d) {
 void LocalShadow::Collect(const MainDraw& d) {
   const DrawGeometry& g = *d.geometry;
   rules::DrawFacts f;
-  f.color_pass = d.match && d.match.color && d.match.depth && temporal::IsPlaySamples(d.match.samples);
+  const bool pause = d.match.samples == temporal::kPauseSamples;
+  f.color_pass = d.match && d.match.color && d.match.depth &&
+                 (temporal::IsPlaySamples(d.match.samples) || (pause && pause_ready_));
+  if (f.color_pass) {
+    (pause ? pause_casters_ : play_casters_) = true;
+  }
   f.color_count = d.key->color_count;
   f.depth_test = (d.key->depth & 1u) != 0;
   f.depth_write = (d.key->depth & 2u) != 0;
@@ -849,12 +862,13 @@ void LocalShadow::Collect(const MainDraw& d) {
 
 bool LocalShadow::IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const {
   // The ambient occlusion's trigger (car_shadow_map.cpp IsTrigger, ao.cpp Judge): the first copy of the main depth that is no end-of-scene copy,
-  // into 078B0000, before the anchor, in the game view (the pause view's world has no headlights lit by this rig).
+  // into 078B0000, before the anchor. A pause/photo replay uses casters from the same view.
   if (!summary.depth_copy || !summary.source || trigger_seen_) {
     return false;
   }
   const uint32_t samples = temporal::MainDepthSamples(summary.source_key);
-  if (!temporal::IsPlaySamples(samples)) {
+  const bool pause = samples == temporal::kPauseSamples;
+  if (!temporal::IsMainSamples(samples) || !rules::ReplayViewMatches(pause, pause_ready_, play_casters_, pause_casters_)) {
     return false;
   }
   if ((record.flags & kEventInsideEndTiling) || summary.clears_depth || summary.dest_address != kTriggerDestination || anchor_seen_ || composite_seen_) {
@@ -862,6 +876,12 @@ bool LocalShadow::IsTrigger(const ResolveRecord& record, const ResolveCache::Sum
   }
   const uint32_t width = std::min(summary.dest_width, summary.source->width);
   const uint32_t height = std::min(summary.dest_height, summary.source->height);
+  if (pause) {
+    // CHECK: the eligible four-sample world supplies replayable casters and
+    // usable light banks at this copy on both APIs.
+    return menu_world::PauseFirstPointGeometry(summary.x0, summary.y0, summary.x1, summary.y1, width, height,
+                                               summary.source->width, summary.source->height, EdramTargets::kHeightAlignment);
+  }
   return summary.x0 == 0 && summary.y0 == 0 && summary.x1 > summary.x0 && summary.y1 > summary.y0 && uint32_t(summary.x1) <= width &&
          uint32_t(summary.y1) <= height;
 }

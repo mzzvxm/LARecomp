@@ -1076,7 +1076,18 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void AmbientOcclusion::BeginFrame() {
+void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
+  if (pause_fx_ != pause_fx && previous_pause_) {
+    // AO and screen-space bounce share a history. Contact shadows can also
+    // keep their own. Start both over when the pause camera changes mode.
+    have_previous_ = false;
+    have_last_step_ = false;
+    last_motion_valid_ = false;
+    vs_pose_trusted_ = false;
+    history_valid_ = false;
+    contact_hist_.valid = false;
+  }
+  pause_fx_ = pause_fx;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_ao_census.Get()));
   const std::string ao_text = AoSetting().Get();
   const auto ao_decision = rtao_setting::DecideFor(ao_text);
@@ -1185,6 +1196,7 @@ void AmbientOcclusion::BeginFrame() {
     const bool normals_setting = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get();
     gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion, ao_gbuffer::PlanesWanted(normals_setting, mode_ != Mode::kOff || contact_mode_ != Mode::kOff));
     gbuffer_->Want(gbuffer::Consumer::kBounceLight, ao_gbuffer::BouncePlanesWanted(normals_setting, gi_active_));
+    gbuffer_->WantPauseNormals(mode_ != Mode::kOff || contact_mode_ != Mode::kOff);
   }
   screen_wants_ = false;
   if (screen_) {
@@ -2547,7 +2559,8 @@ bool AmbientOcclusion::NormalPipelineReady(bool multisampled) {
 ao_gbuffer::Why AmbientOcclusion::PlanNormals(const ResolveCache::Summary& summary, const Plan& plan, NormalPlan* out) {
   *out = NormalPlan{};
   ao_gbuffer::FrameFacts facts;
-  facts.setting = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get();
+  facts.pause_fx = trigger_pause_ && gbuffer_ && gbuffer::IsPauseFx(gbuffer_->published_pause_fx());
+  facts.setting = facts.pause_fx || larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get();
   facts.gbuffer_present = gbuffer_ != nullptr;
   facts.play_view = !trigger_pause_;
   facts.render_width = plan.render[0];
@@ -2555,7 +2568,9 @@ ao_gbuffer::Why AmbientOcclusion::PlanNormals(const ResolveCache::Summary& summa
   const gbuffer::GBufferFrame* frame = gbuffer_ ? &gbuffer_->frame() : nullptr;
   if (frame) {
     // The plane has the main colour's samples and the depth the same ones (one colour target and its depth): the sample the depth is read at is the plane's too.
-    facts.frame_has_normal = frame->Has(gbuffer::kPlaneNormal) && summary.source && frame->host_samples == summary.source->host_samples && frame->sample0 == summary.host_sample;
+    const bool same_view = trigger_pause_ == gbuffer::IsPauseFx(gbuffer_->published_pause_fx());
+    facts.frame_has_normal = same_view && frame->Has(gbuffer::kPlaneNormal) && summary.source &&
+                             frame->host_samples == summary.source->host_samples && frame->sample0 == summary.host_sample;
     facts.plane_width = frame->width;
     facts.plane_height = frame->height;
   }

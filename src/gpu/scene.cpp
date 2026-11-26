@@ -859,13 +859,14 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
   }
   if (ao_) {
-    ao_->BeginFrame();
+    ao_->BeginFrame(gbuffer_ ? gbuffer_->pause_fx_candidate() : gbuffer::PauseFxView::kNone);
   }
+  const auto pause_fx = gbuffer_ && gbuffer_->tracks_pause_fx() ? gbuffer_->pause_fx_candidate() : gbuffer::PauseFxView::kNone;
   if (shafts_) {
-    shafts_->BeginFrame();
+    shafts_->BeginFrame(pause_fx);
   }
   if (vol_) {
-    vol_->BeginFrame();
+    vol_->BeginFrame(pause_fx);
   }
   if (car_refl_) {
     car_refl_->BeginFrame();
@@ -889,7 +890,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     light_manager_->BeginLights(frame_serial_, slot);  // the frame's lights (light_manager.h): before the replay, which picks its cars from them when mcla_gpu_light_frame says so (LU-4c)
   }
   if (local_shadow_) {
-    local_shadow_->BeginFrame();
+    local_shadow_->BeginFrame(pause_fx, gbuffer_ && gbuffer_->has_pause_fx_camera());
   }
   if (light_manager_) {
     light_manager_->BeginFrame(frame_serial_, slot);  // the last trigger's maps (passive unless mcla_gpu_lights_census or mcla_gpu_light_frame is set); after the rig's and the replay's own
@@ -1358,7 +1359,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
     if (gi_integration_ && anchor_cut_) {
       gi_integration_->NoteRequestedCut();  // ... and the probe field and the bounce light's pixel history start again at the next frame's start (a cut under the field's own 200 m step)
     }
-    if (gbuffer_ && gbuffer_->tracking()) {
+    if (gbuffer_ && (gbuffer_->tracking() || gbuffer_->tracks_pause_fx())) {
       gbuffer_->OnAnchor(banks.ps.data());  // ... and the next frame's G-buffer writers have the camera for the derivative normal (with or without an upscaler)
     }
   }
@@ -1735,6 +1736,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   // target, which it writes. In the pipeline's key only (d.key stays the guest's, as for the UI sharpening above).
   // A draw of the rear view mirror's phase that redirects (mirror_view.h) goes into a framebuffer of one colour and a depth: no planes, and none of the second draws below.
   const bool mirror_redirect = mirror_view_ && mirror_view_->redirecting();
+  if (gbuffer_ && !gbuffer_->active() && !mirror_redirect && gbuffer_->tracks_pause_fx() && d.key.color_count != 0) {
+    const uint32_t samples = temporal::MainColorSamples(ColorEdramKey(s, 0));
+    if (samples != 0) gbuffer_->NoteDraw(gbuffer::Why::kWindowClosed, r.ps_identity, samples);
+  }
   PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active() && !mirror_redirect) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
   // The per-texture material row (gbuffer_materials.h) of the texture the draw's pixel shader takes its colour from (the material table's diffuse slot: slot 0 for almost every shader, the
   // windows', tiles' and metal props' second), looked up once per draw that writes the planes (a cache hit; empty at no cost unless a table file exists or the census is on).
@@ -2682,12 +2687,24 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
   facts.rt0_write_mask = (d.key.blend[0] >> 28) & 0xFu;
   facts.rt0_writes = facts.rt0_write_mask != 0;
   facts.ps_variant_before = d.key.ps_variant;
-  // Which view the draw is in. The main view is the colour identity AND the depth identity of the play view at the same samples: the pause world (4 samples) is told by the samples, the
+  // Which view the draw is in. The main view is the colour identity AND the depth identity at the same samples: the pause world (4 guest samples) is told by the samples, the
   // side views (cascades, environment map, reflections) by their other identities, a main colour with another depth is not the view, and a draw whose viewport is a window of the target
-  // (the rear view mirror's phase: hooks/rear_view.cpp) is not the whole view (gbuffer_rules.h, "The views that never write"). A cutscene's frames have no sidecar at all (active()).
+  // (the rear view mirror's phase: hooks/rear_view.cpp) is not the whole view. A cutscene's frames have no sidecar at all (active()).
   if (d.key.color_count >= 1) {
-    const uint32_t color_samples = temporal::MainColorSamples(ColorEdramKey(state, 0));
+    const EdramKey color_key = ColorEdramKey(state, 0);
+    const uint32_t color_samples = temporal::MainColorSamples(color_key);
     facts.main_samples = color_samples;
+    if (color_samples != 0) {
+      facts.window_open &= gbuffer_->AllowsMainSamples(color_samples);
+      if (gbuffer::IsPauseWorld(color_samples) && !scene_marker_seen_ && gbuffer_->CarriesPauseSidecar()) {
+        // The pause clear prepares the images. If a draw needs a larger or
+        // differently scaled target, let it use the guest framebuffer.
+        const EdramTargets::Target* target = edram_->Find(color_key);
+        const uint32_t bottom = (state.scissor_br >> 16) & 0x7FFFu;
+        facts.pause_fx = target && target->texture && target->height >= bottom && target->scale == d.scale &&
+                         target->host_samples == d.key.sample_count;
+      }
+    }
     if (color_samples != 0 && facts.has_depth) {
       facts.depth_is_main = temporal::MainDepthSamples(DepthEdramKey(state)) == color_samples;
     }
@@ -2768,7 +2785,7 @@ PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, Prep
       }
     }
   }
-  gbuffer_->NoteDraw(decision.why, r.ps_identity);
+  gbuffer_->NoteDraw(decision.why, r.ps_identity, facts.main_samples);
   if (!decision.attach()) {
     return key;
   }
@@ -2819,7 +2836,7 @@ bool Scene::FillGBufferCamera(gbuffer::GBufferConstants* block, const PreparedDr
   // directly: the view ray and the rotation the derivative normal reads (gbuffer_types.h GBufferConstants). One frame late: a fast pan turns the world normal a degree or two at
   // most, a camera cut shows for one frame.
   // CHECK: that the anchor's c12-c14 rows are the view inverse's right, up and minus forward as ExtractCamera takes them, and that a frame late is close enough for the derivative normal.
-  const gbuffer::CameraAxes* camera = gbuffer_ ? gbuffer_->camera() : nullptr;
+  const gbuffer::CameraAxes* camera = gbuffer_ ? gbuffer_->camera(MsaaSampleCount(d.state.msaa)) : nullptr;
   if (!camera || camera->width == 0 || camera->height == 0) {
     return false;
   }
@@ -3461,6 +3478,9 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
     Lap(Stage::kBindStreams);
     list->drawInstanced(g.count, 1, g.first, 0);
   }
+  if (gbuffer_ && d.gbuffer_mode == gbuffer::PlaneMode::kWrite && gbuffer::IsPauseWorld(MsaaSampleCount(s.msaa))) {
+    gbuffer_->NotePauseWrite();
+  }
   if (occlusion_query != GuestOcclusion::kNoQuery) {
     occlusion_->EndDraw(list, occlusion_query);
   }
@@ -3982,8 +4002,9 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
     }
     ++window_.clears_color;
     note_other_pitch(i, key);
-    if (gbuffer_ && gbuffer_->tracking() && temporal::MainColorSamples(key) != 0 && temporal::ViewOfSamples(key.samples) == temporal::View::kPlay) {
-      // The main view's colour in the play view: the G-buffer's planes are cleared with the same rectangle (gbuffer.h; also while the memory cap holds the sidecar back:
+    if (gbuffer_ && gbuffer_->tracking() && temporal::MainColorSamples(key) != 0 &&
+        (!scene_marker_seen_ || !gbuffer::IsPauseWorld(key.samples))) {
+      // The eligible main colour's clear also clears the sidecar (gbuffer.h; also while the memory cap holds the sidecar back:
       // the clear is where the cap is looked at again).
       gbuffer_->OnColorClear(list, *target, plume::RenderRect(x0, y0, x1, y1));
       if (gbuffer_->TakeFramebufferDirty()) {
@@ -4100,7 +4121,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   bool gbuffer_published = false;
   if (gbuffer_ && gbuffer_->active()) {
     // The mid-scene depth copy closes the G-buffer's window and publishes the frame (gbuffer.h), before the effects that will read it run.
-    gbuffer_published = gbuffer_->OnResolve(record, summary, list);
+    gbuffer_published = gbuffer_->OnResolve(record, summary, list, scene_marker_seen_);
     order_.Note(frame_order::Step::kGBufferPublish, gbuffer_published);
   }
   // THE FRAME'S ORDER AT THIS COPY (the game's mid-scene depth copy, 078B0000: the trigger of every pass below) IS THE TABLE IN frame_order.h (LIGHT-UNIFY 5.3, U9): each step, what it makes and

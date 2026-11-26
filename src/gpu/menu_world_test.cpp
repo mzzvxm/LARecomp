@@ -95,6 +95,16 @@ void ShaftsNeedSkyOutsideTheGameView() {
   Check(ShaftsRun(World::kGarage, true), "the garage with a sky draw would (a window onto the street)");
   Check(!ShaftsRun(World::kMap, true), "the map never runs them");
   Check(!ShaftsRun(World::kNone, true), "no 3D view never");
+  using mcla::gpu::gbuffer::PauseFxView;
+  Check(!PauseFxRuns(World::kPause, PauseFxView::kNone), "the switch is required to admit the pause city to new effects");
+  for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto}) {
+    Check(PauseFxRuns(World::kPause, view) && ShaftsRun(World::kPause, false, view),
+          "the admitted city runs shafts with the light direction when there is no sky draw");
+    Check(!PauseFxRuns(World::kMap, view) && !ShaftsRun(World::kMap, true, view),
+          "an overhead map never gets the new effects even if the movie lags");
+    Check(!PauseFxRuns(World::kGarage, view) && !ShaftsRun(World::kGarage, false, view),
+          "the garage keeps its sky rule even if the movie lags");
+  }
 }
 
 void LensRule() {
@@ -103,6 +113,20 @@ void LensRule() {
   Check(LensSteady(true, 0.05), "a change of 5% is still steady (the cut rule's limit)");
   Check(!LensSteady(true, 0.0501), "more than 5% is a swing");
   Check(kLensSteadyStep == mcla::gpu::temporal::kCutFov && kLensSteadyStep == 0.05, "the steady limit is the temporal system's cut rule for the lens");
+  mcla::gpu::temporal::Camera before{};
+  before.fov_y = 1.0;
+  before.aspect = 1.6;
+  before.near_plane = 0.5;
+  before.far_plane = 1000.0;
+  auto now = before;
+  Check(LensSteady(true, LensStep(now, before)), "a frozen photo lens is steady");
+  now.fov_y *= 1.02;
+  Check(LensSteady(true, LensStep(now, before)), "a slow zoom can keep its last lens");
+  for (auto member : {&decltype(now)::fov_y, &decltype(now)::aspect, &decltype(now)::near_plane, &decltype(now)::far_plane}) {
+    now = before;
+    now.*member *= 0.8;
+    Check(!LensSteady(true, LensStep(now, before)), "an abrupt change to any lens parameter drops history");
+  }
 }
 
 void FirstPointGeometry() {

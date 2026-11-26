@@ -85,7 +85,7 @@ class Volumetrics {
   void SetInputSource(volumetrics::VolInputSource* source) { source_ = source; }
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView pause_fx);
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
   // The game's sun cascades of this frame as the shadow collector's draws told them (the data FillCascades gives the volume: the light matrices, the boxes, the atlas), for another pass that
@@ -287,6 +287,8 @@ class Volumetrics {
   // The history: the previous volume's camera and grid, the frames between, the smoothed ground.
   volumetrics::HistoryUse history_;
   uint64_t history_frame_ = 0;
+  gbuffer::PauseFxView pause_fx_ = gbuffer::PauseFxView::kNone;
+  bool pause_lens_steady_ = false;
   Level history_level_ = Level::kOff;
   float ground_y_ = 0.0f;
   bool ground_valid_ = false;

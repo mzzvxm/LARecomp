@@ -17,8 +17,11 @@
 
 #include "backend.h"
 #include "host_shaders.h"
+#include "mc_engine/keyboard_native.h"
+#include "menu_world.h"
 #include "pass_timing.h"
 #include "records.h"
+#include "screen_shared.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "texture_bytes.h"
@@ -127,6 +130,7 @@ void GBuffer::Shutdown() {
   image_planes_ = 0;
   held_bytes_ = 0;
   frame_ = gbuffer::GBufferFrame{};
+  pause_contents_ = false;
   passes_ = nullptr;
   edram_ = nullptr;
   pass_timing_ = nullptr;
@@ -144,18 +148,19 @@ void GBuffer::EndOfFrameView() {
       ++mixed_frames_;
       if (!mixed_logged_) {
         mixed_logged_ = true;
-        REXLOG_WARN("{} a frame had draws of the pause world (4 guest samples) and of the play view: {} and {} draws (the pause world must carry no sidecar; counted, logged once)", kPrefix,
+        REXLOG_WARN("{} a frame had draws of the pause world (4 guest samples) and of the play view: {} and {} draws (the two views cannot share a sidecar; counted, logged once)", kPrefix,
                     tally_.pause, tally_.play);
       }
     }
     if (pause_spell_frames_ == 0) {
-      REXLOG_INFO("{} the pause / map / garage world (4 guest samples, whatever the host's MSAA level) is on: its draws bind the guest's own framebuffer, nothing carries the sidecar", kPrefix);
+      REXLOG_INFO("{} the pause / map / garage world (4 guest samples, whatever the host's MSAA level) is on{}", kPrefix,
+                  gbuffer::IsPauseFx(pause_fx_candidate_) ? "" : ": its draws bind the guest's own framebuffer, nothing carries the sidecar");
       pause_spell_draws_ = 0;
     }
     ++pause_spell_frames_;
     pause_spell_draws_ += tally_.pause;
   } else if (tally_.play != 0 && pause_spell_frames_ != 0) {
-    REXLOG_INFO("{} the pause / map / garage world is over: a spell of {} frames, {} draws, none carried the sidecar; frames with draws of both kinds so far: {}", kPrefix,
+    REXLOG_INFO("{} the pause / map / garage world is over: a spell of {} frames, {} draws; frames with draws of both kinds so far: {}", kPrefix,
                 pause_spell_frames_, pause_spell_draws_, mixed_frames_);
     pause_spell_frames_ = 0;
   }
@@ -166,10 +171,25 @@ void GBuffer::BeginFrame(uint64_t frame_serial) {
   EndOfFrameView();
   camera_.BeginFrame(frame_serial);
   frame_serial_ = frame_serial;
+  last_published_pause_fx_ = published_pause_fx_;
+  published_pause_fx_ = gbuffer::PauseFxView::kNone;
+  pause_fx_candidate_ = gbuffer::PauseFxView::kNone;
+  if (larecomp::settings::mcla_gpu_pause_world_fx.Get()) {
+    // CHECK: the input poll and queued draw records agree at pause/photo/map
+    // transitions, including when the photo UI is hidden for a capture.
+    char movie[32];
+    larecomp::keyboard::CurrentMovieName(movie, sizeof(movie));
+    pause_fx_candidate_ = gbuffer::PauseFxViewOf(true, movie, menu_world::GarageLighting());
+  }
+  pause_fx_ready_ = gbuffer::IsPauseFx(pause_fx_candidate_) && camera_.Previous(pause_fx_candidate_);
+  window_samples_ = 0;
+  anchor_seen_ = false;
+  pause_written_ = false;
   frame_ = gbuffer::GBufferFrame{};
   window_.BeginFrame();
   const gbuffer::Setting setting = gbuffer::SettingOfWord(larecomp::settings::mcla_gpu_gbuffer.Get());
-  plan_ = gbuffer::PlanFrame(setting, wants_.Union());
+  const uint32_t pause_planes = pause_fx_ready_ && pause_normals_wanted_ ? gbuffer::PlaneBit(gbuffer::kPlaneNormal) : 0u;
+  plan_ = gbuffer::PlanFrame(setting, wants_.Union() | pause_planes);
   view_ = gbuffer::ViewOf(larecomp::settings::mcla_gpu_gbuffer_view.Get());
   caps_ = gbuffer::CapsFor(ActiveBackend() == Backend::kVulkan);
   masked_attach_ = gbuffer::MaskedDrawsAttach(gbuffer::AttachOfWord(larecomp::settings::mcla_gpu_gbuffer_attach.Get()), caps_);
@@ -213,10 +233,18 @@ void GBuffer::BeginFrame(uint64_t frame_serial) {
   }
 }
 
+bool GBuffer::AllowsMainSamples(uint32_t samples) const {
+  return gbuffer::MainSamplesAllowed(samples, window_samples_, pause_fx_ready_ && !tally_.mixed());
+}
+
 void GBuffer::OnAnchor(const uint8_t* ps_bank) {
+  anchor_seen_ = true;
   ++anchors_;
-  // The frame's camera for the NEXT frame's draws. Anything that is not the play view's (the pause world, a frame with no 3D view, both) keeps none (CameraKeeper::OnAnchor).
+  if (!ps_bank) return;
+  // The frame's camera for the next frame's draws, including a pause/photo
+  // camera as long as its lens does not identify the overhead map.
   gbuffer::CameraAxes axes;
+  gbuffer::PauseFxView pause_fx = gbuffer::PauseFxView::kNone;
   bool have = false;
   const float width = BankFloat(ps_bank, kWidthHeightRegister, 0);
   const float height = BankFloat(ps_bank, kWidthHeightRegister, 1);
@@ -233,9 +261,12 @@ void GBuffer::OnAnchor(const uint8_t* ps_bank) {
       axes.width = camera.width;
       axes.height = camera.height;
       have = camera.width != 0 && camera.height != 0;
+      if (tally_.pause_world() && !menu_world::TopDown(menu_world::LensOf(&camera))) {
+        pause_fx = pause_fx_candidate_;
+      }
     }
   }
-  camera_.OnAnchor(have ? &axes : nullptr, tally_);
+  camera_.OnAnchor(have ? &axes : nullptr, tally_, pause_fx);
   if (have && tally_.play_world()) {
     ++anchors_kept_;
   }
@@ -247,9 +278,9 @@ void GBuffer::OnAnchor(const uint8_t* ps_bank) {
   }
 }
 
-void GBuffer::NoteDraw(gbuffer::Why why, uint64_t ps_identity) {
+void GBuffer::NoteDraw(gbuffer::Why why, uint64_t ps_identity, uint32_t main_samples) {
   ++counts_[size_t(why)];
-  tally_.Note(why);
+  tally_.Note(why, main_samples);
   if (why == gbuffer::Why::kWrites) {
     ++written_by_[ps_identity];
   } else if (why == gbuffer::Why::kMaskedNoVariant || why == gbuffer::Why::kMaskedOtherVariant) {
@@ -344,7 +375,8 @@ void GBuffer::ReleaseImages() {
   frame_ = gbuffer::GBufferFrame{};
 }
 
-void GBuffer::ClearRect(plume::RenderCommandList* list, const plume::RenderRect& host) {
+bool GBuffer::ClearRect(plume::RenderCommandList* list, const plume::RenderRect& host) {
+  if (!list || !edram_) return false;
   const plume::RenderTexture* extras[gbuffer::kPlaneCount] = {};
   uint32_t count = 0;
   for (const HostImage& image : images_) {
@@ -355,7 +387,7 @@ void GBuffer::ClearRect(plume::RenderCommandList* list, const plume::RenderRect&
   // One framebuffer of all the planes (the colour slots after the guest's are the planes' slots: the Framebuffer's key holds the textures and the generation).
   plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(nullptr, 0, nullptr, extras, count, generation_);
   if (!framebuffer) {
-    return;
+    return false;
   }
   Transition(list, plume::RenderTextureLayout::COLOR_WRITE);
   list->setFramebuffer(framebuffer);
@@ -363,6 +395,7 @@ void GBuffer::ClearRect(plume::RenderCommandList* list, const plume::RenderRect&
     list->clearColor(i, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f), &host, 1);
   }
   framebuffer_dirty_ = true;
+  return true;
 }
 
 void GBuffer::FillSidecar(Sidecar* out) const {
@@ -380,10 +413,10 @@ bool GBuffer::Attach(plume::RenderCommandList* list, EdramTargets::Target& colou
     return false;
   }
   const bool no_clear_yet = window_.GateForDraw() == gbuffer::Window::Gate::kNeedsClear;
-  if (needs_clear_ || no_clear_yet) {
+  if (needs_clear_ || no_clear_yet || (pause_contents_ && !gbuffer::IsPauseWorld(colour0.key.samples))) {
     // A draw of the frame came before the guest's clear of the main colour (or the images are new): the whole of them is made "no data" first.
-    if (list) {
-      ClearRect(list, plume::RenderRect(0, 0, int32_t(images_[gbuffer::kPlaneNormal].width), int32_t(images_[gbuffer::kPlaneNormal].height)));
+    if (!ClearRect(list, plume::RenderRect(0, 0, int32_t(images_[gbuffer::kPlaneNormal].width), int32_t(images_[gbuffer::kPlaneNormal].height)))) {
+      return false;
     }
     needs_clear_ = false;
     if (no_clear_yet) {
@@ -395,13 +428,15 @@ bool GBuffer::Attach(plume::RenderCommandList* list, EdramTargets::Target& colou
       }
     }
   }
+  window_samples_ = colour0.key.samples;
+  pause_contents_ = gbuffer::IsPauseWorld(window_samples_);
   Transition(list, plume::RenderTextureLayout::COLOR_WRITE);
   FillSidecar(out);
   return true;
 }
 
 void GBuffer::OnColorClear(plume::RenderCommandList* list, EdramTargets::Target& colour0, const plume::RenderRect& guest_rect) {
-  if (!tracking() || !list) {
+  if (!tracking() || !list || !AllowsMainSamples(colour0.key.samples)) {
     return;
   }
   if (window_.triggered()) {
@@ -419,12 +454,18 @@ void GBuffer::OnColorClear(plume::RenderCommandList* list, EdramTargets::Target&
   }
   const bool whole = rect.left <= 0 && rect.top <= 0 && rect.right >= int32_t(colour0.width) &&
                      rect.bottom + int32_t(EdramTargets::kHeightAlignment) >= int32_t(colour0.height);
-  // New images have undefined contents: whatever the rectangle, the whole of them is cleared now.
+  // A tiled pause frame may start with a partial guest clear. Erase the whole
+  // sidecar on its first clear and when returning to play with reused images.
+  const bool pause = gbuffer::IsPauseWorld(colour0.key.samples);
+  const bool full_clear = needs_clear_ || (!window_.had_clear() && (pause || pause_contents_));
   const HostImage& first = images_[gbuffer::kPlaneNormal];
-  const plume::RenderRect host = needs_clear_ ? plume::RenderRect(0, 0, int32_t(first.width), int32_t(first.height))
+  const plume::RenderRect host = full_clear ? plume::RenderRect(0, 0, int32_t(first.width), int32_t(first.height))
                                               : EdramTargets::ScaledRect(rect, colour0.scale);
-  ClearRect(list, host);
+  if (!ClearRect(list, host)) return;
+  if (pause && (full_clear || whole)) pause_written_ = false;
   needs_clear_ = false;
+  window_samples_ = colour0.key.samples;
+  pause_contents_ = pause;
   window_.OnClear(whole);
   ++clears_;
   if (!whole) ++partial_clears_;
@@ -435,23 +476,38 @@ void GBuffer::OnColorClear(plume::RenderCommandList* list, EdramTargets::Target&
   }
 }
 
-bool GBuffer::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+bool GBuffer::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool composite_seen) {
   if (!active() || !list) {
     return false;
   }
   gbuffer::TriggerFacts facts;
   facts.depth_copy = summary.depth_copy;
   facts.main_depth_samples = summary.depth_copy ? temporal::MainDepthSamples(summary.source_key) : 0u;
+  if (!AllowsMainSamples(facts.main_depth_samples)) return false;
   facts.dest_address = summary.dest_address;
   facts.clears_depth = summary.clears_depth;
   facts.inside_end_tiling = (record.flags & kEventInsideEndTiling) != 0;
   facts.first_this_frame = !window_.triggered();
+  // CHECK: the live photo city uses this pre-anchor depth copy and clears the
+  // four-sample colour before its opaque draws on both backends.
+  facts.pause_trigger = gbuffer::IsPauseWorld(facts.main_depth_samples) && tally_.pause_world() &&
+                        CarriesPauseSidecar() && ScreenShared::IsTrigger(record, summary, anchor_seen_, composite_seen, window_.triggered());
   if (!gbuffer::IsTrigger(facts)) {
     return false;
   }
   window_.OnTrigger();
   if (image_planes_ == 0 || !window_.had_clear()) {
     return false;  // the frame carried no sidecar (a view with nothing of the family, or the images could not be made)
+  }
+  if (facts.pause_trigger) {
+    // A cleared image without a completed writer is no source of normals
+    // or material data (for example, while the pipelines are being built).
+    const HostImage& normal = images_[gbuffer::kPlaneNormal];
+    const EdramTargets::Target* depth = summary.source;
+    if (!pause_written_ || !depth || !normal.texture || normal.samples != depth->host_samples ||
+        normal.width != depth->scale.Edge(depth->width)) {
+      return false;
+    }
   }
   Transition(list, plume::RenderTextureLayout::SHADER_READ);
   frame_ = gbuffer::GBufferFrame{};
@@ -465,6 +521,13 @@ bool GBuffer::OnResolve(const ResolveRecord& record, const ResolveCache::Summary
     if ((plan_.written & (1u << p)) != 0 && images_[p].texture) {
       frame_.valid |= 1u << p;
       frame_.slot[p] = images_[p].slot;
+    }
+  }
+  if (facts.pause_trigger) {
+    published_pause_fx_ = pause_fx_candidate_;
+    if (published_pause_fx_ != last_published_pause_fx_) {
+      REXLOG_INFO("{} published the {} sidecar ({} host samples)", kPrefix,
+                  published_pause_fx_ == gbuffer::PauseFxView::kPhoto ? "photo mode" : "pause menu", frame_.host_samples);
     }
   }
   ++published_frames_;
