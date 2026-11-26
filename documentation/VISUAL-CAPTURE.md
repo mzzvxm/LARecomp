@@ -33,6 +33,13 @@ dimensions, crop or source during the take fails visibly.
 | class | ID, u8, class-id | The G-buffer's material byte at guest sample zero, plus clear scene depth and the matching UI layer's alpha when available |
 | motion | XY, f16le, motion-px | Temporal vectors in render pixels, previous minus current, +Y down, with jitter removed. Each vector covers a single update even with subsampling |
 | reflhit | Visible source and RT query ID, u8, class-id | Current surface reflection trace on the `refl` grid, or native fallback material tags on the full G-buffer grid with SSR off |
+| roadrefl | Combined luma and screen confidence, f16le, linear-scene | Half-resolution `road-reflection-lobe-v1` from SSR's apply input and the renderer's estimate of the native planar radiance |
+
+Score `roadrefl` on class 1 receivers. `combined_luma` is nonnegative
+scene-linear luma before receiver shading. The native estimate uses the
+current road view and game-strength scalar. `screen_confidence` records the
+mean screen-ray confidence before RT fallback. The stream requires SSR to
+run and uses four bytes per half-resolution pixel.
 
 Class 0 is clear depth with no material, 1 is dry or wet road, 2 is paint or
 vehicle chrome/metal, 3 is vehicle glass, 4 is vehicle interior where tagged,

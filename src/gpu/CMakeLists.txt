@@ -1246,6 +1246,7 @@ larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_
 larecomp_gpu_host_shader(ssr_trace_rt_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1)
 larecomp_gpu_host_shader(ssr_trace_rt_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1)
 larecomp_gpu_host_shader(ssr_trace_reflhit_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_REFLHIT=1)
+larecomp_gpu_host_shader(capture_road_reflection_ps ps_6_0)
 larecomp_gpu_host_shader(ssr_trace_reflhit_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_REFLHIT=1)
 larecomp_gpu_host_shader(ssr_trace_rt_reflhit_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1 SSR_REFLHIT=1)
 larecomp_gpu_host_shader(ssr_trace_rt_reflhit_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1 SSR_REFLHIT=1)

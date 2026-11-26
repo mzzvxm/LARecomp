@@ -144,6 +144,14 @@ bool Writer::Finish(std::string& why) {
         if (i == kRefl) {
             file << ",\"source\":\"" << (written.plane.alternate ? "car-rt-history" : "ssr-resolve-input") << '"';
         }
+        if (i == kRoadRefl) {
+            const auto& plane = written.plane;
+            file << ",\"domain\":\"road-reflection-lobe-v1\",\"channel_names\":[\"combined_luma\",\"screen_confidence\"]"
+                 << ",\"source_w\":" << plane.width << ",\"source_h\":" << plane.height;
+            if (plane.crop.x || plane.crop.y || plane.crop.width != plane.width || plane.crop.height != plane.height) {
+                file << ",\"x\":" << plane.crop.x << ",\"y\":" << plane.crop.y;
+            }
+        }
         if (i == kReflHit) {
             const auto& plane = written.plane;
             file << ",\"domain\":\"reflection-hit-v1\",\"source\":\""

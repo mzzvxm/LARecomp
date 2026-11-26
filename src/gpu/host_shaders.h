@@ -151,6 +151,7 @@
 #include "ssr_trace_rt_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_rt_ps.hlsl.dxil.h"
 #include "ssr_trace_reflhit_ps.hlsl.dxil.h"
+#include "capture_road_reflection_ps.hlsl.dxil.h"
 #include "ssr_trace_reflhit_ms_ps.hlsl.dxil.h"
 #include "ssr_trace_rt_reflhit_ps.hlsl.dxil.h"
 #include "ssr_trace_rt_reflhit_ms_ps.hlsl.dxil.h"
@@ -318,6 +319,7 @@
 #include "ssr_trace_rt_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_rt_ps.hlsl.spirv.h"
 #include "ssr_trace_reflhit_ps.hlsl.spirv.h"
+#include "capture_road_reflection_ps.hlsl.spirv.h"
 #include "ssr_trace_reflhit_ms_ps.hlsl.spirv.h"
 #include "ssr_trace_rt_reflhit_ps.hlsl.spirv.h"
 #include "ssr_trace_rt_reflhit_ms_ps.hlsl.spirv.h"
@@ -535,6 +537,8 @@ inline HostShaderBlob ScreenReflectionsRtShader(uint32_t pass) {
     default: return MCLA_GPU_HOST_SHADER_BLOB(ssr_rt_trace_ms_cs);
   }
 }
+
+inline HostShaderBlob CaptureRoadReflectionShader() { return MCLA_GPU_HOST_SHADER_BLOB(capture_road_reflection_ps); }
 
 inline HostShaderBlob ScreenReflectionsHitShader(bool rt, bool ms) {
   if (rt) return ms ? MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_reflhit_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_reflhit_ps);

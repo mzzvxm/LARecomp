@@ -464,7 +464,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float reuse_weight = confidence - screen_weight;
   const float rt_weight = ReflectionHandoff(confidence, 0.0f, weight * rt_fades, 0.0f).rt;
   const uint visible = ReflHitHandoffDominant(screen_id, screen_weight, reuse_weight, rt_id, rt_weight, native);
-  g_reflhit[pix] = ReflHitPackHandoff(visible, rt_id >= kReflHitRtCity ? rt_id : rejected, screen_id, native, screen_fraction);
+  g_reflhit[pix] = ReflHitPackHandoff(visible, rt_id >= kReflHitRtCity ? rt_id : rejected, screen_id, native, screen_fraction) | ReflHitConfidenceBits(packed);
 #endif
   if (!filled) {
     return;

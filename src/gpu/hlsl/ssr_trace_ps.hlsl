@@ -269,7 +269,8 @@ float4 SsrTraceBody(float4 position) {
 #if SSR_REFLHIT
   const uint visible = ReflHitHandoffDominant(screen_id, screen_weight / divisor, reuse_weight / divisor, kReflHitNone, 0.0f, native);
   const float screen_fraction = screen_weight / max(screen_weight + reuse_weight, 1.0e-5f);
-  g_reflhit = ReflHitPackHandoff(visible, kReflHitNone, screen_id, native, screen_fraction);
+  const uint confidence_bits = ReflHitPackConfidence(uint(saturate(screen_weight / divisor) * 63.0f + 0.5f));
+  g_reflhit = ReflHitPackHandoff(visible, kReflHitNone, screen_id, native, screen_fraction) | confidence_bits;
 #endif
 #if SSR_RT
   g_confidence = float2(SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / divisor));

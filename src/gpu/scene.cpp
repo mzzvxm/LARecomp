@@ -813,6 +813,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   visual_hdr_rows_ = 0;
   const bool capture_class = (visual_mask_ & vis::Bit(vis::kClass)) != 0;
   const bool capture_reflhit = (visual_mask_ & vis::Bit(vis::kReflHit)) != 0;
+  const bool capture_roadrefl = (visual_mask_ & vis::Bit(vis::kRoadRefl)) != 0;
   if (rt_world_) {
     rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
   }
@@ -824,7 +825,8 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (ssr_) {
     // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
     // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
-    ssr_->SetCaptureHitWanted(capture_reflhit);
+    ssr_->SetCaptureHitWanted(capture_reflhit || capture_roadrefl);
+    ssr_->SetCaptureRoadWanted(capture_roadrefl);
     ssr_->BeginFrame();
   }
   if (gi_integration_) {
@@ -4532,6 +4534,9 @@ void Scene::CollectVisualSources(VisualSources& sources) const {
     if (sources.native_reflection_fallback && edram_ && gbuffer_) {
       sources.road_view_drawn = ScreenReflections::RoadViewDrawn(*edram_, gbuffer_->frame().frame_serial);
     }
+  }
+  if (ssr_ && (visual_mask_ & vis::Bit(vis::kRoadRefl))) {
+    sources.images[vis::kRoadRefl] = VisualSource::Image(ssr_->CaptureRoadReflection());
   }
   if (temporal_) {
     const auto kept = temporal_->motion().kept();

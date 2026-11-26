@@ -13,7 +13,7 @@
 
 namespace mc::cinematic::capture::visual {
 
-enum Buffer : uint8_t { kFinal, kHdr, kAo, kRefl, kGi, kClass, kMotion, kReflHit, kCount };
+enum Buffer : uint8_t { kFinal, kHdr, kAo, kRefl, kGi, kClass, kMotion, kReflHit, kRoadRefl, kCount };
 constexpr uint32_t Bit(Buffer buffer) { return 1u << buffer; }
 
 struct Stream {
@@ -33,6 +33,7 @@ inline constexpr std::array<Stream, kCount> kStreams = {{
     {"class", "u8", "class-id", 1, 1, 1},
     {"motion", "f16le", "motion-px", 2, 2, 4},
     {"reflhit", "u8", "class-id", 2, 1, 4},
+    {"roadrefl", "f16le", "linear-scene", 2, 2, 4},
 }};
 
 bool ParseBuffers(std::string_view text, uint32_t& mask);

@@ -53,8 +53,9 @@ void Options() {
     uint32_t mask = 0;
     Check(vis::ParseBuffers("", mask) && !mask, "default disabled");
     Check(vis::ParseBuffers("off", mask) && !mask, "explicit off");
-    Check(vis::ParseBuffers("all", mask) && mask == 255, "all streams");
+    Check(vis::ParseBuffers("all", mask) && mask == 511, "all streams");
     Check(vis::ParseBuffers("reflhit", mask) && mask == vis::Bit(vis::kReflHit), "hit stream alone");
+    Check(vis::ParseBuffers("roadrefl", mask) && mask == vis::Bit(vis::kRoadRefl), "road reflection stream alone");
     Check(vis::ParseBuffers("class,hdr", mask) && mask == (vis::Bit(vis::kClass) | vis::Bit(vis::kHdr)), "named subset");
     for (auto bad : {"motion,motion", "final,", ",class", "unknown"}) {
         Check(!vis::ParseBuffers(bad, mask), "invalid list");
@@ -115,7 +116,21 @@ void ReflectionIds() {
     const auto packed = ReflHitPack(1, kReflHitRtCar, 5, 7);
     Check(packed == 0x07052001u && ReflHitScreenId(packed) == 5 && ReflHitFallbackId(packed) == 7,
           "visible and query bytes precede the scratch bytes");
-    Check(ReflHitPack(7, kReflHitRtMiss, 0, 7) == 0x07002107u && kReflHitRtUnresolved == 34 && kReflHitRtCarShaded == 35, "RT query codes");
+    Check(ReflHitPack(7, kReflHitRtMiss, 0, 7) == 0x07002107u && kReflHitRtUnresolved == 34 && kReflHitRtCarShaded == 35 && kReflHitReuse == 36, "RT query codes");
+    for (uint confidence = 0; confidence <= 63; ++confidence) {
+        const uint with_confidence = ReflHitPackHandoff(1, kReflHitRtCar, 5, 7, 1.0f) | ReflHitPackConfidence(confidence);
+        Check((with_confidence & 0xffffu) == (packed & 0xffffu) && ReflHitScreenId(with_confidence) == 5 &&
+              ReflHitFallbackId(with_confidence) == 7 && ReflHitScreenFraction(with_confidence) == 1.0f,
+              "confidence preserves the hit IDs and screen fraction");
+        const uint updated = ReflHitPackHandoff(18, 18, 5, 7, ReflHitScreenFraction(with_confidence)) |
+                              ReflHitConfidenceBits(with_confidence);
+        Check(ReflHitConfidence(updated) == confidence && (updated & 0xffffu) == 0x1212u,
+              "RT outcomes preserve screen confidence");
+    }
+    Check(RoadReflectionLobe(-0.125f, 0.5f, 0.5f, 1.0f) == 0.125f, "subtract the signed replacement from the native lobe");
+    Check(RoadReflectionLobe(0.125f, 8.0f, 0.5f, 1.0f) == 0.625f, "combine the correction and capped planar radiance");
+    Check(RoadReflectionLobe(-0.25f, 0.5f, 0.25f, 1.0f) == 0.0f, "combined radiance cannot be negative");
+    Check(RoadReflectionLobe(0.5f, 0.0f, 1.0f, 1.0f) == 0.5f, "missing planar view leaves the traced lobe");
 }
 
 void Writers(const fs::path& take) {
@@ -127,7 +142,7 @@ void Writers(const fs::path& take) {
         frame.planes[i] = vis::Place({2, 1, 2, 2}, 8, 4, vis::kStreams[i].max_source_bytes,
                                     i == vis::kGi ? 2 : 0, i == vis::kFinal, end);
     }
-    Check(frame.planes[vis::kHdr].offset == 512 && end == 4096, "D3D12 placement alignment");
+    Check(frame.planes[vis::kHdr].offset == 512 && end == 4608, "D3D12 placement alignment");
     uint64_t odd_end = 1;
     const auto odd = vis::Place({0, 0, 257, 1}, 257, 1, 1, 0, false, odd_end);
     Check(odd.offset == 512 && odd.row_pitch == 512 && odd_end == 1024, "unaligned footprint");
@@ -147,7 +162,7 @@ void Writers(const fs::path& take) {
         const size_t offset = hit_plane.offset + i / 2 * hit_plane.row_pitch + i % 2 * sizeof(uint32_t);
         for (size_t b = 0; b < sizeof(uint32_t); ++b) bytes[offset + b] = uint8_t(hit_words[i] >> (8 * b));
     }
-    Check(writer.Write(frame, bytes, why), "write eight streams");
+    Check(writer.Write(frame, bytes, why), "write every visual stream");
     frame.index = 4;
     frame.planes[vis::kFinal].swap_rb = false;
     frame.planes[vis::kRefl] = {};
@@ -160,6 +175,9 @@ void Writers(const fs::path& take) {
     Check(Read(root / "gi/frame_0.bin").substr(0, 6) == std::string("\3\4\5\6\7\10", 6), "GI extracts yzw");
     Check(Read(root / "class/frame_0.bin") == std::string("\1\11\41\51", 4), "packed class bytes");
     Check(Read(root / "motion/frame_0.bin").substr(0, 8) == std::string("\1\2\3\4\11\12\13\14", 8), "packed two-channel motion");
+    Check(Read(root / "roadrefl/frame_0.bin").size() == 16 &&
+          Read(root / "roadrefl/meta.json").contains("\"domain\":\"road-reflection-lobe-v1\",\"channel_names\":[\"combined_luma\",\"screen_confidence\"],\"source_w\":8,\"source_h\":4,\"x\":2,\"y\":1"),
+          "combined road reflection stores both half-float lanes and its exact layout");
     Check(Read(root / "motion/meta.json") == "{\"w\":2,\"h\":2,\"channels\":2,\"encoding\":\"f16le\",\"space\":\"motion-px\",\"frames\":[0,4]}\n", "exact motion metadata");
     Check(Read(root / "refl/meta.json") == "{\"w\":2,\"h\":2,\"channels\":3,\"encoding\":\"f16le\",\"space\":\"linear-scene\",\"frames\":[0],\"source\":\"ssr-resolve-input\"}\n" &&
           !fs::exists(root / "refl/frame_4.bin"), "missing frame stays absent");
