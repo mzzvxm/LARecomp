@@ -1457,7 +1457,8 @@ int main(int argc, char** argv) {
   // ---- the shaders, the host and the settings hold the numbers ------------------------------------------------------------------------------------
   {
     // the car's file and the two halves of what every hit shading shares (hlsl/rt_hit_frame.hlsli, rt_hit_sample.hlsli: CITY-RT M2 H4 moved the frame, the cascades and the environment map there)
-    const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_frame.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_sample.hlsli");
+    const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli") + ReadFile(src + "/gpu/hlsl/car_rt_hit_material.hlsli") + ReadFile(src + "/gpu/hlsl/rt_hit_frame.hlsli") +
+                              ReadFile(src + "/gpu/hlsl/rt_hit_sample.hlsli");
     const std::string refl = ReadFile(src + "/gpu/hlsl/car_rt_refl_cs.hlsl");
     const std::string scene = ReadFile(src + "/gpu/car_rt_scene.cpp");
     const std::string scene_h = ReadFile(src + "/gpu/car_rt_scene.h");

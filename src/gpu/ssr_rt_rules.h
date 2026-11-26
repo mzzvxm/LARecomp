@@ -11,7 +11,7 @@
 // environment map), which is blurred and does not show the street. The fallback traces THE SAME GGX ray into the city's structures (the scene service's top level, city_rt_scene.h) and shades the hit
 // with the city hit library (hlsl/city_hit_shade.hlsli ResolveHit), for the pixels the picture could not speak for, within a cap, and adds it to the trace image where the temporal and the apply
 // passes take it unchanged. The passes of a frame (ssr.cpp OnTrigger):
-//     1 trace      (graphics, hlsl/ssr_trace_ps.hlsl with SSR_RT 1) the trace as always, plus the CONFIDENCE target: r the class group, g the picture's share (R8G8_UNORM, the SSR size)
+//     1 trace      (graphics, hlsl/ssr_trace_ps.hlsl with SSR_RT 1) the trace and the confidence target (R8G8_UNORM): R packs the group and first ray's residual share, G holds mean confidence
 //     2 select     (compute, hlsl/ssr_rt_select_cs.hlsl) the tile list: the candidates of the groups the level takes, with the confidence under the threshold, thinned to the cap, listed tile by tile
 //     3 trace      (compute, hlsl/ssr_rt_trace_cs.hlsl) one thread a listed pixel: the same ray, the top level, the hit library; the result added into the trace image (a storage image)
 //     4 temporal, apply   unchanged
@@ -123,10 +123,10 @@ constexpr Cell CellFor(Level level, gc::RtTier rung) {
   return level == Level::kUltra ? kUltraCell : kHighCell;
 }
 
-// What the list holds at most: the largest cap over its rays a pixel, the buffer's size (4 bytes an entry: x | y << 16).
-inline constexpr uint32_t kMaxListEntries = 500000;
+// Size the list for one pixel per capped ray (4 bytes an entry: x | y << 16).
+inline constexpr uint32_t kMaxListEntries = kUltraCell.ray_cap;  // one entry per ray when tracing one ray per pixel
 inline constexpr uint64_t kListBytes = uint64_t(kMaxListEntries) * 4;
-static_assert(kUltraCell.ray_cap / kUltraCell.rays <= kMaxListEntries && kHighCell.ray_cap / kHighCell.rays <= kMaxListEntries && kMidCell.ray_cap / kMidCell.rays <= kMaxListEntries,
+static_assert(kHighCell.ray_cap <= kMaxListEntries && kMidCell.ray_cap <= kMaxListEntries,
               "the list holds the largest cell's pixels");
 inline constexpr uint32_t kThreads = 64;   // the trace pass's group
 inline constexpr uint32_t kTile = 8;       // the select pass's tile
@@ -140,16 +140,23 @@ constexpr uint32_t RayCap(const Cell& cell, uint32_t step) {
   const uint32_t stepped = cell.ray_cap >> (step > 3 ? 3 : step);
   return stepped < kMinRays ? (cell.ray_cap < kMinRays ? cell.ray_cap : kMinRays) : stepped;
 }
-// The list's capacity in pixels: the cap over the rays a pixel. The rays are the cell's, or fewer where the effect's own trace walked fewer (the fallback regenerates the trace's rays: it traces ray
-// indices 0 .. rays - 1, and the trace walked as many as its level says: `rays_walked`).
-constexpr uint32_t RaysUsed(const Cell& cell, uint32_t rays_walked) { return cell.rays < rays_walked ? cell.rays : rays_walked; }
+// The list's capacity in pixels is the capped ray count divided by rays per pixel. Single-ray mode samples one
+// of the existing screen rays, so the compute shader still uses the screen's ray count to regenerate the direction.
+constexpr uint32_t RaysUsed(const Cell& cell, uint32_t rays_walked, bool single_ray = false) {
+  return single_ray ? std::min(1u, std::min(cell.rays, rays_walked)) : std::min(cell.rays, rays_walked);
+}
 constexpr uint32_t CapacityFor(const Cell& cell, uint32_t step, uint32_t rays) { return rays == 0 ? 0 : RayCap(cell, step) / rays; }
 constexpr uint32_t Capacity(const Cell& cell, uint32_t step) { return CapacityFor(cell, step, cell.rays); }
 
-// The scene service's need (rt_scene_rules.h Needs): the structures and the hit data at the level's city level, every texture (a hit is shaded from its diffuse). The cars are not wanted by this pass.
+constexpr bool CarHitsEnabled(const Cell& cell, bool enabled) {
+  return enabled && (cell.group_mask & GroupBit(kGroupGround)) != 0;
+}
+
+// Ask for the car scene when road receivers can shade cars, including when the car reflection passes are off.
 constexpr city_rt::Level CityLevelOf(Level level) { return level == Level::kUltra ? city_rt::Level::kUltra : (level == Level::kHigh ? city_rt::Level::kHigh : city_rt::Level::kOff); }
-constexpr rt_scene::Needs NeedsFor(Level level) {
+constexpr rt_scene::Needs NeedsFor(Level level, bool cars = false) {
   rt_scene::Needs n;
+  n.cars = level != Level::kOff && cars;
   n.city = CityLevelOf(level);
   n.hit = CityLevelOf(level);
   n.textures = level == Level::kOff ? TextureScope::kNone : TextureScope::kAll;
@@ -258,6 +265,11 @@ inline constexpr uint32_t kFlagsShift = 24;
 inline constexpr uint32_t kFlagStats = 1;
 inline constexpr uint32_t kFlagReset = 2;
 inline constexpr uint32_t kFlagScreen = 4;
+inline constexpr uint32_t kFlagSingleRay = 8;
+inline constexpr uint32_t kFlagSkyMiss = 16;
+inline constexpr uint32_t kFlagScreenProxy = 32;
+inline constexpr uint32_t kFlagProbeMisses = 64;
+inline constexpr uint32_t kFlagCars = 128;
 }  // namespace push
 // The conf word: the confidence image's slot (16 bits), the groups the level traces (4), the rays a pixel less one (2), the flags (8).
 constexpr uint32_t PackConf(uint32_t slot, uint32_t group_mask, uint32_t rays, uint32_t flags) {
@@ -270,8 +282,8 @@ inline constexpr uint32_t kCtlListed = 3;     // 3 words
 inline constexpr uint32_t kCtlWords = 8;
 inline constexpr uint32_t kStatCal = 8;       // rt_hit_calibration.h kStatsWords words
 inline constexpr uint32_t kStatCensus = 56;
-inline constexpr uint32_t kCensusWords = 16;
-inline constexpr uint32_t kStatWords = 72;
+inline constexpr uint32_t kCensusWords = 17;
+inline constexpr uint32_t kStatWords = 73;
 inline constexpr uint64_t kBytes = uint64_t(kStatWords) * 4;
 // the census words (offsets from kStatCensus)
 inline constexpr uint32_t kRays = 0;
@@ -282,6 +294,15 @@ inline constexpr uint32_t kNoData = 4;
 inline constexpr uint32_t kScreen = 5;
 inline constexpr uint32_t kShaded = 6;
 inline constexpr uint32_t kFilled = 7;
+inline constexpr uint32_t kMissProbed = 8;
+inline constexpr uint32_t kMissBeyond = 9;
+inline constexpr uint32_t kMissOpenUp = 10;
+inline constexpr uint32_t kNoDataLod = 11;
+inline constexpr uint32_t kNoDataDefault = 12;
+inline constexpr uint32_t kNoDataMissing = 13;
+inline constexpr uint32_t kProxyRecovered = 14;
+inline constexpr uint32_t kEnvMiss = 15;
+inline constexpr uint32_t kCarShaded = 16;
 }  // namespace buf
 static_assert(buf::kStatCensus + buf::kCensusWords <= buf::kStatWords && buf::kStatCal + 48 == buf::kStatCensus && buf::kCtlWords == buf::kStatCal, "the control buffer's regions follow one another");
 

@@ -462,13 +462,15 @@ int main(int argc, char** argv) {
   // ---- the shader, the host, the settings ------------------------------------------------------------------------------------
   {
     const std::string hlsli = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli");
+    const std::string material = ReadFile(src + "/gpu/hlsl/car_rt_hit_material.hlsli");
     const std::string scene = ReadFile(src + "/gpu/car_rt_scene.cpp");
     const std::string scene_h = ReadFile(src + "/gpu/car_rt_scene.h");
     const std::string inst = ReadFile(src + "/gpu/car_rt_instances.cpp");
     const std::string inst_h = ReadFile(src + "/gpu/car_rt_instances.h");
     const std::string cmake = ReadFile(src + "/gpu/CMakeLists.txt");
     Check(!hlsli.empty() && !scene.empty() && !inst.empty() && !cmake.empty(), "the sources were read (give the src folder as the first argument)");
-    Check(Has(hlsli, "static const uint kMatGlowDriven = 1u;") && Has(hlsli, "m.glowDriven = (r1.w & kMatGlowDriven) != 0u;") && Has(hlsli, "const float glowNight = m.glowDriven ? 1.0 : night;") && !Has(hlsli, "m.glowDriven ? 1.0 : f.night") &&
+    Check(Has(material, "static const uint kMatGlowDriven = 1u;") && Has(material, "m.glowDriven = (r1.w & kMatGlowDriven) != 0u;") && Has(material, "return m.glowDriven ? 1.0 : night;") &&
+              Has(hlsli, "const float glowNight = CarMatGlowScale(m, night);") &&
               Has(hlsli, "result += albedo * (m.emissive * kRtHitEmissiveGain * glowNight);") && Has(hlsli, "gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? m.emissive * glowNight : 0.0;"),
           "the shader reads the driven bit of the record's row 1 w and does not multiply a driven lens's scale by the night factor");
     Check(Has(scene, "void CarRtScene::UpdateLamps(") && Has(scene, "UpdateLamps(frame, build_limits.On());") && Has(scene, "lights_source_.Poll(kNoFrames,") && Has(scene, "car_rt_lights::MakeLampSet(lights, &lamp_set_);") &&
