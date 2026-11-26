@@ -280,8 +280,10 @@
       "properties": {
         "setting": { "type": "string" },
         "order": { "type": "array", "items": { "type": "string" }, "minItems": 1, "uniqueItems": true },
-        "first_start": { "type": "string" },
-        "legacy_file_preset": { "type": "string", "description": "Initial preset when the config contains a covered key and omits the preset setting" },
+        "first_start": { "type": "string", "description": "Initial preset ID or fallback when first_start_by is present" },
+        "first_start_by": { "const": "class_to_preset", "description": "Use the first matching class_to_preset rule for a config with no preset or covered keys" },
+        "legacy_file_preset": { "type": "string", "description": "Initial preset when the config omits the preset setting but contains a key in covers or legacy_file_keys" },
+        "legacy_file_keys": { "type": "array", "items": { "type": "string" }, "uniqueItems": true, "description": "Formerly covered keys that still imply legacy_file_preset" },
         "scope": { "type": "array", "items": { "type": "string" }, "description": "ids of the sections whose rows presets cover" },
         "items": {
           "type": "object",

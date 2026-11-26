@@ -12,6 +12,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <iterator>
@@ -368,7 +369,6 @@ void CheckNames() {
   }
   Preset out = Preset::kVanilla;
   Check(!gp::Parse("", &out) && !gp::Parse("auto", &out) && !gp::Parse("Vanilla", &out) && !gp::Parse("enhanced ultra", &out) && !gp::Parse("none", &out), "Parse takes the stored words only");
-  Check(gp::kFirstStart == Preset::kVanilla, "the first start is VANILLA");
   CheckEq(gp::kPresetSetting, "mcla_gpu_preset", "the preset setting's name");
   CheckEq(gp::kFromSetting, "mcla_gpu_preset_from", "the from setting's name");
   Check(gp::IsNamed(Preset::kVanilla) && gp::IsNamed(Preset::kEnhancedRt) && !gp::IsNamed(Preset::kCustom), "every preset but CUSTOM is named");
@@ -394,52 +394,66 @@ void CheckRtNeeds() {
 
 // --- the class -> preset map ------------------------------------------------------------------------------------------------------------------------------------------------
 void CheckRecommendation() {
-  Check(gp::kClassRuleCount == 2, "there are two recommendation rules");
-  CheckEq(gp::kClassToPreset[0].when, "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", "the exported RT recommendation");
+  Check(gp::kClassRuleCount == 3, "there are three recommendation rules");
+  CheckEq(gp::kClassToPreset[0].when, "gpu.class == 'high' && gpu.rt_tier == 'strong'", "the exported RT recommendation");
   Check(gp::kClassToPreset[0].preset == Preset::kEnhancedRt, "the exported RT preset");
-  CheckEq(gp::kClassToPreset[1].when, "true", "the exported fallback is unconditional");
-  Check(gp::kClassToPreset[1].preset == Preset::kEnhanced, "the exported fallback preset");
-  for (const auto tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
-    Check(RecommendedPreset(GpuClass::kLow, tier) == Preset::kEnhanced, "low class recommendation");
-    for (const auto cls : {GpuClass::kMid, GpuClass::kHigh}) {
-      const auto want = tier == RtTier::kNone ? Preset::kEnhanced : Preset::kEnhancedRt;
-      Check(RecommendedPreset(cls, tier) == want, "Mid and High recommendation");
+  CheckEq(gp::kClassToPreset[1].when, "gpu.class == 'low'", "the exported Low recommendation");
+  Check(gp::kClassToPreset[1].preset == Preset::kVanilla, "the exported Low preset");
+  CheckEq(gp::kClassToPreset[2].when, "true", "the exported fallback is unconditional");
+  Check(gp::kFallbackPreset == Preset::kEnhanced, "the exported fallback preset");
+
+  constexpr std::optional<GpuClass> classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh, std::nullopt};
+  constexpr std::optional<RtTier> tiers[] = {RtTier::kNone, RtTier::kWeak, RtTier::kStrong, std::nullopt};
+  constexpr Preset expected[][4] = {
+      {Preset::kVanilla, Preset::kVanilla, Preset::kVanilla, Preset::kVanilla},
+      {Preset::kEnhanced, Preset::kEnhanced, Preset::kEnhanced, Preset::kEnhanced},
+      {Preset::kEnhanced, Preset::kEnhanced, Preset::kEnhancedRt, Preset::kEnhanced},
+      {Preset::kEnhanced, Preset::kEnhanced, Preset::kEnhanced, Preset::kEnhanced},
+  };
+  for (size_t i = 0; i < std::size(classes); ++i) {
+    for (size_t j = 0; j < std::size(tiers); ++j) {
+      const auto cls = classes[i];
+      const auto tier = tiers[j];
+      const std::string label = std::string(cls ? ClassName(*cls) : "unknown") + " / " +
+                                std::string(tier ? RtTierName(*tier) : "unknown");
+      const Preset recommended = RecommendedPreset(cls, tier);
+      Check(recommended == expected[i][j], "recommendation: " + label);
+      Check(gp::DecideInitial({}, recommended) == expected[i][j], "first start: " + label);
     }
   }
 }
 
 // --- first start, an older file, the CUSTOM flip, picking a preset ------------------------------------------------------------------------------------------------------------
 void CheckFirstStart() {
-  gp::FileFacts none;
-  Check(gp::DecideInitial(none) == Preset::kVanilla, "no saved keys: VANILLA");
+  constexpr Preset recommended = Preset::kEnhancedRt;
   gp::FileFacts older;
   older.NoteKey("mcla_gpu_ao");
   older.NoteKey("mcla_gpu_ao_rt");
-  Check(gp::DecideInitial(older) == Preset::kCustom, "a covered setting followed by a support setting still starts on CUSTOM");
+  Check(gp::DecideInitial(older, recommended) == Preset::kCustom, "a covered setting followed by a support setting still starts on CUSTOM");
   older.NoteKey("mcla_gpu_preset");
-  Check(gp::DecideInitial(older) == Preset::kVanilla, "an explicit preset suppresses the CUSTOM migration");
+  Check(!gp::DecideInitial(older, recommended), "an explicit preset suppresses the CUSTOM migration");
   gp::FileFacts only_preset;
   only_preset.NoteKey("mcla_gpu_preset");
-  Check(gp::DecideInitial(only_preset) == Preset::kVanilla, "a file with only the preset line: the line decides");
+  Check(!gp::DecideInitial(only_preset, recommended), "a file with only the preset line: the line decides");
   only_preset.NoteKey("mcla_gpu_ao");
-  Check(gp::DecideInitial(only_preset) == Preset::kVanilla, "an explicit preset suppresses migration even before a covered key");
+  Check(!gp::DecideInitial(only_preset, recommended), "an explicit preset suppresses migration even before a covered key");
   for (const gp::Row& row : gp::kRows) {
     gp::FileFacts facts;
     facts.NoteKey(row.cvar);
-    const auto expected = Preset::kCustom;
-    Check(gp::DecideInitial(facts) == expected, std::string(row.cvar) + ": only a covered key triggers legacy CUSTOM");
+    Check(gp::DecideInitial(facts, recommended) == Preset::kCustom, std::string(row.cvar) + ": covered key triggers legacy CUSTOM");
   }
-  for (const auto key : {"mcla_gpu_msaa", "mcla_gpu_aa", "larecomp.mcla_gpu_aa"}) {
+  for (const auto key : {"mcla_gpu_msaa", "mcla_gpu_aa", "larecomp.mcla_gpu_aa",
+                         "mcla_gpu_car_mirror_rt", "larecomp.mcla_gpu_car_mirror_rt"}) {
     gp::FileFacts facts;
     facts.NoteKey(key);
-    Check(gp::DecideInitial(facts) == Preset::kCustom, "formerly covered AA preserves an old config");
+    Check(gp::DecideInitial(facts, recommended) == Preset::kCustom, "a formerly covered key preserves an old config");
     facts.NoteKey("larecomp.mcla_gpu_preset");
-    Check(gp::DecideInitial(facts) == Preset::kVanilla, "a scoped preset overrides legacy config inference");
+    Check(!gp::DecideInitial(facts, recommended), "a scoped preset overrides legacy config inference");
   }
   for (const auto key : {"fullscreen", "mcla_gpu_upscaler", "language"}) {
     gp::FileFacts facts;
     facts.NoteKey(key);
-    Check(gp::DecideInitial(facts) == Preset::kVanilla, std::string(key) + ": outside preset coverage");
+    Check(gp::DecideInitial(facts, recommended) == recommended, std::string(key) + ": outside preset coverage");
   }
 }
 

@@ -192,9 +192,16 @@ fallback_values = [{id = "1", label = "100%"}]
     check(presets["setting"].value_or("") == std::string_view("mcla_gpu_preset"), "the presets name their setting");
     check(presets["order"].as_array() && presets["order"].as_array()->size() == 4 && presets["order"][0].value_or("") == std::string_view("vanilla") &&
           presets["order"][3].value_or("") == std::string_view("custom"), "four presets, VANILLA first, CUSTOM last");
-    check(presets["first_start"].value_or("") == std::string_view("vanilla"), "a first start is VANILLA");
+    check(presets["first_start"].value_or("") == std::string_view("enhanced"), "ENHANCED is the first-start fallback");
+    check(presets["first_start_by"].value_or("") == std::string_view("class_to_preset"), "first start uses the recommendation rules");
     check(presets["legacy_file_preset"].value_or("") == std::string_view("custom"),
           "a file with a covered setting and no preset starts as CUSTOM");
+    const auto legacy_keys = presets["legacy_file_keys"];
+    check(legacy_keys.as_array() && legacy_keys.as_array()->size() == 3 &&
+          legacy_keys[0].value_or("") == std::string_view("mcla_gpu_msaa") &&
+          legacy_keys[1].value_or("") == std::string_view("mcla_gpu_aa") &&
+          legacy_keys[2].value_or("") == std::string_view("mcla_gpu_car_mirror_rt"),
+          "old AA and RT mirror keys also trigger legacy CUSTOM");
     check(presets["items"]["vanilla"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("off") &&
           presets["items"]["enhanced"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("on") &&
           presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt"), "the values are the table's");
@@ -217,8 +224,15 @@ fallback_values = [{id = "1", label = "100%"}]
           presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ssr_rt"].value_or("") == std::string_view("high"),
           "the surface-reflection fallback is explicit and independent");
     check(!presets["items"]["vanilla"]["values"]["fps_limit"] && !presets["items"]["vanilla"]["values"]["mcla_gpu_upscaler"], "a preset names no DISPLAY or UPSCALING setting");
-    check(presets["class_to_preset"].as_array() && presets["class_to_preset"].as_array()->size() == 2 && presets["class_to_preset"][1]["when"].value_or("") == std::string_view("true"),
-          "the last recommendation rule always holds");
+    const auto rules = presets["class_to_preset"];
+    check(rules.as_array() && rules.as_array()->size() == 3 &&
+          rules[0]["when"].value_or("") == std::string_view("gpu.class == 'high' && gpu.rt_tier == 'strong'") &&
+          rules[0]["preset"].value_or("") == std::string_view("enhanced_rt") &&
+          rules[1]["when"].value_or("") == std::string_view("gpu.class == 'low'") &&
+          rules[1]["preset"].value_or("") == std::string_view("vanilla") &&
+          rules[2]["when"].value_or("") == std::string_view("true") &&
+          rules[2]["preset"].value_or(std::string_view{}) == presets["first_start"].value_or(std::string_view{}),
+          "the exported rules give the first-start preset");
     check(presets["flip"]["to"].value_or("") == std::string_view("custom") && presets["flip"]["writes"][0]["setting"].value_or("") == std::string_view("mcla_gpu_preset_from"),
           "a change of a covered row flips to CUSTOM and remembers where it started");
     bool has_tier = false;

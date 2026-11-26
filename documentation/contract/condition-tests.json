@@ -42,7 +42,7 @@
       "null_when": {"cases": [{"when": "gpu.class == 'x'", "value": "skipped"}, {"value": "default"}]},
       "host_is_windows": "os.name == 'windows'"
     },
-    "presets": {"class_to_preset": [{"when": "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", "preset": "enhanced_rt"}, {"when": "true", "preset": "enhanced"}], "items": {"vanilla": {"values": {"mcla_gpu_example_preset": "off", "mcla_gpu_example_preset_num": "1"}}, "enhanced": {"values": {"mcla_gpu_example_preset": "high", "mcla_gpu_example_preset_num": "2"}}, "enhanced_rt": {"values": {"mcla_gpu_example_preset": "ultra", "mcla_gpu_example_preset_num": "3"}}}}
+    "presets": {"class_to_preset": [{"when": "gpu.class == 'high' && gpu.rt_tier == 'strong'", "preset": "enhanced_rt"}, {"when": "gpu.class == 'low'", "preset": "vanilla"}, {"when": "true", "preset": "enhanced"}], "items": {"vanilla": {"values": {"mcla_gpu_example_preset": "off", "mcla_gpu_example_preset_num": "1"}}, "enhanced": {"values": {"mcla_gpu_example_preset": "high", "mcla_gpu_example_preset_num": "2"}}, "enhanced_rt": {"values": {"mcla_gpu_example_preset": "ultra", "mcla_gpu_example_preset_num": "3"}}}}
   },
   "contexts": {
     "empty": {},
@@ -349,10 +349,15 @@
     {"id": "resolved.compare_unknown_class", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": null}}}, "expr": "resolved(s.mcla_gpu_ao) in ['high', 'ultra']", "expect": null},
     {"id": "resolved.preset_rt", "ctx": "rtx5080", "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "ultra"},
     {"id": "resolved.preset_high_without_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"rt_tier": "none"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high"},
-    {"id": "resolved.preset_mid_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": "mid"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "ultra"},
+    {"id": "resolved.preset_mid_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": "mid"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high"},
+    {"id": "resolved.preset_high_weak_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"rt_tier": "weak"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high"},
+    {"id": "resolved.preset_high_unknown_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"rt_tier": null}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high"},
+    {"id": "resolved.preset_low_strong_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": "low"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "off"},
+    {"id": "resolved.preset_low_unknown_rt", "ctx": {"facts": {"gpu": {"class": "low"}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "off"},
+    {"id": "resolved.preset_no_hardware_facts", "ctx": "empty", "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high"},
     {"id": "resolved.preset_unknown_class_is_enhanced", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": null}}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "high", "note": "unknown GPU class uses the Enhanced recommendation"},
     {"id": "resolved.preset_value_is_typed_by_the_setting", "ctx": "rtx5080", "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 3, "note": "the preset holds the text 3; the setting is an int"},
-    {"id": "resolved.preset_numeric_rt", "ctx": {"base": "rtx5080", "facts": {"gpu": {"class": "mid"}}}, "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 3},
+    {"id": "resolved.preset_numeric_rt", "ctx": "rtx5080", "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 3},
     {"id": "resolved.preset_numeric_not_auto", "ctx": {"base": "rtx5080", "config": {"mcla_gpu_example_preset_num": 5}}, "expr": "resolved(s.mcla_gpu_example_preset_num)", "expect": 5},
     {"id": "resolved.preset_value_missing_is_null", "ctx": "rtx5080", "expr": "resolved(s.mcla_gpu_example_preset_gap)", "expect": null},
     {"id": "resolved.preset_not_auto", "ctx": {"base": "rtx5080", "config": {"mcla_gpu_example_preset": "off"}}, "expr": "resolved(s.mcla_gpu_example_preset)", "expect": "off"},

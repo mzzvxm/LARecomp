@@ -5,6 +5,7 @@
 #include "gfx_preset_apply.h"
 
 #include <mutex>
+#include <optional>
 #include <string>
 #include <unordered_set>
 
@@ -141,14 +142,29 @@ void OnPresetChanged(std::string_view value) {
 
 }  // namespace
 
-void Start() {
+void Start(const FileFacts& file) {
+  namespace gc = gpu_class;
   const std::lock_guard<std::recursive_mutex> lock(g_mutex);
   if (g_started) return;
   g_started = true;
+  const auto cls = gc::Known() ? std::optional{gc::Current()} : std::nullopt;
+  const auto tier = gc::CurrentRtTier();
+  const Preset recommended = gc::RecommendedPreset(cls, tier);
+  const auto initial = DecideInitial(file, recommended);
+  // Older files already got their CUSTOM default while loading. Explicit setting layers take precedence.
+  if (initial && IsNamed(*initial) && cv::GetFlagSource(kPresetSetting) == cv::Source::kDefault) {
+    // CHECK: smoke-test the selected pause row and startup log with an empty config on actual hardware.
+    if (larecomp::settings::SetDefault(kPresetSetting, Id(*initial))) {
+      REXLOG_INFO("[preset] first start: GPU class {}, RT tier {}, picked {}",
+                  cls ? gc::ClassName(*cls) : "unknown", cls ? gc::RtTierName(tier) : "unknown", Id(*initial));
+    } else {
+      REXLOG_WARN("[preset] could not apply first-start preset {}", Id(*initial));
+    }
+  }
   // A change made while the game runs applies at once. The setting exists from RegisterAll on (OnConfigure); this runs in OnInit.
   cv::RegisterChangeCallback("mcla_gpu_preset", [](std::string_view, std::string_view value) { OnPresetChanged(value); });  // (a literal: tools/check_live_readers.py looks for it)
   const Preset p = PresetOfSetting();
-  REXLOG_INFO("[preset] {} (recommended for this GPU: {})", Id(p), Id(Recommended()));
+  REXLOG_INFO("[preset] {} (recommended for this GPU: {})", Id(p), Id(recommended));
   if (IsNamed(p)) {
     HoldNamedLocked(p);
   } else {
@@ -157,12 +173,6 @@ void Start() {
 }
 
 Preset Current() { return PresetOfSetting(); }
-
-Preset Recommended() {
-  namespace gc = gpu_class;
-  if (!gc::Known()) return Preset::kEnhanced;
-  return gc::RecommendedPreset(gc::Current(), gc::CurrentRtTier());
-}
 
 bool NoteRowWrite(std::string_view cvar) {
   if (t_writing > 0 || !IsCovered(cvar)) return false;

@@ -4,21 +4,21 @@
 // ===========================================================================
 // Named presets apply concrete values across Image Quality, Lighting and Shadows,
 // Reflections and World Detail. Display (including AA), upscaling and debug controls
-// are independent. GPU class and RT tier only select the recommendation.
+// are independent. GPU class and RT tier select the recommendation and the first-start preset.
 //
 // HOW A PRESET REACHES THE ROWS (gfx_preset_apply.h): the config keeps the preset's NAME. While a named preset is in force its values are held over the rows (the same hold the trailer
 // scenes use, so they are never written to larecomp.toml); the player changing any covered row in the pause menu turns the preset into CUSTOM (the rows keep the values they had, and
 // mcla_gpu_preset_from remembers the preset they came from, so rows added later take that preset's value); picking CUSTOM again from a preset the player was only trying
 // brings back what they had. Command line and environment settings sit on top of a preset, are never saved and never turn it into CUSTOM.
 //
-// FIRST START (DecideInitial): no larecomp.toml, or one with no covered row in it: VANILLA. A larecomp.toml that has covered rows and no mcla_gpu_preset line (every file written
-// before presets): CUSTOM, so nothing changes for the owner, Mz or the testers.
+// FIRST START (DecideInitial): without a saved preset or covered rows, use the recommendation. A config with covered rows and no preset starts on CUSTOM.
 //
 // This header includes nothing of Plume or ReXGlue: gfx_preset_test.cpp checks the table, tools\check_gfx_presets.py checks it against the menu's pages.
 // ===========================================================================
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -97,7 +97,6 @@ inline constexpr const char* kLabels[kPresetCount] = {"VANILLA", "ENHANCED", "EN
 inline constexpr std::string_view kPresetSetting = "mcla_gpu_preset";
 inline constexpr std::string_view kFromSetting = "mcla_gpu_preset_from";
 inline constexpr std::string_view kFromNone = "none";
-inline constexpr Preset kFirstStart = Preset::kVanilla;
 
 // --- the table ---------------------------------------------------------------------------------------------------------------------
 
@@ -252,20 +251,23 @@ constexpr double Number(std::string_view text) {
   return digits / divisor;
 }
 
-// --- the class -> preset map (the "Recommended for this GPU" tag) -----------------------------------------------------------------------
-// RT is recommended for cards in the Mid and High classes that support ray tracing.
-// VANILLA remains the first-start preset on every GPU.
+// --- the class -> preset map (first start and the "Recommended for this GPU" tag) -------------------------------------------------------
 struct ClassRule {
   std::string_view when;
   Preset preset;
 };
 inline constexpr ClassRule kClassToPreset[] = {
-    {"gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", Preset::kEnhancedRt},
+    {"gpu.class == 'high' && gpu.rt_tier == 'strong'", Preset::kEnhancedRt},
+    {"gpu.class == 'low'", Preset::kVanilla},
     {"true", Preset::kEnhanced},
 };
 inline constexpr int kClassRuleCount = static_cast<int>(sizeof(kClassToPreset) / sizeof(kClassToPreset[0]));
+inline constexpr Preset kFallbackPreset = kClassToPreset[kClassRuleCount - 1].preset;
 
 // --- first start and the older files ---------------------------------------------------------------------------------------------------
+
+// Formerly covered AA and RT mirror keys can still signal an existing custom setup.
+inline constexpr std::string_view kLegacyCoveredKeys[] = {"mcla_gpu_msaa", "mcla_gpu_aa", "mcla_gpu_car_mirror_rt"};
 
 // What a larecomp.toml says about presets, from the keys it has.
 struct FileFacts {
@@ -275,13 +277,16 @@ struct FileFacts {
   constexpr void NoteKey(std::string_view name) {
     if (name.starts_with("larecomp.")) name.remove_prefix(sizeof("larecomp.") - 1);
     if (name == kPresetSetting) has_preset_key = true;
-    // AA used to be covered. An old file can still signal an existing custom setup with it.
-    if (IsCovered(name) || name == "mcla_gpu_msaa" || name == "mcla_gpu_aa") has_covered_key = true;
+    if (IsCovered(name)) has_covered_key = true;
+    for (const auto key : kLegacyCoveredKeys) {
+      if (name == key) has_covered_key = true;
+    }
   }
 };
-// Start on VANILLA unless a file without a preset line already holds a covered value. Then start on CUSTOM with no base preset.
-constexpr Preset DecideInitial(const FileFacts& file) {
-  return (!file.has_preset_key && file.has_covered_key) ? Preset::kCustom : kFirstStart;
+// A preset key leaves the file in charge. Existing effect choices imply CUSTOM; an empty effect config uses the recommendation.
+constexpr std::optional<Preset> DecideInitial(const FileFacts& file, Preset recommended) {
+  if (file.has_preset_key) return std::nullopt;
+  return file.has_covered_key ? Preset::kCustom : recommended;
 }
 
 // --- what the pause menu does with a change --------------------------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 #include "config_save.h"
+#include "gpu/gfx_preset.h"
 #include "settings/immortal.h"
 
 #include <algorithm>
@@ -342,7 +343,9 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
         action == CvarSaveAction::kWriteBeforeScene ? hold->second.value : info->getter();
     // Save an explicit OFF even if this is the first write of the new toggle. A legacy "rr"
     // line can still supply the startup value until the file contains the new key.
-    const bool unchanged = name != "mcla_gpu_vendor_denoiser" &&
+    // Save an explicit preset even when it equals the registered default. The first-start preset can differ.
+    // CHECK: choose VANILLA on a machine that starts in ENHANCED and verify it survives a restart.
+    const bool unchanged = name != "mcla_gpu_vendor_denoiser" && name != mcla::gpu::gfx_preset::kPresetSetting &&
                            (value == info->default_value || AtStartupValue(name, value));
     Put(edits, name, CvarTomlValue(name, value), unchanged);
   }

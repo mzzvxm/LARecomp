@@ -1329,8 +1329,8 @@ class GPUSettings final : public rex::SettingOwner {
     "interval 0 and the wait alone paces the frame, so measure before turning it on.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_preset, "vanilla", "Graphics preset: the look of the four effect pages (IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS, WORLD DETAIL) in one choice. "
-    "vanilla (the first-start default), enhanced, enhanced_rt (requires ray tracing) "
-    "or custom (your own choices on those pages). While a preset "
+    "vanilla, enhanced, enhanced_rt (requires ray tracing) or custom (your own choices on those pages). "
+    "On first start the game chooses the recommended preset for your graphics card. While a preset "
     "other than custom is chosen, its values are used for every row of those pages and are not written to larecomp.toml; changing any one of "
     "those rows in the pause menu switches this to custom and keeps the values (mcla_gpu_preset_from remembers the preset they came from). "
     "DISPLAY and UPSCALING are never changed by a preset. A larecomp.toml that has graphics values and no line for this setting (written "

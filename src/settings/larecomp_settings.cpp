@@ -370,23 +370,24 @@ void MigrateGraphicsPresetIds() {
   if (migrated) REXLOG_INFO("[preset] migrated saved preset IDs: enhanced_ultra to enhanced, enhanced_rt_ultra to enhanced_rt");
 }
 
-int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::path& file) {
+mcla::gpu::gfx_preset::FileFacts ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::path& file) {
+  namespace gp = mcla::gpu::gfx_preset;
   std::error_code ec;
   if (file.empty() || !std::filesystem::exists(file, ec)) {
-    return 0;
+    return {};
   }
   // Read through the path object (a non-ASCII folder name opens), as the SDK's loader does.
   std::string content;
   {
     std::ifstream in(file, std::ios::binary);
-    if (!in) return 0;
+    if (!in) return {};
     content.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
   }
   toml::table table;
   try {
     table = toml::parse(content, file.string());
   } catch (const toml::parse_error&) {
-    return 0;  // the SDK reports an unreadable file itself (and keeps the defaults)
+    return {};  // the SDK reports an unreadable file itself
   }
   const auto text_of = [&](const char* key) -> std::optional<std::string> {
     const toml::node* node = table.get(key);
@@ -444,19 +445,17 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
   const auto has_mirror = std::any_of(leaves.begin(), leaves.end(), [&](const auto& leaf) {
     return leaf.first == "mcla_gpu_side_mirrors" || leaf.first == mirror.GetName();
   });
-  bool migrated_rt_mirror = false;
   if (!has_mirror) {
     for (const auto& [name, text] : leaves) {
       if (name == "mcla_gpu_car_mirror_rt" || name == "larecomp.mcla_gpu_car_mirror_rt") {
         if (const auto value = mcla::gpu::mirror_setting::LegacyRtWord(text)) {
           put_title(mirror.GetName(), std::string(*value));
-          migrated_rt_mirror = true;
         }
       }
     }
   }
   int refused = 0;
-  mcla::gpu::gfx_preset::FileFacts preset_facts;  // what the file says about the graphics presets (gpu/gfx_preset.h DecideInitial)
+  gp::FileFacts preset_facts;
   for (const auto& [name, text] : leaves) {
     preset_facts.NoteKey(name);
     // The SDK reads these aliases when it loads the file after OnConfigure.
@@ -482,18 +481,16 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
       REXLOG_WARN("larecomp.toml: {} = {} was not used ({}); the default stays", name, text, result.error().GetDescription());
     }
   }
-  if (migrated_rt_mirror) preset_facts.NoteKey("mcla_gpu_side_mirrors");
-  // A file with a covered value and no preset line starts on CUSTOM. Otherwise the setting defaults to VANILLA.
-  // The title-layer default stays below the file and command line layers and is never written back.
-  if (mcla::gpu::gfx_preset::DecideInitial(preset_facts) == mcla::gpu::gfx_preset::Preset::kCustom) {
-    put_title("larecomp.mcla_gpu_preset", std::string(mcla::gpu::gfx_preset::Id(mcla::gpu::gfx_preset::Preset::kCustom)));
+  // Infer CUSTOM for an older file before the renderer starts. The hardware-based default is set after device detection.
+  if (gp::DecideInitial(preset_facts, gp::kFallbackPreset) == gp::Preset::kCustom) {
+    put_title("larecomp.mcla_gpu_preset", std::string(gp::Id(gp::Preset::kCustom)));
   }
   if (refused > 0) {
     REXLOG_WARN("larecomp.toml: {} value(s) refused; every other line was applied. The SDK will report the file as not "
                 "used and keep {}.unreadable.bak: that is the same refusal, not a second problem",
                 refused, file.filename().string());
   }
-  return refused;
+  return preset_facts;
 }
 
 }  // namespace larecomp::settings

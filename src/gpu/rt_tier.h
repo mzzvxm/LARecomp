@@ -62,6 +62,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -473,8 +474,10 @@ constexpr GpuClass RtClass(GpuClass, RtTier t) {
   return t == RtTier::kNone ? GpuClass::kLow : GpuClass::kHigh;
 }
 
-constexpr gfx_preset::Preset RecommendedPreset(GpuClass c, RtTier t) {
-  return c != GpuClass::kLow && t != RtTier::kNone ? gfx_preset::Preset::kEnhancedRt : gfx_preset::Preset::kEnhanced;
+constexpr gfx_preset::Preset RecommendedPreset(std::optional<GpuClass> cls, std::optional<RtTier> tier) {
+  if (cls == GpuClass::kLow) return gfx_preset::Preset::kVanilla;
+  if (cls == GpuClass::kHigh && tier == RtTier::kStrong) return gfx_preset::Preset::kEnhancedRt;
+  return gfx_preset::kFallbackPreset;
 }
 
 // The tier a FORCED class stands for in a test (mcla_gpu_class): what the class's cells were meant to show. A card the API says cannot trace stays none.
