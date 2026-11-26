@@ -7310,6 +7310,39 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_fix_guest_density_work": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Reuse the ambient zone lookups and read density settings once per update. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_fix_guest_mirror_work": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Search occupied rear-view car visibility slots only. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_fix_guest_shadow_work": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/Patches",
+  "help": "\"Skip unused traffic-shadow viewport reads and select the two distances for the caster cutoff. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_fix_neon_30hz": {
   "type": "bool",
   "default": "true",
@@ -11058,6 +11091,17 @@
   "default": "true",
   "category": "MCLA/Cinematic",
   "help": "\"TRAILER TOOLKIT repeatable scenes: true: the generators are given their state at every update of the scene (a thread that draws a different number of times in \"\n    \"one run cannot carry the difference into the next update); false: once, at the scene's first update. Read at every update of a scene.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_guest_timing": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/Diagnostics",
+  "help": "\"Log mean and p95 elapsed time per frame for game updates, graphics submission and recomp hooks. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

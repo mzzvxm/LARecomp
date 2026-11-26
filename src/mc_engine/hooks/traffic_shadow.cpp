@@ -40,6 +40,7 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
 #include <rex/ppc/context.h>
+#include <rex/ppc/recompiled_code.h>
 #include <rex/kernel/title_runtime.h>
 #include <algorithm>
 #include <atomic>
@@ -51,6 +52,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
 #if defined(LARECOMP_HAS_GPU)
@@ -206,7 +208,9 @@ ts::Limits CurrentLimits(ts::Mode mode) {
 bool DecideAndPublish(State& s, ts::Mode mode, const ts::Limits& limits, uint32_t id, uint32_t phase, float distance) {
     std::lock_guard<std::mutex> guard(s.lock);
     if (s.mode != mode) ResetState(s, mode);  // a new setting starts from a clean census
-    const bool cast = s.selector.Decide(id, phase, distance, limits);
+    // CHECK: compare cutoffs and caster counts with the switch flipped in Near and All.
+    const bool cast = s.selector.Decide(id, phase, distance, limits,
+                                       [] { return larecomp::settings::mcla_fix_guest_shadow_work.Get(); });
     const ts::FrameStats& f = s.selector.last();
     if (f.frame != s.published_frame) {
         s.published_frame = f.frame;
@@ -269,11 +273,14 @@ struct Eyes {
     bool have_main = false;
     bool have_current = false;
 };
-bool FindEyes(const uint8_t* base, ts::Gates& gates, bool ambient_route, Eyes& out) {
+bool FindEyes(const uint8_t* base, ts::Gates& gates, bool ambient_route, bool census, Eyes& out) {
+    if (!base) return false;
     out.main_viewport = MainViewport(base, gates, ambient_route);
     out.have_main = out.main_viewport != 0 && ReadViewportEye(base, out.main_viewport, out.main_eye);
-    out.current_viewport = ReadGuestU32(base, ts::kCurrentViewportGlobal);
-    out.have_current = ReadViewportEye(base, out.current_viewport, out.current_eye);
+    if (ts::NeedsCurrentEye(out.have_main, census, larecomp::settings::mcla_fix_guest_shadow_work.Get())) {
+        out.current_viewport = ReadGuestU32(base, ts::kCurrentViewportGlobal);
+        out.have_current = ReadViewportEye(base, out.current_viewport, out.current_eye);
+    }
     const float* chosen = out.have_main ? out.main_eye : out.current_eye;
     for (int i = 0; i < 3; ++i) out.eye[i] = chosen[i];
     return out.have_main || out.have_current;
@@ -342,6 +349,7 @@ void ReadBone(const uint8_t* base, uint32_t block, float bone[3][4]) {
 // 0x8236066C, before `cmplwi cr6,r11,0` in sub_82360518 (the item draw of mcCarModelClass: the player's and the
 // racers' cars).
 void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r28, PPCRegister& r30) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kTrafficShadowHooks);
 #if defined(LARECOMP_HAS_GPU)
     using Gate = ts::CarGate;
     ts::Gates& gates = G();
@@ -412,7 +420,7 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
         return;
     }
     Eyes eyes;
-    if (!FindEyes(base, gates, false, eyes)) {
+    if (!FindEyes(base, gates, false, false, eyes)) {
         gates.Add(Gate::kCameraPtr);
         return;
     }
@@ -442,6 +450,7 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
 // client's mask, r30 = the phase, r31 = the client. For the traffic client (mcAmbientCarRenderClass) in a sun
 // cascade the mask gets the phase, so the client is called in it. Nothing is written into the client.
 void Patch_AmbientCascadeClient(PPCRegister& r11, PPCRegister& r30, PPCRegister& r31) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kTrafficShadowHooks);
 #if defined(LARECOMP_HAS_GPU)
     using Gate = ts::AmbientGate;
     const uint32_t phase = uint32_t(r30.u64);
@@ -464,11 +473,22 @@ void Patch_AmbientCascadeClient(PPCRegister& r11, PPCRegister& r30, PPCRegister&
 #endif
 }
 
+// Includes both the gate and the original ambient item draw it can open.
+#if defined(LARECOMP_HAS_GPU)
+REX_EXTERN(__imp__rex_sub_82793360);
+extern "C" REX_FUNC(rex_sub_82793360) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kCascadeCarDraws,
+                                        mc::guest_timing::active_frame && ts::CascadeIndex(ctx.r4.u32) != 0);
+    __imp__rex_sub_82793360(ctx, base);
+}
+#endif
+
 // 0x82793360, the entry of sub_82793360 (the item draw of mcAmbientCarRenderClass: r3 = the item, r4 = the phase).
 // In a cascade the draw knows no phase and returns; for a car the selector picks the phase becomes 0x100000, the
 // branch that draws the body (traffic_shadow.h; 0x8000, the first version, is the car's lights). The draw's own tests
 // (LOD, the item's and the car's flags) still apply. Only r4, a register, is changed: no guest memory is written.
 void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kTrafficShadowHooks);
     TrafficProbeNoteItem(uint32_t(r3.u64));  // mcla_traffic_probe (debug): reads the item's LOD for its log; one atomic load when off
 #if defined(LARECOMP_HAS_GPU)
     using Gate = ts::AmbientGate;
@@ -528,7 +548,7 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
     bool measured = false;
     bool have_eye = false;
     if (rejected == 0 || census_phase) {
-        have_eye = FindEyes(base, gates, true, eyes);
+        have_eye = FindEyes(base, gates, true, census_phase, eyes);
         if (have_eye) {
             const bool render_copy = ThreadReadsRenderCopy(base, uint32_t(r13.u64));
             const uint32_t matrix = car + ts::AmbientMatrixOffset(render_copy, buffer);
@@ -603,6 +623,7 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
 // body bone's rotation, because the ambient cars' shadow shader has no bone matrices (gpu/traffic_shadow_pose.h). The rows are the
 // draw's own stack copy: nothing persistent is written.
 void Patch_AmbientCascadeWorld(PPCRegister& r3, PPCRegister& r18, PPCRegister& r27) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kTrafficShadowHooks);
 #if defined(LARECOMP_HAS_GPU)
     uint8_t* const base = REX_RUNTIME() ? larecomp::guest::Membase() : nullptr;
     if (!base) return;
@@ -661,7 +682,7 @@ void Patch_AmbientCascadeWorld(PPCRegister& r3, PPCRegister& r18, PPCRegister& r
     {
         Eyes eyes;
         ts::Gates scratch;  // FindEyes counts its failures; the log wants none of them in the run's counters
-        if (FindEyes(base, scratch, false, eyes)) {
+        if (FindEyes(base, scratch, false, false, eyes)) {
             const float at[3] = {game_world[3][0] + bone[0][3], game_world[3][1] + bone[1][3], game_world[3][2] + bone[2][3]};
             distance = ts::Distance(eyes.eye, at);
         }
@@ -679,6 +700,7 @@ void Patch_AmbientCascadeWorld(PPCRegister& r3, PPCRegister& r18, PPCRegister& r
 // (r4: the bone 0 axes as rows, the position in row 3; r31 = the item). The log line only (mcla_gpu_traffic_shadows_log): the decal's
 // heading against the body's, so a run can say whether the game's own decal turns with the car.
 void Patch_AmbientDecalPose(PPCRegister& r4, PPCRegister& r31) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kTrafficShadowHooks);
 #if defined(LARECOMP_HAS_GPU)
     if (larecomp::settings::mcla_gpu_traffic_shadows_log.Get() <= 0) return;
     uint8_t* const base = REX_RUNTIME() ? larecomp::guest::Membase() : nullptr;

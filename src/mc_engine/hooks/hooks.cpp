@@ -11,6 +11,7 @@
 
 #include "hooks.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "discord_rpc/discord_rpc.h"
 #include "mc_engine/input/adaptive_triggers.h"
 #include "mc_engine/input/impulse_triggers.h"
@@ -160,6 +161,7 @@ void InitHooks() {
 // frame, which is what caused traffic jitter and physics stutter. What is left
 // here is the per-frame housekeeping.
 void Patch_DeltaTimePre() {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kHousekeeping);
     TickVinylReadbackWindow();  // runs every frame regardless of real_frame_delta
     TickGlobalReadback();       // closes the vinyl / photo readback window once both are done
     TickVinylShapeCapture();    // hands-free shape-catalog sweep, if requested
@@ -185,7 +187,10 @@ void Patch_DeltaTimePre() {
     TickVibration();            // controller_vibration: stops a motor that was running when it went off
     RpcOnRaceTick();            // Discord RPC: race name + series/tournament standings
     ApplyAmbientDensityTuning();  // no-op unless an ambient cvar moved
-    TickTrafficProbe();           // mcla_traffic_probe / mcla_traffic_probe_spawn (debug): reads the ambient cars, pools and police; one flag test when off
+    {
+        const mc::guest_timing::Scope census(mc::guest_timing::Section::kCensus);
+        TickTrafficProbe();       // mcla_traffic_probe / mcla_traffic_probe_spawn (debug)
+    }
     ApplyFragTuneOverrides();     // re-asserts the fragment tune overrides
     ApplyRenderPhaseMask();       // perf_no_shadows, live
     ApplyLoadTimeDevOptions();    // keeps node+4 in sync for the load-time switches

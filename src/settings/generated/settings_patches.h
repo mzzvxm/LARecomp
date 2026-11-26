@@ -94,6 +94,12 @@ class PatchesSettings final : public rex::SettingOwner {
     "second but 0.42 at 60 FPS and 0.17 at 144 FPS, so above 30 FPS the smoke vanished with the checkpoint. On: the "
     "same decay per second as the console at any frame rate. Off: the game's own number at every update.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_fix_guest_density_work, true, "Reuse the ambient zone lookups and read density settings once per update. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_fix_guest_mirror_work, true, "Search occupied rear-view car visibility slots only. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_fix_guest_shadow_work, true, "Skip unused traffic-shadow viewport reads and select the two distances for the caster cutoff. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_fix_neon_30hz, true, "Fix: the neon underglow's pulse follows the console's 30 Hz clock, not every frame. A fast flash "
     "rate is a wave of about 30 Hz; the console sampled it 30 times a second and showed a slow throb, "
     "and at 60 FPS or more the same wave blinks about 11 times a second (a strobe). On: every frame "
@@ -185,6 +191,9 @@ inline auto& intro_original_speed = g_patches.intro_original_speed;
 inline auto& mcla_fast_exit = g_patches.mcla_fast_exit;
 inline auto& mcla_skip_gpu_teardown = g_patches.mcla_skip_gpu_teardown;
 inline auto& mcla_fix_checkpoint_fade = g_patches.mcla_fix_checkpoint_fade;
+inline auto& mcla_fix_guest_density_work = g_patches.mcla_fix_guest_density_work;
+inline auto& mcla_fix_guest_mirror_work = g_patches.mcla_fix_guest_mirror_work;
+inline auto& mcla_fix_guest_shadow_work = g_patches.mcla_fix_guest_shadow_work;
 inline auto& mcla_fix_neon_30hz = g_patches.mcla_fix_neon_30hz;
 inline auto& mcla_fix_neon_pulse_pin = g_patches.mcla_fix_neon_pulse_pin;
 inline auto& real_frame_delta = g_patches.real_frame_delta;

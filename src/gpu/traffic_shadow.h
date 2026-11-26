@@ -73,6 +73,7 @@
 #include <cmath>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 
 #include "gpu_class.h"
 
@@ -124,6 +125,11 @@ constexpr int CascadeIndex(uint32_t phase) {
     }
   }
   return 0;
+}
+
+// The current viewport is needed for fallback and for the census that compares the two eyes.
+constexpr bool NeedsCurrentEye(bool have_main, bool census, bool skip_unused) {
+  return !have_main || census || !skip_unused;
 }
 
 // --- which cars ---------------------------------------------------------------------------------------------
@@ -370,7 +376,7 @@ inline float Distance(const float camera[3], const float position[3]) {
 // far away): the radius when no more than `cars` of them are within reach, else halfway between the Nth and
 // the (N+1)th nearest (or the radius if that is nearer): the nearest N cast and the rest do not, whatever
 // their order of arrival.
-inline float CutoffFor(const float* distances, uint32_t count, const Limits& limits) {
+inline float CutoffFor(const float* distances, uint32_t count, const Limits& limits, bool select = false) {
   if (!(limits.radius > 0.0f) || limits.cars == 0) {
     return 0.0f;
   }
@@ -387,8 +393,16 @@ inline float CutoffFor(const float* distances, uint32_t count, const Limits& lim
   if (n <= limits.cars) {
     return limits.radius;
   }
-  std::sort(sorted, sorted + n);
-  const float cut = 0.5f * (sorted[limits.cars - 1] + sorted[limits.cars]);
+  float last_caster;
+  if (select) {
+    float* first_rejected = sorted + limits.cars;
+    std::nth_element(sorted, first_rejected, sorted + n);
+    last_caster = *std::max_element(sorted, first_rejected);
+  } else {
+    std::sort(sorted, sorted + n);
+    last_caster = sorted[limits.cars - 1];
+  }
+  const float cut = 0.5f * (last_caster + sorted[limits.cars]);
   return std::min(limits.radius, cut);
 }
 
@@ -412,13 +426,14 @@ class Selector {
 
   // Whether the car (any id that is stable and different per car: its guest address) casts in `phase` now.
   // `distance` is its distance from the camera in metres. A phase that is not a cascade does not cast.
-  bool Decide(uint32_t id, uint32_t phase, float distance, const Limits& limits) {
+  template <typename UseSelection = std::false_type>
+  bool Decide(uint32_t id, uint32_t phase, float distance, const Limits& limits, UseSelection use_selection = {}) {
     const int cascade = CascadeIndex(phase);
     if (cascade == 0) {
       return false;
     }
     if (phase < last_phase_ || (phase == census_phase_ && Seen(id))) {
-      EndFrame(limits);
+      EndFrame(limits, use_selection());
     }
     last_phase_ = phase;
     if (census_phase_ == 0) {
@@ -445,8 +460,8 @@ class Selector {
 
   // Closes the frame in progress (the next one casts by its census). Public for the caller that knows a frame
   // ended (a mode change or the game leaving the world: everything is forgotten).
-  void EndFrame(const Limits& limits) {
-    cutoff_ = CutoffFor(distances_, count_, limits);
+  void EndFrame(const Limits& limits, bool select = false) {
+    cutoff_ = CutoffFor(distances_, count_, limits, select);
     stats_.candidates = candidates_;
     stats_.casting = casting_;
     stats_.nearest = candidates_ ? nearest_ : 0.0f;

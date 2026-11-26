@@ -199,6 +199,9 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
+    Bool("PM_RxDbgGuestDensity", "mcla_fix_guest_density_work", "DENSITY LOOKUP: "),
+    Bool("PM_RxDbgGuestMirror", "mcla_fix_guest_mirror_work", "MIRROR CAR LOOKUP: "),
+    NativeOnly(Bool("PM_RxDbgGuestShadow", "mcla_fix_guest_shadow_work", "TRAFFIC SHADOW WORK: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 
@@ -472,6 +475,7 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgLbDiag",      "leaderboards_diag",     "LEADERBOARDS DIAG: "),
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
     Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
+    Bool("PM_RxDbgGuestTiming", "mcla_guest_timing",     "GUEST TIMING: "),
 #if defined(LARECOMP_HAS_GPU)
     // Every 600 frames, the textures the HUD and menus read (what UI SHARPEN is tuned from).
     NativeOnly(Bool("PM_RxDbgUiSharpCensus", "mcla_ui_sharp_census", "UI SHARPEN CENSUS: ")),

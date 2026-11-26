@@ -80,6 +80,7 @@
 #include "../gpu/texture_names.h"
 #endif
 #include "mc_engine/core/draw_stats.h"
+#include "mc_engine/hooks/guest_timing.h"
 #include "../mc_engine/hooks/display_gamma.h"
 
 // Defined in native_gfx.cpp at global scope, so the declaration goes here at
@@ -565,6 +566,7 @@ extern "C" REX_FUNC(D3DDevice_DrawIndexedVertices) {
 #endif
   mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kCensus);
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/1, /*is_up=*/false);
   }
   if (mcla::native_gfx::Active()) {
@@ -600,6 +602,7 @@ extern "C" REX_FUNC(D3DDevice_DrawVertices) {
 #endif
   mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kCensus);
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/0, /*is_up=*/false);
   }
   if (mcla::native_gfx::Active()) {
@@ -639,6 +642,7 @@ extern "C" REX_FUNC(D3DDevice_BeginVertices) {
 #endif
   mcla::draw_stats::RecordDraw(count);
   if (mcla::gfx_probe::Enabled()) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kCensus);
     mcla::gfx_probe::RecordDraw(base, dev, prim, count, /*indexed=*/0, /*is_up=*/true);
   }
   if (mcla::native_gfx::Active()) {
@@ -764,8 +768,24 @@ extern "C" REX_FUNC(D3DDevice_EndTiling) {
 
 // --- frame boundary --------------------------------------------------------
 
+// The guest's world phase loop. The render submit interval starts at its first
+// call and ends before EndFrame. The phase cursor is local to each invocation.
+REX_EXTERN(__imp__rex_sub_822E6408);
+extern "C" REX_FUNC(rex_sub_822E6408) {
+  mc::guest_timing::BeginSubmit();
+  __imp__rex_sub_822E6408(ctx, base);
+  mc::guest_timing::EndPhases();
+}
+
+REX_EXTERN(__imp__rex_sub_82227428);
+extern "C" REX_FUNC(rex_sub_82227428) {
+  const mc::guest_timing::Scope timing(mc::guest_timing::Section::kHud);
+  __imp__rex_sub_82227428(ctx, base);
+}
+
 // rage::grcDevice::EndFrame.
 extern "C" REX_FUNC(grcDevice_EndFrame) {
+  mc::guest_timing::MarkEndFrame();
   mcla::native_gfx::nocp::NoteHook("grcDevice_EndFrame");
   mcla::native_gfx::nocp::NoteFrameEnd();
   const bool probe_was_enabled = mcla::gfx_probe::Enabled();
@@ -776,6 +796,7 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
   mcla::gpu::OnGuestFrameEnd(base);
 #endif
   if (probe_was_enabled) {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kCensus);
     mcla::gfx_probe::OnFrameEnd();
     if (!mcla::gfx_probe::Enabled()) {
       mcla::gfx_probe::WriteReport();
@@ -864,6 +885,9 @@ extern "C" REX_FUNC(grcDevice_EndFrame) {
 // suppresses: it presents a triangle and has no command processor frame to
 // care about.
 extern "C" REX_FUNC(D3DDevice_Swap) {
+  struct FinishTiming {
+    ~FinishTiming() { mc::guest_timing::EndSubmit(); }
+  } finish_timing;
 #if defined(LARECOMP_HAS_GPU)
   // The original consumes these arguments and overwrites r3 with its result.
   const uint32_t gpu_device = ctx.r3.u32;

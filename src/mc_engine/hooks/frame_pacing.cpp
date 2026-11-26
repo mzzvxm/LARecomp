@@ -79,6 +79,7 @@
 #include "hooks.h"
 #include "os/environment.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "mc_engine/camera/camera_trace.h"
 #include "../cinematic/capture_mode.h"
 #include "mc_engine/core/logging.h"
@@ -354,6 +355,15 @@ extern "C" REX_FUNC(rex_sub_821BDA90) {
     t_game_clock = true;
     __imp__rex_sub_821BDA90(ctx, base);
     t_game_clock = false;
+}
+
+// CHECK: verify all play updates return here and submit starts independently on
+// the game's graphics thread. The render-done wait in the caller is outside this bracket.
+REX_EXTERN(__imp__rex_sub_822C1FA8);
+extern "C" REX_FUNC(rex_sub_822C1FA8) {
+    mc::guest_timing::EnterUpdate();
+    __imp__rex_sub_822C1FA8(ctx, base);
+    mc::guest_timing::EndUpdate();
 }
 
 // The hand-over's frame-buffer swap: the render thread is idle and draws the

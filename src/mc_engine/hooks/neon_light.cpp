@@ -25,6 +25,7 @@
 #include "gpu/light_points.h"
 #include "gpu/neon_light.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 #include "larecomp_log.h"
 
 REX_EXTERN(__imp__rex_sub_823553F8);  // the car effect object's light update (the neon's colour is its last step)
@@ -51,7 +52,8 @@ extern "C" REX_FUNC(rex_sub_823553F8) {
     const uint32_t self = ctx.r3.u32;
     __imp__rex_sub_823553F8(ctx, base);
 
-    if (!nl::Wanted()) return;
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kLights);
+    if (!base || !nl::Wanted()) return;
     const GuestMemory mem{base};
     nl::NeonCar car;
     if (!nl::ReadNeonCar(mem, self, ReadGuestU32(base, larecomp::gpu::light_points::kPlayerVehiclePtr), &car)) return;

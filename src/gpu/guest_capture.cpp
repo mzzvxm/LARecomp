@@ -25,6 +25,10 @@
 
 #include "cycles.h"
 #include "draw_decode.h"
+#include "draw_state.h"
+#include "edram.h"
+#include "side_view_ui_map.h"
+#include "mc_engine/hooks/guest_timing.h"
 #include "guest_memory.h"
 #include "native_gfx/guest/guest_fence.h"
 #include "occlusion.h"
@@ -647,7 +651,27 @@ void GuestCapture::ResolveIdentityFull(const uint8_t* base, ShaderRead& shader, 
 // draws
 // ---------------------------------------------------------------------------
 
+namespace {
+namespace gt = mc::guest_timing;
+
+// Use the same target identity as the renderer. This measures capture of the
+// map draws; CPU work preparing the map stays in the guest's phase or HUD time.
+// CHECK: compare the map capture count with the known 128/220/256 target counts.
+bool IsUiMapDraw(const DrawRecord& draw) {
+  if (!draw.surfaces[0] || !draw.target_size_bits) return false;
+  const RegisterWindow regs(draw.registers, guest::kRegisterWindowBegin, sizeof(draw.registers));
+  if ((regs.Register(guest::reg::kRbColorMask) & 0xFu) == 0) return false;
+  const xreg::RB_SURFACE_INFO surface{.value = regs.Register(guest::reg::kRbSurfaceInfo)};
+  const xreg::RB_COLOR_INFO color{.value = regs.Register(guest::reg::kRbColorInfo)};
+  const EdramKey key{.base_tiles = uint16_t(color.color_base | (color.color_base_bit_11 << 11)),
+                     .pitch = uint16_t(surface.surface_pitch), .format = uint8_t(color.color_format),
+                     .samples = uint8_t(MsaaSampleCount(surface.msaa_samples))};
+  return ui_map_views::Matches(key, draw.target_size_bits);
+}
+}  // namespace
+
 GuestCallToken GuestCapture::BeforeDraw(const uint8_t* base, uint32_t device) {
+  gt::Scope timing(gt::Section::kCapture);
   GuestCallToken token;
   if (!enabled() || base == nullptr || device < 0x1000u) {
     return token;
@@ -878,6 +902,7 @@ void GuestCapture::CountRecord(uint32_t payload_bytes) {
 void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                              DrawKind kind, uint32_t primitive, uint32_t count, uint32_t start,
                              int32_t base_vertex) {
+  gt::Scope timing(gt::Section::kCapture);
   if (!token.active || !enabled()) {
     return;
   }
@@ -899,6 +924,9 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
   uint8_t* payload = writer.Begin(RecordType::kDraw, layout.payload_bytes);
   if (payload) {
     WriteDraw(base, device, c, payload);
+    if (timing && IsUiMapDraw(*reinterpret_cast<const DrawRecord*>(payload))) {
+      timing.Also(gt::Section::kHudMapCapture);
+    }
     writer.Commit(Publication::kBatched);
     CountRecord(layout.payload_bytes);
     ++frame_.draws;
@@ -911,6 +939,7 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
 void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t* base,
                                       uint32_t device, uint32_t primitive, uint32_t count,
                                       uint32_t stride, uint32_t buffer) {
+  gt::Scope timing(gt::Section::kCapture);
   if (!token.active || !enabled()) {
     return;
   }
@@ -952,6 +981,9 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
       ComputeDrawLayout(c.decl_count, c.vs_block_count, c.ps_block_count, c.inline_bytes);
   pending_.payload.assign(layout.payload_bytes, 0);
   WriteDraw(base, device, c, pending_.payload.data());
+  if (timing && IsUiMapDraw(*reinterpret_cast<const DrawRecord*>(pending_.payload.data()))) {
+    timing.Also(gt::Section::kHudMapCapture);
+  }
   pending_.active = true;
   pending_.device = device;
   pending_.buffer = buffer;
@@ -961,6 +993,7 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
 }
 
 void GuestCapture::AfterEndVertices(const uint8_t* base, uint32_t device) {
+  gt::Scope timing(gt::Section::kCapture);
   if (!enabled()) {
     return;
   }
@@ -1007,6 +1040,7 @@ void GuestCapture::FlushPendingInline(CommandStream::Writer& writer, const uint8
 
 GuestCallToken GuestCapture::BeforeEvent(const uint8_t* base, uint32_t device, GuestEvent event,
                                          uint32_t stack_pointer) {
+  gt::Scope timing(gt::Section::kCapture);
   GuestCallToken token;
   if (!enabled() || base == nullptr || device < 0x1000u) {
     return token;
@@ -1102,6 +1136,7 @@ void CopyEventState(const EventSnapshot& s, const uint8_t* base, uint32_t device
 void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, uint32_t device,
                               uint32_t caller, uint32_t flags, uint32_t rect, uint32_t color,
                               float z, uint32_t stencil) {
+  gt::Scope timing(gt::Section::kCapture);
   EventSnapshot* s = PopSnapshot(token, GuestEvent::kClear);
   if (!s || !enabled()) {
     return;
@@ -1140,6 +1175,7 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
                                 uint32_t caller, uint32_t flags, uint32_t source_rect,
                                 uint32_t dest_texture, uint32_t dest_point, uint32_t dest_level,
                                 uint32_t dest_slice, uint32_t clear_color, float clear_z) {
+  gt::Scope timing(gt::Section::kCapture);
   EventSnapshot* s = PopSnapshot(token, GuestEvent::kResolve);
   if (!s) {
     return;
@@ -1225,6 +1261,7 @@ void GuestCapture::AfterBeginTiling(const GuestCallToken& token, const uint8_t* 
                                     uint32_t device, uint32_t caller, uint32_t flags,
                                     uint32_t tile_count, uint32_t rects, uint32_t clear_color,
                                     float clear_z, uint32_t clear_stencil) {
+  gt::Scope timing(gt::Section::kCapture);
   EventSnapshot* s = PopSnapshot(token, GuestEvent::kTilingBegin);
   if (!s || !enabled()) {
     return;
@@ -1266,6 +1303,7 @@ void GuestCapture::AfterEndTiling(const GuestCallToken& token, const uint8_t* ba
                                   uint32_t device, uint32_t caller, uint32_t flags,
                                   uint32_t rects, uint32_t dest_texture, uint32_t clear_color,
                                   float clear_z, uint32_t clear_stencil, uint32_t params) {
+  gt::Scope timing(gt::Section::kCapture);
   EventSnapshot* s = PopSnapshot(token, GuestEvent::kTilingEnd);
   if (!s) {
     return;
@@ -1367,6 +1405,7 @@ void GuestCapture::Present(const uint8_t* base, uint32_t device, uint32_t front_
       state->check_next = true;
     }
   }
+  const gt::Scope timing(gt::Section::kPresentWait);
   stream_.WaitExecuted(sequence);
 }
 
@@ -1462,6 +1501,7 @@ bool GuestCapture::Lock(uint32_t resource, uint32_t level, uint32_t address, uin
   }
   // The render thread writes the GPU's image of the range into memory before
   // the CPU reads it (M5.1).
+  const gt::Scope timing(gt::Section::kReadbackWait);
   stream_.WaitExecuted(sequence);
   return true;
 }

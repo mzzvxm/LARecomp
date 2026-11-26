@@ -37,6 +37,7 @@
 
 #include "gpu/vol_lamp_list.h"
 #include "hooks_internal.h"
+#include "guest_timing.h"
 
 namespace {
 
@@ -72,6 +73,7 @@ bool Mapped(const uint8_t* base, uint32_t ea, uint32_t len) {
 
 // 0x82302814, one instruction into the cone drawer (larecomp_config.toml): the per-frame list is complete.
 void MCLAVolLampList() {
+    const mc::guest_timing::Scope timing(mc::guest_timing::Section::kLights);
     namespace vl = mcla::gpu::vol_lamps;
     if (!vl::Wanted()) return;
     const uint8_t* base = Base();
