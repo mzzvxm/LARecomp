@@ -147,13 +147,17 @@ class LightManager {
   // next BeginLights.
   void Want(bool wanted) {
     want_pass_ = wanted;
-    wanted_ = want_pass_ || want_rt_;
+    wanted_ = want_pass_ || want_rt_ || want_bounce_;
   }
   // GI-BOUNCE-RT (rt_emitters_rules.h): the ray traced bounce light's emitters read the same frame (the headlights) and the cars' lamps. A flag of its own, so that the light pass's Want(false) of a frame in which its
   // pass is off does not take the manager away from the ray traced bounce light (the two are separate consumers and set their flags at different places). Sticky, read at the next BeginLights.
   void WantRt(bool wanted) {
     want_rt_ = wanted;
-    wanted_ = want_pass_ || want_rt_;
+    wanted_ = want_pass_ || want_rt_ || want_bounce_;
+  }
+  void WantBounce(bool wanted) {
+    want_bounce_ = wanted;
+    wanted_ = want_pass_ || want_rt_ || want_bounce_;
   }
   // Whether the manager is running (the census, a flip or a consumer was on at the last BeginLights): the volume asks before it hands its inputs over.
   bool active() const { return active_; }
@@ -214,6 +218,7 @@ class LightManager {
   int every_ = 0;
   bool wanted_ = false;        // a consumer of the frame asked for it (Want or WantRt: either of the two flags below)
   bool want_pass_ = false;     // the deferred light pass's
+  bool want_bounce_ = false;
   bool want_rt_ = false;       // the ray traced bounce light's emitters'
   uint32_t flips_ = 0;         // mcla_gpu_light_frame as read at the last BeginLights (light_project.h kFlip*)
   bool active_ = false;

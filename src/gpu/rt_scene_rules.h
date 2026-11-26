@@ -57,6 +57,7 @@ enum class Consumer : uint8_t {
   kRtLights,         // the ray traced visibility of the top K lights (rt_lights.h, mcla_gpu_rt_lights)
   kCityMirror,       // MIRROR-CITY: the player's side mirrors tracing the city behind the car (car_mirror_rt.h, car_mirror_city_rules.h, mcla_gpu_car_mirror_rt_world)
   kRtAo,
+  kVirtualBounce,
   kCount,
 };
 inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
@@ -72,6 +73,7 @@ constexpr std::string_view ConsumerName(Consumer who) {
     case Consumer::kRtLights: return "rt lights";
     case Consumer::kCityMirror: return "city mirror";
     case Consumer::kRtAo: return "rtao";
+    case Consumer::kVirtualBounce: return "light bounce";
     default: return "?";
   }
 }

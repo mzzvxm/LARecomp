@@ -124,10 +124,6 @@ class GiApply {
   float TakeSsgiShare();
   // The occlusion tells that its bounce light ran with this share after all (0: it did not: the colour chain could not be made).
   void NoteSsgiRan(float share) { ssgi_ran_share_ = share; }
-  // GI-BOUNCE-JOIN (gi_bounce_carrier.h): the per-pixel pass made its image in THIS frame's trigger (it carries the listed moving emitters' bounce); valid from OnTrigger until the next BeginFrame. The light
-  // pass, which runs after this, draws a moving light outside the screen-space pair only in a frame where it is true.
-  bool pixel_pass_ran() const { return pixel_ran_frame_; }
-
   // At the trigger, after the occlusion's OnResolve and before the light pass. `gbuffer_published` is the G-buffer's own answer for this resolve. Records the pass and returns true (the caller's list
   // state is gone). `frame_slot` is the frame's slot of the upload ring. Once a frame.
   // G6: `raw_requested` = DLSS Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtGi()): the per-pixel pass (if it runs) then hands its 1 spp signal on unfiltered.
@@ -135,6 +131,7 @@ class GiApply {
   // G6: the per-pixel pass's hit distance image of THIS frame, null unless the pass ran raw in it (RG16F at its own size, the distance in x, in the read state): the guide pass's last-choice hit distance.
   // Valid after OnTrigger, until the next frame's.
   const HostImage* RawHitImage() const;
+  float AppliedFieldShare() const { return field_share_in_frame_; }
   const HostImage* CaptureLookup() const { return capture_lookup_ ? &lookup_ : nullptr; }
   // True while the effect has a field to apply this frame (the Scene calls OnTrigger only then).
   bool wants_draws() const { return enabled_; }
@@ -199,11 +196,11 @@ class GiApply {
   bool pipelines_failed_ = false;
   std::array<Slot, kFramesInFlight> slots_;
   HostImage lookup_;  // RGBA16F at the traced size: rgb = E_net x confidence, a = the linear depth the texel was looked up at
+  float field_share_in_frame_ = 0.0f;
   bool capture_lookup_ = false;
 
   // the frame
   bool enabled_ = false;
-  bool pixel_ran_frame_ = false;   // GI-BOUNCE-JOIN: the per-pixel pass published its image in this trigger (BeginFrame clears it)
   bool pixel_wanted_ = false;      // G6: the field runs, the layout has the per-pixel pass and it is made (BeginFrame: the DENOISER board's word for the bounce light)
   uint32_t view_ = 0;
   bool cabin_on_ = true;           // mcla_gpu_gi_cabin, read at the frame's start (the A/B of the player's cabin term)

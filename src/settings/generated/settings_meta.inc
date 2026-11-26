@@ -453,6 +453,7 @@
 {"mcla_gpu_headlight_strength", "MCLA/GPU"},
 {"mcla_gpu_headlights", "MCLA/GPU"},
 {"mcla_gpu_neon_light", "MCLA/GPU"},
+{"mcla_gpu_light_bounce", "MCLA/GPU"},
 {"mcla_gpu_lock_ahead_verify", "MCLA/GPU"},
 {"mcla_gpu_lock_dump", "MCLA/GPU"},
 {"mcla_gpu_low_latency", "MCLA/GPU"},

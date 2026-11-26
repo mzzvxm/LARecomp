@@ -1,33 +1,6 @@
 #pragma once
-// ===========================================================================
-// MCLA GPU renderer -- WHO CARRIES A LIGHT'S BOUNCE (GI-BOUNCE-JOIN, perf/GI-BOUNCE.md section JOIN): the one rule that joins the screen-space path (ssgi_lights.h) and the ray traced path
-// (rt_emitters_rules.h, the probe field and the per-pixel pass) so that every light bounces exactly once, at every tier. Pure: no renderer, no guest, no SDK. gi_bounce_carrier_test.cpp holds it.
-// ===========================================================================
-// THE OWNER'S RULE (2026-11-22): every light (neon, headlights, street lamps, tail lamps, decorative lights) bounces: screen-space when ray tracing is off or unavailable, ray traced when it is on.
-// Two halves were written apart: the screen-space path carries the light PASS's difference (the colour before and after the deferred light pass, last frame's, reprojected into the colour chain), the ray traced
-// path lights what its rays hit with an emitters list (the probe field the STATIC ones, the per-pixel pass all of them; the world's own lamps are the lamp grid's). Where the field stands the screen-space bounce
-// was skipped whole, so a MOVING car's lights bounced through neither path at HIGH. This rule closes it: a light is carried by exactly one path.
-//
-//   the light                                              RT off       field alone (HIGH, or a weak card's ULTRA)     field + per-pixel pass (ULTRA, strong card)
-//   a street lamp, the world's lamps (source kLamp)        screen       FIELD (the lamp grid)                          FIELD
-//   a listed STATIC emitter (a parked car's lights)        screen       FIELD (the probes)                             FIELD
-//   a listed MOVING emitter (a car on the road)            screen       SCREEN (lights-only chain)                     PIXEL PASS
-//   a light the list does not hold (too far, over budget)  screen       screen                                         screen
-//   an emitter of a group whose switch is off              none         none                                           none
-//   a light too dark to bounce (day)                       none         none                                           none
-// "screen" is the colour chain's lights' share; where the field stands it runs LIGHTS-ONLY (the chain's radiance is the lights' share alone: the field already carries everything else, ao_color_ps.hlsl
-// AoLightsOnly). The screen-space bounce takes a light from the light pass by DRAWING it between the two captures: the lights it does not carry are drawn first, outside the pair (local_lights.cpp), so the pair's
-// difference is the carried lights' light and nothing else, and nothing is counted twice.
-//
-// THE FIELD STANDS when the probe field replaces the screen-space bounce completely this frame (gi_apply_rules.h SsgiSkipped: fade over). While it fades in or out (0 < fade < 1: 0.4 s after a cut, 0.5 s going
-// away) the old crossfade holds: the screen-space bounce carries EVERY light at (1 - fade) and the field its own at fade, so nothing is lost in between; only a MOVING light at HIGH is at (1 - fade) until the
-// field has stood (the screen-space strength is the crossfade's, as it always was).
-//
-// THE SWITCHES. One coherent story, the four SHARED debug switches (mcla_gpu_gi_bounce_headlights / _neon / _rear / _other) govern the emitters' groups on BOTH paths: a group that is off is not gathered by the
-// ray traced list and is not in the screen-space pair; all four off is no lights' share at all (the colour chain is the old one, ao.cpp PlanGi); mcla_gpu_ssgi_lights (false: the colour chain as it was) is the
-// screen-space half's master and mcla_gpu_city_refl_lamps the reflections'. The world's lamps are in no group: they follow the screen path while no field stands and the field when it does.
-// CHECK: confirm capture transitions and history rejection on D3D12 and Vulkan, moving-light bounce at RT High, and daylight pixel equality with no contributing lights.
-// ===========================================================================
+// LT-6 routes car lights to virtual bounce. City lights retain the SSGI
+// and probe-field crossfade. Reflection hit shading has its own light list.
 
 #include <algorithm>
 #include <array>
@@ -36,7 +9,6 @@
 #include <functional>
 
 #include "rt_emitters_rules.h"
-#include "ssgi_lights.h"
 
 namespace mcla::gpu::gi_bounce {
 
@@ -44,14 +16,14 @@ namespace lg = ::larecomp::gpu;
 namespace re = ::mcla::gpu::rt_emitters;
 
 enum class Carrier : uint8_t {
+  kVirtual,    // the surface struck by a car light (LT-6)
   kScreen,     // the colour chain's lights' share (the screen-space bounce)
   kField,      // the probe field (the lamp grid and the static emitters)
-  kPixelPass,  // the per-pixel pass (the moving emitters at ULTRA on a strong card)
   kNone,       // nobody: the light does not bounce (its group's switch is off, or it is too dark to light anything)
 };
 
 constexpr const char* CarrierName(Carrier c) {
-  return c == Carrier::kScreen ? "screen" : (c == Carrier::kField ? "field" : (c == Carrier::kPixelPass ? "pixel pass" : "none"));
+  return c == Carrier::kVirtual ? "virtual" : c == Carrier::kScreen ? "screen" : c == Carrier::kField ? "field" : "none";
 }
 
 // What the field's emitters list (RtWorldFrame, rt_emitters_rules.h Build) says about a light of the light pass, by its id.
@@ -61,7 +33,7 @@ enum class Listed : uint8_t { kNo, kStatic, kMoving };
 struct Frame {
   uint32_t groups = re::kGroupAll;  // the four switches' mask (rt_emitters::MaskOf)
   bool field_stands = false;        // the probe field replaces the screen-space bounce this frame (SsgiSkipped(share): fade over)
-  bool pixel_pass = false;          // the per-pixel pass ran in this frame (it carries the listed moving emitters)
+  bool virtual_on = true;           // LIGHT BOUNCE
 };
 
 // The world's own lamps: a street lamp or a window the game does not draw as a light volume (the lamp grid and the glow materials of the ray traced hit shading light the bounce of these).
@@ -96,15 +68,14 @@ inline Carrier CarrierOf(const Frame& f, const lg::Light& l, Listed listed) {
   if ((f.groups & re::GroupOf(l)) == 0) {
     return Carrier::kNone;
   }
-  if (!f.field_stands) {
-    return Carrier::kScreen;
-  }
-  switch (listed) {
-    case Listed::kStatic: return Carrier::kField;
-    case Listed::kMoving: return f.pixel_pass ? Carrier::kPixelPass : Carrier::kScreen;
-    case Listed::kNo: break;
-  }
-  return Carrier::kScreen;
+  if (f.field_stands && listed == Listed::kStatic) return Carrier::kField;
+  if (re::IsVehicleLight(l)) return f.virtual_on ? Carrier::kVirtual : Carrier::kNone;
+  return f.field_stands ? Carrier::kNone : Carrier::kScreen;
+}
+
+// During a field fade, an already listed parked light has one total share.
+constexpr float VirtualShare(bool listed_static, float field_share) {
+  return listed_static ? 1.0f - field_share : 1.0f;
 }
 
 // The light's place in the light pass: in the screen-space pair (drawn between the two captures) or outside it.
@@ -112,7 +83,7 @@ inline bool InPair(const Frame& f, const lg::Light& l, Listed listed, float nigh
   return Bounces(l, night, gain) && CarrierOf(f, l, listed) == Carrier::kScreen;
 }
 
-// "All four off = the lights' share off" (the one line both halves described): the screen-space half is off when no group is on.
+// The virtual pass can stay idle when all car-light groups are off.
 constexpr bool AnyGroup(uint32_t groups) {
   return (groups & re::kGroupAll) != 0;
 }
@@ -120,33 +91,8 @@ constexpr bool AnyGroup(uint32_t groups) {
 // What the light pass is handed (Scene, once a frame, only while the AO wants the lights' pair): the frame's facts for the rule, the field's list and the capture to make between the pass's two runs of draws.
 struct Pair {
   Frame frame;
-  std::function<Listed(uint64_t)> listed;  // the world frame's emitters list by light id (null: nothing is listed); asked only where frame.field_stands
   std::function<bool()> capture_before;    // makes the "before" capture (screen_->CaptureLightsBefore); true when it recorded one
 };
-
-// ---------------------------------------------------------------------------
-// the AO's plan (ao.cpp PlanGi)
-// ---------------------------------------------------------------------------
-
-// What the bounce light's plan says about the lights this frame. `residual`: the light pass makes the RESIDUAL pair (the field stands: only the lights nobody else carries are between the captures);
-// `only`: the colour chain runs LIGHTS-ONLY, on the residual pair the last frame left. Everywhere else (no field, or a field still fading in or out: the crossfade) both are false and the pair, if the lights' share
-// is wanted, is the whole pass's, as it was.
-struct JoinPlan {
-  bool residual = false;
-  bool only = false;
-};
-// `wants`: the lights' share is wanted (the setting, a group on, the owner extracting); `stands`: the field replaces the screen-space bounce completely this frame (gi_apply_rules.h SsgiSkipped(share));
-// `ready`: the last frame left a residual pair (ScreenShared::LightsResidualReady); `hold`: the lights-only chain's hold (stepped once a frame the plan is made).
-inline JoinPlan PlanFor(bool wants, bool stands, bool ready, ssgi_lights::OnlyHold* hold) {
-  JoinPlan plan;
-  if (!stands) {
-    hold->Step(false, false);
-    return plan;
-  }
-  plan.residual = wants;
-  plan.only = hold->Step(wants, wants && ready);
-  return plan;
-}
 
 // ---------------------------------------------------------------------------
 // the partition of a light pass's draws (local_lights.cpp OnResolve)

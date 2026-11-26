@@ -163,7 +163,7 @@ void PageWidthOfLighting(const std::vector<Row>& rows) {
       {"PM_RxGpuRtGi", "RT BOUNCE LIGHT (NO RT GPU)", false},
       {"PM_RxGpuSsgiLevel", "BOUNCE LIGHT STRENGTH", false}, {"PM_RxGpuSunShafts", "SUN SHAFTS", false},
       {"PM_RxGpuHeadlights", "HEADLIGHTS", false},     {"PM_RxGpuLightShadows", "LIGHT SHADOWS", false},
-      {"PM_RxGpuNeonLight", "NEON LIGHT", false},      {"PM_RxGpuVolumetrics", "VOLUMETRIC LIGHT", false},
+      {"PM_RxGpuNeonLight", "NEON LIGHT", false},      {"PM_RxGpuLightBounce", "LIGHT BOUNCE", false},      {"PM_RxGpuVolumetrics", "VOLUMETRIC LIGHT", false},
   };
   size_t widest_label = 0;
   for (const L& l : labels) {
@@ -215,7 +215,7 @@ void Page(const std::string& dir) {
   const std::vector<std::string> light_expected = {
       "PM_RxNoShadows",       "PM_RxFoliage",       "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxGpuContact",
       "PM_RxGpuRtShadows",    "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuAo",         "PM_RxGpuAoLevel",      "PM_RxGpuSsgi",
-      "PM_RxGpuRtGi",         "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuNeonLight",
+      "PM_RxGpuRtGi",         "PM_RxGpuSsgiLevel",    "PM_RxGpuSunShafts",  "PM_RxGpuHeadlights",   "PM_RxGpuLightShadows", "PM_RxGpuNeonLight", "PM_RxGpuLightBounce",
       "PM_RxGpuVolumetrics"};
   const std::vector<std::string> world_expected = {"PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars",
                                                    "PM_RxFragDist", "PM_RxLodTraffic", "PM_RxLodCity"};

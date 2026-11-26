@@ -218,6 +218,7 @@ enum class Step : uint8_t {
   kAoApply,
   kScreenPublish,
   kGiApply,
+  kVirtualBounce,
   kLightsBefore,
   kLocalLights,
   kRtLights,    // inside the light pass: the ray traced visibility of the top K lights, traced and filtered before the pass's draws (RT-LIGHTS-D1)
@@ -419,12 +420,19 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "pass runs first, inside this step: 'rt gi pixel' (the trace) and 'rt gi denoise' (RtDenoise's temporal and spatial stages) are marked only in a frame that runs it, before the lookup. "
              "CITY-RT G6: in a frame DLSS Ray Reconstruction takes (TemporalSystem::RawModes().RtGi()) the denoiser does not run, the lookup mixes the 1 spp signal itself, and the pass's hit distance image "
              "(kRrHitGi) goes to the guide pass through TemporalSystem::NoteRrBounceHit. The lamps' direct light comes after it"},
+    {.step = Step::kVirtualBounce, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "moving-light bounce",
+     .call = "vpl_->OnTrigger(summary, list, gbuffer_published, slot_, field_share)", .label_file = "vpl.cpp", .label = "vpl hit",
+     .more_labels = {{"vpl irradiance", "vpl composite"}}, .closing_label = "after vpl", .reads = data::kLinDepth,
+     .soft_reads = data::kAoTerm | data::kCarStructures | data::kLights, .wants_screen = data::kLinDepth,
+     .note = "Samples RT2 when the sidecar is already present, otherwise estimates surface colour.",
+     .deps = {{{Step::kScreenPublish, "finds landing points and receivers in the current depth chain"},
+               {Step::kGiApply, "fills the share of parked lights the probe field did not apply"}}}},
     {.step = Step::kLightsBefore, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "colour before the light pass (the bounce light's lights, capture 1 of 2)", .call = "screen_->CaptureLightsBefore(record, summary, list)",
      .label_file = "screen_lights.cpp", .label = "ssgi lights before", .soft_reads = data::kColourChain, .makes = data::kLightsBefore,
      .deps = {{{Step::kAoApply, "the colour as the occlusion's apply left it: the light pass adds to this"}, {Step::kGiApply, "... and as the probe field's apply left it: the field's light is not the lights' share"}}},
-     .note = "(GI-BOUNCE-SS, screen_lights.cpp) only in a frame whose AO wanted the lights' pair (the bounce light ran with the lights' share, or the probe field stands and the residual pair is wanted: GI-BOUNCE-JOIN) and "
+     .note = "(GI-BOUNCE-SS, screen_lights.cpp) only in a frame whose AO wanted the lights' pair (screen-space bounce ran with the world-light share) and "
              "the light pass has a light in the pair in view: the main colour averaged over its host samples at the AO's traced size (the colour_post capture's shader and pipelines). It writes nothing to the main colour. "
-             "The light pass makes this capture itself, through a hook Scene hands it, between its draws of the lights OUTSIDE the pair (the ones the probe field, the per-pixel pass or a switch carries: gi_bounce_carrier.h) and "
+             "The light pass makes this capture itself, through a hook Scene hands it, between its draws of the lights OUTSIDE the pair (including the virtual bounce sources: gi_bounce_carrier.h) and "
              "the pair's own (just ahead of its first draw when nothing is outside); the Scene notes it right after the pass returns, ahead of the pass's own note. The pair of captures is the next frame's colour chain's history of the lights"},
     {.step = Step::kLocalLights, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "deferred local lights (additive)", .call = "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)",
      .label_file = "local_lights.cpp", .label = "local lights", .closing_label = "after local lights", .reads = data::kPlanes | data::kLinDepth | data::kLights,

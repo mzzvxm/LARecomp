@@ -1881,6 +1881,9 @@ constexpr const char* const* kNativeLightShadowNames = kLightShadowWords.names;
 // colour and pulse (owner, 2026-11-21: ON by default where the light pass runs). One level, ON: AUTO says what it comes to on this GPU (ON on a discrete card, OFF on an integrated one); OFF leaves the neon
 // as the game has it. How many cars and lights the pass takes follows LIGHT SHADOWS (gpu/light_budget.h), and nothing is drawn while no car with a lit neon is in view. No other row it waits for. The label is
 // "NEON LIGHT" (10 characters) with a value of at most 9 ("AUTO (OFF)").
+const char* const kNativeLightBounceVals[] = {"off", "on"};
+const char* const kNativeLightBounceNames[] = {"OFF", "ON"};
+
 const char* const kNativeNeonLightVals[]  = {"auto", "off", "on"};
 const char* const kNativeNeonLightNames[] = {"AUTO", "OFF", "ON"};
 // Car self-reflections (mcla_gpu_car_selfrefl, gpu/car_selfrefl.h, live, and mcla_gpu_car_selfrefl_rt, gpu/car_rt_refl.h, live): the player's car
@@ -1988,7 +1991,7 @@ const ItemDef kImageQualityItems[] = {
 // card cannot ray trace (" (NO RT GPU)"), is too slow (" (TOO SLOW)") or the probe update is not built yet (" (NOT READY)"), BOUNCE LIGHT STRENGTH while neither bounce light runs
 // (SsgiOn); LIGHT SHADOWS is grey while HEADLIGHTS is off (HeadlightsOn); FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC SHADOWS are grey
 // while SHADOWS is off and say so; HEADLIGHTS, NEON LIGHT and VOLUMETRIC LIGHT have no dependency (VOLUMETRIC LIGHT: the
-// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 18 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs; RT BOUNCE LIGHT after BOUNCE LIGHT, whose strength row it shares).
+// lamps' and headlights' beams, the haze and the sun's shafts through the cascades; it sits after the lights it shows). 19 rows of the 24 a page can hold (RT SHADOWS sits after CONTACT SHADOWS, which its pass needs; RT BOUNCE LIGHT after BOUNCE LIGHT, whose strength row it shares).
 // Width ("Page width" above ItemRowLabel): the longest label is "FOLIAGE SHADOWS (NO SHADOW)" and "TRAFFIC SHADOWS (NO SHADOW)" (27, the four
 // shadow rows' reason is at most 12 characters), then "BOUNCE LIGHT STRENGTH" (21) and "AMBIENT OCCLUSION" (17); the longest value
 // "AUTO (DEFAULT)" (14, SUN SHAFTS), then "AUTO (ULTRA)" (12) and "STRONGEST" (9): 41 of the 41 a page can take. Only those four rows, RT SHADOWS, RT BOUNCE LIGHT (27 with " (NO RT GPU)") and BOUNCE LIGHT ("BOUNCE LIGHT (REPLACED)" 23) have a suffix.
@@ -2026,6 +2029,8 @@ const ItemDef kLightItems[] = {
                                 kNativeLightShadowVals, kNativeLightShadowNames, kLightShadowWords.count)),
     NativeOnly(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON LIGHT: ",
                                 kNativeNeonLightVals, kNativeNeonLightNames, 3)),
+    NativeOnly(Str("PM_RxGpuLightBounce", "mcla_gpu_light_bounce", "LIGHT BOUNCE: ",
+                                kNativeLightBounceVals, kNativeLightBounceNames, 2)),
     NativeOnly(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "VOLUMETRIC LIGHT: ",
                                 kNativeVolumetricsVals, kNativeVolumetricsNames, 5)),
 #endif
@@ -3263,7 +3268,7 @@ void ItemSetValueIndex(const ItemDef& it, int i) {
 // states are counted in upscaling_menu.cpp, frame generation's in frame_generation_menu.h.
 // IMAGE QUALITY (kImageQualityItems, 7 rows): "POST AA (FSR 3.1 ON)" 20, "MSAA (FSR 3.1 ON)" 17, "DEPTH OF
 // FIELD" 14, "SHARP MINIMAP" 13, "ANISOTROPIC" 11; values at most 4 ("SMAA", "FXAA", "GAME", "16X"): 24.
-// LIGHTING AND SHADOWS (kLightItems, 18 rows; RT SHADOWS has the suffixes " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label, and RT BOUNCE LIGHT " (NO RT GPU)", " (TOO SLOW)" and " (NOT READY)", at most 27 as a label (BOUNCE LIGHT says " (REPLACED)", 23); the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
+// LIGHTING AND SHADOWS (kLightItems, 19 rows; RT SHADOWS has the suffixes " (NO RT GPU)" and " (GPU TOO SLOW)", at most 25 as a label, and RT BOUNCE LIGHT " (NO RT GPU)", " (TOO SLOW)" and " (NOT READY)", at most 27 as a label (BOUNCE LIGHT says " (REPLACED)", 23); the suffix " (NO SHADOW)" (12) on FOLIAGE SHADOWS, SHADOW DETAIL, SHADOW FILTER and TRAFFIC
 // SHADOWS while SHADOWS is off): labels at most 27 ("FOLIAGE SHADOWS (NO SHADOW)", "TRAFFIC SHADOWS (NO SHADOW)"), then "SHADOW DETAIL
 // (NO SHADOW)" and "SHADOW FILTER (NO SHADOW)" 25, "BOUNCE LIGHT STRENGTH" 21, "AMBIENT OCCLUSION" 17, "CONTACT SHADOWS" 15, "LIGHT
 // SHADOWS" 13, "CAR SHADOWS" 11, "SUN SHAFTS" 10, "NEON LIGHT" 10; values at most 14 (SUN SHAFTS' "AUTO (DEFAULT)"), then 13 (LIGHT SHADOWS' "AUTO
@@ -3437,7 +3442,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 18 rows
+// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 19 rows
 // (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room. The cap is the size of these tables, not
 // the screen's: nothing past about 14 rows has been looked at in the game ("CHECK: every page up to 14 rows scrolls" above), and a page that long is no
 // way to find a row, so a page that outgrows it is split into two pages, never given a higher cap. tools/check_menu_rows.py counts every page of kMenus

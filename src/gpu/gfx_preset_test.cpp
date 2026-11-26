@@ -85,6 +85,7 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_headlights", "off|on"},
     {"mcla_gpu_light_shadows", "off|medium|high|ultra"},
     {"mcla_gpu_neon_light", "off|on"},
+    {"mcla_gpu_light_bounce", "off|on"},
     {"mcla_gpu_volumetrics", "off|medium|high|ultra"},
     {"mcla_gpu_reflection_resolution", "game|high|ultra"},
     {"mcla_gpu_env_resolution", "game|high|ultra"},
@@ -155,7 +156,7 @@ void CheckTable() {
       ++covered;
     }
   }
-  Check(covered == 37 && support == 1, "37 covered rows and one support row (mcla_gpu_ao_rt)");
+  Check(covered == 38 && support == 1, "38 covered rows and one support row (mcla_gpu_ao_rt)");
   Check(gp::kExemptCount == 3, "three rows of the four pages are exempt");
   for (const gp::Note& e : gp::kExempt) {
     Check(gp::FindRow(e.cvar) < 0, std::string(e.cvar) + ": an exempt row is not in the table");
@@ -193,6 +194,7 @@ const Want kVanilla[] = {
     {"mcla_gpu_headlights", "off"},
     {"mcla_gpu_light_shadows", "off"},
     {"mcla_gpu_neon_light", "off"},
+    {"mcla_gpu_light_bounce", "off"},
     {"mcla_gpu_volumetrics", "off"},
     {"mcla_gpu_reflection_resolution", "game"},
     {"mcla_gpu_env_resolution", "game"},
@@ -414,6 +416,7 @@ const Top kTops[] = {
     {"mcla_gpu_headlights", "on"},
     {"mcla_gpu_light_shadows", "ultra"},
     {"mcla_gpu_neon_light", "on"},
+    {"mcla_gpu_light_bounce", "on"},
     {"mcla_gpu_volumetrics", "ultra"},
     {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_env_resolution", "ultra"},
@@ -674,7 +677,7 @@ void CheckScope() {
   int per_page[5] = {};
   for (const gp::Row& row : gp::kRows) ++per_page[static_cast<int>(row.page)];
   Check(per_page[0] == 5, "IMAGE QUALITY: 5 covered rows (MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR)");
-  Check(per_page[1] == 18, "LIGHTING AND SHADOWS: its 18 rows");
+  Check(per_page[1] == 19, "LIGHTING AND SHADOWS: its 19 rows");
   Check(per_page[2] == 8, "REFLECTIONS: its 7 rows and the ray traced half of CAR SELF-REFLECTIONS");
   Check(per_page[3] == 6, "WORLD DETAIL: its 6 rows");
   Check(per_page[4] == 1, "one support row");

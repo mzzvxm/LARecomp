@@ -107,6 +107,7 @@ class RtWorldFrame;
 class LocalLights;
 class ScreenReflections;
 class ScreenShared;
+class VirtualBounce;
 class Volumetrics;
 class CarSelfRefl;
 class CarDump;
@@ -210,6 +211,7 @@ class Scene {
   void SetScreenReflections(ScreenReflections* ssr) { ssr_ = ssr; }
   // The probe field's apply (gi_apply.h; CITY-RT M3 G3): told of the frame's start (before the G-buffer's and the shared products', which read the wants it makes) and run at the mid-scene depth copy
   // right after the ambient occlusion's apply and before the deferred lights. Null: none. Not owned.
+  void SetVirtualBounce(VirtualBounce* vpl) { vpl_ = vpl; }
   void SetGiApply(GiApply* gi_apply) { gi_apply_ = gi_apply; }
   // The probe field's integration (gi_integration.h; CITY-RT M3 G4): told of the frame's start BEFORE the apply (the field's frame starts there) and run at the mid-scene depth copy BEFORE the occlusion's
   // OnResolve (the field's maintenance, the probe update and the weights: the occlusion asks whether the screen-space bounce light may be skipped while it plans). Null: none. Not owned.
@@ -582,6 +584,7 @@ class Scene {
   ScreenReflections* ssr_ = nullptr;
   // The order the frame's passes ran in at the trigger and the end-of-scene copy, held to frame_order.h's table at each guest present (LIGHT-UNIFY U9).
   frame_order::Recorder order_;
+  VirtualBounce* vpl_ = nullptr;
   GiApply* gi_apply_ = nullptr;
   GiIntegration* gi_integration_ = nullptr;
   RtWorldFrame* rt_world_ = nullptr;

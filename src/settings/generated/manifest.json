@@ -2656,6 +2656,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_light_bounce": {
+  "type": "std::string",
+  "default": "\"on\"",
+  "category": "MCLA/GPU",
+  "help": "\"Surface-coloured light reflected from car headlights, tail lights and neon. Applies live.\"",
+  "traits": [
+   "rex::Allowed(\"off\", \"on\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_headlight_strength": {
   "type": "f64",
   "default": "1.0",

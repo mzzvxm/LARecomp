@@ -19,8 +19,8 @@
 //   factor (a few per cent brighter above the street) is not applied: the bounce is soft.
 //   MOVING LIGHTS. The probe field is fixed to the world and blends 33 updates (hysteresis 0.97): a light that moves at the speed of a car would leave a smear of its colour along its path that fades for
 //   a second, and the new value would count 3 per cent. So the list is ordered STATIC FIRST (a light whose position changed by under kMovingSpeed m/s: a parked car, one at a stop) and the probes read only
-//   the first `static count` of it (row 44 z of the world rows); the per-pixel pass and the reflections read all. A light seen for the first time is moving until a second sample says otherwise.
-//   At HIGH (the field alone, no per-pixel pass) a moving car's lights therefore do not bounce through this path: the screen-space bounce light is what lights those (perf/GI-BOUNCE.md).
+//   the first `static count` of it (row 44 z of the world rows); the per-pixel bounce reads the same prefix. Reflections can read the whole list. A new light starts as moving.
+//   Virtual bounce carries the moving car lights at every GI quality.
 // THE LAYOUT. The emitters are GpuLight rows (light_frame.h: four float4 each, WORLD space, as the light pass reads them) in gRtLamps after the lamps' rows: row base + 4 i + k (k 0..3); the base, the count, the
 // static count and the groups are row 44 of gRtWorld (rt_world_frame_rules.h kRowEmitters).
 //
@@ -114,6 +114,11 @@ constexpr ll::Tier TierFor(bool ultra, bool weak) { return ultra ? ll::Tier::kUl
 
 // The head lamps of the cars the rig lights and the ones it does not are both `kHeadlight` source lights; a rear lamp is a `kOther` source light of a car (car_key); the police and the mods have their own
 // sources; anything else (the test lamp, a handed over lamp: a debug light) is `other`.
+inline bool IsVehicleLight(const lg::Light& l) {
+  return l.source == lg::LightSource::kHeadlight || l.source == lg::LightSource::kNeon ||
+         l.source == lg::LightSource::kPolice || (l.source == lg::LightSource::kOther && l.car_key != 0);
+}
+
 inline uint32_t GroupOf(const lg::Light& l) {
   switch (l.source) {
     case lg::LightSource::kHeadlight: return kGroupHeadlights;

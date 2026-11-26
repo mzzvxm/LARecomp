@@ -212,7 +212,7 @@ int main(int argc, char** argv) {
     board.Want(rs::Consumer::kCityMirror, cmc::NeedsFor(high));
     Check(board.Now().city == Level::kUltra && board.Wants(rs::Consumer::kCityMirror) && board.Wants(rs::Consumer::kCityReflections), "a consumer slot of its own: both wants stand");
     Check(std::string(rs::ConsumerName(rs::Consumer::kCityMirror)) == "city mirror", "the consumer's name");
-    Check(rs::kConsumerCount == 9 && rs::Consumer::kCityMirror == static_cast<rs::Consumer>(7) && rs::Consumer::kRtAo == static_cast<rs::Consumer>(8), "nine consumers (the eighth, the side mirrors' city; the ninth, the ray traced occlusion)");
+    Check(rs::kConsumerCount == 10 && rs::Consumer::kCityMirror == static_cast<rs::Consumer>(7) && rs::Consumer::kRtAo == static_cast<rs::Consumer>(8), "the side mirror and AO consumer indices are preserved");
   }
 
   // =========================================================================

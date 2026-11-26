@@ -62,6 +62,7 @@ add_library(larecomp_gpu OBJECT
     frame.cpp
     gbuffer.cpp
     gi_apply.cpp
+    vpl.cpp
     gi_pixel.cpp
     gi_field.cpp
     gi_integration.cpp
@@ -543,6 +544,7 @@ target_include_directories(larecomp_rt_emitters_rules_test PRIVATE ${CMAKE_SOURC
 # The rule that joins the screen-space and the ray traced halves of the lights that bounce (gi_bounce_carrier.h, GI-BOUNCE-JOIN: who carries a light's bounce at RT off / HIGH / ULTRA, with every group switch, so each light
 # bounces exactly once; the partition of the light pass's draws; the lights-only chain's plan; given the src/gpu folder it also checks the text of the places that wire it, mutation-checked):
 #   cmake --build <dir> --target larecomp_gi_bounce_carrier_test, then run src/gpu/larecomp_gi_bounce_carrier_test <src/gpu dir> (exit 0 = passed).
+add_executable(larecomp_vpl_rules_test EXCLUDE_FROM_ALL vpl_rules_test.cpp)
 add_executable(larecomp_gi_bounce_carrier_test EXCLUDE_FROM_ALL gi_bounce_carrier_test.cpp)
 target_include_directories(larecomp_gi_bounce_carrier_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # The forward headlight stage against the deferred pass (headlight_pass_rules.h, GB-H2: the switch mcla_gpu_headlight_pass and what each route does, the retail census of the stage, the
@@ -1421,6 +1423,12 @@ larecomp_gpu_host_shader_rt(gi_pixel_trace_cs cs_6_5 DEFINES GIP_MS=0)
 larecomp_gpu_host_shader_rt(gi_pixel_trace_ms_cs cs_6_5 SOURCE gi_pixel_trace_cs DEFINES GIP_MS=1)
 # The probe field's apply (gi_apply.h, CITY-RT M3 package G3): the lookup at the occlusion's traced size and the additive apply at the picture's size, each for plain and multisampled planes (the apply also
 # without and with the upsample from the lookup's image); one source, hlsl/gi_apply_ps.hlsl.
+foreach(ms 0 1)
+    larecomp_gpu_host_shader(vpl_hit_${ms}_cs cs_6_0 SOURCE vpl DEFINES VPL_MS=${ms} HitMain=main)
+    larecomp_gpu_host_shader_rt(vpl_hit_rt_${ms}_cs cs_6_5 SOURCE vpl DEFINES VPL_MS=${ms} VPL_RAY=1 HitMain=main)
+    larecomp_gpu_host_shader(vpl_irradiance_${ms}_ps ps_6_0 SOURCE vpl DEFINES VPL_MS=${ms} IrradianceMain=main)
+    larecomp_gpu_host_shader(vpl_composite_${ms}_ps ps_6_0 SOURCE vpl DEFINES VPL_MS=${ms} CompositeMain=main)
+endforeach()
 larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)
 larecomp_gpu_host_shader(gi_apply_lookup_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=1 GIA_UP=0)
 larecomp_gpu_host_shader(gi_apply_ps ps_6_0 DEFINES GIA_PASS=1 GIA_MS=0 GIA_UP=0)

@@ -6,7 +6,7 @@
 // 0x80) and the cars' parts, and the result is
 //   a hit on the city   the library's GI mode (hlsl/city_hit_shade.hlsli CityHitShadeHit: the SAME call the probes' rays make): the average colour times the ambient, the sun with a shadow ray (the disc
 //                       jittered, the temporal stage averages it), ONE of the lamps of the world frame's grid with a shadow ray (R7: CITY_HIT_LAMP_GRID), the glow of what glows, the EMITTERS of the world frame (the
-//                       cars' neon, headlights, tail lamps, police bars: GI-BOUNCE-RT, ALL of them, the moving ones too: this pass has no history longer than a few frames; one of them with a shadow ray) and the
+//                       static lamps and parked car lights, with one shadow ray) and the
 //                       field one frame old as the second bounce (CITY_HIT_FEEDBACK);
 //   a hit on a car      a neutral diffuse in the frame's ambient and the sun (an occluder: CHECK G5-d);
 //   nothing in reach    the field's irradiance at the pixel (the long range is the field's: gi_pixel_rules.h MISS).
@@ -86,9 +86,8 @@ float3 GipFeedback(float3 viewPoint, float3 viewNormal)
 #define CITY_HIT_LAMP_GRID
 #define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)
 #define CITY_HIT_FEEDBACK(P, N) GipFeedback((P), (N))
-// GI-BOUNCE-RT: the world frame's emitters (a car's neon, headlights, tail lamps, police bars, a mod's lamps), all of them, by the light pass's own laws and with one shadow ray (the library's CityHitEmitters). They
-// replace the frame's headlights this pass took from the light manager's frame by itself (no shadow ray, and only while something else made the manager run).
-#define CITY_HIT_EMITTER_COUNT (g_world.emitterCount)
+// The same static emitter prefix as the probes. LT-6 carries the moving emitters.
+#define CITY_HIT_EMITTER_COUNT (g_world.emitterStatic)
 #define CITY_HIT_EMITTER_RADIANCE(i, P, N) RtEmitterRadiance(g_world, (i), (P), (N))
 #define CITY_HIT_EMITTER_TO(i, P) RtEmitterTo(g_world, (i), (P))
 #include "city_hit_shade.hlsli"

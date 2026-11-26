@@ -195,8 +195,6 @@ struct ColourRecipe {
     float tan_prev[2] = {};       // the last frame's tan half field of view -> lens.zw
     float gain = 1.0f;            // shape.z
     float cap_floor = 0.0f;       // shape.w: the lights' own cap floor (ssgi_lights.h LightsCap; 0 = the chain's cap alone)
-    // GI-BOUNCE-JOIN: the chain runs LIGHTS-ONLY (the probe field stands: ssgi_lights.h kFlagOnly). Independent of `on`: with no usable history the lights-only chain is black.
-    bool only = false;
   };
   Lights lights;
 };
@@ -221,9 +219,6 @@ inline AoPush ColourLevel0Push(const AoPush& base, const Frame& f, const ColourR
     push.slots2[2] |= interior_camera::kSsgiMatchColour;
     push.slots2[0] = c.sample;
     push.slots2[1] = c.matched_depth_slot;
-  }
-  if (c.lights.only) {
-    push.slots2[2] |= ssgi_lights::kFlagOnly;
   }
   if (c.lights.on) {
     // GI-BOUNCE-SS: the fields the lights' share reads (the pass reads none of them otherwise: ssgi_lights.h kFlag, hlsl/ao_color_ps.hlsl).

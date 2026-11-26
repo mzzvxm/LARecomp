@@ -132,6 +132,7 @@ enum class Consumer : uint8_t {
   kLocalLights,       // GB-H's light pass: lin_depth
   kDebugView,         // mcla_gpu_screen_view: the product the view shows (made by the setting, never by a caller)
   kRtBounce,          // the probe field's apply (gi_apply.h, CITY-RT M3 G3): lin_depth (the vehicle mark, the upsample's depth) and the camera
+  kVirtualBounce,     // moving-light landing points, from the shared depth chain
   kCount,
 };
 constexpr const char* ConsumerName(Consumer consumer) {
@@ -147,6 +148,7 @@ constexpr const char* ConsumerName(Consumer consumer) {
     case Consumer::kVolumetrics: return "volumetric light";
     case Consumer::kLocalLights: return "local lights";
     case Consumer::kDebugView: return "debug view";
+    case Consumer::kVirtualBounce: return "light bounce";
     case Consumer::kRtBounce: return "ray traced bounce light";
     case Consumer::kCount: break;
   }

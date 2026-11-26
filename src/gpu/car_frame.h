@@ -240,6 +240,7 @@ class CarFrame {
   // A user wants the frames: call it in every frame it needs one (any time in the frame); a request in frame N makes frame N+1
   // collect. Nobody asks: the per-draw call is one flag read.
   void Request() { requested_ = true; }
+  void RequestStencilCentres() { Request(); stencil_centres_requested_ = true; }
   // As Request, and the draws of the other cars too, within `limits` (Limits::On() false: no other cars). Call it in every frame it is wanted.
   // `model`: the cars the camera does not draw are also walked from their own model data (car_model_walk.h Production; Mode::kOff: not).
   // `traffic`: how many traffic and parked cars the walk takes besides the racers (car_model_walk.h Production::traffic_cars; 0: none), `wheels`: the racers' wheels are walked.
@@ -424,6 +425,8 @@ class CarFrame {
   // The frame being collected.
   car_frame_rules::IdentityTracker tracker_;
   uint32_t previous_id_ = 0;           // the player's ID in the frame before (0: none)
+  bool stencil_centres_requested_ = false;
+  bool stencil_centres_on_ = false;
   bool player_read_ = false;           // the player's vehicle was read in this frame
   car_mesh::PlayerVehicle player_;
   bool vehicles_read_ = false;         // the game's other vehicles were read in this frame (others_on_ only)

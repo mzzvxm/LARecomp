@@ -27,6 +27,7 @@
 #include "headlight_rig.h"
 #include "light_manager.h"
 #include "gi_apply.h"
+#include "vpl.h"
 #include "gi_bounce_settings.h"
 #include "capture_readback.h"
 #include "mc_engine/cinematic/capture_mode.h"
@@ -855,6 +856,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   msaa_.BeginFrame(list, temporal_ && temporal_->UpscalerNext(),
                    !temporal_ || temporal_->PathSettled(),
                    edram_->change_serial() != targets_before);
+  if (vpl_) vpl_->BeginFrame(frame_serial_);
   if (screen_) {
     screen_->BeginFrame(frame_serial_);  // the shared screen products: reads the consumers' wants and the debug view, before the AO declares its own (screen_shared.h)
   }
@@ -4202,6 +4204,11 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi, regen_modes.Bounce() ? regen_ask.jitter : nullptr);
     order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
   }
+  if (vpl_) {
+    const float field_share = gi_apply_ ? gi_apply_->AppliedFieldShare() : 0.0f;
+    const bool vpl_ran = vpl_->OnTrigger(summary, list, gbuffer_published, slot_, field_share);
+    order_.Note(frame_order::Step::kVirtualBounce, vpl_ran);
+  }
   if (local_lights_ && local_lights_->wants_draws()) {
     // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
     // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
@@ -4211,23 +4218,12 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());
     // GI-BOUNCE-SS (ssgi_lights.h, perf/GI-BOUNCE.md): the bounce light takes the light this pass adds in the NEXT frame's colour chain: the main colour is captured before the lights it carries and right after them (only in a
     // frame whose AO wanted the lights' pair; screen_shared.h CaptureLightsBefore / After), and the chain adds their difference, reprojected, to its radiance. Nothing here writes the main colour.
-    // GI-BOUNCE-JOIN (gi_bounce_carrier.h): the light pass draws the lights the probe field and the per-pixel pass carry (and the switched-off groups') OUTSIDE the pair and makes the "before" capture itself, between its
-    // two runs of draws (through the hook below); with the field not standing the pair is the whole pass, as it was.
+    // The light pass takes the first capture after drawing the car lights. The pair measures the world-light contribution.
     gi_bounce::Pair lights_pair;
     bool lights_before = false;
     const bool want_pair = screen_ && screen_->lights_wanted();
     if (want_pair) {
       lights_pair.frame.groups = gi_bounce::GroupsNow();
-      lights_pair.frame.field_stands = screen_->lights_partition() == ssgi_lights::Partition::kResidual;
-      lights_pair.frame.pixel_pass = gi_apply_ && gi_apply_->pixel_pass_ran();
-      lights_pair.listed = [this](uint64_t id) {
-        switch (rt_world_ ? rt_world_->EmitterMotionOf(id) : RtWorldFrame::EmitterMotion::kNotListed) {
-          case RtWorldFrame::EmitterMotion::kStatic: return gi_bounce::Listed::kStatic;
-          case RtWorldFrame::EmitterMotion::kMoving: return gi_bounce::Listed::kMoving;
-          case RtWorldFrame::EmitterMotion::kNotListed: break;
-        }
-        return gi_bounce::Listed::kNo;
-      };
       lights_pair.capture_before = [&]() {
         lights_before = screen_->CaptureLightsBefore(record, summary, list);
         return lights_before;
@@ -4488,7 +4484,12 @@ void Scene::CollectVisualSources(VisualSources& sources) const {
     sources.images[vis::kAo] = VisualSource::Image(ao_->CaptureAo());
     sources.images[vis::kGi] = VisualSource::Image(ao_->CaptureBounce(), 2);
   }
-  // apply writes straight into scene colour, and has no equivalent 2D target to copy.
+  if (vpl_ && vpl_->Capture()) {
+    // The GI stream carries the irradiance when the virtual pass ran.
+    sources.images[vis::kGi] = VisualSource::Image(vpl_->Capture());
+    sources.images[vis::kGi].alternate = true;
+  }
+  // The probe apply writes straight into scene colour unless it makes a lookup image.
   if (!sources.images[vis::kGi].texture && gi_apply_) {
     sources.images[vis::kGi] = VisualSource::Image(gi_apply_->CaptureLookup());
     sources.images[vis::kGi].alternate = true;
