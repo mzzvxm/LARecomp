@@ -14,6 +14,7 @@
 #include <rex/settings_registry.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <stdexcept>
@@ -183,7 +184,7 @@ toml::table ReadRegistry() {
 
 std::string ExecutableId(const fs::path& executable) {
     return std::to_string(fs::file_size(executable)) + ":" +
-           std::to_string(fs::last_write_time(executable).time_since_epoch().count());
+           std::to_string(static_cast<int64_t>(fs::last_write_time(executable).time_since_epoch().count()));
 }
 
 void Export(const fs::path& output, std::string_view exe_id) {
