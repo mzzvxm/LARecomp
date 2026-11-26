@@ -221,11 +221,11 @@ void TemporalSystem::SyncVectors() {
   }
 }
 
-void TemporalSystem::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
-                                HostPasses& passes, PassTiming& pass_timing,
+void TemporalSystem::Initialize(Device& device, FrameRing& frames, HostPasses& passes,
+                                PassTiming& pass_timing,
                                 TextureCache& textures, ResolveCache& resolve,
                                 EdramTargets& edram) {
-  motion_.Initialize(device, heap, passes, pass_timing);
+  motion_.Initialize(passes, pass_timing);
   edram_ = &edram;
   device_ = &device;
   frames_ = &frames;
@@ -322,7 +322,10 @@ bool TemporalSystem::RecordAnchorPasses(plume::RenderCommandList* list) {
       }
     }
   }
-  if (!motion_.Record(list, pending_)) {
+  const bool upscaling = frame_.upscaler != Upscaler::kOff && frame_.backend_ready;
+  const bool lean = upscaling && larecomp::settings::mcla_gpu_upscaler_inputs_lean.Get();
+  const bool verify = lean && larecomp::settings::mcla_gpu_upscaler_inputs_verify.Get();
+  if (!motion_.Record(list, pending_, upscaling, lean, verify)) {
     if (frame_.upscaler != Upscaler::kOff && frame_.backend_ready) {
       // The upscaler cannot be fed this session: the passes themselves could not be made.
       FailUpscaler("the depth and motion vector passes could not be recorded");

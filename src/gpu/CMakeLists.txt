@@ -1227,6 +1227,7 @@ larecomp_gpu_host_shader(smaa_blend_ps ps_6_0 SOURCE smaa_ps DEFINES SMAA_PASS=3
 # F4 step 1b: the temporal system's passes -- the motion vectors and the copy of the depth it keeps
 # (temporal_mv.h).
 larecomp_gpu_host_shader(temporal_mv_ps ps_6_0)
+larecomp_gpu_host_shader(temporal_mv_depth_ps ps_6_0 SOURCE temporal_mv_ps DEFINES TEMPORAL_DEPTH_MRT=1)
 larecomp_gpu_host_shader(temporal_copy_ps ps_6_0)
 # The vehicles' motion (vehicle_motion.h): a row of the table the vector pass reads; and the masks the
 # upscalers take as their reactive and transparency inputs (upscaler_masks.h).
@@ -1235,6 +1236,7 @@ larecomp_gpu_host_shader(upscaler_masks_ps ps_6_0)
 # The same masks from a coverage image with the samples of the game's depth (mcla_gpu_msaa_with_upscaler): the mean
 # of the samples' masks.
 larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DEFINES MASKS_MS=1)
+larecomp_gpu_host_shader(upscaler_masks_pair_ps ps_6_0 SOURCE upscaler_masks_ps DEFINES MASKS_PAIR=1)
 # The G-buffer's debug view (gbuffer.h, mcla_gpu_gbuffer_view): a plane of the sidecar images drawn over the main view's colour; once for planes with one
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)

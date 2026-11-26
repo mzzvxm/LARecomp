@@ -334,9 +334,67 @@ void HostPasses::RetireFramebuffer(std::unique_ptr<plume::RenderFramebuffer> fra
   }
 }
 
+bool HostMrtPair::Ensure(HostPasses& passes, const HostImage& first, const HostImage& second,
+                         const char* name) {
+  if (!first.texture || !second.texture || first.width != second.width ||
+      first.height != second.height || first.samples != 1 || second.samples != 1) {
+    return false;
+  }
+  if (framebuffer && first_serial == first.serial && second_serial == second.serial) {
+    return true;
+  }
+  Release(passes);
+  const plume::RenderTexture* colors[] = {first.texture.get(), second.texture.get()};
+  framebuffer = passes.CreateMrtFramebuffer(colors, 2, name);
+  if (!framebuffer) {
+    return false;
+  }
+  first_serial = first.serial;
+  second_serial = second.serial;
+  return true;
+}
+
+void HostMrtPair::Release(HostPasses& passes) {
+  passes.RetireFramebuffer(std::move(framebuffer));
+  first_serial = second_serial = 0;
+}
+
+void HostPasses::DrawMrtPair(plume::RenderCommandList& list, const plume::RenderFramebuffer& framebuffer,
+                            HostImage& first, HostImage& second,
+                            const plume::RenderPipeline& pipeline, const void* push,
+                            uint32_t push_size, const plume::RenderPipelineLayout* layout) const {
+  using Layout = plume::RenderTextureLayout;
+  const bool clear_first = first.layout == Layout::UNKNOWN;
+  const bool clear_second = second.layout == Layout::UNKNOWN;
+  const plume::RenderTextureBarrier writes[] = {{first.texture.get(), Layout::COLOR_WRITE},
+                                                {second.texture.get(), Layout::COLOR_WRITE}};
+  list.barriers(plume::RenderBarrierStage::GRAPHICS, writes, 2);
+  list.setFramebuffer(&framebuffer);
+  if (clear_first) {
+    list.clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  }
+  if (clear_second) {
+    list.clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  }
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(first.width), float(first.height)};
+  const plume::RenderRect scissor(0, 0, int32_t(first.width), int32_t(first.height));
+  list.setViewports(&viewport, 1);
+  list.setScissors(&scissor, 1);
+  Bind(&list, layout);
+  list.setPipeline(&pipeline);
+  list.setGraphicsPushConstants(0, push, 0, push_size);
+  list.drawInstanced(3, 1, 0, 0);
+  list.setFramebuffer(nullptr);
+  const plume::RenderTextureBarrier reads[] = {{first.texture.get(), Layout::SHADER_READ},
+                                               {second.texture.get(), Layout::SHADER_READ}};
+  list.barriers(plume::RenderBarrierStage::GRAPHICS, reads, 2);
+  first.layout = second.layout = Layout::SHADER_READ;
+}
+
 void HostPasses::DrawInto(plume::RenderCommandList* list, HostImage& image,
                           const plume::RenderPipeline* pipeline, const void* push,
-                          uint32_t push_size, bool clear) const {
+                          uint32_t push_size, bool clear,
+                          const plume::RenderPipelineLayout* layout) const {
   // A new colour target from a heap made without zeroing is cleared before
   // anything else uses it, even when the draw covers it whole (D3D12 debug
   // layer id 1422, as the EDRAM targets).
@@ -355,7 +413,7 @@ void HostPasses::DrawInto(plume::RenderCommandList* list, HostImage& image,
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(0, 0, int32_t(image.width), int32_t(image.height));
   list->setScissors(&scissor, 1);
-  Bind(list);
+  Bind(list, layout);
   list->setPipeline(pipeline);
   list->setGraphicsPushConstants(0, push, 0, push_size);
   list->drawInstanced(3, 1, 0, 0);

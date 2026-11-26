@@ -74,6 +74,19 @@ struct HostImage {
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
 };
 
+class HostPasses;
+
+// A framebuffer that follows two HostImages across resize and retirement.
+struct HostMrtPair {
+  bool Ensure(HostPasses& passes, const HostImage& first, const HostImage& second,
+              const char* name);
+  void Release(HostPasses& passes);
+
+  std::unique_ptr<plume::RenderFramebuffer> framebuffer;
+  uint64_t first_serial = 0;
+  uint64_t second_serial = 0;
+};
+
 class HostPasses {
  public:
   // 32 bytes held every pass's constants until the HDR10 output (hdr.h) added the four values
@@ -204,7 +217,12 @@ class HostPasses {
   // readable by the next pass.
   void DrawInto(plume::RenderCommandList* list, HostImage& image,
                 const plume::RenderPipeline* pipeline, const void* push, uint32_t push_size,
-                bool clear = false) const;
+                bool clear = false, const plume::RenderPipelineLayout* layout = nullptr) const;
+  // Like DrawInto, with both images at the same extent and attached in this order.
+  void DrawMrtPair(plume::RenderCommandList& list, const plume::RenderFramebuffer& framebuffer,
+                   HostImage& first, HostImage& second, const plume::RenderPipeline& pipeline,
+                   const void* push, uint32_t push_size,
+                   const plume::RenderPipelineLayout* layout = nullptr) const;
   // RT-PARKED-PAINT: `count` more draws of the full-screen triangle into an image that already holds a pass's result (never cleared here), one render pass, each with the scissor
   // rects[i] and the push block pushes + i * push_size: a pass that writes only some texels of a rectangle (its pixel shader discards the rest) and leaves the others as they were.
   // Leaves the image readable like DrawInto. No call for count 0.

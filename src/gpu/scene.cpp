@@ -1203,10 +1203,11 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
 
 // CHECK: the cost of the render pass switches (the game's framebuffer, the coverage image's own for the
 // layer's first clear, the coverage image with the game's depth, the game's again) a second draw makes
-// on Vulkan, on a card with little power, in a frame with hundreds of particle draws (PassTiming marks
-// "upscaler mask draws"); consecutive second draws could be batched behind the last of a run of
+// on Vulkan, on a card with little power, in a frame with hundreds of particle draws. PassTiming
+// separates the identified rain shaders; consecutive second draws could be batched behind the last of a run of
 // draws of the families if it shows.
-void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list) {
+void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list,
+                               uint64_t ps_identity) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUpscalerMask);
   UpscalerMasks& masks = temporal_->masks();
   const UpscalerMasks::Layer layer = UpscalerMasks::LayerOf(d.mask_kind);
@@ -1234,10 +1235,9 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
     masks.Skipped(UpscalerMasks::Skip::kNoImage);
     return;
   }
-  pass_timing_->Mark(list, "upscaler mask draws");
-  // The layout change and the frame's first clear happen outside the game's render pass (the first
-  // draw of a frame: the image was left readable by the last frame's pass), with the image's own
-  // framebuffer.
+  pass_timing_->Mark(list, UpscalerMasks::IsRainShader(ps_identity) ? "upscaler rain mask draws"
+                                                                  : "upscaler mask draws");
+  // The layout change happens outside the game's render pass.
   if (image->layout != plume::RenderTextureLayout::COLOR_WRITE) {
     list->setFramebuffer(nullptr);
     list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -1248,7 +1248,11 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
   if (clear) {
     // No coverage anywhere: the layer's first draw of the frame, or a new image (a new colour target
     // is also initialised before it is drawn into, D3D12 debug layer id 1422).
-    list->setFramebuffer(image->framebuffer.get());
+    // CHECK: clear only color in the depth-attached framebuffer, which fits the whole coverage
+    // image. Compare the depth/stencil attachments and mask coverage before and after this change.
+    list->setFramebuffer(larecomp::settings::mcla_gpu_upscaler_inputs_lean.Get()
+                             ? framebuffer
+                             : image->framebuffer.get());
     list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
   }
   list->setFramebuffer(framebuffer);
@@ -1519,7 +1523,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list, bool 
           RecordHdrDuplicate(d, list);
         }
         if (d.mask_pipeline) {
-          RecordUpscalerMask(d, list);
+          RecordUpscalerMask(d, list, r.ps_identity);
         }
       }
     }

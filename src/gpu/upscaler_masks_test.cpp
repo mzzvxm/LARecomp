@@ -6,6 +6,7 @@
 //   cmake --build <build dir> --target larecomp_upscaler_masks_test     (src/gpu/CMakeLists.txt)
 //   <build dir>/src/gpu/larecomp_upscaler_masks_test
 
+#include <bit>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -132,6 +133,70 @@ void TestMask() {
   }
 }
 
+void TestResolvePlan() {
+  for (uint32_t draws = 0; draws < 4; ++draws) {
+    for (uint32_t sizes = 0; sizes < 4; ++sizes) {
+      for (uint32_t forced = 0; forced < 4; ++forced) {
+        const uint32_t expected = (draws & sizes) | forced;
+        bool resolves[2];
+        for (uint32_t layer = 0; layer < 2; ++layer) {
+          const uint32_t bit = 1u << layer;
+          const auto source = SourceFor((draws & bit) != 0, (sizes & bit) != 0,
+                                        (forced & bit) != 0);
+          resolves[layer] = Resolves(source);
+          Check(resolves[layer] == ((expected & bit) != 0), "resolve only a valid layer");
+          Check((source == ResolveSource::kOnes) == ((forced & bit) != 0),
+                "the diagnostic overrides coverage and size");
+          Check((source == ResolveSource::kWrongSize) ==
+                    ((draws & ~sizes & ~forced & bit) != 0),
+                "a drawn layer of the wrong size is rejected");
+        }
+        Check(FuseResolves(true, resolves[0], resolves[1]) == (expected == 3),
+              "MRT only when both layers resolve");
+        Check(!FuseResolves(false, resolves[0], resolves[1]), "A/B off uses separate resolves");
+      }
+    }
+  }
+}
+
+void TestPairArithmetic() {
+  // The dual resolve has independent inputs, including different sample counts on a transition or
+  // when one layer is forced. Compare the pair with the old single-layer formula bit for bit.
+  const Layers reactive[8] = {{0.9f, 0.1f, 0.3f, 0.1f}, {0.1f, 0.8f, 0.0f, 0.1f},
+                              {}, {}, {0.3f, 0.1f, 0.85f, 0.2f}};
+  const Layers transparency[8] = {{0.1f, 0.2f, 0.0f, 0.15f}, {0.3f, 0.1f, 0.2f, 0.3f},
+                                  {}, {}, {0.1f, 0.4f, 0.0f, 0.2f}};
+  const auto separate = [](const Layers* samples, uint32_t count, float gain) {
+    if (count == 0) {
+      return 1.0f;
+    }
+    float sum = 0.0f;
+    for (uint32_t i = 0; i < count; ++i) {
+      const Layers& l = samples[i];
+      sum += std::clamp(std::max({l.a * gain, l.r, l.g, l.b}), 0.0f, 1.0f);
+    }
+    return sum / float(count);
+  };
+  for (uint32_t r : {0u, 1u, 2u, 4u, 8u}) {
+    for (uint32_t t : {0u, 1u, 2u, 4u, 8u}) {
+      const float first = r ? MeanMask(reactive, r, kReactiveGain, kAddedLightGain) : 1.0f;
+      const float second =
+          t ? MeanMask(transparency, t, kTransparencyGain, kAddedLightGain) : 1.0f;
+      Check(std::bit_cast<uint32_t>(first) ==
+                std::bit_cast<uint32_t>(separate(reactive, r, kReactiveGain)),
+            "reactive target keeps its own arithmetic");
+      Check(std::bit_cast<uint32_t>(second) ==
+                std::bit_cast<uint32_t>(separate(transparency, t, kTransparencyGain)),
+            "transparency target keeps its own arithmetic");
+    }
+  }
+  // Recording only each draw's brightest channel loses the order of max and sum. Two additions
+  // in different channels are a concrete counterexample to packing one scalar per coverage layer.
+  const Layers channel_sum{0.6f, 0.6f, 0.0f, 0.0f};
+  Check(MaskOf(channel_sum, 1.0f, 1.0f) == 0.6f && Saturate(0.6f + 0.6f) == 1.0f,
+        "independent RGB sums cannot be replaced with a sum of per-draw maxima");
+}
+
 }  // namespace
 
 // How the mask images are stored: 8 bits on D3D12, half floats on Vulkan (Streamline's Vulkan back end has no format of its own for R8_UNORM and logs "Cannot have undefined format" four times a frame
@@ -152,6 +217,8 @@ void TestStorage() {
 int main() {
   TestViews();
   TestMask();
+  TestResolvePlan();
+  TestPairArithmetic();
   TestStorage();
   if (g_failed != 0) {
     std::printf("upscaler masks: %d of %d checks FAILED\n", g_failed, g_checks);

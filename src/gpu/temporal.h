@@ -391,7 +391,7 @@ class TemporalSystem {
   // `textures` and `resolve`: the stand-in for the scene colour and the product it replaces.
   // Probes the upscaler backend (a worker thread; nothing on this one). `edram`: the scene's
   // targets, whose scale a change of path moves.
-  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes,
+  void Initialize(Device& device, FrameRing& frames, HostPasses& passes,
                   PassTiming& pass_timing, TextureCache& textures, ResolveCache& resolve,
                   EdramTargets& edram);
   // GPU idle, before HostPasses and the BindlessHeap shut down.

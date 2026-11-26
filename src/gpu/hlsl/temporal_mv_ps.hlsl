@@ -49,13 +49,10 @@ struct MotionPush {
 ConstantBuffer<MotionPush> g_push : register(b0, space4);
 #endif
 
-float4 main(float4 position : SV_Position) : SV_Target {
+float2 MotionAt(int3 at, float depth) {
   if (g_push.mode == 2u) {
-    return float4(0.0f, 0.0f, 0.0f, 0.0f);
+    return float2(0.0f, 0.0f);
   }
-  const int3 at = int3(int2(position.xy), 0);
-  // The texture index may carry the gamma bit (bit 31): not an index.
-  const float depth = g_textures[g_push.depth & 0x7FFFFFFFu].Load(at).x;
   const float2 pos = float2(at.xy) + 0.5f - g_push.jitter;
   const float4 clip = float4(2.0f * pos.x / g_push.size.x - 1.0f, 1.0f - 2.0f * pos.y / g_push.size.y,
                              1.0f - depth, 1.0f);
@@ -93,6 +90,33 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   // Clamped to the frame.
-  mv = clamp(mv, -g_push.size, g_push.size);
-  return float4(mv, 0.0f, 0.0f);
+  return clamp(mv, -g_push.size, g_push.size);
 }
+
+float LoadDepth(int3 at) {
+  return g_textures[g_push.depth & 0x7FFFFFFFu].Load(at).x;
+}
+
+#if TEMPORAL_DEPTH_MRT
+struct Outputs {
+  float2 motion : SV_Target0;
+  float depth : SV_Target1;
+};
+
+Outputs main(float4 position : SV_Position) {
+  const int3 at = int3(int2(position.xy), 0);
+  Outputs out_px;
+  // A reset zeros the motion, but still publishes this frame's depth.
+  out_px.depth = LoadDepth(at);
+  out_px.motion = MotionAt(at, out_px.depth);
+  return out_px;
+}
+#else
+float2 main(float4 position : SV_Position) : SV_Target {
+  if (g_push.mode == 2u) {
+    return float2(0.0f, 0.0f);
+  }
+  const int3 at = int3(int2(position.xy), 0);
+  return MotionAt(at, LoadDepth(at));
+}
+#endif

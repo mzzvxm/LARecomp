@@ -3579,6 +3579,28 @@
   ],
   "pp_depth": 0
  },
+ "mcla_gpu_upscaler_inputs_lean": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Combine the upscaler's depth and motion passes and resolve both masks together when present. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_upscaler_inputs_verify": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Record separate and combined upscaler input passes in the same frame for GPU capture. The combined passes write last. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_upscaler_masks": {
   "type": "bool",
   "default": "true",
