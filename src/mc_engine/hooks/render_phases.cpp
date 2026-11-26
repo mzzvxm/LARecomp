@@ -145,11 +145,7 @@ thread_local bool g_map_scope = false;
 bool GuestPointer(uint32_t p) { return p >= 0x10000u && p < 0xE0000000u; }
 
 uint32_t ViewWorld(const uint8_t* base) {
-    const uint32_t pause = ReadGuestU32(base, 0x828CCEA0u);  // Game_IsPaused
-    const bool paused = GuestPointer(pause) && base[pause + 4] != 0 && base[pause + 10] == 0;
-    // sub_822C0320 tests the HUD manager's photo-mode byte.
-    const uint32_t hud = ReadGuestU32(base, 0x8286D8D4u);
-    const bool photo = GuestPointer(hud) && base[hud + 0x51380u] != 0;
+    const GuestMenuView menu = ReadGuestMenuView(base);
     // mcCineScript::IsScenePlaying: a live script or an active director handover.
     const uint32_t cine = ReadGuestU32(base, 0x8286D8F0u);
     const uint32_t director = ReadGuestU32(base, 0x8286D8E8u);
@@ -157,7 +153,7 @@ uint32_t ViewWorld(const uint8_t* base) {
     const bool cinematic = GuestPointer(cine) &&
         (base[cine + 288] != 0 || (GuestPointer(handover) && ReadGuestF32(base, handover + 120) >= 0.0f));
     const bool garage = mcla::gpu::menu_world::GarageLighting();
-    return uint32_t(paused) | (uint32_t(photo) << 1) | (uint32_t(garage) << 2) |
+    return uint32_t(menu.paused) | (uint32_t(menu.photo) << 1) | (uint32_t(garage) << 2) |
            (uint32_t(cinematic) << 3);
 }
 }  // namespace

@@ -37,8 +37,8 @@ void PlanChecks() {
   f.range = 120.0f;
   Check(rtao::Decide(f).why == kNotWanted && rtao::Decide(f).screen_pass, "identity precedes all fallback reasons");
   f.wanted = true;
-  Check(rtao::Decide(f).why == kNotPlayView, "non-play view precedes pipelines");
-  f.play_view = true;
+  Check(rtao::Decide(f).why == kUnsupportedView, "an unsupported view precedes pipelines");
+  f.view_supported = true;
   Check(rtao::Decide(f).why == kPipelineNotReady, "pipeline precedes TLAS");
   f.pipelines = true;
   Check(rtao::Decide(f).why == kNoTopLevel, "TLAS precedes city");

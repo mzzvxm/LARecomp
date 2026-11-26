@@ -869,21 +869,35 @@ gb::CameraAxes MakeAxes(float yaw_degrees) {
 void PauseAndCameraChecks() {
   using gb::Why;
   using gb::PauseFxView;
-  Check(gb::PauseFxViewOf(false, "PHOTOALBUMMOVIE", false) == PauseFxView::kNone, "off refuses photo mode");
-  Check(gb::PauseFxViewOf(true, "PHOTOALBUMMOVIE", false) == PauseFxView::kPhoto, "photo movie");
-  Check(gb::PauseFxViewOf(true, "PAUSEMOVIE", false) == PauseFxView::kPause, "pause movie");
-  Check(gb::PauseFxViewOf(true, "PAUSEMOVIE", true) == PauseFxView::kNone, "garage lighting excludes the garage during a movie transition");
-  Check(gb::PauseFxViewOf(true, "GARAGEMOVIE", false) == PauseFxView::kNone &&
-        gb::PauseFxViewOf(true, "NAVSYSMOVIE", false) == PauseFxView::kNone &&
-        gb::PauseFxViewOf(true, "", false) == PauseFxView::kNone, "garage, map and unknown movies are excluded");
-  Check(gb::PauseFxViewOf(false, "GARAGEMOVIE", true, true) == PauseFxView::kGarage, "the garage has an independent switch");
-  Check(gb::PauseFxViewOf(true, "GARAGEMOVIE", true, false) == PauseFxView::kNone, "the garage off-ramp does not fall through to pause FX");
-  Check(gb::PauseFxViewOf(true, "PAUSEMOVIE", true, true) == PauseFxView::kGarage &&
-        gb::PauseFxViewOf(false, "POPUPMOVIE", true, true) == PauseFxView::kGarage,
+  using gb::MenuState;
+  using gb::MenuStateOf;
+  Check(gb::PauseFxViewOf(false, MenuState::kPhoto, false) == PauseFxView::kNone, "off refuses photo mode");
+  Check(gb::PauseFxViewOf(true, MenuState::kPhoto, false) == PauseFxView::kPhoto, "active photo camera");
+  Check(gb::PauseFxViewOf(true, MenuState::kPause, false) == PauseFxView::kPause, "pause movie");
+  Check(gb::PauseFxViewOf(true, MenuState::kPause, true) == PauseFxView::kNone, "garage lighting excludes the garage during a movie transition");
+  Check(gb::PauseFxViewOf(true, MenuState::kMap, false) == PauseFxView::kNone &&
+        gb::PauseFxViewOf(true, MenuState::kNone, false) == PauseFxView::kNone, "the map and unrelated menus have no city sidecar");
+  Check(gb::PauseFxViewOf(false, MenuState::kNone, true, true) == PauseFxView::kGarage, "the garage has an independent switch");
+  Check(gb::PauseFxViewOf(true, MenuState::kNone, true, false) == PauseFxView::kNone, "the garage off-ramp does not fall through to pause FX");
+  Check(gb::PauseFxViewOf(true, MenuState::kPause, true, true) == PauseFxView::kGarage &&
+        gb::PauseFxViewOf(false, MenuState::kNone, true, true) == PauseFxView::kGarage,
         "the lighting state identifies the garage through menu changes");
-  Check(gb::PauseFxViewOf(true, "NAVSYSMOVIE", true, true) == PauseFxView::kNone &&
-        gb::PauseFxViewOf(true, "GARAGEMOVIE", false, true) == PauseFxView::kNone,
+  Check(gb::PauseFxViewOf(true, MenuState::kMap, true, true) == PauseFxView::kNone &&
+        gb::PauseFxViewOf(true, MenuState::kNone, false, true) == PauseFxView::kNone,
         "the map and a stale garage movie cannot open a garage sidecar");
+  Check(MenuStateOf("POPUPMOVIE", true, false) == MenuState::kPause, "a dialog retains the paused city");
+  Check(MenuStateOf("", true, false) == MenuState::kPause, "a paused city does not need a movie");
+  Check(MenuStateOf("PAUSEMOVIE", false, false) == MenuState::kPause, "the pause movie covers entry");
+  Check(MenuStateOf("", true, true) == MenuState::kPhoto, "photo survives hidden UI");
+  Check(MenuStateOf("POPUPMOVIE", false, true) == MenuState::kPhoto, "photo survives a capture dialog");
+  Check(MenuStateOf("PHOTOALBUMMOVIE", false, false) == MenuState::kNone, "the gallery movie alone is not photo mode");
+  Check(MenuStateOf("PROMPTMOVIE", false, false) == MenuState::kNone, "the title follows its main render targets");
+  Check(MenuStateOf("NAVSYSMOVIE", true, true) == MenuState::kMap, "map excludes other city hints");
+  Check(gb::SupportsCityEffects(false, PauseFxView::kNone), "ordinary main views can use the city trace");
+  Check(gb::SupportsCityEffects(true, PauseFxView::kPause), "pause can use the city trace with its sidecar");
+  Check(gb::SupportsCityEffects(true, PauseFxView::kPhoto), "photo can use the city trace with its sidecar");
+  Check(!gb::SupportsCityEffects(true, PauseFxView::kNone), "no city trace for a map or an unpublished sidecar");
+  Check(!gb::SupportsCityEffects(true, PauseFxView::kGarage), "no outdoor city trace in the garage");
   for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto, PauseFxView::kGarage}) {
     Check(gb::MatchesPauseFxView(true, view) && !gb::MatchesPauseFxView(false, view),
           "a published pause/photo sidecar belongs to the four-sample view");

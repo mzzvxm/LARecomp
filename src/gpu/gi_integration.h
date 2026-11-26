@@ -6,18 +6,17 @@
 //
 //   BeginFrame(frame)   at the scene's frame start, BEFORE GiApply::BeginFrame (which reads GiField::running() to make its wants): reads the setting (gi_setting.h Current: the word, the class, the ray tracing tier,
 //                       the gate), tells gi_setting.h whether the field replaced the screen-space bounce light in the last frame (the BOUNCE LIGHT row's "(REPLACED)"), and starts the field's frame with
-//                       its Inputs: the rung and level, whether the world is the play view's, the camera and the light of the last trigger, M1's safe range, the bounce light level's strength, the probes' feedback.
+//                       its inputs: the rung and level, outdoor city eligibility, the camera and light of the last trigger, M1's safe range, the bounce light level's strength and the probes' feedback.
 //   OnResolve(...)      at the mid-scene depth copy, the FIRST copy of the main view's depth in a frame, BEFORE the occlusion's OnResolve (which asks GiApply::TakeSsgiShare while it plans): notes the world
 //                       the frame is in and latches the pose and the light for the next BeginFrame, then, while the field runs, RecordMaintenance, the probe update (G2: SetUpdate), RecordFinish: the order
 //                       the field's header fixes. The field is published before the occlusion plans, so the occlusion knows whether the screen-space bounce light may be skipped.
 //
 // WHERE THE SCREEN-SPACE BOUNCE LIGHT GOES (the crossfade and the fallback; the rules are G3's, gi_apply_rules.h SsgiShareFor / FieldShare): it runs whole where there is no field (the setting is off,
-// the card cannot trace, the world is the pause menu's, the garage's or the map's, M1 has no structures standing: safe range 0), at (1 - fade) while the field fades in (0.4 s after it is ready: the
+// the card cannot trace, the view lacks the outdoor city inputs or M1 has no structures standing: safe range 0), at (1 - fade) while the field fades in (0.4 s after it is ready: the
 // finest cascade mostly traced; a cut makes it start again) and out (0.5 s where the world stops being usable), and not at all once the field stands. This class adds the two things that decision needs and G3
 // could not know:
-//   * THE WORLD. The field exists only in the play view: the main view's depth at the game view's samples (2, or 1 with no MSAA), seen at the last trigger and not more than a few frames ago; the pause menu's,
-//     the race pause's, the garage's and the map's world are the 4 sample identity (temporal_identities.h kPauseSamples), where SSGI runs as before (menu_world.h).
-//   * THE WATCHDOG. A field that stands but cannot draw its light (GiApply::Starved: no G-buffer planes in a cutscene, no pipeline, no camera) must not leave the picture without any bounce light: the field is idled
+//   * THE WORLD. Play, pause and photo can use the field. The current view must have a published normal and albedo before the field takes any of the bounce share.
+//   * THE WATCHDOG. A field that stands but cannot draw its light (GiApply::Starved: no pipeline or camera) must not leave the picture without any bounce light: the field is idled
 //     for kStarvedHoldFrames (it fades out, the screen-space bounce light crossfades back) and tried again after.
 //
 // THE PROBE UPDATE (G2) IS A SEAM: SetUpdate gives the integration the function that traces and blends (it is called between RecordMaintenance and RecordFinish, with the update's frame), and says the update
@@ -30,11 +29,11 @@
 //
 // CHECK (nothing here was run: no build, no game):
 //   G4a  the first frame's order: GiField::BeginFrame, GiApply::BeginFrame, then the trigger's RecordMaintenance / RecordFinish before the occlusion's OnResolve: Scene::BeginFrame and OnResolve have the calls
-//   G4b  the trigger is the first depth copy of the MAIN view's depth in a frame (temporal::MainDepthSamples of the source's key != 0), the same copy the occlusion's Judge qualifies; a frame with no such copy has no field
+//   G4b  the trigger is the shared mid-scene depth copy (ScreenShared::IsTrigger), the same copy the occlusion's Judge qualifies; a frame with no such copy has no field
 //        (the occlusion would not have run either)
 //   G4c  the camera and the light are the last trigger's (AmbientOcclusion::TriggerViewInverse, FrameLight): the field's windows follow the camera one frame late, which the cascades' 2 to 16 m cells never show
 //   G4d  GiField::Inputs' ambient_down is the same registers as ambient_up (PS c26): the car hit's frame rows have a c57 sky colour that this branch does not read; only the apply's baseline reads the up colour
-//   G4e  the game's cutscenes: the G-buffer has no planes there, so the watchdog is what brings SSGI back after 8 frames; if the cutscene's first frames show no bounce light, world_ok can read the G-buffer
+//   G4e  confirm SSGI holds its full share on cutscene frames where the G-buffer has no planes.
 //   G4f  a camera cut the game asked for (the trailer toolkit's shots: Scene::NoteAnchorCut, cut_request.h) is a teleport for the field (NoteRequestedCut, Inputs::cut = kTeleport on the next frame's start: every
 //        probe and the pixel pass's history start again, whatever the camera's step); any other jump is a cut by the camera's step only (GiField::Move, 200 m, by design: the probes are fixed to the world, a jump under
 //        200 m moves the windows and keeps the data that is still in them). A time of day jump (the Director's hour, a mission start's, a skip) is a relight: world_clock.h counts the hour's jumps
@@ -52,6 +51,7 @@
 
 #include "gi_field.h"
 #include "gi_setting.h"
+#include "pause_world_fx.h"
 #include "resolve.h"
 
 namespace mcla::gpu {
@@ -62,7 +62,7 @@ class GiApply;
 
 class GiIntegration {
  public:
-  // A field this many frames after the last trigger that saw the play view is not usable (a loading screen, a menu with no 3D view): the trigger comes once a guest frame.
+  // A field this many frames past the last city depth copy expires, including on loading screens.
   static constexpr uint64_t kWorldStaleFrames = 4;
   // After the watchdog (GiApply::Starved) the field idles for this many frames (4 s at 60) and is tried again.
   static constexpr uint64_t kStarvedHoldFrames = 240;
@@ -81,14 +81,14 @@ class GiIntegration {
 
   // Scene::BeginFrame, before GiApply::BeginFrame. `frame` is the scene's frame serial.
   void BeginFrame(uint64_t frame);
-  // Scene::OnResolve, for every resolve, before the occlusion's OnResolve. True when the field's frame was recorded (the caller's list state is gone then, as for the other passes).
-  bool OnResolve(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t frame_slot);
+  // Scene::OnResolve, at the main depth copy before AO. Publish only when the current view can apply the result.
+  bool OnResolve(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t frame_slot,
+                 gbuffer::PauseFxView view, bool has_planes);
 
   // Scene, at the anchor draw: the game asked for a camera cut at this frame (cut_request.h). The next BeginFrame hands the field a teleport (GiField::Inputs::cut), once.
   void NoteRequestedCut() { cut_pending_ = true; }
 
   // What the frame knows (for the tests of the order and the log).
-  bool world_play() const { return world_play_; }
   bool idle_by_watchdog(uint64_t frame) const { return frame < idle_until_; }
 
  private:
@@ -105,11 +105,11 @@ class GiIntegration {
   uint64_t frame_ = 0;
   uint64_t trigger_frame_ = 0;       // the last frame whose trigger was seen (once a frame)
   uint64_t world_frame_ = 0;         // ... and the frame the last main view depth copy was seen in
-  bool world_play_ = false;          // ... and it was the play view's (not the 4 sample pause / garage / map identity)
+  bool city_view_ = false;
   uint64_t idle_until_ = 0;          // the watchdog's hold: no field before this frame
   uint64_t watchdog_trips_ = 0;
   bool cut_pending_ = false;         // the game asked for a camera cut at the last anchor: the next frame's Inputs say so (once)
-  gi_field::RelightDetector relight_;  // the clock's hour jumps and the sun's steps, per play view trigger (LatchPoseAndLight)
+  gi_field::RelightDetector relight_;  // the clock's hour jumps and the sun's steps in the outdoor city
   bool relight_pending_ = false;     // the clock and the light both saw an hour jump: the next frame's Inputs say so (kept until a frame with a world, then spent)
 
   // The last trigger's camera and light (the next frame's Inputs).

@@ -159,13 +159,13 @@ bool RtAo::PipelineReady(bool ms) {
   return !failed_[variant];
 }
 
-void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool play_view) {
+void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool view_supported) {
   plan_ = {};
   shared_ = false;
   raw_ = false;
   selected_ = decision.rt;
-  play_view_ = play_view;
-  wanted_ = selected_ && play_view;
+  view_supported_ = view_supported;
+  wanted_ = selected_ && view_supported;
   if (selected_) {
     const auto legacy_rung = decision.rung == gpu_class::RtTier::kNone ? gpu_class::RtTier::kWeak : decision.rung;
     budget_ = rtao::BudgetFor(legacy_rung);
@@ -214,7 +214,7 @@ rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bo
   cabin_screen_ = rtao::ScreenCabin(interior_policy_, interior, cabin_closed_);
   rtao::PlanInputs facts;
   facts.wanted = selected_;
-  facts.play_view = play_view_;
+  facts.view_supported = view_supported_;
   facts.cabin_screen = cabin_screen_;
   facts.bounce_light = bounce_light_on;
   facts.screen = screen_;
@@ -235,7 +235,7 @@ rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bo
   if (rtao::UseQuarterAt4k(settings::mcla_gpu_rtao_quarter_at_4k.Get(), in.render[1], scale_ == 0, raw_, in.interior)) {
     facts.scale = 4;
   }
-  if (facts.wanted && facts.play_view && available()) {
+  if (facts.wanted && facts.view_supported && available()) {
     const bool trace_ready = PipelineReady(in.stencil_ms);
     const bool compose_ready = compose_->available();
     if (raw_)

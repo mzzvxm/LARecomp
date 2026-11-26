@@ -70,14 +70,14 @@ inline car_rt_ao::Rect BoxPixelRect(const car_rt_ao::Box& box, float margin, flo
 }
 
 enum class Fallback : uint8_t {
-  kNone, kNotWanted, kNotPlayView, kPipelineNotReady, kNoTopLevel, kNoCity, kImagesFailed,
+  kNone, kNotWanted, kUnsupportedView, kPipelineNotReady, kNoTopLevel, kNoCity, kImagesFailed,
 };
 
 constexpr const char* FallbackText(Fallback why) {
   switch (why) {
     case Fallback::kNone: return "none";
     case Fallback::kNotWanted: return "not wanted";
-    case Fallback::kNotPlayView: return "not the play view";
+    case Fallback::kUnsupportedView: return "the view has no outdoor city inputs";
     case Fallback::kPipelineNotReady: return "pipeline not ready";
     case Fallback::kNoTopLevel: return "no top level";
     case Fallback::kNoCity: return "no city";
@@ -120,7 +120,7 @@ constexpr bool KeepHistory(bool previous_ours, bool consecutive, bool same_size,
 }
 
 struct PlanInputs {
-  bool wanted = false, play_view = false, pipelines = false, top_level = false, city = false, images = false;
+  bool wanted = false, view_supported = false, pipelines = false, top_level = false, city = false, images = false;
   bool cabin_screen = false, raw = false, bounce_light = false;
   Screen screen = Screen::kAuto;
   Budget budget = {};
@@ -141,14 +141,14 @@ struct Plan {
 inline Plan Decide(const PlanInputs& in) {
   Plan plan;
   if (!in.wanted) plan.why = Fallback::kNotWanted;
-  else if (!in.play_view) plan.why = Fallback::kNotPlayView;
+  else if (!in.view_supported) plan.why = Fallback::kUnsupportedView;
   else if (!in.pipelines) plan.why = Fallback::kPipelineNotReady;
   else if (!in.top_level) plan.why = Fallback::kNoTopLevel;
   else if (!in.city) plan.why = Fallback::kNoCity;
   else if (!in.images) plan.why = Fallback::kImagesFailed;
   else plan.why = Fallback::kNone;
   plan.on = plan.why == Fallback::kNone;
-  plan.screen_pass = in.bounce_light || plan.why == Fallback::kNotWanted || plan.why == Fallback::kNotPlayView ||
+  plan.screen_pass = in.bounce_light || plan.why == Fallback::kNotWanted || plan.why == Fallback::kUnsupportedView ||
                      ScreenPassInPlay(in.screen, plan.on, in.cabin_screen);
   if (plan.on) {
     plan.raw = in.raw;

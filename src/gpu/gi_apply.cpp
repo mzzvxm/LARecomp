@@ -359,7 +359,10 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
 
   // The camera: the lens and the projection's depth rows from the shared products' camera, the pose from the occlusion's trigger pose where it trusts the vertex constants, else the last frame's.
   const screen::ScreenFrame& sf = screen_->Frame();
-  if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial || (sf.flags & screen::kFramePause) != 0 || !(sf.camera.tan_half_fov[0] > 0.0f) ||
+  const bool pause = (sf.flags & screen::kFramePause) != 0;
+  const auto view = gbuffer_->published_pause_fx();
+  if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial ||
+      !gbuffer::MatchesPauseFxView(pause, view) || !gbuffer::SupportsCityEffects(pause, view) || !(sf.camera.tan_half_fov[0] > 0.0f) ||
       !(sf.camera.tan_half_fov[1] > 0.0f) || !sf.Has(screen::kLinDepth) || sf.lin_depth_slot[0] == screen::kNoSlot || sf.traced[0] == 0 || sf.traced[1] == 0 || sf.render[0] == 0 || sf.render[1] == 0) {
     Count(ga::Skip::kNoCamera);
     return false;

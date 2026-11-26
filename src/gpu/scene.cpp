@@ -16,7 +16,6 @@
 #endif
 
 #include "settings/larecomp_settings.h"
-#include "mc_engine/keyboard_native.h"
 #include <rex/xenos/texture.h>
 #include <rex/logging/log_category.h>
 
@@ -840,11 +839,8 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   const bool pause_world_fx = larecomp::settings::mcla_gpu_pause_world_fx.Get();
   const bool garage_fx = larecomp::settings::mcla_gpu_garage_fx.Get();
   const bool menu_atmosphere = larecomp::settings::mcla_gpu_atmosphere_menu_views.Get();
-  char movie[32]{};
-  if (pause_world_fx || (garage_fx && garage_lighting) || (menu_atmosphere && (shafts_ || vol_))) {
-    larecomp::keyboard::CurrentMovieName(movie, sizeof(movie));
-  }
-  const auto pause_fx_candidate = gbuffer::PauseFxViewOf(pause_world_fx, movie, garage_lighting, garage_fx);
+  const auto menu = larecomp::keyboard::CurrentMenuState();
+  const auto pause_fx_candidate = gbuffer::PauseFxViewOf(pause_world_fx, menu, garage_lighting, garage_fx);
   headlight_rig::SampleRoute(local_lights_ != nullptr && local_lights_->SampleRtLights());  // the headlight route's setting, read once for this frame (LiveText): the light pass just below and the rig further down both take it from headlight_rig::CurrentRoute() (review F3)
   if (local_lights_) {
     local_lights_->BeginFrame(pause_fx_candidate);  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
@@ -904,7 +900,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);
   }
   const auto pause_fx = gbuffer_ && gbuffer_->tracks_pause_fx() ? pause_fx_candidate : gbuffer::PauseFxView::kNone;
-  const auto atmosphere_view = gbuffer::PauseFxViewOf(menu_atmosphere, movie, garage_lighting, menu_atmosphere);
+  const auto atmosphere_view = gbuffer::PauseFxViewOf(menu_atmosphere, menu, garage_lighting, menu_atmosphere);
   if (shafts_) {
     shafts_->BeginFrame(atmosphere_view, (visual_mask_ & vis::Bit(vis::kShafts)) != 0);
   }
@@ -4426,10 +4422,14 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     light_manager_->OnResolve(shadow_recorded);  // passive: this frame's maps, and the headlight block is checked against them
     order_.Note(frame_order::Step::kLightMaps, shadow_recorded);
   }
-  if (gi_integration_) {
-    // The probe field's maintenance, update and weights (gi_integration.h, CITY-RT M3 G4): outside any render pass, before the occlusion plans (it asks the field's share while it plans); records nothing
-    // while no field runs. Its own layouts and pipelines: the reset below forgets them too.
-    const bool gi_field_ran = gi_integration_->OnResolve(summary, list, slot_);
+  const bool gi_trigger = (gi_integration_ || gi_apply_) &&
+                          ScreenShared::IsTrigger(record, summary, !edram_->scene_phase(), scene_marker_seen_, false);
+  if (gi_trigger && gi_integration_) {
+    // The probe field must publish before AO divides bounce between the screen and the city field.
+    const auto view = gbuffer_ ? gbuffer_->pause_fx_candidate() : gbuffer::PauseFxView::kNone;
+    const bool has_planes = gbuffer_published && gbuffer_ && gbuffer_->frame().Has(gbuffer::kPlaneNormal) &&
+                            gbuffer_->frame().Has(gbuffer::kPlaneAlbedo);
+    const bool gi_field_ran = gi_integration_->OnResolve(summary, list, slot_, view, has_planes);
     order_.Note(frame_order::Step::kGiField, gi_field_ran);
   }
   if (ao_ && ao_->wants_draws()) {
@@ -4450,7 +4450,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     temporal_->FrameJitter(regen_ask.jitter);
   }
   const bool light_composite = vpl_ && vpl_->composite_enabled();
-  if (gi_apply_ && gi_apply_->wants_draws()) {
+  if (gi_trigger && gi_apply_ && gi_apply_->wants_draws()) {
     // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
     // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
     // framebuffer: the reset below forgets them too. With no field in the frame it records nothing.

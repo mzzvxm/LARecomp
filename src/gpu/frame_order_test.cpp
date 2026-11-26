@@ -904,7 +904,7 @@ void CheckSources(const std::string& gpu) {
             At(scene, "gi_apply_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate)") && At(scene, "gi_apply_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
             At(scene, "gi_apply_->BeginFrame()") < At(scene, "ao_->BeginFrame("),
         "the probe field starts its frame before its apply declares, and the apply declares before the G-buffer and the screen owner read (lag 0)");
-  Check(At(scene, "gi_integration_->OnResolve(summary, list, slot_)") < At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning())") &&
+  Check(At(scene, "gi_integration_->OnResolve(summary, list, slot_, view, has_planes)") < At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning())") &&
             At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning())") < At(scene, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_)"),
         "the probe field's frame is recorded before the AO's frame (the AO asks the field's share while it plans) and the field's apply after it");
 }

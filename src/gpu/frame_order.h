@@ -355,7 +355,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kLightMaps, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "light manager takes this frame's maps", .call = "light_manager_->OnResolve(shadow_recorded)",
      .reads = data::kShadowAtlas, .makes = data::kLightMaps, .deps = {{{Step::kShadowReplay, "its maps are what it takes"}}},
      .note = "passive (light_manager.h): the block is checked against them; noted when the replay recorded"},
-    {.step = Step::kGiField, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's frame (maintenance, update, weights)", .call = "gi_integration_->OnResolve(summary, list, slot_)",
+    {.step = Step::kGiField, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "probe field's frame (maintenance, update, weights)", .call = "gi_integration_->OnResolve(summary, list, slot_, view, has_planes)",
      .label_file = "gi_field.cpp", .label = "gi reset", .more_labels = {{"gi weights"}}, .soft_reads = data::kCarStructures, .makes = data::kProbeField,
      .note = "(CITY-RT M3 G4, gi_integration.h) outside any render pass, BEFORE the AO plans: the occlusion asks GiApply::TakeSsgiShare while it plans, so the field must be published by then (a frame whose field is "
              "not published yet leaves the screen-space bounce light whole). Reads the city's structures for its safe range (M1) and, with the probe update (G2), its rays; records nothing while no field runs. "
