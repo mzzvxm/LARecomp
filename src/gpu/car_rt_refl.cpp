@@ -48,8 +48,7 @@ LiveText& Setting() {
   return text;
 }
 
-car_rt_refl::Setting SettingNow(bool one_ray) {
-  if (!one_ray && gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) return car_rt_refl::Setting::kOff;
+car_rt_refl::Setting SettingNow() {
   return car_rt_refl::SettingOf(Setting().Get());
 }
 
@@ -66,8 +65,7 @@ std::atomic<bool> g_available{false};
 
 }  // namespace
 
-// The device can run it AND the ray tracing tier lets it: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the shaders) and the Low
-// class (shared memory) trace nothing, so the pause row does not offer RAY TRACED there (rt_tier.h: the rung is none).
+// The paint row requires ray-query support and an initialized trace path.
 bool CarRtReflAvailable() {
   return g_available.load(std::memory_order_relaxed) && gpu_class::CurrentRtTier() != gpu_class::RtTier::kNone;
 }
@@ -110,7 +108,7 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
   }
   // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
   const bool paint_at_start = reflection_on_at_start &&
-      SettingNow(larecomp::settings::mcla_gpu_car_rt_paint_one_ray.Get()) == car_rt_refl::Setting::kOn;
+      SettingNow() == car_rt_refl::Setting::kOn;
   opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_, city_.Builder(), paint_at_start);
   // The player's windows (car_rt_glass_refl.h): optional too, on the same layout of sets.
   glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(), paint_at_start);
@@ -378,7 +376,7 @@ void CarRtRefl::BeginFrame(bool reflection_on, bool garage) {
   if (!ready_ || !scene_) {
     return;
   }
-  const bool wanted = car_rt_refl::Wanted(SettingNow(one_ray_), supported_, reflection_on);
+  const bool wanted = car_rt_refl::Wanted(SettingNow(), supported_, reflection_on);
   if (!wanted) {
     return;
   }

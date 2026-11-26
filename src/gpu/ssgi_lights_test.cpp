@@ -589,10 +589,11 @@ void CheckSources(const std::string& gpu) {
   Check(Has(shared_cpp, "LightsBeginFrame();"), "screen_shared.cpp: the frame's start clears the frame's captures and counts the idle frames");
   // scene.cpp: the captures at the two sides of the light pass
   const size_t before_at = scene.find("screen_->CaptureLightsBefore(record, summary, list)");
-  const size_t lights_at = scene.find("local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_)");
+  const size_t lights_at = scene.find("local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_,");
   const size_t after_at = scene.find("screen_->CaptureLightsAfter(record, summary, list)");
   Check(before_at != std::string::npos && lights_at != std::string::npos && after_at != std::string::npos && before_at < lights_at && lights_at < after_at, "scene.cpp: the capture before stands ahead of the light pass and the one after right behind it");
-  Check(Has(scene, "if (lights_before && local_lights_ran) {"), "scene.cpp: the second capture only when the first was made and the light pass recorded");
+  Check(Has(scene, "if (lights_before && local_lights_ran) {") && Has(scene, "lights_pair.capture_before = [&]() {") &&
+        Has(scene, "local_lights_->SetLightsPair(want_pair ? &lights_pair : nullptr);"), "scene.cpp: the second capture only when the first was made and the light pass recorded");
   // the table
   // (kAll is frame_order_test.cpp's pin: it follows every branch that adds a data bit)
   Check(Has(order, "kLightHistory = 1u << 29") && Has(order, "kLightsBefore = 1u << 28"), "frame_order.h: the two data bits");

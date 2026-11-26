@@ -45,7 +45,10 @@ struct Frame {
   uint32_t classify_group_mask = 0;
   uint32_t classify_stride = 0;
   uint32_t classify_plan = 0;
-  std::array<float, 3> env_camera_delta{  std::array<float, 3> rt_bounds_min{};
+  std::array<float, 3> env_camera_delta{};
+  uint32_t env_has_origin = 0;
+  uint32_t specular_ao = 0xFFFFu;  // low 16 bits: visibility slot; high 16: half-size texel shift
+  std::array<float, 3> rt_bounds_min{};
   uint32_t rt_bounds_valid = 0;
   std::array<float, 3> rt_bounds_max{};
 };

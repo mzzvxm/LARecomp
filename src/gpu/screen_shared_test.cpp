@@ -965,7 +965,7 @@ void SourceChecks(const std::string& gpu) {
   Check(Before(ao_cpp, "ran_this_frame_ = true;\n  PublishScreen(", "return true;\n}\n\nvoid AmbientOcclusion::PublishScreen"), "... right after it says the frame ran, as the last step of Run");
   Check(Has(ao_cpp, "screen_->Want(screen::Consumer::kAmbientOcclusion") && Has(ao_cpp, "screen_->Want(screen::Consumer::kContactShadows") && Has(ao_cpp, "screen_->Want(screen::Consumer::kBounceLight"),
         "the AO declares the three consumers' wants");
-  Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "|| screen_wants_ || world_light_wanted_;"), "the AO runs for the screen products only with its depth pipelines made");
+  Check(Has(ao_cpp, "screen_wants_ = ready_ && screen_->NeedsDepthChain() && EnsureScreenDepthPipelines();") && Has(ao_h, "screen_wants_ || world_light_wanted_ || shadow_fit_wanted_;"), "the AO runs for the screen products only with its depth pipelines made");
   Check(Has(ao_cpp, "plan.screen = screen_wants_ && !plan.occlusion && !contact;") && Has(ao_cpp, "if (!plan.probe && !plan.screen) {"), "a frame for the screen products is the census's probe frame without the readback");
   Check(Has(ao_cpp, "if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {"), "the AO does not give its images back while the screen products use them");
   Check(Has(scene_cpp, "screen_->BeginFrame(frame_serial_)") && Before(scene_cpp, "screen_->BeginFrame(frame_serial_)", "ao_->BeginFrame("), "the Scene starts the screen frame before the AO's, which declares its wants after it");
@@ -1040,15 +1040,15 @@ void SourceChecksSs1(const std::string& gpu) {
   Check(Has(colour_ps, "[loop] for (uint s = 0u; s < samples; ++s) {\n        sum += g_textures_ms[g_push.slots.x].Load(p, s).rgb;\n      }") &&
             Has(car_ps, "[loop] for (uint s = 0u; s < samples; ++s) {\n    sum += g_textures_ms[g_push.slots.y].Load(p, s).rgb;\n  }"),
         "both add the host samples one by one in order");
-  Check(Has(colour_ps, "total += sum / float(samples);") && Has(car_ps, "const float3 colour = sum / float(samples);"), "both divide the sum by the sample count as a float");
+  Check(Has(colour_ps, "total += sum / float(samples);") && Has(car_ps, "return sum / float(samples);"), "both divide the sum by the sample count as a float");
   const std::string held = "float HeldChannel(float v) {\n  return ((asuint(v) & 0x7FFFFFFFu) <= 0x7F800000u) ? min(max(v, 0.0f), kMaxColour) : 0.0f;\n}\n"
                            "float3 HeldColour(float3 colour) {\n  return float3(HeldChannel(colour.x), HeldChannel(colour.y), HeldChannel(colour.z));\n}\n";
   Check(Has(colour_ps, "const float3 colour = total / float(ratio * ratio);") && Has(colour_ps, "return float4(HeldColour(colour), 1.0f);") &&
-            Has(car_ps, "return float4(HeldColour(colour), LinearDistance(stored));") && Has(colour_ps, held) && Has(car_ps, held),
+            Has(car_ps, "return float4(HeldColour(ReadColour(p)), LinearDistance(ReadStored(p)));") && Has(colour_ps, held) && Has(car_ps, held),
         "both clamp with the same HeldColour (a NaN black by the bits, else min(max(c, 0), kMaxColour)), the capture after dividing by 1 at the picture's size");
   Check(Has(colour_ps, "const uint samples = max(g_push.slots.y, 1u);") && Has(car_ps, "const uint samples = max(g_push.slots.w, 1u);"), "both take at least one sample");
   // the car history's variants: 0 and 1 keep their text, 2 reads one load
-  Check(Has(car_ps, "#if CAR_HISTORY_MS == 2") && Has(car_ps, "const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;\n#elif CAR_HISTORY_MS") && Count(car_ps, "#if CAR_HISTORY_MS\n") == 1,
+  Check(Has(car_ps, "#if CAR_HISTORY_MS == 2") && Has(car_ps, "return g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;\n#elif CAR_HISTORY_MS") && Count(car_ps, "#if CAR_HISTORY_MS\n") == 1,
         "the car history shader's third variant reads the colour from one single sample image, the first two keep their code");
   Check(Has(car_ps, "id = StencilOf(g_utextures_ms[g_push.slots.z].Load(p, g_push.slots2.x)) >> 2;"), "... and the stencil and depth planes are still the multisampled ones in it");
 
@@ -1084,12 +1084,12 @@ void SourceChecksSs1(const std::string& gpu) {
         "the paint history needs an agreeing lens and resets on a garage camera cut, missing camera or missing capture");
 
   // THE SOURCE: the colour is the capture's only at the picture's size and only with the setting's allowance; else the pass is the old one
-  Check(Has(car_cpp, "const HostImage* shared = SharedColour(render_w, render_h);") && Has(car_cpp, "Pipeline(ms ? (shared ? kPassMsShared : kPassMs) : kPassPlain)") && Has(car_cpp, "push.slots[1] = shared ? shared->slot : colour_slot;"),
+  Check(Has(car_cpp, "const HostImage* shared = SharedColour(render_w, render_h);") && Has(car_cpp, "const uint32_t pass = ms ? (shared ? kPassMsShared : kPassMs) : kPassPlain;") && Has(car_cpp, "pipeline = Pipeline(pass);") && Has(car_cpp, "Pipeline(pass + kRasterPassCount)") && Has(car_cpp, "push.slots[1] = shared ? shared->slot : colour_slot;"),
         "the history pass is the old pass with the colour slot unchanged unless the frame has a capture of the picture's size");
   const std::string shared_colour = body(car_cpp, "const HostImage* CarSelfRefl::SharedColour(", "// ---------------------------------------------------------------------------\n// the draws of the paint");
   Check(!shared_colour.empty() && Has(shared_colour, "source_ == 1 || !screen_ || !screen_->Frame().Has(screen::kColourPost)") && Has(shared_colour, "image->width != render_width || image->height != render_height"),
         "SharedColour: not with the source setting 1, not without a capture in the frame, not at another size");
-  Check(Has(car_h, "enum Pass : uint32_t { kPassPlain, kPassMs, kPassMsShared, kPassCount };") && Has(car_h, "void SetScreenShared(ScreenShared* screen)") && Has(car_cpp, "PassName(pass)"),
+  Check(Has(car_h, "enum Pass : uint32_t { kPassPlain, kPassMs, kPassMsShared, kRasterPassCount, kPassCount = kRasterPassCount * 2 };") && Has(car_h, "void SetScreenShared(ScreenShared* screen)") && Has(car_cpp, "PassName(pass)"),
         "the car self-reflection has the third pass and the owner's setter");
   const setting_source::Info source = setting_source::Find(gpu, car_cpp, "mcla_gpu_car_selfrefl_source");
   Check(source.found && setting_source::DefaultIs(source, 0.0) && source.debug_only && source.live && source.has_range && source.range_lo == 0.0 && source.range_hi == 2.0,

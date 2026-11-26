@@ -103,7 +103,7 @@ void TestFixedCapacity() {
   Check(ResolveFixed(Level::kOff, Choice::kUltra, true).why == Why::kSsrOff, "SSR off");
   Check(ResolveFixed(Level::kHigh, Choice::kOff, true).why == Why::kSetting, "RT off");
   const Cell high = ResolveFixed(Level::kUltra, Choice::kHigh, true).cell;
-  const Cell ultra = ResolveFixed(Level::kUltra, Choice::kAuto, true).cell;
+  const Cell ultra = ResolveFixed(Level::kUltra, Choice::kUltra, true).cell;
   Check(CapacityFor(high, 1) == 250000 && high.reach == 150.0f &&
         high.group_mask == (GroupBit(kGroupBright) | GroupBit(kGroupGround)), "fixed High cell");
   Check(CapacityFor(ultra, 1) == 1000000 && ultra.reach == 300.0f, "fixed Ultra cell");

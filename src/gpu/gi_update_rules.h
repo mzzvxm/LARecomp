@@ -428,7 +428,6 @@ constexpr Budget BudgetOf(const gi::Budget& g) {
 struct PlanInputs {
   double camera[3] = {0, 0, 0};  // the play camera, world metres
   float safe_range_m = 0.0f;     // M1's SafeRange: a probe beyond it is not traced
-  float governor_scale = 1.0f;   // the governor's, for the cascades after the finest
   float warmup_scale = 1.0f;     // gi_field_rules.h FieldState::BudgetScale
   bool reuse_coarse = false;
   bool phased = false;
@@ -512,7 +511,7 @@ class Scheduler {
     uint32_t left = max_probes;
     for (uint32_t c = 0; c < budget_.cascade_count && left > 0; ++c) {
       const gi::CascadeSpec& spec = budget_.cascade[c];
-      const float scale = in.warmup_scale * (c == 0 ? 1.0f : in.governor_scale);
+      const float scale = in.warmup_scale;
       const uint32_t want = std::min(CascadeShare(spec, scale), left);
       const gi::Dims& d = spec.dims;
       const gi::Coord origin = state.origin(c);
@@ -694,45 +693,6 @@ constexpr uint32_t TraceGroups(uint32_t probes, uint32_t rays) {
   const uint32_t per_group = rays > 0 && rays <= kTraceGroup ? kTraceGroup / rays : 1u;
   return (probes + per_group - 1) / per_group;
 }
-
-// ---------------------------------------------------------------------------
-// the governor
-// ---------------------------------------------------------------------------
-
-// The later cascades' budget scale from the update's measured GPU time against the cell's cap. An EWMA smooths the frames; over the cap the scale falls by 3% a sample down to gi::kGovernorMin, well
-// under it (0.6 of the cap) it rises by 1% a sample up to gi::kGovernorMax, between them it holds. No sample (timestamps unavailable) holds the scale at 1.
-class Governor {
- public:
-  static constexpr float kAlpha = 0.1f;
-  static constexpr float kOver = 1.0f;
-  static constexpr float kUnder = 0.6f;
-  static constexpr float kFall = 0.97f;
-  static constexpr float kRise = 1.01f;
-  void Reset() {
-    scale_ = 1.0f;
-    ewma_ms_ = 0.0f;
-    samples_ = 0;
-  }
-  void AddSample(float ms, float cap_ms) {
-    if (!(ms >= 0.0f) || !(cap_ms > 0.0f)) return;
-    ewma_ms_ = samples_ == 0 ? ms : ewma_ms_ + kAlpha * (ms - ewma_ms_);
-    ++samples_;
-    const float ratio = ewma_ms_ / cap_ms;
-    if (ratio > kOver) {
-      scale_ = std::max(gi::kGovernorMin, scale_ * kFall);
-    } else if (ratio < kUnder) {
-      scale_ = std::min(gi::kGovernorMax, scale_ * kRise);
-    }
-  }
-  float scale() const { return scale_; }
-  float ewma_ms() const { return ewma_ms_; }
-  uint64_t samples() const { return samples_; }
-
- private:
-  float scale_ = 1.0f;
-  float ewma_ms_ = 0.0f;
-  uint64_t samples_ = 0;
-};
 
 // ---------------------------------------------------------------------------
 // the census: the counters' words the two passes add to (never cleared: the host takes the difference between two readbacks)

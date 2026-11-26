@@ -375,10 +375,10 @@ void WiringTests(const std::string& src) {
     return;
   }
   // the history pass: the mark mode
-  Check(Has(history, "if (g_push.slots2.y != 0u) {") && Has(history, "if (id != 0u || g_push.slots.z == kNoSlot) {\n      discard;") &&
+  Check(Has(history, "if (g_push.slots2.y == 1u) {") && Has(history, "if (id != 0u || g_push.slots.z == kNoSlot) {\n      discard;") &&
             Has(history, "if (!(t > 0.0f && t >= asfloat(g_push.slots2.z) && t <= asfloat(g_push.slots2.w))) {\n      discard;") && Has(history, "return float4(HeldColour(ReadColour(p)), -t);"),
         "the history pass's mark mode: a texel with an ID or no stencil plane, or outside the range, is discarded; the rest is the scene colour and the negated distance");
-  Check(Has(history, "return float4(HeldColour(colour), LinearDistance(stored));") && Has(history, "if (id < kFirstVehicleId || id > kLastVehicleId) {") &&
+  Check(Has(history, "return float4(HeldColour(ReadColour(p)), LinearDistance(ReadStored(p)));") && Has(history, "return HistoryValue(p);") && Has(history, "if (id < kFirstVehicleId || id > kLastVehicleId) {") &&
             Has(history, "if (g_push.sizes.w != 0.0f) {\n      discard;") && Has(history, "return float4(0.0f, 0.0f, 0.0f, 0.0f);"),
         "the history pass's own mode is as it was: a vehicle's texel, the positive distance");
   // the readers that ask a > 0 are left alone, the ray traced passes read the distance of either kind

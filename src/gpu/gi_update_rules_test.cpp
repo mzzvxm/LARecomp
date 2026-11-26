@@ -634,11 +634,10 @@ struct Rig {
       for (uint32_t i = 0; i < budget.cascade[c].dims.Probes(); ++i) state.NoteTraced(c, i);
     for (int i = 0; i < 14; ++i) state.Move(camera);
   }
-  gu::PlanInputs Inputs(float safe_range = 400.0f, float governor = 1.0f) const {
+  gu::PlanInputs Inputs(float safe_range = 400.0f) const {
     gu::PlanInputs in;
     for (int a = 0; a < 3; ++a) in.camera[a] = camera[a];
     in.safe_range_m = safe_range;
-    in.governor_scale = governor;
     in.warmup_scale = state.BudgetScale();
     return in;
   }
@@ -709,13 +708,6 @@ void TestScheduler() {
     Check(covered[0].size() == 16384 && covered[1].size() == 16384 && covered[2].size() == 16384, "every probe of every cascade is traced once in its interval (4, 8 and 16 frames)");
   }
   {
-    // the governor's scale touches the later cascades only
-    Rig rig;
-    rig.Settle();
-    const gu::Plan half = rig.sched.Make(rig.state, rig.Inputs(400.0f, 0.5f), ub.max_probes);
-    Check(half.per_cascade[0] == 4096 && half.per_cascade[1] == 1024 && half.per_cascade[2] == 512, "a governor scale of 0.5 halves the later cascades and never the finest");
-    const gu::Plan more = rig.sched.Make(rig.state, rig.Inputs(400.0f, 1.5f), ub.max_probes);
-    Check(more.per_cascade[0] == 4096 && more.per_cascade[1] == 3072 && more.per_cascade[2] == 1536, "a scale of 1.5 gives the later cascades half as much again");
     Check(gu::CascadeShare(gi::BudgetOf(gi::Layout::kStandard).cascade[2], 0.0f) == 1 && gu::CascadeShare(gi::BudgetOf(gi::Layout::kStandard).cascade[0], 100.0f) == 16384, "a share is at least one probe and at most the cascade");
   }
   {
@@ -966,29 +958,6 @@ void TestBudgets() {
 }
 
 // ---------------------------------------------------------------------------
-// the governor
-// ---------------------------------------------------------------------------
-void TestGovernor() {
-  gu::Governor g;
-  g.AddSample(1.0f, 0.0f);
-  g.AddSample(-1.0f, 0.9f);
-  Check(g.scale() == 1.0f && g.samples() == 0, "no cap or a negative sample is no sample");
-  for (int i = 0; i < 60; ++i) g.AddSample(0.9f * 0.8f, 0.9f);
-  Check(g.scale() == 1.0f, "between 0.6 and 1.0 of the cap the scale holds");
-  for (int i = 0; i < 200; ++i) g.AddSample(1.8f, 0.9f);
-  Check(g.scale() == gi::kGovernorMin, Num("a run over the cap falls to the minimum %.2f and stops there", g.scale()));
-  for (int i = 0; i < 2000; ++i) g.AddSample(0.2f, 0.9f);
-  Check(g.scale() == gi::kGovernorMax, Num("a run well under it rises to the maximum %.2f and stops there", g.scale()));
-  g.Reset();
-  Check(g.scale() == 1.0f && g.samples() == 0 && g.ewma_ms() == 0.0f, "a reset forgets");
-  // the average smooths one slow frame
-  gu::Governor h;
-  for (int i = 0; i < 30; ++i) h.AddSample(0.6f, 0.9f);
-  h.AddSample(3.0f, 0.9f);
-  Check(h.scale() == 1.0f && h.ewma_ms() > 0.6f && h.ewma_ms() < 1.0f, "one slow frame in a steady run does not move the scale");
-}
-
-// ---------------------------------------------------------------------------
 // the census
 // ---------------------------------------------------------------------------
 double Field(const std::string& line, const char* pattern) {
@@ -1126,7 +1095,7 @@ void TestSources(const std::string& dir) {
   Check(Has(cpp, "to_read") && Has(cpp, "Layout::SHADER_READ") && Has(cpp, "to_write") && Has(cpp, "Layout::GENERAL"), "the field's textures are read by the trace and written by the blend");
   Check(Has(cpp, "kPrefix = \"[rt gi]\""), "the census lines carry the prefix the report reads");
   Check(Has(cpp, "hit_scene_->ready() || hit_scene_->stats().committed == 0") || Has(cpp, "!hit_scene_->ready() || hit_scene_->stats().committed == 0"), "the update waits for the hit data's pool (a field of zeros must never replace the screen-space bounce light)");
-  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainSectorChanges(scheduled);") && Has(cpp, "MarkStaleBox(") && Has(cpp, "in.governor_scale = 1.0f;") && !Has(cpp, "governor_.AddSample("), "the update uses the fixed probe budget and wakes sectors that changed");
+  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainSectorChanges(scheduled);") && Has(cpp, "MarkStaleBox(") && !Has(cpp, "in.governor_scale") && !Has(cpp, "governor_.AddSample("), "the update uses the fixed probe budget and wakes sectors that changed");
   const std::string renderer = ReadFile(dir + "/renderer.cpp");
   const std::string renderer_h = ReadFile(dir + "/renderer.h");
   Check(Has(renderer_h, "GiUpdate gi_update_;") && Has(renderer_h, "#include \"gi_update.h\""), "renderer.h owns the update");
@@ -1174,7 +1143,6 @@ int main(int argc, char** argv) {
   TestScheduler();
   TestPhasedScheduler();
   TestBudgets();
-  TestGovernor();
   TestCensus();
   TestSources(dir);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

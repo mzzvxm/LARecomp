@@ -496,7 +496,6 @@ void GiUpdate::Record(plume::RenderCommandList* list, uint32_t frame_slot, const
     in.camera[a] = uf.camera[a];
   }
   in.safe_range_m = uf.safe_range_m;
-  in.governor_scale = 1.0f;
   in.warmup_scale = field_->budget_scale();
   // CHECK: compare trace/blend, lamp and bounce recovery on both APIs across a
   // fast turn, passing lit traffic, a sector boundary and the dusk sweep.

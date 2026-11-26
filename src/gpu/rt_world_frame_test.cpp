@@ -1522,7 +1522,7 @@ void TestSources(const std::string& src) {
     const size_t weather = tod.find("// ── Weather ──", publish);
     CHECK(mgr < publish && publish < weather);
     const std::string ao_h = ReadFile(src + "/gpu/ao.h");
-    CHECK(Has(ao_h, "|| census_every_ != 0 || screen_wants_ || world_light_wanted_;") && Has(ao_h, "void SetWorldLightWanted(bool wanted) { world_light_wanted_ = wanted; }") &&
+    CHECK(Has(ao_h, "|| census_every_ != 0 ||\n           screen_wants_ || world_light_wanted_ || shadow_fit_wanted_;") && Has(ao_h, "void SetWorldLightWanted(bool wanted) { world_light_wanted_ = wanted; }") &&
           Has(ao_h, "bool FrameWetness(float* value) const { return PickWet(value); }"));
     const std::string ao_c = ReadFile(src + "/gpu/ao.cpp");
     CHECK(Has(ao_c, "if (contact_mode_ != Mode::kOff || world_light_wanted_) {"));
@@ -1539,7 +1539,7 @@ void TestSources(const std::string& src) {
       const size_t lamps_at = cpp.find("rt_world::BuildLampFrame(li, &lamp_frame_);"), build_at = cpp.find("BuildEmitters(&in, camera);"), rows_at = cpp.find("rt_world::MakeWorldRows(in, rows);");
       CHECK(lamps_at != std::string::npos && build_at != std::string::npos && rows_at != std::string::npos && lamps_at < build_at && build_at < rows_at);
       CHECK(Has(cpp, "if (emitters_ != nullptr && in.camera_known) {") && Has(cpp, "rt_world::AppendEmitters(&lamp_frame_, e.words.data(), uint32_t(e.result.list.size()), e.result.static_count(), e.result.census.groups);"));
-      CHECK(Has(cpp, "if (!e.wanted) {\n    e.motion.Clear();") && Has(cpp, "const bool ask = wanted && (EmitterGroupsNow() & ~rt_emitters::kGroupNeon) != 0;") && Has(cpp, "src_.lights->WantRt(ask);") && Has(cpp, "src_.lights->WantRt(false);"));
+      CHECK(Has(cpp, "if (!e.any_wanted()) {\n    e.motion.Clear();") && Has(cpp, "const bool ask = e.any_wanted() && (EmitterGroupsNow() & ~rt_emitters::kGroupNeon) != 0;") && Has(cpp, "src_.lights->WantRt(ask);") && Has(cpp, "src_.lights->WantRt(false);"));
       CHECK(Has(cpp, "if (src_.lights != nullptr && src_.lights->active()) {") && Has(cpp, "bi.night = schedule_.fill;") && Has(cpp, "mcla_gpu_gi_bounce_headlights.Get()") && Has(cpp, "mcla_gpu_gi_bounce_neon.Get()") &&
             Has(cpp, "mcla_gpu_gi_bounce_rear.Get()") && Has(cpp, "mcla_gpu_gi_bounce_other.Get()"));
       CHECK(Has(header, "void WantEmitters(bool wanted, bool ultra, bool weak);") && Has(header, "LightManager* lights = nullptr;"));

@@ -2088,7 +2088,7 @@ void TestShaderText(const std::string& src) {
     const size_t never = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && (l.flags & uint(LL_FLAG_GAME_LIT)) != 0u && !rt_ref && !(l.shadow_kind == uint(LL_SHADOW_ATLAS) && l.view_count != 0u)) {\n    return float4(0.0f, 0.0f, 0.0f, 0.0f);");
     const size_t lamp = ps.find("if (l.source == uint(LL_SOURCE_LAMP) && ((l.shadow_kind");
     CHECK(never != std::string::npos && lamp != std::string::npos && never < lamp);
-    CHECK(Has(ps, "if (!any_light) {\n    discard;\n  }\n  return float4(total, 0.0f);"));
+    CHECK(Has(ps, "if (!any_light) {\n    LP_EMPTY;\n  }\n  return float4(total, 0.0f);") && Has(ps, "#define LP_EMPTY discard") && Has(ps, "#define LP_EMPTY return 0.0f"));
   }
   // the light pass's reader: the seams
   CHECK(Has(read, "float4 RtmLoadMask(uint slot, int2 p);") && Has(read, "float RtmLoadDepth(uint slot, int2 p);") && Has(read, "float RtmVisibility(RtmTable tb, uint channel, int2 p, float renderW, float renderH, float t, bool raw)"));

@@ -531,7 +531,7 @@ int main(int argc, char** argv) {
       Check(Has(denoise, "const float sharp = saturate((1.0 - ownAux.w) / kAuxSharpScale);") && Has(denoise, "* (1.0 - sharp);") && Has(denoise, "!(ownAux.w > 0.5)"),
             "the denoise scales its strength by what the mirror's share leaves, and the aux's 'has data' test is still w > 0.5");
 
-      Check(Has(host_h, "float coat[4];") && Has(host_h, "static_assert(sizeof(Push) == 96);") && Has(opp_h, "float coat[4];") && Has(opp_h, "static_assert(sizeof(Push) == 112);") && Has(opp_h, "kBasePushBytes = 96;"),
+      Check(Has(host_h, "float coat[4];") && Has(host_h, "static_assert(sizeof(Push) == 96);") && Has(opp_h, "float coat[4];") && Has(opp_h, "static_assert(sizeof(Push) == 128);") && Has(opp_h, "kBasePushBytes = 96;"),
             "the host's push blocks are the shader's: 96 bytes with coat, 112 with the opponents' opp");
       Check(Has(host, "car_rt_hit::LevelWith(base_level, double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),") &&
                 Has(host, "double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));") && Has(host, "car_rt_hit::CastReach(parts, self_reach, others_reach)") &&
