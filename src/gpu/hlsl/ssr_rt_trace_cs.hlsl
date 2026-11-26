@@ -34,6 +34,14 @@
 RWTexture2D<float4> g_trace : register(u0, space5);
 RWByteAddressBuffer g_ctl : register(u1, space5);
 RWByteAddressBuffer g_list : register(u2, space5);
+#if SSR_REFLHIT
+#include "reflhit.hlsli"
+#ifdef __spirv__
+[[vk::image_format("r32ui")]]
+#endif
+RWTexture2D<uint> g_reflhit : register(u3, space5);
+#define CITY_HIT_RESOLVE_MATERIAL_CLASS 1
+#endif
 
 // The library's hooks (hlsl/city_hit_shade.hlsli lists them): the top level, the picture (lin_depth level 0 and colour_post's mip chain, the trace's own images), the class gains, the calibration's counters.
 // No lamp list (R7's), no haze, no probe field.
@@ -201,19 +209,34 @@ void main(uint3 id : SV_DispatchThreadID) {
   float3 sum = float3(0.0f, 0.0f, 0.0f);
   float nearest = kSsrMissLength;
   bool any_hit = false;
+#if SSR_REFLHIT
+  uint rt_id = kReflHitNone;
+  uint rejected = kReflHitNone;
+  float rt_fades = 0.0f;
+  float best_rt_fade = -1.0f;
+#endif
   [loop] for (uint k = 0u; k < rays; ++k) {
     const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, rays);
     SsrRtCount(stats, SSR_RT_CENSUS_RAYS);
     const CityHitTraceResult hit = CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask, pixel_angle * receiver_distance, cone_tan, 0.5f);
     if (hit.hit == 0u) {
       SsrRtCount(stats, SSR_RT_CENSUS_MISS);
+#if SSR_REFLHIT
+      if (rejected == kReflHitNone) rejected = kReflHitRtMiss;
+#endif
       continue;
     }
     if (!CityHitIsCity(hit.inst.instanceId)) {
       SsrRtCount(stats, SSR_RT_CENSUS_CAR);
+#if SSR_REFLHIT
+      rejected = kReflHitRtCar;
+#endif
       continue;   // a car's part: its own passes shade it
     }
     SsrRtCount(stats, SSR_RT_CENSUS_CITY);
+#if SSR_REFLHIT
+    if (rejected != kReflHitRtCar) rejected = kReflHitRtUnresolved;
+#endif
     p.noise = float3(SsrNoise1(pix.x, pix.y, frame, k + 4u, rays), SsrNoise2(pix.x, pix.y, frame, k + 4u, rays), SsrNoise1(pix.y, pix.x, frame, k + 6u, rays));
     CityHitRay ray;
     ray.origin = origin;
@@ -233,7 +256,22 @@ void main(uint3 id : SV_DispatchThreadID) {
       nearest = min(nearest, hit.t);
     }
     any_hit = true;
+#if SSR_REFLHIT
+    if (fade > best_rt_fade) {
+      rt_id = ReflHitCity(res.cls);
+      best_rt_fade = fade;
+    }
+    rt_fades += fade;
+#endif
   }
+#if SSR_REFLHIT
+  const uint packed = g_reflhit[pix];
+  const uint screen_id = ReflHitScreenId(packed);
+  const uint native = ReflHitFallbackId(packed);
+  const float rt_weight = (1.0f - confidence) * weight * rt_fades / float(rays);
+  const uint visible = ReflHitDominant(screen_id, confidence, rt_id, rt_weight, native);
+  g_reflhit[pix] = ReflHitPack(visible, any_hit ? rt_id : rejected, screen_id, native);
+#endif
   if (!any_hit) {
     return;
   }

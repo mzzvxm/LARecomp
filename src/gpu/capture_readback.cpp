@@ -217,10 +217,15 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
       max_width = std::max(max_width, source.width);
       max_height = std::max(max_height, source.height);
     }
-    if (config.mask & vis::Bit(vis::kClass)) {
+    if (config.mask & (vis::Bit(vis::kClass) | vis::Bit(vis::kReflHit))) {
       max_width = std::max(max_width, gbuffer.frame().width);
       max_height = std::max(max_height, gbuffer.frame().height);
+    }
+    if (config.mask & vis::Bit(vis::kClass)) {
       scratch += uint64_t(max_width) * max_height;
+    }
+    if ((config.mask & vis::Bit(vis::kReflHit)) && visual_sources_.native_reflection_fallback) {
+      scratch += uint64_t(max_width) * max_height * vis::kStreams[vis::kReflHit].max_source_bytes;
     }
     if (final && !config.legacy) scratch += uint64_t(width) * height * 4;
     capacity = 0;
@@ -291,6 +296,11 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
       const bool ui = present.front_key(&front) && layer.IsPictureOf(front) && layers.UiAlphaFor(layer) > 0.0f;
       visual_sources_.images[vis::kClass] = VisualSource::Image(
           gbuffer.DrawCaptureClass(list, visual_sources_.depth, ui ? layer.ui : nullptr, layer.gap));
+    }
+    if ((config.mask & vis::Bit(vis::kReflHit)) && visual_sources_.native_reflection_fallback) {
+      auto& hit = visual_sources_.images[vis::kReflHit];
+      hit = VisualSource::Image(gbuffer.DrawCaptureReflectionFallback(list, visual_sources_.depth, visual_sources_.road_view_drawn));
+      hit.alternate = true;
     }
     for (uint32_t i = 0; i < vis::kCount; ++i) {
       const uint32_t bit = 1u << i;

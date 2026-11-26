@@ -6586,7 +6586,7 @@
   "type": "std::string",
   "default": "\"\"",
   "category": "MCLA/Cinematic",
-  "help": "\"Visual comparison buffers to write during a take: all or comma-separated final,hdr,ao,refl,gi,class,motion. Empty or off disables buffer capture.\"",
+  "help": "\"Visual comparison buffers to write during a take: all or comma-separated final,hdr,ao,refl,gi,class,motion,reflhit. Empty or off disables buffer capture.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

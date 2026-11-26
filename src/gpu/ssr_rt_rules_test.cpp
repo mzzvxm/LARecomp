@@ -849,7 +849,8 @@ void TestShaderSources(const std::string& dir) {
         "the trace and the fallback regenerate the ray with the one function SsrSampleRay (the same pixel, frame, ray index and rays a pixel: the noise's sample number is frame * rays + ray)");
   Check(!Has(trace_ps, "SsrSampleReflection("), "the trace has no copy of the ray's formula left");
   // the identity of the plain compilations: the trace's plain entry and everything the confidence adds is under SSR_RT
-  Check(Has(trace_ps, "#ifndef SSR_RT\n#define SSR_RT 0\n#endif") && Has(trace_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return SsrTraceBody(position);\n}") && Count(trace_ps, "#if SSR_RT") == 5 &&
+  Check(Has(trace_ps, "#ifndef SSR_RT\n#define SSR_RT 0\n#endif") && Has(trace_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return SsrTraceBody(position);\n}") &&
+            Has(trace_ps, "#if SSR_RT\n  float2 confidence : SV_Target1;\n#endif") && Has(trace_ps, "#if SSR_RT\n  o.confidence = g_confidence;\n#endif") &&
             Count(trace_ps, "g_confidence") == 3 && Count(trace_ps, "conf_sum") == 3 && Count(trace_ps, "rt_group") == 2,
         "the confidence target's code is all under #if SSR_RT (the plain compilations hold none of it)");
   Check(Has(trace_ps, "SV_Target0") && Has(trace_ps, "SV_Target1") && Has(trace_ps, "SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays))"), "the confidence target is the trace's second target: the class group and the mean of the rays' fades");
@@ -874,6 +875,8 @@ void TestShaderSources(const std::string& dir) {
         "fade replaces both ground radiance and the matching planar share; weak hits keep the old distance");
   Check(Has(trace, "NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight))") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
   Check(Has(trace, "if (!CityHitIsCity(hit.inst.instanceId))") && Has(trace, "SSR_RT_CENSUS_CAR"), "a hit on a car is not shaded here (it is counted)");
+  Check(Has(trace, "register(u3, space5)") && Has(trace, "ReflHitPack(visible, any_hit ? rt_id : rejected, screen_id, native)"),
+        "the capture pass stores discarded query classes separately from the visible source");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),
         "the hit's flags are the car reflections' (the sun's ray, glow) and a stats frame calibrates through the control buffer's region");
   Check(Has(trace, "SsrRtLift(r.pc.z,") && Has(trace, "SsrRtReachFade(hit.t, reach)") && Has(trace, "SsrRtFootprint(pixel_angle, receiver_distance, hit.t, cone_tan)"), "the ray's lift, the hit's fade and the footprint are the twins'");
@@ -892,10 +895,12 @@ void TestHostSources(const std::string& dir) {
   Check(Has(rt_cpp, "builder.addDescriptorSet(heap_->texture_set_builder());") && Has(rt_cpp, "for (uint32_t set = 0; set < 4; ++set)") && Has(rt_cpp, "sampler_set != 4 || output_set != 5 || scene_set != 6") &&
             Has(rt_cpp, "builder.addPushConstant(0, 4, sizeof(ssr::Push), plume::RenderShaderStageFlag::COMPUTE)") && Has(rt_cpp, "builder.addDescriptorSet(scene.SetDesc())"),
         "the compute layout: four texture sets, the samplers at 4, the output set at 5, the car scene's ray tracing set at 6, the push block at (b0, space4)");
-  Check(Has(rt_cpp, "list->setComputeDescriptorSet(set_.get(), 5);") && Has(rt_cpp, "list->setComputeDescriptorSet(view.set, 6);") && Has(rt_cpp, "list->setComputeDescriptorSet(heap_->sampler_set(), 4);"), "the sets are bound at the indices the shaders declare");
+  Check(Has(rt_cpp, "list->setComputeDescriptorSet(hit ? capture_set_.get() : set_.get(), 5);") && Has(rt_cpp, "list->setComputeDescriptorSet(view.set, 6);") && Has(rt_cpp, "list->setComputeDescriptorSet(heap_->sampler_set(), 4);"), "the sets are bound at the indices the shaders declare");
   // D3D12 sizes a descriptor set by its view count: the literal is the builder's ranges (u0, u1, u2)
-  Check(Count(rt_cpp, "output_builder_.addReadWrite") == 3 && Has(rt_cpp, "CreateDescriptorSet(output_builder_, 3, 0, \"ssr rt output set\")") && Count(rt_cpp, "CreateDescriptorSet(") == 1,
+  Check(Count(rt_cpp, "output_builder_.addReadWrite") == 3 && Has(rt_cpp, "CreateDescriptorSet(output_builder_, 3, 0, \"ssr rt output set\")"),
         "the output set is made with the three views its builder describes (D3D12 counts them)");
+  Check(Count(rt_cpp, "capture_builder_.addReadWrite") == 4 && Has(rt_cpp, "CreateDescriptorSet(capture_builder_, 4, 0, \"ssr rt capture output\")") &&
+            Has(rt_cpp, "capture_set_->setTexture(3, hit.texture.get()"), "the capture output set adds the hit ID image at u3");
   Check(Has(rt_cpp, "set_->setTexture(0, trace.texture.get(), plume::RenderTextureLayout::GENERAL, trace.view.get());") && Has(rt_cpp, "set_->setBuffer(1, ctl_.get()") && Has(rt_cpp, "set_->setBuffer(2, list_.get()"),
         "u0 is the trace image, u1 the control words, u2 the list");
   // the pass: the barriers and the order of the dispatches
@@ -932,7 +937,8 @@ void TestHostSources(const std::string& dir) {
   Check(Has(passes_h, "const plume::RenderFormat* formats,") && Has(passes_cpp, "desc.renderTargetCount = count;") && Has(passes_cpp, "count < 2"), "the host passes make a pipeline over several targets");
   Check(Has(ssr_cpp, "const plume::RenderFormat formats[2] = {kFormat, kConfidenceFormat};") && Has(ssr_cpp, "kConfidenceFormat = plume::RenderFormat::R8G8_UNORM") && Has(ssr_cpp, "plume::RenderFramebufferDesc(attachments, 2)"),
         "the trace pass with two targets: RGBA16F and R8G8_UNORM, one framebuffer over both");
-  Check(Has(ssr_cpp, "list->clearColor(0,") && Has(ssr_cpp, "list->clearColor(1,"), "both targets are cleared on their first use");
+  Check(Has(ssr_cpp, "first_use[i] = images[i]->layout == Layout::UNKNOWN;") && Has(ssr_cpp, "if (first_use[i]) list->clearColor(i,"),
+        "every trace target is cleared on its first use");
   // the build and the blobs
   Check(Has(cmake, "ssr_rt.cpp") && Has(cmake, "larecomp_gpu_host_shader(ssr_trace_rt_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1)") && Has(cmake, "larecomp_gpu_host_shader(ssr_trace_rt_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1)") &&
             Has(cmake, "larecomp_gpu_host_shader(ssr_rt_select_cs cs_6_0)") && Has(cmake, "larecomp_gpu_host_shader_rt(ssr_rt_trace_cs cs_6_5 DEFINES SSR_MS=0)") &&

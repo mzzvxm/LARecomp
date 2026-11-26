@@ -812,6 +812,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   visual_mask_ = mc::cinematic::CaptureVisualMask();
   visual_hdr_rows_ = 0;
   const bool capture_class = (visual_mask_ & vis::Bit(vis::kClass)) != 0;
+  const bool capture_reflhit = (visual_mask_ & vis::Bit(vis::kReflHit)) != 0;
   if (rt_world_) {
     rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
   }
@@ -822,6 +823,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (ssr_) {
     // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
     // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
+    ssr_->SetCaptureHitWanted(capture_reflhit);
     ssr_->BeginFrame();
   }
   if (gi_integration_) {
@@ -832,8 +834,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   if (gbuffer_) {
     const auto consumer = gbuffer::Consumer::kVisualCapture;
-    gbuffer_->Want(consumer, capture_class ? gbuffer::ConsumerPlanes(consumer) : 0);
+    gbuffer_->Want(consumer, capture_class || capture_reflhit ? gbuffer::ConsumerPlanes(consumer) : 0);
     if (!capture_class) gbuffer_->ReleaseCaptureClass();
+    if (!capture_reflhit) gbuffer_->ReleaseCaptureReflectionFallback();
     gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
   }
   watch::BeginFrame(frame_serial_);
@@ -4519,6 +4522,15 @@ void Scene::CollectVisualSources(VisualSources& sources) const {
   } else if (car_refl_) {
     sources.images[vis::kRefl] = VisualSource::Image(car_refl_->CaptureRtSignal());
     sources.images[vis::kRefl].alternate = true;
+  }
+  if (visual_mask_ & vis::Bit(vis::kReflHit)) {
+    sources.images[vis::kReflHit] = VisualSource::Image(ssr_ ? ssr_->CaptureHit() : nullptr);
+    // A wanted SSR path can lack a usable trace in a view or while its pipelines warm up.
+    // Publish native source IDs for takes with SSR off; omit a missing SSR sample.
+    sources.native_reflection_fallback = !ssr_ || !ssr_->wants_draws();
+    if (sources.native_reflection_fallback && edram_ && gbuffer_) {
+      sources.road_view_drawn = ScreenReflections::RoadViewDrawn(*edram_, gbuffer_->frame().frame_serial);
+    }
   }
   if (temporal_) {
     const auto kept = temporal_->motion().kept();
