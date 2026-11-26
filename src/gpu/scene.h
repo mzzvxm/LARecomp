@@ -94,6 +94,7 @@
 namespace mcla::gpu {
 
 struct VisualSources;
+namespace env_hold { struct Eye; }
 
 class AmbientOcclusion;
 class BindlessHeap;
@@ -258,7 +259,7 @@ class Scene {
   // begin moves the frame to the view's pass, the end closes it and resolves the picture. Render thread. `tag`: the begin's second word, the field the phase's camera was built with (mirror_view_link.h
   // PhaseField, MV-J2); the end's is 0.
   void OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list);
-  void OnEnvMarker(uint32_t bucket, uint32_t renderer, plume::RenderCommandList* list);
+  void OnEnvMarker(uint32_t bucket, uint32_t renderer, const env_hold::Eye& eye, plume::RenderCommandList* list);
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();

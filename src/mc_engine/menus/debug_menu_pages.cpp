@@ -238,6 +238,7 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
     NativeOnly(Bool("PM_RxDbgCarRtPaintOneRay", "mcla_gpu_car_rt_paint_one_ray", "RT PAINT ONE RAY: ")),
     NativeOnly(Bool("PM_RxDbgEnvHold", "mcla_gpu_env_hold", "ENVIRONMENT MAP HOLD: ")),
+    NativeOnly(Bool("PM_RxDbgEnvFallback", "mcla_gpu_env_fallback", "REFLECTION ENVIRONMENT FALLBACK: ")),
     NativeOnly(Bool("PM_RxDbgAoCheap", "mcla_gpu_ao_cheap", "COMBINED AO FILTER: ")),
     NativeOnly(Str("PM_RxDbgRtAoDenoise", "mcla_gpu_rtao_denoise", "RT AO FILTER: ",
                    kRtAoDenoiseVals, kRtAoDenoiseNames, Len(kRtAoDenoiseVals))),

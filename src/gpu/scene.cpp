@@ -3719,7 +3719,7 @@ void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandLi
   }
 }
 
-void Scene::OnEnvMarker(uint32_t bucket, uint32_t renderer, plume::RenderCommandList* list) {
+void Scene::OnEnvMarker(uint32_t bucket, uint32_t renderer, const env_hold::Eye& eye, plume::RenderCommandList* list) {
   if (bucket != env_hold::kEnd) {
     sample_env_light_ = larecomp::settings::mcla_gpu_env_hold.Get();
     if (bucket == env_hold::kHeld) ++window_.env_held;
@@ -3730,12 +3730,17 @@ void Scene::OnEnvMarker(uint32_t bucket, uint32_t renderer, plume::RenderCommand
       pass_timing_->Mark(list, bucket == env_hold::kHeld ? "env map held" : "env map drawn");
     }
   }
-  if (bucket == env_hold::kDrawn) return;
+  if (bucket == env_hold::kDrawn) {
+    if (ssr_) ssr_->InvalidateEnvCapture();
+    return;
+  }
 
   const bool refreshed = bucket == env_hold::kEnd;
-  const bool ready = list && resolve_ && edram_ &&
-                     resolve_->EnvProductsReady(edram_->side_scales()[SideView::kEnv], refreshed);
-  if (!ready) {
+  const ResolveCache::EnvProducts products = list && resolve_ && edram_
+      ? resolve_->CheckEnvProducts(edram_->side_scales()[SideView::kEnv], refreshed)
+      : ResolveCache::EnvProducts{};
+  if (ssr_) ssr_->NoteEnvCapture(renderer, products.map_write, refreshed, eye);
+  if (!products.ready_to_hold) {
     const uint32_t previous = env_hold::g_ready_renderer.exchange(0, std::memory_order_acq_rel);
     ++window_.env_incomplete;
     if (!refreshed && previous != 0) {

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <cstdint>
 #include <string_view>
@@ -13,6 +14,15 @@ inline constexpr uint32_t kEnd = 0x7F000016u;
 constexpr bool IsMarker(uint32_t marker) {
   return marker == kDrawn || marker == kHeld || marker == kEnd;
 }
+
+struct Eye {
+  std::array<float, 3> position{};
+  bool valid = false;
+};
+
+// End carries the freshly rendered probe eye. Held carries the current view
+// eye, which may have moved since the probe was rendered.
+void SubmitMarker(uint32_t bucket, uint32_t renderer, const Eye& eye);
 
 inline constexpr uint32_t kMapPage = 0x032E2u;
 inline constexpr uint32_t kMipPage = 0x033E2u;

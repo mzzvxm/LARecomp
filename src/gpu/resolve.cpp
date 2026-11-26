@@ -9,6 +9,7 @@
 
 #include "resolve.h"
 #include "cascade_schedule.h"
+#include "env_fallback_rules.h"
 #include "env_hold_link.h"
 #include "hud_map_hold.h"
 
@@ -597,26 +598,29 @@ const ResolveCache::Product* ResolveCache::FindOverlap(uint32_t start, uint32_t 
   return found;
 }
 
-bool ResolveCache::EnvProductsReady(Scale map_scale, bool refreshed) {
+ResolveCache::EnvProducts ResolveCache::CheckEnvProducts(Scale map_scale, bool refreshed) {
   DrainInvalidations();
   const Product* map = FindOverlap(env_hold::kMapPage << 12, 1);
-  const Product* spec = FindOverlap(env_hold::kSpecPage << 12, 1);
-  const auto valid = [this, refreshed](const Product* p, uint32_t page, uint32_t width,
-                                      uint32_t height, size_t levels) {
+  const auto valid = [](const Product* p, uint32_t page, uint32_t width,
+                        uint32_t height, size_t levels, uint64_t written) {
     return p && p->active && p->texture && !p->depth_source &&
            p->layout == plume::RenderTextureLayout::SHADER_READ &&
            p->key.base_page == page && p->key.width == width && p->key.height == height &&
            p->coverage.size() == levels &&
-           std::all_of(p->coverage.begin(), p->coverage.end(), [this, refreshed](const auto& c) {
-             return c.cells_x && c.cells_y && c.complete() &&
-                    ((c.last_write_frame == frame_) == refreshed);
+           std::all_of(p->coverage.begin(), p->coverage.end(), [written](const auto& c) {
+             return env_fallback::LevelMatches(written, c.last_write_frame,
+                                               c.cells_x && c.cells_y && c.complete());
            });
   };
   // CHECK: capture a drawn and a held frame on both APIs. The held frame must
   // have the same four map levels and specular copy, with no clears or resolves.
-  return valid(map, env_hold::kMapPage, 512, 256, 4) && map->own_scale &&
-         map->scale == map_scale && map->key.mip_page == env_hold::kMipPage &&
-         valid(spec, env_hold::kSpecPage, 64, 32, 1);
+  if (!map || !map->own_scale || map->scale != map_scale || map->key.mip_page != env_hold::kMipPage ||
+      map->coverage.empty()) return {};
+  const uint64_t written = map->coverage.front().last_write_frame;
+  if ((written == frame_) != refreshed ||
+      !valid(map, env_hold::kMapPage, 512, 256, env_fallback::kLevels, written)) return {};
+  const Product* spec = FindOverlap(env_hold::kSpecPage << 12, 1);
+  return {written, valid(spec, env_hold::kSpecPage, 64, 32, 1, written)};
 }
 
 std::optional<ResolveCache::HudMapCopy> ResolveCache::DescribeHudMapCopy(const ResolveRecord& r) {

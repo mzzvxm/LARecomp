@@ -22,7 +22,6 @@
 #include "descriptors.h"
 #include "device.h"
 #include "dlss_rr_rules.h"
-#include "env_fallback_rules.h"
 #include "gbuffer.h"
 #include "gpu_class.h"
 #include "host_shaders.h"
@@ -169,6 +168,7 @@ void ScreenReflections::Shutdown() {
   classify_key_.valid = false;
   frames_ring_ = nullptr;
   resolves_ = nullptr;
+  InvalidateEnvCapture();
   reuse_key_.valid = false;
   capture_hit_framebuffer_.reset();
   capture_hit_.framebuffer.reset();
@@ -632,9 +632,11 @@ void ScreenReflections::BeginFrame(gbuffer::PauseFxView pause_fx) {
   // board at the temporal system's frame boundary, which comes right after this call (frame_order.h kBeginSsr, kBeginTemporal: lag 0). Only a flag is set; with the plan not RR nothing else changes.
   denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);
   const bool classify = larecomp::settings::mcla_gpu_ssr_classify.Get();
-  if (classify_enabled_ != classify) {
+  const bool env = env_fallback::Enabled();
+  if (classify_enabled_ != classify || env_enabled_ != env) {
     classify_key_.valid = last_key_.valid = regen_key_.valid = false;
     classify_enabled_ = classify;
+    env_enabled_ = env;
   }
   rt_.BeginFrame(garage ? ssr::Level::kOff : level_, classify_enabled_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
   // CITY-RT R6: the fallback is a consumer of the DENOISER row too (rr::kConsumers kCityRtReflections: its one ray a pixel is what Ray Reconstruction is for). `wanted` is the fallback's own answer: the effect is on, the
@@ -1044,8 +1046,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   handoff::Frame handoff_frame;
   handoff_frame.enabled = handoff_enabled_;
   handoff_frame.exposure = sf.camera.exposure_bias > 0.0f ? sf.camera.exposure_bias : ssr::kDefaultExposure;
-  if (handoff_enabled_ && axes.ok && resolves_ && device_ && heap_) {
-    handoff_frame.env_word = env_fallback::MapWord(*resolves_, *edram_, *device_, *heap_, sf.frame_serial);
+  if (handoff_enabled_ && env_enabled_ && axes.ok && resolves_ && edram_ && device_ && heap_) {
+    handoff_frame.env_word = env_fallback::MapWord(*resolves_, *edram_, *device_, *heap_, env_probe_.written());
+    handoff_frame.env_camera_delta = env_probe_.CameraDelta();
+    handoff_frame.env_has_origin = env_probe_.has_origin();
   }
   const bool same_lens = reuse_tan_[0] == sf.camera.tan_half_fov[0] && reuse_tan_[1] == sf.camera.tan_half_fov[1] &&
       reuse_near_ == sf.camera.near_plane && reuse_projection_ == std::array{sf.camera.lin[0], sf.camera.lin[1], sf.camera.lin[2], sf.camera.lin[3]};
@@ -1533,6 +1537,8 @@ bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::P
 }
 
 void ScreenReflections::OnPresent() {
+  // An env marker can precede the trace by more than one command list.
+  env_probe_.EndFrame();
   capture_signal_ = nullptr;
   capture_hit_ready_ = false;
   capture_road_ready_ = false;

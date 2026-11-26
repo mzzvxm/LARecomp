@@ -57,6 +57,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "env_hold_link.h"
 #include "gpu.h"
 #include "records.h"
 #include "stream.h"
@@ -64,6 +65,14 @@
 namespace mcla::gpu {
 
 namespace view_hold { struct MapSample; }
+
+struct EnvMarkerRecord {
+  CompositeRecord marker;
+  env_hold::Eye eye;
+};
+static_assert(std::is_trivially_copyable_v<EnvMarkerRecord>);
+static_assert(AlignRecord(sizeof(RecordHeader) + sizeof(EnvMarkerRecord)) >
+              AlignRecord(sizeof(RecordHeader) + sizeof(CompositeRecord)));
 
 class GuestCapture {
  public:
@@ -141,6 +150,7 @@ class GuestCapture {
   // thread.
   void Composite(uint32_t bucket, uint32_t tag = 0);  // `tag`: the record's second word (the rear view mirror's begin marker: the phase's field)
   void HudMapSample(const view_hold::MapSample& sample);
+  void EnvMarker(uint32_t bucket, uint32_t renderer, const env_hold::Eye& eye);
 
   // D3DQuery::Issue's sample count event (sub_824302F0), before the original: the
   // begin or the end of the guest's occlusion query `query`. Writes what the console's

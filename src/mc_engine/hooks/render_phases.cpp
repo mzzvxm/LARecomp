@@ -135,6 +135,7 @@ constexpr uint32_t kRenderBuffer = 0x827E5640u;
 
 // Only the phase loop's thread reads or writes this state.
 thread_local hold::Sample g_env_capture{};
+thread_local env::Eye g_env_view_eye{};
 thread_local uint32_t g_env_renderer = 0;
 thread_local uint32_t g_env_marker = 0;
 thread_local bool g_env_have_capture = false;
@@ -176,15 +177,11 @@ void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
         env::g_ready_renderer.load(std::memory_order_acquire) == renderer.u32;
     g_env_renderer = renderer.u32;
     g_env_marker = env::kDrawn;
-    if (!enabled) {
-        g_env_have_capture = false;
-        return;
-    }
     hold::Sample now;
     const uint32_t buffer = ReadGuestU32(base, kRenderBuffer);
-    if (buffer < 4) {
+    if (buffer < 4 && mcla::native_gfx::IsGuestRangeReadable(renderer.u32 + 180u + 4u * buffer, 4)) {
         const uint32_t viewport = ReadGuestU32(base, renderer.u32 + 180u + 4u * buffer);
-        if (GuestPointer(viewport)) {
+        if (GuestPointer(viewport) && mcla::native_gfx::IsGuestRangeReadable(viewport + 80u, 44)) {
             // The main viewport's world matrix is at +64. Phase 4 reads its
             // position from row 3 and builds the paraboloid in fixed world axes.
             for (uint32_t i = 0; i < 3; ++i) {
@@ -193,6 +190,11 @@ void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
                 now.camera.position[i] = ReadGuestF32(base, viewport + 112u + 4u * i);
             }
         }
+    }
+    g_env_view_eye = {now.camera.position, hold::Positioned(now.camera)};
+    if (!enabled) {
+        g_env_have_capture = false;
+        return;
     }
     now.time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count();
@@ -213,7 +215,7 @@ void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
         g_env_marker = env::kHeld;
         return;
     }
-    g_env_have_capture = hold::Positioned(now.camera);
+    g_env_have_capture = g_env_view_eye.valid;
     g_env_capture = now;
 #endif
 }
@@ -293,7 +295,11 @@ bool Patch_SkipHeldEnvironmentPhase(PPCRegister& phase) {
 #if defined(LARECOMP_HAS_GPU)
     if ((phase.u32 & kEnvPhases) == 0 || g_env_marker == 0) return false;
     if (phase.u32 == 0x4u) {
-        mcla::gpu::OnGuestSceneComposited(g_env_marker, g_env_renderer);
+        if (g_env_marker == env::kHeld) {
+            env::SubmitMarker(g_env_marker, g_env_renderer, g_env_view_eye);
+        } else {
+            mcla::gpu::OnGuestSceneComposited(g_env_marker, g_env_renderer);
+        }
     }
     return g_env_marker == env::kHeld;
 #else
@@ -305,7 +311,7 @@ void FinishEnvViewPhase(const PPCRegister& phase) {
 #if defined(LARECOMP_HAS_GPU)
     if (phase.u32 != 0x8u) return;
     if (g_env_marker == env::kDrawn) {
-        mcla::gpu::OnGuestSceneComposited(env::kEnd, g_env_renderer);
+        env::SubmitMarker(env::kEnd, g_env_renderer, g_env_view_eye);
     }
     g_env_marker = 0;
 #endif

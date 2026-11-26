@@ -100,6 +100,7 @@
 
 #include "constants.h"
 #include "edram.h"
+#include "env_fallback_rules.h"
 #include "frame.h"
 #include "guest_frame.h"
 #include "host_passes.h"
@@ -164,6 +165,10 @@ class ScreenReflections {
   // A frame's first list: reads the settings, declares what the effect wants of the shared products and of the G-buffer (ssr_rules.h WantedProducts / WantedPlanes: only while it is on; sticky; the
   // owners read them at their own frame start, which Scene::BeginFrame runs AFTER this call, so the wants take effect in this very frame: frame_order.h kBeginSsr, lag 0), forgets the frame's draws.
   void BeginFrame(gbuffer::PauseFxView pause_fx);
+  void InvalidateEnvCapture() { env_probe_ = {}; }
+  void NoteEnvCapture(uint32_t renderer, uint64_t written, bool refreshed, const env_hold::Eye& eye) {
+    env_probe_.Note(renderer, written, refreshed, eye);
+  }
   // True while the effect is on: the Scene then tells it the main view's draws (the wetness).
   bool wants_draws() const { return level_ != ssr::Level::kOff || garage_level_ != ssr::Level::kOff; }
   // A prepared draw of the main view, before the trigger: its vertex constants' wetness (VS c43.x, gReflectionParams.x: 0.095 dry, 1.17 in rain) is a vote for the road's.
@@ -254,6 +259,8 @@ class ScreenReflections {
   float reuse_near_ = 0.0f;
   float reuse_exposure_ = 1.0f;
   bool handoff_enabled_ = false;
+  bool env_enabled_ = false;
+  env_fallback::ProbeFrame env_probe_;
   bool last_handoff_enabled_ = false;
 
   Device* device_ = nullptr;
