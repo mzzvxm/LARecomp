@@ -26,10 +26,6 @@
 #include "temporal_dlss.h"
 #include "uma_budget.h"
 
-namespace plume {
-extern std::unique_ptr<RenderInterface> CreateVulkanInterface();
-}  // namespace plume
-
 namespace mcla::gpu::backend::vulkan {
 
 bool EnableDebugLayer() {
@@ -41,9 +37,8 @@ bool EnableDebugLayer() {
   return false;
 }
 
-void InstallDebugMessageSink(plume::RenderDevice*) {
-  // EnableDebugLayer never succeeds on Vulkan (see above), so there is no layer
-  // whose messages could be routed.
+void InstallDebugMessageSink(plume::RenderDevice*, bool) {
+  // The messenger is installed on the instance in CreateInterface.
 }
 
 void* CaptureDebugDevice(plume::RenderDevice*) {
@@ -54,18 +49,64 @@ void ReportLiveObjects(void*) {}
 
 void ReleaseDebugDevice(void*) {}
 
-std::unique_ptr<plume::RenderInterface> CreateInterface() {
-#if defined(LARECOMP_PLUME_STREAMLINE)
-  // NVIDIA Streamline (temporal_dlss.h), started before the instance when DLSS is the choice:
-  // Plume loads every Vulkan function through the interposer's vkGetInstanceProcAddr, whose
-  // vkCreateInstance and vkCreateDevice add the extensions, features and queues DLSS needs.
-  if (void* hook = dlss::VulkanInstanceProcAddr()) {
-    plume::VulkanInterfaceHooks hooks;
-    hooks.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(hook);
-    return plume::CreateVulkanInterface(hooks);
+namespace {
+
+VKAPI_ATTR VkBool32 VKAPI_CALL OnPipelineDebugMessage(
+    VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
+    const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+  if (data && data->pMessage) {
+    PipelineDebugCapture::Append(data->pMessage);
+    if (severity == VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
+      REXLOG_ERROR("[gpu] Vulkan debug layer: {}", data->pMessage);
+    } else {
+      REXLOG_WARN("[gpu] Vulkan debug layer: {}", data->pMessage);
+    }
   }
+  return VK_FALSE;
+}
+
+class VulkanInterfaceWithPipelineDebug final : public plume::VulkanInterface {
+ public:
+  explicit VulkanInterfaceWithPipelineDebug(const plume::VulkanInterfaceHooks& hooks)
+      : VulkanInterface(hooks) {
+    // CHECK: confirm the validation text reaches the failure line on the ROG lane.
+    if (instance && debugUtils && vkCreateDebugUtilsMessengerEXT && vkDestroyDebugUtilsMessengerEXT) {
+      VkDebugUtilsMessengerCreateInfoEXT info{};
+      info.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+      info.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+      info.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+      info.pfnUserCallback = &OnPipelineDebugMessage;
+      if (vkCreateDebugUtilsMessengerEXT(instance, &info, nullptr, &messenger_) != VK_SUCCESS) {
+        messenger_ = VK_NULL_HANDLE;
+      }
+    }
+  }
+
+  ~VulkanInterfaceWithPipelineDebug() override {
+    if (messenger_ && vkDestroyDebugUtilsMessengerEXT) {
+      vkDestroyDebugUtilsMessengerEXT(instance, messenger_, nullptr);
+    }
+  }
+
+ private:
+  VkDebugUtilsMessengerEXT messenger_ = VK_NULL_HANDLE;
+};
+
+}  // namespace
+
+std::unique_ptr<plume::RenderInterface> CreateInterface() {
+  plume::VulkanInterfaceHooks hooks;
+#if defined(LARECOMP_PLUME_STREAMLINE)
+  // Streamline supplies the Vulkan entry points when it owns device creation.
+  hooks.getInstanceProcAddr = reinterpret_cast<PFN_vkGetInstanceProcAddr>(dlss::VulkanInstanceProcAddr());
 #endif
-  return plume::CreateVulkanInterface();
+  auto interface = std::make_unique<VulkanInterfaceWithPipelineDebug>(hooks);
+  if (!interface->isValid()) {
+    return nullptr;
+  }
+  return interface;
 }
 
 // Vulkan has no factory: with the interposer's functions loaded (backend_vulkan.cpp CreateInterface)
@@ -86,6 +127,16 @@ bool IsNullBacked(const plume::RenderTextureView* view) {
 
 bool IsNullBacked(const plume::RenderBuffer* buffer) {
   return !buffer || static_cast<const plume::VulkanBuffer*>(buffer)->vk == VK_NULL_HANDLE;
+}
+
+std::string DescribeGraphicsPipelineFailure(const plume::RenderPipeline& pipeline) {
+  return []<typename Pipeline>(const Pipeline& native) {
+    if constexpr (requires { native.creationResult; }) {
+      const char* call = native.renderPass ? "vkCreateGraphicsPipelines" : "vkCreateRenderPass";
+      return std::format("{} VkResult {}", call, static_cast<int32_t>(native.creationResult));
+    }
+    return std::string("graphics pipeline VkResult unavailable in this Plume revision");
+  }(static_cast<const plume::VulkanGraphicsPipeline&>(pipeline));
 }
 
 bool IsNullBacked(const plume::RenderPipeline* graphics_pipeline) {

@@ -4,9 +4,46 @@
 // backend_vulkan.cpp, the only two that include a backend's Plume header);
 // backend.cpp forwards every backend.h call to the active one.
 
+#include <cstddef>
+
 #include "backend.h"
 
 namespace mcla::gpu::backend {
+
+// The APIs deliver creation diagnostics on the calling thread. Keep the
+// messages with that call even when background pipeline workers run in parallel.
+class PipelineDebugCapture {
+ public:
+  PipelineDebugCapture() : previous_(active_) { active_ = this; }
+  ~PipelineDebugCapture() { active_ = previous_; }
+  PipelineDebugCapture(const PipelineDebugCapture&) = delete;
+  PipelineDebugCapture& operator=(const PipelineDebugCapture&) = delete;
+
+  std::string_view text() const { return {text_, length_}; }
+
+  static void Append(const char* message) noexcept {
+    if (!active_ || !message || !*message) {
+      return;
+    }
+    if (active_->length_) {
+      active_->AppendText(" | ");
+    }
+    active_->AppendText(message);
+  }
+
+ private:
+  void AppendText(const char* text) noexcept {
+    while (*text && length_ < sizeof(text_)) {
+      const char ch = *text++;
+      text_[length_++] = ch == '\r' || ch == '\n' ? ' ' : ch;
+    }
+  }
+
+  inline static thread_local PipelineDebugCapture* active_ = nullptr;
+  PipelineDebugCapture* previous_;
+  char text_[2048];
+  std::size_t length_ = 0;
+};
 
 // The GPU the renderer will run on, as DXGI lists it (d3d12::DescribeRenderingAdapter). Asked
 // before any backend exists, to decide graphics_backend = "auto" (ChooseAutoBackend, backend.h).
@@ -26,12 +63,13 @@ void NameCrashQueue(plume::RenderCommandQueue* queue);
 void NameCrashList(plume::RenderCommandList* list, uint32_t slot, uint32_t batch);
 void RecordCrashPass(plume::RenderCommandList* list, std::string_view label);
 bool ForceDeviceRemoval(plume::RenderDevice* device);
-void InstallDebugMessageSink(plume::RenderDevice* device);
+void InstallDebugMessageSink(plume::RenderDevice* device, bool requested);
 // LiveObjectReport: the device's debug interface (an ID3D12DebugDevice*), or null.
 void* CaptureDebugDevice(plume::RenderDevice* device);
 void ReportLiveObjects(void* debug_device);  // and releases it
 void ReleaseDebugDevice(void* debug_device);
 std::unique_ptr<plume::RenderInterface> CreateInterface();
+std::string DescribeGraphicsPipelineFailure(const plume::RenderPipeline& pipeline);
 bool IsNullBacked(const plume::RenderTexture* texture);
 bool IsNullBacked(const plume::RenderTextureView* view);
 bool IsNullBacked(const plume::RenderBuffer* buffer);
@@ -89,11 +127,12 @@ namespace vulkan {
 AcquireResult TryAcquireImage(plume::RenderSwapChain* swap_chain,
                               plume::RenderCommandSemaphore* signal, uint32_t* image);
 bool EnableDebugLayer();
-void InstallDebugMessageSink(plume::RenderDevice* device);
+void InstallDebugMessageSink(plume::RenderDevice* device, bool requested);
 void* CaptureDebugDevice(plume::RenderDevice* device);
 void ReportLiveObjects(void* debug_device);
 void ReleaseDebugDevice(void* debug_device);
 std::unique_ptr<plume::RenderInterface> CreateInterface();
+std::string DescribeGraphicsPipelineFailure(const plume::RenderPipeline& pipeline);
 bool IsNullBacked(const plume::RenderTexture* texture);
 bool IsNullBacked(const plume::RenderTextureView* view);
 bool IsNullBacked(const plume::RenderBuffer* buffer);

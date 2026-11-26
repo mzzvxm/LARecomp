@@ -69,11 +69,14 @@ void __stdcall OnD3D12DebugMessage(D3D12_MESSAGE_CATEGORY category,
   switch (severity) {
     case D3D12_MESSAGE_SEVERITY_CORRUPTION:
     case D3D12_MESSAGE_SEVERITY_ERROR:
+      // CHECK: confirm the InfoQueue text reaches the failure line with the debug layer on.
+      PipelineDebugCapture::Append(description);
       REXLOG_ERROR("[gpu] D3D12 debug layer (category {}, id {}): {}",
                    static_cast<int>(category), static_cast<int>(id),
                    description ? description : "");
       break;
     case D3D12_MESSAGE_SEVERITY_WARNING:
+      PipelineDebugCapture::Append(description);
       REXLOG_WARN("[gpu] D3D12 debug layer (category {}, id {}): {}", static_cast<int>(category),
                   static_cast<int>(id), description ? description : "");
       break;
@@ -84,15 +87,17 @@ void __stdcall OnD3D12DebugMessage(D3D12_MESSAGE_CATEGORY category,
 
 }  // namespace
 
-void InstallDebugMessageSink(plume::RenderDevice* device) {
+void InstallDebugMessageSink(plume::RenderDevice* device, bool requested) {
   auto* dev = static_cast<plume::D3D12Device*>(device);
   if (!dev || !dev->d3d) {
     return;
   }
   ID3D12InfoQueue1* queue = nullptr;
   if (FAILED(dev->d3d->QueryInterface(IID_PPV_ARGS(&queue))) || !queue) {
-    REXLOG_ERROR("[gpu] the D3D12 debug layer is not active on this device (no ID3D12InfoQueue1): "
-                 "its messages cannot be logged");
+    if (requested) {
+      REXLOG_ERROR("[gpu] the D3D12 debug layer is not active on this device (no ID3D12InfoQueue1): "
+                   "its messages cannot be logged");
+    }
     return;
   }
   // Notes this renderer produces by design, kept out so that what is left is
@@ -227,6 +232,17 @@ bool IsNullBacked(const plume::RenderTextureView* view) {
 
 bool IsNullBacked(const plume::RenderBuffer* buffer) {
   return !buffer || static_cast<const plume::D3D12Buffer*>(buffer)->d3d == nullptr;
+}
+
+std::string DescribeGraphicsPipelineFailure(const plume::RenderPipeline& pipeline) {
+  // The native result is available with Plume's graphics pipeline diagnostics patch.
+  return []<typename Pipeline>(const Pipeline& native) {
+    if constexpr (requires { native.creationResult; }) {
+      return std::format("CreateGraphicsPipelineState HRESULT {:#010x}",
+                         static_cast<uint32_t>(native.creationResult));
+    }
+    return std::string("CreateGraphicsPipelineState HRESULT unavailable in this Plume revision");
+  }(static_cast<const plume::D3D12GraphicsPipeline&>(pipeline));
 }
 
 bool IsNullBacked(const plume::RenderPipeline* graphics_pipeline) {
