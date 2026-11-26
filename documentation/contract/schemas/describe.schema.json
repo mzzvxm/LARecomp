@@ -8,6 +8,7 @@
   "properties": {
     "schema": { "const": "larecomp.describe" },
     "schema_version": { "type": "integer", "minimum": 1 },
+    "min_launcher": { "type": "string", "pattern": "^[0-9]+(\\.[0-9]+){0,3}$", "description": "optional: the oldest LAUNCHER PROGRAM (the app the player runs; its own version is <major>.<days since 2026-01-01>.<minute of day>, like 1.332.480) that can set up and run this game version. A launcher whose version is lower must not build or update to this game version: it shows a 'this game version needs a newer launcher' screen and keeps the install it has. min_reader is the contract-format gate; this is the program gate (new setup actions, new launcher features the game relies on). Absent means no requirement; a launcher that cannot parse the value ignores it. The single source is min_launcher of launcher-recipe.json at the game repo root; the other contract files take the value from it." },
     "game_version": { "type": "string" },
     "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
     "contracts": {

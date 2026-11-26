@@ -1,11 +1,14 @@
-"""Validator of the four launcher-follows-the-game contract files (LAUNCHER-FOLLOWS-GAME.md): settings-ui.json, machine.json, install-manifest.json,
-launcher-recipe.json (and the small --describe document). It checks a JSON against its schema in schemas/ and then the rules a schema cannot express
+"""Validator of the launcher-follows-the-game contract files (LAUNCHER-FOLLOWS-GAME.md): settings-ui.json, machine.json, install-manifest.json,
+launcher-recipe.json (and the small --describe document and the dependency pins, cmake/deps.json). It checks a JSON against its schema in schemas/ and then the rules a schema cannot express
 (section 3, "Writers"): an expression parses, only declared namespaces and functions, every fact path is in fact-dictionary.json, a setting a row names exists,
 a value id is valid for its setting, `apply` agrees with `life`, `live.*` has a `??` fallback, presets cover what they should, facts_used is what the rules read.
 
     python -I documentation/contract/validate_contract.py [--kind K] [--strict] [--quiet] FILE...     check files (kind from their "schema" word)
     python -I documentation/contract/validate_contract.py --selftest                                   the validator's own tests (examples must pass, mutations must fail)
     python -I documentation/contract/validate_contract.py --facts-used FILE                           print the facts_used list of a settings-ui.json
+
+Several files in one run are one game build: they must carry the same optional min_launcher (the oldest launcher program that can set up this game version;
+the value of launcher-recipe.json, the one place it is edited, when the recipe is among the files). A malformed min_launcher is an error.
 
 Output: one line per finding, `ERROR|WARN|INFO <file>: <where>: <what>`; exit 0 when there is no ERROR (with --strict, no WARN either).
 As a module: validate(doc, kind=None, dictionary=None, strict=False, manifest=None) -> Report(errors, warnings, infos). Pure Python 3, no packages (the JSON Schema
@@ -27,6 +30,7 @@ KINDS = {
     'larecomp.install-manifest': 'install-manifest',
     'larecomp.launcher-recipe': 'launcher-recipe',
     'larecomp.describe': 'describe',
+    'larecomp.deps': 'deps',
 }
 SCHEMA_FILES = {
     'settings-ui': 'settings-ui.schema.json',
@@ -34,7 +38,13 @@ SCHEMA_FILES = {
     'install-manifest': 'install-manifest.schema.json',
     'launcher-recipe': 'launcher-recipe.schema.json',
     'describe': 'describe.schema.json',
+    'deps': 'deps.schema.json',
 }
+# min_launcher: 1 to 4 dot-separated non-negative integers (the launcher program's own version scheme). Read with fullmatch: a schema `$` also
+# accepts a trailing newline.
+MIN_LAUNCHER = re.compile(r'[0-9]+(\.[0-9]+){0,3}')
+SDK_COMMIT = re.compile(r'[0-9a-f]{40}')
+SDK_PIN_FILE = 'tools/release/lar-rxsdk.pin'
 FACT_NAMESPACES = ('gpu', 'api', 'features', 'os', 'display', 'cpu', 'build', 'install', 'live')
 FUNCTIONS = {'resolved': 1, 'auto_of': 1, 'known': 1, 'contains': 2, 'min': 2, 'max': 2}
 KNOWN_KINDS = ('choice', 'bool', 'number', 'text', 'color', 'action', 'link', 'carbon')
@@ -1198,6 +1208,10 @@ def lint_machine(doc, rep, facts, strict=False):
 _PLACEHOLDER = re.compile(r'\{([^{}]*)\}')
 
 
+def is_relative_file(path):
+    return not re.search(r'[:\\\x00-\x1f]', path) and all(part not in ('', '.', '..') for part in path.split('/'))
+
+
 def lint_manifest(doc, rep, facts, strict=False):
     if 'launch' in doc:
         launch = doc['launch']
@@ -1205,6 +1219,12 @@ def lint_manifest(doc, rep, facts, strict=False):
             rep.error('launch.game_root', 'expected one flag with the {game_root} placeholder as its value')
         if not re.fullmatch(r'--[a-z][a-z0-9_]*=true', launch['debug_menu']):
             rep.error('launch.debug_menu', 'expected one flag with true as its value')
+        if 'program' in launch and not is_relative_file(launch['program']):
+            rep.error('launch.program', 'expected a relative file path in the game folder')
+    files = doc.get('files', {})
+    for name in ('join_status', 'machine', 'settings_ui'):
+        if name in files and not is_relative_file(files[name]):
+            rep.error(f'files.{name}', 'expected a relative file path in the game folder')
     ids = [a['id'] for a in doc.get('actions', [])]
     for i, a in enumerate(doc.get('actions', [])):
         w = f'actions[{a["id"]}]'
@@ -1271,6 +1291,19 @@ def lint_manifest(doc, rep, facts, strict=False):
 # ---- launcher-recipe.json ---------------------------------------------------------------------------------------------------------------
 
 def lint_recipe(doc, rep, facts, strict=False):
+    if 'sdk' in doc:
+        commit = doc['sdk']['commit']
+        if not SDK_COMMIT.fullmatch(commit):
+            rep.error('sdk.commit', 'expected exactly 40 lowercase hexadecimal digits')
+        else:
+            try:
+                with open(os.path.join(HERE, '..', '..', SDK_PIN_FILE), encoding='ascii') as stream:
+                    pin = stream.read().rstrip('\n')
+            except (OSError, UnicodeError) as error:
+                rep.error('sdk.commit', f'cannot read the repository SDK pin {SDK_PIN_FILE}: {error}')
+            else:
+                if commit != pin:
+                    rep.error('sdk.commit', f'must match the repository SDK pin in {SDK_PIN_FILE} ({pin!r})')
     names = [o['name'] for o in doc.get('options', [])]
     for i, o in enumerate(doc.get('options', [])):
         w = f'options[{o["name"]}]'
@@ -1287,11 +1320,24 @@ def lint_recipe(doc, rep, facts, strict=False):
     for i in ids:
         if ids.count(i) > 1:
             rep.error('steps', f'step id {i!r} is used twice')
-    if 'codegen' in doc and not doc['codegen'].get('inputs'):
-        rep.warn('codegen', 'inputs lists the files the code generation reads (the launcher checks they exist before it runs the tool)')
+    if 'codegen' in doc:
+        codegen = doc['codegen']
+        inputs = codegen.get('inputs', [])
+        if not inputs:
+            rep.warn('codegen', 'inputs lists the files the code generation reads (the launcher checks they exist before it runs the tool)')
+        for name, path in codegen.get('place', {}).items():
+            where = f'codegen.place[{name!r}]'
+            if name not in inputs or not is_relative_file(name):
+                rep.error(where, 'expected a relative file name listed in codegen.inputs')
+            if not is_relative_file(path):
+                rep.error(where, 'expected a relative file path in the source checkout')
 
 
 def lint_describe(doc, rep, facts, strict=False):
+    pass
+
+
+def lint_deps(doc, rep, facts, strict=False):
     pass
 
 
@@ -1301,7 +1347,51 @@ LINTS = {
     'install-manifest': lint_manifest,
     'launcher-recipe': lint_recipe,
     'describe': lint_describe,
+    'deps': lint_deps,
 }
+
+
+def lint_min_launcher(doc, rep):
+    """min_launcher (every contract file): the exact shape the launcher reads. The schema's `pattern` runs as a search, so this repeats it as a
+    full match (a trailing newline is not a version)."""
+    shown = {e.split(':', 1)[0] for e in rep.errors}
+    value = doc.get('min_launcher')
+    if isinstance(value, str) and not MIN_LAUNCHER.fullmatch(value) and '$.min_launcher' not in shown:
+        rep.error('$.min_launcher', f'{value!r} is not 1 to 4 numbers separated by dots, like "1.0.0"')
+
+
+def lint_setup_launcher_floor(doc, rep, kind):
+    """The first launcher understands the default build steps and stdout grammar 1."""
+    if kind == 'launcher-recipe':
+        if not doc.get('steps'):
+            return
+        feature = 'recipe steps'
+    elif kind == 'install-manifest':
+        if not any(action.get('stdout', {}).get('grammar', 1) >= 2 for action in doc.get('actions', [])):
+            return
+        feature = 'stdout grammar 2 or later'
+    else:
+        return
+    major, *rest = (part.lstrip('0') for part in doc.get('min_launcher', '0').split('.'))
+    if not major or (major == '1' and not any(rest)):
+        rep.error('min_launcher', f'{feature} requires a value above 1.0.0')
+
+
+def min_launcher_findings(named_docs):
+    """The files of one game build must agree on min_launcher: (name, doc) pairs in, (name, message) pairs out. When a launcher-recipe is among
+    them it is the source: every other file carries its value (or, when the recipe has none, none). Without a recipe the files agree with the first."""
+    docs = [(n, d) for n, d in named_docs if isinstance(d, dict)]
+    recipe = next(((n, d) for n, d in docs if d.get('schema') == 'larecomp.launcher-recipe'), None)
+    source_name, source = recipe if recipe else (docs[0] if docs else (None, {}))
+    want = source.get('min_launcher')
+    out = []
+    for name, doc in docs:
+        have = doc.get('min_launcher')
+        if have != want:
+            shown = 'no min_launcher' if have is None else f'min_launcher {have!r}'
+            wanted = 'none' if want is None else repr(want)
+            out.append((name, f'{shown}, but {source_name} has {wanted}: every file of one game build carries the value of launcher-recipe.json'))
+    return out
 
 
 def validate(doc, kind=None, dictionary_doc=None, strict=False):
@@ -1315,8 +1405,10 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False):
     schema = schema_of(kind)
     for path, msg in schema_errors(doc, schema, schema):
         rep.error(path, msg)
+    lint_min_launcher(doc, rep)
     if rep.errors:
         return rep   # the rules assume the shape
+    lint_setup_launcher_floor(doc, rep, kind)
     facts = FactTypes(dictionary_doc or dictionary())
     used = LINTS[kind](doc, rep, facts, strict)
     rep.used = used
@@ -1353,6 +1445,49 @@ def selftest():
         rep = validate(doc)
         check(not rep.errors and not rep.warnings, f'{f}: {(rep.errors + rep.warnings)[:3]}')
     check(len(examples) >= 7, 'the examples folder has the golden files')
+    # 2b. min_launcher: every golden file (the fleet and the dependency example too) carries the value of the recipe example, the only edit point
+    golden = []
+    for dirpath, _, names in sorted(os.walk(ex_dir)):
+        for f in sorted(names):
+            if f.endswith('.json'):
+                full = os.path.join(dirpath, f)
+                golden.append((os.path.relpath(full, ex_dir).replace(os.sep, '/'), load_json(full)))
+    check(len(golden) >= 20, 'the examples folder has the fleet and the dependency example')
+    for name, doc in golden:
+        check('min_launcher' in doc, f'{name}: has no min_launcher')
+        rep = validate(doc)
+        check(not rep.errors and not rep.warnings, f'{name}: {(rep.errors + rep.warnings)[:3]}')
+    check(not min_launcher_findings(golden), f'the examples disagree on min_launcher: {min_launcher_findings(golden)[:2]}')
+    by_schema = {doc['schema']: doc for _, doc in golden}
+    check(set(by_schema) == set(KINDS), f'an example for every kind: {sorted(set(KINDS) - set(by_schema))}')
+    recipe_example = by_schema['larecomp.launcher-recipe']
+    for bad in ('1.x', '', '1.2.3.4.5', '1..2', ' 1.0', '1.0.0\n', '-1.0', 'v1.0', 7, 1.5, None, ['1.0.0']):
+        for schema_word, doc in by_schema.items():
+            d = copy.deepcopy(doc)
+            d['min_launcher'] = bad
+            rep = validate(d)
+            check(rep.errors, f'{schema_word}: min_launcher {bad!r} is not reported')
+    for good in ('0', '1', '1.0', '1.336.600', '1.0.0.7', '12.345.678.9'):
+        for schema_word, doc in by_schema.items():
+            d = copy.deepcopy(doc)
+            d['min_launcher'] = good
+            rep = validate(d)
+            check(not rep.errors and not rep.warnings, f'{schema_word}: min_launcher {good!r} is refused: {(rep.errors + rep.warnings)[:1]}')
+    for schema_word, doc in by_schema.items():
+        d = copy.deepcopy(doc)
+        d.pop('min_launcher')
+        rep = validate(d)
+        check(not rep.errors and not rep.warnings, f'{schema_word}: a file without min_launcher means no requirement: {(rep.errors + rep.warnings)[:1]}')
+    # the files of one run agree with the recipe's value
+    for what, docs, expected in [
+        ('a file with another value', [('recipe', recipe_example), ('x', {**by_schema['larecomp.machine'], 'min_launcher': '1.0.1'})], 1),
+        ('a file without the value next to a recipe with it', [('recipe', recipe_example), ('x', {k: v for k, v in by_schema['larecomp.describe'].items() if k != 'min_launcher'})], 1),
+        ('a file with a value next to a recipe without it', [('recipe', {k: v for k, v in recipe_example.items() if k != 'min_launcher'}), ('x', by_schema['larecomp.describe'])], 1),
+        ('two files that agree, no recipe', [('a', by_schema['larecomp.machine']), ('b', by_schema['larecomp.describe'])], 0),
+        ('two files that differ, no recipe', [('a', by_schema['larecomp.machine']), ('b', {**by_schema['larecomp.describe'], 'min_launcher': '2.0'})], 1),
+        ('a recipe and nothing else', [('recipe', recipe_example)], 0),
+    ]:
+        check(len(min_launcher_findings(docs)) == expected, f'min_launcher agreement, {what}: {min_launcher_findings(docs)}')
     # 3. the parser agrees with the shared condition vectors (syntax, unsupported calls, paths, unguarded live)
     tests = load_json(os.path.join(HERE, 'condition-tests.json'))
     n = 0
@@ -1445,6 +1580,7 @@ def selftest():
         ('machine: a contradictory API fact', lambda d: d['api']['by_api']['d3d12'].update(car_rt=False), 'corresponding active API fact'),
         ('machine: an invalid API tier', lambda d: d['api']['by_api']['vulkan'].update(rt_tier='high'), 'api.by_api.vulkan.rt_tier'),
         ('machine: an impossible Vulkan provider', lambda d: d['api']['by_api']['vulkan'].update(ray_regen='ready'), 'api.by_api.vulkan.ray_regen'),
+        ('machine: a resolved configuration path is not text', lambda d: d['paths'].update(config_file=[]), 'paths.config_file'),
     ]:
         d = copy.deepcopy(mdoc)
         fn(d)
@@ -1466,6 +1602,13 @@ def selftest():
         ('manifest: a fact not install.*', lambda d: d['facts'].update(**{'gpu.foo': {'any_of': ['a']}}), 'install.* fact'),
         ('manifest: launch without a game root placeholder', lambda d: d['launch'].update(game_root='--game_data_root=.'), 'expected one flag'),
         ('manifest: debug launch with an extra flag', lambda d: d['launch'].update(debug_menu='--debug_menu=true --other=true'), 'expected one flag'),
+        ('manifest: an absolute launch program', lambda d: d['launch'].update(program='C:/larecomp.exe'), 'launch.program'),
+        ('manifest: a join status outside the game folder', lambda d: d['files'].update(join_status='../join_server.txt'), 'files.join_status'),
+        ('manifest: an empty machine path', lambda d: d['files'].update(machine=''), '$.files.machine'),
+        ('manifest: settings UI outside the game folder', lambda d: d['files'].update(settings_ui='logs/../../settings-ui.json'), 'files.settings_ui'),
+        ('manifest: empty successful results', lambda d: d['actions'][0]['stdout'].update(ok_results=[]), '.stdout.ok_results'),
+        ('manifest: duplicate success results', lambda d: d['actions'][0]['stdout'].update(ok_results=['ok', 'ok']), 'listed twice'),
+        ('manifest: delimiter in a success result', lambda d: d['actions'][0]['stdout'].update(ok_results=['ok|other']), '.stdout.ok_results[0]'),
         ('manifest: negative XEX bytes', lambda d: d['game'].update(size=-1), 'game.size'),
         ('manifest: negative disk estimate', lambda d: d['actions'][0].update(estimated_disk_mib=-1), 'estimated_disk_mib: -1 is below 0'),
         ('manifest: fractional disk estimate', lambda d: d['actions'][0].update(estimated_disk_mib=0.5), 'estimated_disk_mib: is float, expected integer'),
@@ -1483,11 +1626,44 @@ def selftest():
         ('recipe: a when needing a probed fact', lambda d: d['options'][2].update(when="gpu.class == 'high'"), 'before the first probe'),
         ('recipe: an option with both value and from', lambda d: d['options'][1].update(value='x'), 'either a value or a from'),
         ('recipe: no targets', lambda d: d.update(targets=[]), 'needs 1'),
+        ('recipe: an uppercase SDK commit', lambda d: d['sdk'].update(commit='A' * 40), '$.sdk.commit'),
+        ('recipe: a short SDK commit', lambda d: d['sdk'].update(commit=d['sdk']['commit'][:12]), '$.sdk.commit'),
+        ('recipe: a newline in the SDK commit', lambda d: d['sdk'].update(commit=d['sdk']['commit'] + '\n'), 'exactly 40'),
+        ('recipe: an SDK commit different from the pin', lambda d: d['sdk'].update(commit='0' * 40), 'must match the repository SDK pin'),
+        ('recipe: a prebuilt option with the CLI flag prefix', lambda d: d['sdk']['prebuilt'].update(options=['-DREXGLUE_ENABLE_TRACY=OFF']), '$.sdk.prebuilt.options[0]'),
+        ('recipe: placement for an undeclared input', lambda d: d['codegen']['place'].update(other='out/other'), 'listed in codegen.inputs'),
+        ('recipe: placement outside the checkout', lambda d: d['codegen']['place'].update({'default.xex': 'out/../../default.xex'}), 'relative file path in the source checkout'),
+        ('recipe: absolute placement path', lambda d: d['codegen']['place'].update({'default.xex': '/out/default.xex'}), 'relative file path in the source checkout'),
+        ('recipe: placement with a drive letter', lambda d: d['codegen']['place'].update({'default.xex': 'C:default.xex'}), 'relative file path in the source checkout'),
     ]:
         d = copy.deepcopy(rdoc)
         fn(d)
         rep = validate(d)
         check(any(fragment in m for m in rep.errors), f'mutation "{name}" not reported: {rep.errors[:2]}')
+    recipe_with_steps = {**rdoc, 'steps': [{'id': 'configure', 'tool': 'cmake'}]}
+    manifest_with_grammar_2 = copy.deepcopy(idoc)
+    manifest_with_grammar_2['actions'][0]['stdout']['grammar'] = 2
+    for d in (recipe_with_steps, manifest_with_grammar_2):
+        for floor in (None, '0.9', '1', '1.0.0', '01.00.000.0', '1.0.0.1', '1.0.1', '2'):
+            candidate = dict(d)
+            if floor is None:
+                candidate.pop('min_launcher')
+            else:
+                candidate['min_launcher'] = floor
+            rep = validate(candidate)
+            want_error = floor not in ('1.0.0.1', '1.0.1', '2')
+            check(bool(rep.errors) == want_error and not rep.warnings,
+                  f'{d["schema"]} with a new setup feature and min_launcher {floor!r}: {rep.errors + rep.warnings}')
+    check(not validate({**rdoc, 'steps': []}).errors, 'recipe: empty steps needs no launcher bump')
+    legacy_recipe = copy.deepcopy(rdoc)
+    del legacy_recipe['sdk'], legacy_recipe['codegen']['place']
+    legacy_manifest = copy.deepcopy(idoc)
+    del legacy_manifest['launch']['program'], legacy_manifest['files']
+    for action in legacy_manifest['actions']:
+        del action['stdout']['ok_results']
+    for d in (legacy_recipe, legacy_manifest):
+        rep = validate(d)
+        check(not rep.errors and not rep.warnings, f'older {d["schema"]} without optional fields: {rep.errors + rep.warnings}')
     rep = mutate(lambda d: row(d, 'PM_RxFpsCap')['states'][0].update(when="live.city_data == 'ready'", live_only=True))
     check(not any('needs a ?? fallback' in m for m in rep.errors), 'live_only on a rule must silence lint 3')
     if failures:
@@ -1520,6 +1696,7 @@ def main(argv=None):
         ap.error('give a file, --selftest or --facts-used')
     dct = load_json(args.dictionary) if args.dictionary else None
     bad = 0
+    loaded = []
     for path in args.files:
         try:
             doc = load_json(path)
@@ -1527,6 +1704,7 @@ def main(argv=None):
             print(f'ERROR {path}: cannot read: {ex}')
             bad += 1
             continue
+        loaded.append((path, doc))
         rep = validate(doc, args.kind, dct, args.strict)
         for m in rep.errors:
             print(f'ERROR {path}: {m}')
@@ -1539,6 +1717,10 @@ def main(argv=None):
             bad += 1
         elif not args.quiet:
             print(f'ok    {path} ({len(rep.warnings)} warnings, {len(rep.infos)} notes)')
+    # the files of one run are one game build: they carry the same min_launcher (the recipe's, when it is among them)
+    for path, msg in min_launcher_findings(loaded) if len(loaded) > 1 else []:
+        print(f'ERROR {path}: {msg}')
+        bad += 1
     return 1 if bad else 0
 
 

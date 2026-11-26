@@ -2,6 +2,7 @@
   "schema": "larecomp.machine",
   "schema_version": 1,
   "min_reader": 1,
+  "min_launcher": "1.0.0",
   "source": "game",
   "final": true,
   "written_by": {

@@ -1104,6 +1104,10 @@ else()
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/ReadDeps.cmake")
     larecomp_read_kit(fidelityfx larecomp_fidelityfx_pins)
     larecomp_read_kit(streamline larecomp_streamline_pins)
+    # The oldest launcher program that can set up this game version: min_launcher of launcher-recipe.json, the one place it is
+    # edited. It goes to install-manifest.json and the --describe text (InstallManifest.cmake), to settings-ui.json
+    # (settings_ui_data.h below) and to machine.json (a compile definition of machine_facts.cpp below). Empty = none.
+    larecomp_recipe_min_launcher(LARECOMP_MIN_LAUNCHER)
     larecomp_stage(larecomp "$<TARGET_FILE_NAME:larecomp>" program)
     larecomp_stage_sdk_runtime(larecomp)
 
@@ -1169,6 +1173,7 @@ else()
             set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${_gx_git_file}")
         endif()
     endforeach()
+    set(GX_MIN_LAUNCHER "${LARECOMP_MIN_LAUNCHER}")
     configure_file(src/settings_ui/ui_data.h.in settings_ui_data.h @ONLY)
     target_include_directories(larecomp PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
@@ -1459,6 +1464,10 @@ else()
     if(_machine_git_result EQUAL 0 AND _machine_commit_length EQUAL 40 AND _machine_commit MATCHES "^[0-9a-f]+$")
         set_property(SOURCE src/machine_facts/machine_facts.cpp APPEND PROPERTY
             COMPILE_DEFINITIONS "LARECOMP_MACHINE_COMMIT=\"${_machine_commit}\"")
+    endif()
+    if(NOT "${LARECOMP_MIN_LAUNCHER}" STREQUAL "")
+        set_property(SOURCE src/machine_facts/machine_facts.cpp APPEND PROPERTY
+            COMPILE_DEFINITIONS "LARECOMP_MIN_LAUNCHER=\"${LARECOMP_MIN_LAUNCHER}\"")
     endif()
 
     add_executable(larecomp_machine_facts_test EXCLUDE_FROM_ALL

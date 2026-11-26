@@ -145,14 +145,42 @@ function(larecomp_manifest_commit out)
     set(${out} "${commit}" PARENT_SCOPE)
 endfunction()
 
+# The oldest launcher program that can set up this game version: min_launcher of launcher-recipe.json, the one place it is
+# edited. The manifest, the --describe text, settings-ui.json and machine.json all take it from here. An empty result means
+# the recipe has none (no requirement): every file then leaves the field out. A value that is not 1 to 4 dot-separated
+# numbers is a configure error, so a typo never reaches a player.
+function(larecomp_recipe_min_launcher out)
+    set(path "${CMAKE_CURRENT_SOURCE_DIR}/launcher-recipe.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
+    file(READ "${path}" recipe)
+    string(JSON members ERROR_VARIABLE error LENGTH "${recipe}")
+    if(NOT error STREQUAL "NOTFOUND")
+        message(FATAL_ERROR "launcher-recipe.json is not valid JSON: ${error}")
+    endif()
+    string(JSON type ERROR_VARIABLE error TYPE "${recipe}" min_launcher)
+    if(NOT error STREQUAL "NOTFOUND")
+        set(${out} "" PARENT_SCOPE)
+        return()
+    endif()
+    if(NOT type STREQUAL "STRING")
+        message(FATAL_ERROR "launcher-recipe.json: min_launcher must be a text like \"1.0.0\", not ${type}")
+    endif()
+    string(JSON value GET "${recipe}" min_launcher)
+    if(NOT value MATCHES "^[0-9]+(\\.[0-9]+(\\.[0-9]+(\\.[0-9]+)?)?)?$")
+        message(FATAL_ERROR "launcher-recipe.json: min_launcher must be 1 to 4 numbers separated by dots, like 1.0.0 (got \"${value}\")")
+    endif()
+    set(${out} "${value}" PARENT_SCOPE)
+endfunction()
+
 function(larecomp_add_manifest_action id prefix timeout disk_mib when)
-    cmake_parse_arguments(PARSE_ARGV 5 action "" "FORCE_FLAG" "AFTER;ARGS;OUTPUTS;PRODUCES")
+    cmake_parse_arguments(PARSE_ARGV 5 action "" "FORCE_FLAG" "AFTER;ARGS;OUTPUTS;PRODUCES;OK_RESULTS")
     larecomp_json_strings(after ${action_AFTER})
     larecomp_json_strings(args ${action_ARGS})
     larecomp_json_strings(outputs ${action_OUTPUTS})
+    larecomp_json_strings(ok_results ${action_OK_RESULTS})
     larecomp_json_string(condition "${when}")
     set(entry "{ \"id\": \"${id}\", \"flag\": \"--${id}\", \"args\": ${args}, \"after\": ${after}, \"when\": ${condition}, \"outputs\": ${outputs}")
-    string(APPEND entry ", \"stdout\": { \"prefix\": \"@${prefix}|\", \"grammar\": 1 }, \"exit\": { \"ok\": [0], \"fail\": [1] }, \"never_fails_setup\": true, \"timeout_min\": ${timeout}, \"estimated_disk_mib\": ${disk_mib}")
+    string(APPEND entry ", \"stdout\": { \"prefix\": \"@${prefix}|\", \"grammar\": 1, \"ok_results\": ${ok_results} }, \"exit\": { \"ok\": [0], \"fail\": [1] }, \"never_fails_setup\": true, \"timeout_min\": ${timeout}, \"estimated_disk_mib\": ${disk_mib}")
     if(action_FORCE_FLAG)
         string(APPEND entry ", \"force_flag\": \"${action_FORCE_FLAG}\"")
     endif()
@@ -219,16 +247,19 @@ function(larecomp_generate_install_manifest target)
             list(APPEND features dlss_ray_reconstruction)
         endif()
     endif()
-    set(files "{}")
+    larecomp_manifest_literal(join_status src/mc_engine/online/server_browser/join_server.cpp [=[^const char\* kStatusFile = "([^"]+)"]=])
+    set(files "{ \"join_status\": \"logs/${join_status}\" }")
     if(TARGET larecomp_online_tool)
         list(APPEND features online_tool)
         larecomp_manifest_literal(online_tables src/mc_engine/online/online_tables_core.h [=[^inline constexpr char kFileName\[\] = "([^"]+)"]=])
-        set(files "{ \"online_tool\": \"$<TARGET_FILE_NAME:larecomp_online_tool>\", \"online_tables\": \"logs/${online_tables}\" }")
+        string(JSON files SET "${files}" online_tool "\"$<TARGET_FILE_NAME:larecomp_online_tool>\"")
+        string(JSON files SET "${files}" online_tables "\"logs/${online_tables}\"")
     endif()
     larecomp_json_strings(features ${features})
 
     set(manifest_actions "")
     set(describe_actions "")
+    # CHECK: exercise the launcher's result parsing and output paths in a fresh setup using this manifest.
     # The app accepts these five flags even on an SDK-only build, where they
     # report "not needed". Only offer their setup work on a native GPU build.
     set(gpu_when false)
@@ -239,15 +270,19 @@ function(larecomp_generate_install_manifest target)
     get_target_property(settings_ui ${target} LARECOMP_EXPORTS_SETTINGS_UI)
     if(settings_ui)
         string(JSON contracts SET "${contracts}" settings_ui 1)
+        set(settings_ui_file "settings-ui.json")
+        string(JSON files SET "${files}" settings_ui "\"${settings_ui_file}\"")
         larecomp_add_manifest_action(dump_settings_ui settingsui 1 1 true
-            OUTPUTS "{game_folder}/settings-ui.json" PRODUCES settings-ui)
+            OUTPUTS "{game_folder}/${settings_ui_file}" PRODUCES settings-ui OK_RESULTS ok)
     endif()
     set(city_after build_shader_packs)
     get_target_property(machine ${target} LARECOMP_PROBES_MACHINE)
     if(machine)
         string(JSON contracts SET "${contracts}" machine 1)
+        set(machine_file "machine.json")
+        string(JSON files SET "${files}" machine "\"${machine_file}\"")
         larecomp_add_manifest_action(probe_machine machine 1 1 true
-            OUTPUTS "{game_folder}/machine.json" PRODUCES machine)
+            OUTPUTS "{game_folder}/${machine_file}" PRODUCES machine OK_RESULTS ok)
         list(APPEND city_after probe_machine)
     endif()
 
@@ -269,20 +304,25 @@ function(larecomp_generate_install_manifest target)
     # Keep the action timeouts generous for slower machines. Recorded shader packs took up to
     # 249 s and occupied 135 MiB with variants (pack-integ2.log). Allow for temporary output.
     larecomp_add_manifest_action(build_shader_packs shaderpack 25 260 "${gpu_when}"
-        ARGS "${game_root}" FORCE_FLAG --build_shader_packs_force OUTPUTS ${shader_outputs})
+        ARGS "${game_root}" FORCE_FLAG --build_shader_packs_force OUTPUTS ${shader_outputs}
+        OK_RESULTS ok "up to date" "not needed")
     # The recorded D3D12 prebuild took 3 s (lb8-stuck1-build6-install.log). Budget for the 128 MiB
     # Vulkan cache limit plus the game-owned pipeline list and stamp. Drivers manage their own caches.
     larecomp_add_manifest_action(precache_pipelines pipelines 20 130 "${gpu_when}"
         ARGS "${game_root}" FORCE_FLAG --precache_pipelines_force AFTER build_shader_packs
-        OUTPUTS "{pipeline_cache_dir}/${pipeline_file}" "{pipeline_cache_dir}/${pipeline_stamp}")
+        OUTPUTS "{pipeline_cache_dir}/${pipeline_file}" "{pipeline_cache_dir}/${pipeline_stamp}"
+        OK_RESULTS ok "up to date" "not needed" "no list")
     # The city pack took 133 s and used 238 MiB (integ2-rtl-night). The hit and texture packs
     # took 76 s and used 105 + 132 MiB (asan-race-vk-rog). The deep check only reads the packs.
     larecomp_add_manifest_action(build_city_pack citypack 25 300 "${rt_when}"
-        ARGS "${game_root}" FORCE_FLAG --build_city_pack_force AFTER ${city_after} OUTPUTS ${city_outputs})
+        ARGS "${game_root}" FORCE_FLAG --build_city_pack_force AFTER ${city_after} OUTPUTS ${city_outputs}
+        OK_RESULTS ok "up to date" "not needed")
     larecomp_add_manifest_action(build_city_hit citypack 25 260 "${rt_when}"
-        ARGS "${game_root}" FORCE_FLAG --build_city_hit_force AFTER build_city_pack OUTPUTS ${hit_outputs})
+        ARGS "${game_root}" FORCE_FLAG --build_city_hit_force AFTER build_city_pack OUTPUTS ${hit_outputs}
+        OK_RESULTS ok "up to date" "not needed")
     larecomp_add_manifest_action(check_city_hit citypack 5 0 "${rt_when}"
-        ARGS "${game_root}" --check_city_hit_deep=true AFTER build_city_hit)
+        ARGS "${game_root}" --check_city_hit_deep=true AFTER build_city_hit
+        OK_RESULTS "up to date" "not needed")
 
     larecomp_json_strings(describe_actions ${describe_actions})
     list(JOIN manifest_actions ",\n    " actions)
@@ -304,12 +344,17 @@ function(larecomp_generate_install_manifest target)
     list(JOIN stage ",\n    " stage)
 
     set(identity "\"game_version\": ${version},\n  \"commit\": \"${commit}\",\n  \"contracts\": ${contracts}")
+    larecomp_recipe_min_launcher(min_launcher)
+    set(launcher_gate "")
+    if(NOT "${min_launcher}" STREQUAL "")
+        set(launcher_gate "\"min_launcher\": \"${min_launcher}\",\n  ")
+    endif()
     string(CONFIGURE [=[
 {
   "schema": "larecomp.install-manifest",
   "schema_version": 1,
   "min_reader": 1,
-  @identity@,
+  @launcher_gate@@identity@,
   "sdk": { "generation": "@sdk_generation@" },
   "features": @features@,
   "stage": [
@@ -322,7 +367,7 @@ function(larecomp_generate_install_manifest target)
     @actions@
   ],
   "pipeline_key_settings": @pipeline_key_settings@,
-  "launch": { "game_root": "@game_root@", "debug_menu": "--@debug_menu@=true" },
+  "launch": { "program": "$<TARGET_FILE_NAME:@target@>", "game_root": "@game_root@", "debug_menu": "--@debug_menu@=true" },
   "game": {
     "title_id": "@title_id@",
     "xex_sha256": ["c386f4001fa569e6ad4b982f441f67412f00b3f47c166134555cd4b59854a432"],
@@ -354,7 +399,7 @@ namespace larecomp {
 extern const char kDescribeJson[] = R"lfg({
   "schema": "larecomp.describe",
   "schema_version": 1,
-  @identity@,
+  @launcher_gate@@identity@,
   "actions": @describe_actions@
 }
 )lfg";

@@ -19,6 +19,7 @@ struct Inputs {
     std::string_view launcher_rows;
     std::string_view rules;
     std::string_view phase_a;
+    std::string_view min_launcher;  // launcher-recipe.json's min_launcher; empty = none (the field is left out)
 };
 
 toml::table BuildDocument(toml::table settings, std::span<const Menu> menus, const Inputs& inputs);
