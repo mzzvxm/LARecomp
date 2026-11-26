@@ -42,7 +42,8 @@ constexpr std::string_view kHelper = R"HLSL(// LARecomp variant shadow_filter (s
 // frame number), w the mode bits (1: true PCF taps, each a bilinear weighted compare of four texels taken at the
 // receiver's own plane, instead of the sampler's own bilinear depth; 2: contact hardening, a blocker search first;
 // 4: the disk is turned per pixel by noise, which only a temporal upscaler's history can average out: without
-// the bit every pixel takes the same disk, so there is no grain; 32: that noise is the blue noise tile stepped along the R2 sequence, not the first version's gradient noise (a lattice); bits 8 to 15: the sun's size for the contact
+// the bit every pixel takes the same disk, so there is no grain; 8: unanimous PCSS probes; 32: blue noise stepped along
+// the R2 sequence; bits 8 to 15: the sun's size for the contact
 // hardening, in sixteenths of the real sun's).
 static const float kShadowFilterRadiusGain = 1.05;     // the weighted disk is as wide as the game's four taps
 static const float kShadowFilterGoldenCos = -0.7373688780783197;  // cos and sin of the golden angle, 137.5 degrees
@@ -51,8 +52,28 @@ static const float kShadowFilterSunTan = 0.0047123890;  // tan of the sun's angu
 static const float kShadowFilterMinTexels = 0.75;       // contact hardening: the smallest kernel radius, in atlas texels
 static const float kShadowFilterMaxRadii = 2.0;         // and the largest, in radii of the soft filter (the search covers it)
 static const int kShadowFilterSearchTaps = 8;
+// Five well-spread taps on each existing Vogel disk. The centre is a separate tap.
+static const uint kShadowFilterBlockerProbe = 0xE6u;   // indices 1, 2, 5, 6, 7
+static const uint kShadowFilterPcfProbe = 0x2E8u;      // indices 3, 5, 6, 7, 9
+static const int kShadowFilterPcfTaps = 16;
 static const float kShadowFilterFixedAngle = 2.399963;  // the disk's turn without noise (a radian count that no tap row lines up with)
 static const float kShadowFilterMaxSlope = 8.0;         // the steepest receiver plane believed: 8 metres of depth per metre across
+
+float2 ShadowFilterTurn(float2 direction)
+{
+    return float2(direction.x * kShadowFilterGoldenCos - direction.y * kShadowFilterGoldenSin,
+                  direction.x * kShadowFilterGoldenSin + direction.y * kShadowFilterGoldenCos);
+}
+
+bool ShadowFilterProbeHasTap(uint mask, int index)
+{
+    return ((mask >> uint(index)) & 1u) != 0u;
+}
+
+uint ShadowFilterProbeSlot(uint mask, int index)
+{
+    return countbits(mask & ((1u << uint(index)) - 1u));
+}
 
 // The blue noise tile (src/gpu/blue_noise.h, hlsl/blue_noise.hlsli: 32 x 32 pixels, one byte a pixel, four to a word, pixel 4 w in the low byte; written by larecomp_blue_noise_test --emit,
 // and the same words are checked against it by larecomp_shadow_filter_noise_test).
@@ -202,6 +223,7 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
     float radius = length(tap1 - tap3) * (1.0 / 1.5) * constants.y * kShadowFilterRadiusGain;
     int count = clamp(int(constants.x + 0.5), 4, 32);
     bool gather = (mode & 1u) != 0u;
+    bool earlyOut = (mode & 8u) != 0u;
     // Noise turns the disk from pixel to pixel: a grain that a temporal upscaler's history averages out. Without one
     // (plain MSAA, no upscaler) nothing would, so the disk keeps its turn and the edge has none.
     float angle = (mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z, (mode & 32u) != 0u) : kShadowFilterFixedAngle;
@@ -214,20 +236,51 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
         float maxRadius = kShadowFilterMaxRadii * radius;
         float blockerSum = 0.0;
         int blockers = 0;
+        uint mask = earlyOut ? kShadowFilterBlockerProbe : 0u;
+        float probe[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+        if (earlyOut)
+        {
+            float centreStored = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex,
+                                             centre, float2(0.0, 0.0), 0.0).x;
+            bool centreBlocked = centreStored < depth;
+            bool unanimous = true;
+            float2 probeDirection = direction;
+            [unroll]
+            for (int j = 0; j < kShadowFilterSearchTaps; ++j)
+            {
+                if (ShadowFilterProbeHasTap(kShadowFilterBlockerProbe, j))
+                {
+                    float share = (float(j) + 0.5) / float(kShadowFilterSearchTaps);
+                    float2 offset = probeDirection * (sqrt(share) * maxRadius);
+                    float stored = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex,
+                                               centre + offset, float2(0.0, 0.0), 0.0).x;
+                    probe[ShadowFilterProbeSlot(kShadowFilterBlockerProbe, j)] = stored;
+                    unanimous = unanimous && ((stored < depth + dot(slope, offset)) == centreBlocked);
+                }
+                probeDirection = ShadowFilterTurn(probeDirection);
+            }
+            [branch]
+            if (unanimous)
+                return centreBlocked ? 0.0 : 1.0;
+        }
         [loop]
         for (int j = 0; j < kShadowFilterSearchTaps; ++j)
         {
             float share = (float(j) + 0.5) / float(kShadowFilterSearchTaps);
             float2 offset = direction * (sqrt(share) * maxRadius);
-            float stored = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex,
-                                       centre + offset, float2(0.0, 0.0), 0.0).x;
+            float stored;
+            [branch]
+            if (ShadowFilterProbeHasTap(mask, j))
+                stored = probe[ShadowFilterProbeSlot(kShadowFilterBlockerProbe, j)];
+            else
+                stored = tfetch2DLod(resourceDescriptorIndex, samplerDescriptorIndex,
+                                     centre + offset, float2(0.0, 0.0), 0.0).x;
             if (stored < depth + dot(slope, offset))
             {
                 blockerSum += stored;
                 blockers += 1;
             }
-            direction = float2(direction.x * kShadowFilterGoldenCos - direction.y * kShadowFilterGoldenSin,
-                               direction.x * kShadowFilterGoldenSin + direction.y * kShadowFilterGoldenCos);
+            direction = ShadowFilterTurn(direction);
         }
         if (blockers == 0)
             return 1.0;
@@ -237,6 +290,38 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
         kernel = ShadowFilterPenumbra(cascadeBase, depth - blockerSum / float(blockers), sunTan,
                                       constants.y * (1.0 / 1280.0), maxRadius);
     }
+    // Keep the full loop for diagnostic tap counts. At 16 taps, a fractional Gather at the centre
+    // already proves there is an edge, so take the original disk directly.
+    // CHECK: compare thin features and moving penumbrae against the full filter on both APIs.
+    uint pcfMask = 0u;
+    float pcfProbe[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    if (earlyOut && count == kShadowFilterPcfTaps)
+    {
+        float centreLit = ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex, centre, depth, gather, slope);
+        if (centreLit == 0.0 || centreLit == 1.0)
+        {
+            pcfMask = kShadowFilterPcfProbe;
+            bool unanimous = true;
+            float2 probeDirection = direction;
+            [unroll]
+            for (int i = 0; i < kShadowFilterPcfTaps; ++i)
+            {
+                if (ShadowFilterProbeHasTap(kShadowFilterPcfProbe, i))
+                {
+                    float share = (float(i) + 0.5) / float(kShadowFilterPcfTaps);
+                    float2 offset = probeDirection * (sqrt(share) * kernel);
+                    float lit = ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex, centre + offset,
+                                                   depth + dot(slope, offset), gather, slope);
+                    pcfProbe[ShadowFilterProbeSlot(kShadowFilterPcfProbe, i)] = lit;
+                    unanimous = unanimous && lit == centreLit;
+                }
+                probeDirection = ShadowFilterTurn(probeDirection);
+            }
+            [branch]
+            if (unanimous)
+                return centreLit;
+        }
+    }
     float sum = 0.0;
     float total = 0.0;
     [loop]
@@ -245,11 +330,16 @@ float ShadowFilterSoft(uint resourceDescriptorIndex, uint samplerDescriptorIndex
         float share = (float(i) + 0.5) / float(count);  // r^2: equal areas
         float weight = 1.0 - 0.5 * share;
         float2 offset = direction * (sqrt(share) * kernel);
-        sum += weight * ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex, centre + offset,
-                                           depth + dot(slope, offset), gather, slope);
+        float lit;
+        [branch]
+        if (ShadowFilterProbeHasTap(pcfMask, i))
+            lit = pcfProbe[ShadowFilterProbeSlot(kShadowFilterPcfProbe, i)];
+        else
+            lit = ShadowFilterLookup(resourceDescriptorIndex, samplerDescriptorIndex, centre + offset,
+                                     depth + dot(slope, offset), gather, slope);
+        sum += weight * lit;
         total += weight;
-        direction = float2(direction.x * kShadowFilterGoldenCos - direction.y * kShadowFilterGoldenSin,
-                           direction.x * kShadowFilterGoldenSin + direction.y * kShadowFilterGoldenCos);
+        direction = ShadowFilterTurn(direction);
     }
     return sum / total;
 }

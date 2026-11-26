@@ -29,5 +29,6 @@ inline std::atomic<uint32_t> atlas_ready_scale{0};
 inline std::atomic<uint32_t> camera_cut{0};
 
 void NoteCaster(uint32_t id, const float (&position)[3], uint8_t last_cascade);
+uint64_t FrameSerial();
 
 }  // namespace mcla::gpu::cascade_schedule

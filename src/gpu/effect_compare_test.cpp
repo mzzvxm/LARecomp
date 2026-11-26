@@ -308,14 +308,14 @@ void TestForcedOnText() {
       Check(hp::Resolve(hp::Pass::kOcclusion, cls, known, std::string(Info(Effect::kAmbientOcclusion).on_text)).level != hp::Level::kOff,
             "occlusion forced-on text is on " + c);
     }
-    Check(sf::ModeFor(cls, sf::ParseChoice(std::string(Info(Effect::kShadowFilter).on_text))) == sf::Mode::kSoft,
+    Check(sf::ModeFor(sf::ParseChoice(Info(Effect::kShadowFilter).on_text)) == sf::Mode::kSoft,
           "filter forced-on text is soft " + c);
     // And `off` is off for each of them (what a flip forces off is read as the word `off`).
     Check(hp::Resolve(hp::Pass::kContact, cls, true, "off").level == hp::Level::kOff, "contact off is off");
     Check(hp::Resolve(hp::Pass::kShafts, cls, true, "off").level == hp::Level::kOff, "shafts off is off");
     Check(hp::Resolve(hp::Pass::kBounce, cls, true, "off").level == hp::Level::kOff, "bounce off is off");
     Check(hp::Resolve(hp::Pass::kOcclusion, cls, true, "off").level == hp::Level::kOff, "occlusion off is off");
-    Check(sf::ModeFor(cls, sf::ParseChoice("game")) == sf::Mode::kGame, "filter game is the game's");
+    Check(sf::ModeFor(sf::ParseChoice("game")) == sf::Mode::kGame, "filter game is the game's");
   }
 }
 

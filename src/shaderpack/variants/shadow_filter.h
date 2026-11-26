@@ -14,7 +14,7 @@
 // What the variant changes, in every shader that has that lookup (the four texture fetches of the atlas at
 // float2(0, 0) offsets, a compare of the four and an average with 0.25):
 //
-//   - the average is replaced by ShadowFilterSoft(): N taps (8 on Low, 16 otherwise, the host's constants)
+//   - the average is replaced by ShadowFilterSoft(): 16 taps by default (the host's constants)
 //     on a Vogel disk (golden angle spiral, sqrt radius) of the game's own radius round the game's own centre,
 //     turned by interleaved gradient noise of the HOST pixel position plus the R2 shift of the frame number
 //     ONLY WHILE A TEMPORAL UPSCALER RUNS (mode bit 4; the upscaler's history averages the noise out). Without
@@ -72,7 +72,9 @@
 //     sharper than about a texel, and the cap keeps the PCF's 16 taps dense enough (it follows the atlas scale
 //     with the soft radius: constants.y). With the real sun the penumbra is under a texel for every caster
 //     lower than about 3.5 m at the nearest cascade, so the sun's size is a setting (mcla_gpu_shadow_filter_sun).
-//   - a Low class never gets the search (the host leaves the bit out): LOW is soft.
+//   - mode bit 8 enables a six-sample probe for blocker search and default 16-tap PCF. The centre
+//     and five disk samples must all be lit or all shadowed. Mixed probes reuse their disk samples
+//     in the full loop.
 //
 // Runtime: src/gpu/pipelines.cpp selects it per draw (the feature kFeatureShadowFilter) while
 // mcla_gpu_shadow_filter resolves to soft or pcss; src/gpu/scene.cpp uploads the constants. A variant is built for
@@ -88,7 +90,7 @@ namespace larecomp::shaderpack {
 
 // Hand bumped: the edits, the helper or the checks of this variant (its stamp line
 // variants_shadow_filter_version).
-inline constexpr uint32_t kShadowFilterVariantVersion = 4;  // 4: the disk's turn is the blue noise tile stepped along R2 with mode bit 5 (NOISE-AUDIT), the first version's gradient noise without; 2: contact hardening (mode bit 2), a0 passed to the helper; 3: noise only with mode bit 4, the Gather taps and the blocker search at the receiver's plane
+inline constexpr uint32_t kShadowFilterVariantVersion = 5;  // PCSS early-out on mode bit 3
 
 // The collector's pixel shaders, found by name (the entry points of the .updb path; the identities differ
 // per material and the pack records each one's own).

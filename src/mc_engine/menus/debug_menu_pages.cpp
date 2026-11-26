@@ -219,6 +219,8 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgHudMapHold", "mcla_gpu_hud_map_hold", "HUD RADAR HOLD: ")),
     NativeOnly(Bool("PM_RxDbgGuestShadow", "mcla_fix_guest_shadow_work", "TRAFFIC SHADOW WORK: ")),
     NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgShadowProbe", "mcla_gpu_shadow_filter_early_out", "SUN SHADOW EARLY OUT: ")),
+    NativeOnly(Bool("PM_RxDbgTrafficReach", "mcla_gpu_traffic_shadows_reach", "TRAFFIC SHADOW REACH: ")),
     NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
     NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
     NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),

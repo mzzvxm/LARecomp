@@ -119,21 +119,21 @@ void TestTurn() {
 }
 
 void TestHost(const std::string& dir, const std::string& variant) {
-  const uint32_t bits = sf::kModeGather | sf::kModePcss | sf::kModeNoise | (255u << sf::kSunShift);
+  const uint32_t bits = sf::kModeGather | sf::kModePcss | sf::kModeNoise | sf::kModeEarlyOut | (255u << sf::kSunShift);
   g_check(sf::kModeBlueNoise == 32u && (sf::kModeBlueNoise & bits) == 0u, "mode bit 5 is the blue noise's: clear of the gather, contact hardening, noise and sun size bits");
-  const sf::ShadowFilterConstants with = sf::MakeConstants(mcla::gpu::gpu_class::GpuClass::kHigh, 0, 1.0, 1.0f, false, true, 77, false, 4.0, true);
-  const sf::ShadowFilterConstants without = sf::MakeConstants(mcla::gpu::gpu_class::GpuClass::kHigh, 0, 1.0, 1.0f, false, true, 77, false, 4.0, false);
-  const sf::ShadowFilterConstants still = sf::MakeConstants(mcla::gpu::gpu_class::GpuClass::kHigh, 0, 1.0, 1.0f, false, false, 77, false, 4.0, true);
+  const sf::ShadowFilterConstants with = sf::MakeConstants(0, 1.0, 1.0f, false, true, 77, false, 4.0, true);
+  const sf::ShadowFilterConstants without = sf::MakeConstants(0, 1.0, 1.0f, false, true, 77, false, 4.0, false);
+  const sf::ShadowFilterConstants still = sf::MakeConstants(0, 1.0, 1.0f, false, false, 77, false, 4.0, true);
   g_check(uint32_t(with.mode) == (sf::kModeNoise | sf::kModeBlueNoise) && uint32_t(without.mode) == sf::kModeNoise && with.noise_frame == 77.0f,
           "with an upscaler the mode has the noise bit, and the blue bit by the setting; the frame is the shift's");
   g_check(uint32_t(still.mode) == 0u && still.noise_frame == 0.0f, "without an upscaler there is no noise and no blue bit: every pixel takes the same disk, as before");
   const std::string host = nc::ReadFile(dir + "/shadow_filter.cpp");
-  g_check(nc::Has(host, "larecomp::settings::mcla_gpu_shadow_filter_sun.Get(), larecomp::settings::mcla_gpu_noise_blue.Get());"), "shadow_filter.cpp passes mcla_gpu_noise_blue to the constants (read at every draw: live)");
+  g_check(nc::Has(host, "larecomp::settings::mcla_gpu_noise_blue.Get(),"), "shadow_filter.cpp passes mcla_gpu_noise_blue to the constants (read at every draw: live)");
   g_check(nc::Has(variant, "(mode & 4u) != 0u ? 6.28318530718 * ShadowFilterNoise(pixel, constants.z, (mode & 32u) != 0u) : kShadowFilterFixedAngle") &&
               nc::Has(variant, "float(uint(frame) * 3242174889u) * (1.0 / 4294967296.0)") && nc::Has(variant, "float ShadowFilterNoise(float2 pixel, float frame, bool blue)"),
           "the variant's text turns the disk by the tile and R2 step with mode bit 5, by the first version's noise without it, and by nothing without bit 4");
   const std::string header = nc::ReadFile(dir + "/../shaderpack/variants/shadow_filter.h");
-  g_check(nc::Has(header, "kShadowFilterVariantVersion = 4;"), "the variant's version is bumped (4): a player's pack is rebuilt with the new text");
+  g_check(nc::Has(header, "kShadowFilterVariantVersion = 5;"), "version 5 rebuilds the pack for the PCSS probes");
 }
 
 }  // namespace

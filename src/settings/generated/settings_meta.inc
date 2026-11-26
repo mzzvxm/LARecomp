@@ -512,6 +512,8 @@
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
 {"mcla_gpu_shadow_ledger", "MCLA/GPU"},
 {"mcla_gpu_shadow_schedule", "MCLA/GPU"},
+{"mcla_gpu_shadow_filter_early_out", "MCLA/GPU"},
+{"mcla_gpu_traffic_shadows_reach", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
 {"mcla_gpu_garage_fx", "MCLA/GPU"},
 {"mcla_gpu_pause_world_fx", "MCLA/GPU"},

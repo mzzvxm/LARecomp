@@ -24,22 +24,11 @@ namespace {
 // while another thread may be writing it (the pause menu), as gpu_class.cpp's override.
 std::atomic<uint8_t> g_choice{static_cast<uint8_t>(Choice::kAuto)};
 std::atomic<float> g_atlas_scale_inverse{1.0f};
-std::atomic<uint8_t> g_last_logged{255};  // the last Mode (and class) the log line said, to say a change once
+std::atomic<uint8_t> g_last_logged{255};
 
 std::string Lower(std::string text) {
   std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) { return char(std::tolower(c)); });
   return text;
-}
-
-gpu_class::GpuClass EffectiveClass() {
-  // `auto` is not the same on every class, so until the class is known it acts as on the weakest: a player
-  // is never given the stronger class's cost before it is known (gpu_class.h Known()).
-  return gpu_class::Known() ? gpu_class::Current() : gpu_class::GpuClass::kLow;
-}
-
-// Whether the Steam Deck's cells are in force (gpu_class.h Handheld): never before the class is known.
-bool EffectiveHandheld() {
-  return gpu_class::Known() && gpu_class::Handheld();
 }
 
 const char* ChoiceName(Choice choice) {
@@ -55,19 +44,15 @@ const char* ChoiceName(Choice choice) {
   }
 }
 
-// One line when the mode or the class it was worked out for changes (also the first time it is asked).
+// One line when the mode changes (also the first time it is asked).
 void LogMode(Mode mode) {
-  const gpu_class::GpuClass cls = EffectiveClass();
-  const bool handheld = EffectiveHandheld();
-  const uint8_t state =
-      static_cast<uint8_t>((handheld ? 16u : 0u) | (static_cast<uint8_t>(mode) << 2) | static_cast<uint8_t>(cls));
+  const uint8_t state = static_cast<uint8_t>(mode);
   if (g_last_logged.exchange(state, std::memory_order_relaxed) == state) return;
   const Choice choice = static_cast<Choice>(g_choice.load(std::memory_order_relaxed));
   const char* name = mode == Mode::kPcss ? "pcss (contact hardening)" : mode == Mode::kSoft ? "soft" : "the game's own";
-  REXLOG_INFO("[gpu] shadow filter: {} (mcla_gpu_shadow_filter = {}, GPU class {}{}{}; {} taps{}; live)", name,
-              ChoiceName(choice), gpu_class::ClassName(cls), handheld ? " (handheld cells)" : "",
-              choice == Choice::kPcss && mode == Mode::kSoft ? "; pcss is soft on a Low class: no blocker search" : "",
-              TapsFor(cls, larecomp::settings::mcla_gpu_shadow_filter_taps.Get()),
+  REXLOG_INFO("[gpu] shadow filter: {} (mcla_gpu_shadow_filter = {}, GPU class {}; {} taps{}; live)", name,
+              ChoiceName(choice), gpu_class::ClassName(gpu_class::Current()),
+              TapsFor(larecomp::settings::mcla_gpu_shadow_filter_taps.Get()),
               mode == Mode::kPcss
                   ? std::format(", 8 blocker taps, sun x{:g}", std::clamp(larecomp::settings::mcla_gpu_shadow_filter_sun.Get(),
                                                                          kMinSunTuning, kMaxSunTuning))
@@ -85,9 +70,7 @@ void EnsureRegistered() {
   });
 }
 
-}  // namespace
-
-Mode CurrentMode() {
+Mode ReadMode() {
   EnsureRegistered();
   Choice choice = static_cast<Choice>(g_choice.load(std::memory_order_relaxed));
   // The compare key's flip (effect_compare.h): the game's own filter or the soft one, whatever the setting says.
@@ -101,21 +84,24 @@ Mode CurrentMode() {
     default:
       break;
   }
-  const Mode mode = ModeFor(EffectiveClass(), choice, EffectiveHandheld());
+  return ModeFor(choice);
+}
+
+}  // namespace
+
+Mode CurrentMode() {
+  const Mode mode = ReadMode();
   LogMode(mode);
   return mode;
 }
 
-bool PcssRuns() { return PcssAvailable(EffectiveClass()); }
-
 ShadowFilterConstants CurrentConstants(bool temporal_upscaler, uint64_t frame) {
-  EnsureRegistered();
-  const gpu_class::GpuClass cls = EffectiveClass();
-  const bool pcss =
-      ModeFor(cls, static_cast<Choice>(g_choice.load(std::memory_order_relaxed)), EffectiveHandheld()) == Mode::kPcss;
-  return MakeConstants(cls, larecomp::settings::mcla_gpu_shadow_filter_taps.Get(), larecomp::settings::mcla_gpu_shadow_filter_radius.Get(),
+  const bool pcss = ReadMode() == Mode::kPcss;
+  return MakeConstants(larecomp::settings::mcla_gpu_shadow_filter_taps.Get(), larecomp::settings::mcla_gpu_shadow_filter_radius.Get(),
                        g_atlas_scale_inverse.load(std::memory_order_relaxed), larecomp::settings::mcla_gpu_shadow_filter_pcf.Get(),
-                       temporal_upscaler, frame, pcss, larecomp::settings::mcla_gpu_shadow_filter_sun.Get(), larecomp::settings::mcla_gpu_noise_blue.Get());
+                       temporal_upscaler, frame, pcss, larecomp::settings::mcla_gpu_shadow_filter_sun.Get(),
+                       larecomp::settings::mcla_gpu_noise_blue.Get(),
+                       larecomp::settings::mcla_gpu_shadow_filter_early_out.Get());
 }
 
 void SetAtlasRadiusScale(float scale_inverse) {
