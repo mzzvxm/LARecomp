@@ -105,7 +105,7 @@ void ReflectionIds() {
     const auto packed = ReflHitPack(1, kReflHitRtCar, 5, 7);
     Check(packed == 0x07052001u && ReflHitScreenId(packed) == 5 && ReflHitFallbackId(packed) == 7,
           "visible and query bytes precede the scratch bytes");
-    Check(ReflHitPack(7, kReflHitRtMiss, 0, 7) == 0x07002107u && kReflHitRtUnresolved == 34, "RT query codes");
+    Check(ReflHitPack(7, kReflHitRtMiss, 0, 7) == 0x07002107u && kReflHitRtUnresolved == 34 && kReflHitRtCarShaded == 35, "RT query codes");
 }
 
 void Writers(const fs::path& take) {

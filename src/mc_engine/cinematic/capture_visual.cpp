@@ -161,7 +161,7 @@ bool Writer::Finish(std::string& why) {
                     "\"22\":\"rt_city_lod\",\"23\":\"rt_city_foliage\",\"24\":\"rt_city_paint\","
                     "\"25\":\"rt_city_chrome\",\"26\":\"rt_city_metal\",\"27\":\"rt_city_glass\","
                     "\"28\":\"rt_city_skin\",\"29\":\"rt_city_emissive\",\"30\":\"rt_city_interior\","
-                    "\"31\":\"rt_city_water\",\"32\":\"rt_car\",\"33\":\"rt_miss\",\"34\":\"rt_city_unresolved\"}";
+                    "\"31\":\"rt_city_water\",\"32\":\"rt_car\",\"33\":\"rt_miss\",\"34\":\"rt_city_unresolved\",\"35\":\"rt_car_shaded\"}";
         }
         file << "}\n";
         file.close();

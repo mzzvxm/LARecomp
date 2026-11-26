@@ -15,6 +15,7 @@ static const uint kReflHitRtCity = 16u;  // add the city material class (0..15)
 static const uint kReflHitRtCar = 32u;
 static const uint kReflHitRtMiss = 33u;
 static const uint kReflHitRtUnresolved = 34u;
+static const uint kReflHitRtCarShaded = 35u;  // a car hit shaded from the car's own materials (kReflHitRtCar: skipped)
 
 uint ReflHitScreen(uint cls, uint flags, bool vehicle) {
   if (vehicle || (flags & GB_FLAG_VEHICLE) != 0u || cls == GB_CLASS_PAINT) return kReflHitSsrVehicle;
