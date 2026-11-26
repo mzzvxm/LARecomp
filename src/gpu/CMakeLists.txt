@@ -344,6 +344,19 @@ add_executable(larecomp_host_plan_test EXCLUDE_FROM_ALL host_plan_test.cpp)
 #   cmake --build <dir> --target larecomp_resolve_variants_test, then run src/gpu/larecomp_resolve_variants_test <src/gpu dir>.
 add_executable(larecomp_resolve_variants_test EXCLUDE_FROM_ALL resolve_variants_test.cpp)
 target_link_libraries(larecomp_resolve_variants_test PRIVATE plume)
+# The real resolve copy pass (hlsl/resolve_ps.hlsl, compiled with the host shader flags) run on the D3D12 software adapter (WARP) over colour
+# values at the edge of a 7e3 target's range and past it (a NaN of any payload, plus and minus infinity, negatives, 31.875 and the next float16 above
+# it, 65504): the NaN flag, the ceiling flag, the exponent scale and the sample sum, per colour channel (ROAD-VIEW-OVERFLOW). Windows only; it
+# says SKIPPED and exits 0 where WARP or dxc.exe is missing (the dxc folder is its second argument or $LARECOMP_DXC_DIR):
+#   cmake --build <dir> --target larecomp_resolve_range_warp_test, then run src/gpu/larecomp_resolve_range_warp_test <src/gpu dir> [<dxc dir>].
+# What a colour clear stores in a target of the host (color_clear_rules.h: a 7e3 target never stores a NaN, a negative number or more than 31.875; the
+# test also reads edram.cpp and checks that EncodeColorClear takes its numbers from the header) likewise:
+#   cmake --build <dir> --target larecomp_color_clear_rules_test, then run src/gpu/larecomp_color_clear_rules_test <src/gpu dir>.
+add_executable(larecomp_color_clear_rules_test EXCLUDE_FROM_ALL color_clear_rules_test.cpp)
+if(WIN32)
+    add_executable(larecomp_resolve_range_warp_test EXCLUDE_FROM_ALL resolve_range_warp_test.cpp)
+    target_link_libraries(larecomp_resolve_range_warp_test PRIVATE d3d12 dxgi)
+endif()
 # HostImage's release order (host_passes.h: framebuffer, view, texture, by the destructor and by move assignment; the defaulted assignment freed the texture before the view: ASan
 # heap-use-after-free in GiField::Shutdown) has a check with stand-ins for Plume's texture, view and framebuffer, no device. It reads Plume's headers only:
 #   cmake --build <dir> --target larecomp_host_image_test, then run src/gpu/larecomp_host_image_test (exit 0 = passed).

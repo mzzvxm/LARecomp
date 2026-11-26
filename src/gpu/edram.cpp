@@ -14,6 +14,7 @@
 #include "xxhash_inline.h"
 #include <rex/logging/log_category.h>
 
+#include "color_clear_rules.h"
 #include "descriptors.h"
 #include "device.h"
 #include "format.h"
@@ -300,15 +301,9 @@ std::string DescribeEdramKey(const EdramKey& k) {
 
 void EncodeColorClear(uint32_t color_format, int32_t exp_bias, const float color[4],
                       float out[4]) {
-  float scale = std::ldexp(1.0f, exp_bias);
-  if (color_format == 4 || color_format == 5) {
-    scale *= 1.0f / 32.0f;  // k_16_16, k_16_16_16_16: SNORM +-1 on the host = +-32
-  }
+  // The rules, per component, are color_clear_rules.h's (a 7e3 target never stores a NaN, a negative number or more than 31.875).
   for (uint32_t c = 0; c < 4; ++c) {
-    out[c] = color[c] * scale;
-    if (color_format == 1) {
-      out[c] = std::clamp(out[c], 0.0f, 1.0f);  // k_8_8_8_8_GAMMA, kept linear
-    }
+    out[c] = color_clear::EncodeComponent(color_format, exp_bias, color[c], c);
   }
 }
 
