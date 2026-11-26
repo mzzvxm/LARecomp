@@ -37,6 +37,7 @@ const ItemDef* DebugFixesRows(int& count);
 #if defined(LARECOMP_HAS_GPU)
 const ItemDef* DebugPictureFixesRows(int& count);
 const ItemDef* DebugRendererFixesRows(int& count);
+const ItemDef* DebugLightingFixesRows(int& count);
 #endif
 const ItemDef* DebugPerformanceRows(int& count);
 const ItemDef* DebugRenderingRows(int& count);

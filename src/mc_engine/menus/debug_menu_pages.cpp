@@ -156,6 +156,7 @@ const ItemDef kDebugHubItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Submenu("PM_RxDbgSubFixes2", "PICTURE FIXES", "RxDbgFixes2Menu")),
     NativeOnly(Submenu("PM_RxDbgSubGpuFixes", "RENDERER FIXES", "RxDbgGpuFixesMenu")),
+    NativeOnly(Submenu("PM_RxDbgSubLightingFixes", "LIGHTING FIXES", "RxDbgLightingFixesMenu")),
 #endif
     Submenu("PM_RxDbgSubPerf",  "PERFORMANCE", "RxDbgPerfMenu"),
     Submenu("PM_RxDbgSubRend",  "RENDERING",   "RxDbgRendMenu"),
@@ -171,8 +172,6 @@ const ItemDef kDebugHubItems[] = {
 // and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
 // page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
 const ItemDef kDebugFixesItems[] = {
-    NativeOnly(Bool("PM_RxSharpUi", "mcla_ui_sharp", "SHARP UI: ")),
-    NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale", "SHARP MINIMAP: ")),
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
     Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",
@@ -214,31 +213,17 @@ constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
 
 // CHECK: open Renderer Fixes and toggle a reflection switch in the live menu.
 const ItemDef kDebugRendererFixesItems[] = {
-    NativeOnly(Bool("PM_RxDbgCityRtSelect", "mcla_gpu_city_rt_shadow_selective", "SELECTIVE SUN RAYS: ")),
+    NativeOnly(Bool("PM_RxSharpUi", "mcla_ui_sharp", "SHARP UI: ")),
+    NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale", "SHARP MINIMAP: ")),
     NativeOnly(Bool("PM_RxDbgSpecularOcclusion", "mcla_gpu_specular_occlusion", "REFLECTION FALLBACK OCCLUSION: ")),
-    NativeOnly(Bool("PM_RxDbgCarShadowReuse", "mcla_gpu_car_shadow_reuse", "CAR SHADOW REUSE: ")),
-    NativeOnly(Bool("PM_RxDbgLightShadowBands", "mcla_gpu_light_shadow_bands", "LIGHT SHADOW DISTANCE BANDS: ")),
-    NativeOnly(Bool("PM_RxDbgLightComposite", "mcla_gpu_light_composite", "LIGHT COMPOSITE: ")),
     NativeOnly(Bool("PM_RxDbgUpInputsLean", "mcla_gpu_upscaler_inputs_lean", "COMBINED UPSCALER INPUT PASSES: ")),
     NativeOnly(Bool("PM_RxDbgLampFringe", "mcla_gpu_glow_neutral", "REFLECTED LAMP FRINGE FIX: ")),
     NativeOnly(Bool("PM_RxDbgImpostorSize", "mcla_gpu_impostor_native_size", "NATIVE FOLIAGE BAKE: ")),
     NativeOnly(Bool("PM_RxDbgHudMapHold", "mcla_gpu_hud_map_hold", "HUD RADAR HOLD: ")),
-    NativeOnly(Bool("PM_RxDbgGuestShadow", "mcla_fix_guest_shadow_work", "TRAFFIC SHADOW WORK: ")),
-    NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
-    NativeOnly(Bool("PM_RxDbgGiFieldSchedule", "mcla_gpu_rt_gi_field_schedule", "RT BOUNCE FIELD SCHEDULE: ")),
-    NativeOnly(Bool("PM_RxDbgShadowVisibleFar", "mcla_gpu_shadow_visible_far", "SUN CASCADE VISIBLE FAR: ")),
-    NativeOnly(Bool("PM_RxDbgShadowStableFit", "mcla_gpu_shadow_stable_fit", "SUN CASCADE STABLE FIT: ")),
-    NativeOnly(Bool("PM_RxDbgShadowProbe", "mcla_gpu_shadow_filter_early_out", "SUN SHADOW EARLY OUT: ")),
-    NativeOnly(Bool("PM_RxDbgTrafficReach", "mcla_gpu_traffic_shadows_reach", "TRAFFIC SHADOW REACH: ")),
-    NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
-    NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
-    NativeOnly(Bool("PM_RxDbgVolAmortize", "mcla_gpu_vol_amortize", "REUSE VOLUME SAMPLES: ")),
-    NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),
     NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
     NativeOnly(Bool("PM_RxDbgRtDenoiseV2", "mcla_gpu_rt_denoise_v2", "RT DENOISE V2: ")),
     NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
-    NativeOnly(Bool("PM_RxDbgCityCarCover", "mcla_gpu_city_rt_car_coverage", "CITY RT CAR COVERAGE: ")),
     NativeOnly(Bool("PM_RxDbgCarHistoryTiles", "mcla_gpu_car_history_tiles", "CAR HISTORY TILES: ")),
     NativeOnly(Bool("PM_RxDbgCarRtPaintOneRay", "mcla_gpu_car_rt_paint_one_ray", "RT PAINT ONE RAY: ")),
     NativeOnly(Bool("PM_RxDbgEnvHold", "mcla_gpu_env_hold", "ENVIRONMENT MAP HOLD: ")),
@@ -251,6 +236,26 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgResolveLayout", "mcla_gpu_resolve_layout_memo", "RESOLVE LAYOUT CACHE: ")),
     NativeOnly(Bool("PM_RxDbgConstBatch", "mcla_gpu_batch_constant_banks", "BATCH CONSTANT BANKS: ")),
     NativeOnly(Bool("PM_RxDbgFetchRaw", "mcla_gpu_fetch_memo_raw", "FETCH MEMO RAW: ")),
+};
+
+// CHECK: open this page and flip a sun and an atmosphere switch in the live menu.
+const ItemDef kDebugLightingFixesItems[] = {
+    NativeOnly(Bool("PM_RxDbgCityRtSelect", "mcla_gpu_city_rt_shadow_selective", "SELECTIVE SUN RAYS: ")),
+    NativeOnly(Bool("PM_RxDbgCarShadowReuse", "mcla_gpu_car_shadow_reuse", "CAR SHADOW REUSE: ")),
+    NativeOnly(Bool("PM_RxDbgLightShadowBands", "mcla_gpu_light_shadow_bands", "LIGHT SHADOW DISTANCE BANDS: ")),
+    NativeOnly(Bool("PM_RxDbgLightComposite", "mcla_gpu_light_composite", "LIGHT COMPOSITE: ")),
+    NativeOnly(Bool("PM_RxDbgGuestShadow", "mcla_fix_guest_shadow_work", "TRAFFIC SHADOW WORK: ")),
+    NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgGiFieldSchedule", "mcla_gpu_rt_gi_field_schedule", "RT BOUNCE FIELD SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgShadowVisibleFar", "mcla_gpu_shadow_visible_far", "SUN CASCADE VISIBLE FAR: ")),
+    NativeOnly(Bool("PM_RxDbgShadowStableFit", "mcla_gpu_shadow_stable_fit", "SUN CASCADE STABLE FIT: ")),
+    NativeOnly(Bool("PM_RxDbgShadowProbe", "mcla_gpu_shadow_filter_early_out", "SUN SHADOW EARLY OUT: ")),
+    NativeOnly(Bool("PM_RxDbgTrafficReach", "mcla_gpu_traffic_shadows_reach", "TRAFFIC SHADOW REACH: ")),
+    NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
+    NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
+    NativeOnly(Bool("PM_RxDbgVolAmortize", "mcla_gpu_vol_amortize", "REUSE VOLUME SAMPLES: ")),
+    NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),
+    NativeOnly(Bool("PM_RxDbgCityCarCover", "mcla_gpu_city_rt_car_coverage", "CITY RT CAR COVERAGE: ")),
 };
 
 // PICTURE FIXES: the fixes of the Plume renderer's picture (dither, bloom and exposure at a render scale, the car chrome, the noise of the
@@ -775,6 +780,7 @@ const ItemDef* DebugFixesRows(int& count)       { return Rows(kDebugFixesItems, 
 #if defined(LARECOMP_HAS_GPU)
 const ItemDef* DebugPictureFixesRows(int& count) { return Rows(kDebugPictureFixesItems, count); }
 const ItemDef* DebugRendererFixesRows(int& count) { return Rows(kDebugRendererFixesItems, count); }
+const ItemDef* DebugLightingFixesRows(int& count) { return Rows(kDebugLightingFixesItems, count); }
 #endif
 const ItemDef* DebugPerformanceRows(int& count) { return Rows(kDebugPerformanceItems, count); }
 const ItemDef* DebugRenderingRows(int& count)   { return Rows(kDebugRenderingItems, count); }

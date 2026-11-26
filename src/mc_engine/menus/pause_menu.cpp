@@ -2641,7 +2641,7 @@ const MenuDef kMenus[] = {
     {"PM_RxTabUi", "UI", "Colors of the menus, speed units and HUD width.",
      "RxUiMenu",
      kUiItems, int(sizeof(kUiItems) / sizeof(kUiItems[0]))},
-    // The hidden DEBUG menu (debug_menu_pages.cpp): a hub button before QUIT and the eight pages it opens (seven while the XENIA renderer runs).
+    // The hidden DEBUG menu (debug_menu_pages.cpp): a hub button before QUIT and a set of pages filtered by renderer.
     // All of it is MenuDef::debug_only: with the menu locked these have no rows, no button and no log
     // line, and the SETTINGS tab is what it was. The rows are the cvars of the DEBUG verdict of
     // SETTINGS-REVIEW.md, session only (a debug cvar's change is never saved, config_save.cpp).
@@ -2661,6 +2661,9 @@ const MenuDef kMenus[] = {
     {"PM_RxDbgTabGpuFixes", "RENDERER FIXES", "Renderer switches for comparing fixes and optimizations.",
      "RxDbgGpuFixesMenu",
      nullptr, 0, mcla_menu::DebugRendererFixesRows, false, nullptr, true},
+    {"PM_RxDbgTabLightingFixes", "LIGHTING FIXES", "Compare lighting and shadow fixes and optimizations.",
+     "RxDbgLightingFixesMenu",
+     nullptr, 0, mcla_menu::DebugLightingFixesRows, false, nullptr, true},
 #endif
     {"PM_RxDbgTabPerf", "PERFORMANCE", "Pacing and speed switches for testing.",
      "RxDbgPerfMenu",
