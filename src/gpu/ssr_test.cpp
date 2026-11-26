@@ -2609,6 +2609,27 @@ void TestSources(const std::string& dir) {
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "fallback.planar * weights.planar + fallback.env * weights.env - fallback.stock;") && Has(trace_ps, "SsrSurfaceFallback(surface.cls") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
+  const std::string fallback = Read(dir, "hlsl/ssr_handoff.hlsli");
+  const size_t planar_stock = fallback.find("result.stock = result.planar;");
+  const size_t env_stock = fallback.find("result.stock = result.env;");
+  const size_t planar_occlusion = fallback.find("result.planar *= result.visibility;");
+  const size_t env_occlusion = fallback.find("result.env *= result.visibility;");
+  Check(planar_stock < planar_occlusion && planar_occlusion != std::string::npos &&
+            env_stock < env_occlusion && env_occlusion != std::string::npos &&
+            Has(fallback, "SpecularOcclusion(dot(normal, to_camera), ao, SsrAlphaOfSmooth(smoothness))"),
+        "specular occlusion leaves the guest estimate intact and attenuates both fallback rungs");
+  const std::string rt_trace = Read(dir, "hlsl/ssr_rt_trace_cs.hlsl");
+  Check(Has(rt_trace, "const float3 fallback = lower.planar + lower.env;") &&
+            Has(rt_trace, "return colour * visibility - fallback;") &&
+            Has(rt_trace, "w.units, lower.visibility, fallback, cap)"),
+        "RT replaces the attenuated fallback and applies the same visibility on a sky miss");
+  Check(Has(trigger, "ao_->FrameOcclusionNow(&ao_view) && ao_view.has_visibility") &&
+            Has(trigger, "last_specular_ao_ == specular_ao") && Has(trigger, "last_specular_ao_ = specular_ao;"),
+        "the fallback uses current AO and changing its availability invalidates the reflection history");
+  Check(Has(apply_ps, "if (trace_slot != accum_slot && t.w != 0.0f)") &&
+            Has(apply_ps, "radiance += min(g_textures[trace_slot].Load(int3(q, 0)).xyz, 0.0f);") &&
+            Has(apply_ps, "sum += radiance * w;"),
+        "Ray Regeneration preserves subtractive deltas without adding the raw positive radiance back");
   const std::string guided = FunctionText(temporal_ps, "SsrHistoryOutput SsrAccumulate(");
   Check(Has(guided, "SsrClipToBox(history,") && Has(guided, "SsrHistoryInside(image.u, image.v") &&
             Has(guided, "if (SsrGuideSource(state) != source)") && Has(guided, "w *= SsrImageDepthWeight(guide.z, image.z, source)") &&

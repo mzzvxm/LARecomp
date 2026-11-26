@@ -2,6 +2,7 @@
 #define MCLA_GPU_SSR_HANDOFF_HLSLI
 
 #include "env_fallback.hlsli"
+#include "spec_occlusion.hlsli"
 
 // reflection_handoff_rules.h Frame. The RT pass already uses sets 5 and 6.
 #if SSR_HANDOFF_RT
@@ -26,12 +27,14 @@ struct SsrFallback {
   float3 planar;
   float3 env;
   float3 stock;
+  float visibility;
   bool has_planar;
   bool has_env;
 };
 
-SsrFallback SsrSurfaceFallback(uint cls, int2 texel, float3 pc, float3 normal, float smoothness, bool handoff) {
+SsrFallback SsrSurfaceFallback(uint cls, int2 texel, float3 pc, float3 normal, float3 to_camera, float smoothness, bool handoff) {
   SsrFallback result = (SsrFallback)0;
+  result.visibility = 1.0f;
   const bool road = SsrRoadReceiver(cls);
   const bool ground = road || cls == uint(GB_CLASS_SIDEWALK);
   const float share = SsrF(SSR_W_FALLBACK);
@@ -60,6 +63,16 @@ SsrFallback SsrSurfaceFallback(uint cls, int2 texel, float3 pc, float3 normal, f
         result.stock = result.env;
       }
     }
+  }
+  const uint ao_word = g_handoff.Load(152u);
+  const uint ao_slot = SsrLo(ao_word);
+  if (SsrHasSlot(ao_slot) && (result.has_planar || result.has_env)) {
+    const int2 ao_texel = texel >> int(SsrHi(ao_word));
+    const float ao = g_textures[ao_slot].Load(int3(ao_texel, 0)).x;
+    result.visibility = SpecularOcclusion(dot(normal, to_camera), ao, SsrAlphaOfSmooth(smoothness));
+    // Subtract the original guest contribution even when the replacement is darker.
+    result.planar *= result.visibility;
+    result.env *= result.visibility;
   }
   return result;
 }

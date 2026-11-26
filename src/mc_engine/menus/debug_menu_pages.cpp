@@ -201,6 +201,7 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
     NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
+    NativeOnly(Bool("PM_RxDbgSpecularOcclusion", "mcla_gpu_specular_occlusion", "REFLECTION FALLBACK OCCLUSION: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

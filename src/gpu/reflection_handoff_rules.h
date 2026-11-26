@@ -45,8 +45,9 @@ struct Frame {
   uint32_t classify_group_mask = 0;
   uint32_t classify_stride = 0;
   uint32_t classify_plan = 0;
+  uint32_t specular_ao = 0xFFFFu;  // low 16 bits: visibility slot; high 16: half-size texel shift
 };
-static_assert(sizeof(Frame) == 152);
+static_assert(sizeof(Frame) == 156 && offsetof(Frame, specular_ao) == 152);
 static_assert(offsetof(Frame, classify_flags) == 128 && offsetof(Frame, classify_stride) == 144);
 inline constexpr uint32_t kClassifyEnabled = 1u;
 inline constexpr uint32_t kClassifyHistory = 2u;

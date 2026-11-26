@@ -835,10 +835,25 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   now.generation = sf.generation;
   const float history_weight = history_override_ >= 0.0f ? history_override_ : numbers.history_weight;
   const bool resolve = larecomp::settings::mcla_gpu_ssr_resolve.Get();
-  if (last_handoff_enabled_ != handoff_enabled_) {
+  namespace handoff = reflection_handoff;
+  handoff::Frame handoff_frame;
+  handoff_frame.enabled = handoff_enabled_;
+  AmbientOcclusion::OcclusionView ao_view;
+  if (handoff_enabled_ && larecomp::settings::mcla_gpu_specular_occlusion.Get() && ao_ &&
+      ao_->FrameOcclusionNow(&ao_view) && ao_view.has_visibility &&
+      ao_view.render[0] == sf.render[0] && ao_view.render[1] == sf.render[1] &&
+      ao_view.traced[0] == (ao_view.low ? width : sf.render[0]) &&
+      ao_view.traced[1] == (ao_view.low ? height : sf.render[1])) {
+    // At half size the receiver and the AO read the same 2x2 depth block.
+    // CHECK: AO agreement at wet-road and tunnel silhouettes, including odd sizes and MSAA.
+    handoff_frame.specular_ao = ssr::PackSlots(ao_view.visibility_slot, ao_view.low ? 1u : 0u);
+  }
+  const bool specular_ao = (handoff_frame.specular_ao & 0xFFFFu) != ssr::push::kNoSlot16;
+  const bool same_fallback = last_handoff_enabled_ == handoff_enabled_ && last_specular_ao_ == specular_ao;
+  if (!same_fallback) {
     regen_key_.valid = false;
   }
-  const bool history_eligible = ssr::HistoryUsable(last_key_, now, motion_known) && last_resolve_ == resolve && last_handoff_enabled_ == handoff_enabled_ &&
+  const bool history_eligible = ssr::HistoryUsable(last_key_, now, motion_known) && last_resolve_ == resolve && same_fallback &&
       last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
   if (!camera_logged_) {
     camera_logged_ = true;
@@ -984,9 +999,6 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     trace_push.Set(pk::kRoadView, road_word | kCapturePlanarBit);
   }
   trace_push.SetFloat(pk::kFallback, road_why == ssr::RoadViewWhy::kUsed ? road.share : 0.0f);
-  namespace handoff = reflection_handoff;
-  handoff::Frame handoff_frame;
-  handoff_frame.enabled = handoff_enabled_;
   handoff_frame.exposure = sf.camera.exposure_bias > 0.0f ? sf.camera.exposure_bias : ssr::kDefaultExposure;
   if (handoff_enabled_ && axes.ok && resolves_ && device_ && heap_) {
     handoff_frame.env_word = env_fallback::MapWord(*resolves_, *edram_, *device_, *heap_, sf.frame_serial);
@@ -1204,7 +1216,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   } else if (regen_ok) {
     // RG-3: the same resolve over the DENOISED image (rgb the runtime's radiance, alpha the hit distance it preserved: not 0 where a ray was traced, which is all the resolve asks of the alpha).
     const uint32_t denoised_slot = regen_pass_.image(rgd::Image::kDenoised).slot;
-    apply.Set(pk::kSrc, ssr::PackSlots(denoised_slot, denoised_slot));
+    // Ray Regeneration clips negative deltas. Keep the original trace for the
+    // signed fallback subtraction when AO is active.
+    // CHECK: compare the signed road and glass correction on the AMD denoiser.
+    apply.Set(pk::kSrc, ssr::PackSlots(denoised_slot, specular_ao ? trace_.slot : denoised_slot));
   } else {
     apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)
     apply.Set(pk::kRoadViewApply, road_word);
@@ -1265,6 +1280,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     regen_key_.valid = false;   // the next regen frame starts the runtime's history again
   }
   last_handoff_enabled_ = handoff_enabled_;
+  last_specular_ao_ = specular_ao;
   reuse_key_ = now;
   reuse_key_.valid = handoff_enabled_ || classify;
   reuse_tan_ = {sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1]};

@@ -84,6 +84,13 @@ void RunOnFixture() {
         "one trace call, with no pixel position (the points of the ray have no per-pixel noise)");
   Check(Count(text, "CarReflApply(r10.xyz, carRefl, 1.0)") == 1, "the sharp read is applied once at full weight");
   Check(Count(text, "CarReflApply(r13.xyz, carRefl, 0.5)") == 1, "the blurred read is applied once at half weight");
+  Check(Count(text, "SpecularOcclusion(iTexCoord6.w, iTexCoord4.w, kSpecularOcclusionPaintRoughness)") == 1 &&
+            Contains(text, "float carEnvVisibility = 1.0f;") &&
+            Contains(text, "if ((g_CarReflC.w & kSpecularOcclusionPaintFlag) != 0u)"),
+        "paint visibility is opt-out and uses baked AO and N.V even without car history");
+  Check(Contains(text, "r10.xyz *= carEnvVisibility;\n\tr10.xyz = CarReflApply") &&
+            Contains(text, "r13.xyz *= carEnvVisibility;\n\tr13.xyz = CarReflApply"),
+        "only environment texels are attenuated before either can be replaced by a hit");
   Check(Count(text, "CarReflDebug(carRefl, iTexCoord4.w)") == 1, "one debug view");
   Check(Contains(text, "#define g_CarReflM0 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 608, 0x10)"),
         "the SPIR-V declaration of the first matrix row");
@@ -98,7 +105,7 @@ void RunOnFixture() {
         "the local result follows the cube map data");
   // The ray of version 4 (src/gpu/car_selfrefl_rules.h has the same arithmetic, which car_selfrefl_rules_test.cpp checks): the
   // numbers in the helper are the ones of that header. Version 5 adds the host's ray traced image in front of the march, version 6 reads it with a 3x3 B-spline.
-  Check(sp::kCarSelfReflVariantVersion == 11, "the variant's version is 11 (the stamp rebuilds the pack's paint and the traffic paint's; 11 also carries the no double precision edit)");
+  Check(sp::kCarSelfReflVariantVersion == 12, "the stamp rebuilds the variant for paint specular occlusion");
   // Version 10 (RT-PARKED-PAINT): a draw with the flag bit 2 reads the history's distance as abs(a) in the self-test and in the lookup of the ray traced image, and nothing else changes
   // (src/gpu/car_selfrefl_rules.h PaintHistoryDistance is the same arithmetic).
   Check(Contains(text, "const float ownDistance = ((slots.w & 4u) != 0u) ? abs(own.a) : own.a;") && Contains(text, "if (!(ownDistance > 0.0) || agreement <= 0.0)") &&

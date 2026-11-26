@@ -253,6 +253,7 @@ class ScreenReflections {
   float reuse_exposure_ = 1.0f;
   bool handoff_enabled_ = false;
   bool last_handoff_enabled_ = false;
+  bool last_specular_ao_ = false;
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
