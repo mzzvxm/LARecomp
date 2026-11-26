@@ -1421,6 +1421,10 @@ class GPUSettings final : public rex::SettingOwner {
     "made: the old one is kept, the pause menu's RENDER SCALE row says LIMITED and the log says so. "
     "The guest keeps seeing its own sizes.");
 
+  REX_SETTING(bool, mcla_gpu_resolve_texture_copy, false,
+    "Use a GPU texture copy for matching single-sample RGBA8 resolves that need no conversion. Live.",
+    rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_resolve_7e3_ceiling, true, "A resolve of a 7e3 colour target (k_2_10_10_10_FLOAT, the 3D scene) clamps "
                     "each sample's red, green and blue to what the console's target holds, as "
                     "Xenia does: 0 to 31.875 as stored, which with the game's exponent bias of 4 "
@@ -2398,6 +2402,7 @@ inline auto& mcla_gpu_reflection_resolution = g_gpu.mcla_gpu_reflection_resoluti
 inline auto& mcla_gpu_reflection_scale = g_gpu.mcla_gpu_reflection_scale;
 inline auto& mcla_gpu_road_mirror_blur = g_gpu.mcla_gpu_road_mirror_blur;
 inline auto& mcla_gpu_resolution_scale = g_gpu.mcla_gpu_resolution_scale;
+inline auto& mcla_gpu_resolve_texture_copy = g_gpu.mcla_gpu_resolve_texture_copy;
 inline auto& mcla_gpu_resolve_7e3_ceiling = g_gpu.mcla_gpu_resolve_7e3_ceiling;
 inline auto& mcla_gpu_resolve_fill_half_pixel = g_gpu.mcla_gpu_resolve_fill_half_pixel;
 inline auto& mcla_gpu_resolve_memory_check = g_gpu.mcla_gpu_resolve_memory_check;

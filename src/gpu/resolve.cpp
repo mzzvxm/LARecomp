@@ -1584,63 +1584,97 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
             p->views.Slot(*device_, *heap_, *p->texture, p->format, key.levels(),
                           format::kHostSwizzleRGBA, "resolve product view");
       }
-      // The EDRAM planes are read by the pass, and by the encode's dispatch if there is one.
-      edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
-      // A depth copy that keeps its stencil byte (not the raw k_8_8_8_8 one, which waits for
-      // its product) at a whole scale, or at a fractional one whose pixels the pass wrote: this
-      // pass also stores the resolve memory's dwords, from the invocation that loaded each guest
-      // texel's sample, the very depth and stencil the encode would load (resolve_ps.hlsl
-      // RESOLVE_FUSED). The encode does everything else now, before the pass: the waiting
-      // encodes over its pages, the uploads, the barrier, the page bookkeeping. Other cases,
-      // and a pipeline that could not be made: the dispatch after the pass, as before.
-      plume::RenderPipeline* fused_pipeline = nullptr;
-      if (memory_copy.depth && !memory_copy.from_product && resolution_scale.whole() &&
-          resolution_scale.n >= Scale::kDenominator) {
-        fused_pipeline = resolve_memory_->FusedPipeline(host_multisampled, host.format, false);
-      } else if (memory_copy.depth && !memory_copy.from_product && depth_fractional_ok) {
-        fused_pipeline = resolve_memory_->FusedPipeline(host_multisampled, host.format, true);
-      }
-      struct FusedPush {
-        Push resolve;
-        ResolveMemory::FusedWrite write;
-      } fused_push{};
-      static_assert(sizeof(FusedPush) == ResolveMemory::kFusedPushBytes);
-      bool encoded = false;  // the resolve memory has had the copy (fused: the pass writes it)
-      bool in_pass = false;
-      if (fused_pipeline) {
-        memory_copy.fuse = true;
-        encoded = true;
-        resolve_memory_->Encode(list, memory_copy, &fused_push.write);
-        in_pass = fused_push.write.scale_n != 0;
-      }
-      TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
-      if (pass_timing_->enabled()) {
-        const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
-                                        : format::ColorTargetFormat(src_format).guest_name;
-        const char* to = format::TextureHost(key.format).guest_name;
-        pass_timing_->Mark(list, std::format("resolve {} {}x -> {} {}x{}", from, samples, to,
-                                             key.width, key.height));
-      }
-      list->setFramebuffer(framebuffer);
-      const plume::RenderViewport viewport(0.0f, 0.0f, float(resolution_scale.Edge(level_width)),
-                                           float(resolution_scale.Edge(level_height)));
-      list->setViewports(&viewport, 1);
       const plume::RenderRect scissor =
           EdramTargets::ScaledRect(plume::RenderRect(tx0, ty0, tx1, ty1), resolution_scale);
-      list->setScissors(&scissor, 1);
-      if (in_pass) {
-        resolve_memory_->BindFused(list);
-        list->setPipeline(fused_pipeline);
-        fused_push.resolve = push;
-        list->setGraphicsPushConstants(0, &fused_push, 0, sizeof(fused_push));
+      const uint64_t host_pixels =
+          uint64_t(scissor.right - scissor.left) * uint64_t(scissor.bottom - scissor.top);
+      plume::RenderBox copy_box;
+      bool encoded = false;  // the resolve memory has had the copy (fused: the pass writes it)
+      if (larecomp::settings::mcla_gpu_resolve_texture_copy.Get() &&
+          src->texture && p->texture &&
+          resolve_variants::CanCopyRgba8({depth_source, host_multisampled, p->format}, src->format,
+                                        level, push.mode, push.scale, push.fill) &&
+          resolve_variants::Rgba8CopyBox(scissor, push.offset_x, push.offset_y,
+                                       resolution_scale.Edge(src->width),
+                                       resolution_scale.Edge(src->height), copy_box)) {
+        // CHECK: Compare the copy and shader paths on D3D12 and Vulkan, including
+        // a partial write followed by a guest texture fetch and memory readback.
+        using Layout = plume::RenderTextureLayout;
+        const plume::RenderTextureBarrier before[] = {
+            {src->texture.get(), Layout::COPY_SOURCE}, {p->texture.get(), Layout::COPY_DEST}};
+        const plume::RenderTextureBarrier after[] = {
+            {src->texture.get(), Layout::SHADER_READ}, {p->texture.get(), Layout::SHADER_READ}};
+        list->setFramebuffer(nullptr);
+        if (pass_timing_->enabled()) {
+          pass_timing_->Mark(list, "resolve RGBA8 texture copy");
+        }
+        list->barriers(plume::RenderBarrierStage::COPY, before, 2);
+        list->copyTextureRegion(plume::RenderTextureCopyLocation::Subresource(p->texture.get()),
+                                plume::RenderTextureCopyLocation::Subresource(src->texture.get()),
+                                uint32_t(scissor.left), uint32_t(scissor.top), 0, &copy_box);
+        list->barriers(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE,
+                       after, 2);
+        src->layout = Layout::SHADER_READ;
+        p->layout = Layout::SHADER_READ;
+        edram_->NoteCopyBarriers();
+        ++stats_.texture_copies;
+        stats_.texture_copy_pixels += host_pixels;
       } else {
-        passes_->Bind(list);
-        list->setPipeline(pipeline);
-        list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+        // The EDRAM planes are read by the pass, and by the encode's dispatch if there is one.
+        edram_->Transition(list, *src, plume::RenderTextureLayout::SHADER_READ);
+        // A depth copy that keeps its stencil byte (not the raw k_8_8_8_8 one, which waits for
+        // its product) at a whole scale, or at a fractional one whose pixels the pass wrote: this
+        // pass also stores the resolve memory's dwords, from the invocation that loaded each guest
+        // texel's sample, the very depth and stencil the encode would load (resolve_ps.hlsl
+        // RESOLVE_FUSED). The encode does everything else now, before the pass: the waiting
+        // encodes over its pages, the uploads, the barrier, the page bookkeeping. Other cases,
+        // and a pipeline that could not be made: the dispatch after the pass, as before.
+        plume::RenderPipeline* fused_pipeline = nullptr;
+        if (memory_copy.depth && !memory_copy.from_product && resolution_scale.whole() &&
+            resolution_scale.n >= Scale::kDenominator) {
+          fused_pipeline = resolve_memory_->FusedPipeline(host_multisampled, host.format, false);
+        } else if (memory_copy.depth && !memory_copy.from_product && depth_fractional_ok) {
+          fused_pipeline = resolve_memory_->FusedPipeline(host_multisampled, host.format, true);
+        }
+        struct FusedPush {
+          Push resolve;
+          ResolveMemory::FusedWrite write;
+        } fused_push{};
+        static_assert(sizeof(FusedPush) == ResolveMemory::kFusedPushBytes);
+        bool in_pass = false;
+        if (fused_pipeline) {
+          memory_copy.fuse = true;
+          encoded = true;
+          resolve_memory_->Encode(list, memory_copy, &fused_push.write);
+          in_pass = fused_push.write.scale_n != 0;
+        }
+        TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
+        if (pass_timing_->enabled()) {
+          const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
+                                          : format::ColorTargetFormat(src_format).guest_name;
+          const char* to = format::TextureHost(key.format).guest_name;
+          pass_timing_->Mark(list, std::format("resolve {} {}x -> {} {}x{}", from, samples, to,
+                                               key.width, key.height));
+        }
+        list->setFramebuffer(framebuffer);
+        const plume::RenderViewport viewport(0.0f, 0.0f, float(resolution_scale.Edge(level_width)),
+                                             float(resolution_scale.Edge(level_height)));
+        list->setViewports(&viewport, 1);
+        list->setScissors(&scissor, 1);
+        if (in_pass) {
+          resolve_memory_->BindFused(list);
+          list->setPipeline(fused_pipeline);
+          fused_push.resolve = push;
+          list->setGraphicsPushConstants(0, &fused_push, 0, sizeof(fused_push));
+        } else {
+          passes_->Bind(list);
+          list->setPipeline(pipeline);
+          list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+        }
+        list->drawInstanced(3, 1, 0, 0);
+        list->setFramebuffer(nullptr);
+        TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
       }
-      list->drawInstanced(3, 1, 0, 0);
-      list->setFramebuffer(nullptr);
-      TransitionProduct(list, *p, plume::RenderTextureLayout::SHADER_READ);
       // Its reduced copies are made again when next read; the fetches memoized
       // with them bind again (the pages' generation).
       ++p->writes;
@@ -1687,6 +1721,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       ++stats_.copies;
       ++stats_.modes[mode & 0xFF];
       stats_.pixels += uint64_t(tx1 - tx0) * uint64_t(ty1 - ty0);
+      stats_.host_pixels += host_pixels;
       if (capture_hdr && !depth_source && level == 0 && tx0 == 0 && uint32_t(tx1) == level_width &&
           temporal::MainColorSamples(src_key) != 0 &&
           temporal::ViewOfSamples(src_key.samples) == temporal::View::kPlay &&
@@ -1920,6 +1955,11 @@ std::string ResolveCache::TakeSummary(uint64_t frames) {
       stats_.pages_written_back, double(stats_.write_back_ns) / 1e6,
       double(stats_.write_back_max_ns) / 1e6, stats_.write_back_failures, stats_.reduced_made,
       stats_.reduced_created);
+  text += std::format(" | {:.2f} host Mpixel/frame", double(stats_.host_pixels) / f / 1e6);
+  if (larecomp::settings::mcla_gpu_resolve_texture_copy.Get() || stats_.texture_copies != 0) {
+    text += std::format(" | texture copies {:.1f}/frame ({:.2f} host Mpixel/frame)",
+                        double(stats_.texture_copies) / f, double(stats_.texture_copy_pixels) / f / 1e6);
+  }
   if (census_scale_) {
     text += std::format(" | census scale: {} copies of an image of the screen moved from their "
                         "source",

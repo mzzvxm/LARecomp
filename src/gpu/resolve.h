@@ -434,6 +434,9 @@ class ResolveCache {
     uint64_t found_by_image_base = 0; // ... of which by the base the SDK dropped
     uint64_t found_incomplete = 0;    // ... of a level not wholly written since activation
     uint64_t pixels = 0;
+    uint64_t host_pixels = 0;
+    uint64_t texture_copies = 0;
+    uint64_t texture_copy_pixels = 0;
     uint64_t finds = 0;
     uint64_t found = 0;
     uint64_t evicted = 0;

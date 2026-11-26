@@ -85,6 +85,32 @@ struct Variant {
   friend constexpr bool operator==(const Variant&, const Variant&) = default;
 };
 
+// The shader's UNORM8 load and store round-trip every byte when no conversion flag,
+// sample averaging, bias, or half-pixel fill changes it. Limit the copy to mip 0,
+// whose extent is the scaled guest extent even at fractional scales.
+constexpr bool CanCopyRgba8(Variant variant, plume::RenderFormat source, uint32_t mip,
+                            uint32_t mode, float scale, uint32_t fill) {
+  constexpr auto rgba8 = plume::RenderFormat::R8G8B8A8_UNORM;
+  return !variant.depth && !variant.msaa && source == rgba8 && variant.format == rgba8 &&
+         mip == 0 && mode == kModeUnorm8888 && scale == 1.0f && fill == 0;
+}
+
+// SV_Position in the shader indexes the destination scissor plus this signed
+// offset. At fractional scales rounding can push an edge outside the source.
+inline bool Rgba8CopyBox(plume::RenderRect rect, int32_t offset_x, int32_t offset_y,
+                            uint32_t source_width, uint32_t source_height, plume::RenderBox& box) {
+  const int32_t left = rect.left + offset_x;
+  const int32_t top = rect.top + offset_y;
+  const int32_t right = rect.right + offset_x;
+  const int32_t bottom = rect.bottom + offset_y;
+  if (left < 0 || top < 0 || right <= left || bottom <= top ||
+      uint32_t(right) > source_width || uint32_t(bottom) > source_height) {
+    return false;
+  }
+  box = plume::RenderBox(left, top, right, bottom);
+  return true;
+}
+
 // A copy pipeline's key in ResolveCache::pipelines_ and in the host precache (its variant word). The
 // format fits in 8 bits (resolve_variants_test.cpp checks it for every listed one).
 constexpr uint32_t PipelineKeyOf(bool depth, bool msaa, plume::RenderFormat format) {

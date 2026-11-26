@@ -548,6 +548,9 @@ class EdramTargets {
   void Transition(plume::RenderCommandList* list, Target& target,
                   plume::RenderTextureLayout layout);
 
+  // The source of a direct texture copy transitions to COPY_SOURCE and back to SHADER_READ.
+  void NoteCopyBarriers() { stats_.barriers += 2; }
+
   // The bindless slots of `target`'s shader views: the colour or depth plane,
   // and (depth targets) the stencil plane; made on first use. False when a
   // view or a slot cannot be had (logged).

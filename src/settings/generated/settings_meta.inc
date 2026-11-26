@@ -504,6 +504,7 @@
 {"mcla_gpu_reflection_resolution", "MCLA/GPU"},
 {"mcla_gpu_reflection_scale", "MCLA/GPU"},
 {"mcla_gpu_resolution_scale", "MCLA/GPU"},
+{"mcla_gpu_resolve_texture_copy", "MCLA/GPU"},
 {"mcla_gpu_resolve_7e3_ceiling", "MCLA/GPU"},
 {"mcla_gpu_resolve_fill_half_pixel", "MCLA/GPU"},
 {"mcla_gpu_resolve_memory_check", "MCLA/GPU"},
