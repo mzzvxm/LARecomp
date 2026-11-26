@@ -262,3 +262,9 @@ Fixes made directly in LARecomp:
 **ARC DTrade**, who made the LARecomp logo font for the project: the word mark and the LAR app icon.
 
 **Rockstar San Diego**, who made the game.
+
+## License
+
+LARecomp is free software under [GPL-3.0-only](LICENSE) with
+[additional terms](LICENSE-ADDITIONAL-TERMS.md).
+See [NOTICE](NOTICE) for attribution and third-party license information.
