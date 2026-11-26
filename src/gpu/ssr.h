@@ -351,6 +351,7 @@ class ScreenReflections {
   bool vehicle_table_logged_ = false;
   uint64_t vehicle_table_frames_ = 0;
   ssr::HistoryKey last_key_;          // the last frame that ran
+  bool last_denoise_v2_ = false;
   float last_tan_[2] = {0.0f, 0.0f};  // the lens it ran with
   uint64_t frames_ = 0;
   uint64_t frames_run_ = 0;

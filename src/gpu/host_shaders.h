@@ -163,6 +163,17 @@
 #include "ray_regen_ssr_cs.hlsl.dxil.h"
 #include "ray_regen_bounce_cs.hlsl.dxil.h"
 #include "rtao_denoise_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_ssr_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_ssr_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_ssr_temporal_ms_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_diffuse_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_diffuse_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_vis_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_vis_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_ao_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_ao_temporal_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_shadow_spatial_cs.hlsl.dxil.h"
+#include "rt_denoise_v2_shadow_temporal_cs.hlsl.dxil.h"
 #include "rtao_denoise_temporal_cs.hlsl.dxil.h"
 #include "rtao_compose_cs.hlsl.dxil.h"
 #include "rtao_compose_gi_cs.hlsl.dxil.h"
@@ -331,6 +342,17 @@
 #include "ray_regen_ssr_cs.hlsl.spirv.h"
 #include "ray_regen_bounce_cs.hlsl.spirv.h"
 #include "rtao_denoise_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_ssr_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_ssr_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_ssr_temporal_ms_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_diffuse_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_diffuse_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_vis_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_vis_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_ao_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_ao_temporal_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_shadow_spatial_cs.hlsl.spirv.h"
+#include "rt_denoise_v2_shadow_temporal_cs.hlsl.spirv.h"
 #include "rtao_denoise_temporal_cs.hlsl.spirv.h"
 #include "rtao_compose_cs.hlsl.spirv.h"
 #include "rtao_compose_gi_cs.hlsl.spirv.h"
@@ -581,8 +603,24 @@ inline HostShaderBlob RrGuidesViewShader() {
 inline HostShaderBlob RtDenoiseAoShader(bool temporal) {
   return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rtao_denoise_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rtao_denoise_spatial_cs);
 }
+inline HostShaderBlob RtDenoiseV2SsrShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_ssr_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_ssr_spatial_cs);
+}
+inline HostShaderBlob RtDenoiseV2SsrMsShader() { return MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_ssr_temporal_ms_cs); }
+inline HostShaderBlob RtDenoiseV2DiffuseShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_diffuse_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_diffuse_spatial_cs);
+}
+inline HostShaderBlob RtDenoiseV2VisShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_vis_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_vis_spatial_cs);
+}
+inline HostShaderBlob RtDenoiseV2AoShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_ao_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_ao_spatial_cs);
+}
 inline HostShaderBlob RtAoComposeShader(bool gi) {
   return gi ? MCLA_GPU_HOST_SHADER_BLOB(rtao_compose_gi_cs) : MCLA_GPU_HOST_SHADER_BLOB(rtao_compose_cs);
+}
+inline HostShaderBlob RtDenoiseV2ShadowShader(bool temporal) {
+  return temporal ? MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_shadow_temporal_cs) : MCLA_GPU_HOST_SHADER_BLOB(rt_denoise_v2_shadow_spatial_cs);
 }
 inline HostShaderBlob RayRegenAoShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(ray_regen_ao_cs);

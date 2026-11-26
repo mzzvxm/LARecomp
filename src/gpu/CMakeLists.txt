@@ -491,6 +491,7 @@ add_executable(larecomp_ssr_classify_test EXCLUDE_FROM_ALL ssr_classify_test.cpp
 # hlsl/rt_denoise_common.hlsli as C++ and compares it with the twins, runs a CPU model of the two stages on synthetic frames, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_rt_denoise_test EXCLUDE_FROM_ALL rt_denoise_test.cpp)
+add_executable(larecomp_rt_denoise_v2_test EXCLUDE_FROM_ALL rt_denoise_v2_test.cpp)
 # The NaN guard (hlsl/nan_guard.hlsli: a NaN decided by its bits, the same on D3D12 and on Vulkan, whose max / min / clamp / saturate disagree about a NaN; it compiles the .hlsli as C++ and compares it with the
 # standard library on every kind of NaN, the infinities and random bit patterns) and the places that use it (the reflections', the occlusion's, the volume's and the lights' shaders: the text of each place) likewise:
 #   cmake --build <dir> --target larecomp_nan_guard_test, then run src/gpu/larecomp_nan_guard_test [<src/gpu dir>] (exit 0 = passed).
@@ -1293,6 +1294,17 @@ target_sources(larecomp_gpu PRIVATE
 add_executable(larecomp_rtao_denoise_test EXCLUDE_FROM_ALL rtao_denoise_test.cpp)
 larecomp_gpu_host_shader(rtao_denoise_temporal_cs cs_6_0)
 larecomp_gpu_host_shader(rtao_denoise_spatial_cs cs_6_0)
+larecomp_gpu_host_shader(rt_denoise_v2_ssr_spatial_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_SSR=1)
+larecomp_gpu_host_shader(rt_denoise_v2_ssr_temporal_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_SSR=1 RT_DN_PASS_TEMPORAL=1)
+larecomp_gpu_host_shader(rt_denoise_v2_ssr_temporal_ms_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_SSR=1 RT_DN_PASS_TEMPORAL=1 SSR_MS=1)
+larecomp_gpu_host_shader(rt_denoise_v2_diffuse_spatial_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE)
+larecomp_gpu_host_shader(rt_denoise_v2_diffuse_temporal_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_PASS_TEMPORAL=1)
+larecomp_gpu_host_shader(rt_denoise_v2_vis_spatial_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1)
+larecomp_gpu_host_shader(rt_denoise_v2_vis_temporal_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1 RT_DN_PASS_TEMPORAL=1)
+larecomp_gpu_host_shader(rt_denoise_v2_ao_spatial_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_AO=1)
+larecomp_gpu_host_shader(rt_denoise_v2_ao_temporal_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_AO=1 RT_DN_PASS_TEMPORAL=1)
+larecomp_gpu_host_shader(rt_denoise_v2_shadow_spatial_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1 RT_DN_SHADOW=1)
+larecomp_gpu_host_shader(rt_denoise_v2_shadow_temporal_cs cs_6_0 SOURCE rt_denoise_v2_cs DEFINES RT_DN_PROFILE=RT_DN_PROFILE_DIFFUSE RT_DN_VIS=1 RT_DN_OUT_UNORM8=1 RT_DN_SHADOW=1 RT_DN_PASS_TEMPORAL=1)
 larecomp_gpu_host_shader(rtao_compose_cs cs_6_0)
 larecomp_gpu_host_shader(rtao_compose_gi_cs cs_6_0 SOURCE rtao_compose_cs DEFINES RTAO_GI=1)
 larecomp_gpu_host_shader(ray_regen_ao_cs cs_6_0)

@@ -194,6 +194,9 @@ struct RtDnPixel {
   float hit;       // the ray's length from the surface, metres (0: none)
   float share;     // how much of the pixel's value the filter may replace, 0..1
   float length;    // the history's length in frames (1: fresh)
+#ifdef RT_DN_SSR
+  uint dn2_surface;
+#endif
 #ifdef MCLA_RT_DENOISE_AO_CONSUMER_HLSLI
   uint vehicle;    // 0 for world pixels, 1 + stencil ID for vehicles
 #endif

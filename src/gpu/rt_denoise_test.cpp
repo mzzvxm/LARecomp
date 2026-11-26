@@ -1073,27 +1073,40 @@ void TestSources(const std::string& dir) {
         "host_shaders.h has the blobs and the two accessors");
   Check(Has(precache, "kRtDenoise = 32") && Has(host_cpp, "HostPrecache::Key(HostPrecache::kRtDenoise, (instance_ << 4) | stage)"), "the host's pipelines have their own precache owner, the consumer's number and the stage");
   // the host class
-  Check(Has(host_cpp, "output_builder_.addReadWriteTexture(0);") && Count(host_cpp, "addReadWriteTexture") == 1 && Has(host_cpp, "device_->CreateDescriptorSet(output_builder_, 1, 0, \"rt denoise output set\")"),
-        "the output set has one view (u0) and CreateDescriptorSet says so: D3D12 allocates a view for each descriptor");
+  Check(Has(host_cpp, "output_builder_.addReadWriteTexture(0);") && Has(host_cpp, "device_->CreateDescriptorSet(output_builder_, 1, 0, \"rt denoise output set\")") &&
+            Has(host_cpp, "output_v2_builder_.addReadWriteTexture(0);") && Has(host_cpp, "output_v2_builder_.addReadWriteTexture(1);") &&
+            Has(host_cpp, "device_->CreateDescriptorSet(output_v2_builder_, 2, 0, \"rt denoise v2 temporal outputs\")"),
+        "the colour output has one UAV and the V2 temporal layout has a second UAV for features");
   Check(Has(host_cpp, "STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS") && Has(host_cpp, "plume::RenderFormat::R16G16B16A16_FLOAT") && !Has(host_cpp, "RENDER_TARGET"), "the result images are RGBA16F storage images (no render target, no typed load is used)");
   Check(Has(host_cpp, "const uint32_t iterations = std::clamp<uint32_t>(in.iterations, 1, rt_denoise::kMaxIterations);") && Has(host_cpp, "const uint32_t out = (i & 1u) == 0 ? kSpatialA : kSpatialB;") &&
             Has(host_cpp, "Dispatch(in.list, kSpatial, out, push, in.width, in.height, i + 1 == iterations);"),
         "the spatial stage records one to three iterations, ping-ponging between two images, the last one's result in the final read state");
   Check(Has(host_cpp, "final_pass ? Stage::GRAPHICS_AND_COMPUTE : Stage::COMPUTE") && Has(host_cpp, "Layout::GENERAL") && Has(host_cpp, "list->setComputePushConstants(0, push.data(), 0, sizeof(uint32_t) * rt_denoise::kPushWords);"),
         "each dispatch: the result image to the storage layout at the compute stage, the 32 words, then to the read state (both stages after the last)");
-  Check(Has(host_cpp, "history_valid_ = false;   // a frame without a stage breaks the history") && Has(host_cpp, "if (images_[slot].texture.get() != before) {\n    RetireSet(slot);"), "a frame without a stage, and a new image, break the history; a new image's set is made again");
+  Check(Has(host_cpp, "history_valid_ = false;   // a frame without a stage breaks the history") &&
+            Has(host_cpp, "if (!v2_ran_) {\n    v2_history_valid_ = false;") &&
+            Has(host_cpp, "if (image.width != width || image.height != height) {\n    RetireSet(slot);") &&
+            Has(host_cpp, "ResetHistory();"),
+        "a gap or resize invalidates history, and replacement images get fresh descriptors");
   Check(Has(host_h, "const HostImage* RecordSpatial(const Frame& frame);") && Has(host_h, "const HostImage* RecordTemporal(const Frame& frame);") && Has(host_h, "void ResetHistory()"), "the host's API: RecordSpatial, RecordTemporal, ResetHistory");
   // the screen-space reflections' use
   const std::string trigger = FunctionText(ssr_cpp, "bool ScreenReflections::OnTrigger(");
-  Check(!trigger.empty() && Before(trigger, "pass_timing_->Mark(list, \"ssr temporal\");", "pass_timing_->Mark(list, \"ssr denoise\");") && Before(trigger, "pass_timing_->Mark(list, \"ssr denoise\");", "pass_timing_->Mark(list, \"ssr apply\");") &&
-            Count(ssr_cpp, "\"ssr denoise\"") == 1,
-        "the label 'ssr denoise' stands between the accumulation's mark and the resolve's, written once");
+  const size_t legacy_temporal = trigger.find("pass_timing_->Mark(list, \"ssr temporal\");");
+  const size_t legacy_denoise = trigger.rfind("pass_timing_->Mark(list, \"ssr denoise\");");
+  Check(!trigger.empty() && Before(trigger, "pass_timing_->Mark(list, \"ssr denoise\");", "filtered_v2 = denoise_.RecordV2(stage);") &&
+            Before(trigger, "filtered_v2 = denoise_.RecordV2(stage);", "pass_timing_->Mark(list, \"ssr temporal\");") &&
+            legacy_temporal != std::string::npos && legacy_denoise != std::string::npos && legacy_temporal < legacy_denoise &&
+            legacy_denoise < trigger.find("pass_timing_->Mark(list, \"ssr apply\");") && Count(ssr_cpp, "\"ssr denoise\"") == 2,
+        "both denoiser paths have timing markers, with legacy accumulation preceding legacy spatial filtering");
   Check(Has(trigger, "denoise_facts.raw = raw;") && Has(trigger, "denoise_facts.fallback_followed = rt_recorded;") && Has(trigger, "rt_recorded = rt_.Record(rt_frame);") && Has(trigger, "denoise_facts.multisampled = ms;") && Has(trigger, "ssr_denoise::Plan denoise = ssr_denoise::Decide(denoise_facts);") &&
-            Has(trigger, "if (denoise.runs()) {\n    pass_timing_->Mark(list, \"ssr denoise\");") && Has(trigger, "denoise_.RecordSpatial(stage)"),
-        "OnTrigger asks the decision with the frame's raw, fallback and multisampling facts and records the stage only when it runs");
+            Has(trigger, "if (denoise.runs() && !filtered_v2) {\n    pass_timing_->Mark(list, \"ssr denoise\");") && Has(trigger, "denoise_.RecordSpatial(stage)") &&
+            Has(trigger, "if (!raw && !regen_ok && rt_recorded && denoise_setting != 0 && RtDenoise::V2Enabled())"),
+        "both denoisers respect the vendor bypass, and the legacy spatial pass is used as a fallback");
   Check(Has(trigger, "denoise_facts.pipelines_ready = denoise_.SpatialReady();") && Before(trigger, "denoise_facts.pipelines_ready = true;", "denoise_facts.pipelines_ready = denoise_.SpatialReady();"),
         "the pipeline is asked for only when everything else says go: with the effect off, the fallback off or the setting 0 nothing is listed with the precache");
-  Check(Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));") && Has(trigger, "const HostImage* resolve_source = &accum_[write_];") && Has(trigger, "resolve_source = filtered;"),
+  Check(Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));") &&
+            Has(trigger, "const HostImage* resolve_source = filtered_v2 ? filtered_v2 : &accum_[write_];") &&
+            Has(trigger, "resolve_source = filtered;") && Has(trigger, "filtered_v2 ? denoise_.V2Confidence() : nullptr"),
         "the resolve reads the filtered image where there is one, the accumulation otherwise");
   Check(Has(trigger, "last_key_ = now;") && !Has(trigger, "last_key_ = denoise") && Before(trigger, "write_ ^= 1u;", "return true;"), "the accumulation's history is the next frame's as before: the filter's image is not fed back");
   Check(Has(trigger, "stage.signal = &accum_[write_];") && Has(trigger, "stage.reads = {&trace_, &confidence_};") && Has(trigger, "pass.SetFloat(ssr_denoise::kWordLength, ssr_denoise::HistoryLength(use_history));") &&

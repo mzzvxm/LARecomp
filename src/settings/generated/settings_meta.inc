@@ -439,6 +439,7 @@
 {"mcla_gpu_ssr_rt_probe_misses", "MCLA/GPU"},
 {"mcla_gpu_ssr_rt_cars", "MCLA/GPU"},
 {"mcla_gpu_rt_denoise", "MCLA/GPU"},
+{"mcla_gpu_rt_denoise_v2", "MCLA/GPU"},
 {"mcla_gpu_ssr_blue_noise", "MCLA/GPU"},
 {"mcla_gpu_ssr_classify", "MCLA/GPU"},
 {"mcla_gpu_ssr_handoff", "MCLA/GPU"},

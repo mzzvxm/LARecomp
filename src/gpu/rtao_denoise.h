@@ -22,6 +22,7 @@ class RtAoDenoise {
     // Leave these rows zero when the camera step is unknown (motion_still).
     // Vehicle reprojection reads the independently validated vehicle table.
     float motion[12] = {};
+    bool motion_still = false;
     uint32_t vehicle_table_slot = 0xFFFFFFFFu;
     uint32_t vehicle_ids = 0;
     bool history_valid = false;

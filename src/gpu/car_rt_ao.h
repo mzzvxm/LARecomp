@@ -56,6 +56,7 @@
 
 #include "car_rt_ao_rules.h"
 #include "host_passes.h"
+#include "rt_denoise.h"
 
 namespace mcla::gpu {
 
@@ -106,11 +107,13 @@ class CarRtAo {
     uint32_t noise_code = 0;           // what the main pass is given in slots2.y (ao_stable.h NoiseCode; its bit 29 says the blue noise tile, for the sun ray's too)
     uint32_t sun_frame = 0;            // the frame the sun ray's spread is shifted by (0: a fixed pattern)
     uint64_t frame = 0;                // for the log
+    RtDenoise::VisibilityFrame denoise;
   };
   // What a recorded pass gives the consumers.
   struct Result {
     bool recorded = false;
     uint32_t slot = kNoSlot;  // the image's bindless slot (a recorded frame)
+    uint32_t raw_slot = kNoSlot;  // city sun combines the trace before filtering its mask
     bool occlusion = false;   // the image's r channel holds a traced term
     bool contact = false;     // ... its g channel
   };
@@ -155,6 +158,7 @@ class CarRtAo {
                 const car_rt_ao::Box& box, uint32_t other_boxes);
 
   Device* device_ = nullptr;
+  RtDenoise denoise_;
   FrameRing* frames_ = nullptr;
   BindlessHeap* heap_ = nullptr;
   HostPasses* passes_ = nullptr;

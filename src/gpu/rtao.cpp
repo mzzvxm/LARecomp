@@ -436,6 +436,7 @@ bool RtAo::RecordFilter(plume::RenderCommandList* list, const FilterInputs& in) 
     };
     if (in.camera.have_motion && !in.camera.motion_still)
       std::copy_n(in.camera.motion, 12, frame.motion);
+    frame.motion_still = in.camera.have_motion && in.camera.motion_still;
     // Everything recorded from here to the closing mark is the denoiser's: the temporal and the spatial passes (a raw frame has no such span).
     timing_->Mark(list, "rtao denoise");
     if (const HostImage* filtered = denoise_->Record(frame)) {

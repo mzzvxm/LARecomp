@@ -102,6 +102,10 @@ void CityRtShadow::Initialize(Device& device, FrameRing& frames, BindlessHeap& h
     return;
   }
   ready_ = true;
+  denoise_.Initialize(device, frames, heap, passes, 7, "city sun", {}, {}, rt_denoise::Format::kRgba8);
+  const auto dn_spatial = RtDenoiseV2ShadowShader(false);
+  const auto dn_temporal = RtDenoiseV2ShadowShader(true);
+  denoise_.InitializeV2({dn_spatial.data, dn_spatial.size, dn_spatial.name}, {dn_temporal.data, dn_temporal.size, dn_temporal.name});
   g_available.store(true, std::memory_order_relaxed);
   if (listed_at_start && city_rt::LevelForRung(gpu_class::Current(), gpu_class::CurrentRtTier(), city_rt::ParseChoice(Setting().Get())) != city_rt::Level::kOff) {
     const uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
@@ -142,6 +146,7 @@ bool CityRtShadow::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRt
 }
 
 void CityRtShadow::Shutdown() {
+  denoise_.Shutdown();
   if (passes_) {
     passes_->precache().Stop();  // the host builder's function names this object's layout and shader: stop it first
   }
@@ -213,6 +218,7 @@ bool CityRtShadow::PipelineReady() {
 // ---------------------------------------------------------------------------
 
 void CityRtShadow::BeginFrame(bool contact_on) {
+  denoise_.OnPresent();
   wanted_ = false;
   level_ = city_rt::Level::kOff;
   if (!ready_ || !city_scene_ || !car_scene_) {
@@ -251,7 +257,7 @@ void CityRtShadow::BeginFrame(bool contact_on) {
 
 CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const Inputs& in) {
   Result result;
-  if (!list || !wanted_ || !ready_ || !in.depth || !in.depth->texture || in.depth->slot == kNoSlot) {
+  if (!list || !wanted_ || !ready_ || !car_scene_ || !city_scene_ || !pass_timing_ || !in.depth || !in.depth->texture || in.depth->slot == kNoSlot) {
     return result;
   }
   const CarRtView& view = car_scene_->View();
@@ -365,6 +371,12 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
     result.slot = image_.slot;
   }
   const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u) | (alpha_view ? 1u << 18 : 0u) | (rules::PackAlphaReference(alpha_reference) << 20);
+  if (!check && !alpha_view && RtDenoise::V2Enabled()) {
+    pass_timing_->Mark(list, "city sun denoise");
+    if (const HostImage* filtered = denoise_.RecordVisibility(list, image_, *in.depth, in.denoise, in.frame, in.tan_x, in.tan_y, range, state)) {
+      result.slot = filtered->slot;
+    }
+  }
   if (!first_logged_ || state != last_state_) {
     first_logged_ = true;
     last_state_ = state;
@@ -482,7 +494,9 @@ void CityRtShadow::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t
               kPrefix, frame, s.pixels, width, height, instances, s.coverage * 100.0, s.hi, s.lod, s.within1_share * 100.0, s.within5_share * 100.0, s.p50 * 100.0, s.p95 * 100.0, s.no_hit);
 }
 
-uint64_t CityRtShadow::HeldBytes() const { return image_.texture ? TextureBytes(image_.width, image_.height, 1, image_.format) : 0; }
+uint64_t CityRtShadow::HeldBytes() const {
+  return (image_.texture ? TextureBytes(image_.width, image_.height, 1, image_.format) : 0) + denoise_.HeldBytes();
+}
 
 std::string CityRtShadow::CensusText() const {
   if (!ready_) {

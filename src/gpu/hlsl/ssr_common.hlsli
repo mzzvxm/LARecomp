@@ -36,6 +36,7 @@
 #define SSR_W_HIZ01 3          // the Hi-Z's levels 0 | 1 << 16
 #define SSR_W_HIZ23 4
 #define SSR_W_HIZ45 5
+#define SSR_W_DENOISE_CONFIDENCE SSR_W_HIZ45 // apply: optional V2 history length image
 #define SSR_W_COL01 6          // colour_post's levels 0 | 1 << 16
 #define SSR_W_COL23 7
 #define SSR_W_RENDER 8         // the picture's size in host pixels: width | height << 16

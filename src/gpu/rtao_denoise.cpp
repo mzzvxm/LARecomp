@@ -11,6 +11,7 @@
 #include "device.h"
 #include "frame.h"
 #include "host_shaders.h"
+#include "rt_denoise_v2_rules.h"
 #include "rtao_denoise_rules.h"
 #include "settings/larecomp_settings.h"
 
@@ -48,6 +49,9 @@ void RtAoDenoise::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   const HostShaderBlob temporal = RtDenoiseAoShader(true);
   denoiser_.Initialize(device, frames, heap, passes, 5, "rtao", {spatial.data, spatial.size, spatial.name}, {temporal.data, temporal.size, temporal.name},
                        rt_denoise::Format::kRgba16f);
+  const auto v2_spatial = RtDenoiseV2AoShader(false);
+  const auto v2_temporal = RtDenoiseV2AoShader(true);
+  denoiser_.InitializeV2({v2_spatial.data, v2_spatial.size, v2_spatial.name}, {v2_temporal.data, v2_temporal.size, v2_temporal.name});
 }
 
 void RtAoDenoise::Shutdown() {
@@ -114,15 +118,22 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   // compute-readable before the trace) in a play frame on both backends. The "rtao denoise"
   // timing span is marked by RtAo::RecordFilter. Run the four NOISE-NA6 takes and compare the
   // cockpit and exterior views.
-  const HostImage* temporal = denoiser_.RecordTemporal(pass);
-  if (!temporal) {
-    ResetHistory();
-    return nullptr;
+  RtDenoise::Frame v2 = pass;
+  v2.iterations = rt_denoise::v2::kAmbientIterations;
+  if (in.motion_still) {
+    // A still camera has valid identity reprojection for world receivers.
+    v2.push[words::kMotion] = v2.push[words::kMotion + 5] = v2.push[words::kMotion + 10] = std::bit_cast<uint32_t>(1.0f);
   }
-  pass.signal = const_cast<HostImage*>(temporal);
-  pass.reads[3] = in.signal;
-  pass.iterations = rt_denoise::kMaxIterations;
-  const HostImage* result = denoiser_.RecordSpatial(pass);
+  const HostImage* result = denoiser_.RecordV2(v2);
+  if (!result) {
+    const HostImage* temporal = denoiser_.RecordTemporal(pass);
+    if (temporal) {
+      pass.signal = const_cast<HostImage*>(temporal);
+      pass.reads[3] = in.signal;
+      pass.iterations = rt_denoise::kMaxIterations;
+      result = denoiser_.RecordSpatial(pass);
+    }
+  }
   if (!result) {
     ResetHistory();
     return nullptr;
