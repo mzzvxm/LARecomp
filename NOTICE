@@ -1,0 +1,14 @@
+Copyright (C) 2026 the LARecomp authors
+RenanQueiroz, mzzvxm, BadassBaboon, Grien25, Vi.
+
+License: GPL-3.0-only with additional terms. See LICENSE and
+LICENSE-ADDITIONAL-TERMS.md.
+
+Third-party materials in thirdparty/ and LICENSES/ are under their own licenses.
+LAR-RXSDK is BSD-3-Clause. Plume and LAR-XenosRecomp are MIT.
+
+LARecomp includes no game code or assets. The build generates the recompiled
+game code on the user's machine from their own copy of the game.
+
+Midnight Club and other Take-Two Interactive and Rockstar Games trademarks
+belong to their respective owners.
