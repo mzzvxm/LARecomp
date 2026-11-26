@@ -17,9 +17,8 @@ original project.
 ## Name and logo (section 7(e))
 
 This license grants no trademark rights in the LARecomp name or logo. Modified
-versions must use their own name and branding unless separately authorized by
-the trademark holders. The name may be used to credit or identify the original
-project.
+versions must use their own name and branding unless the LARecomp team authorizes
+it in writing. The name may be used to credit or identify the original project.
 
 ## Additional permission under GNU GPL version 3 section 7
 
