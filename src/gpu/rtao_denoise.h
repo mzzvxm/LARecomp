@@ -51,7 +51,9 @@ class RtAoDenoise {
 };
 
 namespace rtao_denoise {
-bool Enabled();
+enum class Mode { kShared, kLegacy, kOff };
+Mode ReadMode();
+uint32_t ReadHistoryCap();
 uint32_t RawScale();
 }
 

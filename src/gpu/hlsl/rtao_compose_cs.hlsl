@@ -1,5 +1,6 @@
 #include "host_pass_common.hlsli"
 #include "rtao_denoise_math.hlsli"
+#include "ao_rate_rules.hlsli"
 
 #ifndef RTAO_GI
 #define RTAO_GI 0
@@ -12,7 +13,7 @@ struct RtAoComposePush {
   uint4 stencil;     // render.xy, host sample and MS flag, car AO term
   float power;
   float floor_;
-  uint flags;        // bit 0: blend all, bit 1: history length present, bit 2: blend world only
+  uint flags;        // bit 0: blend all, bit 1: history length present, bit 2: blend world only, bit 3: shared history age
   uint view;
 };
 
@@ -94,7 +95,10 @@ void main(uint3 id : SV_DispatchThreadID) {
       judged += covered;
       weights += w;
       if (g_push.view == 1u) debug_sum += raw.r * covered;
-      if (g_push.view == 4u && (g_push.flags & 2u) != 0u) debug_sum += signal.a * (covered / 32.0f);
+      if (g_push.view == 4u && (g_push.flags & 2u) != 0u) {
+        const float age = (g_push.flags & 8u) != 0u ? float(AoHistoryAge(signal.z)) : signal.a;
+        debug_sum += age * (covered / 32.0f);
+      }
       if (g_push.view == 5u) debug_sum += raw.b * covered;
       if (g_push.view == 6u && g_push.guides.z != kMissing) {
         debug_sum += g_textures[g_push.guides.z].Load(tap).x * (covered / 23.0f);

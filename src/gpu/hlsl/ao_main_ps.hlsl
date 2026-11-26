@@ -116,6 +116,9 @@
 #define AO_FAST_ACOS 0
 #endif
 
+#include "ao_rate_rules.hlsli"
+#include "blue_noise_frame.hlsli"
+#define AO_ROTATING_GRID 1
 #include "ao_common.hlsli"
 
 #ifndef AO_GI
@@ -545,22 +548,30 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float2 vehicle_fall = AoVehicleFalloff(car_share, radius, falloff_ratio);
 
 #if AO_SPECIALISED
-  const uint slices = AO_SLICES;
+  uint slices = AO_SLICES;
   const uint steps = AO_STEPS;
 #else
-  const uint slices = max(AoSlices(), 1u);
+  uint slices = max(AoSlices(), 1u);
   const uint steps = max(AoSteps(), 1u);
 #endif
+  if ((g_push.slots2.z & (1u << 23)) != 0u && g_push.slots.x != 0xFFFFFFFFu && !AoIsVehicle(tc)) {
+    const float4 old = g_textures[g_push.slots.x].Load(int3(pixel, 0));
+    if (AoHistoryId(old.z) == 0u && AoRateSurface(tc, old.y)) {
+      const float rate_noise = BlueNoiseFrame(pixel.x, pixel.y, 0u, g_push.slots.y, kBlueNoiseR2StepB);
+      slices = AoScreenSlices(AoHistoryAge(old.z), old.w, rate_noise);
+    }
+  }
   const float2 clip_scale = 2.0f / size;
   const float2 spatial = AoSpatialNoise(pixel);
-  // The frame's shift: a lattice of 13 frames (ao_common.hlsli AoNoiseShift, ao_stable.h).
   const float2 noise = frac(spatial + AoNoiseShift());
+  const bool cheap = (g_push.slots2.z & (1u << 23)) != 0u;
+  const float2 trace_noise = cheap && AoBlueNoise() ? BlueNoiseFrame2(pixel.x, pixel.y, g_push.slots.y) : noise;
   const float min_offset = kMinOffsetPixels / radius_px;
 
   float visibility = 0.0f;
   float open_sum = 0.0f;  // what the slices' terms add up to for a surface nothing blocks
   AO_SLICE_LOOP for (uint slice = 0u; slice < slices; ++slice) {
-    const float phi = (float(slice) + noise.x) / float(slices) * kPi;
+    const float phi = (float(slice) + trace_noise.x) / float(slices) * kPi;
     const float2 dir_px = float2(cos(phi), sin(phi));          // pixels, y down
     const float3 dir_view = float3(dir_px.x, -dir_px.y, 0.0f);  // view space, y up
     const float3 ortho = dir_view - dot(dir_view, view_vec) * view_vec;
@@ -579,7 +590,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     float hcos0 = low0;
     float hcos1 = low1;
     AO_UNROLL for (uint s = 0u; s < steps; ++s) {
-      const float step_noise = frac(noise.y + float(slice + s * slices) * 0.6180339887f);
+      const float step_noise = frac(trace_noise.y + float(slice + s * slices) * 0.6180339887f);
       float share = (float(s) + step_noise) / float(steps);
       share = share * share + min_offset;
       // The offset's length is the share of the radius (dir_px is a unit vector); the depth chain's level is 0

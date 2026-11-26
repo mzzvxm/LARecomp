@@ -133,8 +133,8 @@ void RuleChecks() {
   Check(rtao::ImageBytes(960, 540) == 31'104'000 && rtao::TermBytes(1920, 1080, false) == 4'147'200 &&
         rtao::TermBytes(1920, 1080, true) == 16'588'800 && Near(rtao::EstimatedRays(960, 540, 1), 570'240),
         "image memory and ray model");
-  Check(sizeof(rtao::RtAoPush) == 112 && offsetof(rtao::RtAoPush, trace) == 32 &&
-        offsetof(rtao::RtAoPush, lens) == 48 && offsetof(rtao::RtAoPush, box_max) == 96, "112-byte push layout");
+  Check(sizeof(rtao::RtAoPush) == 128 && offsetof(rtao::RtAoPush, trace) == 32 &&
+        offsetof(rtao::RtAoPush, lens) == 48 && offsetof(rtao::RtAoPush, box_max) == 96 && offsetof(rtao::RtAoPush, rate) == 112, "128-byte push layout");
   for (unsigned b = 0; b < 8; ++b)
     Check(car::OcclusionOn(b & 1, b & 2, b & 4) == (b == 1 || b == 5 || b == 7), "car term is folded except in the blend arm");
 }

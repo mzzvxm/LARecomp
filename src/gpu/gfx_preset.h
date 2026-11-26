@@ -127,8 +127,8 @@ inline constexpr Row kRows[] = {
     {"mcla_gpu_car_shadow_map", Page::kLighting, {"off", "ultra", "ultra", "ultra", "ultra"}},
     {"mcla_gpu_contact_shadows", Page::kLighting, {"off", "high", "ultra", "high", "ultra"}},
     {"mcla_gpu_rt_shadows", Page::kLighting, {"off", "off", "off", "high", "high"}},
-    {"mcla_gpu_ao", Page::kLighting, {"off", "high", "ultra", "high", "rt"}},
-    {"mcla_gpu_ao_rt", Page::kLighting, {"off", "off", "off", "contact", "both"}},
+    {"mcla_gpu_ao", Page::kLighting, {"off", "on", "on", "rt", "rt"}},
+    {"mcla_gpu_ao_rt", Page::kLighting, {"off", "off", "off", "both", "both"}},
     {"mcla_gpu_ao_intensity", Page::kLighting, {"default", "default", "default", "default", "default"}},
     {"mcla_gpu_ssgi", Page::kLighting, {"off", "off", "high", "off", "high"}},
     {"mcla_gpu_rt_gi", Page::kLighting, {"off", "off", "off", "off", "high"}},
@@ -213,6 +213,11 @@ constexpr std::string_view CellOf(std::string_view cvar, Preset p) {
   return kRows[row].cell[Col(p)];
 }
 constexpr std::string_view CellAt(int row, Preset p) { return kRows[row].cell[Col(p)]; }
+
+// A legacy Auto car AO value follows the active preset or explicit Custom world RT.
+constexpr std::string_view CarAoAuto(Preset preset, bool custom_world_rt) {
+  return IsNamed(preset) ? CellOf("mcla_gpu_ao_rt", preset) : (custom_world_rt ? "both" : "off");
+}
 
 constexpr bool IsCovered(std::string_view cvar) { return FindRow(cvar) >= 0; }
 constexpr bool IsKnownRow(std::string_view cvar) { return IsCovered(cvar); }

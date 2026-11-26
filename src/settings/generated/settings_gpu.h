@@ -99,7 +99,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, mcla_gpu_anisotropy, "game", "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
     "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.");
 
-  REX_SETTING(std::string, mcla_gpu_ao, "auto", "Darkens corners and creases. High and Ultra use the screen's depth, and RT traces the city's geometry. Legacy auto uses screen-space occlusion. Live.", rex::Allowed("auto", "off", "high", "ultra", "rt"));
+  REX_SETTING(std::string, mcla_gpu_ao, "auto", "Ambient occlusion: darkens creases, kerbs and where objects meet. On uses screen-space occlusion. "
+    "Ray Traced uses geometry and falls back to screen space where rays are unavailable. "
+    "Existing high and ultra settings select On. Also drawn behind the pause menu and on the map. Live.", rex::Allowed("auto", "off", "on", "rt", "high", "ultra"));
+
+  REX_SETTING(bool, mcla_gpu_ao_cheap, true, "Diagnostic: use the combined screen-space AO filter and rotating half-size samples. Off uses the original passes. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_ao_car_reach, 0.4, "Diagnostic: how far what a car blocks of the sky light reaches on the road and the other things "
     "round it, as a share of the occlusion's radius (0.4 of the default 3 m is 1.2 m: the dark line "
@@ -1219,7 +1223,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_rtao_reach, 0.0, "Debug: Ray reach in metres. 0 takes the AO intensity radius share. Live.", rex::kDebugOnly, rex::Range{0.0, 2.5});
   REX_SETTING(f64, mcla_gpu_rtao_range, 0.0, "Debug: Maximum distance to a traced AO receiver in metres. 0 uses the scene's safe range up to 90 m. Live.", rex::kDebugOnly, rex::Range{0.0, 90.0});
   REX_SETTING(i32, mcla_gpu_rtao_scale, 0, "Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses the governor. Live.", rex::kDebugOnly, rex::Range{0, 4});
-  REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, true, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, true, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies when trace scale is automatic. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rtao_reuse_trace_validity, true, "Debug: Use the RT ambient occlusion trace validity in the temporal and spatial filters. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_rtao_alpha, "auto", "Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.", rex::kDebugOnly, rex::Allowed("auto", "exact", "stochastic", "opaque", "exclude"));
@@ -1254,7 +1258,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_rtao_history, 32, "Debug: ray traced ambient occlusion history cap in frames. 1 disables temporal accumulation. Live.", rex::kDebugOnly, rex::Range{1, 64});
 
-  REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
+  REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: Auto uses the shared AO temporal filter. Ours uses the previous RT denoiser. Off sends raw visibility to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
   REX_SETTING(bool, mcla_gpu_rtao_spatial_resolve, false, "Debug: prefilter one-ray ambient occlusion samples and apply a wider bilateral resolve to mature world surfaces. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rtao_cabin_guide, false, "Debug: match reduced-resolution RT AO traces to their guide surface in the cockpit. Live.", rex::kDebugOnly);
 
@@ -2114,6 +2118,7 @@ inline auto& mcla_gpu_ab_interleave = g_gpu.mcla_gpu_ab_interleave;
 inline auto& mcla_gpu_adapter = g_gpu.mcla_gpu_adapter;
 inline auto& mcla_gpu_anisotropy = g_gpu.mcla_gpu_anisotropy;
 inline auto& mcla_gpu_ao = g_gpu.mcla_gpu_ao;
+inline auto& mcla_gpu_ao_cheap = g_gpu.mcla_gpu_ao_cheap;
 inline auto& mcla_gpu_ao_blue_noise = g_gpu.mcla_gpu_ao_blue_noise;
 inline auto& mcla_gpu_ao_car_reach = g_gpu.mcla_gpu_ao_car_reach;
 inline auto& mcla_gpu_ao_census = g_gpu.mcla_gpu_ao_census;

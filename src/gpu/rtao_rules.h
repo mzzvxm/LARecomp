@@ -34,6 +34,7 @@ constexpr Budget BudgetFor(gpu_class::RtTier rung) {
   }
 }
 
+constexpr Budget kSharedBudget = {1, false, 0.50f, 32, true};
 constexpr uint32_t kBoostBelow = 4;
 constexpr uint32_t kRawFrameRays = 2;
 constexpr uint32_t kRayMask = 0x9D;
@@ -186,12 +187,14 @@ constexpr uint32_t kFlagInterior = 1u << 10;
 constexpr uint32_t kFlagBlue = 1u << 11;
 constexpr uint32_t kFlagProbe = 1u << 20;
 constexpr uint32_t kFlagDepthHalf = 1u << 21;
+constexpr uint32_t kFlagRate = 1u << 23;
 constexpr uint32_t kFlagStats = 1u << 28;
 
 struct RtAoPush {
   uint32_t slots[4], sizes[4], trace[4];
   float lens[4], look[4], box_min[4], box_max[4];
+  uint32_t rate[4];  // history, motion table, previous lens x and y as float bits
 };
-static_assert(sizeof(RtAoPush) == 112);
+static_assert(sizeof(RtAoPush) == 128);
 
 }  // namespace mcla::gpu::rtao

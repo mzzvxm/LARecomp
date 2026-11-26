@@ -128,6 +128,7 @@
 // that 1.0 reads below the tone map's white.
 
 #include "ao_common.hlsli"
+#include "ao_rate_rules.hlsli"
 #include "cabin_shadow_rules.hlsli"
 #include "host_pass_samplers.hlsli"
 #include "nan_guard.hlsli"
@@ -206,15 +207,25 @@ float LinearAt(int2 p, int2 last) {
 // depth. `vehicle` is the share of the same neighbourhood that the depth pass marked as a vehicle (the
 // depth image's lowest bit, 0 to 1; the weights are the visibility's): the depth is read for the weights
 // anyway, so it costs next to nothing at half size and one load of the pixel's own depth at full size.
-float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
+float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle, bool thin = false, bool rotated = false) {
   if (!AoLow()) {
     vehicle = AoIsVehicle(AoLoadLinear(ApplyDepthSlot(), pixel)) ? 1.0f : 0.0f;
     return g_textures[slot].Load(int3(pixel, 0)).x;
   }
   const int2 asize = int2(g_push.sizes.zw);
-  const float2 q = (float2(pixel) + 0.5f) * 0.5f - 0.5f;
+  const float2 q = (float2(pixel) + 0.5f) * 0.5f - 0.5f -
+                   (rotated ? AoGridOffset(AoGridPhase()) : float2(0.0f, 0.0f));
   const int2 q0 = int2(floor(q));
   const float2 f = q - float2(q0);
+  float4 taps = 0.0f;
+  if (thin) {
+    taps = g_textures[slot].GatherRed(g_samplers[kSamplerLinearClamp], (float2(q0) + 1.0f) / float2(asize));
+    // A positive bilateral average, then paint and strength, cannot darken an open footprint.
+    if (all(taps >= 0.999f)) {
+      vehicle = 0.0f;
+      return 1.0f;
+    }
+  }
   float sum = 0.0f;
   float vehicle_sum = 0.0f;
   float weights = 0.0f;
@@ -225,7 +236,8 @@ float VisibilityAt(uint slot, int2 pixel, float tc, out float vehicle) {
       const float td = AoLoadLinear(ApplyDepthSlot(), c);
       const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);
       const float w = bilinear * max(exp(-dz * dz), 1e-4f);
-      sum += g_textures[slot].Load(int3(c, 0)).x * w;
+      const float v = thin ? taps[AoGatherIndex(i, j)] : g_textures[slot].Load(int3(c, 0)).x;
+      sum += v * w;
       vehicle_sum += (AoIsVehicle(td) ? 1.0f : 0.0f) * w;
       weights += w;
     }
@@ -354,7 +366,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float ao_vehicle = gi_vehicle;
 #else
   float ao_vehicle = 0.0f;
-  const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle) : 1.0f;
+  const bool optimized = (g_push.slots2.z & (1u << 31)) != 0u;
+  const bool thin = optimized && view == 0u;
+  const float ao = ao_on ? VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle, thin, optimized && AoRotatingGrid()) : 1.0f;
+  if (thin && !contact_on && ao >= 0.999f) {
+    discard;
+  }
 #endif
 
   // The normal: the normal image's where the frame has one at this size (GB-E; ao_normal_ps.hlsl: the G-buffer's where a pixel has it, else the depth's), else from the full

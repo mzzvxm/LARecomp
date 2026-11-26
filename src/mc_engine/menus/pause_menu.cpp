@@ -1631,8 +1631,6 @@ const char* const kQualityVals[] = {"off", "high", "ultra"};
 const char* const kQualityNames[] = {"OFF", "HIGH", "ULTRA"};
 const char* const kOnOffVals[] = {"off", "on"};
 const char* const kOnOffNames[] = {"OFF", "ON"};
-const char* const kNativeAoVals[] = {"off", "high", "ultra", "rt"};
-const char* const kNativeAoNames[] = {"OFF", "HIGH", "ULTRA", "RT"};
 const char* const kCarAoRtVals[] = {"off", "ao", "contact", "both"};
 const char* const kCarAoRtNames[] = {"OFF", "OCCLUSION", "SUN", "BOTH"};
 const char* const kNativeAoLevelVals[] = {"light", "default", "strong", "max"};
@@ -1706,7 +1704,7 @@ const ItemDef kLightItems[] = {
     NativeOnly(Str("PM_RxGpuRtShadows", "mcla_gpu_rt_shadows", "SUN SHADOWS RT: ",
                    kQualityVals, kQualityNames, 3)),
     NativeOnly(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION / RT: ",
-                   kNativeAoVals, kNativeAoNames, 4)),
+                   nullptr, nullptr, 0)),
     NativeOnly(Str("PM_RxGpuCarAoRt", "mcla_gpu_ao_rt", "CAR OCCLUSION RT: ",
                    kCarAoRtVals, kCarAoRtNames, 4)),
     NativeOnly(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "OCCLUSION STRENGTH: ",

@@ -168,6 +168,9 @@ const ItemDef kDebugHubItems[] = {
 // page makes no new switch. A page holds at most 24 rows (pause_menu.cpp kMaxRowsPerMenu: a page over it is refused whole
 // and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
 // page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
+constexpr const char* kRtAoDenoiseVals[] = {"auto", "ours", "off"};
+constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
+
 const ItemDef kDebugFixesItems[] = {
     NativeOnly(Bool("PM_RxSharpUi", "mcla_ui_sharp", "SHARP UI: ")),
     NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale", "SHARP MINIMAP: ")),
@@ -175,6 +178,11 @@ const ItemDef kDebugFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgResolveLayout", "mcla_gpu_resolve_layout_memo", "RESOLVE LAYOUT CACHE: ")),
     NativeOnly(Bool("PM_RxDbgConstBatch", "mcla_gpu_batch_constant_banks", "BATCH CONSTANT BANKS: ")),
     NativeOnly(Bool("PM_RxDbgFetchRaw", "mcla_gpu_fetch_memo_raw", "FETCH MEMO RAW: ")),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Bool("PM_RxDbgAoCheap", "mcla_gpu_ao_cheap", "COMBINED AO FILTER: ")),
+    NativeOnly(Str("PM_RxDbgRtAoDenoise", "mcla_gpu_rtao_denoise", "RT AO FILTER: ",
+                   kRtAoDenoiseVals, kRtAoDenoiseNames, Len(kRtAoDenoiseVals))),
+#endif
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
     Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",

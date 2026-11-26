@@ -30,11 +30,11 @@ display_mode.cases = [
 dlss_frame_gen_multiplier = "live.frame_generation_multiplier ?? min(max(s.mcla_gpu_frame_generation_multiplier, 2), features.frame_generation.dlss_multiplier_max)"
 frame_gen_on = "live.frame_generation_running ?? ((s.mcla_gpu_frame_generation == 'fsr31' && features.frame_generation.fsr31) || (s.mcla_gpu_frame_generation == 'dlss' && features.frame_generation.dlss))"
 hdr_on = "live.hdr_active ?? (s.mcla_gpu_hdr == 'on' || (s.mcla_gpu_hdr == 'auto' && features.hdr.windows_hdr_on))"
-ao_on = "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']"
+ao_on = "s.mcla_gpu_ao in ['auto','on','high','ultra','rt']"
 shadows_on = "!s.perf_no_shadows"
 rt_field_class = "live.rt_field_class ?? gpu.class"
 rt_gi_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && build.rt_gi_update_built"
-rtao_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && (live.rtao_pass_built ?? false)"
+rtao_open = "gpu.rt_tier != 'none' && (live.rtao_pass_built ?? false)"
 bounce_on = "(d.ao_on && (resolved(s.mcla_gpu_ssgi) in ['high','ultra'])) || (d.rt_gi_open && (resolved(s.mcla_gpu_rt_gi) in ['high','ultra']))"
 shown_upscaler.cases = [
   { when = "s.mcla_gpu_upscaler == 'fsr31' && features.upscalers.fsr31", value = "fsr31" },
@@ -251,12 +251,16 @@ label_rules = [
 ]
 
 [rows.PM_RxGpuAo]
-decode = "resolved(s.mcla_gpu_ao)"
+decode = { cases = [{ when = "s.mcla_gpu_ao in ['auto','on','high','ultra']", value = "on" }, { value = { expr = "s.mcla_gpu_ao" } }] }
+values = [
+  { id = "off", label = "OFF" },
+  { id = "on", label = "ON" },
+  { id = "rt", label = "RT" },
+]
 
 [rows.PM_RxGpuAo.value."rt"]
 label_rules = [
   { when = "gpu.rt_tier == 'none'", label = "RT (NO RT GPU)" },
-  { when = "d.rt_field_class == 'low'", label = "RT (TOO SLOW)" },
   { when = "!(live.rtao_pass_built ?? false)", label = "RT (NOT READY)" },
 ]
 
@@ -349,7 +353,12 @@ decode = { cases = [{ when = "s.mcla_gpu_side_mirrors == 'off'", value = "off" }
 decode = "resolved(s.mcla_gpu_car_selfrefl)"
 
 [rows.PM_RxGpuCarAoRt]
-decode = { cases = [{ when = "s.mcla_gpu_ao_rt == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_ao_rt" } }] }
+decode = { cases = [
+  { when = "s.mcla_gpu_ao_rt != 'auto'", value = { expr = "s.mcla_gpu_ao_rt" } },
+  { when = "s.mcla_gpu_preset in ['enhanced_rt','enhanced_rt_ultra']", value = "both" },
+  { when = "s.mcla_gpu_preset == 'custom' && s.mcla_gpu_ao == 'rt'", value = "both" },
+  { value = "off" },
+] }
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "CAR AO RT" },
   { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)", label = "CAR AO RT" },

@@ -60,12 +60,12 @@ const AutoRow kAuto[] = {
     // (the car self-reflections are not here: their one level is `on`, which the plan reads as its ultra, so they have a check of
     // their own, CheckCarRefl)
     // the ambient occlusion: off on Low, high on Mid, ultra on High (gpu_class.h: AO-DESIGN.md section 5)
-    {Pass::kOcclusion, {"off", "high", "ultra"}},
+    {Pass::kOcclusion, {"off", "on", "on"}},
 };
 
 Level LevelOf(const std::string& name) {
   Level level = Level::kOff;
-  ParseLevel(name, &level);
+  ParseLevel(name == "on" ? "ultra" : name, &level);
   return level;
 }
 
@@ -76,7 +76,7 @@ void CheckOcclusion() {
     Level want;
   } rows[] = {
       {"off", Level::kOff},   {"high", Level::kHigh},  {"ultra", Level::kUltra},
-      {"Ultra", Level::kUltra}, {"HIGH", Level::kHigh}, {"rt", Level::kUltra},
+      {"Ultra", Level::kUltra}, {"HIGH", Level::kHigh}, {"rt", Level::kUltra}, {"on", Level::kUltra},
   };
   for (int k = 0; k < 3; ++k) {
     for (const auto& row : rows) {
@@ -87,7 +87,7 @@ void CheckOcclusion() {
       Check(!c.automatic, what + ": never automatic");
       Check(!c.rt, what + ": no RT pass on this adapter");
     }
-    for (const char* junk : {"", "low", "hgih", "high ", "on", "Low"}) {
+    for (const char* junk : {"", "low", "hgih", "high ", "Low"}) {
       const Choice c = Resolve(Pass::kOcclusion, kClasses[k], true, junk);
       const std::string what = std::string("occlusion '") + junk + "' on " + kClassNames[k];
       Check(c.unknown && c.automatic, what + ": not a value, taken as auto");
@@ -143,9 +143,11 @@ void CheckAutoPasses() {
       const Choice bounce = Resolve(Pass::kBounce, kClasses[k], true, junk);
       Check(bounce.level == LevelOf(kAuto[1].cells[k]) && bounce.unknown && bounce.automatic,
             "bounce light " + where + ": not a value, taken as auto (high on High, off elsewhere)");
-      const Choice ao = Resolve(Pass::kOcclusion, kClasses[k], true, junk);
-      Check(ao.level == LevelOf(kAuto[2].cells[k]) && ao.unknown && ao.automatic,
-            "ambient occlusion " + where + ": not a value, taken as auto");
+      if (std::string_view(junk) != "on") {
+        const Choice ao = Resolve(Pass::kOcclusion, kClasses[k], true, junk);
+        Check(ao.level == LevelOf(kAuto[2].cells[k]) && ao.unknown && ao.automatic,
+              "ambient occlusion " + where + ": not a value, taken as auto");
+      }
     }
     for (const char* junk : {"", "low", "high", "ultra", "hgih", "game", "auto "}) {
       const std::string where = std::string("'") + junk + "' on " + kClassNames[k];
@@ -365,7 +367,7 @@ void CheckDescribe() {
   CheckEq(Describe(Pass::kOcclusion, Resolve(Pass::kOcclusion, GpuClass::kHigh, true, "ultra"), GpuClass::kHigh),
           "ambient occlusion ultra (set)", "Describe: the occlusion's own value");
   CheckEq(Describe(Pass::kOcclusion, Resolve(Pass::kOcclusion, GpuClass::kMid, true, "auto"), GpuClass::kMid),
-          "ambient occlusion high (auto on the mid class)", "Describe: the occlusion's auto on Mid");
+          "ambient occlusion ultra (auto on the mid class)", "Describe: the occlusion's auto on Mid");
   CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kMid, true, "auto"), GpuClass::kMid),
           "sun shafts default (auto on the mid class)", "Describe: shafts auto on Mid");
   CheckEq(Describe(Pass::kShafts, Resolve(Pass::kShafts, GpuClass::kHigh, true, "strong"), GpuClass::kHigh),
@@ -382,7 +384,7 @@ void CheckDescribe() {
   CheckEq(Describe(Pass::kContact, Resolve(Pass::kContact, GpuClass::kHigh, true, "hgih"), GpuClass::kHigh),
           "contact shadows ultra (not a value of the setting: taken as auto on the high class)", "Describe: a word taken as auto");
   CheckEq(Describe(Pass::kOcclusion, Resolve(Pass::kOcclusion, GpuClass::kMid, true, "low"), GpuClass::kMid),
-          "ambient occlusion high (not a value of the setting: taken as auto on the mid class)",
+          "ambient occlusion ultra (not a value of the setting: taken as auto on the mid class)",
           "Describe: the low of an older larecomp.toml is taken as auto");
   CheckEq(std::string(PassName(Pass::kBounce)), "bounce light", "PassName(bounce)");
   CheckEq(Describe(Pass::kBounce, Resolve(Pass::kBounce, GpuClass::kHigh, true, "auto"), GpuClass::kHigh),

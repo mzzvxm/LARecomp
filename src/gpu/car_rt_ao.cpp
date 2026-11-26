@@ -21,6 +21,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
+#include "gfx_preset.h"
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "live_text.h"
@@ -51,8 +52,16 @@ LiveText& Setting() {
 }
 
 rules::Setting SettingNow() {
-  if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) return rules::Setting::kOff;
-  return rules::SettingOf(Setting().Get());
+  const std::string value = Setting().Get();
+  if (value != "auto") {
+    return rules::SettingOf(value);
+  }
+  gfx_preset::Preset preset = gfx_preset::Preset::kCustom;
+  // CHECK: the live preset flip removes the car pass on RT-capable adapters.
+  static LiveText preset_setting("mcla_gpu_preset");
+  gfx_preset::Parse(preset_setting.Get(), &preset);
+  static LiveText world_ao("mcla_gpu_ao");
+  return rules::SettingOf(gfx_preset::CarAoAuto(preset, world_ao.Get() == "rt"));
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kAmbientOcclusion, kPipelineVariant); }

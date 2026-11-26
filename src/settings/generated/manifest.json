@@ -296,9 +296,20 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Darkens corners and creases. High and Ultra use the screen's depth, and RT traces the city's geometry. Legacy auto uses screen-space occlusion. Live.\"",
+  "help": "\"Ambient occlusion: darkens creases, kerbs and where objects meet. On uses screen-space occlusion. \"\n    \"Ray Traced uses geometry and falls back to screen space where rays are unavailable. \"\n    \"Existing high and ultra settings select On. Also drawn behind the pause menu and on the map. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\", \"rt\")"
+   "rex::Allowed(\"auto\", \"off\", \"on\", \"rt\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ao_cheap": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: use the combined screen-space AO filter and rotating half-size samples. Off uses the original passes. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -491,7 +502,7 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.\"",
+  "help": "\"Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies when trace scale is automatic. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -681,7 +692,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.\"",
+  "help": "\"Debug: Auto uses the shared AO temporal filter. Ours uses the previous RT denoiser. Off sends raw visibility to compose. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"ours\", \"off\")"

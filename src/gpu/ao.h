@@ -741,7 +741,9 @@ class AmbientOcclusion {
     // The normal image's pass (GB-E): listed with the host precache the first time a frame has the G-buffer's plane (NormalPipelineReady), never at the start.
     kVNormal = kVApplyGiBase + 8,
     kVNormalMs = kVNormal + 1,
-    kVariantCount = kVNormalMs + 1,
+    kVTemporalCheap = kVNormalMs + 1,
+    kVTemporalCheapMs = kVTemporalCheap + 1,
+    kVariantCount = kVTemporalCheapMs + 1,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiApplyVariant(bool debug, uint32_t host_samples);
@@ -879,6 +881,9 @@ class AmbientOcclusion {
     bool screen = false;           // a frame run for the shared screen products alone (the occlusion and the contact shadows are off; no apply, no coarser levels)
     bool occlusion = true;         // the occlusion's term is computed (the AO setting is not off)
     bool low = false;              // the occlusion's and the bounce light's passes run at half the picture's size (the trace; a size, not a quality level)
+    bool cheap = false;           // shared screen AO filter and rotating half-size grid
+    bool rotating = false;
+    uint32_t phase = 0;
     bool by_height = false;        // ... only because of the height rule (above 1080 lines: ao_size.h), not the old one
     bool contact_full = false;     // the contact shadows keep the picture's size (their own depth and images) while `low`
     bool upscaler = false;
@@ -1140,7 +1145,7 @@ class AmbientOcclusion {
   // that moves this frame's view space into the history's with the camera's motion `use.motion` and the
   // vehicle's step repeated. Returns the IDs (bit k) that got a row; 0 means no table was drawn and
   // `*slot` is then none.
-  uint32_t RecordVehicleTable(plume::RenderCommandList* list, const HistoryUse& use, uint32_t* slot);
+  uint32_t RecordVehicleTable(plume::RenderCommandList* list, const HistoryUse& use, uint32_t* slot, bool include_camera = false);
   // One summary line of the totals (every few thousand frames, and the first time a table is drawn).
   void LogVehicleSummary();
   // The census's depth statistic: a copy of the coarsest level into a readback buffer, and its
@@ -1429,6 +1434,10 @@ class AmbientOcclusion {
   HostImage gi_hist_[2];
   HostImage gi_weight_;
   bool history_gi_ = false;
+  bool history_cheap_ = false;
+  uint32_t history_grid_ = 0;
+  uint64_t grid_epoch_ = 0;
+  bool history_rotated_ = false;
   uint32_t history_gi_cabin_id_ = 0;
   uint32_t history_index_ = 0;
   bool history_valid_ = false;    // it holds a picture the next frame may lean on

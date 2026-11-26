@@ -74,7 +74,7 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_rt_shadows", "off|high|ultra"},
     {"mcla_gpu_traffic_shadows", "off|near|all"},
     {"mcla_gpu_car_shadow_map", "off|high|ultra"},
-    {"mcla_gpu_ao", "off|high|ultra|rt"},
+    {"mcla_gpu_ao", "off|on|rt"},
     {"mcla_gpu_ao_intensity", "light|default|strong|max"},
     {"mcla_gpu_ssgi", "off|high|ultra"},
     {"mcla_gpu_rt_gi", "off|high|ultra"},
@@ -239,7 +239,7 @@ const OldEffect kOldEffects[] = {
     {Effect::kSsgi, "mcla_gpu_ssgi", "off", "off", "high"},
     {Effect::kTrafficShadows, "mcla_gpu_traffic_shadows", "off", "near", "near"},
     {Effect::kCarSelfRefl, "mcla_gpu_car_selfrefl", "off", "on", "on"},
-    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "high", "ultra"},
+    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "on", "on", "on"},
     {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on"},
     {Effect::kLightShadows, "mcla_gpu_light_shadows", "off", "medium", "ultra"},
     {Effect::kVolumetrics, "mcla_gpu_volumetrics", "off", "medium", "high"},
@@ -258,7 +258,7 @@ struct OldRtEffect {
 // rt_tier.h kRtEffects as it was before the table.
 const OldRtEffect kOldRt[] = {
     {RtEffect::kCarSelfReflRt, "mcla_gpu_car_selfrefl_rt", "off", "on", "on"},
-    {RtEffect::kCarRtAo, "mcla_gpu_ao_rt", "off", "contact", "both"},
+    {RtEffect::kCarRtAo, "mcla_gpu_ao_rt", "off", "both", "both"},
     {RtEffect::kRtShadows, "mcla_gpu_rt_shadows", "off", "high", "high"},
     {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "on", "on"},
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},
@@ -317,13 +317,17 @@ void CheckAutoUnchanged() {
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "ultra", "SSR in EnhancedRtUltra");
       continue;
     }
-    // ENHANCED is the Mid class's `auto`, ENHANCED ULTRA the High class's, VANILLA the Low class's: the table and the `auto` cells are one thing.
+    if (old.effect == Effect::kAmbientOcclusion) {
+      for (const GpuClass c : kClasses) CheckEq(ResolveFor(c, old.effect, "auto"), "on", "legacy AO Auto uses one raster level");
+      continue;
+    }
+    // ENHANCED is the Mid class's `auto`, ENHANCED ULTRA the High class's, VANILLA the Low class's.
     CheckEq(gp::CellOf(old.cvar, Preset::kVanilla), old.low, cvar + ": VANILLA is today's Low cell");
     CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), old.mid, cvar + ": ENHANCED is today's Mid cell");
     CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), old.high, cvar + ": ENHANCED ULTRA is today's High cell");
     // The RT presets' non-RT rows are their non-RT sibling's (the ray traced rows are the ones that differ).
-    CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), gp::CellOf(old.cvar, Preset::kEnhanced), cvar + ": ENHANCED RT is ENHANCED's cell where the row is not ray traced");
-    if (old.effect != Effect::kAmbientOcclusion) {  // the one row that is both: ENHANCED RT ULTRA's occlusion is ray traced (`rt`)
+    if (old.effect != Effect::kAmbientOcclusion) {
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), gp::CellOf(old.cvar, Preset::kEnhanced), cvar + ": ENHANCED RT is ENHANCED's cell where the row is not ray traced");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), gp::CellOf(old.cvar, Preset::kEnhancedUltra), cvar + ": ENHANCED RT ULTRA is ENHANCED ULTRA's cell where the row is not ray traced");
     }
     // And `auto` on a class resolves to the preset the class's family names.
@@ -367,6 +371,7 @@ void CheckAutoUnchanged() {
       CheckEq(RtCell(old.effect, tier), legacy, cvar + ": legacy Auto never enables RT");
     }
     if (old.effect == RtEffect::kRtAo) {
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "rt", "ENHANCED RT selects world ray traced AO");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "rt", "the world's ambient occlusion is ray traced in ENHANCED RT ULTRA");
       continue;
     }
@@ -399,7 +404,7 @@ const Top kTops[] = {
     {"mcla_gpu_contact_shadows", "ultra"},
     {"mcla_gpu_traffic_shadows", "all"},
     {"mcla_gpu_car_shadow_map", "ultra"},
-    {"mcla_gpu_ao", "ultra"},
+    {"mcla_gpu_ao", "on"},
     {"mcla_gpu_ssgi", "ultra"},
     {"mcla_gpu_headlights", "on"},
     {"mcla_gpu_light_shadows", "ultra"},

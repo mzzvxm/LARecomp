@@ -24,7 +24,7 @@ namespace gi = mcla::gpu::gi_setting;
 namespace rtao = mcla::gpu::rtao_setting;
 constexpr bool flags[] = {false, true};
 constexpr std::string_view levels[] = {"auto", "off", "high", "ultra"};
-constexpr std::string_view ao_levels[] = {"auto", "off", "high", "ultra", "rt"};
+constexpr std::string_view ao_levels[] = {"auto", "off", "on", "high", "ultra", "rt"};
 constexpr gc::GpuClass classes[] = {gc::GpuClass::kLow, gc::GpuClass::kMid, gc::GpuClass::kHigh};
 constexpr gc::RtTier tiers[] = {gc::RtTier::kNone, gc::RtTier::kWeak, gc::RtTier::kStrong};
 int checks = 0;
@@ -167,12 +167,10 @@ void Lighting(Fixture& f) {
                 f.S("mcla_gpu_ssgi", ss);
                 f.S("mcla_gpu_rt_gi", rt);
                 f.State("PM_RxGpuAoLevel", ao_on);
-                if (ao == "auto") {
-                    f.Decodes("PM_RxGpuAo", gc::Cell(gc::Effect::kAmbientOcclusion, cls));
-                    Check(!ao_decision.rt, "PM_RxGpuAo", "legacy auto remains raster");
-                }
-                for (const auto fixed : {rtao::Choice::kOff, rtao::Choice::kHigh, rtao::Choice::kUltra, rtao::Choice::kRt})
-                    f.Label("PM_RxGpuAo", rtao::kValues[uint8_t(fixed)], "mcla_gpu_ao", fixed == rtao::Choice::kRt && ao_decision.gate == rtao::Gate::kRuns ? "RT" : rtao::ValueLabel(fixed, ao_decision.gate),
+                if (ao == "auto" || ao == "high" || ao == "ultra") f.Decodes("PM_RxGpuAo", "on");
+                for (const auto fixed : {rtao::Choice::kOff, rtao::Choice::kOn, rtao::Choice::kRt})
+                    f.Label("PM_RxGpuAo", rtao::kValues[uint8_t(fixed)], "mcla_gpu_ao",
+                            fixed == rtao::Choice::kRt && ao_decision.gate == rtao::Gate::kRuns ? "RT" : rtao::ValueLabel(fixed, ao_decision.gate),
                             {}, "%g", fixed == rtao::Choice::kRt ? "RT" : rtao::kNames[uint8_t(fixed)]);
                 f.State("PM_RxGpuSsgi", ao_on, replaced ? gi::kReplacedSuffix : "");
                 f.State("PM_RxGpuRtGi", gi::RowEnabled(decision.gate), gi::RowSuffix(decision.gate));

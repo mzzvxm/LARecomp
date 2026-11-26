@@ -13,6 +13,7 @@ static const uint kFlagInterior = 1u << 10;
 static const uint kFlagBlue = 1u << 11;
 static const uint kFlagProbe = 1u << 20;
 static const uint kFlagDepthHalf = 1u << 21;
+static const uint kFlagRate = 1u << 23;
 static const uint kFlagStats = 1u << 28;
 
 static const uint kStatRays = 0u, kStatHits = 1u, kStatCandidates = 2u, kStatAlpha = 3u;
@@ -28,6 +29,7 @@ struct RtAoPush {
   float4 look;
   float4 box_min;
   float4 box_max;
+  uint4 rate;
 };
 
 #ifdef __spirv__

@@ -113,7 +113,7 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   const auto compose_shader = Read(gpu / "hlsl/rtao_compose_cs.hlsl");
   checks.Expect(trace.contains("ParseScreen(settings::mcla_gpu_rtao_screen.Get())") &&
                     trace.contains("ScreenBlendFlags(screen_, force_open)") &&
-                    compose.contains("in.screen_blend_flags | (history ? 2u : 0u)") &&
+                    compose.contains("in.screen_blend_flags | (history ? 2u : 0u) | (in.shared_history ? 8u : 0u)") &&
                     compose_shader.contains("RtAoBlendScreen(g_push.flags, vehicle)"),
                 "the live world blend mode reaches the compose shader without changing the history bit");
   checks.Expect(ao.contains("ScreenPassInPlay(rtao_->screen_, plan.rtao.on, rtao_->cabin_screen_)"),

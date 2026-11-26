@@ -248,6 +248,7 @@
 {"mcla_gpu_ao_blue_noise", "MCLA/GPU"},
 {"mcla_gpu_ao_car_reach", "MCLA/GPU"},
 {"mcla_gpu_ao_census", "MCLA/GPU"},
+{"mcla_gpu_ao_cheap", "MCLA/GPU"},
 {"mcla_gpu_ao_fade_end", "MCLA/GPU"},
 {"mcla_gpu_ao_fast_math", "MCLA/GPU"},
 {"mcla_gpu_ao_gbuffer_normals", "MCLA/GPU"},

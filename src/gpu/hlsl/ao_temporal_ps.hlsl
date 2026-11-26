@@ -79,8 +79,10 @@
 // the bounce's history keeps and lens.w the clip's width. Output: RGBA16F, the next frame's history (the
 // debug view 6 run writes the confidence in x).
 
+#define AO_ROTATING_GRID 1
 #include "ao_common.hlsli"
 #include "nan_guard.hlsli"
+#include "ao_rate_rules.hlsli"
 
 // The plane test's width as a share of the distance (the denoise's), the depth agreement, the
 // margin of the neighbourhood clamp, and the confidences at which a history counts for nothing and
@@ -142,6 +144,16 @@ uint AoVehicleId(int2 pixel, float depth) {
   }
   if (!AoIsVehicle(depth)) {
     return 0u;
+  }
+  if (AoRotatingGrid() && (g_push.slots2.z & (1u << 23)) != 0u) {
+    const uint phase = AoGridPhase();
+    const int2 p = min(pixel * 2 + int2(phase & 1u, phase >> 1u), int2(g_push.sizes.xy) - 1);
+#if AO_DEPTH_MS
+    const uint id = StencilOf(g_utextures_ms[slot].Load(p, g_push.slots.y & 0xFFu)) >> 2;
+#else
+    const uint id = StencilOf(g_utextures[slot].Load(int3(p, 0))) >> 2;
+#endif
+    return id <= kLastVehicleId ? id : 0u;
   }
   for (int k = 0; k < 4; ++k) {
     const int2 p = pixel * 2 + int2(k & 1, k >> 1);
@@ -295,27 +307,32 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint depth_slot = g_push.slots.w;
   const float tc = AoLoadLinear(depth_slot, pixel);
   const float depth_out = min(tc, kAoSky);
-  const float current = g_textures[visibility_slot].Load(int3(pixel, 0)).x;
+  const bool fused = (g_push.slots2.z & (1u << 23)) != 0u;
+  const bool trace = fused && (g_push.slots2.z & (1u << 24)) != 0u;
+  const float4 raw = g_textures[visibility_slot].Load(int3(pixel, 0));
+  const float current = raw.x;
+  const bool sampled = !trace || raw.z > 0.0f;
   const uint view = AoView();
   // The sky, and what is past where the effect fades out entirely: nothing to occlude.
-  if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y) {
+  if (tc >= kAoSky * 0.5f || tc >= g_push.extra.y || (trace && raw.y < 0.5f)) {
     return float4(1.0f, depth_out, 0.0f, 0.0f);
   }
-  if (!AoHistoryOn()) {
+  if (!fused && !AoHistoryOn()) {
     return float4(view == 6u ? 0.0f : current, depth_out, 0.0f, 0.0f);
   }
 
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
-  const float3 normal = AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
+  const float3 normal = trace ? g_textures[g_push.slots.y].Load(int3(pixel, 0)).xyz :
+      AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc);
   float3 pe = AoToHistory(pc);
   float3 ne = AoDirToHistory(normal);
   // A pixel of a vehicle is found with the vehicle's own motion (the row of its ID in the vehicle
   // table: the three rows of the 3x4 that moves this frame's view space into the last frame's with the
   // camera's motion and the vehicle's, texel 3 holds 1 in x when the row is usable). No usable row: no
   // history for the pixel.
-  bool no_history = false;
-  const uint vehicle = AoVehicleId(pixel, tc);
-  if (vehicle != 0u && !AoVehiclesAsWorld()) {
+  bool no_history = !AoHistoryOn();
+  const uint vehicle = trace ? uint(g_textures[g_push.slots2.y].Load(int3(pixel, 0)).x) : AoVehicleId(pixel, tc);
+  if (!no_history && vehicle != 0u && !AoVehiclesAsWorld()) {
     no_history = true;
     const uint table = g_push.slots.x;
     if (table != kNoSlot && g_textures[table].Load(int3(3, int(vehicle), 0)).x > 0.5f) {
@@ -333,13 +350,16 @@ float4 main(float4 position : SV_Position) : SV_Target {
 
   // The history round the place the pixel was.
   float sum = 0.0f;
+  float age_sum = 0.0f;
+  float variance_sum = 0.0f;
   float weight = 0.0f;
+  const float2 previous_offset = fused && AoRotatingGrid() ? AoGridOffset((g_push.slots2.z >> 29) & 3u) : float2(0.0f, 0.0f);
   if (!no_history && pe.z > 0.05f) {
     const float2 uv = float2(0.5f + 0.5f * pe.x / (pe.z * tan_half.x),
                              0.5f - 0.5f * pe.y / (pe.z * tan_half.y));
     // The texel-centre coordinates of the place, kept where an int can hold them; a texel outside
     // the image has no weight.
-    const float2 hp = clamp(uv * size - 0.5f, float2(-2.0f, -2.0f), size + 2.0f);
+    const float2 hp = clamp(uv * size - 0.5f - previous_offset, float2(-2.0f, -2.0f), size + 2.0f);
     const int2 h0 = int2(floor(hp));
     const float2 f = hp - float2(h0);
     const float sigma = kPlaneShare * pe.z + kPlaneFloor;
@@ -349,13 +369,19 @@ float4 main(float4 position : SV_Position) : SV_Target {
         if (q.x < 0 || q.y < 0 || q.x >= isize.x || q.y >= isize.y) {
           continue;
         }
-        const float2 texel = g_textures[history_slot].Load(int3(q, 0)).xy;
-        const float3 ph = AoHistoryPos(float2(q) + 0.5f, size, texel.y, tan_half);
+        const float4 texel = g_textures[history_slot].Load(int3(q, 0));
+        const uint age = fused ? AoHistoryAge(texel.z) : 0u;
+        if (fused && (age == 0u || AoHistoryId(texel.z) != vehicle)) {
+          continue;
+        }
+        const float3 ph = AoHistoryPos(float2(q) + 0.5f + previous_offset, size, texel.y, tan_half);
         const float off_plane = dot(ne, ph - pe) / sigma;
         float w = exp(-0.5f * off_plane * off_plane);
         w *= abs(texel.y - pe.z) < kDepthShare * pe.z + 0.05f ? 1.0f : 0.0f;
         w *= (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
         sum += texel.x * w;
+        age_sum += float(age) * w;
+        variance_sum += texel.w * w;
         weight += w;
       }
     }
@@ -364,6 +390,66 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float confidence = no_history ? 0.0f : smoothstep(kConfidenceLow, kConfidenceHigh, weight);
   if (view == 6u) {
     return float4(confidence, depth_out, 0.0f, 0.0f);
+  }
+
+  if (fused) {
+    // One plane-aware 3x3 gather supplies both the disocclusion blur and the clamp.
+    const float inv_sigma = 1.0f / (kPlaneShare * tc + kPlaneFloor);
+    const float2 clip_scale = 2.0f / size;
+    float lo = sampled ? current : 1.0f;
+    float hi = sampled ? current : 0.0f;
+    float fresh_sum = 0.0f;
+    float fresh_weight = 0.0f;
+    if (sampled || confidence < kConfidenceHigh) {
+      [unroll]
+      for (int j = -1; j <= 1; ++j) {
+        [unroll]
+        for (int i = -1; i <= 1; ++i) {
+          const int2 q = clamp(pixel + int2(i, j), int2(0, 0), isize - 1);
+          const float4 v = g_textures[visibility_slot].Load(int3(q, 0));
+          if (trace && v.z <= 0.0f) {
+            continue;
+          }
+          const float td = AoLoadLinear(depth_slot, q);
+          if (AoIsVehicle(td) != AoIsVehicle(tc)) {
+            continue;
+          }
+          const float3 pq = AoViewPosInv(float2(q) + 0.5f, clip_scale, td);
+          const float off_plane = dot(normal, pq - pc) * inv_sigma;
+          if (abs(off_plane) > 2.0f || abs(td - tc) > 0.08f * tc + 0.05f) {
+            continue;
+          }
+          lo = min(lo, v.x);
+          hi = max(hi, v.x);
+          if (confidence < 1.0f) {
+            const float w = exp2(kAoNegHalfLog2e * (off_plane * off_plane + float(i*i + j*j)));
+            fresh_sum += v.x * w;
+            fresh_weight += w;
+          }
+        }
+      }
+    }
+    const float inv_weight = 1.0f / max(weight, 1e-4f);
+    const float old_age = age_sum * inv_weight;
+    const float old_variance = variance_sum * inv_weight;
+    const float wide = fresh_weight > 0.0f ? fresh_sum / fresh_weight : current;
+    const float fresh = sampled ? lerp(wide, current, confidence) : wide;
+    if (!sampled) {
+      const float kept = lerp(fresh, history, confidence);
+      return float4(saturate(NgNumberOr(kept, 1.0f)), depth_out,
+                    float(AoHistoryState(uint(old_age * confidence + 0.5f), vehicle)), old_variance);
+    }
+    // One-ray samples are binary. Use a wider clip than GTAO so a quiet, dark
+    // mean is not clamped toward white each time the neighbourhood misses.
+    const float margin = trace ? 0.25f : kClampMargin;
+    const float clipped = clamp(history, lo - margin, hi + margin);
+    const float stable_age = abs(clipped - history) > margin ? 0.0f : old_age * confidence;
+    const uint age = AoNextAge(stable_age, uint(g_push.lens.z));
+    const float keep = 1.0f - rcp(max(float(age), 1.0f));
+    const float delta = fresh - clipped;
+    const float variance = lerp(delta * delta, old_variance, keep);
+    return float4(saturate(NgNumberOr(lerp(fresh, clipped, keep), 1.0f)), depth_out,
+                  float(AoHistoryState(age, vehicle)), variance);
   }
 
   // The anti-ghost clamp: the history may not be farther from this frame's neighbourhood than a

@@ -25,6 +25,7 @@
 
 #include "ao_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#include "ao_rate_rules.hlsli"
 #include "cabin_shadow_rules.hlsli"
 #if AO_HIZ0
 #include "screen_hiz.hlsli"
@@ -64,7 +65,12 @@ float AoDepthTexel(float2 position_xy) {
   float t;
   int2 source;
   uint source_index = 0u;
-  if (AoLow()) {
+  if (AoLow() && AoRotatingGrid()) {
+    source_index = AoGridPhase();
+    source = int2(AoSourceAxis(pixel.x, source_index & 1u, last.x),
+                  AoSourceAxis(pixel.y, source_index >> 1u, last.y));
+    t = AoLinearDepth(AoLoadStored(source));
+  } else if (AoLow()) {
     const int2 p0 = min(pixel * 2 + int2(0, 0), last);
     const int2 p1 = min(pixel * 2 + int2(1, 0), last);
     const int2 p2 = min(pixel * 2 + int2(0, 1), last);

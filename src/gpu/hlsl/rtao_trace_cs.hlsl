@@ -10,6 +10,7 @@
 #include "rtao_common.hlsli"
 #include "interior_camera_rules.hlsli"
 #include "rtao_noise.hlsli"
+#include "ao_rate_rules.hlsli"
 
 #ifdef __spirv__
 [[vk::image_format("rgba16f")]]
@@ -173,6 +174,35 @@ float3 SurfaceNormal(int2 pixel, float depth, float3 p) {
   return dot(n, p) > 0.0 ? -n : n;
 }
 
+bool SkipMatureRay(uint2 pixel, uint id, float3 position) {
+  if ((g_push.slots.w & kFlagRate) == 0u || g_push.rate.y == 0xFFFFFFFFu)
+    return false;
+  const uint motion = g_push.rate.y;
+  const float4 p = float4(position, 1.0f);
+  if (g_textures[motion].Load(int3(3, id, 0)).x < 0.5f)
+    return false;
+  const float3 previous = float3(dot(g_textures[motion].Load(int3(0, id, 0)), p),
+                                 dot(g_textures[motion].Load(int3(1, id, 0)), p),
+                                 dot(g_textures[motion].Load(int3(2, id, 0)), p));
+  if (previous.z <= 0.05f)
+    return false;
+  const float2 uv = 0.5f + float2(previous.x, -previous.y) / (2.0f * previous.z * asfloat(g_push.rate.zw));
+  if (any(uv < 0.0f) || any(uv >= 1.0f))
+    return false;
+  const float2 texel = uv * float2(g_push.sizes.xy);
+  const float2 nearest_weight = 1.0f - abs(frac(texel) - 0.5f);
+  // Across a subpixel reprojection, leave uncertain bilinear support to the filter.
+  if (nearest_weight.x * nearest_weight.y < 0.75f)
+    return false;
+  const int2 q = int2(texel);
+  const float4 history = g_textures[g_push.rate.x].Load(int3(q, 0));
+  if (AoHistoryId(history.z) != id || !AoRateSurface(previous.z, history.y))
+    return false;
+  const float probability = AoRayProbability(AoHistoryAge(history.z), history.w);
+  const float coin = BlueNoiseFrame(int(pixel.x), int(pixel.y), 1u, RtAoNoiseSample(g_push.trace.x, 6u), kBlueNoiseR2StepB);
+  return coin >= probability;
+}
+
 void TracePixel(uint2 pixel) {
   const uint flags = g_push.slots.w;
   const uint2 size = g_push.sizes.zw;
@@ -239,6 +269,11 @@ void TracePixel(uint2 pixel) {
     return;
   }
 
+  // Keep coverage and the guide alive even when reusing a reprojected sample.
+  if (SkipMatureRay(pixel, id, ViewPos(float2(pixel) + 0.5f, float2(traced), guide_depth))) {
+    g_signal[pixel] = float4(1.0, 1.0, 0.0, 1.0);
+    return;
+  }
   float3 n = SurfaceNormal(sample_pixel, t, p);
   const float footprint = 2.0 * g_push.lens.y * t / float(size.y);
   float lift = Lift(t, footprint);

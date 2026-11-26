@@ -364,12 +364,12 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "runs a depth-only frame for a consumer outside its family when the occlusion and the contact shadows are off (screen_wants_); the steps below run inside it, in this order. "
              "It plans its bounce light with the probe field's share (GiApply::TakeSsgiShare), which is why the field's frame is before it"},
     {.step = Step::kAoDepth, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "depth chain (recorded by the screen owner)", .file = "ao.cpp",
-     .call = "screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);", .label_file = "screen_extract.cpp", .label = "ao depth", .makes = data::kAoDepth,
+     .call = "screen_->RecordDepth(list, chain, depth_base, summary.stencil_slot, normals_.depth_source_bits, ms);", .label_file = "screen_extract.cpp", .label = "ao depth", .makes = data::kAoDepth,
      .note = "SS-2: the AO's frame calls the owner, which records level 0, the coarser levels and the contact shadows' full size depth into its own images, with the labels 'ao depth' and 'ao contact depth'. "
              "SS-3: while the Hi-Z is wanted these passes also write its levels 0, 1 and 2 beside their images (two render targets) and the owner records the levels above them right behind, under 'screen hiz'; "
              "the frame's Hi-Z is whole when the screen frame is published below (mcla_gpu_screen_hiz_fused false: the separate passes are recorded there, as before)"},
     {.step = Step::kAoNormals, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "normals (G-buffer RT1 where valid, else the depth's)", .file = "ao.cpp",
-     .call = "screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));", .label_file = "screen_extract.cpp", .label = "ao normals", .reads = data::kAoDepth, .soft_reads = data::kPlanes,
+     .call = "screen_->RecordNormals(list, chain, depth_base, NormalRecipeFor(normals_));", .label_file = "screen_extract.cpp", .label = "ao normals", .reads = data::kAoDepth, .soft_reads = data::kPlanes,
      .makes = data::kAoNormal},
     {.step = Step::kColourPre, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "colour_pre capture (capped, only while the bounce light is on)", .file = "ao.cpp",
      .call = "screen_->RecordColourPre(list, chain, base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot));", .label_file = "screen_extract.cpp", .label = "ssgi colour chain",
