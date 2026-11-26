@@ -799,6 +799,13 @@ void TestScheduler() {
 // the dispatches and the budgets of the cells
 // ---------------------------------------------------------------------------
 void TestBudgets() {
+  const uint32_t clean = gu::ProbeWord(0, 0, 170);
+  const uint32_t dirty = gu::ProbeWord(1, gu::kProbeDirty, 170);
+  Check(gu::RefreshRays(clean, 64, 1.0f, true) == 32, "steady probes use 32 rays");
+  Check(gu::RefreshRays(dirty, 64, 1.0f, true) == 64, "new and stale probes use 64 rays");
+  Check(gu::RefreshRays(clean, 64, 4.0f, true) == 64, "warm-up keeps the full ray count");
+  Check(gu::RefreshRays(clean, 64, 1.0f, false) == 64, "the A/B keeps the full ray count");
+  Check(gu::RefreshRays(clean, 32, 1.0f, true) == 32, "the lean field keeps its original ray count");
   const gu::Dispatch d = gu::DispatchFor(61440);
   Check(d.x == 4096 && d.y == 15 && uint64_t(d.x) * d.y >= 61440, "the largest plan's blend dispatch: 4096 x 15 groups");
   Check(gu::TraceGroups(61440, 64) == 61440 && gu::TraceGroups(1536, 32) == 768, "the trace dispatch: a group a probe at 64 rays, two probes a group at 32");

@@ -136,6 +136,11 @@ float4 GiaLoadPlane(uint slot, int2 p)
 #endif
 }
 
+bool GiaQuarterLookup()
+{
+    return (g_push.info.w & GIA_FLAG_QUARTER_LOOKUP) != 0u;
+}
+
 uint GiaView()
 {
     return (g_push.info.w >> 8u) & 0xFFu;
@@ -176,7 +181,7 @@ float4 main(float4 position : SV_Position) : SV_Target
     int2 p = int2(position.xy);
     GiaFrame fr = GiaLoadFrame();
     int2 last = int2(fr.render) - 1;
-    int2 r = min(p * 2, last);
+    int2 r = min(p * (GiaQuarterLookup() ? 4 : 2), last);
     float2 rt1 = GiaLoadPlane(g_push.slots.y, r).xy;
     if (!GbRt1Valid(rt1))
     {
@@ -205,6 +210,55 @@ float3 GiaTone(float3 c)
 {
     return c / (float3(1.0f, 1.0f, 1.0f) + c);
 }
+
+#if GIA_UP
+float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, float3 pos, GiaFrame fr)
+{
+    int2 last = int2(fr.render) - 1;
+    if (all((pixel & 3) == 0) && all(pixel <= last))
+    {
+        // This receiver is the lookup's own sample, with the same guides.
+        return g_textures[g_push.info.y].Load(int3(pixel / 4, 0)).xyz;
+    }
+    // Quarter texels represent the full-size pixel at c*4, whose centre is at
+    // c*4+0.5. This avoids a shift when exactly on a sample and at odd extents.
+    float2 q = float2(pixel) * 0.25f;
+    int2 q0 = int2(floor(q));
+    float2 f = q - float2(q0);
+    int2 size = (int2(fr.render) + 3) / 4;
+    float3 radiance = 0.0f;
+    float weight = 0.0f;
+    [unroll] for (int j = 0; j < 2; ++j)
+    {
+        [unroll] for (int i = 0; i < 2; ++i)
+        {
+            float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
+            if (bilinear <= 0.0f)
+            {
+                continue;
+            }
+            int2 c = min(q0 + int2(i, j), size - 1);
+            float4 look = g_textures[g_push.info.y].Load(int3(c, 0));
+            float2 nc1 = GiaLoadPlane(g_push.slots.y, min(c * 4, last)).xy;
+            if (GbRt1Valid(nc1) && look.w > 0.0f && look.w < GIA_SKY)
+            {
+                float bilateral = GiaDepthWeight(t, look.w) * GiaNormalWeight(n, GbRt1Decode(nc1));
+                float w = GiaQuarterTap(bilinear, bilateral);
+                radiance += look.xyz * w;
+                weight += w;
+            }
+        }
+    }
+    // Blend into the direct answer at guide boundaries so the fallback does
+    // not create a new edge on a surface that crosses the coarse grid.
+    if (weight >= kGiaQuarterSupport)
+    {
+        return radiance / weight;
+    }
+    float3 exact = GiaLookupNet(GiLookup(pos, n), n, fr);
+    return lerp(exact, radiance / max(weight, 1.0e-8f), GiaQuarterBlend(weight));
+}
+#endif
 
 float4 main(float4 position : SV_Position) : SV_Target
 {
@@ -296,11 +350,22 @@ float4 main(float4 position : SV_Position) : SV_Target
             {
                 int2 c = clamp(q0 + int2(i, j), int2(0, 0), tsize - 1);
                 float bilinear = (i == 0 ? 1.0f - f.x : f.x) * (j == 0 ? 1.0f - f.y : f.y);
-                float4 look = g_textures[g_push.info.y].Load(int3(c, 0));
-                float2 nc1 = GiaLoadPlane(g_push.slots.y, min(c * 2, rlast)).xy;
+                int2 r = min(c * 2, rlast);
+                float2 nc1 = GiaLoadPlane(g_push.slots.y, r).xy;
                 if (!GbRt1Valid(nc1))
                 {
                     continue;
+                }
+                float4 look = 0.0f;
+                if (GiaQuarterLookup())
+                {
+                    // Match the original RGBA16F lookup's guide precision.
+                    float depth = GiaLinearDepth(GiaLoadPlane(g_push.slots.x, r).x, fr.lin);
+                    look.w = f16tof32(f32tof16(depth));
+                }
+                else
+                {
+                    look = g_textures[g_push.info.y].Load(int3(c, 0));
                 }
                 float w = bilinear * max(GiaDepthWeight(t, look.w) * GiaNormalWeight(n, GbRt1Decode(nc1)), GIA_MIN_UPSAMPLE_WEIGHT);
                 eSum = eSum + float3(look.x, look.y, look.z) * w;
@@ -317,6 +382,10 @@ float4 main(float4 position : SV_Position) : SV_Target
             eNet = eSum * (1.0f / wSum);
             vehicle = vSum / wSum;
             ao = GiaHasVisibility() ? aoSum / wSum : 1.0f;
+        }
+        if (GiaQuarterLookup())
+        {
+            eNet = GiaQuarterIrradiance(pixel, t, n, pos, fr);
         }
     }
 #else

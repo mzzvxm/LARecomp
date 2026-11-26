@@ -13,9 +13,11 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <random>
 #include <sstream>
 #include <string>
 
+#include "ao_fast.h"
 #include "setting_source.h"
 #include "ssgi_stable.h"
 
@@ -23,6 +25,15 @@ using namespace mcla::gpu::ssgi_stable;
 using mcla::gpu::ao_stable::kReferenceHeight;
 
 namespace {
+
+namespace shader {
+using std::abs;
+using std::clamp;
+using std::max;
+using std::sqrt;
+#include "hlsl/ssgi_sector.hlsli"
+#include "hlsl/ssgi_filter_plane.hlsli"
+}
 
 int g_checks = 0;
 int g_failed = 0;
@@ -138,6 +149,38 @@ void CheckAtrous() {
   Check(AtrousIterations(2, 1080) == 3 && AtrousIterations(2, 720) == 2, "4K traced at 1080 lines runs 3 passes, 1440p traced at 720 runs 2 (4 and 3 at full size)");
 }
 
+void CheckFastMath() {
+  constexpr float half_pi = 1.57079632679f;
+  std::mt19937 random(0x53534749u);
+  std::uniform_real_distribution<float> unit(-1.0f, 1.0f);
+  for (int i = 0; i < 10000; ++i) {
+    const float c = unit(random);
+    const float n = unit(random) * half_pi;
+    const float side = i & 1 ? 1.0f : -1.0f;
+    const float sn = std::sin(n);
+    const float cn = std::cos(n);
+    for (float angle : {std::acos(c), mcla::gpu::ao_fast::AcosFast(c)}) {
+      const float theta = side * angle;
+      const float t = n + std::clamp(theta - n, -half_pi, half_pi);
+      const float ref = (cn - std::cos(2.0f * t - n) + 2.0f * t * sn) * 0.25f;
+      const float got = shader::SsgiFastSectorIntegral(c, side, theta, n, sn, cn, half_pi, t);
+      Check(std::abs(got - ref) <= 3.6e-5f, "horizon integral stays within 0.0012 of a sector");
+    }
+
+    const float nx = unit(random), ny = unit(random), nz = unit(random);
+    const float x = unit(random), y = unit(random);
+    const float dx = unit(random) * 0.03f, dy = unit(random) * 0.03f;
+    const float centre = 1.0f + 400.0f * std::abs(unit(random));
+    const float tap = std::max(0.02f, centre * (1.0f + 0.1f * unit(random)));
+    const float centre_ray = nx * x + ny * y + nz;
+    const float slow = nx * ((x + dx) * tap - x * centre) + ny * ((y + dy) * tap - y * centre) + nz * (tap - centre);
+    const float fast = shader::SsgiFilterPlaneOffset(tap, centre, centre_ray, nx * dx + ny * dy);
+    const float sigma = 0.006f * centre + 0.01f;
+    const auto weight = [sigma](float offset) { return std::exp(-0.5f * (offset / sigma) * (offset / sigma)); };
+    Check(std::abs(weight(fast) - weight(slow)) <= 2.0e-5f, "affine plane reconstruction preserves bilateral weights");
+  }
+}
+
 // ---------------------------------------------------------------------------
 // the shaders and ao.cpp repeat the header's numbers
 // ---------------------------------------------------------------------------
@@ -156,6 +199,7 @@ void CheckShaders(const std::string& gpu_dir) {
   const std::string temporal = Slurp(gpu_dir + "/hlsl/ao_temporal_ps.hlsl");
   const std::string common = Slurp(gpu_dir + "/hlsl/ao_common.hlsli");
   const std::string main_ps = Slurp(gpu_dir + "/hlsl/ao_main_ps.hlsl");
+  const std::string filter = Slurp(gpu_dir + "/hlsl/ao_atrous_ps.hlsl");
   const std::string cpp = Slurp(gpu_dir + "/ao.cpp");
   Check(!temporal.empty() && !common.empty() && !main_ps.empty() && !cpp.empty(), "the shaders and ao.cpp are readable from " + gpu_dir);
   if (temporal.empty() || common.empty() || main_ps.empty() || cpp.empty()) {
@@ -171,6 +215,13 @@ void CheckShaders(const std::string& gpu_dir) {
   Check(has(common, "const float spatial_sigma = AoBlurSigma(radius);") && !has(common, "radius >= 2 ? 1.4f : 0.9f"), "ao_common.hlsli: the blur over four channels takes its sigma from AoBlurSigma");
   // The bounce light's main pass takes its noise from the same shift as the occlusion's.
   Check(!has(main_ps, "frame * float2("), "ao_main_ps.hlsl: the bounce light's main pass keeps no copy of the recurrence");
+  const size_t occupy = main_ps.find("occupied |= bits;");
+  const size_t black = main_ps.find("if (!any(radiance > 0.0f))");
+  const size_t facing = main_ps.find("if (facing_weight > 0.0f)");
+  Check(occupy < black && black < facing && facing != std::string::npos, "black samples still cover their sectors before skipping the facing work");
+  Check(has(main_ps, "far_ring && (!AoFastGather() || occupied != 0xFFFFFFFFu)") &&
+            has(filter, "SsgiFilterPlaneOffset(tq, tc, ray_at_centre,"),
+        "skip a fully occluded far ring and use the tested affine filter plane");
   // The setting's default (a REX_SETTING row of src/settings/generated; the REXCVAR_DEFINE of ao.cpp before the conversion), then ao.cpp: the first
   // version's values for the switch, the passes, the share's bits.
   const setting_source::Info clamp = setting_source::Find(gpu_dir, cpp, "mcla_gpu_ssgi_test_history_clamp");
@@ -196,6 +247,7 @@ int main(int argc, char** argv) {
   }
   CheckClip();
   CheckAtrous();
+  CheckFastMath();
   if (!gpu_dir.empty()) {
     CheckShaders(gpu_dir);
   }

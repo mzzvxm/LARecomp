@@ -180,6 +180,9 @@ float2 AoVehicleFalloff(float car_share, float radius, float falloff_ratio) {
 #if AO_GI
 
 static const uint kSectors = 32u;
+static const uint kFastGatherFlag = 1u << 25;
+
+bool AoFastGather() { return (g_push.slots2.z & kFastGatherFlag) != 0u; }
 
 // The colour chain's radiance at the continuous pixel position `p` (level-0 pixels), nearest texel of
 // `level`: the slots come straight from the push constants, as the depth chain's do.
@@ -228,6 +231,18 @@ float AoSectorPos(float theta, float n, float sin_n, float cos_n, float g_end, f
   return saturate(below * inv_total);
 }
 
+#include "ssgi_sector.hlsli"
+
+float AoHorizonSector(float cosine, float side, float n, float sin_n, float cos_n, float g_end, float inv_total) {
+  const float theta = side * AoAngleOf(cosine);
+  if (AoFastGather()) {
+    const float t = n + clamp(theta - n, -kHalfPi, kHalfPi);
+    const float g = SsgiFastSectorIntegral(cosine, side, theta, n, sin_n, cos_n, kHalfPi, t);
+    return saturate((t < 0.0f ? g_end - g : g_end + g) * inv_total);
+  }
+  return AoSectorPos(theta, n, sin_n, cos_n, g_end, inv_total);
+}
+
 // The sectors from `lo` to `hi` (0 to 1, lo <= hi) as a mask: rounded to the nearest sector at each end
 // (no bias towards more or less occlusion than the horizon search), and a span that exists is at least
 // one sector wide (a thin thing still blocks something).
@@ -270,18 +285,27 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
   const float inv_dist = 1.0f / max(dist, 1e-6f);
   const float3 dir = delta * inv_dist;
   const float cos_front = max(lerp(low, dot(dir, view_vec), w), low);
-  const float u_front = AoSectorPos(side * AoAngleOf(cos_front), n, sin_n, cos_n, g_end, inv_total);
+  const float u_front = AoHorizonSector(cos_front, side, n, sin_n, cos_n, g_end, inv_total);
   float u_back = side > 0.0f ? 1.0f : 0.0f;  // a solid: everything below the front horizon
   if (thickness > 0.0f) {
     const float3 behind = delta + sp * (thickness / max(length(sp), 1e-6f));
     const float cos_back = max(lerp(low, dot(normalize(behind), view_vec), w), low);
-    u_back = AoSectorPos(side * AoAngleOf(cos_back), n, sin_n, cos_n, g_end, inv_total);
+    u_back = AoHorizonSector(cos_back, side, n, sin_n, cos_n, g_end, inv_total);
   }
   const uint bits = AoSectorBits(min(u_front, u_back), max(u_front, u_back));
   const uint fresh = bits & ~occupied;
   occupied |= bits;
   if (fresh == 0u) {
     return;
+  }
+  const bool fast = AoFastGather();
+  float3 radiance = float3(0.0f, 0.0f, 0.0f);
+  if (fast) {
+    radiance = ChainColour(p, level);
+    // Keep the occluder's sectors, even when it carries no radiance.
+    if (!any(radiance > 0.0f)) {
+      return;
+    }
   }
   // Its radiance, for the share of the slice it newly covers. A diffuse surface radiates the same in
   // every direction, so the sector's measure already is the solid angle it fills (a wall seen from
@@ -320,7 +344,10 @@ void AoGiSample(float2 p, uint level, float2 away, float side, float low, float3
       }
     }
   }
-  light += (float(countbits(fresh)) * (1.0f / float(kSectors)) * facing) * ChainColour(p, level);
+  if (!fast) {
+    radiance = ChainColour(p, level);
+  }
+  light += (float(countbits(fresh)) * (1.0f / float(kSectors)) * facing) * radiance;
 }
 
 float4 main(float4 position : SV_Position) : SV_Target {
@@ -423,7 +450,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     // The far ring: more samples of this slice, out to the reach, into the sectors still open. The mask
     // the visibility is counted from is the near samples' (occupied_near).
     const uint occupied_near = occupied;
-    if (far_ring) {
+    if (far_ring && (!AoFastGather() || occupied != 0xFFFFFFFFu)) {
       AO_FAR_UNROLL for (uint s = 0u; s < far_steps; ++s) {
         const float step_noise = frac(noise.y + float(slice + (steps + s) * slices) * 0.6180339887f);
         float share = (float(s) + step_noise) / float(far_steps);

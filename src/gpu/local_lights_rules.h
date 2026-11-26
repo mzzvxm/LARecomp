@@ -181,6 +181,8 @@ inline constexpr uint32_t kPushLateReach = 1u << 0;
 inline constexpr uint32_t kPushFullContact = 1u << 1;
 inline constexpr uint32_t kPushNoContact = 1u << 2;
 inline constexpr uint32_t kPushFarDepthShift = 3;
+inline constexpr uint32_t kPushReachMask = 1u << 31;
+static_assert((uint32_t(kSky * 16.0f) << kPushFarDepthShift) < kPushReachMask);
 // mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost, except the third,
 // which trades a little of the contact term's accuracy for its reads: ContactDonors): the reach test before the planes are read (the pixel shader's order), one draw for a car's neon tube (its
 // lights are summed in the shader), the cap of the contact term's marches (two a pixel, not one for each light of the tube).

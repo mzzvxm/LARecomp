@@ -493,6 +493,11 @@ struct Chunk {
   uint32_t first = 0;
   uint32_t count = 0;
 };
+
+// Streaming, relighting and warm-up keep the original angular coverage.
+constexpr uint32_t RefreshRays(uint32_t word, uint32_t rays, float warmup, bool enabled) {
+  return enabled && rays == 64u && warmup == 1.0f && ProbeFlags(word) == 0u ? 32u : rays;
+}
 inline std::vector<Chunk> ChunksOf(uint32_t total, uint32_t chunk_probes) {
   std::vector<Chunk> out;
   if (chunk_probes == 0) return out;

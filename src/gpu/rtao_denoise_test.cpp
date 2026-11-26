@@ -74,6 +74,12 @@ void CheckSingleRayPrefilter() {
 }
 
 void CheckMath() {
+  Check(shader::RtAoReadSignalValidity(true, true, 0), "temporal input carries the trace validity");
+  Check(!shader::RtAoReadSignalValidity(true, false, 0), "the first spatial input carries the temporal normal");
+  Check(shader::RtAoReadSignalValidity(true, false, 1) && shader::RtAoReadSignalValidity(true, false, 2),
+        "later spatial inputs carry the original trace validity");
+  Check(!shader::RtAoReadSignalValidity(false, true, 0) && !shader::RtAoReadSignalValidity(false, false, 2),
+        "the off switch reads the guide in every pass");
   Check(ao::HistoryCap(-1) == 1 && ao::HistoryCap(15) == 15 && ao::HistoryCap(100) == 64, "history cvar bounds");
   for (uint32_t slot : {1u, 255u, 256u, 32767u}) {
     const uint32_t bits = 0x800022u;
