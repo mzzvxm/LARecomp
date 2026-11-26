@@ -897,6 +897,10 @@ target_include_directories(larecomp_render_cpu_test PRIVATE ${CMAKE_SOURCE_DIR}/
 add_executable(larecomp_render_wait_rules_test EXCLUDE_FROM_ALL render_wait_rules_test.cpp)
 target_include_directories(larecomp_render_wait_rules_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 
+# The startup screen-size read against an SDK address space without a title.
+add_executable(larecomp_guest_screen_size_test EXCLUDE_FROM_ALL guest_screen_size_test.cpp)
+target_link_libraries(larecomp_guest_screen_size_test PRIVATE rex::kernel)
+
 # Render-thread target, layout and pipeline memo checks. No device or shader pack.
 add_executable(larecomp_render_draw_memo_test EXCLUDE_FROM_ALL render_draw_memo_test.cpp)
 target_include_directories(larecomp_render_draw_memo_test PRIVATE ${CMAKE_SOURCE_DIR}/src)

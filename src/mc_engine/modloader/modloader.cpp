@@ -2,6 +2,7 @@
 #include "settings/immortal.h"
 
 #include "settings/larecomp_settings.h"
+#include <rex/kernel/memory_view.h>
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/title_paths.h>
 #include <rex/platform/file.h>
@@ -2323,12 +2324,16 @@ void PartProbeLoop() {
     for (;;) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         if (!larecomp::settings::model_mods_part_probe.Get()) continue;
-        auto* runtime = REX_RUNTIME();
-        if (!runtime || !larecomp::guest::AddressSpace(runtime)) continue;
-        const uint8_t* base = runtime->GetMembase().GetBase();
+        const auto* memory = larecomp::guest::AddressSpace();
+        if (!memory) continue;
+        const rex::kernel::MemoryView view(*memory);
+        const uint8_t* base = view.GetVirtualMembase();
         if (!base) continue;
 
-        const uint32_t car = ProbeU32(base, 0x8288DCF8u);
+        // CHECK: boot with the parts probe enabled and verify its first in-game report.
+        const auto player_car = view.TryLoad<uint32_t>(0x8288DCF8u);
+        if (!player_car) continue;
+        const uint32_t car = *player_car;
         if (!ProbeAddress(car)) {
             const std::string report = std::format("no player car (0x{:08X})", car);
             if (report != last) {
@@ -2382,7 +2387,7 @@ void PartProbeLoop() {
         // (sub_821E2820) prints to nothing and sets this byte on the streaming
         // manager (dword_8286CE50 + 6212) -- the one sign a part waits because
         // the heap had no room for it.
-        const uint32_t streamer = ProbeU32(base, 0x8286CE50u);
+        const uint32_t streamer = view.TryLoad<uint32_t>(0x8286CE50u).value_or(0);
         const int alloc_failed = ProbeAddress(streamer) ? ProbeU8(base, streamer + 6212) : -1;
         const std::string report =
             std::format("car 0x{:08X} reattach pending {} all-ready {} blocked 0x{:08X} "
