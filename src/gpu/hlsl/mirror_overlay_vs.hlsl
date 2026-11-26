@@ -18,16 +18,10 @@ struct VsInput {
   [[vk::location(0)]] float3 position : POSITION;
 };
 
-struct VsOutput {
-  float4 position : SV_Position;
-  float2 mask_uv : TEXCOORD1;
-  float3 view_pos : TEXCOORD0;  // the point in the main camera's view space, eye-relative: what the pixel stage reflects
-};
-
-VsOutput main(VsInput input) {
+MirrorOverlayVaryings main(VsInput input) {
   const MirrorOverlayDraw draw = g_draw;
   const MirrorOverlayPush p = draw.mirror;
-  VsOutput o;
+  MirrorOverlayVaryings o;
   const float4 model = float4(input.position, 1.0);
   o.mask_uv = float2(dot(model, draw.mask_u), dot(model, draw.mask_v));
   const float3 pv = MirrorOverlayViewPos(p, input.position);

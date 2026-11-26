@@ -951,7 +951,10 @@ void TestFiles(const std::string& src) {
   // the stages
   Check(Has(vs, "#include \"mirror_overlay.hlsli\"") && Has(ps, "#include \"mirror_overlay.hlsli\"") && Has(vs, "register(b0, space4)") && Has(ps, "register(b0, space4)") && Has(vs, "[[vk::push_constant]]") && Has(ps, "[[vk::push_constant]]"),
         "both stages take the one push block at (b0, space4) on D3D12 and as the push constant on Vulkan");
-  Check(Has(vs, "[[vk::location(0)]] float3 position : POSITION;") && Has(vs, "float3 view_pos : TEXCOORD0;") && Has(ps, "float3 view_pos : TEXCOORD0;"), "the vertex stage's output and the pixel stage's input are the same");
+  Check(Has(vs, "[[vk::location(0)]] float3 position : POSITION;"), "the vertex layout supplies POSITION at location 0");
+  Check(Has(vs, "MirrorOverlayVaryings main(VsInput input)") && Has(ps, "main(MirrorOverlayVaryings input)") &&
+            Has(hlsli, "struct MirrorOverlayVaryings {\n  float4 position : SV_Position;\n  float3 view_pos : TEXCOORD0;\n  float2 mask_uv : TEXCOORD1;\n};"),
+        "both stages share the ordered signature: SV_Position, TEXCOORD0 view position, TEXCOORD1 mask UV");
   Check(Has(ps, "g_samplers[kSamplerLinearClamp]") && Has(ps, "SampleLevel") && Has(ps, "asuint(p.delta.w)") && Has(ps, "NgFinite3(colour.rgb)") && Has(ps, "MirrorOverlayEdgeFade(uv.xy)") && Has(ps, "alpha = open + coverage;"), "the pixel stage reads the picture with the linear clamp sampler at the slot in the block and writes the edge fade as the alpha");
   Check(Has(cmake, "larecomp_gpu_host_shader(mirror_overlay_vs vs_6_0)") && Has(cmake, "larecomp_gpu_host_shader(mirror_overlay_ps ps_6_0)") && Has(cmake, "mirror_overlay.cpp") &&
             Has(cmake, "add_executable(larecomp_mirror_overlay_rules_test EXCLUDE_FROM_ALL mirror_overlay_rules_test.cpp)"),
