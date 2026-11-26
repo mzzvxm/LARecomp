@@ -15,7 +15,7 @@
 //      constants from the main view's draws, the cascades from the shadow collector's draws (phase 0x1000), the camera from the vertex
 //      constants once they are trusted else the previous frame's, the fog quad's colour of the last frame.
 //   2. the first copy of the main colour after the first point (the end-of-scene copy; shafts_anchor.h's policy): the COMPOSITE
-//      (hlsl/volumetrics_apply_ps.hlsl), BEFORE the copy is made and before the sun shafts' own pass, so that the temporal upscaler, the bloom
+//      (hlsl/volumetrics_apply_ps.hlsl), BEFORE the copy is made, in the same blend as the shafts when active, so that the temporal upscaler, the bloom
 //      and the tone map all see the beams. One full-screen pass, blend (ONE, SRC_ALPHA) on every sample of the multisampled target, depth from
 //      the main depth plane. The policy keeps it alive if a build gives no such copy (then it goes in at the first point, before the fog).
 // The game's lamp cones (xrage_spotlightfog, 4 pixel shader identities: upscaler_masks.cpp kLightVolume) are not drawn in a frame the volume
@@ -24,8 +24,9 @@
 // SETTING: mcla_gpu_volumetrics = auto | off | medium | high | ultra (volumetrics_level.h; gpu_class.h kEffects: Low off, Mid medium, High high),
 // live: the grid is made again at the next frame, the history dropped. Off costs a flag read. The debug cvars mcla_gpu_vol_* tune the look.
 //
-// GATING (nothing recorded, nothing costs): off; the picture is not the play view's (the pause menu's, the map's and the garage's worlds have no
-// volume: V10); no sun term, no lamp, no headlight and no medium (a clear noon); no previous camera; a picture too small.
+// GATING: needs a volume light source, a valid camera and a main depth plane.
+// Pause, photo and garage composite at their tiled depth copy with a steady lens.
+// The full map is outside the volume views.
 //
 // RENDER SCALE, MSAA, UPSCALERS: the grid does not depend on the render size; the composite runs at the render size and is the only per pixel
 // cost; it is before the anchor, so DLSS / FSR see the beams as colour they accumulate.
@@ -42,6 +43,7 @@
 
 #include <plume_render_interface.h>
 
+#include "atmosphere.h"
 #include "constants.h"
 #include "edram.h"
 #include "frame.h"
@@ -85,7 +87,7 @@ class Volumetrics {
   void SetInputSource(volumetrics::VolInputSource* source) { source_ = source; }
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView menu_view);
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
   // The game's sun cascades of this frame as the shadow collector's draws told them (the data FillCascades gives the volume: the light matrices, the boxes, the atlas), for another pass that
@@ -104,8 +106,10 @@ class Volumetrics {
   // constants are trusted).
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A resolve, BEFORE ResolveCache::Execute makes its copy, with `list` the frame's open list outside any render pass: the first copy of the main
-  // colour after the first point is the second point. True when passes were recorded (the caller's list state is gone).
+  // colour after the first point is the second point. True when the pending volume should composite at this copy.
   bool BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list);
+  bool AtMidScene() const { return pending_.valid && anchor_ == shafts_anchor::Anchor::kMidScene; }
+  bool Composite(plume::RenderCommandList* list, const AtmosphereShafts* shafts, bool& merged);
   // A resolve, after Execute: the mid-scene depth copy is the first point. `frame_slot`: the FrameRing's slot being recorded (the constants'
   // buffer). `upscaler_running`: a temporal upscaler works on this frame.
   bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t frame_slot,
@@ -136,16 +140,23 @@ class Volumetrics {
     float depth[4];
     float lin[4];
   };
-  static_assert(sizeof(ApplyPush) == 64 && sizeof(ApplyPush) == HostPasses::kPushConstantBytes);
+  static_assert(sizeof(ApplyPush) == HostPasses::kPushConstantBytes);
+  struct MergedPush {
+    ApplyPush volume;
+    float shafts_tint[3];
+    uint32_t shafts_slot;
+  };
+  static_assert(sizeof(MergedPush) == 80);
 
   // The pipelines: the two compute passes and the composite per colour target's sample count.
   enum Variant : uint32_t {
     kVInject = 0,
     kVIntegrate = 1,
     kVApplyBase = 2,  // + log2(samples)
-    kVariantCount = kVApplyBase + 4,
+    kVMergedBase = kVApplyBase + 4,
+    kVariantCount = kVMergedBase + 4,
   };
-  static uint32_t ApplyVariant(uint32_t host_samples);
+  static uint32_t ApplyVariant(uint32_t host_samples, bool merged = false);
   static std::string VariantName(uint32_t variant);
 
   // The light constants of a main view draw, as raw dwords: VS c16.xyz (the direction the sunlight travels), PS c39.xyz (the sun colour) and VS c43.x
@@ -214,7 +225,7 @@ class Volumetrics {
   // The passes (volumetrics.cpp).
   bool RecordVolume(plume::RenderCommandList* list, uint32_t frame_slot, const Pending& plan, const volumetrics::VolGpuConstants& constants,
                     bool use_history, bool use_shadows);
-  bool RecordComposite(plume::RenderCommandList* list, const Pending& plan);
+  bool RecordComposite(plume::RenderCommandList* list, const Pending& plan, const AtmosphereShafts* shafts);
   bool EnsureResources(const volumetrics::GridDesc& grid);
   void ReleaseResources();
   bool EnsureConstantSet(uint32_t slot);
@@ -244,6 +255,8 @@ class Volumetrics {
   bool composite_seen_ = false;
   bool play_view_ = false;
   bool pause_view_ = false;
+  bool pause_lens_steady_ = false;
+  gbuffer::PauseFxView last_menu_run_ = gbuffer::PauseFxView::kNone;
   bool first_point_seen_ = false;
   uint32_t main_draws_ = 0;
   std::array<Seen, kSeenSlots> seen_{};
@@ -261,6 +274,7 @@ class Volumetrics {
 
   // The camera: the previous frame's, and whether the vertex constants have been shown to hold a frame's own view.
   temporal::Camera previous_;
+  gbuffer::PauseFxView menu_view_ = gbuffer::PauseFxView::kNone;
   bool have_previous_ = false;
   bool previous_pause_ = false;
   uint64_t previous_frame_ = 0;
@@ -313,7 +327,8 @@ class Volumetrics {
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> inject_shader_;
   std::unique_ptr<plume::RenderShader> integrate_shader_;
-  std::array<std::unique_ptr<plume::RenderShader>, 2> apply_shaders_;  // plain depth, multisampled depth
+  std::array<std::unique_ptr<plume::RenderShader>, 4> apply_shaders_;  // plain/MS depth, standalone/merged
+  std::unique_ptr<plume::RenderPipelineLayout> merged_layout_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<bool, kVariantCount> pipeline_failed_{};
   bool listed_ = false;

@@ -11,22 +11,21 @@
 
 #include "shafts_common.hlsli"
 #include "host_pass_samplers.hlsli"
+#include "shafts_apply.hlsli"
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const float2 uv = position.xy / g_push.sizes.xy;
-  const float value =
-      g_textures[g_push.slots.y].SampleLevel(g_samplers[kSamplerLinearClamp], uv, 0).x;
   const uint view = g_push.slots.w;
-  const float3 light = g_push.tint.xyz * value;
   if (view == 0u) {
-    if (!(max(light.x, max(light.y, light.z)) > 1.0f / 4096.0f)) {
+    const float3 light = SampleShaftLight(uv, g_push.slots.y, g_push.tint.xyz);
+    if (!any(light > 0.0f)) {
       discard;
     }
     return float4(light, 0.0f);
   }
   if (view == 3u) {
-    return float4(light, 1.0f);
+    return float4(g_push.tint.xyz * SampleShaftValue(uv, g_push.slots.y), 1.0f);
   }
-  const float grey = 0.3f * value;
+  const float grey = 0.3f * SampleShaftValue(uv, g_push.slots.y);
   return float4(grey, grey, grey, 1.0f);
 }

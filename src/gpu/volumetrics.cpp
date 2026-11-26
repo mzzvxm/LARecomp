@@ -123,8 +123,8 @@ Volumetrics::~Volumetrics() { Shutdown(); }
 // start and end
 // ---------------------------------------------------------------------------
 
-uint32_t Volumetrics::ApplyVariant(uint32_t host_samples) {
-  return kVApplyBase + std::min(uint32_t(std::countr_zero(std::max(host_samples, 1u))), 3u);
+uint32_t Volumetrics::ApplyVariant(uint32_t host_samples, bool merged) {
+  return (merged ? kVMergedBase : kVApplyBase) + std::min(uint32_t(std::countr_zero(std::max(host_samples, 1u))), 3u);
 }
 
 std::string Volumetrics::VariantName(uint32_t variant) {
@@ -133,7 +133,9 @@ std::string Volumetrics::VariantName(uint32_t variant) {
     case kVIntegrate: return "volumetrics integrate";
     default: break;
   }
-  return std::format("volumetrics apply {}x", 1u << (variant - kVApplyBase));
+  const bool merged = variant >= kVMergedBase;
+  return std::format("{} apply {}x", merged ? "atmosphere" : "volumetrics",
+                     1u << (variant - (merged ? kVMergedBase : kVApplyBase)));
 }
 
 void Volumetrics::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, EdramTargets& edram,
@@ -187,8 +189,15 @@ bool Volumetrics::MakeLayoutAndShaders() {
     inject_shader_ = device_->CreateShader(inject.data, inject.size, "main", inject.name);
     integrate_shader_ = device_->CreateShader(integrate.data, integrate.size, "main", integrate.name);
     for (uint32_t i = 0; i < 2; ++i) {
-      const HostShaderBlob apply = VolumetricsApplyShader(i != 0);
+      const HostShaderBlob apply = VolumetricsApplyShader(i != 0, false);
       apply_shaders_[i] = passes_->CreateShader(apply.data, apply.size, apply.name);
+    }
+    merged_layout_ = passes_->CreateLayout(sizeof(MergedPush), "atmosphere apply layout");
+    if (merged_layout_) {
+      for (uint32_t i = 0; i < 2; ++i) {
+        const HostShaderBlob apply = VolumetricsApplyShader(i != 0, true);
+        apply_shaders_[i + 2] = passes_->CreateShader(apply.data, apply.size, apply.name);
+      }
     }
     ok = inject_shader_ && integrate_shader_ && apply_shaders_[0] && apply_shaders_[1];
   }
@@ -199,6 +208,7 @@ bool Volumetrics::MakeLayoutAndShaders() {
     for (auto& shader : apply_shaders_) {
       shader.reset();
     }
+    merged_layout_.reset();
     layout_.reset();
     shaders_failed_ = true;
     return false;
@@ -234,6 +244,7 @@ void Volumetrics::Shutdown() {
   for (auto& shader : apply_shaders_) {
     shader.reset();
   }
+  merged_layout_.reset();
   layout_.reset();
   ready_ = false;
   device_ = nullptr;
@@ -250,6 +261,14 @@ std::vector<uint32_t> Volumetrics::Variants() const {
   std::vector<uint32_t> variants = {kVInject, kVIntegrate, ApplyVariant(1), ApplyVariant(2), ApplyVariant(4)};
   if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
     variants.push_back(ApplyVariant(8));
+  }
+  if (merged_layout_ && apply_shaders_[2] && apply_shaders_[3]) {
+    variants.push_back(ApplyVariant(1, true));
+    variants.push_back(ApplyVariant(2, true));
+    variants.push_back(ApplyVariant(4, true));
+    if (edram_ && edram_->SupportedMsaaLevel(8) == 8) {
+      variants.push_back(ApplyVariant(8, true));
+    }
   }
   return variants;
 }
@@ -302,7 +321,11 @@ std::unique_ptr<plume::RenderPipeline> Volumetrics::MakePipeline(uint32_t varian
     return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(layout_.get(), integrate_shader_.get(), 8, 8, 1), name.c_str());
   }
   // The composite: into the scene colour (float16 RGBA) with the target's sample count, blend (ONE, SRC_ALPHA) on the colour, the alpha never written.
-  const uint32_t samples = 1u << (variant - kVApplyBase);
+  const bool merged = variant >= kVMergedBase;
+  const uint32_t samples = 1u << (variant - (merged ? kVMergedBase : kVApplyBase));
+  const auto* shader = apply_shaders_[(merged ? 2 : 0) + (samples > 1 ? 1 : 0)].get();
+  const auto* layout = merged ? merged_layout_.get() : &passes_->layout();
+  if (!shader || !layout) return nullptr;
   plume::RenderBlendDesc blend = plume::RenderBlendDesc::Copy();
   blend.blendEnabled = true;
   blend.srcBlend = plume::RenderBlend::ONE;
@@ -312,7 +335,7 @@ std::unique_ptr<plume::RenderPipeline> Volumetrics::MakePipeline(uint32_t varian
   blend.dstBlendAlpha = plume::RenderBlend::ONE;
   blend.blendOpAlpha = plume::RenderBlendOperation::ADD;
   blend.renderTargetWriteMask = kWriteRgb;
-  return passes_->CreatePipeline(passes_->layout(), *apply_shaders_[samples > 1 ? 1 : 0], plume::RenderFormat::R16G16B16A16_FLOAT, blend, samples,
+  return passes_->CreatePipeline(*layout, *shader, plume::RenderFormat::R16G16B16A16_FLOAT, blend, samples,
                                  name.c_str());
 }
 
@@ -333,7 +356,19 @@ plume::RenderPipeline* Volumetrics::Pipeline(uint32_t variant) {
   return pipelines_[variant].get();
 }
 
-void Volumetrics::BeginFrame() {
+void Volumetrics::BeginFrame(gbuffer::PauseFxView menu_view) {
+  if (menu_view_ != menu_view) {
+    ground_valid_ = false;
+    fog_seen_ = false;
+    std::fill_n(fog_colour_, 4, 0.0f);
+    history_.valid = false;
+  }
+  if (gbuffer::PauseFxCameraChanged(previous_pause_, menu_view_, menu_view)) {
+    have_previous_ = false;
+    have_older_ = false;
+    vs_pose_trusted_ = false;
+  }
+  menu_view_ = menu_view;
   census_every_ = uint32_t(std::max(0, larecomp::settings::mcla_gpu_vol_census.Get()));
   keep_cones_ = larecomp::settings::mcla_gpu_vol_keep_cones.Get();
   stable_ = larecomp::settings::mcla_gpu_vol_stable.Get();
@@ -540,6 +575,7 @@ void Volumetrics::OnMainDraw(const temporal::MainMatch& match, const ConstantBan
 
 void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
   anchor_seen_ = true;
+  pause_lens_steady_ = false;
   if (play_view_ == pause_view_) {
     have_previous_ = false;
     have_older_ = false;
@@ -564,6 +600,9 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
     return;
   }
   const bool same_kind = have_previous_ && previous_frame_ + 1 == frame_ && previous_pause_ == pause;
+  pause_lens_steady_ = same_kind && pause && menu_world::LensSteady(true, menu_world::LensStep(camera, previous_));
+  const bool menu_cut = same_kind && pause && (!pause_lens_steady_ || temporal::TestCut(camera, previous_, nullptr).fires);
+  if (menu_cut) history_.valid = false;
   // Whether this frame's vertex constants held this frame's view inverse: trusted once they did in a frame the camera moved in, dropped as soon as
   // they differ (ao.cpp, shafts.cpp).
   if (same_kind && vs_view_inverse_draws_ != 0) {
@@ -584,8 +623,8 @@ void Volumetrics::OnAnchor(const ConstantBanks::Banks& banks) {
     vs_pose_trusted_ = false;
   }
   // The camera of the frame before the previous one, for the volume that has to guess this frame's camera (VOL-STABLE-2: volumetrics_stable.h ExtrapolateCamera).
-  have_older_ = same_kind;
-  if (same_kind) {
+  have_older_ = same_kind && !menu_cut;
+  if (have_older_) {
     cam_older_ = CameraOf(previous_);
   }
   previous_ = camera;
@@ -778,7 +817,7 @@ void Volumetrics::FillDefaults(const Light& light, const vol::VolFrameContext& f
   w.scale[1] = look.lamp_strength * float(std::clamp(st::mcla_gpu_vol_lamp_strength.Get(), 0.0, 50.0));
   w.scale[2] = look.head_strength * float(std::clamp(st::mcla_gpu_vol_head_strength.Get(), 0.0, 50.0));
   w.scale[3] = look.sun_strength * float(std::clamp(st::mcla_gpu_vol_sun_strength.Get(), 0.0, 50.0));
-  FillCascades(in);
+  if (!frame.garage) FillCascades(in);
   if (in->sun_valid) {
     w.sun_dir[3] = std::clamp(collector_.shader_globals_z, 0.0f, 1.0f);  // the collector's own fade: visibility lerp(lit, 1, z)
   }
@@ -878,18 +917,30 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   ++triggers_;
   outcome_ = Outcome::kNoCamera;
   const bool pause = temporal::MainDepthSamples(summary.source_key) == temporal::kPauseSamples;
-  if (pause) {
-    // The pause menu's, the race pause's and the garage's world and the map have no volume (survey V10): nothing is recorded.
+  if (pause && (!pause_view_ || play_view_ || !gbuffer::IsPauseFx(menu_view_))) {
     outcome_ = Outcome::kWorld;
     return false;
   }
-  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_) {
+  if (!have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != pause || (pause && !pause_lens_steady_)) {
     ++skipped_no_camera_;
+    return false;
+  }
+  const auto world = pause ? menu_world::Classify(true, menu_world::LensOf(&previous_), menu_world::GarageLighting())
+                           : menu_world::World::kPlay;
+  const bool garage = menu_world::GarageFxRuns(world, menu_view_);
+  if (pause && !garage && !menu_world::PauseFxRuns(world, menu_view_)) {
+    outcome_ = Outcome::kWorld;
     return false;
   }
   outcome_ = Outcome::kNoLight;
   Light light;
-  if (!ComputeLight(&light)) {
+  if (garage) {
+    // CHECK: confirm the garage lamp list reaches the parked-car view.
+    // The indoor medium is lit by the garage's local lights. The TOD key
+    // light is for shading surfaces and must not scatter as an outdoor sun.
+    light.to_sun[1] = 1.0f;
+    light.elevation = -90.0;
+  } else if (!ComputeLight(&light)) {
     return false;
   }
   for (int i = 0; i < 3; ++i) {
@@ -901,7 +952,8 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     census_sun_colour_[i] = light.colour[i];
   }
 
-  vol::GridDesc grid = vol::GridFor(level_);
+  const vol::GridDesc grid = vol::ProofGrid(level_, larecomp::settings::mcla_gpu_vol_history_medium.Get(),
+                                          float(larecomp::settings::mcla_gpu_vol_near.Get()));
   if (!grid.valid()) {
     return false;
   }
@@ -941,6 +993,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   context.render_width = plan.render[0];
   context.render_height = plan.render[1];
   context.upscaler = upscaler_running;
+  context.garage = garage;
   // The time since the last volume: the scene clock's (the wall clock, or a take's frames times its step), so that a lamp's fade of 0.35 s and the haze's drift run at
   // the same speed at any frame rate; the first version counted the frames over 60 (a lamp faded in 88 ms at 240 FPS).
   const double clock_ms = mc::cinematic::SceneClockNowMs(frame_);
@@ -998,7 +1051,7 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     turn = std::acos(std::clamp(cosine, -1.0f, 1.0f));
     cut = step > kCutStepMetres || turn > kCutTurnRadians;
   }
-  const bool history_ok = history_wanted && history_.valid && history_frame_ + 1 == frame_ && history_level_ == level_ && !cut;
+  const bool history_ok = history_wanted && history_.valid && history_frame_ + 1 == frame_ && history_level_ == level_ && history_.near_m == grid.near_m && !cut;
   vol::HistoryUse use = history_;
   use.valid = history_ok;
   if (stable_) {
@@ -1065,6 +1118,13 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   pending_ = plan;
   pending_.valid = true;  // the composite is still to be recorded
   outcome_ = Outcome::kSkyOnly;
+  // CHECK: in menu views, verify the first eligible tile covers the full view once.
+  anchor_ = pause ? shafts_anchor::Anchor::kMidScene : policy_.Choose(larecomp::settings::mcla_gpu_vol_early.Get());
+  if (pause && last_menu_run_ != menu_view_) {
+    last_menu_run_ = menu_view_;
+    REXLOG_INFO("{} first volume in {}, lamps {}, headlights {}, {}x depth",
+                kPrefix, garage ? "garage" : menu_view_ == gbuffer::PauseFxView::kPhoto ? "photo mode" : "pause world", constants.counts[0], constants.counts[1], plan.host_samples);
+  }
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} the first volume: frame {}, level {}, {}x{}x{} froxels, far {:.0f} m, {} lamps, {} headlights, {} shadow views, sun {}, camera {}, history {}, picture {}x{} ({} host "
@@ -1073,14 +1133,6 @@ bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
                 inputs->sun_valid ? "through the cascades" : "unshadowed", current ? "this frame's" : "the previous frame's",
                 use.valid && use.weight > 0.0f ? "on" : "off", plan.render[0], plan.render[1], plan.host_samples,
                 shafts_anchor::AnchorName(anchor_));
-  }
-  anchor_ = policy_.Choose(larecomp::settings::mcla_gpu_vol_early.Get());
-  if (anchor_ == shafts_anchor::Anchor::kMidScene) {
-    // Here, before the fog and the particles: the debug switch, or the fall-back of a build or a scene that gives no copy of the main colour at the
-    // second point. The copy is still watched there.
-    pending_.valid = false;
-    composited_ = RecordComposite(list, plan);
-    outcome_ = composited_ ? Outcome::kRecorded : Outcome::kNotRecorded;
   }
   return true;
 }
@@ -1188,23 +1240,31 @@ bool Volumetrics::BeforeResolve(const ResolveRecord& record, plume::RenderComman
     return false;
   }
   copy_seen_ = true;
-  if (!pending_.valid) {
-    return false;  // the volume went in at the first point: the copy was only watched
+  return pending_.valid;  // an early composite only watches the copy
+}
+
+bool Volumetrics::Composite(plume::RenderCommandList* list, const AtmosphereShafts* shafts, bool& merged) {
+  merged = false;
+  if (!list || !pending_.valid || !edram_ || !passes_ || !pass_timing_) return false;
+  pending_.valid = false;  // subsequent tiles read the composited colour
+  const Pending& plan = pending_;
+  if (shafts && view_ == 0 && shafts->colour == plan.colour &&
+      shafts->width == plan.render[0] && shafts->height == plan.render[1] && shafts->samples == plan.host_samples) {
+    merged = RecordComposite(list, plan, shafts);
   }
-  const Pending plan = pending_;
-  pending_.valid = false;  // once: the other tiles' copies find the picture with the light in it
-  composited_ = RecordComposite(list, plan);
+  composited_ = merged || RecordComposite(list, plan, nullptr);
   outcome_ = composited_ ? Outcome::kRecorded : Outcome::kNotRecorded;
   return composited_;
 }
 
-bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending& plan) {
+bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending& plan, const AtmosphereShafts* shafts) {
   EdramTargets::Target* colour = TargetOf(plan.colour, list);
   EdramTargets::Target* depth = TargetOf(plan.depth, list);
   if (!colour || !depth || colour->host_samples != plan.host_samples || depth->host_samples != plan.host_samples || !accum_.texture) {
     return false;
   }
-  plume::RenderPipeline* pipeline = Pipeline(ApplyVariant(colour->host_samples));
+  if (shafts && (!merged_layout_ || !apply_shaders_[2] || !apply_shaders_[3])) return false;
+  plume::RenderPipeline* pipeline = Pipeline(ApplyVariant(colour->host_samples, shafts != nullptr));
   if (!pipeline) {
     return false;
   }
@@ -1222,7 +1282,8 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
     return false;
   }
   const vol::GridDesc& g = plan.grid;
-  ApplyPush push = {};
+  MergedPush parameters{};
+  ApplyPush& push = parameters.volume;
   push.slots[0] = depth_slot;
   push.slots[1] = accum_.slot;
   push.slots[2] = g.nx | (g.ny << 8) | (g.nz << 16) | (g.tiles_x << 24);
@@ -1237,15 +1298,22 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
   for (int i = 0; i < 4; ++i) {
     push.lin[i] = plan.lin[i];
   }
-  pass_timing_->Mark(list, "vol apply");
+  if (shafts) {
+    std::copy_n(shafts->tint, 3, parameters.shafts_tint);
+    parameters.shafts_slot = shafts->slot;
+    // CHECK: validate the combined layout and blend on both APIs with MSAA.
+    pass_timing_->Mark(list, "atmosphere apply");
+  } else {
+    pass_timing_->Mark(list, "vol apply");
+  }
   list->setFramebuffer(framebuffer);
   const plume::RenderViewport viewport{0.0f, 0.0f, float(plan.render[0]), float(plan.render[1])};
   list->setViewports(&viewport, 1);
   const plume::RenderRect scissor(0, 0, int32_t(plan.render[0]), int32_t(plan.render[1]));
   list->setScissors(&scissor, 1);
-  passes_->Bind(list);
+  passes_->Bind(list, shafts ? merged_layout_.get() : nullptr);
   list->setPipeline(pipeline);
-  list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
+  list->setGraphicsPushConstants(0, &parameters, 0, shafts ? sizeof(parameters) : sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
   pass_timing_->Mark(list, "after vol apply");
@@ -1260,7 +1328,7 @@ bool Volumetrics::RecordComposite(plume::RenderCommandList* list, const Pending&
 const char* Volumetrics::OutcomeName(Outcome outcome) {
   switch (outcome) {
     case Outcome::kNoTrigger: return "no resolve of the frame was the first point (the mid-scene depth copy)";
-    case Outcome::kWorld: return "the world has none (the pause menu's, the map, the garage): nothing recorded";
+    case Outcome::kWorld: return "the world is outside the admitted volume views";
     case Outcome::kNoCamera: return "no previous frame's camera";
     case Outcome::kNoLight: return "no usable light constants in the main view's draws, or no inputs";
     case Outcome::kGated: return "nothing to show now (a medium too thin, no sun, no lamp, no headlight): nothing recorded";
@@ -1284,7 +1352,7 @@ std::string Volumetrics::LevelName() const { return std::string(vol::Name(level_
 void Volumetrics::EndFrame() {
   if (recorded_this_frame_) {
     const bool was_fallen_back = policy_.fallen_back();
-    policy_.EndOfFrame(anchor_, copy_seen_);
+    if (pending_.colour.samples != temporal::kPauseSamples) policy_.EndOfFrame(anchor_, copy_seen_);
     if (!composited_) {
       ++lost_;
     }

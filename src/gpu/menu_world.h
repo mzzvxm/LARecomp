@@ -49,11 +49,14 @@
 // Pure rules, no renderer: menu_world_test.cpp builds on its own.
 // ===========================================================================
 
+#include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <string>
 
+#include "pause_world_fx.h"
 #include "temporal_camera.h"
 
 namespace mcla::gpu::menu_world {
@@ -140,11 +143,18 @@ constexpr Rules RulesFor(World world) {
   return {};
 }
 
-// The sun shafts in a world: the game view as it always was (the light's place stands in for a sky that
-// no draw told), the others only where a sky draw of the frame told where the sun is (the garage is an
-// interior: none is drawn, and a shaft needs a sky to start from).
-constexpr bool ShaftsRun(World world, bool sky_drawn) {
-  return RulesFor(world).shafts && (world == World::kPlay || sky_drawn);
+constexpr bool PauseFxRuns(World world, gbuffer::PauseFxView view) {
+  return world == World::kPause && (view == gbuffer::PauseFxView::kPause || view == gbuffer::PauseFxView::kPhoto);
+}
+
+constexpr bool GarageFxRuns(World world, gbuffer::PauseFxView view) {
+  return world == World::kGarage && view == gbuffer::PauseFxView::kGarage;
+}
+
+// Play and the admitted pause/photo city can place the sun from its world light.
+// The legacy menu path needs a sky draw to tell where the sun is.
+constexpr bool ShaftsRun(World world, bool sky_drawn, gbuffer::PauseFxView view = gbuffer::PauseFxView::kNone) {
+  return RulesFor(world).shafts && (world == World::kPlay || sky_drawn || PauseFxRuns(world, view));
 }
 
 // A 4x view's lens must have been steady for the effects that lean on the previous frame's camera (the
@@ -154,6 +164,12 @@ constexpr bool ShaftsRun(World world, bool sky_drawn) {
 inline constexpr double kLensSteadyStep = temporal::kCutFov;
 inline bool LensSteady(bool step_valid, double step) {
   return step_valid && step <= kLensSteadyStep;
+}
+
+inline double LensStep(const temporal::Camera& now, const temporal::Camera& before) {
+  const auto rel = [](double a, double b) { return std::fabs(a - b) / std::max(1e-30, std::fabs(b)); };
+  return std::max({rel(now.fov_y, before.fov_y), rel(now.aspect, before.aspect),
+                   rel(now.near_plane, before.near_plane), rel(now.far_plane, before.far_plane)});
 }
 
 // The first point of a 4x frame (the game's mid-scene depth copy into the occlusion's trigger page): the

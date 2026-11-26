@@ -175,7 +175,7 @@ void CheckAutoPasses() {
 // and High, OFF on Low), and the old low and high (read as default). The plan's level is off for no shafts, else the ray
 // quality the class gives: high on Low and Mid (32 steps), ultra on High (64).
 void CheckShafts() {
-  const Level quality[] = {Level::kHigh, Level::kHigh, Level::kUltra};
+  const Level quality = Level::kHigh;
   const sl::Level auto_strength[] = {sl::Level::kOff, sl::Level::kDefault, sl::Level::kDefault};
   struct Own {
     const char* text;
@@ -191,24 +191,24 @@ void CheckShafts() {
     for (const char* text : {"auto", "AUTO"}) {
       const Choice a = Resolve(Pass::kShafts, kClasses[k], true, text);
       Check(a.strength == auto_strength[k] && a.automatic && !a.unknown && !a.legacy, at + ": '" + text + "' is automatic: " + std::string(sl::Name(auto_strength[k])));
-      Check(a.level == (auto_on ? quality[k] : Level::kOff), at + ": '" + text + "': the level is the ray quality, or off");
+      Check(a.level == (auto_on ? quality : Level::kOff), at + ": '" + text + "': the level is the ray quality, or off");
     }
     for (const Own& o : own) {
       const Choice c = Resolve(Pass::kShafts, kClasses[k], true, o.text);
       const bool on = o.strength != sl::Level::kOff;
       Check(c.strength == o.strength && !c.automatic && !c.unknown && !c.legacy, at + ": '" + o.text + "' is the player's own");
-      Check(c.level == (on ? quality[k] : Level::kOff), at + ": '" + o.text + "': the level is the ray quality, or off");
+      Check(c.level == (on ? quality : Level::kOff), at + ": '" + o.text + "': the level is the ray quality, or off");
     }
     // The old values: default on every class (also on Low, where `auto` is off), marked.
     for (const char* old : {"low", "high", "Low", "HIGH"}) {
       const Choice c = Resolve(Pass::kShafts, kClasses[k], true, old);
-      Check(c.strength == sl::Level::kDefault && c.legacy && !c.automatic && !c.unknown && c.level == quality[k],
+      Check(c.strength == sl::Level::kDefault && c.legacy && !c.automatic && !c.unknown && c.level == quality,
             at + ": the old '" + old + "' is read as default");
     }
     // A word that is not a value counts as `auto`.
     for (const char* junk : {"", "ultra", "hgih", "on", "game", "auto "}) {
       const Choice c = Resolve(Pass::kShafts, kClasses[k], true, junk);
-      Check(c.strength == auto_strength[k] && c.unknown && c.automatic && !c.legacy && c.level == (auto_on ? quality[k] : Level::kOff),
+      Check(c.strength == auto_strength[k] && c.unknown && c.automatic && !c.legacy && c.level == (auto_on ? quality : Level::kOff),
             at + ": '" + junk + "' is taken as auto (" + std::string(sl::Name(auto_strength[k])) + ")");
     }
     // The other passes carry no strength.
@@ -276,7 +276,7 @@ void CheckPlans() {
             mid.of(Pass::kShafts).level == Level::kHigh && mid.of(Pass::kBounce).level == Level::kOff,
         "plan: Mid's levels are high, high, high, off");
   const Plan high = Decide(GpuClass::kHigh, true, "ultra", "auto", "auto", "auto");
-  Check(high.of(Pass::kContact).level == Level::kUltra && high.of(Pass::kShafts).level == Level::kUltra &&
+  Check(high.of(Pass::kContact).level == Level::kUltra && high.of(Pass::kShafts).level == Level::kHigh &&
             high.of(Pass::kBounce).level == Level::kHigh,
         "plan: High's levels are ultra, ultra, high");
   const Plan high_high = Decide(GpuClass::kHigh, true, "ultra", "auto", "auto", "high");

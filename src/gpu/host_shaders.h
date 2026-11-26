@@ -163,6 +163,10 @@
 #include "shafts_sky_ps.hlsl.dxil.h"
 #include "volumetrics_apply_ms_ps.hlsl.dxil.h"
 #include "volumetrics_apply_ps.hlsl.dxil.h"
+#include "atmosphere_apply_ps.hlsl.dxil.h"
+#include "atmosphere_apply_ms_ps.hlsl.dxil.h"
+#include "shafts_blur_legacy_ps.hlsl.dxil.h"
+#include "shafts_blur_accumulate_ps.hlsl.dxil.h"
 #include "volumetrics_inject_cs.hlsl.dxil.h"
 #include "volumetrics_integrate_cs.hlsl.dxil.h"
 #include "smaa_blend_ps.hlsl.dxil.h"
@@ -320,6 +324,10 @@
 #include "shafts_sky_ps.hlsl.spirv.h"
 #include "volumetrics_apply_ms_ps.hlsl.spirv.h"
 #include "volumetrics_apply_ps.hlsl.spirv.h"
+#include "atmosphere_apply_ps.hlsl.spirv.h"
+#include "atmosphere_apply_ms_ps.hlsl.spirv.h"
+#include "shafts_blur_legacy_ps.hlsl.spirv.h"
+#include "shafts_blur_accumulate_ps.hlsl.spirv.h"
 #include "volumetrics_inject_cs.hlsl.spirv.h"
 #include "volumetrics_integrate_cs.hlsl.spirv.h"
 #include "smaa_blend_ps.hlsl.spirv.h"
@@ -730,7 +738,10 @@ inline HostShaderBlob VolumetricsInjectShader() {
 inline HostShaderBlob VolumetricsIntegrateShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(volumetrics_integrate_cs);
 }
-inline HostShaderBlob VolumetricsApplyShader(bool multisampled) {
+inline HostShaderBlob VolumetricsApplyShader(bool multisampled, bool shafts) {
+  if (shafts) {
+    return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(atmosphere_apply_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(atmosphere_apply_ps);
+  }
   return multisampled ? MCLA_GPU_HOST_SHADER_BLOB(volumetrics_apply_ms_ps) : MCLA_GPU_HOST_SHADER_BLOB(volumetrics_apply_ps);
 }
 
@@ -743,6 +754,8 @@ inline HostShaderBlob SunShaftsPixelShader(uint32_t pass) {
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(shafts_sky_ms_ps);
     case 2: return MCLA_GPU_HOST_SHADER_BLOB(shafts_blur_ps);
     case 3: return MCLA_GPU_HOST_SHADER_BLOB(shafts_add_ps);
+    case 5: return MCLA_GPU_HOST_SHADER_BLOB(shafts_blur_legacy_ps);
+    case 6: return MCLA_GPU_HOST_SHADER_BLOB(shafts_blur_accumulate_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(shafts_temporal_ps);
   }
 }

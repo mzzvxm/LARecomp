@@ -321,6 +321,9 @@ target_include_directories(larecomp_volumetrics_stable_test PRIVATE ${CMAKE_SOUR
 # also checks that the shaders say what the header says) likewise:
 #   cmake --build <dir> --target larecomp_shafts_image_test, then run src/gpu/larecomp_shafts_image_test [<src/gpu/hlsl dir>].
 add_executable(larecomp_shafts_image_test EXCLUDE_FROM_ALL shafts_image_test.cpp)
+
+#   cmake --build <dir> --target larecomp_atmosphere_test, then run src/gpu/larecomp_atmosphere_test <src/gpu dir>.
+add_executable(larecomp_atmosphere_test EXCLUDE_FROM_ALL atmosphere_test.cpp)
 # The bounce light's cap, falloff and gain maths and its strength levels (ssgi_light.h, ssgi_level.h; given the hlsl folder it also
 # checks that the shaders' constants are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ssgi_test, then run src/gpu/larecomp_ssgi_test [<src/gpu/hlsl dir>].
@@ -1337,6 +1340,7 @@ larecomp_gpu_host_shader(ao_apply_gi_ms_ps ps_6_0 SOURCE ao_apply_ps DEFINES AO_
 larecomp_gpu_host_shader(shafts_sky_ps ps_6_0 DEFINES SHAFTS_MS=0)
 larecomp_gpu_host_shader(shafts_sky_ms_ps ps_6_0 SOURCE shafts_sky_ps DEFINES SHAFTS_MS=1)
 larecomp_gpu_host_shader(shafts_blur_ps ps_6_0)
+larecomp_gpu_host_shader(shafts_blur_accumulate_ps ps_6_0 SOURCE shafts_blur_ps DEFINES SHAFTS_ACCUMULATE=1)
 larecomp_gpu_host_shader(shafts_add_ps ps_6_0)
 # The blurred image averaged over frames while no temporal upscaler runs (NOISE-RESOLVE, noise_resolve.h):
 larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)
@@ -1346,6 +1350,9 @@ larecomp_gpu_host_shader(volumetrics_inject_cs cs_6_0)
 larecomp_gpu_host_shader(volumetrics_integrate_cs cs_6_0)
 larecomp_gpu_host_shader(volumetrics_apply_ps ps_6_0 DEFINES APPLY_MS=0)
 larecomp_gpu_host_shader(volumetrics_apply_ms_ps ps_6_0 SOURCE volumetrics_apply_ps DEFINES APPLY_MS=1)
+larecomp_gpu_host_shader(atmosphere_apply_ps ps_6_0 SOURCE volumetrics_apply_ps DEFINES APPLY_MS=0 ATM_SHAFTS=1)
+larecomp_gpu_host_shader(atmosphere_apply_ms_ps ps_6_0 SOURCE volumetrics_apply_ps DEFINES APPLY_MS=1 ATM_SHAFTS=1)
+larecomp_gpu_host_shader(shafts_blur_legacy_ps ps_6_0 SOURCE shafts_blur_ps DEFINES SHAFTS_LEGACY=1)
 # The car self-reflection history (car_selfrefl.h): the main view's colour and the car's depth into one image, read by the
 # next frame's car paint variant.
 larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)

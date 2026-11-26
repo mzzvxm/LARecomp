@@ -517,15 +517,6 @@ void CheckScales() {
         "the traffic range cells are inside the range the menu offers");
 }
 
-// The sun shafts' ray steps are chosen by the class and are no setting: Mid 32, High 64, Low (a strength turned on by
-// hand there) the cheaper 32.
-void CheckSunShaftSteps() {
-  CheckNum(kSunShaftStepsMid, 32, "kSunShaftStepsMid");
-  CheckNum(kSunShaftStepsHigh, 64, "kSunShaftStepsHigh");
-  CheckNum(SunShaftSteps(GpuClass::kLow), 32, "sun shaft steps on Low");
-  CheckNum(SunShaftSteps(GpuClass::kMid), 32, "sun shaft steps on Mid");
-  CheckNum(SunShaftSteps(GpuClass::kHigh), 64, "sun shaft steps on High");
-}
 
 // --- the speed table (kSpeedTable): GPU names that cap the class --------------------------------------
 
@@ -1042,7 +1033,6 @@ void CheckHandheldDetect() {
 
 int main() {
   CheckTable();
-  CheckSunShaftSteps();
   CheckAmbientOcclusion();
   CheckLightShadows();
   CheckVolumetrics();

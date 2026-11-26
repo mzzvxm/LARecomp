@@ -143,7 +143,7 @@ inline Choice Resolve(Pass pass, gpu_class::GpuClass cls, bool class_known, std:
     choice.unknown = s.unknown;
     choice.legacy = s.legacy;
     if (shafts_level::On(s.level)) {
-      choice.level = gpu_class::SunShaftSteps(cls) >= gpu_class::kSunShaftStepsHigh ? Level::kUltra : Level::kHigh;
+      choice.level = Level::kHigh;
     }
     return choice;
   }

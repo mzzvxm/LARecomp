@@ -64,6 +64,8 @@ class VolumetricsInputs final : public volumetrics::VolInputSource {
   volumetrics::PickResult picked_;
   std::vector<vol_lamps::GameLamp> list_;  // the newest list the table gave
   uint64_t list_seq_ = 0;                  // its number
+  bool list_garage_ = false;
+  bool garage_ = false;
   bool list_stale_ = true;                 // the table had nothing recent at the last Fill
   float last_camera_[3] = {};
   bool have_camera_ = false;

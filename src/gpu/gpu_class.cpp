@@ -98,9 +98,6 @@ std::string AutoSummary(GpuClass c, bool handheld) {
     out += '=';
     out += ScaleText(scale, ScaleCell(scale, c));
   }
-  // Not a setting's `auto`, but chosen by the class too: the sun shafts' ray steps.
-  out += ", sun_shafts_steps=";
-  out += std::to_string(SunShaftSteps(c));
   return out;
 }
 

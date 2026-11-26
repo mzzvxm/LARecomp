@@ -24,18 +24,7 @@ bool HostPasses::Initialize(Device& device, FrameRing& frames, BindlessHeap& hea
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
-  plume::RenderPipelineLayoutBuilder builder;
-  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
-  builder.addDescriptorSet(heap.texture_set_builder());  // set 0: Texture2D<float4>[]   space0
-  builder.addDescriptorSet(heap.texture_set_builder());  // set 1: Texture2DMS<float4>[] space1
-  builder.addDescriptorSet(heap.texture_set_builder());  // set 2: Texture2D<uint4>[]    space2
-  builder.addDescriptorSet(heap.texture_set_builder());  // set 3: Texture2DMS<uint4>[]  space3
-  builder.addDescriptorSet(heap.sampler_set_builder());  // set 4: SamplerState[]        space4
-  builder.addPushConstant(0, 4, kPushConstantBytes,
-                          plume::RenderShaderStageFlag::VERTEX |
-                              plume::RenderShaderStageFlag::PIXEL);  // b0, space4
-  builder.end();
-  layout_ = device.CreatePipelineLayout(builder, "host pass layout");
+  layout_ = CreateLayout(kPushConstantBytes, "host pass layout");
   const HostShaderBlob vs = FullscreenVertexShader();
   vertex_shader_ = device.CreateShader(vs.data, vs.size, "main", vs.name);
   if (!layout_ || !vertex_shader_) {
@@ -43,6 +32,22 @@ bool HostPasses::Initialize(Device& device, FrameRing& frames, BindlessHeap& hea
     return false;
   }
   return true;
+}
+
+std::unique_ptr<plume::RenderPipelineLayout> HostPasses::CreateLayout(uint32_t push_bytes, const char* name) const {
+  if (!device_ || !heap_) return nullptr;
+  plume::RenderPipelineLayoutBuilder builder;
+  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  builder.addDescriptorSet(heap_->texture_set_builder());  // set 0: Texture2D<float4>[]   space0
+  builder.addDescriptorSet(heap_->texture_set_builder());  // set 1: Texture2DMS<float4>[] space1
+  builder.addDescriptorSet(heap_->texture_set_builder());  // set 2: Texture2D<uint4>[]    space2
+  builder.addDescriptorSet(heap_->texture_set_builder());  // set 3: Texture2DMS<uint4>[]  space3
+  builder.addDescriptorSet(heap_->sampler_set_builder());  // set 4: SamplerState[]        space4
+  builder.addPushConstant(0, 4, push_bytes,
+                          plume::RenderShaderStageFlag::VERTEX |
+                              plume::RenderShaderStageFlag::PIXEL);  // b0, space4
+  builder.end();
+  return device_->CreatePipelineLayout(builder, name);
 }
 
 void HostPasses::Shutdown() {
@@ -183,8 +188,9 @@ std::unique_ptr<plume::RenderFramebuffer> HostPasses::CreateMrtFramebuffer(
   return device_->CreateFramebuffer(plume::RenderFramebufferDesc(attachments, count), name);
 }
 
-void HostPasses::Bind(plume::RenderCommandList* list) const {
-  list->setGraphicsPipelineLayout(layout_.get());
+void HostPasses::Bind(plume::RenderCommandList* list, const plume::RenderPipelineLayout* layout) const {
+  if (!list || !heap_) return;
+  list->setGraphicsPipelineLayout(layout ? layout : layout_.get());
   for (uint32_t set = 0; set < 4; ++set) {
     list->setGraphicsDescriptorSet(heap_->texture_set(), set);
   }

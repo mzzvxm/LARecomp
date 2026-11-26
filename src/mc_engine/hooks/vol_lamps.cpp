@@ -35,6 +35,7 @@
 #include <Windows.h>
 #endif
 
+#include "gpu/menu_world.h"
 #include "gpu/vol_lamp_list.h"
 #include "hooks_internal.h"
 
@@ -86,7 +87,7 @@ void MCLAVolLampList() {
             if (vl::Plausible(l)) lamps[n++] = l;
         }
     }
-    vl::Global().Publish(lamps.data(), n);  // an empty list is published too: a day, a menu
+    vl::Global().Publish(lamps.data(), n, vl::Table::Clock::now(), mcla::gpu::menu_world::GarageLighting());  // an empty list is published too: a day, a menu
 }
 
 #else  // REXGLUE_HAS_XEO3_TARGET

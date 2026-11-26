@@ -36,7 +36,9 @@
 // has those fields (a template: the producer includes the real headers).
 // ===========================================================================
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -88,6 +90,22 @@ constexpr GridDesc GridFor(Level level) {
     case Level::kOff: break;
   }
   return GridDesc{};
+}
+
+// Proof arm: keep approximately the same logarithmic slice spacing after
+// moving the start of the volume. Round to complete rows of atlas tiles.
+inline GridDesc ProofGrid(Level level, bool medium_history, float near_m) {
+  GridDesc grid = GridFor(level);
+  if (!grid.valid()) return grid;
+  if (level == Level::kMedium) grid.temporal = medium_history;
+  near_m = std::min(near_m, 2.0f);
+  if (near_m > grid.near_m) {
+    const float ratio = std::log(grid.far_m / near_m) / std::log(grid.far_m / grid.near_m);
+    grid.tiles_y = std::max(1u, uint32_t(std::round(float(grid.tiles_y) * ratio)));
+    grid.nz = grid.tiles_x * grid.tiles_y;
+    grid.near_m = near_m;
+  }
+  return grid;
 }
 
 // The slice maths, shared by the C++ rules, the shaders' twin and the tests (the shaders write the same formulas).
@@ -226,6 +244,7 @@ struct VolFrameContext {
   bool camera_is_current = false;  // false: the previous frame's (the volume is then one frame behind a moving camera)
   uint32_t render_width = 0;     // the picture in host pixels
   uint32_t render_height = 0;
+  bool garage = false;         // the lamp list must come from the same world
   bool upscaler = false;         // a temporal upscaler works on this frame
   float elapsed_s = 0.0f;        // seconds since the producer's last Fill (for a wind's integral); 0 on the first call
 };

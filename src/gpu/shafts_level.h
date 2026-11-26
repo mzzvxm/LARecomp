@@ -17,16 +17,16 @@
 //
 // The old values: the setting used to be auto, off, low and high, a quality (32 or 64 ray steps). An older
 // larecomp.toml that holds `low` or `high` is read as `default`, the nearest meaning (both gave the same
-// strength; only the steps differed, and those now come from the GPU class, gpu_class.h SunShaftSteps).
+// strength; all strengths use the same blur).
 // A text that is none of the values (a hand-edited file) counts as `auto`, as it always did.
 //
-// The ray steps are not a player's choice: the class picks them (Mid 32, High 64); the debug cvar
-// mcla_gpu_sun_shafts_steps overrides them for a comparison (Steps below).
+// The debug cvar mcla_gpu_sun_shafts_steps selects the legacy march for comparison.
 //
 // Everything is a pure inline function and this header includes nothing of Plume or ReXGlue:
 // shafts_level_test.cpp builds on its own and checks every text on every class.
 // ===========================================================================
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -121,15 +121,11 @@ inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   return choice;
 }
 
-// The ray steps in force: the class's (gpu_class.h SunShaftSteps), or the debug cvar's when it is above 0
-// (kept between kMinSteps and kMaxSteps: the blur's loop takes any count, the decay is scaled to match).
+// A positive diagnostic override runs the legacy march for A/B on any GPU.
 inline constexpr int kMinSteps = 8;
 inline constexpr int kMaxSteps = 128;
-constexpr uint32_t Steps(gpu_class::GpuClass cls, int forced) {
-  if (forced <= 0) {
-    return gpu_class::SunShaftSteps(cls);
-  }
-  return static_cast<uint32_t>(forced < kMinSteps ? kMinSteps : (forced > kMaxSteps ? kMaxSteps : forced));
+constexpr uint32_t LegacySteps(int forced) {
+  return forced <= 0 ? 0u : static_cast<uint32_t>(std::clamp(forced, kMinSteps, kMaxSteps));
 }
 
 // "default x2", "off": a level for the log's words.

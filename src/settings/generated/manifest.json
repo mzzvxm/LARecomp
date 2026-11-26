@@ -3352,7 +3352,7 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: how many steps each ray of the sun shafts marches (8 to 128). 0: by the graphics \"\n    \"card (32 on a mid-range one, 64 on a fast one). More steps make smoother rays and cost more; \"\n    \"the light the rays gather stays the same. Live.\"",
+  "help": "\"Diagnostic: a positive count uses the legacy sun shafts march (8 to 128 taps) for comparison. Zero uses the fixed iterated blur. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 128}"
@@ -3423,7 +3423,7 @@
   "type": "bool",
   "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic: caps the sun shafts' two working images at 960x540 (the size they are at 1080p, a quarter \"\n    \"of their old size at 4K, the same shape as the picture; a picture whose half size is under that is \"\n    \"untouched). The shafts are a smooth, blurred light, so the picture is the same to within the ray \"\n    \"noise being coarser; it saves a good part of the passes' time at 1440p and 4K while the shafts \"\n    \"show. False: the images are half the picture's size, as they were. Live.\"",
+  "help": "\"Diagnostic: cap the sun shafts at their 1080p working resolution, keeping the picture shape. Off scales the working images with the picture. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -3731,6 +3731,51 @@
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0.0, 1000.0}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_atmosphere_merge": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use one blend when volumetric light and sun shafts share a scene target. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_atmosphere_menu_views": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Apply volumetric light in pause, photo mode and the garage. Allow the world light to place sun shafts in pause and photo mode. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_history_medium": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Enable froxel history on Medium for comparison with Ultra. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_vol_near": {
+  "type": "f64",
+  "default": "0.5",
+  "category": "MCLA/GPU",
+  "help": "\"Start of the volumetric grid in metres. A higher start uses fewer depth slices. Live.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0.5, 2.0}"
   ],
   "comments": [],
   "pp_depth": 0

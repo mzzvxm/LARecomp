@@ -95,6 +95,17 @@ void ShaftsNeedSkyOutsideTheGameView() {
   Check(ShaftsRun(World::kGarage, true), "the garage with a sky draw would (a window onto the street)");
   Check(!ShaftsRun(World::kMap, true), "the map never runs them");
   Check(!ShaftsRun(World::kNone, true), "no 3D view never");
+  namespace gb = mcla::gpu::gbuffer;
+  for (const auto view : {gb::PauseFxView::kPause, gb::PauseFxView::kPhoto}) {
+    Check(PauseFxRuns(World::kPause, view) && ShaftsRun(World::kPause, false, view), "pause and photo accept the world sun fallback");
+    Check(!PauseFxRuns(World::kMap, view) && !ShaftsRun(World::kMap, true, view), "map rejects all atmosphere");
+    Check(!GarageFxRuns(World::kGarage, view), "pause and photo cannot select the garage");
+  }
+  const auto garage = gb::PauseFxViewOf(false, "GARAGE", true, true);
+  Check(GarageFxRuns(World::kGarage, garage) && !ShaftsRun(World::kGarage, false, garage), "garage accepts indoor volume, shafts still need a sky");
+  Check(gb::PauseFxViewOf(true, "NAVSYSMOVIE", true, true) == gb::PauseFxView::kNone, "garage map is excluded");
+  Check(gb::PauseFxViewOf(false, "PHOTOALBUMMOVIE", false, false) == gb::PauseFxView::kNone, "debug off-ramp leaves the old policy");
+  Check(gb::PauseFxCameraChanged(true, gb::PauseFxView::kPause, gb::PauseFxView::kPhoto), "pause to photo resets camera history");
 }
 
 void LensRule() {

@@ -203,12 +203,6 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
 // card is kHigh, a 4 GB one kMid. A first guess for the owner to tune.
 inline constexpr uint64_t kMidBelowBytes = 5632ull << 20;
 
-// The ray quality of the sun shafts is not a setting. The blur marches each ray over the sky image (half the picture, capped at 960x540: shafts_image.h) in this many
-// steps, chosen by the class: 64 on High, 32 on Mid (and on Low, where the shafts are off unless the player turns a
-// strength on by hand: the cheaper one). The debug cvar mcla_gpu_sun_shafts_steps overrides it (shafts_level.h Steps).
-inline constexpr uint32_t kSunShaftStepsMid = 32;
-inline constexpr uint32_t kSunShaftStepsHigh = 64;
-
 // --- the pure rules ----------------------------------------------------------------------------
 
 constexpr std::string_view ClassName(GpuClass c) {
@@ -316,11 +310,6 @@ inline std::string Upper(std::string_view text) {
 // "AUTO (X)" for any display name X: the helper for a row whose values have names of their own.
 inline std::string AutoLabelOf(std::string_view shown) {
   return "AUTO (" + Upper(shown) + ")";
-}
-
-// The ray steps of the sun shafts' blur for a class (see kSunShaftStepsMid).
-constexpr uint32_t SunShaftSteps(GpuClass c) {
-  return c == GpuClass::kHigh ? kSunShaftStepsHigh : kSunShaftStepsMid;
 }
 
 // "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value in capitals. The stored word is the word the player sees

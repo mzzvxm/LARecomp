@@ -29,6 +29,7 @@
 #include "gi_apply.h"
 #include "gi_bounce_settings.h"
 #include "capture_readback.h"
+#include "mc_engine/keyboard_native.h"
 #include "mc_engine/cinematic/capture_mode.h"
 #include "gi_integration.h"
 #include "local_lights.h"
@@ -861,11 +862,17 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (ao_) {
     ao_->BeginFrame();
   }
+  const bool menu_atmosphere = larecomp::settings::mcla_gpu_atmosphere_menu_views.Get();
+  char movie[32]{};
+  if (menu_atmosphere && (shafts_ || vol_)) {
+    larecomp::keyboard::CurrentMovieName(movie, sizeof(movie));
+  }
+  const auto atmosphere_view = gbuffer::PauseFxViewOf(menu_atmosphere, movie, menu_world::GarageLighting(), menu_atmosphere);
   if (shafts_) {
-    shafts_->BeginFrame();
+    shafts_->BeginFrame(atmosphere_view);
   }
   if (vol_) {
-    vol_->BeginFrame();
+    vol_->BeginFrame(atmosphere_view);
   }
   if (car_refl_) {
     car_refl_->BeginFrame();
@@ -4043,6 +4050,17 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
   }
 }
 
+bool Scene::CompositeAtmosphere(plume::RenderCommandList* list, bool volume, bool shafts) {
+  const HostImage* shine = shafts && shafts_ ? shafts_->PrepareComposite(list) : nullptr;
+  AtmosphereShafts input{};
+  const bool merge = volume && shine && shafts_ && larecomp::settings::mcla_gpu_atmosphere_merge.Get() &&
+                     shafts_->MergeInput(*shine, input);
+  bool merged = false;
+  const bool volume_drawn = volume && vol_ && vol_->Composite(list, merge ? &input : nullptr, merged);
+  const bool shafts_drawn = shine && shafts_ && shafts_->Composite(list, *shine, merged);
+  return volume_drawn || shafts_drawn;
+}
+
 void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
   ++window_.resolves;
   if (composite_census_.after()) {
@@ -4058,18 +4076,10 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // for this resolve (frame_layers.h).
     layers_->OnResolve(record, list);
   }
-  if (vol_ && vol_->wants_draws()) {
-    // The same copy (volumetrics.h): the volumetric light is composited into the colour before the copy reads it, and before the sun
-    // shafts' own pass below (the shafts' light is added on top of the haze).
-    const bool vol_composited = vol_->BeforeResolve(record, list);
-    order_.Note(frame_order::Step::kVolumeComposite, vol_composited);
-  }
-  if (shafts_ && shafts_->wants_draws()) {
-    // The end-of-scene copy of the main colour (shafts.h): the sun shafts' light goes into the colour
-    // before the copy reads it.
-    const bool shafts_composited = shafts_->BeforeResolve(record, list);
-    order_.Note(frame_order::Step::kShaftsComposite, shafts_composited);
-  }
+  const bool vol_at_copy = vol_ && vol_->wants_draws() && vol_->BeforeResolve(record, list);
+  const bool shafts_at_copy = shafts_ && shafts_->wants_draws() && shafts_->BeforeResolve(record, list);
+  const bool atmosphere_at_copy = CompositeAtmosphere(list, vol_at_copy, shafts_at_copy);
+  order_.Note(frame_order::Step::kAtmosphereComposite, atmosphere_at_copy);
   if (mirror_view_ && mirror_view_->StampArmed() && list && RecordMirrorStamp(record, list)) {
     // The rear view mirror's picture (mirror_view.h) is stamped into the HUD's rectangle of the main colour at the first copy of it after the phase's end: after the volumetric light and the sun shafts
     // have composited (the haze does not lie over the stamp) and before the copy reads the colour. Its own layout, pipeline, viewport and framebuffer: the list state is gone.
@@ -4242,18 +4252,23 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
       order_.Note(frame_order::Step::kLightsAfter, lights_after);
     }
   }
+  bool shafts_ran = false;
+  bool vol_ran = false;
   if (shafts_ && shafts_->wants_draws()) {
     // At the same mid-scene depth copy the sun shafts take the sky's brightness (their own passes and
     // targets: the reset below forgets them too).
-    const bool shafts_ran = shafts_->OnResolve(record, summary, list, UpscalerRunning());
+    shafts_ran = shafts_->OnResolve(record, summary, list, UpscalerRunning());
     order_.Note(frame_order::Step::kShafts, shafts_ran);
   }
   if (vol_ && vol_->wants_draws()) {
     // The same depth copy again: the volumetric light's compute passes (volumetrics.h), after the car shadow map, the headlights' shadow replay, the
     // ambient occlusion and the sun shafts have recorded, so that the beams see this frame's maps.
-    const bool vol_ran = vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
+    vol_ran = vol_->OnResolve(record, summary, list, slot_, UpscalerRunning());
     order_.Note(frame_order::Step::kVolume, vol_ran);
   }
+  const bool atmosphere_at_depth = CompositeAtmosphere(list, vol_ran && vol_ && vol_->AtMidScene(),
+                                                       shafts_ran && shafts_ && shafts_->AtMidScene());
+  order_.Note(frame_order::Step::kAtmosphereMid, atmosphere_at_depth);
   if (car_rt_) {
     // The check pass of the structures, over the occlusion's linear depth (it exists only after the AO's frame).
     const bool car_check = car_rt_->OnAfterOcclusion(summary, list, slot_, ao_);
