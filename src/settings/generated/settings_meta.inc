@@ -504,6 +504,8 @@
 {"mcla_gpu_gate_unused_rt_scene", "MCLA/GPU"},
 {"mcla_gpu_skip_identity_bloom", "MCLA/GPU"},
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
+{"mcla_gpu_shadow_ledger", "MCLA/GPU"},
+{"mcla_gpu_shadow_schedule", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
 {"mcla_gpu_garage_fx", "MCLA/GPU"},
 {"mcla_gpu_pause_world_fx", "MCLA/GPU"},

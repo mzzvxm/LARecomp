@@ -3163,6 +3163,24 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_shadow_ledger": {
+  "type": "bool",
+  "default": "false",
+  "category": "MCLA/GPU",
+  "help": "\"Measure sun cascade submission and camera motion during daylight.\"",
+  "traits": ["rex::kDebugOnly"],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_shadow_schedule": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reuse far sun cascades while the camera and casters stay within their update limits.\"",
+  "traits": ["rex::kDebugOnly"],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_present_wait": {
   "type": "bool",
   "default": "false",

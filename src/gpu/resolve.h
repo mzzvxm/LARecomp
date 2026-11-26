@@ -144,6 +144,7 @@ class ResolveCache {
     // The log has said the size of this product as a side view's (once for each time it is made: a
     // product made again at another scale is a new one).
     bool own_scale_logged = false;
+    bool sun_atlas = false;
   };
 
   ResolveCache() = default;

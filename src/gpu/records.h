@@ -178,7 +178,8 @@ struct DrawRecord {
   uint16_t ps_delta_count = 0;
   uint8_t viz_query_index = 0;  // byte dev+12187
   uint8_t viz_query_id = 0;     // byte dev+12122[index]
-  uint8_t reserved0[2] = {};
+  uint8_t sun_cascade = 0;  // 1..4 when measuring a sun cascade draw
+  uint8_t reserved0 = 0;
   uint32_t device_flags = 0;    // dword dev+10940, raw
   uint32_t surfaces[guest::kSurfaceCount] = {};
   // The size of the image the draw's targets hold, as SizeBits (D3DSurface+
@@ -288,7 +289,7 @@ struct ResolveRecord {
   uint32_t clear_stencil = 0;    // [sp+0x5C]
   uint32_t params_ptr = 0;       // [sp+0x64]
   uint32_t flags = 0;            // EventFlags
-  uint32_t reserved = 0;
+  uint32_t sun_cascade = 0;  // 1..4 during a guest sun cascade
   uint8_t src_rect[16] = {};
   uint8_t dest_point[8] = {};
   uint8_t reserved1[8] = {};

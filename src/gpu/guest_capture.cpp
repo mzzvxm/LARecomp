@@ -23,6 +23,7 @@
 #include <emmintrin.h>
 #endif
 
+#include "cascade_schedule.h"
 #include "cycles.h"
 #include "hitch.h"
 #include "draw_decode.h"
@@ -789,6 +790,8 @@ void GuestCapture::WriteDraw(const uint8_t* base, uint32_t device, const DrawCap
   r->ps_delta_count = uint16_t(c.ps_block_count);
   r->viz_query_index = *DeviceBytes(base, device, guest::kDevVizQueryIndex);
   r->viz_query_id = *DeviceBytes(base, device, guest::kDevVizQueryTable + r->viz_query_index);
+  r->sun_cascade = cascade_schedule::time_draws ? cascade_schedule::capture_cascade : 0;
+  if (cascade_schedule::time_guest && r->sun_cascade) ++cascade_schedule::captured_draws;
   r->device_flags = DeviceU32(base, device, guest::kDevFlags);
   // One translation of the table's address serves its words (GuestPtr compares and adds the
   // 0xE0 heap's offset at every call; the table lies inside the device object).
@@ -905,7 +908,9 @@ void GuestCapture::AfterDraw(const GuestCallToken& token, const uint8_t* base, u
     ++frame_.draws;
   }
   if (timed) {
-    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+    const auto spent = ElapsedCycles(t0) * kDrawTimingEvery;
+    frame_.capture_cycles += spent;
+    cascade_schedule::NoteCapture(spent);
   }
 }
 
@@ -957,7 +962,9 @@ void GuestCapture::AfterBeginVertices(const GuestCallToken& token, const uint8_t
   pending_.device = device;
   pending_.buffer = buffer;
   if (timed) {
-    frame_.capture_cycles += ElapsedCycles(t0) * kDrawTimingEvery;
+    const auto spent = ElapsedCycles(t0) * kDrawTimingEvery;
+    frame_.capture_cycles += spent;
+    cascade_schedule::NoteCapture(spent);
   }
 }
 
@@ -1115,6 +1122,9 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
   uint8_t* payload = writer.Begin(RecordType::kClear, sizeof(ClearRecord));
   if (payload) {
     auto* r = new (payload) ClearRecord();
+    if (cascade_schedule::time_guest && cascade_schedule::capture_cascade) {
+      ++cascade_schedule::captured_clears;
+    }
     r->device = device;
     r->caller = caller;
     r->clear_flags = flags;
@@ -1134,7 +1144,9 @@ void GuestCapture::AfterClear(const GuestCallToken& token, const uint8_t* base, 
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ClearRecord));
   }
-  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
+  const auto spent = s->before_cycles + ElapsedCycles(t0);
+  frame_.capture_cycles += spent;
+  cascade_schedule::NoteCapture(spent);
 }
 
 void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base, uint32_t device,
@@ -1159,6 +1171,8 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
   uint8_t* payload = writer.Begin(RecordType::kResolve, sizeof(ResolveRecord));
   if (payload) {
     auto* r = new (payload) ResolveRecord();
+    r->sun_cascade = cascade_schedule::capture_cascade;
+    if (cascade_schedule::time_guest && r->sun_cascade) ++cascade_schedule::captured_resolves;
     r->device = device;
     r->caller = caller;
     r->resolve_flags = flags;
@@ -1198,7 +1212,9 @@ void GuestCapture::AfterResolve(const GuestCallToken& token, const uint8_t* base
     writer.Commit(Publication::kBatched);
     CountRecord(sizeof(ResolveRecord));
   }
-  frame_.capture_cycles += s->before_cycles + ElapsedCycles(t0);
+  const auto spent = s->before_cycles + ElapsedCycles(t0);
+  frame_.capture_cycles += spent;
+  cascade_schedule::NoteCapture(spent);
 }
 
 void GuestCapture::NoteResolveDestination(const uint8_t* header) {

@@ -8,6 +8,7 @@
 // the Xenia authors, BSD-3-Clause) for what the copy writes.
 
 #include "resolve.h"
+#include "cascade_schedule.h"
 #include "env_hold_link.h"
 
 #include <algorithm>
@@ -343,6 +344,7 @@ void ResolveCache::ListPrecache() {
 }
 
 void ResolveCache::Shutdown() {
+  cascade_schedule::atlas_ready_scale.store(0, std::memory_order_release);
   // The host builder's functions name this cache's shaders: stop it first.
   if (passes_) {
     passes_->precache().Stop();
@@ -451,6 +453,7 @@ void ResolveCache::Deactivate(Product& p) {
     env_hold::g_ready_renderer.store(0, std::memory_order_release);
   }
   p.active = false;
+  if (p.sun_atlas) cascade_schedule::atlas_ready_scale.store(0, std::memory_order_release);
   UnindexRanges(p);
   const auto it = active_by_image_.find(ImageKey(p.key));
   if (it != active_by_image_.end() && it->second == &p) {
@@ -1475,6 +1478,13 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       // A product of a side view is read at its own scale (Product::own_scale). Told again by each
       // resolve into it, which is one source's: a product that two identities write, at two scales,
       // would be made again at each of them (Activate), so a class has to take all of its sources.
+      const bool sun_atlas = src->side_view == SideView::kShadow && depth_source && level == 0 &&
+                             key.format == uint32_t(xe::TextureFormat::k_24_8) &&
+                             key.width == 1280 && key.height == 1280;
+      if (sun_atlas && !p->coverage[0].complete()) {
+        cascade_schedule::atlas_ready_scale.store(0, std::memory_order_release);
+      }
+      p->sun_atlas |= sun_atlas;
       p->own_scale = src->side_view != SideView::kNone;
       if (p->own_scale && !p->own_scale_logged) {
         // What a side view's product costs (the sun shadows' atlas: 25 MiB at 2x, 56 MiB at 3x).
@@ -1690,7 +1700,9 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
           in_pass = fused_push.write.scale_n != 0;
         }
         TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
-        if (pass_timing_ && pass_timing_->records_labels()) {
+        if (pass_timing_ && pass_timing_->records_labels() && sun_atlas && cascade_schedule::TileBit(r.sun_cascade)) {
+          pass_timing_->Mark(list, cascade_schedule::kResolveLabels[r.sun_cascade - 1]);
+        } else if (pass_timing_ && pass_timing_->records_labels()) {
           const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
                                           : format::ColorTargetFormat(src_format).guest_name;
           const char* to = format::TextureHost(key.format).guest_name;
@@ -1752,6 +1764,12 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       if (level < p->inherited.size()) {
         UpdateInheritedCells(p->inherited[level], level_width, level_height, tx0, ty0, tx1, ty1,
                              false);
+      }
+      if (sun_atlas && p->coverage[0].complete() &&
+          cascade_schedule::atlas_ready_scale.load(std::memory_order_relaxed) != resolution_scale.n) {
+        // CHECK: verify all four quadrants stay covered on both APIs, and a
+        // live shadow-detail change primes the replacement before it is held.
+        cascade_schedule::atlas_ready_scale.store(resolution_scale.n, std::memory_order_release);
       }
       cells_timed.Stop();
       if (!depth_source && memory_copy.product_slot == kInvalidBindlessSlot) {

@@ -1267,6 +1267,9 @@ class GPUSettings final : public rex::SettingOwner {
     "A measurement for the performance work, off by "
     "default.", rex::kDebugOnly, rex::kRequiresRestart);
 
+  REX_SETTING(bool, mcla_gpu_shadow_ledger, false, "Measure sun cascade submission and camera motion during daylight.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_shadow_schedule, true, "Reuse far sun cascades while the camera and casters stay within their update limits.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_pause_vehicle_vectors, false, "Diagnostic: in the pause menu's world, the garage and the map, take the game's own per-vehicle motion for a "
     "vehicle's pixels in the temporal upscalers' motion vectors, as in the game view. Off (the default): a vehicle "
     "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
@@ -2364,6 +2367,8 @@ inline auto& mcla_gpu_mirror_census = g_gpu.mcla_gpu_mirror_census;
 inline auto& mcla_gpu_gate_unused_rt_scene = g_gpu.mcla_gpu_gate_unused_rt_scene;
 inline auto& mcla_gpu_skip_identity_bloom = g_gpu.mcla_gpu_skip_identity_bloom;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
+inline auto& mcla_gpu_shadow_ledger = g_gpu.mcla_gpu_shadow_ledger;
+inline auto& mcla_gpu_shadow_schedule = g_gpu.mcla_gpu_shadow_schedule;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
 inline auto& mcla_gpu_garage_fx = g_gpu.mcla_gpu_garage_fx;
 inline auto& mcla_gpu_pause_world_fx = g_gpu.mcla_gpu_pause_world_fx;
