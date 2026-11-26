@@ -210,6 +210,7 @@ const ItemDef kDebugFixesItems[] = {
 constexpr const char* kRtAoDenoiseVals[] = {"auto", "ours", "off"};
 constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
 
+// CHECK: open Renderer Fixes and toggle a reflection switch in the live menu.
 const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
@@ -312,7 +313,7 @@ const ItemDef kDebugPerformanceItems[] = {
     NativeOnly(Str("PM_RxDbgRenderWait", "render_wait_mode", "RENDER THREAD WAIT: ",
                    kRenderWaitVals, kRenderWaitNames, Len(kRenderWaitVals))),
     NativeOnly(Bool("PM_RxDbgUnusedRt", "mcla_gpu_gate_unused_rt_scene", "GATE UNUSED RT SCENE: ")),
-    NativeOnly(Bool("PM_RxDbgIdentityBloom", "mcla_gpu_skip_identity_bloom", "SKIP NATIVE-SCALE BLOOM VARIANT: ")),
+    NativeOnly(Bool("PM_RxDbgIdentityBloom", "mcla_gpu_skip_identity_bloom", "SKIP 1X BLOOM VARIANT: ")),
 #if defined(_WIN32)
     NativeOnly(Bool("PM_RxDbgVkPresentPacing", "mcla_gpu_vk_present_pacing", "VULKAN PRESENT PACING: ")),
 #endif

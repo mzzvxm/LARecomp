@@ -313,7 +313,7 @@ void EmitterTextChecks(const std::string& src) {
   CHECK(has(update, "#define CITY_HIT_EMITTER_COUNT (g_world.emitterStatic)") && has(update, "#define CITY_HIT_EMITTER_RADIANCE(i, P, N) RtEmitterRadiance(g_world, (i), (P), (N))") &&
         has(update, "#define CITY_HIT_EMITTER_TO(i, P) RtEmitterTo(g_world, (i), (P))") && has(update, "if (g_world.emitterStatic != 0u)") && has(update, "p.flags |= CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;"));
   CHECK(has(update, "#include \"light_laws.hlsli\"") && has(update, "#include \"rt_emitters.hlsli\""));
-  CHECK(has(pixel, "#define CITY_HIT_EMITTER_COUNT (g_world.emitterCount)") && has(pixel, "if (g_world.emitterCount != 0u)") && has(pixel, "params.flags = params.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;") &&
+  CHECK(has(pixel, "#define CITY_HIT_EMITTER_COUNT (g_world.emitterStatic)") && has(pixel, "if (g_world.emitterStatic != 0u)") && has(pixel, "params.flags = params.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;") &&
         has(pixel, "#include \"rt_emitters.hlsli\""));
   CHECK(!has(pixel, "GipLights") && !has(pixel, "g_lightCount") && !has(pixel, "#define CITY_HIT_AMBIENT"));
   CHECK(has(glue, "LlLightTerm(LlUnpack(RtEmitterGpuLight(w, i)), pw, nw, 1.0)") && has(glue, "if (!(dot(d, d) < range * range))"));

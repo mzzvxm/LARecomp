@@ -1116,12 +1116,12 @@ void TestSources(const std::string& dir) {
             Before(ssr_cpp, "if (rt_.available()) {\n    const HostShaderBlob spatial", "denoise_.Initialize(") && Has(ssr_cpp, "denoise_.Shutdown();") && Has(ssr_cpp, "denoise_.OnPresent();") && Has(ssr_cpp, "denoise_.HeldBytes()"),
         "the host is made only where the fallback can run, shut down with the effect, ticked at the present and counted in its memory");
   // the merge of the raw mode and the fallback: one frame can be both
-  Check(Has(trigger, "if (rt_.wanted() && !decision.stub) {") && !Has(trigger, "!decision.stub && !raw") && Before(trigger, "ssr::RawWhy raw_why = ssr::DecideRaw(raw_facts);", "if (rt_.wanted() && !decision.stub) {"),
+  Check(Has(trigger, "if (!garage && rt_.wanted() && !decision.stub) {") && !Has(trigger, "!decision.stub && !raw") && Before(trigger, "ssr::RawWhy raw_why = ssr::DecideRaw(raw_facts);", "if (!garage && rt_.wanted() && !decision.stub) {"),
         "R6 merge: a raw frame follows the ray traced fallback too (its one ray a pixel is what Ray Reconstruction takes): the fallback's condition does not look at the raw decision");
   Check(Has(trigger, "bool images_ok = EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1]);") && Has(trigger, "images_ok = EnsureImages(width, height, false, raw, sf.render[0], sf.render[1]);") &&
             Has(trigger, "images_ok = EnsureImages(width, height, false, false);") && Before(trigger, "    rt = false;     // the confidence image or its framebuffer could not be made", "    raw_why = ssr::RawWhy::kImages;"),
         "R6 merge: the images are made for both modes at once, and when they cannot be the fallback goes first, then the raw mode");
-  Check(Has(ssr_cpp, "if (raw) {\n    ok = ok && passes_->EnsureImage(hit_, render_width, render_height, kHitFormat, \"ssr hit distance\");\n  } else {\n    ok = ok && passes_->EnsureImage(accum_[0]") &&
+  Check(Has(ssr_cpp, "if (raw) {\n    ok = ok && passes_->EnsureImage(hit_, render_width, render_height, kHitFormat, \"ssr hit distance\");\n  } else {\n    ok = ok && EnsureHistory(width, height);") &&
             Has(ssr_cpp, "passes_->EnsureImage(trace_, width, height, kFormat, \"ssr trace\", trace_flags)"),
         "R6 merge: a raw frame has the hit image and no accumulation; the trace image has the storage flags in any frame that follows the fallback, raw or not");
   Check(Has(ssr_cpp, "ScreenReflectionsPixelShader(i)") && Has(ssr_h, "kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount") && Has(shaders_h, "case 7: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);") &&

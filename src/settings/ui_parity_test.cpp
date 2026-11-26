@@ -195,8 +195,8 @@ void Lighting(Fixture& f) {
             const bool rt = std::string_view(rt_word) == "on";
             f.Decodes("PM_RxGpuCarSelfRefl", base);
             f.Decodes("PM_RxGpuCarSelfReflRt", rt ? "on" : "off");
-            const bool car_rt = api && base == "on" && rt && gc::RtRung(cls, tier) != gc::RtTier::kNone;
-            for (const auto city_word : levels) for (auto data : {city::Data::kUnknown, city::Data::kReady, city::Data::kBuilding, city::Data::kUnavailable}) {
+            const bool car_rt = api && base == "on" && rt;
+            for (const auto city_word : {"auto", "off", "on", "high", "ultra"}) for (auto data : {city::Data::kUnknown, city::Data::kReady, city::Data::kBuilding, city::Data::kUnavailable}) {
                 f.F("live.city_data", data == city::Data::kBuilding ? "building" :
                     data == city::Data::kUnavailable ? "unavailable" : data == city::Data::kReady ? "ready" : "unknown");
                 f.S("mcla_gpu_rt_reflections", city_word);

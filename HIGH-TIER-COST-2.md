@@ -38,7 +38,6 @@ $exeDir = 'C:\mcv\larecomp\ports\exe\high-tier-cost-2'
 $packs = 'C:\mcv\larecomp\ports\scratch\packs-high-tier-cost-2'
 $batch1 = @(
     '--mcla_gpu_rt_gi_reuse_coarse_probes=true',
-    '--mcla_gpu_ssgi_residual_short_filter=true',
     '--mcla_gpu_rtao_quarter_at_4k=true',
     '--mcla_gpu_local_lights_depth_bound=true',
     '--mcla_gpu_local_lights_sphere_scissor=true'

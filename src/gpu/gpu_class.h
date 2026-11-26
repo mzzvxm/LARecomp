@@ -101,8 +101,9 @@ enum class Effect : uint8_t {
   kRtShadows,             // mcla_gpu_rt_shadows         auto, off, high, ultra (city_rt_rules.h; the city's real geometry traced for the sun's shadows)
   kSsr,                   // mcla_gpu_ssr                auto, off, high, ultra (ssr_rules.h; the row REFLECTIONS ON SURFACES)
   kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
+  kCount,
 };
-inline constexpr int kEffectCount = 16;
+inline constexpr int kEffectCount = static_cast<int>(Effect::kCount);
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {

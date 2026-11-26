@@ -865,7 +865,8 @@ void CheckSources(const std::string& gpu) {
     Check(ProductsNamedIn(StatementAt(ll, At(ll, "screen_->Want(screen::Consumer::kLocalLights"))) == fo::RowOf(Step::kLocalLights).wants_screen, "the light pass asks the screen owner for the products the table lists");
     const std::string& ssr_rules = text_of("ssr_rules.h");
     Check(ProductsNamedIn(StatementAt(ssr_rules, At(ssr_rules, "inline constexpr uint32_t kWantedProducts"))) == fo::RowOf(Step::kSsr).wants_screen &&
-              Has(ssr, "screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(std::max(level_, garage_level_)))"),
+              Has(ssr, "products = ssr::WantedProducts(std::max(level_, garage_level_))") &&
+              Has(ssr, "screen_->Want(screen::Consumer::kReflections, products)"),
           "the reflections ask the screen owner, through ssr_rules.h WantedProducts, for the products the table lists");
     Check(ProductsNamedIn(StatementAt(car, At(car, "screen_->Want(screen::Consumer::kCarHistory"))) == fo::RowOf(Step::kCarHistory).wants_screen, "the car self-reflection asks for the product the table lists");
     const size_t from = At(ao, "const uint32_t normal = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get()");

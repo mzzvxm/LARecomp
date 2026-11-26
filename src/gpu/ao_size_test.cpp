@@ -457,7 +457,7 @@ void CheckSources(const std::string& gpu) {
   Check(Has(header, "ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
         "ao.h: the contact filter in the apply follows ao_size.h (the picture's size, split or not) and is not used while the contact image has a history of its own (noise-all)");
   Check(Has(cpp, "FillPush") && Has(cpp, "ao_stable::DenoiseRadius(plan.ao[1])"), "ao.cpp: the blur's radius is taken from the traced image's height (plan.ao)");
-  Check(Has(cpp, "AtrousIterations(int(plan.gi.atrous), plan.ao[1], trim_height_pass)"), "ao.cpp: the a-trous passes follow the traced image's height");
+  Check(Has(cpp, "AtrousIterations(int(plan.gi.atrous), plan.ao[1])"), "ao.cpp: the a-trous passes follow the traced image's height");
   Check(Has(cpp, "history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]"), "ao.cpp: a change of the traced size throws the history away (kSize)");
   // The apply uses the depth-aware upsample for the occlusion's and the bounce's images, and not for the contact image beside them.
   Check(Has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle, thin,") && Has(apply, "GiAt(g_push.slots.z, ColourSlot()"), "the apply upsamples the occlusion's and the bounce's images with the depth-aware weights");

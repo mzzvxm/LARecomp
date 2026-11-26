@@ -285,6 +285,10 @@ decode = "resolved(s.mcla_gpu_ssr)"
 
 [rows.PM_RxGpuCarRefl]
 decode = { cases = [{ when = "s.mcla_gpu_env_resolution in ['game','off']", value = "off" }, { value = "on" }] }
+values = [
+  { id = "off", label = "OFF" },
+  { id = "on", label = "ON" },
+]
 
 [rows.PM_RxGpuCarShadowMap]
 decode = "resolved(s.mcla_gpu_car_shadow_map)"
@@ -362,7 +366,6 @@ decode = { cases = [
 ] }
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "CAR AO RT" },
-  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)", label = "CAR AO RT" },
   { when = "!d.ao_on && !d.contact_on", enabled = false, reason = "Ambient occlusion and contact shadows are off." },
 ]
 
@@ -385,7 +388,6 @@ decode = { cases = [{ when = "s.mcla_gpu_car_selfrefl_rt == 'auto'", value = "of
 states = [
   { when = "!api.car_rt", enabled = false, suffix = " (NO RT GPU)" },
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "resolved(s.mcla_gpu_car_selfrefl) != 'on'", enabled = false, reason = "Car Self-Reflections is off." },
 ]
 

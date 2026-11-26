@@ -1743,7 +1743,7 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(Str("PM_RxGpuSsrRt", "mcla_gpu_ssr_rt", "SURFACE REFLECTIONS RT: ",
                    kQualityVals, kQualityNames, 3)),
     NativeOnly(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution", "PAINT REFLECTION DETAIL: ",
-                   kOnOffVals, kOnOffNames, 2)),
+                   nullptr, nullptr, 0)),
     NativeOnly(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl", "CAR SELF-REFLECTIONS: ",
                    kOnOffVals, kOnOffNames, 2)),
     NativeOnly(Str("PM_RxGpuCarSelfReflRt", "mcla_gpu_car_selfrefl_rt", "CAR SELF-REFLECTIONS RT: ",

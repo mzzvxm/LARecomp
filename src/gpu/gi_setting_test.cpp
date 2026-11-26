@@ -357,7 +357,7 @@ void RendererChecks(const std::string& dir) {
         "the field's pipelines are listed before the precache starts, when the setting is not off at the start");
   Check(Before(r, "gi_apply_.Initialize(", "gi_apply_.SetGiField(&gi_field_);") && Has(r, "gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);") && Has(r, "scene_.SetGiIntegration(&gi_integration_);"),
         "the apply is given the field, the integration its owners, the scene the integration");
-  Check(Has(r, "vram_.AddHolder(\"probe field\", [this] { return gi_field_.HeldBytes(); });") && Has(r, "\", probe field \" + mib(gi_field_.HeldBytes())"), "the memory budget and the census line count the field");
+  Check(Has(r, "vram_.AddHolder(\"probe field\", [this] { return gi_field_.HeldBytes(); }, VramSetting::kRtBounce);") && Has(r, "\", probe field \" + mib(gi_field_.HeldBytes())"), "the memory budget and the census line count the field");
   // the end, in both places (a failed start and the normal one): the integration, then the apply that reads the field, then the field
   Check(Count(r, "gi_integration_.Shutdown();") == 2 && Count(r, "gi_field_.Shutdown();") == 2, "both shutdown paths stop the integration and the field");
   size_t from = 0;

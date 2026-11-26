@@ -502,10 +502,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); }, VramSetting::kRtBounce);
     vram_.AddHolder("screen targets", [this] {
       return gbuffer_.HeldBytes() + screen_.HeldBytes() + ao_.HeldBytes() + shafts_.HeldBytes() +
-             volumetrics_.HeldBytes() + ssr_.HeldBytes() + gi_apply_.HeldBytes();
+             volumetrics_.HeldBytes() + ssr_.HeldBytes() + gi_apply_.HeldBytes() + vpl_.HeldBytes();
     });
     vram_.AddHolder("vehicle targets", [this] {
-      return car_refl_.HeldBytes() + car_shadow_.HeldBytes() + mirror_view_.HeldBytes() + car_mirror_.HeldBytes();
+      return car_refl_.HeldBytes() + car_shadow_.HeldBytes() + mirror_view_.HeldBytes();
     });
     vram_.AddHolder("ray tracing structures and scratch", [this] {
       return car_rt_.HeldBytes() + city_rt_.HeldBytes() + rt_world_.HeldBytes();

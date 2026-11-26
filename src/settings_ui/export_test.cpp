@@ -193,7 +193,8 @@ fallback_values = [{id = "1", label = "100%"}]
     check(presets["legacy_file_preset"].value_or("") == std::string_view("custom"),
           "a file with a covered setting and no preset starts as CUSTOM");
     check(presets["items"]["vanilla"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("off") &&
-          presets["items"]["enhanced"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("high") &&
+          presets["items"]["enhanced"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("on") &&
+          presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt") &&
           presets["items"]["enhanced_rt_ultra"]["values"]["mcla_gpu_ao"].value_or("") == std::string_view("rt"), "the values are the table's");
     check(presets["items"]["enhanced_rt"]["needs"].value_or("") == std::string_view("gpu.rt_tier != 'none'") && presets["items"]["enhanced_rt"]["needs_reason"] &&
           !presets["items"]["enhanced"]["needs"], "only the RT presets need a ray tracing tier, and say why");

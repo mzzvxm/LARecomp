@@ -877,7 +877,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   if (last_handoff_enabled_ != handoff_enabled_) {
     regen_key_.valid = false;
   }
-  const bool history_eligible = ssr::HistoryUsable(last_key_, now, motion_known) && last_resolve_ == resolve && last_handoff_enabled_ == handoff_enabled_ &&
+  // The current RT dispatch verdict is only available after the trace.
+  ssr::HistoryKey prior_mode = now;
+  prior_mode.ray_traced = last_key_.ray_traced;
+  const bool history_eligible = ssr::HistoryUsable(last_key_, prior_mode, motion_known) && last_resolve_ == resolve && last_handoff_enabled_ == handoff_enabled_ &&
       last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
   if (!camera_logged_) {
     camera_logged_ = true;
@@ -1141,7 +1144,6 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     rt_recorded = rt_.Record(rt_frame);   // false where the frame has no top level: the trace already contains the raster fallback
   }
   now.ray_traced = rt_recorded;
-  const bool use_history = ssr::HistoryUsable(last_key_, now, motion_known) && last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
 
   // RG-3: the signal and its guides, the runtime's dispatch. Refused (no camera rows, an image, the plan of the dispatch, the runtime): the effect's own accumulation runs below, this frame.
   bool regen_ok = false;

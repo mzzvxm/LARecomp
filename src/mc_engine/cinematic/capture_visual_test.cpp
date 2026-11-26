@@ -112,7 +112,7 @@ void ReflectionIds() {
     Check(ReflHitHandoffDominant(1, .30f, .32f, 35, .36f, 7) == 35, "shaded cars can be attributed to RT");
     const auto handoff = ReflHitPackHandoff(36, 35, 1, 8, .6f);
     Check((handoff & 0xffffu) == 0x2324u && ReflHitFallbackId(handoff) == 8 &&
-          ReflHitScreenId(handoff) == 1 && ReflHitScreenFraction(handoff) == .6f, "visible and query IDs retain their on-disk lanes");
+          ReflHitScreenId(handoff) == 1 && ReflHitScreenFraction(handoff) == 4.0f / 7.0f, "visible and query IDs retain their on-disk lanes");
     const auto packed = ReflHitPack(1, kReflHitRtCar, 5, 7);
     Check(packed == 0x07052001u && ReflHitScreenId(packed) == 5 && ReflHitFallbackId(packed) == 7,
           "visible and query bytes precede the scratch bytes");

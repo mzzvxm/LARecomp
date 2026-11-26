@@ -27911,6 +27911,21 @@ name = "Hook_RoadReflCarsPlane"
 registers = ["f0"]
 after_instruction = true
 
+# The title screen's road reflection plane (hooks/title_road_plane.cpp). sub_822F3918 builds gReflectionParams (VS c43) every frame; its z is the player's
+# ground height, and with no player view (the front end: title, boot menus) loc_822F3AF4 stores f31 = 1.0, a plane at sea level, under roads that lie tens of
+# metres higher: in rain the wet road's reflection is then the picture of nothing, flat white blocks. 0x822F3AF4 is `stfs f31,88(r1)` (the z, reached only
+# without a player), 0x822F3AF8 `stfs f31,92(r1)` (the w, reached by both paths). The first sets f31 to the plane the camera's ground says, the second puts
+# f31 back. Both addresses are branch targets of the function's own jumps.
+[[midasm_hook]]
+address = 0x822F3AF4
+name = "Hook_TitlePlaneZ"
+registers = ["f31"]
+
+[[midasm_hook]]
+address = 0x822F3AF8
+name = "Hook_TitlePlaneW"
+registers = ["f31"]
+
 # Owned cars past 30 (owned_cars.cpp, owned_cars_sites.inc; owned_cars_limit = 30 makes every
 # hook below do nothing). Each site moves the register the instruction at `address` just wrote
 # into the block that holds the owned cars, their damage or their plate bytes.

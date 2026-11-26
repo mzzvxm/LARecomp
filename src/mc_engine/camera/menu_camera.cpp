@@ -82,6 +82,7 @@
 #include "mc_engine/cinematic/freecam_runtime.h"
 #include "mc_engine/cinematic/scene_runtime.h"
 #include "larecomp_log.h"
+#include "final_camera.h"
 #include "menu_camera.h"
 #include "mc_engine/gameplay/time_of_day.h"
 #include "larecomp_guest.h"
@@ -701,6 +702,26 @@ void Hook_MenuCameraFinal(PPCRegister& r1, PPCRegister& r24) {
     }
 
     uint32_t mode = static_cast<uint32_t>(r24.u64);
+
+    // Whatever this call does to the slots (the trailer toolkit's cameras, a front-end shot of this module), the pose that is in them when it
+    // returns is the picture's: other threads read it from final_camera.h (the title screen's road reflection plane, hooks/title_road_plane.cpp).
+    struct PublishOnReturn {
+        const uint8_t* base;
+        uint32_t sp;
+        uint32_t mode;
+        ~PublishOnReturn() {
+            mc::final_camera::Pose pose;
+            for (uint32_t i = 0; i < 3; ++i) {
+                pose.pos[i] = ReadF32(base, sp + kSlotPos + 4 * i);
+                pose.right[i] = ReadF32(base, sp + kSlotRow0 + 4 * i);
+                pose.up[i] = ReadF32(base, sp + kSlotRow1 + 4 * i);
+                pose.back[i] = ReadF32(base, sp + kSlotRow2 + 4 * i);
+            }
+            pose.fov_degrees = ReadF32(base, sp + kSlotFov);
+            pose.mode = mode;
+            mc::final_camera::Publish(pose);
+        }
+    } publish_on_return{base, sp, mode};
 
     // Record what the renderer is about to get, for the dump and the diag.
     float cur_pos[3] = {ReadF32(base, sp + kSlotPos + 0),

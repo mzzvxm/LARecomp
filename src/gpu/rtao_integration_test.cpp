@@ -180,7 +180,7 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   has(trace, R"rx(const\s+RtAoCompose::Guides\s+guides\s*=\s*\{\s*\.raw\s*=\s*&signal_\s*,\s*\.id_share\s*=\s*&id_share_\s*,\s*\.stencil_slot\s*=\s*stencil_slot_)rx",
       "the compose gets the raw signal, the ID guide and the stencil plane");
   has(ao, R"rx(\.car_term_slot\s*=\s*rt\.recorded\s*&&\s*rt\.occlusion\s*&&\s*rtao_->blend_car_)rx", "the car term reaches the compose only in the A/B arm");
-  has(ao, R"rx(in\.compute_read\s*=\s*rtao_runs\s*&&\s*in\.occlusion;)rx", "the car image is made compute-readable where the compose reads it");
+  has(ao, R"rx(in\.compute_read\s*=\s*\(rtao_runs\s*&&\s*in\.occlusion\)\s*\|\|\s*\(contact\s*&&\s*city_shadow_\s*&&\s*city_shadow_->wanted\(\)\);)rx", "the car image is made compute-readable where the compose reads it");
   has(Read(gpu / "scene.cpp"), R"rx(ao_->SetRtAoRawMode\(\s*ao_->rtao_wanted\(\)\s*&&\s*temporal_\s*&&\s*temporal_->RawModes\(\)\.RtAo\(\)\s*\))rx",
       "the scene hands the AO the Ray Reconstruction raw mode before it plans the frame");
   has(order, R"rx(\bkRtAoSignal\s*=\s*1u\s*<<\s*31\b)rx", "trace signal uses bit 31");

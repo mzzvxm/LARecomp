@@ -1560,7 +1560,6 @@ class GPUSettings final : public rex::SettingOwner {
     "quarter of the memory. 1080 lines and below are as they were. False: the sizes and the chain as before "
     "(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_ssgi_residual_short_filter, true, "Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssgi_fast_gather, true, "Debug: Use the horizon cosine directly and skip radiance work for black samples in screen-space bounce light. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssgi_fast_filter_plane, true, "Debug: Calculate the plane distance directly in the screen-space bounce filter. Live.", rex::kDebugOnly);
 
@@ -2445,7 +2444,6 @@ inline auto& mcla_gpu_ssgi = g_gpu.mcla_gpu_ssgi;
 inline auto& mcla_gpu_ssgi_clamp = g_gpu.mcla_gpu_ssgi_clamp;
 inline auto& mcla_gpu_ssgi_far_steps = g_gpu.mcla_gpu_ssgi_far_steps;
 inline auto& mcla_gpu_ssgi_half = g_gpu.mcla_gpu_ssgi_half;
-inline auto& mcla_gpu_ssgi_residual_short_filter = g_gpu.mcla_gpu_ssgi_residual_short_filter;
 inline auto& mcla_gpu_ssgi_fast_gather = g_gpu.mcla_gpu_ssgi_fast_gather;
 inline auto& mcla_gpu_ssgi_fast_filter_plane = g_gpu.mcla_gpu_ssgi_fast_filter_plane;
 inline auto& mcla_gpu_ssgi_lights = g_gpu.mcla_gpu_ssgi_lights;

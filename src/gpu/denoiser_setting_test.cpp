@@ -640,7 +640,7 @@ void ConsumerWiringChecks(const std::string& dir) {
   const std::string sfn = (sb == std::string::npos || se == std::string::npos) ? std::string() : ssr.substr(sb, se - sb);
   Check(!sfn.empty() && Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);"), "ScreenReflections::BeginFrame tells the board whether SSR is on");
   Check(Before(sfn, "level_ = level;", "denoiser::NoteConsumer(rr::Consumer::kSsr"), "... after the level is settled (a setting that cannot be made reads as off)");
-  Check(Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());") && Before(sfn, "rt_.BeginFrame(garage ? ssr::Level::kOff : level_);", "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections"),
+  Check(Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());") && Before(sfn, "rt_.BeginFrame(garage ? ssr::Level::kOff : level_, classify_enabled_);", "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections"),
         "ScreenReflections::BeginFrame tells the board whether the ray traced fallback is wanted (CITY-RT R6), after the fallback has decided its level");
   Check(Has(ssr, "#include \"denoiser_setting.h\""), "ssr.cpp includes the board");
   const std::string car = ReadFile(dir + "/car_selfrefl.cpp");

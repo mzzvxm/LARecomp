@@ -930,7 +930,8 @@ void CheckHandheldCells() {
   // light shadows, the volumetric light, the reflections on surfaces, the ambient occlusion and the bounce light).
   for (const Effect effect : {Effect::kContactShadows, Effect::kSunShafts, Effect::kSsgi, Effect::kTrafficShadows, Effect::kCarSelfRefl,
                               Effect::kAmbientOcclusion, Effect::kHeadlights, Effect::kLightShadows, Effect::kVolumetrics, Effect::kSsr}) {
-    CheckEq(std::string(CellFor(effect, kL, true)), "off", std::string(CvarName(effect)) + " stays off on a handheld");
+    const auto expected = effect == Effect::kAmbientOcclusion ? "on" : "off";
+    CheckEq(std::string(CellFor(effect, kL, true)), expected, std::string(CvarName(effect)) + " has its expected legacy handheld value");
   }
 
   // The numbers that are the CPU's stay Low's: the Deck's four Zen 2 cores keep the game's city detail (the scales have no handheld cells).

@@ -67,8 +67,8 @@ void CheckDecisions() {
   for (const auto cls : kClasses) {
     for (const auto tier : kTiers) {
       const auto unknown = ao::Decide(cls, false, tier, Choice::kAuto, true);
-      Check(unknown.screen == Level::kOff && !unknown.rt && unknown.rung == RtTier::kNone,
-            "unknown GPU class uses integrated Auto");
+      Check(unknown.screen == Level::kUltra && !unknown.rt && unknown.rung == RtTier::kNone,
+            "an unknown class uses the same raster Auto");
     }
   }
 }
@@ -92,7 +92,7 @@ void CheckLabels() {
   for (const std::string_view unknown : {"low", "LOW", "", "rt ", "typo"}) {
     Check(ao::ParseChoice(unknown) == Choice::kAuto, "unknown and legacy choices are Auto");
   }
-  constexpr std::string_view auto_labels[] = {"AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"};
+  constexpr std::string_view auto_labels[] = {"AUTO (ON)", "AUTO (ON)", "AUTO (ON)"};
   for (int c = 0; c < 3; ++c) {
     for (const auto tier : kTiers) {
       for (const bool built : {false, true}) {

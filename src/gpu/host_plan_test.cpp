@@ -60,7 +60,7 @@ const AutoRow kAuto[] = {
     // (the car self-reflections are not here: their one level is `on`, which the plan reads as its ultra, so they have a check of
     // their own, CheckCarRefl)
     // the ambient occlusion: off on Low, high on Mid, ultra on High (gpu_class.h: AO-DESIGN.md section 5)
-    {Pass::kOcclusion, {"off", "on", "on"}},
+    {Pass::kOcclusion, {"on", "on", "on"}},
 };
 
 Level LevelOf(const std::string& name) {
@@ -75,8 +75,8 @@ void CheckOcclusion() {
     const char* text;
     Level want;
   } rows[] = {
-      {"off", Level::kOff},   {"high", Level::kHigh},  {"ultra", Level::kUltra},
-      {"Ultra", Level::kUltra}, {"HIGH", Level::kHigh}, {"rt", Level::kUltra}, {"on", Level::kUltra},
+      {"off", Level::kOff},   {"high", Level::kUltra}, {"ultra", Level::kUltra},
+      {"Ultra", Level::kUltra}, {"HIGH", Level::kUltra}, {"rt", Level::kUltra}, {"on", Level::kUltra},
   };
   for (int k = 0; k < 3; ++k) {
     for (const auto& row : rows) {
@@ -124,7 +124,8 @@ void CheckAutoPasses() {
       Check(big.level == a.level && big.automatic, cell + ": AUTO is auto");
       for (const char* own : kOwn) {
         const Choice c = Resolve(row.pass, kClasses[k], true, own);
-        Check(c.level == LevelOf(Lower(own)) && !c.automatic && !c.unknown,
+        const Level expected = row.pass == Pass::kOcclusion && Lower(own) == "high" ? Level::kUltra : LevelOf(Lower(own));
+        Check(c.level == expected && !c.automatic && !c.unknown,
               cell + ": '" + own + "' is the player's own and the class is not looked at");
       }
       // The gpu_class table is the same one.
@@ -236,7 +237,7 @@ struct PlanRow {
 void CheckPlans() {
   const PlanRow rows[] = {
       // The defaults of a fresh install (every setting auto: the occlusion follows the class too).
-      {"auto", "auto", "auto", "auto", GpuClass::kLow, "-----", "fresh install, Low: nothing is on"},
+      {"auto", "auto", "auto", "auto", GpuClass::kLow, "O----", "legacy Auto on Low keeps raster AO"},
       {"auto", "auto", "auto", "auto", GpuClass::kMid, "OCS--", "fresh install, Mid: occlusion, contact shadows, shafts"},
       {"auto", "auto", "auto", "auto", GpuClass::kHigh, "OCSB-", "fresh install, High: all four (the bounce light's auto is high on High)"},
       // A larecomp.toml holds ultra for the occlusion: kept as it is on every class.
@@ -265,7 +266,7 @@ void CheckPlans() {
       // Words that are not values count as auto (an older larecomp.toml's low is one).
       {"auto", "junk", "junk", "junk", GpuClass::kHigh, "OCSB-", "junk: occlusion auto (ultra on High), contact as auto, shafts as auto (High), bounce as auto (high on High)"},
       {"junk", "auto", "auto", "auto", GpuClass::kHigh, "OCSB-", "junk for the occlusion: as auto (ultra on High), the rest as auto"},
-      {"junk", "auto", "auto", "auto", GpuClass::kLow, "-----", "junk for the occlusion on Low: as auto (off), the rest as auto"},
+      {"junk", "auto", "auto", "auto", GpuClass::kLow, "O----", "junk for occlusion on Low uses the raster AO level"},
       {"low", "low", "low", "low", GpuClass::kMid, "OCS--", "the old low everywhere on Mid: the occlusion, contact and bounce as auto, the shafts' own old value (default)"},
   };
   for (const PlanRow& row : rows) {
@@ -278,9 +279,9 @@ void CheckPlans() {
   }
   // The levels, not only on or off.
   const Plan mid = Decide(GpuClass::kMid, true, "high", "auto", "auto", "auto");
-  Check(mid.of(Pass::kOcclusion).level == Level::kHigh && mid.of(Pass::kContact).level == Level::kHigh &&
+  Check(mid.of(Pass::kOcclusion).level == Level::kUltra && mid.of(Pass::kContact).level == Level::kHigh &&
             mid.of(Pass::kShafts).level == Level::kHigh && mid.of(Pass::kBounce).level == Level::kOff,
-        "plan: Mid's levels are high, high, high, off");
+        "plan: Mid keeps raster AO, High contact and shafts, and Off bounce");
   const Plan high = Decide(GpuClass::kHigh, true, "ultra", "auto", "auto", "auto");
   Check(high.of(Pass::kContact).level == Level::kUltra && high.of(Pass::kShafts).level == Level::kUltra &&
             high.of(Pass::kBounce).level == Level::kHigh,

@@ -822,17 +822,6 @@
   "comments": [],
   "pp_depth": 0
  },
- "mcla_gpu_ssgi_residual_short_filter": {
-  "type": "bool",
-  "default": "true",
-  "category": "MCLA/GPU",
-  "help": "\"Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.\"",
-  "traits": [
-   "rex::kDebugOnly"
-  ],
-  "comments": [],
-  "pp_depth": 0
- },
  "mcla_gpu_ssgi_lights": {
   "type": "bool",
   "default": "true",

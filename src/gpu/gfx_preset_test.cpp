@@ -370,6 +370,13 @@ void CheckAutoUnchanged() {
     for (const auto tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
       CheckEq(RtCell(old.effect, tier), legacy, cvar + ": legacy Auto never enables RT");
     }
+    if (old.effect == RtEffect::kCarRtAo) {
+      CheckEq(gp::CarAoAuto(Preset::kEnhanced, true), "off", "Enhanced keeps car AO off");
+      CheckEq(gp::CarAoAuto(Preset::kEnhancedRt, false), "both", "Enhanced RT uses both car terms");
+      CheckEq(gp::CarAoAuto(Preset::kEnhancedRtUltra, false), "both", "Enhanced RT Ultra uses both car terms");
+      CheckEq(gp::CarAoAuto(Preset::kCustom, true), "both", "Custom world RT enables car AO");
+      CheckEq(gp::CarAoAuto(Preset::kCustom, false), "off", "Custom screen AO keeps car RT off");
+    }
     if (old.effect == RtEffect::kRtAo) {
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "rt", "ENHANCED RT selects world ray traced AO");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "rt", "the world's ambient occlusion is ray traced in ENHANCED RT ULTRA");

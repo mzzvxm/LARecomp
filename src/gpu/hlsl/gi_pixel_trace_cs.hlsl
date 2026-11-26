@@ -208,7 +208,7 @@ void main(uint3 id : SV_DispatchThreadID)
                 {
                     params.flags = params.flags | CITY_HIT_P_LAMPS | CITY_HIT_P_LAMP_SHADOW;
                 }
-                if (g_world.emitterCount != 0u)
+                if (g_world.emitterStatic != 0u)
                 {
                     params.flags = params.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;
                 }

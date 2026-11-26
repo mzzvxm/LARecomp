@@ -2547,7 +2547,7 @@ void TestSources(const std::string& dir) {
   for (size_t at = renderer.find("ssr_.Shutdown();"); at != std::string::npos; at = renderer.find("ssr_.Shutdown();", at + 1)) {
     ++shutdowns;
     const size_t ao_at = renderer.find("ao_.Shutdown();", at);
-    before_ao = before_ao && ao_at != std::string::npos && ao_at - at < 1000;  // the light pass's Shutdown (GB-H1) and the probe field's three (CITY-RT M3 G4, each with its comment) sit between them in the merged branches
+    before_ao = before_ao && ao_at != std::string::npos && ao_at < renderer.find("ssr_.Shutdown();", at + 1);
   }
   Check(shutdowns == 2 && before_ao, "renderer.cpp: shut down before the AO it holds a pointer to, in both Shutdown paths");
   Check(Has(renderer, "ssr_.HeldBytes()") && Has(renderer_h, "ScreenReflections ssr_;") && Has(renderer_h, "#include \"ssr.h\""), "renderer.h / renderer.cpp: the memory line and the member");
@@ -2645,9 +2645,9 @@ void TestSources(const std::string& dir) {
   const size_t road_find = trigger.find("edram_->Find(road_key)");
   const size_t road_transition = trigger.find("edram_->Transition(list, *road_target, plume::RenderTextureLayout::SHADER_READ)");
   const size_t trace_draw = trigger.find("DrawPass(list, trace_, trace_pipeline, trace_push, classify);");
-  const size_t road_share = trigger.find("if (road.share > 0.0f) {");
+  const size_t road_share = trigger.find("if (road.share > 0.0f || (capture_road_wanted_ && capture_strength > 0.0f)) {");
   Check(road_find != std::string::npos && road_share != std::string::npos && road_share < road_find && road_transition != std::string::npos && road_transition < trace_draw && trace_draw != std::string::npos,
-        "ssr.cpp: the road view is looked for only while the share is above 0, and is a shader read before the trace");
+        "ssr.cpp: the road view is looked up for a nonzero fallback or capture share and made shader-readable before tracing");
   Check(Has(trigger, "road_found->side_view == SideView::kReflection") && Has(trigger, "uint32_t(road_found->drawn_frame) == sf.frame_serial") && Has(trigger, "road_found->scale.Edge(ssr::roadview::kDeclared)") &&
             Has(trigger, "ssr::DecideRoadView(road)") && Has(trigger, "road_word = ssr::PackRoadView(road_slot, road.host_samples, road.side);") && Has(trigger, "trace_push.Set(pk::kRoadView, road_word);") &&
             Has(trigger, "apply.Set(pk::kRoadViewApply, road_word);"),

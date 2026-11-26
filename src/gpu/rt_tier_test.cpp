@@ -546,7 +546,7 @@ void CheckIntegratedGpuDefaults() {
       if (effect == RtEffect::kRtAo) {
         // The occlusion's cells defer to the class table (rtao_setting.h Decide): the Low class's cell is off, and a Low class never reaches the strong rung's `rt`.
         CheckEq(ResolveRtFor(cls.cls, tier.tier, effect, "auto"), "", name + ": the cell defers to the class table");
-        CheckEq(std::string(CellFor(Effect::kAmbientOcclusion, cls.cls, false)), "off", name + ": the class table's cell is off");
+        CheckEq(std::string(CellFor(Effect::kAmbientOcclusion, cls.cls, false)), "on", name + ": the legacy AO cell keeps the same raster look");
         CheckEq(ResolveRtFor(cls.cls, RtTier::kStrong, effect, "auto"), "", name + ": it defers even when a test forces the tier strong (the Low class has no strong rung)");
         continue;
       }

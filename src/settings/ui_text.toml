@@ -596,8 +596,5 @@ help = "Adds traced creases and short sun shadows around cars."
 [rows.PM_RxGpuRtLights]
 help = "Traces shadows from nearby headlights, neon and street lamps."
 
-[rows.PM_RxGpuSsrRt]
-help = "Fills missing surface reflections with traced hits."
-
 [rows.PM_RxGpuCarSelfReflRt]
 help = "Reflects car parts even when they are outside the camera view."

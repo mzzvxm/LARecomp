@@ -1393,7 +1393,7 @@ void SourceChecks(const std::string& src) {
     const size_t unseen = At(cpp, "std::erase_if(candidates_.neon, unseen);");
     const size_t select = At(cpp, "ll::SelectPassLights(frame,");
     Check(gather != std::string::npos && gather < unseen && unseen < select, "gather, then drop the unseen, then select");
-    Check(Has(cpp, "planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
+    Check(Has(cpp, "planes_wanted_ = enabled_ && (garage || setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
           "the G-buffer's planes are wanted for the setting, for the headlight route while HEADLIGHTS is on, and while a neon car is lit (not for NEON LIGHT alone)");
     Check(Has(cpp, "neon_hold_ = nl::NextHold(neon_on_, neon_on_ && NeonLightReachesPicture(), neon_hold_);"), "the planes are held a while after the last lit neon car in reach (no sidecar flapping)");
     // NEONALL-REVIEW M2: the planes are asked for only while a lit car has a light that can reach the picture (the last frame's camera, widened), and the camera history is kept for it while NEON LIGHT is on
@@ -1407,7 +1407,7 @@ void SourceChecks(const std::string& src) {
       Check(fn != std::string::npos && lit != std::string::npos && previous != std::string::npos && probe != std::string::npos && fallback != std::string::npos && reach != std::string::npos && fn < lit && lit < previous &&
                 previous < probe && probe < fallback && fallback < reach,
             "the probe asks the table for a lit car first (one lock), then the last frame's play camera, and says yes for a lit car when it has none");
-      const size_t want_camera = At(cpp, "screen_->WantCamera(screen::Consumer::kLocalLights, neon_on_);");
+      const size_t want_camera = At(cpp, "screen_->WantCamera(screen::Consumer::kLocalLights, neon_on_ || garage);");
       const size_t hold = At(cpp, "neon_hold_ = nl::NextHold(neon_on_, neon_on_ && NeonLightReachesPicture(), neon_hold_);");
       Check(want_camera != std::string::npos && hold != std::string::npos && want_camera < hold, "the camera history is kept while NEON LIGHT is on, before the probe reads it");
       Check(Has(cpp, "neon_on_ && NeonLightReachesPicture()") && !Has(cpp, "neon_on_ && nl::Global().AnyLit(ll::kNeonMinColour)"), "the table's lit car alone does not make the planes wanted any more");

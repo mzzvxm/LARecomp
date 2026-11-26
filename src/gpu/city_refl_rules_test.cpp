@@ -711,8 +711,8 @@ int main(int argc, char** argv) {
       Check(Has(renderer, "car_rt_refl_.SetSceneService(&rt_scene_);"), "renderer.cpp: the pass has the scene service");
       Check(Has(cmake, "city_refl.cpp") && Has(cmake, "larecomp_city_refl_rules_test"), "CMakeLists.txt: the source and the test");
       Check(Has(screen_rules, "wants.Of(Consumer::kCarRtRefl) & (1u << kColourPost)"), "screen_rules.h: the car ray traced reflections' want makes colour_post's mips");
-      Check(Has(tier, "{\"mcla_gpu_rt_reflections\", \"off\", \"off\", \"off\"},") && Has(ReadFile(src + "/gpu/gfx_preset.h"), "{\"mcla_gpu_rt_reflections\", Page::kReflections, {\"off\", \"off\", \"off\", \"off\", \"high\"}},"),
-            "rt_tier.h: legacy Auto stays off and the RT Ultra preset selects High");
+      Check(Has(tier, "{\"mcla_gpu_rt_reflections\", \"off\", \"off\", \"off\"},") && Has(ReadFile(src + "/gpu/gfx_preset.h"), "{\"mcla_gpu_rt_reflections\", Page::kReflections, {\"off\", \"off\", \"off\", \"on\", \"on\"}},"),
+            "rt_tier.h: legacy tier cells stay off and both RT presets select fixed On");
       // the settings: in the header, the manifest and the meta, with the aliases (the city's own switch is not debug-only since R8, which gave it the row RT CITY REFLECTIONS: city_refl_setting_test.cpp)
       const std::string settings = ReadFile(src + "/settings/generated/settings_gpu.h");
       const std::string manifest = ReadFile(src + "/settings/generated/manifest.json");
