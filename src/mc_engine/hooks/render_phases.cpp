@@ -218,7 +218,7 @@ void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
 #endif
 }
 
-void BeginHudMapPass(const PPCRegister& movie) {
+void BeginHudMapPass(PPCRegister& movie) {
 #if defined(LARECOMP_HAS_GPU)
     g_map_scope = false;
     g_map_sample = {};
@@ -256,7 +256,7 @@ void BeginHudMapPass(const PPCRegister& movie) {
 #endif
 }
 
-void SampleHudMapTransform(const PPCRegister& stack, const PPCRegister& zoom) {
+void SampleHudMapTransform(PPCRegister& stack, PPCRegister& zoom) {
 #if defined(LARECOMP_HAS_GPU)
     if (!g_map_scope || g_map_sample.has_transform) return;
     const auto* base = larecomp::guest::Membase();

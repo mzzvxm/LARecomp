@@ -7,8 +7,8 @@ void StopFreezeWatchdog();
 void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer);
 void FinishEnvViewPhase(const PPCRegister& phase);
 bool Patch_SkipHeldEnvironmentPhase(PPCRegister& phase);
-void BeginHudMapPass(const PPCRegister& movie);
-void SampleHudMapTransform(const PPCRegister& stack, const PPCRegister& zoom);
+void BeginHudMapPass(PPCRegister& movie);
+void SampleHudMapTransform(PPCRegister& stack, PPCRegister& zoom);
 void ResolveHudMapPass();
 void EndHudMapPass();
 
