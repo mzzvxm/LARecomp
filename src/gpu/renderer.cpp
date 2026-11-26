@@ -503,8 +503,10 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     // frame boundary.
     dlssg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, present_,
                       swap_chain_);
-    timing_.Initialize(device_);
-    pass_timing_.Initialize(device_, larecomp::settings::mcla_gpu_pass_timing.Get());
+    const bool pass_timing = larecomp::settings::mcla_gpu_pass_timing.Get();
+    // CHECK: compare a timing-off capture with the frame-timing and pass-timing arms on both APIs.
+    timing_.Initialize(device_, pass_timing || larecomp::settings::mcla_gpu_frame_timing.Get());
+    pass_timing_.Initialize(device_, pass_timing);
     markers_.Initialize(device_);
     capture_.Initialize();
     census_.SetEnabled(larecomp::settings::mcla_gpu_memory_census.Get());

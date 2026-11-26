@@ -104,6 +104,14 @@ constexpr Needs Merge(const Needs& a, const Needs& b) {
   return Normalized(m);
 }
 
+constexpr bool NeedsResolve(bool ready, bool gate_unused, bool cars_wanted, bool city_wanted) {
+  return ready && (!gate_unused || cars_wanted || city_wanted);
+}
+
+constexpr bool NeedsAnchorCamera(bool gate_unused, bool city_wanted) {
+  return !gate_unused || city_wanted;
+}
+
 // ---------------------------------------------------------------------------
 // the lifecycle of the asking
 // ---------------------------------------------------------------------------
@@ -134,6 +142,12 @@ class WantBoard {
   bool Wants(Consumer who) const {
     const size_t i = size_t(who);
     return i < kConsumerCount && (now_[i].any() || prev_[i].any());
+  }
+  bool CityWanted() const {
+    for (size_t i = 0; i < kConsumerCount; ++i) {
+      if (now_[i].city != Level::kOff || prev_[i].city != Level::kOff) return true;
+    }
+    return false;
   }
   // The frame boundary (the guest present): this frame's wants become the previous frame's.
   void EndFrame() {

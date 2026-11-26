@@ -233,6 +233,7 @@ class CarRtScene final : public car_frame::Listener {
   // The same, with the anchor draw's constants: the game's camera of this frame goes to the scene service (the predicted camera of a frame without the car). `cut`: the scene asked for a cut.
   void OnAnchor(const ConstantBanks::Banks& banks, bool cut);
   void OnComposite() { composite_seen_ = true; }
+  bool WantsResolve(bool gate_unused) const;
   // A resolve, after ResolveCache::Execute and BEFORE the ambient occlusion's passes (they trace rays in the top level): at the frame's trigger
   // it uploads and builds what is new and builds the top level. `list` is the frame's open list outside any render pass, `slot` its frame
   // slot. True when anything was recorded (the caller's list state is gone). The check pass is not recorded here: it reads the occlusion's

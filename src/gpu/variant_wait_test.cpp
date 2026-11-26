@@ -55,6 +55,20 @@ void TestFallback() {
         "any extra: pending is always the answer");
 }
 
+void TestIdentityBloom() {
+  const uint32_t feature = chain::FeatureBit(sp::kFeatureBloomGauss);
+  for (uint32_t spec : {0u, 1u}) {
+    const uint32_t bloom = chain::Word(feature, spec);
+    const uint32_t other = chain::Word(chain::FeatureBit(sp::kFeatureLuminanceScale), spec);
+    const uint32_t composed = chain::Word(feature | chain::FeatureBit(sp::kFeatureHeadlight), spec);
+    Check(vw::BloomWord(bloom, true, true) == spec, "native-scale bloom keeps the guest specialization");
+    Check(vw::BloomWord(bloom, false, true) == bloom, "scaled bloom keeps the fix");
+    Check(vw::BloomWord(bloom, true, false) == bloom, "the A/B arm keeps native-scale bloom");
+    Check(vw::BloomWord(other, true, true) == other, "the source scale of exposure is independent");
+    Check(vw::BloomWord(composed, true, true) == composed, "other features survive in composed words");
+  }
+}
+
 // The case the runs showed: a lit world draw writes the stencil, the game's rule says no, and the draw has the headlight and/or the planes.
 void TestTheStencilWritingLitDraw() {
   const bool rule = false;  // Scene::MaySkipForPipeline on a stencil-writing draw (and on a 1-sample one)
@@ -301,6 +315,7 @@ int main(int argc, char** argv) {
     gpu = slash == std::string::npos ? std::string(".") : here.substr(0, slash);
   }
   TestFallback();
+  TestIdentityBloom();
   TestTheStencilWritingLitDraw();
   TestLadders();
   TestWordWithoutHeadlight();

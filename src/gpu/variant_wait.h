@@ -106,6 +106,14 @@ constexpr bool HasRoadMirrorBlur(uint32_t ps_word) {
   return larecomp::shaderpack::chain::HasFeature(ps_word, larecomp::shaderpack::kFeatureRoadMirrorBlur);
 }
 
+// The bloom variant's unit-scale tap is the guest tap. Keep its alpha-test
+// specialization and any word composed with other features.
+constexpr uint32_t BloomWord(uint32_t word, bool unit_scale, bool skip_identity) {
+  namespace sp = larecomp::shaderpack;
+  return skip_identity && unit_scale && sp::chain::FeaturesOf(word) == sp::chain::FeatureBit(sp::kFeatureBloomGauss)
+             ? sp::chain::SpecOf(word) : word;
+}
+
 // The ladder of one draw: the rungs in the order Scene::Prepare asks for them, each with who answers "pending". `extras` are those of the full key
 // (planes attached, features in its pixel word). The final rung has no extras.
 struct Rung {

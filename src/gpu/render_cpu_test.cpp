@@ -87,6 +87,24 @@ void TestSamplerOff() {
   Check(all && s.Scale(77) == 77, "Configure(false) goes back to timing every draw");
 }
 
+void TestTimingDemand() {
+  Check(!DrawTimingWanted(false, false, false, false), "regular draws need no preparation timers");
+  Check(DrawTimingWanted(true, false, false, false), "draw timing requests preparation timers");
+  Check(DrawTimingWanted(false, true, false, false), "scene profiling requests preparation timers");
+  Check(DrawTimingWanted(false, false, true, false), "render CPU comparisons request preparation timers");
+  Check(DrawTimingWanted(false, false, false, true), "mirror census requests preparation timers");
+  for (bool sampled : {false, true}) {
+    DrawSampler sampler;
+    sampler.Configure(sampled, false);
+    sampler.NextFrame();
+    bool took_sample = false;
+    for (int i = 0; i < 64; ++i) took_sample |= sampler.Take();
+    Check(!sampler.enabled() && !took_sample, "no sample while timing is off");
+    sampler.Configure(sampled, true);
+    Check(sampler.enabled() && sampler.Take(), "timing can be configured again");
+  }
+}
+
 void TestSamplerOn() {
   DrawSampler s;
   s.Configure(true);
@@ -637,6 +655,7 @@ int main(int argc, char** argv) {
   }
   TestBits();
   TestSamplerOff();
+  TestTimingDemand();
   TestSamplerOn();
   TestSamplerEstimate();
   TestSamplerPhase();

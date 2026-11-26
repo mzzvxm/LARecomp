@@ -18,8 +18,9 @@ GpuTiming::~GpuTiming() {
   Shutdown();
 }
 
-void GpuTiming::Initialize(Device& device) {
-  if (available_) {
+void GpuTiming::Initialize(Device& device, bool requested) {
+  requested_ = requested;
+  if (!requested || available_) {
     return;
   }
   if (!backend::TimestampsSupported(device.device())) {
@@ -141,7 +142,7 @@ GpuTiming::CityBuild GpuTiming::ReadCityBuild(uint32_t slot, bool device_lost) {
 
 std::string GpuTiming::TakeSummary() {
   if (!available_) {
-    return "GPU time unavailable";
+    return requested_ ? "GPU time unavailable" : "GPU timing off";
   }
   if (frames_ == 0) {
     return "GPU time: no frame measured yet";

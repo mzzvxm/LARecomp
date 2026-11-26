@@ -105,7 +105,7 @@ class GeometryCache {
   // mcla_gpu_scene_profile: time the stages of Prepare (the Scene sets it).
   void SetProfile(bool on) { profile_ = on; }
   // render_cpu_mask bit 1: Prepare's own statistic (stats_.prepare_cycles) reads the clock on one draw in seven (render_cpu.h).
-  void SetSampledTiming(bool sampled) { prepare_sampler_.Configure(sampled); }
+  void SetDrawTiming(bool sampled, bool enabled) { prepare_sampler_.Configure(sampled, enabled); }
   // Frames of use in a row with a change before a watched region is hashed.
   static constexpr uint32_t kDynamicStreak = 3;
   // Frames of use in a row without a change before a hashed region is watched

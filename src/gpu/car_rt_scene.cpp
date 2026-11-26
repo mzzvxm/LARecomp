@@ -555,6 +555,10 @@ bool CarRtScene::IsTrigger(const ResolveRecord& record, const ResolveCache::Summ
          uint32_t(summary.y1) <= height;
 }
 
+bool CarRtScene::WantsResolve(bool gate_unused) const {
+  return rt_scene::NeedsResolve(ready_, gate_unused, Wants(), ready_ && service_ && service_->CityWanted());
+}
+
 bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            uint32_t slot) {
   trigger_this_call_ = false;

@@ -295,6 +295,8 @@ const ItemDef kDebugPerformanceItems[] = {
     Bool("PM_RxDbgLimitSpin",  "frame_limit_spin",       "FPS LIMIT SPIN: "),
     NativeOnly(Str("PM_RxDbgRenderWait", "render_wait_mode", "RENDER THREAD WAIT: ",
                    kRenderWaitVals, kRenderWaitNames, Len(kRenderWaitVals))),
+    NativeOnly(Bool("PM_RxDbgUnusedRt", "mcla_gpu_gate_unused_rt_scene", "GATE UNUSED RT SCENE: ")),
+    NativeOnly(Bool("PM_RxDbgIdentityBloom", "mcla_gpu_skip_identity_bloom", "SKIP NATIVE-SCALE BLOOM VARIANT: ")),
 #if defined(_WIN32)
     NativeOnly(Bool("PM_RxDbgVkPresentPacing", "mcla_gpu_vk_present_pacing", "VULKAN PRESENT PACING: ")),
 #endif

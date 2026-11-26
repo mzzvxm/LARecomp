@@ -1549,8 +1549,12 @@ bool TemporalSystem::RecordUpscale(plume::RenderCommandList* list) {
   return true;
 }
 
+bool TemporalSystem::WantsRrHitImages() const {
+  return rr_pass_ && rr_pass_->wanted();
+}
+
 void TemporalSystem::RecordRrGuides(plume::RenderCommandList* list, const TemporalMotion::Kept& kept, uint32_t width, uint32_t height) {
-  if (!rr_pass_ || !rr_pass_->wanted()) {
+  if (!WantsRrHitImages()) {
     return;
   }
   const temporal::Camera& cam = frame_.camera;

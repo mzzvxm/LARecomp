@@ -29,6 +29,10 @@ constexpr bool Has(int32_t mask, Bits bit) {
   return (mask & bit) != 0;
 }
 
+constexpr bool DrawTimingWanted(bool requested, bool profile, bool ab, bool mirror_census) {
+  return requested || profile || ab || mirror_census;
+}
+
 // "Time this draw?" for a statistic that sums the time of every draw. Reading the TSC costs
 // about 7 ns on the test PC (4 reads a draw, ~3800 draws a frame: 0.1 ms a frame, about 3% of
 // what the render thread does in a race); one draw in kPeriod is timed and its time counted
@@ -46,7 +50,8 @@ class DrawSampler {
  public:
   static constexpr uint32_t kPeriod = 7;
 
-  void Configure(bool sampled) {
+  void Configure(bool sampled, bool enabled = true) {
+    enabled_ = enabled;
     period_ = sampled ? kPeriod : 1u;
     countdown_ = 1;
     phase_ = 0;
@@ -54,16 +59,17 @@ class DrawSampler {
   // At a frame's start: the next frame times the draws whose index has the next phase (the first draw of the frame
   // counts down from 1 + phase). Not sampled: nothing to do.
   void NextFrame() {
-    if (period_ == 1u) {
+    if (!enabled_ || period_ == 1u) {
       return;
     }
     phase_ = (phase_ + 1u) % period_;
     countdown_ = 1u + phase_;
   }
   bool sampled() const { return period_ != 1u; }
+  bool enabled() const { return enabled_; }
   // True on the draws whose time is to be read.
   bool Take() {
-    if (--countdown_ != 0) {
+    if (!enabled_ || --countdown_ != 0) {
       return false;
     }
     countdown_ = period_;
@@ -73,6 +79,7 @@ class DrawSampler {
   uint64_t Scale(uint64_t measured) const { return measured * period_; }
 
  private:
+  bool enabled_ = true;
   uint32_t period_ = 1;
   uint32_t countdown_ = 1;
   uint32_t phase_ = 0;
