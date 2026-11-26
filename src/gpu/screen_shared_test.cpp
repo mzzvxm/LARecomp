@@ -1112,7 +1112,7 @@ void SourceChecksSs1(const std::string& gpu) {
   // NOTHING IS RECORDED WITHOUT A WANT, by construction
   const std::string capture = body(shared_cpp, "bool ScreenShared::CapturePost(", "// ---------------------------------------------------------------------------\n// the debug view");
   Check(!capture.empty() && Has(capture, "if (!list || !capture_wanted() || !IsTrigger(record, summary, anchor_seen_, composite_seen_, trigger_seen_)) {\n    return false;\n  }") &&
-            Count(capture, "DrawInto(") == 2 && At(capture, "DrawInto(") > At(capture, "if (!ColourPipelinesReady()) {"),
+            Count(capture, "DrawInto(") == 2 && At(capture, "DrawInto(") > At(capture, "if (!packed && !ColourPipelinesReady(false)) {"),
         "CapturePost leaves at once unless a capture is planned at the trigger, and draws only after its pipelines are made");
   Check(Has(shared_h, "bool capture_wanted() const { return !post_done_ && (plan_.make & screen::ProductBit(screen::kColourPost)) != 0; }"), "a capture is planned only by the plan's make");
   Check(Has(capture, "++colour_missing_run_;") && Has(capture, "screen::JudgeColourPartner(false, colour_missing_run_) == screen::ColourPartner::kEarly") && Has(capture, "colour_missing_run_ = 0;") &&

@@ -131,6 +131,7 @@ constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
 constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
+constexpr double kVramLogVals[]           = {0.0, 60.0, 300.0, 600.0, 1800.0};
 constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
 // The UI sharpening's strength (ui_sharp.h, mcla_ui_sharp_strength): 1 is the default, 0.5 half of it, 2 a harder edge; 0 does nothing (the Dbl row shows it as NONE).
@@ -166,6 +167,9 @@ const ItemDef kDebugHubItems[] = {
 // and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
 // page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
 const ItemDef kDebugFixesItems[] = {
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Bool("PM_RxDbgVramSavings", "mcla_gpu_vram_savings", "VRAM SAVINGS: ")),
+#endif
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
     Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",
@@ -481,7 +485,7 @@ const ItemDef kDebugLoggingItems[] = {
     NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
     NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
-                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
+                   kVramLogVals, Len(kVramLogVals), "%g", "", "OFF")),
 #endif
 };
 

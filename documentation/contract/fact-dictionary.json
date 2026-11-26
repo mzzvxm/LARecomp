@@ -17,6 +17,7 @@
     "gpu.vendor_id": { "type": "int", "l0": true, "source": "DXGI / Vulkan adapter description" },
     "gpu.device_id": { "type": "int", "l0": true, "source": "DXGI / Vulkan adapter description" },
     "gpu.vram_mb": { "type": "int", "l0": true, "source": "DXGI / Vulkan adapter description" },
+    "gpu.vram_warning": { "type": "string", "l0": false, "source": "gpu/vram_budget.cpp, compact setting hint sampled when the game warns about video memory pressure", "used_by": "Graphics Preset warning" },
     "gpu.driver_version": { "type": "string", "l0": true, "source": "DXGI / Vulkan adapter description" },
     "gpu.software": { "type": "bool", "l0": true, "source": "a software adapter (WARP, llvmpipe)" },
     "gpu.shared_memory": { "type": "bool", "l0": false, "source": "UMA / integrated type (gpu_class.h)", "used_by": "class" },

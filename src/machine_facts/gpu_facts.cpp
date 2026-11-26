@@ -11,6 +11,7 @@
 #include "gpu/rt_tier.h"
 #include "gpu/shadow_filter.h"
 #include "gpu/temporal_dlss.h"
+#include "gpu/vram_warning.h"
 #include "settings/larecomp_settings.h"
 
 #include <algorithm>
@@ -323,6 +324,7 @@ GpuFacts ReadGpuFacts(bool probe, const std::filesystem::path& folder) {
 }
 
 void RefreshGpuFacts(GpuFacts& out) {
+  out.vram_warning = vram_warning::CurrentHint();
   if (!MachineFactsDevice()) return;
   ReadTier(out);
   out.car_rt = CarRtReflAvailable();

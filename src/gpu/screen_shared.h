@@ -315,9 +315,9 @@ class ScreenShared {
   uint32_t RecordDepthFused(plume::RenderCommandList* list, const screen::extract::Frame& frame, const AoPush& level0, plume::RenderPipeline* mip, uint32_t stencil_slot, bool source_bits,
                             bool multisampled);
   // The colour capture's pipelines, the same way: null while one is being made or when it could not be made (no capture then).
-  plume::RenderPipeline* ColourPipeline(uint32_t pass);
-  std::unique_ptr<plume::RenderPipeline> MakeColourPipeline(uint32_t pass);
-  bool ColourPipelinesReady();
+  plume::RenderPipeline* ColourPipeline(uint32_t variant);
+  std::unique_ptr<plume::RenderPipeline> MakeColourPipeline(uint32_t variant);
+  bool ColourPipelinesReady(bool packed);
   void ReleaseColourPost();
   // The lights' share (screen_lights.cpp): the frame's start (the wants, the idle count), the images' release, and the capture both sides of the light pass share.
   void LightsBeginFrame();
@@ -337,12 +337,13 @@ class ScreenShared {
   std::unique_ptr<plume::RenderShader> view_shader_;
   std::array<std::unique_ptr<plume::RenderShader>, kColourPassCount> colour_shaders_;
   std::unique_ptr<plume::RenderPipeline> hiz_pipeline_;
-  std::array<std::unique_ptr<plume::RenderPipeline>, kColourPassCount> colour_pipelines_;
+  std::array<std::unique_ptr<plume::RenderPipeline>, 2 * kColourPassCount> colour_pipelines_;
   bool hiz_listed_ = false;
   bool hiz_failed_ = false;
   bool view_failed_ = false;
-  bool colour_listed_ = false;
-  bool colour_failed_ = false;
+  bool colour_listed_[2] = {};
+  bool colour_failed_[2] = {};
+  bool packed_colour_supported_ = false;
   std::vector<ViewPipeline> view_pipelines_;
 
   // The extraction (SS-2): the pass layout (128 bytes of push constants, both stages), the shaders and pipelines of screen::extract::Kind, and the images it keeps

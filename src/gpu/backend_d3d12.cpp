@@ -440,6 +440,100 @@ uma_budget::Result BudgetOf(plume::RenderDevice* device, const DXGI_QUERY_VIDEO_
 
 }  // namespace
 
+namespace {
+
+struct PlacedTarget final : plume::D3D12Texture {
+  std::shared_ptr<D3D12MA::Allocation> heap;
+  ~PlacedTarget() override {
+    if (d3d) {
+      d3d->Release();
+      d3d = nullptr;
+    }
+  }
+};
+
+D3D12_RESOURCE_DESC TargetDesc(const plume::RenderTextureDesc& desc) {
+  D3D12_RESOURCE_DESC target{};
+  target.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+  target.Width = desc.width;
+  target.Height = desc.height;
+  target.DepthOrArraySize = 1;
+  target.MipLevels = 1;
+  target.Format = desc.format == plume::RenderFormat::R16_FLOAT
+                      ? DXGI_FORMAT_R16_FLOAT : DXGI_FORMAT_R16G16B16A16_FLOAT;
+  target.SampleDesc.Count = 1;
+  target.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
+  return target;
+}
+
+}  // namespace
+
+AliasedTargets CreateAliasedTargets(plume::RenderDevice* device,
+                                    const plume::RenderTextureDesc& first,
+                                    const plume::RenderTextureDesc& second) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  if (!dev || !dev->d3d || !dev->allocator) {
+    return {};
+  }
+  const auto a = TargetDesc(first);
+  const auto b = TargetDesc(second);
+  const auto info_a = dev->d3d->GetResourceAllocationInfo(0, 1, &a);
+  const auto info_b = dev->d3d->GetResourceAllocationInfo(0, 1, &b);
+  const D3D12_RESOURCE_ALLOCATION_INFO info{std::max(info_a.SizeInBytes, info_b.SizeInBytes),
+                                            std::max(info_a.Alignment, info_b.Alignment)};
+  if (info.SizeInBytes == UINT64_MAX || info.Alignment == 0) {
+    return {};
+  }
+  D3D12MA::ALLOCATION_DESC request{};
+  request.HeapType = D3D12_HEAP_TYPE_DEFAULT;
+  request.ExtraHeapFlags = D3D12_HEAP_FLAG_ALLOW_ONLY_RT_DS_TEXTURES;
+  D3D12MA::Allocation* allocation = nullptr;
+  if (FAILED(dev->allocator->AllocateMemory(&request, &info, &allocation)) || !allocation) {
+    return {};
+  }
+  const std::shared_ptr<D3D12MA::Allocation> heap(allocation, [](auto* p) { p->Release(); });
+  const auto make = [&](const auto& native, const auto& desc) -> std::unique_ptr<plume::RenderTexture> {
+    auto image = std::make_unique<PlacedTarget>();
+    image->heap = heap;
+    image->device = dev;
+    image->desc = desc;
+    if (FAILED(dev->allocator->CreateAliasingResource(allocation, 0, &native, D3D12_RESOURCE_STATE_COMMON,
+                                                       nullptr, IID_PPV_ARGS(&image->d3d)))) {
+      return nullptr;
+    }
+    return image;
+  };
+  auto x = make(a, first);
+  auto y = x ? make(b, second) : nullptr;
+  if (!x || !y) {
+    return {};
+  }
+  return {std::move(x), std::move(y), info.SizeInBytes};
+}
+
+void ActivateAliasedTarget(plume::RenderCommandList* list, plume::RenderTexture* texture) {
+  auto* commands = static_cast<plume::D3D12CommandList*>(list);
+  auto* image = static_cast<plume::D3D12Texture*>(texture);
+  if (!commands || !commands->d3d || !image || !image->d3d) {
+    return;
+  }
+  // CHECK: D3D12 debug layer on both handoffs, including a frame split between them.
+  D3D12_RESOURCE_BARRIER barrier{};
+  barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_ALIASING;
+  barrier.Aliasing.pResourceAfter = image->d3d;
+  commands->d3d->ResourceBarrier(1, &barrier);
+}
+
+bool SupportsPackedColourTarget(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::D3D12Device*>(device);
+  D3D12_FEATURE_DATA_FORMAT_SUPPORT support{DXGI_FORMAT_R11G11B10_FLOAT};
+  constexpr auto required = D3D12_FORMAT_SUPPORT1_RENDER_TARGET | D3D12_FORMAT_SUPPORT1_SHADER_SAMPLE |
+                            D3D12_FORMAT_SUPPORT1_SHADER_LOAD;
+  return dev && dev->d3d &&
+         SUCCEEDED(dev->d3d->CheckFeatureSupport(D3D12_FEATURE_FORMAT_SUPPORT, &support, sizeof(support))) &&
+         (support.Support1 & required) == required;
+}
+
 VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   // The LOCAL segment group is the budget of a card with its own memory. On an adapter that shares
   // memory with the CPU Microsoft's residency page says UMA adapters have one pool, and LOCAL is that

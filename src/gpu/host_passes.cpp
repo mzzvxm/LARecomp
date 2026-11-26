@@ -195,18 +195,26 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
                              plume::RenderFormat format, const char* name,
                              plume::RenderTextureFlags flags, uint32_t samples) {
   samples = std::max<uint32_t>(samples, 1);
-  if (image.texture && image.width == width && image.height == height && image.format == format &&
-      image.flags == flags && image.samples == samples) {
+  if (image.texture && !image.alias_bytes && image.width == width && image.height == height &&
+      image.format == format && image.flags == flags && image.samples == samples) {
     return true;
   }
   ReleaseImage(image);
-  const bool render_target = (flags & plume::RenderTextureFlag::RENDER_TARGET) != 0;
   plume::RenderTextureDesc desc =
       plume::RenderTextureDesc::Texture2D(width, height, 1, format, flags);
   desc.multisampling.sampleCount = plume::RenderSampleCounts(samples);
+  if (!device_ || !heap_ || !frames_) {
+    return false;
+  }
   image.texture = device_->CreateTexture(desc, name);
-  if (image.texture) {
-    plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(format);
+  return FinishImage(image, desc, name);
+}
+
+bool HostPasses::FinishImage(HostImage& image, const plume::RenderTextureDesc& desc, const char* name) {
+  const bool render_target = (desc.flags & plume::RenderTextureFlag::RENDER_TARGET) != 0;
+  const uint32_t samples = desc.multisampling.sampleCount;
+  if (image.texture && device_ && heap_) {
+    plume::RenderTextureViewDesc view = plume::RenderTextureViewDesc::Texture2D(desc.format);
     view.mipLevels = 1;
     image.view = device_->CreateTextureView(*image.texture, view, name);
     if (render_target) {
@@ -223,37 +231,87 @@ bool HostPasses::EnsureImage(HostImage& image, uint32_t width, uint32_t height,
     // Asked again by the next frame while the cause lasts: the first 8 are logged.
     if (image_failures_logged_ < 8) {
       ++image_failures_logged_;
-      REXLOG_ERROR("[gpu] {}: the {}x{}{} image could not be made", name, width, height,
+      REXLOG_ERROR("[gpu] {}: the {}x{}{} image could not be made", name, desc.width, desc.height,
                    samples > 1 ? std::format(" {} sample", samples) : std::string());
     }
     ReleaseImage(image);
     return false;
   }
-  image.width = width;
-  image.height = height;
-  image.format = format;
-  image.flags = flags;
+  image.width = desc.width;
+  image.height = desc.height;
+  image.format = desc.format;
+  image.flags = desc.flags;
   image.samples = samples;
   image.serial = ++image_serial_;
   image.layout = plume::RenderTextureLayout::UNKNOWN;
   return true;
 }
 
+bool HostPasses::EnsureAliasedTargets(HostImage& first, const plume::RenderTextureDesc& first_desc,
+                                      const char* first_name, HostImage& second,
+                                      const plume::RenderTextureDesc& second_desc, const char* second_name) {
+  const auto matches = [](const HostImage& image, const plume::RenderTextureDesc& desc) {
+    return image.texture && image.alias_bytes && image.width == desc.width &&
+           image.height == desc.height && image.format == desc.format;
+  };
+  if (matches(first, first_desc) && matches(second, second_desc)) {
+    return true;
+  }
+  if (!device_ || !frames_ || !heap_ || device_->frame() < next_alias_attempt_) {
+    return false;
+  }
+  auto textures = backend::CreateAliasedTargets(device_->device(), first_desc, second_desc);
+  if (textures.bytes == 0) {
+    next_alias_attempt_ = device_->frame() + Device::kBackoffFrames;
+    return false;
+  }
+
+  HostImage a, b;
+  a.texture = std::move(textures.first);
+  b.texture = std::move(textures.second);
+  a.alias_bytes = b.alias_bytes = textures.bytes;
+  if (!FinishImage(a, first_desc, first_name) || !FinishImage(b, second_desc, second_name)) {
+    ReleaseImage(a);
+    ReleaseImage(b);
+    next_alias_attempt_ = device_->frame() + Device::kBackoffFrames;
+    return false;
+  }
+  ReleaseImage(first);
+  ReleaseImage(second);
+  first = std::move(a);
+  second = std::move(b);
+  REXLOG_INFO("[gpu] video memory: {} and {} share {:.2f} MiB",
+              first_name, second_name, double(textures.bytes) / double(1u << 20));
+  return true;
+}
+
+void HostPasses::ActivateAliasedTarget(plume::RenderCommandList* list, HostImage& image) const {
+  if (list && image.texture && image.alias_bytes) {
+    backend::ActivateAliasedTarget(list, image.texture.get());
+    image.layout = plume::RenderTextureLayout::UNKNOWN;  // DrawPass clears after every activation.
+  }
+}
+
 void HostPasses::ReleaseImage(HostImage& image) {
   // The slot first, so the descriptor is null before the texture dies; the
   // objects after the lists that still name them (FrameRing serials).
-  if (image.slot != kInvalidBindlessSlot) {
+  if (heap_ && image.slot != kInvalidBindlessSlot) {
     heap_->ReleaseTexture(image.slot, TextureDimension::k2D);
   }
-  if (image.framebuffer) {
+  if (frames_ && image.framebuffer) {
     frames_->Retire(std::move(image.framebuffer));
   }
-  if (image.view) {
+  if (frames_ && image.view) {
     frames_->Retire(std::move(image.view));
   }
   if (image.texture) {
-    device_->NoteReleased(TextureBytes(image.width, image.height, 1, image.format, image.samples));
-    frames_->Retire(std::move(image.texture));
+    // Aliases share the allocation until both placements retire.
+    if (device_ && !image.alias_bytes) {
+      device_->NoteReleased(TextureBytes(image.width, image.height, 1, image.format, image.samples));
+    }
+    if (frames_) {
+      frames_->Retire(std::move(image.texture));
+    }
   }
   image = HostImage{};
 }

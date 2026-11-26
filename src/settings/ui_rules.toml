@@ -130,6 +130,7 @@ values = [
   { id = "custom", label = "CUSTOM" },
 ]
 states = [
+  { when = "known(gpu.vram_warning)", label = "PRESET (VRAM! {gpu.vram_warning})", reason = "The game detected high video memory use or a failed allocation. Review Render Scale, MSAA, Upscaling, Frame Generation, RT City Reflections, RT Bounce Light, or Light Shadows." },
   { when = "gpu.rt_tier == 'none' && s.mcla_gpu_preset in ['enhanced_rt', 'enhanced_rt_ultra']", enabled = true, suffix = " (NO RT GPU)", reason = "Needs a graphics card that can ray trace." },
   { when = "s.mcla_gpu_preset == d.recommended_preset", enabled = true, suffix = " (RECOMMENDED)" },
 ]

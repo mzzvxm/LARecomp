@@ -362,6 +362,10 @@ void SunShafts::BeginFrame() {
     HoldUntilBuilt(&level);
   }
   level_ = level;
+  if (passes_ && level_ == Level::kOff && sky_.texture &&
+      larecomp::settings::mcla_gpu_vram_savings.Get()) {
+    ReleaseImages();
+  }
 }
 
 uint64_t SunShafts::HeldBytes() const {

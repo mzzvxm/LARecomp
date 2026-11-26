@@ -120,6 +120,7 @@ class UploadRing {
 
   // Every chunk the ring holds: the slots', the one-frame oversized ones and the spares.
   size_t chunk_count() const;
+  uint64_t HeldBytes() const;
   size_t spare_count() const { return spares_.size(); }
 
  private:

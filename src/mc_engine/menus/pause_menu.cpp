@@ -81,6 +81,7 @@
 #include "gpu/renderer_choice.h"
 #include "gpu/shadow_filter.h"
 #include "gpu/side_views.h"
+#include "gpu/vram_warning.h"
 #endif
 
 // hooks/ui.cpp: the glyph set in use (button_prompts, auto resolved).
@@ -2558,6 +2559,10 @@ class PauseRuleEnv final : public expr::Env {
         if (path == "api.city_rt_shadows") return Value::Bool(gpu::CityRtShadowsAvailable());
         if (path == "build.rt_gi_update_built") return Value::Bool(gpu::RtGiUpdateBuilt());
         if (path == "features.pcss") return Value::Bool(gpu::shadow_filter::PcssRuns());
+        if (path == "gpu.vram_warning") {
+            const auto hint = gpu::vram_warning::CurrentHint();
+            return hint.empty() ? Value{} : text(hint);
+        }
         if (path == "live.hdr_active") return Value::Bool(gpu::HdrOutputActive());
         if (path == "features.hdr.auto_paper_white_nits")
             return Value::Number(std::nearbyint(gpu::HdrAutoPaperWhiteNits()));

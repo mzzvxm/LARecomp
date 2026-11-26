@@ -28,6 +28,7 @@ struct GpuFacts {
   std::optional<size_t> selected;
   std::optional<bool> rtx, rx9000, rt_benchmarked, handheld;
   std::optional<std::string> class_forced, rt_tier, rt_rung;
+  std::string vram_warning;
   std::string rt_tier_why;
   std::string api, api_version, shader_model;
   std::optional<bool> dxr_1_1, ray_query, car_rt, city_rt_shadows;

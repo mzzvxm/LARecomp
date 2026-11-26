@@ -863,6 +863,7 @@ add_executable(larecomp_uma_budget_test EXCLUDE_FROM_ALL uma_budget_test.cpp)
 # that fits) have one too:
 #   cmake --build <dir> --target larecomp_vram_room_test, then run src/gpu/larecomp_vram_room_test (exit 0 = passed).
 add_executable(larecomp_vram_room_test EXCLUDE_FROM_ALL vram_room_test.cpp)
+add_executable(larecomp_vram_quality_test EXCLUDE_FROM_ALL vram_quality_test.cpp)
 # The level seeds' rules (level_seeds.h: which saved records are made ahead for a new MSAA level, the memory bound, the queue rules, the
 # run's counts) have one too: no renderer, no device.
 #   cmake --build <dir> --target larecomp_level_seeds_test, then run src/gpu/larecomp_level_seeds_test (exit 0 = passed).
