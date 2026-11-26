@@ -25486,6 +25486,16 @@ name = "Patch_RearViewCadence"
 registers = ["r17", "r21", "r27"]
 after_instruction = false
 
+# The effective phase mask gates the clients, but the begin and end callbacks
+# still run. Skip both callbacks as well on a held environment map, before
+# they can change its basis, clear either half or regenerate the mip/spec chain.
+[[midasm_hook]]
+address = 0x822E66D0
+name = "Patch_SkipHeldEnvironmentPhase"
+registers = ["r30"]
+after_instruction = false
+jump_address_on_true = 0x822E6908
+
 # 0x822E6908: the phase increment in sub_822E6408, after both end calls. The mirror's callback draws the sky before restoring the main camera.
 # r30 still names the finished phase. For 0x1000000 close the shared view and restore the bit a held frame took out of renderer+364.
 [[midasm_hook]]

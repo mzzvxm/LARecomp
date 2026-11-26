@@ -104,13 +104,15 @@ std::vector<std::string> Ids(const RuleView& row) {
 
 void Lighting(Fixture& f) {
     constexpr const char* class_rows[] = {
-        "PM_RxGpuShadowFilter", "PM_RxGpuShadowDetail", "PM_RxGpuCarRefl", "PM_RxGpuRoadRefl",
+        "PM_RxGpuShadowFilter", "PM_RxGpuShadowDetail", "PM_RxGpuRoadRefl",
         "PM_RxGpuContact", "PM_RxGpuSunShafts", "PM_RxGpuSsgi", "PM_RxGpuTrafficShadows", nullptr,
         nullptr /* the occlusion: its AUTO is the class cell or `rt` (rtao_setting.h), held below with the other labels */,
         "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics", nullptr,
         "PM_RxGpuSsr", "PM_RxGpuNeonLight", "PM_RxGpuSideMirrors",
     };
     static_assert(std::size(class_rows) == gc::kEffectCount);
+    Check(Ids(f.Row("PM_RxGpuCarRefl")) == (std::vector<std::string>{"off", "on"}),
+          "CAR REFLECTIONS", "same On/Off choices on every GPU");
     for (const auto cls : classes) for (const auto tier : tiers) for (bool handheld : flags) {
         f.F("gpu.class", gc::ClassName(cls));
         f.F("gpu.rt_tier", gc::RtTierName(tier));

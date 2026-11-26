@@ -47,6 +47,7 @@
 #include "descriptors.h"
 #include "draw_decode.h"
 #include "draw_state.h"
+#include "env_hold_link.h"
 #include "format.h"
 #include "gbuffer.h"
 #include "screen_shared.h"
@@ -815,6 +816,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  sample_env_light_ = false;
   visual_mask_ = mc::cinematic::CaptureVisualMask();
   visual_hdr_rows_ = 0;
   const bool capture_class = (visual_mask_ & vis::Bit(vis::kClass)) != 0;
@@ -1423,6 +1425,28 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
         mirror_frame_seen_ = true;
       }
       const bool consumers = !(mirror_draw && mirror_class_) && !mirror_redirected;  // a draw into the view is a second camera's: never the main view's effects' (whatever mcla_gpu_mirror_class says)
+      if (sample_env_light_ && consumers && d.key.color_count != 0 && (d.key.depth & 2u) != 0) {
+        const EdramKey color = ColorEdramKey(d.state, 0);
+        if (temporal::MatchMainView(&color, nullptr).color) {
+          // Same scene-light inputs the AO reads (PS c26 ambient and c39 sun).
+          const auto luma = [&](uint32_t slot) {
+            float result = 0.0f;
+            constexpr float weights[] = {0.2126f, 0.7152f, 0.0722f};
+            for (uint32_t i = 0; i < 3; ++i) {
+              const float value = std::bit_cast<float>(LoadBe32(banks.ps.data() + slot * 16 + i * 4));
+              if (!(value >= 0.0f && value <= 16.0f)) return -1.0f;
+              result += weights[i] * value;
+            }
+            return result;
+          };
+          const float ambient = luma(26);
+          const float sun = luma(39);
+          if (ambient > 0.0f && sun >= 0.0f) {
+            env_hold::g_brightness.store(ambient + sun, std::memory_order_relaxed);
+            sample_env_light_ = false;
+          }
+        }
+      }
       if (!consumers) {
         ++window_.mirror_class_skips;
       }
@@ -3555,6 +3579,33 @@ void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandLi
   }
 }
 
+void Scene::OnEnvMarker(uint32_t bucket, uint32_t renderer, plume::RenderCommandList* list) {
+  if (bucket != env_hold::kEnd) {
+    sample_env_light_ = larecomp::settings::mcla_gpu_env_hold.Get();
+    if (bucket == env_hold::kHeld) ++window_.env_held;
+    else ++window_.env_drawn;
+    if (list && pass_timing_ && pass_timing_->enabled()) {
+      BindFramebuffer(list, nullptr);
+      marked_framebuffer_ = nullptr;
+      pass_timing_->Mark(list, bucket == env_hold::kHeld ? "env map held" : "env map drawn");
+    }
+  }
+  if (bucket == env_hold::kDrawn) return;
+
+  const bool refreshed = bucket == env_hold::kEnd;
+  const bool ready = list && resolve_ && edram_ &&
+                     resolve_->EnvProductsReady(edram_->side_scales()[SideView::kEnv], refreshed);
+  if (!ready) {
+    const uint32_t previous = env_hold::g_ready_renderer.exchange(0, std::memory_order_acq_rel);
+    ++window_.env_incomplete;
+    if (!refreshed && previous != 0) {
+      REXLOG_WARN("[gpu] env map hold lost a resolved product; requesting a refresh");
+    }
+  } else if (refreshed) {
+    env_hold::g_ready_renderer.store(renderer, std::memory_order_release);
+  }
+}
+
 Scene::Skip Scene::RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list, bool* no_effect, std::string* detail) {
   (void)r;
   const XenosState& s = d.state;
@@ -4518,6 +4569,9 @@ void Scene::Add(Stats& into, const Stats& from) const {
   into.tiling_ends += from.tiling_ends;
   into.prepare_cycles += from.prepare_cycles;
   into.mirror_prepared += from.mirror_prepared;
+  into.env_drawn += from.env_drawn;
+  into.env_held += from.env_held;
+  into.env_incomplete += from.env_incomplete;
   into.mirror_recorded += from.mirror_recorded;
   into.mirror_frames += from.mirror_frames;
   into.mirror_cycles += from.mirror_cycles;
@@ -4714,6 +4768,10 @@ void Scene::Report(const char* why) {
   window_.pipelines_failed += ps.failed;
   window_.pipeline_create_ns += ps.create_ns;
   const Stats& w = window_;
+  if (w.env_drawn || w.env_held) {
+    REXLOG_INFO("[gpu] env map ({}): {} drawn, {} held, {} product checks failed",
+                why, w.env_drawn, w.env_held, w.env_incomplete);
+  }
   if (w.frames == 0 && w.draws == 0) {
     return;
   }

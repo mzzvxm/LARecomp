@@ -257,6 +257,7 @@ class Scene {
   // begin moves the frame to the view's pass, the end closes it and resolves the picture. Render thread. `tag`: the begin's second word, the field the phase's camera was built with (mirror_view_link.h
   // PhaseField, MV-J2); the end's is 0.
   void OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandList* list);
+  void OnEnvMarker(uint32_t bucket, uint32_t renderer, plume::RenderCommandList* list);
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
@@ -688,6 +689,7 @@ class Scene {
   // the set search; the entry is checked as the search checks a way.
   std::array<FetchMemo*, guest::kFetchGroupCount> last_fetch_{};
   uint64_t frame_serial_ = 0;
+  bool sample_env_light_ = false;
   // The scene camera's cut (NoteAnchorCut): this frame's anchor is the frame of a cut the game asked for / that anchor draw has not
   // had its blur constants made neutral yet.
   bool anchor_cut_ = false;
@@ -748,6 +750,9 @@ class Scene {
     // The rear view mirror's draws (mirror_draws.h): prepared draws whose viewport is the mirror's rectangle, the ones of them recorded, the frames that had any,
     // the TSC cycles they took to prepare and record, and the ones kept from the main view's per-draw consumers (mcla_gpu_mirror_class).
     uint64_t mirror_prepared = 0;
+    uint64_t env_drawn = 0;
+    uint64_t env_held = 0;
+    uint64_t env_incomplete = 0;
     uint64_t mirror_recorded = 0;
     uint64_t mirror_frames = 0;
     uint64_t mirror_cycles = 0;

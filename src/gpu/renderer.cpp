@@ -2,6 +2,7 @@
 // renderer.h and gpu.h.
 
 #include "renderer.h"
+#include "env_hold_link.h"
 
 #include "mc_engine/cinematic/capture_mode.h"
 #include "settings/immortal.h"
@@ -702,6 +703,8 @@ void Renderer::Shutdown(bool fast_exit) {
     clock.Done();  // nothing more happens here: the close watchdog is not to wait for this shutdown
     return;
   }
+  env_hold::g_ready_renderer.store(0, std::memory_order_release);
+  env_hold::g_brightness.store(-1.0f, std::memory_order_relaxed);
   // The pacer drains what it holds and ends before anything waits the GPU idle or goes.
   clock.Stage("the frame generation pacer's stop");
   fg_.StopPacer();
@@ -995,6 +998,10 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       // the HUD, use the composite record as a one-way message to the render thread
       // (mc_engine/display/ultrawide.h, IsUiMessage): not a composition, no list to open.
       const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
+      if (env_hold::IsMarker(bucket)) {
+        scene_.OnEnvMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, OpenFrameList());
+        return;
+      }
       if (mirror_view::IsMarker(bucket)) {
         // The rear view mirror's phase (mirror_view.h): the markers need the open list (the view's pass, its resolve), unlike the UI messages below, which only set flags. They are on the
         // same side channel (top byte 0x7F), so they are told first.

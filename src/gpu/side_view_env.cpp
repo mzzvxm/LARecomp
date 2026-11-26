@@ -3,7 +3,7 @@
 //
 // What the game draws (GFX-UPGRADES-DESIGN.md 1.1, 4.2 2a, 6A.2 item 6 and 6B.2 item 2, the census of
 // 2026-11-13): the car paint, the windows and the bonnet reflect a 512x256 dual paraboloid view of the world
-// that the game draws every frame (about 240 draws, in two halves) into
+// that the game normally draws every frame (about 240 draws, in two halves) into
 //   colour k_2_10_10_10_FLOAT at EDRAM tile 416, pitch 520, 4 samples, and
 //   depth kD24FS8 at tile 0, pitch 520, 4 samples,
 // both bound through a surface declared 512x256, and resolves into a 512x256 k_16_16_16_16_EXPAND texture
@@ -22,12 +22,10 @@
 // instead of 6%, and the level pass's taps are a pixel shader constant in the game's texel size, so two
 // variants of the game's own shaders (shaderpack/variants/env_map.h, the variant pack, kEnvVariant) put those
 // taps back: the level pass on the 2x2 texels of a pixel of the next level, the reduction as an area average
-// of the same footprint. pipelines.cpp (WantedFeatures) draws them while this setting is above `game`.
+// of the same footprint. pipelines.cpp (WantedFeatures) draws them when the 2x mode is on.
 //
-// The class: both identities, at a scale of its own (the setting: 2x = 1,024x512, 3x = 1,536x768) with as
-// many host samples as keep the density of the game's four per guest pixel (HostSamples: one from 2x on, the
-// resolve averages a colour source's samples). At 1x it keeps the guest's four and the game's shaders: `game`
-// is the game's own picture.
+// Both identities use one sample at 2x (Car Reflections On) or the guest's
+// four samples at 1x (Off). The hold cadence is independent of the scale.
 //
 // The depth is not the class's alone: the night shadow's pass (dusk and night, colour k_8_8_8_8 at tile 832, pitch
 // 520, 4 samples, declared 512x512, resolved into a 512x512 k_8 texture) draws with the very same depth identity.
@@ -53,13 +51,12 @@
 //     variants_env_map_shaders has 4aa33d052d8aad13 and f92316724cfa62ed); the levels of the 2x map look like
 //     the game's (not twice as blurry) and the 3x map's levels do not shimmer; the specular copy does not
 //     sparkle while the sun or a lamp crosses the map (K-DRIVE).
-//  4. K-DAY with `game` against main: pixel-identical (the class and the variants change nothing at 1x);
-//     with `high` and `ultra` a building edge in the car's rear-window reflection is about 1/2 and 1/3 as
-//     wide (gfx_measure.py edge).
-//  5. A live change game -> ultra -> game: no validation message, "the car reflections side view ... is now
+//  4. With hold disabled, Off uses the stock picture and On halves the width of a building
+//     edge in the rear-window reflection (gfx_measure.py edge).
+//  5. A live change Off -> On -> Off: no validation message, "the car reflections side view ... is now
 //     made at" lines, a few frames of a reflection from the game's map at most while the pipelines of the
 //     1 sample draws (new keys, as the road reflection's) and of the variants are built the first time, the
-//     memory line grows by about 4 MiB (high) and 16 MiB (ultra).
+//     memory line grows by about 4 MiB at 2x.
 //  6. The pause menu's and the GPS map's world views draw the same identities (6B.2 item 6): the same scale
 //     applies, and the pause menu's car view (`tour_01_pause` of the race tour) shows the car with its
 //     reflection.
@@ -146,8 +143,6 @@ const SideViewRule kEnvRule = {
     .name = "car reflections",
     .matches = Matches,
     .setting = Setting,
-    // `auto` is game on Low and Mid, high on High (gpu_class.h, GFX-UPGRADES-DESIGN.md 9).
-    .effect = gpu_class::Effect::kEnvResolution,
     .host_samples = HostSamples,
 };
 

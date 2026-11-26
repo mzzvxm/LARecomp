@@ -8,6 +8,7 @@
 // the Xenia authors, BSD-3-Clause) for what the copy writes.
 
 #include "resolve.h"
+#include "env_hold_link.h"
 
 #include <algorithm>
 #include <bit>
@@ -445,6 +446,9 @@ void ResolveCache::Deactivate(Product& p) {
   if (!p.active) {
     return;
   }
+  if (p.key.base_page == env_hold::kMapPage || p.key.base_page == env_hold::kSpecPage) {
+    env_hold::g_ready_renderer.store(0, std::memory_order_release);
+  }
   p.active = false;
   UnindexRanges(p);
   const auto it = active_by_image_.find(ImageKey(p.key));
@@ -581,6 +585,28 @@ const ResolveCache::Product* ResolveCache::FindOverlap(uint32_t start, uint32_t 
     }
   });
   return found;
+}
+
+bool ResolveCache::EnvProductsReady(Scale map_scale, bool refreshed) {
+  DrainInvalidations();
+  const Product* map = FindOverlap(env_hold::kMapPage << 12, 1);
+  const Product* spec = FindOverlap(env_hold::kSpecPage << 12, 1);
+  const auto valid = [this, refreshed](const Product* p, uint32_t page, uint32_t width,
+                                      uint32_t height, size_t levels) {
+    return p && p->active && p->texture && !p->depth_source &&
+           p->layout == plume::RenderTextureLayout::SHADER_READ &&
+           p->key.base_page == page && p->key.width == width && p->key.height == height &&
+           p->coverage.size() == levels &&
+           std::all_of(p->coverage.begin(), p->coverage.end(), [this, refreshed](const auto& c) {
+             return c.cells_x && c.cells_y && c.complete() &&
+                    ((c.last_write_frame == frame_) == refreshed);
+           });
+  };
+  // CHECK: capture a drawn and a held frame on both APIs. The held frame must
+  // have the same four map levels and specular copy, with no clears or resolves.
+  return valid(map, env_hold::kMapPage, 512, 256, 4) && map->own_scale &&
+         map->scale == map_scale && map->key.mip_page == env_hold::kMipPage &&
+         valid(spec, env_hold::kSpecPage, 64, 32, 1);
 }
 
 void ResolveCache::OnLock(const LockRecord& record,
@@ -1686,6 +1712,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       // except where it stops at the level's edge).
       if (level < p->coverage.size()) {
         Product::Coverage& c = p->coverage[level];
+        c.last_write_frame = frame_;
         const uint32_t cx0 = uint32_t(tx0) / 8, cy0 = uint32_t(ty0) / 8;
         const uint32_t cx1 = std::min((uint32_t(tx1) + 7) / 8, c.cells_x);
         const uint32_t cy1 = std::min((uint32_t(ty1) + 7) / 8, c.cells_y);

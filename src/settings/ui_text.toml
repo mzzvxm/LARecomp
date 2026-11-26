@@ -237,8 +237,7 @@ native = "kRoadReflectionDynamics"
 help = "Sharpens the game's reflections in wet roads, water and windows."
 
 [rows.PM_RxGpuCarRefl]
-native = "kCarReflectionDynamics"
-help = "Sharpens the game's environment reflections in car paint and glass."
+help = "Makes reflections in car paint, windows and trim sharper. On uses a 1024x512 map. Off uses the game's 512x256 map."
 
 [rows.PM_RxGpuCarSelfRefl]
 native = "kCarSelfReflDynamics"

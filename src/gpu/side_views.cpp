@@ -12,6 +12,7 @@
 
 #include "device.h"
 #include "edram.h"
+#include "env_hold_link.h"
 #include "render_cpu.h"
 #include "settings/larecomp_settings.h"
 
@@ -89,11 +90,15 @@ std::string SettingText(SideView view) {
 }
 
 SideLevel LevelOf(SideView view) {
+  if (view == SideView::kEnv) {
+    return env_hold::Resolution(SettingText(view)) == "on" ? SideLevel::kHigh : SideLevel::kGame;
+  }
   // The pure part (the `auto` table, a word that is no level) is side_views.h's LevelFor.
   return LevelFor(gpu_class::Current(), Rule(view).effect, SettingText(view));
 }
 
 std::string AutoLabel(SideView view) {
+  if (view == SideView::kEnv) return {};
   return gpu_class::AutoLabel(Rule(view).effect);
 }
 

@@ -816,11 +816,12 @@ class GPUSettings final : public rex::SettingOwner {
     "or blends another identity's bytes, 2 a pair met by a read, 4 the first reader of "
     "inherited bytes of each kind. 0: none. Needs the game started under RenderDoc.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(std::string, mcla_gpu_env_resolution, "auto", "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the "
-    "world around the car as a 512x256 picture for them to reflect, which is why the reflections look "
-    "soft up close. game (the game's own 512x256), high (1024x512), ultra (1536x768), or auto (game on "
-    "an integrated graphics chip or a card with less than about 6 GB of memory, high on any other card). "
-    "Costs a little graphics card time and video memory (about 4 MiB for high, 16 MiB for ultra). Live.", rex::Allowed("auto", "game", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_env_resolution, "on", "Sharper reflections in car paint, windows and trim. On draws a "
+    "1024x512 environment map. Off uses the game's 512x256 map. Live.",
+    rex::Allowed("on", "off", "auto", "game", "high", "ultra"));
+
+  REX_SETTING(bool, mcla_gpu_env_hold, true, "Reuse the car environment map until the view or lighting changes. "
+    "Turn off to draw it every frame for comparison. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_flicker_probe, false, "Diagnostic: read every guest frame back, as the window shows it, and log "
     "the blocks of 16x16 pixels that change for 1-5 frames and come back to exactly their "
@@ -2258,6 +2259,7 @@ inline auto& mcla_gpu_dlss_rr_rt_ao = g_gpu.mcla_gpu_dlss_rr_rt_ao;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
+inline auto& mcla_gpu_env_hold = g_gpu.mcla_gpu_env_hold;
 inline auto& mcla_gpu_flicker_probe = g_gpu.mcla_gpu_flicker_probe;
 inline auto& mcla_gpu_flicker_probe_dumps = g_gpu.mcla_gpu_flicker_probe_dumps;
 inline auto& mcla_gpu_flicker_probe_shots = g_gpu.mcla_gpu_flicker_probe_shots;

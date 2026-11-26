@@ -841,6 +841,7 @@ static void RearViewCadenceStep(PPCRegister& r17, PPCRegister& r21, PPCRegister&
 // A bracket still open at the frame's first look at the phase loop lost its END. Close it before applying the cadence.
 void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27) {
     SendMirrorMarker(g_markers.OnFrameStart());
+    ApplyEnvViewHold(r21, r27);
     RearViewCadenceStep(r17, r21, r27);
 }
 
@@ -848,6 +849,7 @@ void Patch_RearViewCadence(PPCRegister& r17, PPCRegister& r21, PPCRegister& r27)
 // is still current, then restores the main camera. Keep the host redirect and the held frame's mask in force through the callback.
 // CHECK: confirm the trailing sky draw lands in the private view on both APIs and the held frame emits only an empty marker pair.
 void Patch_RearViewPhaseEnd(PPCRegister& r30) {
+    FinishEnvViewPhase(r30);
     if (r30.u32 != kMirrorPhase) return;
     g_in_mirror_phase = false;
     SendMirrorMarker(g_markers.OnEnd());  // the END of the draws the host redirects (one for every BEGIN sent; none for a phase that did not run)

@@ -274,14 +274,8 @@ decode = "resolved(s.mcla_gpu_reflection_resolution)"
 [rows.PM_RxGpuSsr]
 decode = "resolved(s.mcla_gpu_ssr)"
 
-[rows.PM_RxGpuSsrRt]
-states = [
-  { when = "!api.car_rt", enabled = false, reason = "A GPU with ray queries is required." },
-  { when = "resolved(s.mcla_gpu_ssr) == 'off'", enabled = false, reason = "Surface reflections are off." },
-]
-
 [rows.PM_RxGpuCarRefl]
-decode = "resolved(s.mcla_gpu_env_resolution)"
+decode = { cases = [{ when = "s.mcla_gpu_env_resolution in ['game','off']", value = "off" }, { value = "on" }] }
 
 [rows.PM_RxGpuCarShadowMap]
 decode = "resolved(s.mcla_gpu_car_shadow_map)"
@@ -375,7 +369,6 @@ states = [
 decode = { cases = [{ when = "s.mcla_gpu_ssr_rt == 'auto'", value = "off" }, { value = { expr = "s.mcla_gpu_ssr_rt" } }] }
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "gpu.rt_rung == 'none'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "!d.ssr_on", enabled = false, reason = "Surface Reflections is off." },
 ]
 

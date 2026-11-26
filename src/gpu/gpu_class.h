@@ -88,7 +88,6 @@ enum class GpuClass : uint8_t { kLow, kMid, kHigh };
 enum class Effect : uint8_t {
   kShadowFilter,          // mcla_gpu_shadow_filter      auto, game, soft, pcss
   kShadowResolution,      // mcla_gpu_shadow_resolution  auto, game, high, ultra
-  kEnvResolution,         // mcla_gpu_env_resolution     auto, game, high, ultra
   kReflectionResolution,  // mcla_gpu_reflection_resolution  auto, game, high, ultra
   kContactShadows,        // mcla_gpu_contact_shadows    auto, off, high, ultra
   kSunShafts,             // mcla_gpu_sun_shafts         auto, off, light, default, strong, stronger, strongest (shafts_level.h)
@@ -104,7 +103,7 @@ enum class Effect : uint8_t {
   kNeonLight,             // mcla_gpu_neon_light         auto, off, on (neon_light.h, local_lights_sources.h; the row NEON LIGHT)
   kSideMirrors,           // mcla_gpu_side_mirrors       auto, off, high, ultra (mirror_setting.h; the side mirrors without ray tracing, the row SIDE MIRRORS)
 };
-inline constexpr int kEffectCount = 17;
+inline constexpr int kEffectCount = 16;
 
 // What `auto` stands for, per class (the table of GFX-UPGRADES-DESIGN.md section 9).
 struct EffectInfo {
@@ -123,7 +122,6 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // pcss there is soft: shadow_filter.h PcssAvailable). Kept only if the cost of pcss against soft on Mid is small (the check plan measures it).
     Derived("mcla_gpu_shadow_filter"),
     Derived("mcla_gpu_shadow_resolution"),
-    Derived("mcla_gpu_env_resolution"),
     Derived("mcla_gpu_reflection_resolution"),
     // Legacy Auto keeps the Mid look in these rows; ENHANCED has a leaner budget.
     Derived("mcla_gpu_contact_shadows", gfx_preset::Preset::kEnhancedRt),

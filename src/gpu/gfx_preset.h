@@ -144,7 +144,7 @@ inline constexpr Row kRows[] = {
     // CHECK: compare wet-road motion and pinned highlights with these preset levels.
     {"mcla_gpu_ssr", Page::kReflections, {"off", "high", "ultra", "high", "ultra"}},
     {"mcla_gpu_ssr_rt", Page::kReflections, {"off", "off", "off", "high", "high"}},
-    {"mcla_gpu_env_resolution", Page::kReflections, {"game", "game", "high", "game", "high"}},
+    {"mcla_gpu_env_resolution", Page::kReflections, {"off", "on", "on", "on", "on"}},
     {"mcla_gpu_car_selfrefl", Page::kReflections, {"off", "on", "on", "on", "on"}},
     {"mcla_gpu_car_selfrefl_rt", Page::kReflections, {"off", "off", "off", "on", "on"}},
     {"mcla_gpu_rt_reflections", Page::kReflections, {"off", "off", "off", "off", "high"}},
@@ -175,7 +175,7 @@ inline constexpr int kExemptCount = static_cast<int>(sizeof(kExempt) / sizeof(kE
 // The rows whose ENHANCED ULTRA cell is below the row's top level because that is what the High class's `auto` was (see the header), with the top level: the final pass raises them or
 // says why not. Traffic detail distance 3X is the preset ceiling.
 inline constexpr Note kBelowMax[] = {
-    {"mcla_gpu_shadow_resolution", "ultra"}, {"mcla_gpu_env_resolution", "ultra"}, {"mcla_gpu_reflection_resolution", "ultra"},
+    {"mcla_gpu_shadow_resolution", "ultra"}, {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_ssgi", "ultra"}, {"mcla_gpu_volumetrics", "ultra"}, {"mcla_gpu_traffic_shadows", "all"},
 };
 inline constexpr int kBelowMaxCount = static_cast<int>(sizeof(kBelowMax) / sizeof(kBelowMax[0]));
