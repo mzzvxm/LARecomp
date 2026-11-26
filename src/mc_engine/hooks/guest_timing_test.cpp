@@ -85,26 +85,22 @@ void CheckDensityLookup() {
     Check(!zones.At(0x2000, 0, true).has_written, "new manager clears indexed state");
 }
 
-void CheckSavedSlots() {
-    gw::SavedSlots slots;
-    using Slots = gw::SavedSlots;
-    std::array<uint32_t, Slots::kCapacity> keys{};
-    size_t reads = 0;
-    const auto key_at = [&](size_t i) { ++reads; return keys[i]; };
-    Check(slots.Find(42, key_at, true) == Slots::kCapacity && reads == 0, "empty mirror table needs no probe");
-    for (size_t i = 0; i < keys.size(); ++i) {
-        const auto key = uint32_t(i + 1);
-        Check(slots.Place(key, key_at, i % 2 == 0) == i, "both paths take lowest empty slot");
-        keys[i] = key;
-        slots.Save(i);
+void CheckMirrorCarLookup() {
+    struct Car { uint32_t item; };
+    const std::array<Car, 5> ranked{{{22}, {9}, {42}, {16}, {7}}};
+    gw::MirrorCarLookup<ranked.size()> lookup;
+    for (const bool indexed : {true, false, true}) {
+        lookup.Build(ranked, 4, indexed);
+        for (uint32_t item = 0; item <= 50; ++item) {
+            const bool selected = item == 9 || item == 16 || item == 22 || item == 42;
+            Check(lookup.Contains(ranked, 4, item) == selected, "both paths use the active prefix of the ranked snapshot");
+        }
+        const std::array<Car, 5> next{{{80}, {6}, {22}, {9}, {42}}};
+        lookup.Build(next, 2, indexed);
+        Check(lookup.Contains(next, 2, 80) && lookup.Contains(next, 2, 6), "rebuilding indexes the new view");
+        Check(!lookup.Contains(next, 2, 42), "the previous view leaves no stale entries");
+        Check(!lookup.Contains(next, 0, 80), "zero selected cars excludes all previous entries");
     }
-    Check(slots.Place(42, key_at, true) == Slots::kCapacity, "full table rejects new car");
-    slots.Restore(0);
-    keys[0] = 0;
-    Check(slots.Find(32, key_at, true) == 31, "top bit participates in lookup");
-    Check(slots.Find(1, key_at, false) == Slots::kCapacity, "restore empties a shared slot");
-    Check(slots.Place(2, key_at, true) == Slots::kCapacity, "duplicate keeps the first saved value");
-    Check(slots.Place(42, key_at, true) == 0, "lookup reuses a freed low slot");
 }
 
 void CheckCutoff() {
@@ -142,7 +138,7 @@ int main() {
     CheckWindow();
     CheckPhases();
     CheckDensityLookup();
-    CheckSavedSlots();
+    CheckMirrorCarLookup();
     CheckCutoff();
     std::printf("guest timing and work: %u checks passed\n", checks);
 }

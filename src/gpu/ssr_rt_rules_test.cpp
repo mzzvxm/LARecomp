@@ -1009,8 +1009,8 @@ void TestHostSources(const std::string& dir) {
         "the frame's resolved car setting is shared by the scene request and trace flags");
   Check(Has(rt_cpp, "static LiveText text(\"mcla_gpu_ssr_rt\");") && Has(rt_cpp, "ssr_rt::ParseChoice(Setting().Get())") &&
             Has(rt_cpp, "ssr_rt::ResolveFixed(ssr_level, choice, ready_)") &&
-            Has(rt_cpp, "ssr_rt::Resolve({ssr_level, choice, gpu_class::CurrentRtRung()})"),
-        "the classified path resolves work from the chosen level and ray-query support");
+            !Has(rt_cpp, "gpu_class::CurrentRtRung()"),
+        "classification and its A/B path use the chosen level and ray-query support");
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
   Check(Has(ssr_cpp, "if (!garage && rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&

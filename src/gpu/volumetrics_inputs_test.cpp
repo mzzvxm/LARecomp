@@ -181,7 +181,7 @@ void CheckTable() {
   table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1110));
   Check(out.size() == vl::kMaxRecords, "the list is cut at the table's capacity");
   Check(table.published() == 3, "three lists were published");
-  bool garage = false;
+  garage = false;
   table.Publish(three.data(), 3, t0 + std::chrono::milliseconds(1200), true);
   Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1210), &garage) &&
             garage && !stale && out.size() == 3, "the list and garage tag arrive in the same snapshot");

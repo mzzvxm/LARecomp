@@ -185,6 +185,7 @@ struct Env {
 // ---- the old depth pass's statements, as ao.cpp's Run has them in its old path (comments out) ----
 #define LEGACY_DEPTH                                                                          \
   pass_timing_->Mark(list, "ao depth");                                                      \
+  push = depth_base;                                                      \
   push.sizes[0] = float(plan.ao[0]);                                                         \
   push.sizes[1] = float(plan.ao[1]);                                                         \
   push.sizes[2] = float(plan.render[0]);                                                     \
@@ -300,7 +301,8 @@ Trace RunLegacyDepth(Env& e) {
   const bool levels = e.levels;
   const int depth_pipeline = e.depth_pipeline, mip_pipeline = e.mip_pipeline;
   using Push = AoPush;
-  Push push = base;
+  const Push depth_base = base;
+  Push push{};
 #define Depth(i) e.Depth(i)
 #define DepthFull() e.DepthFull()
 #define DrawPass(l, image, pipe, p) e.DrawPass(l, image, pipe, p)
@@ -745,8 +747,8 @@ void SourceChecks(const std::string& gpu) {
             Has(ext_cpp, "\"ao contact normals\"") && Has(ext_cpp, "\"ssgi depth history\""),
         "the owner keeps the images under the names the AO gave them");
   // ---- ao.cpp calls the owner where it recorded these passes ----
-  Check(order(ao_cpp, {"if (extract) {", "screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);", "} else {", "pass_timing_->Mark(list, \"ao depth\");",
-                       "screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));", "RecordNormals(list, plan, base, normals_);",
+  Check(order(ao_cpp, {"if (extract) {", "screen_->RecordDepth(list, chain, depth_base, summary.stencil_slot, normals_.depth_source_bits, ms);", "} else {", "pass_timing_->Mark(list, \"ao depth\");",
+                       "screen_->RecordNormals(list, chain, depth_base, NormalRecipeFor(normals_));", "RecordNormals(list, plan, depth_base, normals_);",
                        "screen_->RecordColourPre(list, GiFrame(plan), base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot, gi_normal_slot));", "screen_->CapturePre([&] { RecordColourChain(", "CarRtAo::Result rt;"}),
         "ao.cpp calls the owner for the depth chain, the normals and the colour chain at the places it recorded them from, the old recording beside each");
   Check(Has(ao_cpp, "const bool extract = Extracting();") && Has(ao_cpp, "bool AmbientOcclusion::Extracting() const {\n  return screen_ && screen_->extract_on();\n}") &&

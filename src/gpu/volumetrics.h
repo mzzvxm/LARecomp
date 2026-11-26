@@ -301,7 +301,6 @@ class Volumetrics {
   // The history: the previous volume's camera and grid, the frames between, the smoothed ground.
   volumetrics::HistoryUse history_;
   uint64_t history_frame_ = 0;
-  bool pause_lens_steady_ = false;
   Level history_level_ = Level::kOff;
   float ground_y_ = 0.0f;
   bool ground_valid_ = false;

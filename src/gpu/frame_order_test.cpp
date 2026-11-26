@@ -633,7 +633,7 @@ std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
   static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginTemporal", "kBeginCarRefl", "kBeginScreen", "kBeginAo", "kBeginGBuffer", "kBeginLights", "kDrawSidecar", "kDrawHeadlight", "kDrawMirrorView",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
-                                       "kRtAoTrace", "kRtAoFilter", "kAoVisibility", "kRtAoCompose", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kVirtualBounce", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kAtmosphereMid", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
+                                       "kRtAoTrace", "kRtAoFilter", "kAoVisibility", "kRtAoCompose", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kVirtualBounce", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kAtmosphereMid", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
                                        "kGBufferView", "kScreenView", "kAtmosphereComposite", "kMirrorStamp", "kMirrorGlass", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];

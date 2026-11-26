@@ -104,7 +104,7 @@ void Lighting(Fixture& f) {
         "PM_RxGpuContact", "PM_RxGpuSunShafts", "PM_RxGpuSsgi", "PM_RxGpuTrafficShadows", nullptr,
         nullptr /* the occlusion: its AUTO is the class cell or `rt` (rtao_setting.h), held below with the other labels */,
         "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics", nullptr,
-        "PM_RxGpuSsr", "PM_RxGpuNeonLight",
+        "PM_RxGpuSsr", "PM_RxGpuNeonLight", "PM_RxGpuCarShadowMap",
     };
     static_assert(std::size(class_rows) == gc::kEffectCount);
     Check(Ids(f.Row("PM_RxGpuCarRefl")) == (std::vector<std::string>{"off", "on"}),

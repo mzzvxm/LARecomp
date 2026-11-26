@@ -71,8 +71,8 @@ void TheSettingPerClass() {
     SideLevel low, mid, high;  // what `auto` is on each class
   };
   const Row rows[] = {
-      {Effect::kShadowResolution, "shadow detail", SideLevel::kGame, SideLevel::kHigh, SideLevel::kHigh},
-      {Effect::kReflectionResolution, "road reflections", SideLevel::kGame, SideLevel::kHigh, SideLevel::kHigh},
+      {Effect::kShadowResolution, "shadow detail", SideLevel::kHigh, SideLevel::kHigh, SideLevel::kHigh},
+      {Effect::kReflectionResolution, "road reflections", SideLevel::kHigh, SideLevel::kHigh, SideLevel::kHigh},
   };
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
   for (const Row& r : rows) {

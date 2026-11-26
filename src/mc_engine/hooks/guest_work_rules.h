@@ -1,7 +1,7 @@
 #pragma once
 
+#include <algorithm>
 #include <array>
-#include <bit>
 #include <cstddef>
 #include <cstdint>
 #include <map>
@@ -32,44 +32,30 @@ private:
     std::array<State*, Zones> slots_{};
 };
 
-// The same 32 saved slots on either A/B path. The mask accelerates lookup and
-// preserves the old first-free rule when the table has a hole.
-class SavedSlots {
+// Keep the ranked snapshot order for restoration. Only the optional index is sorted.
+template <size_t Capacity>
+class MirrorCarLookup {
 public:
-    static constexpr size_t kCapacity = 32;
-
-    template <typename KeyAt>
-    size_t Find(uint32_t key, const KeyAt& key_at, bool indexed) const {
-        if (indexed) {
-            for (uint32_t bits = occupied_; bits; bits &= bits - 1) {
-                const size_t index = std::countr_zero(bits);
-                if (key_at(index) == key) return index;
-            }
-        } else {
-            for (size_t index = 0; index < kCapacity; ++index) {
-                if (key_at(index) == key) return index;
-            }
+    template <typename CarState>
+    void Build(const std::array<CarState, Capacity>& cars, size_t count, bool indexed) {
+        indexed_ = indexed;
+        if (indexed_) {
+            std::transform(cars.begin(), cars.begin() + count, index_.begin(), [](const CarState& car) { return car.item; });
+            std::sort(index_.begin(), index_.begin() + count);
         }
-        return kCapacity;
     }
 
-    template <typename KeyAt>
-    size_t Place(uint32_t key, const KeyAt& key_at, bool indexed) const {
-        if (indexed) return Find(key, key_at, true) == kCapacity ? std::countr_zero(~occupied_) : kCapacity;
-        size_t free = kCapacity;
-        for (size_t index = 0; index < kCapacity; ++index) {
-            const uint32_t saved = key_at(index);
-            if (saved == key) return kCapacity;
-            if (!saved && free == kCapacity) free = index;
+    template <typename CarState>
+    bool Contains(const std::array<CarState, Capacity>& cars, size_t count, uint32_t item) const {
+        if (indexed_) {
+            return std::binary_search(index_.begin(), index_.begin() + count, item);
         }
-        return free;
+        return std::any_of(cars.begin(), cars.begin() + count, [item](const CarState& car) { return car.item == item; });
     }
-
-    void Save(size_t index) { occupied_ |= uint32_t{1} << index; }
-    void Restore(size_t index) { occupied_ &= ~(uint32_t{1} << index); }
 
 private:
-    uint32_t occupied_ = 0;
+    std::array<uint32_t, Capacity> index_{};
+    bool indexed_ = false;
 };
 
 }  // namespace mc::guest_work

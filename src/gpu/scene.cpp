@@ -68,6 +68,7 @@
 #include "scene_noise.h"
 #include "shafts.h"
 #include "shaderpack/variant_chain.h"
+#include "side_views.h"
 #include "volumetrics.h"
 #include "sync_builds.h"
 #include "temporal.h"
@@ -1847,6 +1848,25 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     if (samples != 0) gbuffer_->NoteDraw(gbuffer::Why::kWindowClosed, r.ps_identity, samples);
   }
   PipelineKey pipeline_key = (gbuffer_ && gbuffer_->active() && !mirror_redirect) ? GBufferKey(s, r, d) : d.key;  // not const: the headlight's pending-pipeline fallback below drops its feature from it
+  namespace chain = larecomp::shaderpack::chain;
+  constexpr uint32_t glow_feature = larecomp::shaderpack::kFeatureGlowNeutral;
+  if (d.ps && (d.ps->features & chain::FeatureBit(glow_feature)) &&
+      larecomp::settings::mcla_gpu_glow_neutral.Get() && d.key.color_count != 0 &&
+      !d.gbuffer_attached && !mirror_redirect && !chain::IsPacked(pipeline_key.ps_variant) &&
+      std::has_single_bit(d.ps->texture_fetch_mask) &&
+      side_views::Classify(ColorEdramKey(s, 0), r.target_size_bits) == SideView::kReflection) {
+    const uint32_t word = chain::Word(chain::FeatureBit(glow_feature), chain::SpecOf(pipeline_key.ps_variant));
+    if (d.ps->HasWord(word)) {
+      uint32_t dwords[6];
+      view.FetchGroup(uint32_t(std::countr_zero(d.ps->texture_fetch_mask)), dwords);
+      xe::TextureFetch fetch;
+      std::memcpy(&fetch, dwords, sizeof(fetch));
+      // CHECK: confirm the 128x128 DXT1 binding and corrected draw in the Wilshire captures on both APIs.
+      if (fetch.type == xe::FetchConstantType::kTexture && fetch.format == xe::TextureFormat::k_DXT1) {
+        pipeline_key.ps_variant = word;
+      }
+    }
+  }
   // The per-texture material row (gbuffer_materials.h) of the texture the draw's pixel shader takes its colour from (the material table's diffuse slot: slot 0 for almost every shader, the
   // windows', tiles' and metal props' second), looked up once per draw that writes the planes (a cache hit; empty at no cost unless a table file exists or the census is on).
   // CHECK: not compiled with the rest of Scene (no build in this package).
@@ -1880,7 +1900,8 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // A variant whose build FAILS takes the same way down, for good (the failed key is remembered: pipelines.h, Deferral::has_fallback); only the game's own key failing drops the draw.
     const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};
     const auto extras_of = [&](const PipelineKey& key) {
-      return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant), variant_wait::HasRoadMirrorBlur(key.ps_variant)};
+      return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant),
+                                  variant_wait::RoadFeature(key.ps_variant) != chain::kNoFeature};
     };
     const auto ask_for = [&](const PipelineKey& key) -> const Deferral* {
       return variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways ? &waits : &deferral;
@@ -1906,12 +1927,13 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       gbuffer_->NoteFallbackDraw();
       d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
     }
-    if (falls_back() && variant_wait::HasRoadMirrorBlur(pipeline_key.ps_variant)) {
-      // Keep drawing the road while its filter pipeline is being built or if the driver rejects it.
+    const uint32_t road_feature = variant_wait::RoadFeature(pipeline_key.ps_variant);
+    if (falls_back() && road_feature != chain::kNoFeature) {
+      // Keep the road or its reflected glow visible while the variant builds or if it fails.
       if (!pending) {
         pipelines_->NoteVariantFailedDraw();
       }
-      pipeline_key.ps_variant = variant_wait::WordWithoutFeature(pipeline_key.ps_variant, larecomp::shaderpack::kFeatureRoadMirrorBlur,
+      pipeline_key.ps_variant = variant_wait::WordWithoutFeature(pipeline_key.ps_variant, road_feature,
                                                                 [&](uint32_t rest) { return d.ps && d.ps->HasWord(rest); });
       pending = false;
       d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
@@ -1947,6 +1969,10 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // The game's own key failed (variant_wait::Next::kDrop: a key with an extra never gets here, it took the rung below): nothing is left to draw this draw with.
     *detail = std::format("VS {:016X} PS {:016X}", d.key.vs, d.key.ps);
     return Skip::kPipeline;
+  }
+  if (!glow_neutral_logged_ && chain::HasFeature(pipeline_key.ps_variant, glow_feature)) {
+    glow_neutral_logged_ = true;
+    REXLOG_INFO("[gpu] reflected lamp glow: using BC1 chroma correction (PS {:016X}, variant {:#x})", d.key.ps, pipeline_key.ps_variant);
   }
   Lap(Stage::kPipeline);
 

@@ -411,7 +411,7 @@ void TextChecks(const std::string& dir) {
   // the shader: the include, the rows after the apply's 9, the material slot in the last word, the term before the add and before the debug views
   Check(Has(ps, "#include \"gi_cabin_common.hlsli\"") && Has(ps, "return GiaRowFloats(GIA_ROWS + i);") && Has(ps, "return g_push.info.w >> GIC_MATERIAL_SLOT_SHIFT;"), "SHADER: the cabin's rows follow the apply's GIA_ROWS and the material slot is the push's last word's upper half");
   const size_t at_gate = At(ps, "if (cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT)");
-  const size_t at_term = At(ps, "cabin = GicShare(cabinA, GiaCabinRow(1u), pos, GbRt3Class(rt3), GbRt3Flags(rt3));");
+  const size_t at_term = At(ps, "cabin = GicShare(cabinA, GiaCabinRow(1u), GiaReceiverPosition(pixel, t, fr), GbRt3Class(rt3), GbRt3Flags(rt3));");
   const size_t at_add = At(ps, "GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare * cabin, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap)");
   const size_t at_view9 = At(ps, "if (view == 9u)");
   Check(at_gate != std::string::npos && at_term != std::string::npos && at_add != std::string::npos && at_view9 != std::string::npos && at_gate < at_term && at_term < at_add && at_add < at_view9 &&

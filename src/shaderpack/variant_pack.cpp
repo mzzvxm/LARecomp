@@ -50,6 +50,7 @@
 #include "shaderpack/variants/gbuffer.h"
 #include "shaderpack/variants/gbuffer_cars.h"
 #include "shaderpack/variants/gbuffer_day.h"
+#include "shaderpack/variants/glow_neutral.h"
 #include "shaderpack/variants/glow_soft.h"
 #include "shaderpack/variants/headlight.h"
 #include "shaderpack/variants/hdr_scene.h"
@@ -728,6 +729,7 @@ std::vector<VariantDef> BuiltInVariants(std::vector<std::string>* left_out) {
   variants.push_back(MakeCarChromeCityVariant());  // CITY-RT M2 R3a: a stage on the chrome's (feature 13), drawn only while the city is in the reflections
   variants.push_back(MakeLuminanceScaleVariant());
   variants.push_back(MakeRoadMirrorBlurVariant());
+  variants.push_back(MakeGlowNeutralVariant());
   variants.push_back(MakeUiSharpVariant());
   variants.push_back(MakeHeadlightVariant());
   VariantDef gbuffer;

@@ -116,6 +116,7 @@
 #include "hooks.h"
 #include "hooks_internal.h"
 #include "guest_timing.h"
+#include "guest_work_rules.h"
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
 #include "gpu/cabin_mirror_rules.h"
@@ -238,7 +239,6 @@ static constexpr uint32_t kRendererMainViewports = 180u;        // renderer + 18
 static constexpr uint32_t kRenderBufferGlobal   = 0x827E5640u;  // dword_827E5640: the render buffer, 0..3
 static constexpr uint32_t kViewportEye          = 112u;         // a viewport's eye: three floats (traffic_shadow.cpp)
 static constexpr uint32_t kPassActiveByte       = 32u;          // [pass + buffer + 32]: the mirror's consumer is active (sub_82308178 tests it)
-static constexpr uint32_t kCarLodWord           = 6004u;        // the vehicle's chosen model level 0..2 (RT-MODEL-SURVEY.md 2.1)
 
 namespace cheap = larecomp::rearview_cheap;
 
@@ -594,8 +594,7 @@ struct CarState {
     uint32_t parts;
 };
 static std::array<CarState, kRacerListLimit> g_mirror_cars{};
-static std::array<uint32_t, kRacerListLimit> g_mirror_car_index{};
-static bool g_mirror_cars_indexed = false;
+static mc::guest_work::MirrorCarLookup<kRacerListLimit> g_mirror_car_lookup;
 static size_t g_mirror_car_count = 0;
 static bool g_cars_selected = false;
 
@@ -617,7 +616,6 @@ static void RestoreMirrorCars(uint8_t* base) {
     for (size_t i = 0; i < g_mirror_car_count; ++i) RestoreCar(base, g_mirror_cars[i]);
     g_mirror_car_count = 0;
     g_cars_selected = false;
-    g_mirror_cars_indexed = false;
 }
 
 // Called from the first racer draw, when the rear camera is current. Rank
@@ -682,13 +680,8 @@ static void SelectMirrorCars(uint8_t* base, PPCFunc* prep, bool shared_view) {
         if (ReadGuestU32(base, item + kVehicleBodyLod) != saved.body || parts != coarse_parts) ++g_stats.cars_coarser;
         g_mirror_cars[g_mirror_car_count++] = saved;
     }
-    g_mirror_cars_indexed = larecomp::settings::mcla_fix_guest_mirror_work.Get();
-    if (g_mirror_cars_indexed) {
-        auto end = g_mirror_car_index.begin() + g_mirror_car_count;
-        std::transform(g_mirror_cars.begin(), g_mirror_cars.begin() + g_mirror_car_count,
-                       g_mirror_car_index.begin(), [](const CarState& car) { return car.item; });
-        std::sort(g_mirror_car_index.begin(), end);
-    }
+    g_mirror_car_lookup.Build(g_mirror_cars, g_mirror_car_count,
+                              larecomp::settings::mcla_fix_guest_mirror_work.Get());
     g_stats.cars_seen += count;
     g_stats.cars_turned_away += count - g_mirror_car_count;
 }
@@ -710,11 +703,7 @@ void Patch_RearViewCarPhase(PPCRegister& r3, PPCRegister& r4) {
         if (rt) SelectMirrorCars(base, rt->FindFunction(kCarVisibilityPrep).value_or(nullptr), SharedViewOn());
     }
     // CHECK: compare selected cars and visibility/LOD restores with the lookup switch on and off.
-    const bool selected = g_mirror_cars_indexed
-        ? std::binary_search(g_mirror_car_index.begin(), g_mirror_car_index.begin() + g_mirror_car_count, item)
-        : std::any_of(g_mirror_cars.begin(), g_mirror_cars.begin() + g_mirror_car_count,
-                      [item](const CarState& car) { return car.item == item; });
-    if (selected) {
+    if (g_mirror_car_lookup.Contains(g_mirror_cars, g_mirror_car_count, item)) {
         r4.u64 = 0x10000;
         ++g_stats.cars_drawn;
     }

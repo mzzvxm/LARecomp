@@ -108,6 +108,7 @@ add_library(larecomp_shaderpack STATIC
     variants/car_chrome_city.cpp
     variants/luminance_scale.cpp
     variants/road_mirror_blur.cpp
+    variants/glow_neutral.cpp
     variants/ui_sharp.cpp
     variants/headlight.cpp
     variants/gbuffer.cpp
@@ -247,6 +248,14 @@ add_executable(larecomp_glow_soft_test EXCLUDE_FROM_ALL
     variants/glow_soft.cpp)
 target_compile_features(larecomp_glow_soft_test PRIVATE cxx_std_23)
 target_include_directories(larecomp_glow_soft_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+
+# The glow transform and its BC1 color rule. Optional input/output HLSL paths
+# let the standalone test write the transformed shader for DXC validation.
+add_executable(larecomp_glow_neutral_test EXCLUDE_FROM_ALL
+    variants/glow_neutral_test.cpp
+    variants/glow_neutral.cpp)
+target_compile_features(larecomp_glow_neutral_test PRIVATE cxx_std_23)
+target_include_directories(larecomp_glow_neutral_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
 # The rule that a pixel shader is in one shader variant only (variant_overlap.h), and the car paint's case (the car self-reflection
 # variant edits it, the shadow filter's leaves it out), need no compiler, renderer or game files either:

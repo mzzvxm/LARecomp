@@ -16,6 +16,7 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <string_view>
 
 #include "shaderpack/variant_chain.h"
 #include "sync_builds.h"
@@ -116,7 +117,7 @@ void TestLadders() {
   Check(!both.rungs[2].extras.headlight && !both.rungs[2].extras.planes, "third rung: neither");
   const vw::Ladder road = vw::LadderOf({true, true, true});
   Check(road.count == 4 && road.rungs[0].extras.planes && !road.rungs[1].extras.planes &&
-            road.rungs[1].extras.road_mirror_blur && !road.rungs[2].extras.road_mirror_blur &&
+            road.rungs[1].extras.road_variant && !road.rungs[2].extras.road_variant &&
             road.rungs[2].extras.headlight && road.rungs[3].ask == vw::Ask::kGameRule,
         "road pipeline fallback keeps the headlight");
   Check(vw::NextStep({false, false, true}, false, false) == vw::Next::kFallBack &&
@@ -124,9 +125,14 @@ void TestLadders() {
         "a standalone road variant falls back whether pending or failed");
   const uint32_t road_and_light = chain::Word(chain::FeatureBit(sp::kFeatureRoadMirrorBlur) | chain::FeatureBit(sp::kFeatureHeadlight), 1);
   const uint32_t headlight_twin = chain::Word(chain::FeatureBit(sp::kFeatureHeadlight), 1);
-  Check(vw::HasRoadMirrorBlur(road_and_light) && !vw::HasRoadMirrorBlur(headlight_twin) &&
+  Check(vw::RoadFeature(road_and_light) == sp::kFeatureRoadMirrorBlur && vw::RoadFeature(headlight_twin) == chain::kNoFeature &&
             vw::WordWithoutFeature(road_and_light, sp::kFeatureRoadMirrorBlur, [&](uint32_t word) { return word == headlight_twin; }) == headlight_twin,
         "removing the blur preserves the headlight and alpha test when the pack has that word");
+  const uint32_t glow = chain::Word(chain::FeatureBit(sp::kFeatureGlowNeutral), 1);
+  const uint32_t glow_feature = vw::RoadFeature(glow);
+  Check(glow_feature == sp::kFeatureGlowNeutral &&
+            vw::WordWithoutFeature(glow, glow_feature, [](uint32_t) { return false; }) == 1,
+        "the reflected glow falls back to the game's shader with the same alpha test");
 }
 
 void TestWordWithoutHeadlight() {
@@ -278,15 +284,32 @@ void SourceChecks(const std::string& gpu) {
   Check(Count(lookup, "&deferral") == 1 && lookup.find("? &waits : &deferral;") != std::string::npos, "the game's rule is used in one place: ask_for's answer for a key with no extra");
   Check(lookup.find("const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};") != std::string::npos,
         "the deferral of a key with a fallback always says pending, counts as a guest draw and says it has a fallback (a failed build is final for it)");
-  Check(lookup.find("variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant), variant_wait::HasRoadMirrorBlur(key.ps_variant)}") != std::string::npos &&
+  Check(lookup.find("variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant),") != std::string::npos &&
+            lookup.find("variant_wait::RoadFeature(key.ps_variant) != chain::kNoFeature") != std::string::npos &&
             lookup.find("variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways") != std::string::npos,
         "ask_for reads the planes and pixel features of the key being requested");
   const size_t first = lookup.find("pipelines_->Get(");
   const size_t planes = lookup.find("if (falls_back() && d.gbuffer_attached) {");
-  const size_t road = lookup.find("if (falls_back() && variant_wait::HasRoadMirrorBlur(pipeline_key.ps_variant)) {");
+  const size_t road = lookup.find("if (falls_back() && road_feature != chain::kNoFeature) {");
   const size_t headlight = lookup.find("if (falls_back() && variant_wait::HasHeadlight(pipeline_key.ps_variant)) {");
   Check(headlight != std::string::npos && first < planes && planes < road && road < headlight,
-        "the ladder tries the full key, then removes planes, blur and headlight in order");
+        "the ladder tries the full key, then removes planes, the road variant and headlight in order");
+  Check(lookup.find("variant_wait::WordWithoutFeature(pipeline_key.ps_variant, road_feature,") != std::string::npos,
+        "the road variant's fallback strips the feature carried by its word");
+  const size_t glow_start = scene.find("constexpr uint32_t glow_feature");
+  if (glow_start != std::string::npos && glow_start < begin) {
+    const auto select_glow = std::string_view(scene).substr(glow_start, begin - glow_start);
+    Check(select_glow.find("mcla_gpu_glow_neutral.Get()") != std::string_view::npos &&
+              select_glow.find("== SideView::kReflection") != std::string_view::npos &&
+              select_glow.find("std::has_single_bit(d.ps->texture_fetch_mask)") != std::string_view::npos &&
+              select_glow.find("fetch.format == xe::TextureFormat::k_DXT1") != std::string_view::npos,
+          "the live glow fix is scoped to one BC1 fetch in the road reflection view");
+    Check(select_glow.find("chain::SpecOf(pipeline_key.ps_variant)") != std::string_view::npos &&
+              select_glow.find("d.ps->HasWord(word)") != std::string_view::npos,
+          "the draw selects only an available variant with matching alpha-test state");
+  } else {
+    Check(false, "the reflected glow word is selected before the pipeline lookup");
+  }
   Check(lookup.find("variant_wait::WordWithoutHeadlight(pipeline_key.ps_variant,") != std::string::npos, "the headlight's fallback takes the word the header names");
   Check(scene.find("variant pipelines failed {} (draws that fell back {})") != std::string::npos && scene.find("ps.variant_failed, ps.variant_fallback_draws") != std::string::npos,
         "the scene interval line counts the variant builds that failed and the draws that took the game's own pipeline");

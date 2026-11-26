@@ -377,7 +377,7 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
                 Eyes eyes;
                 // The near stock caster is covered by cascades 1 and 2. A
                 // detached camera can leave the player in a far cascade.
-                if (FindEyes(base, gates, false, eyes) && ts::Distance(eyes.eye, at) > 15.0f) {
+                if (FindEyes(base, gates, false, false, eyes) && ts::Distance(eyes.eye, at) > 15.0f) {
                     mcla::gpu::cascade_schedule::NoteCaster(vehicle, at, 4);
                 }
             }

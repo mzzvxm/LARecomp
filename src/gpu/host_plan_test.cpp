@@ -101,14 +101,14 @@ void CheckOcclusion() {
         "available manual RT keeps Ultra as the fallback");
   const auto plan = Decide(GpuClass::kHigh, true, "auto", "off", "off", "high", "off", RtTier::kStrong, true);
   Check(!plan.of(Pass::kOcclusion).rt && plan.of(Pass::kOcclusion).automatic &&
-            plan.of(Pass::kOcclusion).level == Level::kHigh && plan.on(Pass::kBounce),
-        "strong Auto is raster High (ray tracing is an explicit choice) and keeps the bounce dependency satisfied");
+            plan.of(Pass::kOcclusion).level == Level::kUltra && plan.on(Pass::kBounce),
+        "strong Auto uses the fixed raster level (ray tracing is an explicit choice) and keeps the bounce dependency satisfied");
   const auto rt_plan = Decide(GpuClass::kHigh, true, "rt", "off", "off", "high", "off", RtTier::kStrong, true);
   Check(rt_plan.of(Pass::kOcclusion).rt && !rt_plan.of(Pass::kOcclusion).automatic &&
             rt_plan.of(Pass::kOcclusion).level == Level::kUltra && rt_plan.on(Pass::kBounce),
         "an explicit RT carries RT through the plan and keeps the bounce dependency satisfied");
   const auto pending = Resolve(Pass::kOcclusion, GpuClass::kHigh, true, "auto", RtTier::kStrong, false);
-  Check(pending.level == Level::kHigh && !pending.rt && pending.automatic, "pending Auto plans High");
+  Check(pending.level == Level::kUltra && !pending.rt && pending.automatic, "pending Auto uses the fixed raster level");
 }
 
 void CheckAutoPasses() {
@@ -182,7 +182,7 @@ void CheckAutoPasses() {
 // and High, OFF on Low), and the old low and high (read as default). The plan's level is off for no shafts, else the ray
 // quality the class gives: high on Low and Mid (32 steps), ultra on High (64).
 void CheckShafts() {
-  const Level quality[] = {Level::kUltra, Level::kUltra, Level::kUltra};
+  const Level quality = Level::kUltra;
   const sl::Level auto_strength[] = {sl::Level::kDefault, sl::Level::kDefault, sl::Level::kDefault};
   struct Own {
     const char* text;

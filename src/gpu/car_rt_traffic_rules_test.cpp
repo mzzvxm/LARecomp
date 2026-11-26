@@ -362,10 +362,10 @@ int main(int argc, char** argv) {
     const std::string cmake = ReadFile(src + "/gpu/CMakeLists.txt");
     const std::string variant = ReadFile(src + "/shaderpack/variants/car_selfrefl.cpp");
     Check(!host.empty() && !scene.empty() && !cmake.empty() && !variant.empty(), "the sources were read (give the src folder as the first argument)");
-    Check(Has(host, "traffic::LevelWith(traffic::LevelFor(gpu_class::CurrentRtClass()), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()))") &&
+    Check(Has(host, "traffic::LevelWith(traffic::LevelFor(budget_class), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()))") &&
               Has(host, "traffic::PlanDispatches(rects, budget, traffic_level,") && Has(host, "car.traffic = view.boxes[i].traffic;") && Has(host, "car.near_depth = traffic::NearDepth(view.boxes[i]);") &&
               Has(host, "const opp::Plan& plan = traffic_plan.plan;"),
-          "the pass makes the class's level with the switch, plans with the traffic rule and gives it each box's traffic flag and depth");
+          "the pass applies the traffic level override, plans with the traffic rule and gives it each box's traffic flag and depth");
     Check(Has(host, "if (view.other_paint_instances - traffic_paint == 0 && (!traffic_level.on || traffic_paint == 0))"), "no dispatch when the frame has no paint but traffic's and the traffic is off");
     Check(Has(scene, "view_.traffic_paint_instances = cars.traffic_paint_instances;") && Has(scene_h, "uint32_t traffic_paint_instances = 0;"), "the scene hands the pass the traffic paint count");
     Check(Has(host_h, "mcla_gpu_car_rt_traffic_refl"), "the pass's header names the switch");

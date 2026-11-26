@@ -82,7 +82,7 @@ void CheckLabels() {
   for (const std::string_view unknown : {"low", "LOW", "", "rt ", "typo"}) {
     Check(ao::ParseChoice(unknown) == Choice::kAuto, "unknown and legacy choices are Auto");
   }
-  constexpr std::string_view auto_labels[] = {"AUTO (ON)", "AUTO (ON)", "AUTO (ON)"};
+  constexpr std::string_view auto_label = "AUTO (ON)";
   for (int c = 0; c < 3; ++c) {
     for (const auto tier : kTiers) {
       for (const bool built : {false, true}) {

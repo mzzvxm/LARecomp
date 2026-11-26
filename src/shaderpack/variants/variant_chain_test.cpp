@@ -72,7 +72,7 @@ void TestWord() {
 void TestTable_() {
   const char* why = nullptr;
   Check(chain::TableIsValid(chain::kFeatures, &why), std::string("the built-in table is valid ") + (why ? why : ""));
-  Check(chain::kFeatureCount == 14, "fourteen built-in features");
+  Check(chain::kFeatureCount == 15, "fifteen built-in features");
   {
     const chain::FeatureInfo* city_row = chain::Find(sp::kFeatureCarChromeCity);
     Check(sp::kFeatureCarChromeCity == 13 && city_row && city_row->name == "car_chrome_city" && city_row->stage == chain::Stage::kPixel && city_row->constants_bytes == 0 && !city_row->spec_twin &&
@@ -113,7 +113,7 @@ void TestTable_() {
   } expect[] = {{sp::kFeatureHdrScene, 16, false},  {sp::kFeatureBloomGauss, 0, false}, {sp::kFeatureEnvMap, 0, false},  {sp::kFeatureShadowFilter, 16, false},
                 {sp::kFeatureGlowSoft, 0, false},   {sp::kFeatureCarSelfRefl, 112, false}, {sp::kFeatureLuminanceScale, 0, false},
                 {sp::kFeatureCarChrome, 112, false}, {sp::kFeatureUiSharp, 16, true},   {sp::kFeatureHeadlight, 1072, true}, {sp::kFeatureGBuffer, 48, true},
-                {sp::kFeatureCarChromeCity, 0, false}, {sp::kFeatureRoadMirrorBlur, 0, true}};
+                {sp::kFeatureCarChromeCity, 0, false}, {sp::kFeatureRoadMirrorBlur, 0, true}, {sp::kFeatureGlowNeutral, 0, true}};
   for (const auto& e : expect) {
     const chain::FeatureInfo* row = chain::Find(e.feature);
     Check(row && row->constants_bytes == e.bytes && row->spec_twin == e.twin && row->stage == chain::Stage::kPixel, "row of feature " + std::to_string(e.feature));
@@ -197,7 +197,7 @@ void TestLayout() {
   // Every subset of the built-in features: dense, in order, 16 byte aligned, never overlapping, total as the sum.
   bool all_disjoint = true;
   bool all_dense = true;
-  const uint32_t all = (1u << (sp::kFeatureRoadMirrorBlur + 1)) - 1;  // every subset of the built-in feature bits (11 is reserved)
+  const uint32_t all = (1u << (sp::kFeatureGlowNeutral + 1)) - 1;  // every subset of the built-in feature bits (11 is reserved)
   for (uint32_t set = 0; set <= all; ++set) {
     const chain::ConstantsLayout layout = chain::LayoutConstants(set);
     all_disjoint &= Disjoint(layout);

@@ -1103,7 +1103,7 @@ void SourceChecksSs1(const std::string& gpu) {
   Check(!Has(ao_cpp, "colour_[") && !Has(ao_h, "HostImage colour_[3]") && Has(ao_h, "HostImage& Colour(uint32_t level) const;"), "the AO keeps no colour chain images of its own");
   Check(Has(ao_cpp, "screen_->CapturePre([&] { RecordColourChain(list, plan, base, *gi_colour, gi_colour_slot); });") && Before(ao_cpp, "screen_->CapturePre(", "CarRtAo::Result rt;"),
         "the AO records the colour chain inside the owner's CapturePre, at the place it always was (before the ray traced pass)");
-  Check(Has(ao_cpp, "screen_ && screen_->EnsureColourPre(colour_sizes, kGiFormat)") && Has(ao_cpp, "screen_->ReleaseColourPre();") && Has(ao_cpp, "return screen_->ColourPre(level);"),
+  Check(Has(ao_cpp, "if (!passes_ || !screen_) {") && Has(ao_cpp, "screen_->EnsureColourPre(colour_sizes, kGiFormat)") && Has(ao_cpp, "screen_->ReleaseColourPre();") && Has(ao_cpp, "return screen_->ColourPre(level);"),
         "the AO's images of the chain are the owner's (made, kept and given back there)");
   const std::string ensure_pre = body(shared_cpp, "bool ScreenShared::EnsureColourPre(", "void ScreenShared::ReleaseColourPre()");
   Check(!ensure_pre.empty() && Has(ensure_pre, "kPreNames[level]") && Has(shared_cpp, "{\"ssgi colour\", \"ssgi colour 1/2\", \"ssgi colour 1/4\"}"), "the images keep the AO's names");

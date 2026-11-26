@@ -3020,6 +3020,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_glow_neutral": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reduce pink and green block artifacts in reflected lamp glows. \"\n    \"Uses the green channel for nearly gray BC1 samples and preserves the lamp tint. Applies live when the shader variant is available.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_glow_visibility": {
   "type": "std::string",
   "default": "\"soft\"",

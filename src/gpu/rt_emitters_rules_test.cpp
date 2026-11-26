@@ -800,9 +800,10 @@ void TextChecks(const std::string& src) {
   CHECK(Has(rules, "const float scale = gain * (l->law == lg::LightLaw::kHeadlight ? 1.0f : night);") && Has(rules, "if (Far(*l, camera)) {") && Has(rules, "if (!Finite(*l)) {"));
   // the manager's second flag
   {
-    size_t both = 0;   // `wanted_ = want_pass_ || want_rt_;` in each of the two setters: one flag cannot take the other's away
-    for (size_t at = frame.find("wanted_ = want_pass_ || want_rt_;"); at != std::string::npos; at = frame.find("wanted_ = want_pass_ || want_rt_;", at + 1)) ++both;
-    CHECK(Has(frame, "void WantRt(bool wanted) {") && both == 2 && Has(frame, "want_pass_ = wanted;") && Has(frame, "want_rt_ = wanted;"));
+    constexpr std::string_view combine = "wanted_ = want_pass_ || want_rt_ || want_bounce_;";
+    size_t setters = 0;
+    for (size_t at = frame.find(combine); at != std::string::npos; at = frame.find(combine, at + 1)) ++setters;
+    CHECK(setters == 3 && Has(frame, "want_pass_ = wanted;") && Has(frame, "want_rt_ = wanted;") && Has(frame, "want_bounce_ = wanted;"));
   }
 }
 

@@ -126,6 +126,7 @@ inline constexpr FeatureInfo kFeatures[] = {
     // wants this feature only together with the chrome's).
     {kFeatureCarChromeCity, "car_chrome_city", Stage::kPixel, 0, FeatureBit(kFeatureCarChrome) | FeatureBit(kFeatureGBuffer), false, 0},
     {kFeatureRoadMirrorBlur, "road_mirror_blur", Stage::kPixel, 0, FeatureBit(kFeatureHeadlight) | FeatureBit(kFeatureGBuffer), true, 0},
+    {kFeatureGlowNeutral, "glow_neutral", Stage::kPixel, 0, 0, true, 0},
 };
 
 constexpr size_t kFeatureCount = sizeof(kFeatures) / sizeof(kFeatures[0]);

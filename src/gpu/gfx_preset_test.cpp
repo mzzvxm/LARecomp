@@ -276,6 +276,16 @@ constexpr EnhancedValues kEnhanced[] = {
     {"lod_city_scale", "2", "2"},
 };
 
+void CheckCarAoAuto() {
+  for (const bool world_rt : {false, true}) {
+    CheckEq(gp::CarAoAuto(Preset::kVanilla, world_rt), "off", "Vanilla car AO Auto selects no traced terms");
+    CheckEq(gp::CarAoAuto(Preset::kEnhanced, world_rt), "off", "Enhanced car AO Auto selects no traced terms");
+    CheckEq(gp::CarAoAuto(Preset::kEnhancedRt, world_rt), "both", "Enhanced RT car AO Auto selects both traced terms");
+  }
+  CheckEq(gp::CarAoAuto(Preset::kCustom, false), "off", "Custom raster AO selects no traced car terms");
+  CheckEq(gp::CarAoAuto(Preset::kCustom, true), "both", "Custom world RT AO selects both traced car terms");
+}
+
 void CheckEnhanced() {
   Check(std::size(kEnhanced) == gp::kRowCount, "both enhanced columns are covered");
   for (const auto& row : kEnhanced) {
@@ -508,6 +518,7 @@ int main() {
   CheckTable();
   CheckVanilla();
   CheckEnhanced();
+  CheckCarAoAuto();
   CheckNoClassDependence();
   CheckRetiredIds();
   CheckNumber();
