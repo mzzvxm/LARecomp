@@ -33,10 +33,14 @@
 #define GIA_UP 0
 #endif
 
+#ifndef GIA_COMPOSITE
 Texture2D<float4> g_textures[] : register(t0, space0);
 Texture2DMS<float4> g_textures_ms[] : register(t0, space1);
 SamplerState g_samplers[] : register(s0, space2);
 ByteAddressBuffer g_rows : register(t0, space3);
+#else
+ByteAddressBuffer g_rows : register(t4, space4);
+#endif
 
 struct GiaPush
 {
@@ -44,10 +48,15 @@ struct GiaPush
     uint4 info;   // x the visibility image's slot (GIA_NO_SLOT: none), y the lookup image's slot, z the host sample that is the guest's sample 0, w flags | view << 8
 };
 
+#ifdef GIA_COMPOSITE
+static GiaPush g_push;
+#else
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<GiaPush> g_push;
 #else
 ConstantBuffer<GiaPush> g_push : register(b0, space4);
+#endif
+
 #endif
 
 #define GI_FRAME_ROW(i) g_rows.Load4((i) * 16u)
@@ -221,7 +230,7 @@ float3 GiaTone(float3 c)
     return c / (float3(1.0f, 1.0f, 1.0f) + c);
 }
 
-#if GIA_UP
+#if GIA_UP || defined(GIA_COMPOSITE)
 float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, GiaFrame fr, bool fast)
 {
     int2 last = int2(fr.render) - 1;
@@ -280,7 +289,13 @@ float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, GiaFrame fr, bool fas
 }
 #endif
 
+#ifdef GIA_COMPOSITE
+#define GIA_EMPTY return 0.0f
+float4 GiaApply(float4 position)
+#else
+#define GIA_EMPTY discard
 float4 main(float4 position : SV_Position) : SV_Target
+#endif
 {
     int2 pixel = int2(position.xy);
     uint view = GiaView();
@@ -295,12 +310,12 @@ float4 main(float4 position : SV_Position) : SV_Target
         {
             return none;
         }
-        discard;
+        GIA_EMPTY;
     }
     float4 rt2 = GiaLoadPlane(g_push.slots.z, pixel);
     if (view == 0u && (!any(rt2 > 0.0f) || !(rt2.w > 0.0f)))
     {
-        discard;  // no albedo (a family that writes none yet, a road) or an emissive surface: it takes no bounce
+        GIA_EMPTY;  // no albedo (a family that writes none yet, a road) or an emissive surface: it takes no bounce
     }
 #if GIA_MS
     float stored = g_textures_ms[g_push.slots.x].Load(pixel, g_push.info.z).r;
@@ -314,7 +329,7 @@ float4 main(float4 position : SV_Position) : SV_Target
         {
             return none;
         }
-        discard;
+        GIA_EMPTY;
     }
     float3 n = GbRt1Decode(rt1);
 
@@ -355,7 +370,10 @@ float4 main(float4 position : SV_Position) : SV_Target
     float ao = 1.0f;
     bool fast = GiaFastLookupApply();
     bool visibility = GiaHasVisibility() && (!fast || (fr.aoStrength > 0.0f && t < fr.aoFadeEnd));
-#if GIA_UP
+#if GIA_UP || defined(GIA_COMPOSITE)
+#ifdef GIA_COMPOSITE
+    if (g_push.info.y != GIA_NO_SLOT)
+#endif
     {
         bool quarter = GiaQuarterLookup();
         if (quarter)
@@ -363,7 +381,7 @@ float4 main(float4 position : SV_Position) : SV_Target
             eNet = GiaQuarterIrradiance(pixel, t, n, fr, fast);
             if (fast && !any(eNet > 0.0f))
             {
-                discard;
+                GIA_EMPTY;
             }
         }
         float2 q = (float2(pixel) + 0.5f) * 0.5f - 0.5f;
@@ -457,7 +475,11 @@ float4 main(float4 position : SV_Position) : SV_Target
             ao = visibility ? aoSum * invWeight : 1.0f;
         }
     }
-#else
+#endif
+#ifdef GIA_COMPOSITE
+    else
+#endif
+#if !GIA_UP || defined(GIA_COMPOSITE)
     {
         GiSample s = GiLookup(GiaReceiverPosition(pixel, t, fr), n, fast);
         eNet = GiaLookupNetMixed(s, n, fr, GiaPixelTerm(pixel, t, n, fr));
@@ -498,9 +520,11 @@ float4 main(float4 position : SV_Position) : SV_Target
     }
     if (!any(add > 0.0f))
     {
-        discard;
+        GIA_EMPTY;
     }
     return float4(add.x, add.y, add.z, 0.0f);
 }
 
 #endif
+
+#undef GIA_EMPTY

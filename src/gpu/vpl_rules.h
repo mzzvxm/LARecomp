@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 
 namespace mcla::gpu::vpl {
@@ -66,11 +67,32 @@ struct alignas(16) Frame {
   std::array<uint32_t, 4> counts;  // traced width, traced height, active beams, guest sample zero
   std::array<uint32_t, 4> slots;   // linear depth 0-2, raw depth
   std::array<uint32_t, 4> guides;  // RT2, main colour, AO visibility, stencil
-  std::array<uint32_t, 4> apply;   // irradiance, cockpit ID, cockpit flag, reserved
+  std::array<uint32_t, 4> apply;   // bounce irradiance, cockpit ID, cockpit flag, direct irradiance
   std::array<float, 4> depth;  // reversed-depth linearisation
   std::array<Beam, kMaxLights> beams;
 };
 
 static_assert(sizeof(Beam) == 64 && sizeof(Frame) == 208 + kMaxLights * sizeof(Beam));
+
+// The composite reads the original light buffer and draw groups for the full-size
+// contact path. This preserves the reach order and contact donor selection.
+inline constexpr uint32_t kMaxDraws = 32;
+struct alignas(16) DirectFrame {
+  std::array<uint32_t, 4> slots;
+  std::array<uint32_t, 4> info;  // draw count, guest sample zero, reserved
+  struct Draw {
+    std::array<uint32_t, 4> info;  // first light, count, push flags, reserved
+    std::array<int32_t, 4> rect;
+  };
+  std::array<Draw, kMaxDraws> draws;
+};
+
+struct alignas(16) CompositeFrame {
+  Frame bounce;
+  DirectFrame direct;
+  std::array<uint32_t, 8> gi_push;
+};
+
+static_assert(offsetof(CompositeFrame, direct) == 976 && offsetof(CompositeFrame, gi_push) == 2032);
 
 }  // namespace mcla::gpu::vpl

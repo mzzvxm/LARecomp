@@ -127,7 +127,10 @@ class GiApply {
   // At the trigger, after the occlusion's OnResolve and before the light pass. `gbuffer_published` is the G-buffer's own answer for this resolve. Records the pass and returns true (the caller's list
   // state is gone). `frame_slot` is the frame's slot of the upload ring. Once a frame.
   // G6: `raw_requested` = DLSS Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtGi()): the per-pixel pass (if it runs) then hands its 1 spp signal on unfiltered.
-  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested = false, const float* regen_jitter = nullptr);
+  bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested = false, const float* regen_jitter = nullptr, bool composite = false);
+  void FinishComposite(plume::RenderCommandList* list, bool composited);
+  const gi_apply::Push* CompositePush() const { return pending_.pipeline ? &pending_.push : nullptr; }
+  plume::RenderBuffer* CompositeBuffer() const { return pending_.slot ? pending_.slot->buffer.get() : nullptr; }
   // G6: the per-pixel pass's hit distance image of THIS frame, null unless the pass ran raw in it (RG16F at its own size, the distance in x, in the read state): the guide pass's last-choice hit distance.
   // Valid after OnTrigger, until the next frame's.
   const HostImage* RawHitImage() const;
@@ -154,6 +157,16 @@ class GiApply {
     std::unique_ptr<plume::RenderBuffer> buffer;
     std::unique_ptr<plume::RenderDescriptorSet> set;
   };
+  struct Pending {
+    const Slot* slot = nullptr;
+    plume::RenderPipeline* pipeline = nullptr;
+    plume::RenderFramebuffer* framebuffer = nullptr;
+    uint32_t width = 0, height = 0;
+    gi_apply::Push push{};
+    bool view = false;
+  };
+  void DrawAdd(plume::RenderCommandList* list, const Pending& draw) const;
+  Pending pending_;
   // The pipelines: the lookup (no blend, RGBA16F, one sample), the add and the view at the main colour's format and sample count.
   enum class Kind : uint8_t { kLookup, kAdd, kView };
   struct PipelineEntry {
@@ -164,7 +177,7 @@ class GiApply {
     std::unique_ptr<plume::RenderPipeline> pipeline;
   };
 
-  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter);
+  bool OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter, bool composite);
   bool EnsureLayout();
   bool EnsureSlot(uint32_t frame_slot);
   plume::RenderShader* ShaderFor(uint32_t which);

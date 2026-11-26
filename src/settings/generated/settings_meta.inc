@@ -657,6 +657,7 @@
 {"mcla_gpu_neon_light_reach", "MCLA/GPU"},
 {"mcla_gpu_neon_light_tuned", "MCLA/GPU"},
 {"mcla_gpu_local_lights_cost_off", "MCLA/GPU"},
+{"mcla_gpu_light_composite", "MCLA/GPU"},
 {"mcla_gpu_local_lights_depth_bound", "MCLA/GPU"},
 {"mcla_gpu_local_lights_reach_mask", "MCLA/GPU"},
 {"mcla_gpu_local_lights_sphere_scissor", "MCLA/GPU"},

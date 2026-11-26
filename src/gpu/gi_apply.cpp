@@ -290,6 +290,7 @@ void GiApply::BeginFrame() {
   ran_this_frame_ = false;
   field_share_in_frame_ = 0.0f;
   capture_lookup_ = false;
+  pending_ = {};
 }
 
 float GiApply::TakeSsgiShare() {
@@ -303,10 +304,10 @@ float GiApply::TakeSsgiShare() {
 
 float GiApply::LevelStrength() { return LevelNumbers().strength; }
 
-bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter) {
+bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter, bool composite) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGiApply);
   expect_add_ = false;
-  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot, raw_requested, regen_jitter);
+  const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot, raw_requested, regen_jitter, composite);
   if (expect_add_) {
     starved_frames_ = recorded ? 0u : starved_frames_ + 1u;  // the watchdog (Starved): a frame the field stood for and the apply drew nothing
   }
@@ -321,7 +322,7 @@ const HostImage* GiApply::RawHitImage() const {
   return out.valid && out.frame == frame_ ? out.hit : nullptr;   // the pass's own frame is the apply's counter: a frame the trigger did not reach has none
 }
 
-bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter) {
+bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter, bool composite) {
   if (!enabled_ || !list || trigger_seen_ || field_ == nullptr || gbuffer_ == nullptr || screen_ == nullptr || edram_ == nullptr || !summary.source) {
     return false;
   }
@@ -589,18 +590,12 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
     Count(ga::Skip::kNoTarget);
     return false;
   }
-  pass_timing_->Mark(list, view_run ? "gi apply view" : "gi apply");
-  list->setFramebuffer(framebuffer);
-  const plume::RenderViewport viewport{0.0f, 0.0f, float(gb.width), float(gb.height)};
-  list->setViewports(&viewport, 1);
-  const plume::RenderRect scissor(0, 0, int32_t(gb.width), int32_t(gb.height));
-  list->setScissors(&scissor, 1);
-  Bind(list, slot);
-  list->setPipeline(apply_pipeline);
-  list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
-  list->drawInstanced(3, 1, 0, 0);
-  list->setFramebuffer(nullptr);
-  pass_timing_->Mark(list, "after gi apply");
+  const Pending draw{&slot, apply_pipeline, framebuffer, gb.width, gb.height, push, view_run};
+  if (composite && !view_run) {
+    pending_ = draw;
+  } else {
+    DrawAdd(list, draw);
+  }
 
   Count(ga::Skip::kRecorded);
   ++frames_run_;
@@ -619,6 +614,27 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
                 own_pose ? "the frame's own pose" : "the last frame's", fr.strength, fr.cap, fr.ambient, fr.sun, view_);
   }
   return true;
+}
+
+void GiApply::DrawAdd(plume::RenderCommandList* list, const Pending& draw) const {
+  if (!list || !pass_timing_ || !draw.framebuffer || !draw.pipeline || !draw.slot) return;
+  pass_timing_->Mark(list, draw.view ? "gi apply view" : "gi apply");
+  list->setFramebuffer(draw.framebuffer);
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(draw.width), float(draw.height)};
+  list->setViewports(&viewport, 1);
+  const plume::RenderRect scissor(0, 0, int32_t(draw.width), int32_t(draw.height));
+  list->setScissors(&scissor, 1);
+  Bind(list, *draw.slot);
+  list->setPipeline(draw.pipeline);
+  list->setGraphicsPushConstants(0, &draw.push, 0, sizeof(draw.push));
+  list->drawInstanced(3, 1, 0, 0);
+  list->setFramebuffer(nullptr);
+  pass_timing_->Mark(list, "after gi apply");
+}
+
+void GiApply::FinishComposite(plume::RenderCommandList* list, bool composited) {
+  if (!composited && pending_.pipeline) DrawAdd(list, pending_);
+  pending_ = {};
 }
 
 void GiApply::OnPresent() {

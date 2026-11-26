@@ -92,6 +92,10 @@
 #include "vpl_hit_1_cs.hlsl.dxil.h"
 #include "vpl_hit_rt_0_cs.hlsl.dxil.h"
 #include "vpl_hit_rt_1_cs.hlsl.dxil.h"
+#include "light_irradiance_0_ps.hlsl.dxil.h"
+#include "light_irradiance_1_ps.hlsl.dxil.h"
+#include "light_composite_0_ps.hlsl.dxil.h"
+#include "light_composite_1_ps.hlsl.dxil.h"
 #include "vpl_irradiance_0_ps.hlsl.dxil.h"
 #include "vpl_irradiance_1_ps.hlsl.dxil.h"
 #include "vpl_composite_0_ps.hlsl.dxil.h"
@@ -283,6 +287,10 @@
 #include "vpl_hit_1_cs.hlsl.spirv.h"
 #include "vpl_hit_rt_0_cs.hlsl.spirv.h"
 #include "vpl_hit_rt_1_cs.hlsl.spirv.h"
+#include "light_irradiance_0_ps.hlsl.spirv.h"
+#include "light_irradiance_1_ps.hlsl.spirv.h"
+#include "light_composite_0_ps.hlsl.spirv.h"
+#include "light_composite_1_ps.hlsl.spirv.h"
 #include "vpl_irradiance_0_ps.hlsl.spirv.h"
 #include "vpl_irradiance_1_ps.hlsl.spirv.h"
 #include "vpl_composite_0_ps.hlsl.spirv.h"
@@ -513,6 +521,8 @@ inline HostShaderBlob VirtualBounceShader(uint32_t stage, bool ms) {
   switch (stage) {
     case 0: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_1_cs) : MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_0_cs);
     case 1: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_rt_1_cs) : MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_rt_0_cs);
+    case 4: return ms ? MCLA_GPU_HOST_SHADER_BLOB(light_irradiance_1_ps) : MCLA_GPU_HOST_SHADER_BLOB(light_irradiance_0_ps);
+    case 5: return ms ? MCLA_GPU_HOST_SHADER_BLOB(light_composite_1_ps) : MCLA_GPU_HOST_SHADER_BLOB(light_composite_0_ps);
     case 2: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_irradiance_1_ps) : MCLA_GPU_HOST_SHADER_BLOB(vpl_irradiance_0_ps);
     default: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_composite_1_ps) : MCLA_GPU_HOST_SHADER_BLOB(vpl_composite_0_ps);
   }

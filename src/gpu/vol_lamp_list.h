@@ -108,6 +108,7 @@ inline constexpr uint32_t kWantedByVolume = 1u << 0;
 inline constexpr uint32_t kWantedByWorldFrame = 1u << 1;
 inline constexpr uint32_t kWantedByLampShadows = 1u << 2;
 inline constexpr uint32_t kWantedByRtLights = 1u << 3;
+inline constexpr uint32_t kWantedByVirtualBounce = 1u << 4;
 inline std::atomic<uint32_t> g_wanted_by{0};
 inline bool Wanted() { return g_wanted_by.load(std::memory_order_relaxed) != 0; }
 inline void SetWantedBy(uint32_t who, bool wanted) {

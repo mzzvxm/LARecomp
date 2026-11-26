@@ -45,6 +45,8 @@ uint64_t AlignUp(uint64_t value, uint64_t alignment) { return (value + alignment
 // GI-BOUNCE-RT: what the emitters keep from frame to frame (the motion of each light by its id), what the bounce light asked for, and the last list for the log.
 struct RtWorldFrame::EmitterState {
   bool wanted = false;
+  bool bounce_wanted = false;
+  bool any_wanted() const { return wanted || bounce_wanted; }
   bool ultra = false;
   bool weak = false;
   bool manager_asked = false;
@@ -188,8 +190,20 @@ void RtWorldFrame::WantEmitters(bool wanted, bool ultra, bool weak) {
   e.wanted = wanted;
   e.ultra = ultra;
   e.weak = weak;
+  UpdateEmitterWant();
+}
+
+void RtWorldFrame::WantBounceEmitters(bool wanted) {
+  if (!emitters_) return;
+  emitters_->bounce_wanted = wanted;
+  UpdateEmitterWant();
+}
+
+void RtWorldFrame::UpdateEmitterWant() {
+  if (!emitters_) return;
+  EmitterState& e = *emitters_;
   // The light manager collects the headlights and polls the cars' light points only while a consumer asks (it is passive otherwise): the neon and the mods' lamps need neither.
-  const bool ask = wanted && (EmitterGroupsNow() & ~rt_emitters::kGroupNeon) != 0;
+  const bool ask = e.any_wanted() && (EmitterGroupsNow() & ~rt_emitters::kGroupNeon) != 0;
   if (src_.lights != nullptr && ask != e.manager_asked) {
     src_.lights->WantRt(ask);
     e.manager_asked = ask;
@@ -197,7 +211,7 @@ void RtWorldFrame::WantEmitters(bool wanted, bool ultra, bool weak) {
 }
 
 RtWorldFrame::EmitterMotion RtWorldFrame::EmitterMotionOf(uint64_t light_id) const {
-  if (emitters_ == nullptr || !emitters_->wanted || !Valid() || light_id == larecomp::gpu::kNoLightId) {
+  if (emitters_ == nullptr || !emitters_->any_wanted() || !Valid() || light_id == larecomp::gpu::kNoLightId) {
     return EmitterMotion::kNotListed;
   }
   for (const rt_emitters::Emitter& e : emitters_->result.list) {
@@ -214,7 +228,7 @@ void RtWorldFrame::BuildEmitters(rt_world::WorldInput* in, const double camera[3
   EmitterState& e = *emitters_;
   e.result = re::BuildResult{};
   e.words.clear();
-  if (!e.wanted) {
+  if (!e.any_wanted()) {
     e.motion.Clear();  // nobody asked: a light that comes back later has no speed to read
     return;
   }
@@ -229,7 +243,7 @@ void RtWorldFrame::BuildEmitters(rt_world::WorldInput* in, const double camera[3
   const std::shared_ptr<const re::mls::Set> active_mod = re::mls::Global().Current();
   bi.active_mod = active_mod.get();
   bi.groups = EmitterGroupsNow();
-  bi.tier = re::TierFor(e.ultra, e.weak);
+  bi.tier = re::TierFor(e.ultra || e.bounce_wanted, e.weak && !e.bounce_wanted);
   for (int i = 0; i < 3; ++i) {
     bi.camera[i] = float(camera[i]);
   }

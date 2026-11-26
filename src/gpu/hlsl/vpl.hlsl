@@ -405,7 +405,7 @@ float4 IrradianceMain(float4 position : SV_Position) : SV_Target {
     float radius2 = 9.0f * landed.w * landed.w;
     if (d2 >= radius2) continue;
     float share = ReceiverShare(id, beam.meta.z, false);
-    if (id != 0u && beam.meta.z == 0u && dot(world - beam.origin_range.xyz, world - beam.origin_range.xyz) < 5.76f) share = 0.0f;
+    if (id != 0u && beam.meta.z == 0u && (beam.meta.w & 8u) == 0u && dot(world - beam.origin_range.xyz, world - beam.origin_range.xyz) < 5.76f) share = 0.0f;
     if (share == 0.0f) continue;
     float3 travel = delta * rsqrt(max(d2, 1.0e-6f));
     float3 normal = asfloat(g_hit_read.Load4(offset + 16)).xyz;
@@ -423,7 +423,7 @@ float4 IrradianceMain(float4 position : SV_Position) : SV_Target {
   return float4(sum, id != 0u ? -depth : depth);
 }
 
-float4 CompositeMain(float4 position : SV_Position) : SV_Target {
+float4 VplComposite(float4 position) {
   View v = VplView();
   int2 pixel = int2(position.xy);
   int2 half_size = int2(v.sizes.zw);
@@ -437,14 +437,14 @@ float4 CompositeMain(float4 position : SV_Position) : SV_Target {
     taps[i] = g_textures[v.apply.x].Load(int3(p, 0));
     total += taps[i].rgb;
   }
-  if (!any(total > 0.0f)) discard;
+  if (!any(total > 0.0f)) return 0.0f;
   float z = MainDepth(v, pixel);
-  if (z >= kSky) discard;
+  if (z >= kSky) return 0.0f;
   float2 uv = (float2(pixel) + 0.5f) / v.sizes.xy;
   float raw = Chain(v, uv, 0);
   uint id = Vehicle(v, pixel, raw);
   float3 world = v.eye + WorldVector(v, AtDepth(v, uv, z));
-  if (InCabin(v, world, id)) discard;
+  if (InCabin(v, world, id)) return 0.0f;
   float3 sum = 0.0f;
   float weights = 0.0f;
   [unroll] for (int j = 0; j < 4; ++j) {
@@ -455,7 +455,7 @@ float4 CompositeMain(float4 position : SV_Position) : SV_Target {
     sum += tap.rgb * w;
     weights += w;
   }
-  if (weights <= 0.0001f) discard;
+  if (weights <= 0.0001f) return 0.0f;
   float4 rt2 = v.guides.x == kNoSlot ? 0.0f : Plane(v, v.guides.x, pixel);
   float3 albedo = (rt2.w > 0.0f || any(rt2.rgb > 0.0f)) ? GbAlbedoDecode(rt2.rgb) * saturate(rt2.w) :
     SurfaceBase(WorldVector(v, GeometricNormal(v, int2(uv * v.counts.xy), Linear(raw))));
@@ -466,4 +466,10 @@ float4 CompositeMain(float4 position : SV_Position) : SV_Target {
     ao = lerp(1.0f, saturate(a), saturate(v.lens.w));
   }
   return float4(albedo * (ao * v.exposure) * (sum / weights), 0.0f);
+}
+
+float4 CompositeMain(float4 position : SV_Position) : SV_Target {
+  const float4 add = VplComposite(position);
+  if (!any(add.rgb > 0.0f)) discard;
+  return add;
 }

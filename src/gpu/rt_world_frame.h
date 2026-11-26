@@ -165,6 +165,8 @@ class RtWorldFrame {
   // choose the budget table's tier (rt_emitters::TierFor). They are made at OnTrigger, as GpuLight rows in the lamp buffer after the lamps (row 44 of the world rows says where), for every consumer of the
   // world frame: the probe field reads the static ones, the per-pixel pass and the reflections all of them. Not wanted: no list, no rows, and the light manager is not asked to run for it.
   void WantEmitters(bool wanted, bool ultra, bool weak);
+  void WantBounceEmitters(bool wanted);
+  void UpdateEmitterWant();
   // GI-BOUNCE-JOIN (gi_bounce_carrier.h): what THIS frame's list says about a light of the deferred light pass, by the light's id: not in the list (not wanted, too far, over the budget, dark, a hole, a frame the
   // world frame was not filled in), a STATIC emitter (the probe field carries its bounce) or a MOVING one (the per-pixel pass does, at ULTRA). The light pass asks it for every light it draws, after OnTrigger.
   enum class EmitterMotion : uint8_t { kNotListed = 0, kStatic = 1, kMoving = 2 };

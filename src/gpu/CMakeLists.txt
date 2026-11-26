@@ -573,6 +573,7 @@ target_include_directories(larecomp_rt_emitters_rules_test PRIVATE ${CMAKE_SOURC
 # bounces exactly once; the partition of the light pass's draws; the lights-only chain's plan; given the src/gpu folder it also checks the text of the places that wire it, mutation-checked):
 #   cmake --build <dir> --target larecomp_gi_bounce_carrier_test, then run src/gpu/larecomp_gi_bounce_carrier_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_vpl_rules_test EXCLUDE_FROM_ALL vpl_rules_test.cpp)
+add_executable(larecomp_light_composite_test EXCLUDE_FROM_ALL light_composite_test.cpp)
 add_executable(larecomp_gi_bounce_carrier_test EXCLUDE_FROM_ALL gi_bounce_carrier_test.cpp)
 target_include_directories(larecomp_gi_bounce_carrier_test PRIVATE ${CMAKE_SOURCE_DIR}/src)
 # The forward headlight stage against the deferred pass (headlight_pass_rules.h, GB-H2: the switch mcla_gpu_headlight_pass and what each route does, the retail census of the stage, the
@@ -1108,7 +1109,7 @@ file(GLOB LARECOMP_GPU_THIRDPARTY_SHADER_SOURCES CONFIGURE_DEPENDS
 # ternaries 2021 rejects, so the FSR1 passes build as 2018. SPIRV_ARGS: more
 # dxc arguments for the SPIR-V blob only (larecomp_gpu_host_shader_rt below).
 function(larecomp_gpu_host_shader STEM PROFILE)
-    cmake_parse_arguments(ARG "" "SOURCE;HLSL_VERSION" "DEFINES;SPIRV_ARGS" ${ARGN})
+    cmake_parse_arguments(ARG "" "SOURCE;HLSL_VERSION" "DEFINES;SPIRV_ARGS;EXTRA_SOURCES" ${ARGN})
     if(NOT ARG_SOURCE)
         set(ARG_SOURCE "${STEM}")
     endif()
@@ -1144,6 +1145,7 @@ function(larecomp_gpu_host_shader STEM PROFILE)
                     "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl"
             DEPENDS "${LARECOMP_GPU_HLSL_DIR}/${ARG_SOURCE}.hlsl" ${LARECOMP_GPU_HLSL_INCLUDES}
                     ${LARECOMP_GPU_THIRDPARTY_SHADER_SOURCES}
+                    ${ARG_EXTRA_SOURCES}
             COMMENT "Compiling host shader ${STEM} from ${ARG_SOURCE}.hlsl (${PROFILE}, ${ext})"
             VERBATIM)
         target_sources(larecomp_gpu PRIVATE "${out}")
@@ -1483,6 +1485,10 @@ foreach(ms 0 1)
     larecomp_gpu_host_shader(vpl_hit_${ms}_cs cs_6_0 SOURCE vpl DEFINES VPL_MS=${ms} HitMain=main)
     larecomp_gpu_host_shader_rt(vpl_hit_rt_${ms}_cs cs_6_5 SOURCE vpl DEFINES VPL_MS=${ms} VPL_RAY=1 HitMain=main)
     larecomp_gpu_host_shader(vpl_irradiance_${ms}_ps ps_6_0 SOURCE vpl DEFINES VPL_MS=${ms} IrradianceMain=main)
+    larecomp_gpu_host_shader(light_irradiance_${ms}_ps ps_6_0 SOURCE light_composite DEFINES VPL_MS=${ms} LC_IRRADIANCE=1 LightIrradianceMain=main
+        EXTRA_SOURCES "${LARECOMP_GPU_HLSL_DIR}/vpl.hlsl" "${LARECOMP_GPU_HLSL_DIR}/local_light_ps.hlsl")
+    larecomp_gpu_host_shader(light_composite_${ms}_ps ps_6_0 SOURCE light_composite DEFINES VPL_MS=${ms} LC_IRRADIANCE=0 LightCompositeMain=main
+        EXTRA_SOURCES "${LARECOMP_GPU_HLSL_DIR}/vpl.hlsl" "${LARECOMP_GPU_HLSL_DIR}/local_light_ps.hlsl" "${LARECOMP_GPU_HLSL_DIR}/gi_apply_ps.hlsl")
     larecomp_gpu_host_shader(vpl_composite_${ms}_ps ps_6_0 SOURCE vpl DEFINES VPL_MS=${ms} CompositeMain=main)
 endforeach()
 larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)
