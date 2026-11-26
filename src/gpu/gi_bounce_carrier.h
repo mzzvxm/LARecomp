@@ -8,7 +8,7 @@
 // path lights what its rays hit with an emitters list (the probe field the STATIC ones, the per-pixel pass all of them; the world's own lamps are the lamp grid's). Where the field stands the screen-space bounce
 // was skipped whole, so a MOVING car's lights bounced through neither path at HIGH. This rule closes it: a light is carried by exactly one path.
 //
-//   the light                                              RT off       field alone (HIGH, or a weak card's ULTRA)     field + per-pixel pass (ULTRA, strong card)
+//   the light                                              RT off       field alone (HIGH)                           field + per-pixel pass (ULTRA)
 //   a street lamp, the world's lamps (source kLamp)        screen       FIELD (the lamp grid)                          FIELD
 //   a listed STATIC emitter (a parked car's lights)        screen       FIELD (the probes)                             FIELD
 //   a listed MOVING emitter (a car on the road)            screen       SCREEN (lights-only chain)                     PIXEL PASS

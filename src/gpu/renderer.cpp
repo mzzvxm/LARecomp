@@ -411,7 +411,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       }
     }
     // The ray tracing benchmark (rt_bench.h, rt_tier.h): once with a card that can trace (kept next to larecomp.toml), while the GPU is idle and before the
-    // precache below starts its builder; it can move the card between the weak and the strong tier, which the ray traced upgrades' `auto` reads.
+    // precache below starts its builder. The result updates the reported RT tier.
     rt_bench::RunIfWanted(device_);
     // The resolve conversions and the decode listed the pipelines a session
     // uses (host_precache.h): one builder thread makes them while the rest of
@@ -1202,8 +1202,6 @@ void Renderer::SubmitFrameWithoutPresent() {
     timing_.OnSubmitted(slot);
     pass_timing_.OnSubmitted(slot);
     occlusion_.OnSubmitted(slot);
-    gi_update_.OnSubmitted(slot);
-    gi_pixel_.OnSubmitted(slot);
     latency::OnRenderSubmitted();
   }
   AdvanceFrame();
@@ -1746,8 +1744,6 @@ void Renderer::ExecutePresent(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
-  gi_update_.OnSubmitted(slot);
-  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
 
   // A scheduled guest frame (gpu.h SetNextPresentTarget) goes to the screen at
@@ -2035,8 +2031,6 @@ void Renderer::ExecutePresentGenerated(PresentSource source) {
   timing_.OnSubmitted(slot);
   pass_timing_.OnSubmitted(slot);
   occlusion_.OnSubmitted(slot);
-  gi_update_.OnSubmitted(slot);
-  gi_pixel_.OnSubmitted(slot);
   latency::OnRenderSubmitted();
   // The present markers are the pacer's: it names the frame around the real image's present.
   const uint64_t latency_frame = latency::DetachRenderFrame();

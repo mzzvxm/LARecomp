@@ -53,7 +53,7 @@ void SettingAndClasses() {
   Check(ModeName(Mode::kNear) == "near" && ModeName(Mode::kAll) == "all" && ModeName(Mode::kOff) == "off", "the names");
   // auto: near on Mid and High, off on Low (the owner's rule); the player's own choice is never changed.
   using gpu_class::GpuClass;
-  Check(ModeFor(GpuClass::kLow, "auto") == Mode::kOff, "auto on Low: off");
+  Check(ModeFor(GpuClass::kLow, "auto") == Mode::kNear, "auto on Low: near");
   Check(ModeFor(GpuClass::kMid, "auto") == Mode::kNear, "auto on Mid: near");
   Check(ModeFor(GpuClass::kHigh, "auto") == Mode::kNear, "auto on High: near");
   for (GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
@@ -62,7 +62,7 @@ void SettingAndClasses() {
     Check(ModeFor(c, "all") == Mode::kAll, "all stays all on every class");
   }
   // The row's label for auto.
-  Check(gpu_class::AutoLabelFor(GpuClass::kLow, gpu_class::Effect::kTrafficShadows) == "AUTO (OFF)", "the row says AUTO (OFF) on Low");
+  Check(gpu_class::AutoLabelFor(GpuClass::kLow, gpu_class::Effect::kTrafficShadows) == "AUTO (NEAR)", "the row says AUTO (NEAR) on Low");
   Check(gpu_class::AutoLabelFor(GpuClass::kHigh, gpu_class::Effect::kTrafficShadows) == "AUTO (NEAR)", "the row says AUTO (NEAR) on High");
   Check(gpu_class::CvarName(gpu_class::Effect::kTrafficShadows) == "mcla_gpu_traffic_shadows", "the cvar's name");
 }

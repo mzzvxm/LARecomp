@@ -82,9 +82,7 @@ inline std::string Lower(std::string_view text) {
 // `auto` is the big map (2048) on a discrete graphics card and the small one (1024) on an integrated one (the Low class: shared
 // memory, gpu_class.h). The contact shadows' own `auto` is off on that class, so there it only runs when the player turned the
 // contact shadows on. A word that is no value (the low of an older larecomp.toml) counts as `auto`.
-inline Level AutoLevel(gpu_class::GpuClass cls) {
-  return cls == gpu_class::GpuClass::kLow ? Level::kHigh : Level::kUltra;
-}
+inline Level AutoLevel(gpu_class::GpuClass) { return Level::kUltra; }
 
 inline Choice Resolve(gpu_class::GpuClass cls, std::string_view saved) {
   Choice choice;

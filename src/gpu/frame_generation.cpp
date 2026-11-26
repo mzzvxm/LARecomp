@@ -477,14 +477,13 @@ bool FrameGeneration::RoomToSwitchOn() {
   std::string figures;
   const std::string problem = SwitchOnProblem(&figures);
   if (!problem.empty()) {
-    BlockForMemory(problem);
-    return false;
+    REXLOG_WARN("[gpu] frame generation: {}; requesting the selected mode", problem);
   }
   if (memory_blocked_ && backend_) {
     backend_->Release();  // forgets an answer that the runtime ran out of memory
   }
-  REXLOG_INFO("[gpu] frame generation: {}: there is room for it{}", figures,
-              memory_blocked_ ? " now, switching it on" : "");
+  REXLOG_INFO("[gpu] frame generation: {}{}", figures,
+              memory_blocked_ ? "; retrying after an allocation failure" : "");
   ClearMemoryBlock();
   return true;
 }
@@ -824,14 +823,11 @@ FrameGeneration::Generated FrameGeneration::Generate(plume::RenderCommandList* l
   request.generation_size[0] = gen_w;
   request.generation_size[1] = gen_h;
   if (!have_request_ || !(requested_ == request)) {
-    // A context of this size is new (the first, another size, or after the release): asked for
-    // only where it and the images that go with it fit under the budget's line (the old context
-    // of another size is still there while the new one is made, so nothing is taken off the need).
+    // The old context may still be live while the worker makes this size.
     std::string figures;
     const std::string problem = MemoryProblem(request, 0, &figures);
     if (!problem.empty()) {
-      BlockForMemory(problem);
-      return skip(stats_.not_generated_memory);
+      REXLOG_WARN("[gpu] frame generation: {}; requesting the selected context", problem);
     }
     REXLOG_INFO("[gpu] frame generation: {}: asking for a context for the generated frame at "
                 "{}x{} (render {}x{})",

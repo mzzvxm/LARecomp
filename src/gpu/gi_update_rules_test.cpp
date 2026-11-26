@@ -988,15 +988,15 @@ void TestSources(const std::string& dir) {
   Check(Has(cpp, "to_read") && Has(cpp, "Layout::SHADER_READ") && Has(cpp, "to_write") && Has(cpp, "Layout::GENERAL"), "the field's textures are read by the trace and written by the blend");
   Check(Has(cpp, "kPrefix = \"[rt gi]\""), "the census lines carry the prefix the report reads");
   Check(Has(cpp, "hit_scene_->ready() || hit_scene_->stats().committed == 0") || Has(cpp, "!hit_scene_->ready() || hit_scene_->stats().committed == 0"), "the update waits for the hit data's pool (a field of zeros must never replace the screen-space bounce light)");
-  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainBuiltSectors();") && Has(cpp, "MarkStaleBox(") && Has(cpp, "governor_.AddSample("), "the update plans with the field's scheduler, marks built sectors stale and feeds the governor");
+  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainBuiltSectors();") && Has(cpp, "MarkStaleBox(") && Has(cpp, "in.governor_scale = 1.0f;") && !Has(cpp, "governor_.AddSample("), "the update plans with the field's scheduler, marks built sectors stale and uses the fixed probe budget");
   const std::string renderer = ReadFile(dir + "/renderer.cpp");
   const std::string renderer_h = ReadFile(dir + "/renderer.h");
   Check(Has(renderer_h, "GiUpdate gi_update_;") && Has(renderer_h, "#include \"gi_update.h\""), "renderer.h owns the update");
   Check(Has(renderer, "gi_update_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_scene_, rt_world_, update_listed);") && Has(renderer, "gi_integration_.SetUpdate(") &&
             At(renderer, "gi_update_.Initialize(") > At(renderer, "gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);") && At(renderer, "gi_update_.Initialize(") < At(renderer, "passes_.precache().Start();"),
         "the renderer makes the update after the integration and the world frame, before the precache starts, and gives it to the integration only where it exists");
-  Check(Count(renderer, "gi_update_.Shutdown();") == 2 && Count(renderer, "gi_update_.OnSubmitted(slot);") == 3 && Has(renderer, "gi_update_.CensusText()") && Has(renderer, "AddHolder(\"probe update\""),
-        "the update is shut down on both paths, told of every submit, in the census and in the video memory holders");
+  Check(Count(renderer, "gi_update_.Shutdown();") == 2 && Has(renderer, "gi_update_.CensusText()") && Has(renderer, "AddHolder(\"probe update\""),
+        "the update is shut down on both paths, in the census and in the video memory holders");
   Check(Has(renderer, "gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first\n    gi_update_.Shutdown();") ||
             Has(renderer, "gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first\n  gi_update_.Shutdown();"),
         "the update is shut down right after the integration, before the field");

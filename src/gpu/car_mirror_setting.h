@@ -67,9 +67,8 @@ enum class Gate : uint8_t {
   kTooSlow,  // it does, but the class is Low (shared memory)
 };
 
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   return Gate::kRuns;
 }
 

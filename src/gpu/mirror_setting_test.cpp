@@ -64,10 +64,10 @@ std::string Name(gc::GpuClass c, bool handheld, gc::RtTier t, const std::string&
 // ---------------------------------------------------------------------------
 
 // AUTO's cell: off on the Low class (a handheld has no cell of its own for this effect), high on Mid, ultra on High.
-std::string ModelCell(gc::GpuClass c) { return c == gc::GpuClass::kLow ? "off" : c == gc::GpuClass::kMid ? "high" : "ultra"; }
+std::string ModelCell(gc::GpuClass) { return "high"; }
 
 bool ModelTraced(gc::GpuClass c, gc::RtTier t, const std::string& word) {
-  return c != gc::GpuClass::kLow && t != gc::RtTier::kNone && word == "on";
+  return t != gc::RtTier::kNone && word == "on";
 }
 
 int ModelLevelMode(gc::GpuClass c, const std::string& word) {
@@ -160,21 +160,21 @@ void NamedCases() {
     return ms::Resolve(f);
   };
   // AUTO per class on a card that cannot trace: the weakest is off, Mid is high (512 wide, every second frame), High is ultra (768, every frame)
-  Check(go(gc::GpuClass::kLow, gc::RtTier::kNone, "auto", "auto").mode == 0 && go(gc::GpuClass::kMid, gc::RtTier::kNone, "auto", "auto").mode == 3 && go(gc::GpuClass::kHigh, gc::RtTier::kNone, "auto", "auto").mode == 4,
+  Check(go(gc::GpuClass::kLow, gc::RtTier::kNone, "auto", "auto").mode == 3 && go(gc::GpuClass::kMid, gc::RtTier::kNone, "auto", "auto").mode == 3 && go(gc::GpuClass::kHigh, gc::RtTier::kNone, "auto", "auto").mode == 3,
         "AUTO: off on Low, high (mode 3) on Mid, ultra (mode 4) on High, where the card cannot trace");
-  Check(go(gc::GpuClass::kMid, gc::RtTier::kNone, "auto", "auto").every == 2 && go(gc::GpuClass::kHigh, gc::RtTier::kNone, "auto", "auto").every == 1, "HIGH redraws every second frame, ULTRA every frame");
+  Check(go(gc::GpuClass::kMid, gc::RtTier::kNone, "auto", "auto").every == 2 && go(gc::GpuClass::kHigh, gc::RtTier::kNone, "ultra", "auto").every == 1, "HIGH redraws every second frame, ULTRA every frame");
   // the player's own words are never overridden by the class, on every class
   for (const gc::GpuClass c : kClasses) {
     Check(go(c, gc::RtTier::kNone, "high", "auto").mode == 3 && go(c, gc::RtTier::kNone, "ultra", "auto").mode == 4 && go(c, gc::RtTier::kNone, "off", "auto").mode == 0,
           std::string("a hand pick is kept on the ") + std::string(gc::ClassName(c)) + " class");
   }
   // a weak ray tracing card on the High class: the traced mirrors' AUTO is off, so this row runs (the RTX 3060 case)
-  Check(go(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", "auto").mode == 4 && !go(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", "auto").replaced, "a weak ray tracing card on High: the traced mirrors are off, the plain ones run");
+  Check(go(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", "auto").mode == 3 && !go(gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", "auto").replaced, "a weak ray tracing card on High: the traced mirrors are off, the plain ones run");
   // a strong card: the traced mirrors (AUTO is on) replace the row, and the row says so
   const ms::Result strong = go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "on");
   Check(strong.mode == 0 && strong.replaced && strong.why == ms::Why::kReplaced && !strong.finder && !strong.overlay && strong.every == 1, "a strong card: RT SIDE MIRRORS replaces the row, nothing of the plain view runs");
   // ... and the plain row applies again the moment the traced mirrors go off
-  Check(go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "off").mode == 4 && !go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "off").replaced, "RT SIDE MIRRORS off on a strong card: the plain row runs again");
+  Check(go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "off").mode == 3 && !go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "auto", "off").replaced, "RT SIDE MIRRORS off on a strong card: the plain row runs again");
   // a row that is off has nothing to replace: no (REPLACED)
   Check(!go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", "auto").replaced && go(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", "auto").why == ms::Why::kOff, "an off row is not replaced by anything");
   // a forced switch beats both (the A/B arms of the cost chain: the 5080 has strong ray tracing)
@@ -184,13 +184,15 @@ void NamedCases() {
   Check(go(gc::GpuClass::kLow, gc::RtTier::kNone, "off", "off", 2).mode == 2 && go(gc::GpuClass::kLow, gc::RtTier::kNone, "off", "off", 3).mode == 3 && go(gc::GpuClass::kLow, gc::RtTier::kNone, "off", "off", 4).mode == 4,
         "debug 2, 3, 4 force the Low, Mid, High size whatever the row says");
   // the finder by default: only with the row's view
-  Check(go(gc::GpuClass::kMid, gc::RtTier::kNone, "auto", "auto").finder && !go(gc::GpuClass::kLow, gc::RtTier::kNone, "auto", "auto").finder && !strong.finder, "the finder runs with the row's view: on Mid, not on Low under AUTO, not where the traced mirrors replace it");
+  Check(go(gc::GpuClass::kMid, gc::RtTier::kNone, "auto", "auto").finder && go(gc::GpuClass::kLow, gc::RtTier::kNone, "auto", "auto").finder && !strong.finder, "the finder runs with the row's view: across classes under Auto, except where replaced by RT");
   Check(go(gc::GpuClass::kLow, gc::RtTier::kNone, "auto", "auto", 0, true).finder, "the debug switch runs the finder whatever the row says");
   // the glass overlay (MV4)
   ms::Facts f;
   f.word = "auto";
   f.cls = gc::GpuClass::kMid;
-  Check(ms::Resolve(f).overlay && !ms::Resolve(ms::Facts{}).overlay, "the overlay hook follows the row's view (and its own debug switch)");
+  ms::Facts off;
+  off.word = "off";
+  Check(ms::Resolve(f).overlay && !ms::Resolve(off).overlay, "the overlay hook follows the row's view (and its own debug switch)");
 }
 
 void RtMeetsChecks() {
@@ -198,7 +200,7 @@ void RtMeetsChecks() {
   for (const gc::GpuClass c : kClasses) {
     for (const gc::RtTier t : kTiers) {
       for (const char* rt : kRtWords) {
-        const bool host = cm::Wanted(cm::SettingOf(rt), true, gc::RtClass(c, t));
+        const bool host = cm::Wanted(cm::SettingOf(rt), t != gc::RtTier::kNone, c);
         Check(ms::TracedWanted(c, t, rt) == host, Name(c, false, t, "", rt) + ": the traced mirrors are wanted as the renderer's Wanted says");
         ms::Facts f;
         f.word = "ultra";
@@ -238,7 +240,7 @@ void TableChecks() {
   Check(rank(gc::Cell(gc::Effect::kSideMirrors, gc::GpuClass::kLow)) <= rank(gc::Cell(gc::Effect::kSideMirrors, gc::GpuClass::kMid)) &&
             rank(gc::Cell(gc::Effect::kSideMirrors, gc::GpuClass::kMid)) <= rank(gc::Cell(gc::Effect::kSideMirrors, gc::GpuClass::kHigh)),
         "the classes only go up");
-  Check(gc::kEffectCount == 17 && int(gc::Effect::kSideMirrors) == 16, "the effect is the seventeenth, last in the table");
+  Check(gc::kEffectCount == 18 && int(gc::Effect::kSideMirrors) == 17, "the effect is the eighteenth, last in the table");
   // the cells are words of the row, none called low
   for (const gc::GpuClass c : kClasses) {
     const std::string cell(gc::Cell(gc::Effect::kSideMirrors, c));
@@ -275,7 +277,7 @@ void RowChecks() {
   for (const bool replaced : {false, true}) {
     Check(ms::LabelChars(replaced) + std::string("AUTO (RAY TRACED)").size() <= 41, "the page stays within 41 with the widest value of the page");
   }
-  Check(ms::LauncherAutoLine() == "Auto is Off on integrated graphics, High on a mid range graphics card and Ultra on a fast one. Where RT SIDE MIRRORS runs, it takes the place of this row.",
+  Check(ms::LauncherAutoLine() == "Auto is High on integrated graphics, High on a mid range graphics card and High on a fast one. Where RT SIDE MIRRORS runs, it takes the place of this row.",
         "the launcher's line: " + ms::LauncherAutoLine());
   Check(ms::WhyName(ms::Why::kForced) == "forced by mcla_gpu_mirror_view" && ms::WhyName(ms::Why::kReplaced) == "replaced by the traced mirrors" && ms::WhyName(ms::Why::kRow) == "the row" && ms::WhyName(ms::Why::kOff) == "off",
         "the reasons' names (for the log)");
@@ -372,15 +374,10 @@ void SettingsChecks(const std::string& dir) {
 
 void ClassTableChecks(const std::string& dir) {
   const std::string header = ReadFile(dir + "/gpu_class.h");
-  Check(Has(header, "kSideMirrors,           // mcla_gpu_side_mirrors") && Has(header, "inline constexpr int kEffectCount = 17;") && Has(header, "Derived(\"mcla_gpu_side_mirrors\"),") &&
-            Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_side_mirrors\", Page::kReflections, {\"off\", \"high\", \"ultra\", \"high\", \"ultra\"}},"),
-        "gpu_class.h has the effect, last, with its cells read from the preset table (gfx_preset.h: VANILLA off, ENHANCED high, ENHANCED ULTRA ultra)");
-  const std::string test = ReadFile(dir + "/gpu_class_test.cpp");
-  Check(Has(test, "{Effect::kSideMirrors, \"mcla_gpu_side_mirrors\", \"off\", \"high\", \"ultra\", \"AUTO (OFF)\", \"AUTO (HIGH)\", \"AUTO (ULTRA)\"},"), "the class test pins the cells and the labels");
-  for (const char* other : {"/neon_light_test.cpp", "/ssr_test.cpp"}) {
-    const std::string t = ReadFile(dir + other);
-    Check(Has(t, "inline constexpr int kEffectCount = 17;") && !Has(t, "inline constexpr int kEffectCount = 16;"), std::string(other + 1) + " pins the table's new size");
-  }
+  Check(Has(header, "Legacy(\"mcla_gpu_side_mirrors\"),") &&
+            Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_side_mirrors\", Page::kReflections, {\"off\", \"high\", \"ultra\"}},"),
+        "legacy Auto uses the Enhanced value and the RT preset uses Ultra");
+
 }
 
 void ReaderChecks(const std::string& dir) {

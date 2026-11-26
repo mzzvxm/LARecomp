@@ -110,24 +110,12 @@ struct Level {
 
 // The numbers by class (a cell of the table the owner asked for, 2026-11-20): High everything; Mid a shorter reach, the cone's outer pair and no coat; Low none (it has no ray tracing:
 // the cell is only there for a debug override on a class that cannot ray trace).
-inline Level LevelFor(gpu_class::GpuClass cls) {
+inline Level LevelFor(gpu_class::GpuClass) {
   Level level;
-  switch (cls) {
-    case gpu_class::GpuClass::kHigh:
-      level.others_reach = 18.0f;
-      level.others_fade_from = 0.75f;
-      level.coat = 1.0f;
-      level.cone_rays = 4;
-      break;
-    case gpu_class::GpuClass::kMid:
-      level.others_reach = 12.0f;
-      level.others_fade_from = 0.7f;
-      level.coat = 0.0f;
-      level.cone_rays = 2;
-      break;
-    case gpu_class::GpuClass::kLow:
-      break;
-  }
+  level.others_reach = 18.0f;
+  level.others_fade_from = 0.75f;
+  level.coat = 1.0f;
+  level.cone_rays = 4;
   return level;
 }
 

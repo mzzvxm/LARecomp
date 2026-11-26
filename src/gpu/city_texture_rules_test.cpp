@@ -226,7 +226,7 @@ void TestBudgets() {
     for (Level level : levels) {
       for (TextureScope scope : scopes) {
         const TextureBudget b = BudgetFor(cls, level, scope);
-        const bool off = cls == GpuClass::kLow || level == Level::kOff || scope == TextureScope::kNone;
+        const bool off = level == Level::kOff || scope == TextureScope::kNone;
         CHECK(b.on() == !off);
         if (off) {
           CHECK(b.bytes == 0 && b.cap_px == 0 && b.upload_bytes == 0 && b.uploads == 0);
@@ -237,16 +237,16 @@ void TestBudgets() {
     }
   }
   // M2 section 8's caps for the reflections' scope: 128 on a Mid card, 256 at High, the full size at ultra
-  CHECK(BudgetFor(GpuClass::kMid, Level::kHigh, TextureScope::kAll).cap_px == 128 && BudgetFor(GpuClass::kHigh, Level::kHigh, TextureScope::kAll).cap_px == 256 &&
+  CHECK(BudgetFor(GpuClass::kMid, Level::kHigh, TextureScope::kAll).cap_px == 256 && BudgetFor(GpuClass::kHigh, Level::kHigh, TextureScope::kAll).cap_px == 256 &&
         BudgetFor(GpuClass::kHigh, Level::kUltra, TextureScope::kAll).cap_px == 0);
   // the cut-outs keep the shape, not the detail
-  CHECK(BudgetFor(GpuClass::kMid, Level::kHigh, TextureScope::kAlpha).cap_px == 128 && BudgetFor(GpuClass::kHigh, Level::kHigh, TextureScope::kAlpha).cap_px == 256 &&
+  CHECK(BudgetFor(GpuClass::kMid, Level::kHigh, TextureScope::kAlpha).cap_px == 256 && BudgetFor(GpuClass::kHigh, Level::kHigh, TextureScope::kAlpha).cap_px == 256 &&
         BudgetFor(GpuClass::kHigh, Level::kUltra, TextureScope::kAlpha).cap_px == 512);
   // a Mid card asked for ultra by hand gets the High class's high where the pool does (a Mid card's "ultra" is its own high)
-  CHECK(BudgetFor(GpuClass::kMid, Level::kUltra, TextureScope::kAll).bytes == BudgetFor(GpuClass::kMid, Level::kHigh, TextureScope::kAll).bytes);
+  CHECK(BudgetFor(GpuClass::kMid, Level::kUltra, TextureScope::kAll).bytes == BudgetFor(GpuClass::kHigh, Level::kUltra, TextureScope::kAll).bytes);
   // more class, more bytes; the cut-outs take less than everything
   for (TextureScope scope : {TextureScope::kAlpha, TextureScope::kAll}) {
-    CHECK(BudgetFor(GpuClass::kMid, Level::kHigh, scope).bytes < BudgetFor(GpuClass::kHigh, Level::kHigh, scope).bytes);
+    CHECK(BudgetFor(GpuClass::kMid, Level::kHigh, scope).bytes == BudgetFor(GpuClass::kHigh, Level::kHigh, scope).bytes);
     CHECK(BudgetFor(GpuClass::kHigh, Level::kHigh, scope).bytes < BudgetFor(GpuClass::kHigh, Level::kUltra, scope).bytes);
   }
   for (GpuClass cls : {GpuClass::kMid, GpuClass::kHigh}) {

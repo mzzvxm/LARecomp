@@ -116,8 +116,8 @@ inline const char* SettingName(Setting s) {
 }
 
 // The side mirrors trace only after the player selects RT and the GPU supports it.
-inline bool Wanted(Setting setting, bool supported, gpu_class::GpuClass cls) {
-  return setting == Setting::kOn && supported && cls != gpu_class::GpuClass::kLow;
+inline bool Wanted(Setting setting, bool supported, gpu_class::GpuClass) {
+  return setting == Setting::kOn && supported;
 }
 
 struct Limits {
@@ -131,12 +131,11 @@ inline constexpr uint32_t kMinPixels = 40;  // a rectangle with the margin round
 inline constexpr uint32_t kMaxPixelsOverride = 262144;
 
 // The class's cell with the debug override (thousands of pixels, 0: the class's). The Low class never runs the pass (Wanted); a test or a tool that asks for its cell gets the Mid class's.
-inline Limits LimitsFor(gpu_class::GpuClass cls, int override_thousands) {
-  const gpu_class::GpuClass effective = cls == gpu_class::GpuClass::kLow ? gpu_class::GpuClass::kMid : cls;
+inline Limits LimitsFor(gpu_class::GpuClass, int override_thousands) {
   Limits limits;
-  limits.max_pixels = effective == gpu_class::GpuClass::kHigh ? 160000u : 64000u;
+  limits.max_pixels = 160000u;
   limits.min_pixels = kMinPixels;
-  limits.reach = car_rt_hit::LevelFor(effective).others_reach;
+  limits.reach = car_rt_hit::LevelFor(gpu_class::GpuClass::kHigh).others_reach;
   if (override_thousands > 0) {
     limits.max_pixels = uint32_t(std::min<int64_t>(int64_t(override_thousands) * 1000, kMaxPixelsOverride));
   }

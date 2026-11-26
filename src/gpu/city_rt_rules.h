@@ -60,7 +60,6 @@ constexpr Level LevelOfCell(std::string_view cell) { return cell == "high" ? Lev
 // tier's table and says off for Mid; a hand set level runs on any class that has ray queries (the class rule says what auto picks, not what the player may choose), except Low: a shared memory GPU does
 // not run it at all.
 constexpr Level LevelFor(gpu_class::GpuClass cls, Choice choice) {
-  if (cls == gpu_class::GpuClass::kLow) return Level::kOff;
   switch (choice) {
     case Choice::kOff:
       return Level::kOff;
@@ -114,14 +113,11 @@ inline constexpr uint64_t kStructureBytesPerTriangle = 96;
 
 constexpr uint64_t EstimateStructureBytes(uint32_t triangles) { return uint64_t(triangles) * kStructureBytesPerTriangle; }
 
-// The class's budget at a level. Mid (an RT card with under 5.5 GiB) at high: the sectors within 150 m, about 45 to 65 MB of structures; High at high: 300 m,
-// 120 to 180 MB; High at ultra: 600 m, 240 to 320 MB. The caps leave room for the player's cars (car_rt_scene_rules.h kMemoryCapBytes is 64 MiB of its own).
-constexpr Budget BudgetFor(gpu_class::GpuClass cls, Level level) {
-  if (level == Level::kOff || cls == gpu_class::GpuClass::kLow) return Budget{};
-  if (level == Level::kUltra && cls == gpu_class::GpuClass::kHigh) return Budget{600.0f, 3000.0f, 100.0f, 512 * kMiB, 200000, 2, 14 * kMiB};
-  if (cls == gpu_class::GpuClass::kHigh) return Budget{300.0f, 2000.0f, 60.0f, 256 * kMiB, 120000, 2, 12 * kMiB};
-  if (level == Level::kUltra) return Budget{300.0f, 2000.0f, 60.0f, 192 * kMiB, 100000, 1, 8 * kMiB};  // a Mid card asked for ultra by hand
-  return Budget{150.0f, 1200.0f, 30.0f, 96 * kMiB, 60000, 1, 6 * kMiB};
+// Geometry streaming budget for the selected shadow level.
+constexpr Budget BudgetFor(gpu_class::GpuClass, Level level) {
+  if (level == Level::kOff) return Budget{};
+  if (level == Level::kUltra) return Budget{600.0f, 3000.0f, 100.0f, 512 * kMiB, 200000, 2, 14 * kMiB};
+  return Budget{300.0f, 2000.0f, 60.0f, 256 * kMiB, 120000, 2, 12 * kMiB};
 }
 
 // mcla_gpu_city_rt_radius (debug, metres, 0 = the class's): the hi detail radius, with the far radius following it (at least 4 times, never under the class's own).

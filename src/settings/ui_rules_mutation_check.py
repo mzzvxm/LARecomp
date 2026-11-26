@@ -16,7 +16,7 @@ MUTATIONS = {
                                'suffix = " (BUILDING DATA)", label = "RT CITY"'),
     "RT city disabled during build": ('enabled = true, suffix = " (BUILDING DATA)"',
                                       'enabled = false, suffix = " (BUILDING DATA)"'),
-    "RT bounce GPU class": ("d.rt_field_class != 'low'", "d.rt_field_class != 'mid'"),
+    "RT preset recommendation": ("gpu.class in ['mid', 'high']", "gpu.class in ['high']"),
     "RT shadows legacy gate": ('decode = "resolved(s.mcla_gpu_rt_shadows)"',
                                'decode = "s.mcla_gpu_rt_shadows"'),
     "hide PCSS fallback": ('label = "ULTRA (HIGH)"', 'label = "ULTRA"'),

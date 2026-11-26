@@ -814,8 +814,8 @@ inline constexpr float kViewMaxDistanceM = 200.0f;
 static_assert(MemoryOf(gi::BudgetOf(gi::Layout::kStandard), false).Field() == 59228160ull && MemoryOf(gi::BudgetOf(gi::Layout::kLean), false).Field() == 4935680ull &&
                   MemoryOf(gi::BudgetOf(gi::Layout::kExtended), false).Field() == 78970880ull,
               "the field's bytes: the atlases, the weight map and the state buffer of each layout");
-static_assert(Cells()[8].layout == gi::Layout::kExtended && Cells()[8].memory.Total() == 190ull * kMiB && Cells()[0].memory.Total() == 0 && Cells()[7].memory.Total() == Cells()[5].memory.Total(),
-              "the strong card's ULTRA cell is the design's 190 MiB; the weak card's ULTRA cell is the strong card's HIGH one");
+static_assert(Cells()[8].layout == gi::Layout::kExtended && Cells()[8].memory.Total() == 190ull * kMiB && Cells()[0].memory.Total() == 0 && Cells()[8].memory.Total() == Cells()[5].memory.Total(),
+              "both RT tiers use the same Ultra field");
 static_assert(FitAt(gi::Layout::kExtended, Step::kNoFourthCascade).budget.cascade_count == 3 && !FitAt(gi::Layout::kExtended, Step::kNoFourthCascade).pixel_images &&
                   FitAt(gi::Layout::kExtended, Step::kFull).pixel_images && FitAt(gi::Layout::kStandard, Step::kNoThirdCascade).budget.cascade_count == 2,
               "the steps of the order of loss");

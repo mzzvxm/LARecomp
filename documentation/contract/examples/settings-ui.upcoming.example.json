@@ -126,7 +126,7 @@
       "allowed": ["auto", "game", "high", "ultra"],
       "auto": {
         "by": "class",
-        "cells": {"low": "game", "mid": "high", "high": "high"},
+        "cells": {"low": "high", "mid": "high", "high": "high"},
         "handheld": {"low": "high"}
       }
     },
@@ -137,7 +137,7 @@
       "life": "live",
       "debug": false,
       "allowed": ["auto", "off", "high", "ultra"],
-      "auto": {"by": "rt_rung", "cells": {"none": "off", "weak": "off", "strong": "high"}}
+      "auto": {"by": "rt_rung", "cells": {"none": "off", "weak": "off", "strong": "off"}}
     },
     "mcla_gpu_car_selfrefl": {
       "full": "larecomp.mcla_gpu_car_selfrefl",
@@ -222,7 +222,7 @@
       "life": "live",
       "debug": false,
       "allowed": ["auto", "off", "high", "ultra"],
-      "auto": {"by": "rt_rung", "cells": {"none": "off", "weak": "off", "strong": "high"}}
+      "auto": {"by": "rt_rung", "cells": {"none": "off", "weak": "off", "strong": "off"}}
     },
     "mcla_gpu_preset": {
       "full": "larecomp.mcla_gpu_preset",
@@ -230,7 +230,7 @@
       "default": "vanilla",
       "life": "live",
       "debug": false,
-      "allowed": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"]
+      "allowed": ["vanilla", "enhanced", "enhanced_rt", "custom"]
     },
     "mcla_gpu_preset_from": {
       "full": "larecomp.mcla_gpu_preset_from",
@@ -238,7 +238,7 @@
       "default": "vanilla",
       "life": "live",
       "debug": true,
-      "allowed": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra"]
+      "allowed": ["vanilla", "enhanced", "enhanced_rt"]
     }
   },
   "tabs": [
@@ -263,9 +263,7 @@
               "values": [
                 {"id": "vanilla", "label": "VANILLA", "title": "Vanilla"},
                 {"id": "enhanced", "label": "ENHANCED", "title": "Enhanced"},
-                {"id": "enhanced_ultra", "label": "ENHANCED ULTRA", "title": "Enhanced Ultra"},
                 {"id": "enhanced_rt", "label": "ENHANCED RT", "title": "Enhanced RT", "when": "gpu.rt_tier != 'none'"},
-                {"id": "enhanced_rt_ultra", "label": "ENHANCED RT ULTRA", "title": "Enhanced RT Ultra", "when": "gpu.rt_tier != 'none'"},
                 {"id": "custom", "label": "CUSTOM", "title": "Custom"}
               ],
               "help": "One choice for the look of the effect pages. Changing a single effect afterwards switches this to Custom."
@@ -525,14 +523,6 @@
                   "reason": "Needs a graphics card that can ray trace."
                 },
                 {
-                  "when": "gpu.class == 'low'",
-                  "label": "RT CITY",
-                  "suffix": " (TOO SLOW)",
-                  "enabled": false,
-                  "tag": "Too slow",
-                  "reason": "This graphics card is too slow for ray traced reflections."
-                },
-                {
                   "when": "!d.car_rt_runs",
                   "label": "RT CITY",
                   "suffix": " (NEEDS CAR RT)",
@@ -631,7 +621,7 @@
   ],
   "presets": {
     "setting": "mcla_gpu_preset",
-    "order": ["vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"],
+    "order": ["vanilla", "enhanced", "enhanced_rt", "custom"],
     "first_start": "vanilla",
     "legacy_file_preset": "custom",
     "scope": ["lighting", "reflections"],
@@ -650,13 +640,6 @@
         "needs": null,
         "values": {"mcla_gpu_shadow_resolution": "high", "mcla_gpu_rt_reflections": "off"}
       },
-      "enhanced_ultra": {
-        "label": "ENHANCED ULTRA",
-        "title": "Enhanced Ultra",
-        "help": "The best shadows, no ray tracing.",
-        "needs": null,
-        "values": {"mcla_gpu_shadow_resolution": "ultra", "mcla_gpu_rt_reflections": "off"}
-      },
       "enhanced_rt": {
         "label": "ENHANCED RT",
         "title": "Enhanced RT",
@@ -665,22 +648,11 @@
         "needs_reason": "Needs a graphics card that can ray trace.",
         "values": {"mcla_gpu_shadow_resolution": "high", "mcla_gpu_rt_reflections": "high"}
       },
-      "enhanced_rt_ultra": {
-        "label": "ENHANCED RT ULTRA",
-        "title": "Enhanced RT Ultra",
-        "help": "The best shadows and ray traced reflections.",
-        "needs": "gpu.rt_tier != 'none'",
-        "needs_reason": "Needs a graphics card that can ray trace.",
-        "values": {"mcla_gpu_shadow_resolution": "ultra", "mcla_gpu_rt_reflections": "ultra"}
-      },
       "custom": {"label": "CUSTOM", "title": "Custom", "help": "Your own choices on the effect pages.", "needs": null}
     },
     "class_to_preset": [
-      {"when": "gpu.class == 'high' && gpu.rt_tier == 'strong'", "preset": "enhanced_rt_ultra"},
-      {"when": "gpu.class == 'high'", "preset": "enhanced_ultra"},
-      {"when": "gpu.class == 'mid' && gpu.rt_tier != 'none'", "preset": "enhanced_rt"},
-      {"when": "gpu.class == 'mid'", "preset": "enhanced"},
-      {"when": "true", "preset": "vanilla"}
+      {"when": "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", "preset": "enhanced_rt"},
+      {"when": "true", "preset": "enhanced"}
     ],
     "covers": ["mcla_gpu_rt_reflections", "mcla_gpu_shadow_resolution"],
     "flip": {"to": "custom", "writes": [{"setting": "mcla_gpu_preset_from", "value": "$previous"}]}

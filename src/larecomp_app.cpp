@@ -657,6 +657,7 @@ static void InstallTerminationSignals() {
 }
 
 rex::Result<void> LarecompApp::OnInit() {
+  ls::MigrateGraphicsPresetIds();
   // The window is open, the systems run, app.* is frozen. The order below is the order the 0.10 start-up had.
   settings_config_path_ = rex::GetPathSettings().config_file.Get();
   NoteCrashLogFile();  // Linux: the crash reports append to the SDK's log file by name (the second half of the logger is in OnTitleLaunch)

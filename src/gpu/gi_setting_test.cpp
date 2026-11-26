@@ -75,15 +75,15 @@ void CellChecks() {
       {gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", gi::Level::kOff, gi::Layout::kNone},
       // High class, weak (an RTX 3060): AUTO is OFF (the screen-space bounce light stays); by hand the lean field at HIGH, the standard one at ULTRA (probes only)
       {gc::GpuClass::kHigh, gc::RtTier::kWeak, "auto", gi::Level::kOff, gi::Layout::kNone},
-      {gc::GpuClass::kHigh, gc::RtTier::kWeak, "high", gi::Level::kHigh, gi::Layout::kLean},
-      {gc::GpuClass::kHigh, gc::RtTier::kWeak, "ultra", gi::Level::kUltra, gi::Layout::kStandard},
+      {gc::GpuClass::kHigh, gc::RtTier::kWeak, "high", gi::Level::kHigh, gi::Layout::kStandard},
+      {gc::GpuClass::kHigh, gc::RtTier::kWeak, "ultra", gi::Level::kUltra, gi::Layout::kExtended},
       {gc::GpuClass::kHigh, gc::RtTier::kWeak, "off", gi::Level::kOff, gi::Layout::kNone},
       // Mid class: the rung is at most weak, even on a strong tier (a card under 6 GB or a slower family)
       {gc::GpuClass::kMid, gc::RtTier::kStrong, "auto", gi::Level::kOff, gi::Layout::kNone},
-      {gc::GpuClass::kMid, gc::RtTier::kStrong, "high", gi::Level::kHigh, gi::Layout::kLean},
-      {gc::GpuClass::kMid, gc::RtTier::kStrong, "ultra", gi::Level::kUltra, gi::Layout::kStandard},
+      {gc::GpuClass::kMid, gc::RtTier::kStrong, "high", gi::Level::kHigh, gi::Layout::kStandard},
+      {gc::GpuClass::kMid, gc::RtTier::kStrong, "ultra", gi::Level::kUltra, gi::Layout::kExtended},
       {gc::GpuClass::kMid, gc::RtTier::kWeak, "auto", gi::Level::kOff, gi::Layout::kNone},
-      {gc::GpuClass::kMid, gc::RtTier::kWeak, "high", gi::Level::kHigh, gi::Layout::kLean},
+      {gc::GpuClass::kMid, gc::RtTier::kWeak, "high", gi::Level::kHigh, gi::Layout::kStandard},
   };
   for (const Case& c : cases) {
     const gs::Decision d = gs::Decide(c.cls, c.tier, c.word, true);
@@ -97,7 +97,7 @@ void CellChecks() {
   const gs::Decision strong_ultra = gs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "ultra", true);
   Check(gi::PixelPassAllowed(strong_ultra.rung, strong_ultra.layout), "a strong card at ULTRA may have the per-pixel pass");
   const gs::Decision weak_ultra = gs::Decide(gc::GpuClass::kHigh, gc::RtTier::kWeak, "ultra", true);
-  Check(!gi::PixelPassAllowed(weak_ultra.rung, weak_ultra.layout), "a weak card never has the per-pixel pass");
+  Check(gi::PixelPassAllowed(weak_ultra.rung, weak_ultra.layout), "either RT tier at Ultra has the per-pixel pass");
 
   // The words that are none of the four are `auto` (an older larecomp.toml, a command line: the setting never fails)
   for (const char* word : {"", "low", "medium", "AUTO", "bogus", "Off"}) {
@@ -120,8 +120,6 @@ void CellChecks() {
           gs::Gate want = gs::Gate::kRuns;
           if (tier == gc::RtTier::kNone) {
             want = gs::Gate::kNoRt;
-          } else if (cls == gc::GpuClass::kLow) {
-            want = gs::Gate::kTooSlow;
           } else if (!built) {
             want = gs::Gate::kNotBuilt;
           }
@@ -187,8 +185,8 @@ void LabelChecks() {
   Check(std::string(gs::RowSuffix(gs::Gate::kRuns)).empty(), "an open gate says nothing");
   Check(std::string(gs::RowSuffix(gs::Gate::kNoRt)) == " (NO RT GPU)" && std::string(gs::RowSuffix(gs::Gate::kNoRt)) == std::string(gc::RtRowSuffix(gc::GpuClass::kHigh, gc::RtTier::kNone)),
         "no ray tracing says (NO RT GPU), rt_tier.h's own words");
-  Check(std::string(gc::RtRowSuffix(gc::GpuClass::kLow, gc::RtTier::kWeak)) == " (GPU TOO SLOW)" && std::string(gs::RowSuffix(gs::Gate::kTooSlow)) == " (TOO SLOW)",
-        "the shared class says (TOO SLOW) here, where rt_tier.h's longer words do not fit");
+  Check(std::string(gc::RtRowSuffix(gc::GpuClass::kLow, gc::RtTier::kWeak)) == "",
+        "RT on the Low class is available where the pass is built");
   Check(std::string(gs::RowSuffix(gs::Gate::kNotBuilt)) == " (NOT READY)", "the update that is not built says (NOT READY)");
   // the launcher's line under its row
   Check(gs::LauncherAutoLine() == "Auto is Off without ray tracing, Off on a weak ray tracing card and Off on a strong one.", "the launcher's line says what Auto is at each tier: " + gs::LauncherAutoLine());
@@ -383,7 +381,7 @@ void MenuChecks(const std::string& dir) {
   const size_t begin = At(rules, "[rows.PM_RxGpuRtGi]");
   const size_t next = At(rules, "[rows.PM_RxGpuSsgiLevel]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
-  Check(Has(row, "gpu.rt_tier") && Has(row, "d.rt_field_class") && Has(row, "build.rt_gi_update_built") &&
+  Check(Has(row, "gpu.rt_tier") && !Has(row, "d.rt_field_class") && Has(row, "build.rt_gi_update_built") &&
             Has(row, "decode = \"resolved(s.mcla_gpu_rt_gi)\""),
         "the RT BOUNCE LIGHT row uses the GPU, build and Auto rules");
   Check(Has(rules, "live.rt_gi_replaces_bounce") && Has(rules, " (REPLACED)") &&

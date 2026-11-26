@@ -108,7 +108,7 @@ void Lighting(Fixture& f) {
         "PM_RxGpuContact", "PM_RxGpuSunShafts", "PM_RxGpuSsgi", "PM_RxGpuTrafficShadows", nullptr,
         nullptr /* the occlusion: its AUTO is the class cell or `rt` (rtao_setting.h), held below with the other labels */,
         "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuVolumetrics", nullptr,
-        "PM_RxGpuSsr", "PM_RxGpuNeonLight", "PM_RxGpuSideMirrors",
+        "PM_RxGpuSsr", "PM_RxGpuNeonLight", "PM_RxGpuCarShadowMap", "PM_RxGpuSideMirrors",
     };
     static_assert(std::size(class_rows) == gc::kEffectCount);
     for (const auto cls : classes) for (const auto tier : tiers) for (bool handheld : flags) {
@@ -124,8 +124,6 @@ void Lighting(Fixture& f) {
                 f.Decodes(class_rows[i], gc::CellFor(effect, cls, handheld));
             }
         }
-        f.S("mcla_gpu_car_shadow_map", "auto");
-        f.Decodes("PM_RxGpuCarShadowMap", mcla::gpu::car_shadow_map::LevelName(mcla::gpu::car_shadow_map::AutoLevel(cls)));
         f.S("mcla_gpu_rt_reflections", "auto");
         f.Decodes("PM_RxGpuRtCityRefl", "off");
         constexpr std::string_view scale_rows[] = {
@@ -137,20 +135,18 @@ void Lighting(Fixture& f) {
             f.settings[std::string(info.cvar)] = Value::Number(info.zero_is_auto ? 0.0 : -1.0);
             f.Decodes(scale_rows[i], FormatNumber(gc::ScaleCell(scale, cls)));
         }
-        for (bool shadows : flags) for (bool pcss : flags) {
+        for (bool shadows : flags) {
             f.settings["perf_no_shadows"] = Value::Bool(!shadows);
-            f.B("features.pcss", pcss);
             for (const auto row : {"PM_RxFoliage", "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxGpuTrafficShadows"})
                 f.State(row, shadows, shadows ? "" : " (SUN OFF)");
-            f.Label("PM_RxGpuShadowFilter", "pcss", "", pcss ? "ULTRA" : "ULTRA (HIGH)", {}, "%g", "ULTRA");
+            f.Label("PM_RxGpuShadowFilter", "pcss", "", "ULTRA", {}, "%g", "ULTRA");
         }
         for (bool api : flags) for (const auto contact : levels) {
             f.B("api.city_rt_shadows", api);
             f.S("mcla_gpu_contact_shadows", contact);
             const auto resolved = gc::ResolveFor(cls, handheld, gc::Effect::kContactShadows, contact);
-            const bool available = api && cls != gc::GpuClass::kLow && tier != gc::RtTier::kNone;
-            const auto suffix = !api ? " (NO RT GPU)" : cls == gc::GpuClass::kLow ? " (TOO SLOW)" :
-                                tier == gc::RtTier::kNone ? " (NO RT GPU)" : "";
+            const bool available = api && tier != gc::RtTier::kNone;
+            const auto suffix = available ? "" : " (NO RT GPU)";
             f.State("PM_RxGpuRtShadows", available && (resolved == "high" || resolved == "ultra"), suffix);
             f.S("mcla_gpu_rt_shadows", "auto");
             f.Decodes("PM_RxGpuRtShadows", "off");

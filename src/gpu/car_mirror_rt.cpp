@@ -136,7 +136,7 @@ void CarMirrorRt::Initialize(Device& device, FrameRing& frames, BindlessHeap& he
   }
   ready_ = true;
   const cm::Setting setting = cm::SettingOf(Setting().Get());
-  if (cm::Wanted(setting, true, gpu_class::CurrentRtClass())) {
+  if (cm::Wanted(setting, gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone, gpu_class::Current())) {
     // Wanted at the start: the trace's pipeline and the applies for the sample counts the main colour has in play (1x with an upscaler, 2x and 4x by the MSAA level) are made ahead.
     uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     listed_ = added != 0;
@@ -322,7 +322,7 @@ void CarMirrorRt::BeginFrame() {
     return;
   }
   const cm::Setting setting = cm::SettingOf(Setting().Get());
-  if (!cm::Wanted(setting, true, gpu_class::CurrentRtClass())) {
+  if (!cm::Wanted(setting, gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone, gpu_class::Current())) {
     ++window_.not_run[size_t(cm::Why::kSettingOff)];
     if (image_.texture) {
       ++idle_frames_;

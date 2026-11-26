@@ -613,85 +613,6 @@ UpscaleMode TemporalSystem::ResolveDlssMode(UpscaleMode wanted, const ModeSizes&
   return use;
 }
 
-// vram_room.h numbers the upscalers as gpu.h does.
-static_assert(vram_room::kKindOff == uint8_t(Upscaler::kOff) &&
-              vram_room::kKindFsr31 == uint8_t(Upscaler::kFsr31) &&
-              vram_room::kKindFsr4 == uint8_t(Upscaler::kFsr4) &&
-              vram_room::kKindDlss == uint8_t(Upscaler::kDlss));
-
-// CHECK: with a small budget (mcla_gpu_vram_budget_mb, debug) and FSR 3.1 or FSR 4 chosen, live and at the
-// start: "[gpu] ffx: no room for the ... context" from the worker, then this file's "no room in video
-// memory for ..." line once, the pause menu's UPSCALING row saying NO ROOM, the game running with no upscaler
-// (or FSR 3.1 for FSR 4), no stall and no "(APPLYING)" stuck; and after the wait (5 s, 10 s, ... one
-// minute) the context is asked again, and made when the budget was raised.
-Upscaler TemporalSystem::FitToRoom(Upscaler chosen, UpscaleMode* mode, Scale* output_ptr,
-                                   Scale output_now, const uint32_t guest[2], bool* held) {
-  *held = false;
-  const Scale output = *output_ptr;
-  const UpscalerAvailability available = GetUpscalerAvailability();
-  const UpscaleMode chosen_mode = *mode;
-  // The same upscaler runs with its context and a new mode or output was refused: it goes on as it is.
-  if (chosen == effective_ && chosen != Upscaler::kOff) {
-    TemporalBackend* backend = BackendFor(chosen);
-    if (backend && backend->NoRoom(RequestFor(chosen, chosen_mode, guest, output)) && request_made_ &&
-        request_.upscaler == chosen && backend->Ready(request_)) {
-      const UpscaleMode keep = mode_in_use_;
-      const uint64_t key = 2u | uint64_t(chosen) << 4 | uint64_t(chosen_mode) << 8 |
-                           uint64_t(keep) << 12 | uint64_t(output.n) << 16;
-      if (key != room_logged_key_) {
-        room_logged_key_ = key;
-        REXLOG_INFO("{} no room in video memory for {} (the backend refused its context): {} keeps "
-                    "running as it is. The setting stays {}; the pause menu says NO ROOM, and the "
-                    "change is tried again after the backend's wait (5 s, then less often, up to a "
-                    "minute)",
-                    kPrefix, PathText(chosen, chosen_mode), PathText(chosen, keep),
-                    PathText(chosen, chosen_mode));
-      }
-      *mode = keep;
-      *output_ptr = output_now;
-      *held = true;
-      return chosen;
-    }
-  }
-  const auto mode_of = [&](uint8_t kind) {
-    return kind == uint8_t(chosen) ? chosen_mode : SavedUpscaleMode(Upscaler(kind));
-  };
-  const auto refused = [&](uint8_t kind) {
-    const Upscaler upscaler = Upscaler(kind);
-    TemporalBackend* backend = BackendFor(upscaler);
-    if (!backend) {
-      return false;
-    }
-    if (backend->NoRoom(RequestFor(upscaler, mode_of(kind), guest, output))) {
-      return true;
-    }
-    // What the frames ask the backend for (BeginFrame) is the same request when the sizes are the
-    // path's; the running path's own refusal counts whichever way the two were worked out.
-    return upscaler == effective_ && request_made_ && request_.upscaler == upscaler &&
-           backend->NoRoom(request_);
-  };
-  const auto can_run = [&](uint8_t kind) { return CanRun(Upscaler(kind), available); };
-  const uint8_t kind = vram_room::FitKind(uint8_t(chosen), refused, can_run);
-  const Upscaler fit = Upscaler(kind);
-  if (fit == chosen) {
-    return chosen;
-  }
-  *held = true;
-  *mode = fit == Upscaler::kOff ? UpscaleMode::kNativeAa : mode_of(kind);
-  const uint64_t key = 1u | uint64_t(chosen) << 4 | uint64_t(chosen_mode) << 8 | uint64_t(fit) << 12 |
-                       uint64_t(output.n) << 16;
-  if (key != room_logged_key_) {
-    room_logged_key_ = key;
-    REXLOG_INFO("{} no room in video memory for {} (the backend refused its context): {}. The setting "
-                "stays {}; the pause menu says NO ROOM, and the choice is tried again after the "
-                "backend's wait (5 s, then less often, up to a minute)",
-                kPrefix, PathText(chosen, chosen_mode),
-                fit == Upscaler::kOff ? std::string("the game runs with no upscaler")
-                                      : std::format("{} runs instead", PathText(fit, *mode)),
-                UpscalerName(chosen));
-  }
-  return fit;
-}
 
 void TemporalSystem::AdoptStartPath() {
   // The scene's first targets are made for the upscaler as the start found it (gpu.h
@@ -857,33 +778,6 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
       }
     }
   }
-  // Video memory (vram_room.h): an upscaler whose context was refused for want of room is not asked for
-  // again until the backend's wait is over; the next one down is (FSR 4 -> FSR 3.1), else none. The
-  // setting is not changed. Not for the DLSS that waits for a restart (the path that runs stays).
-  const Upscaler room_chosen = to;
-  const UpscaleMode room_chosen_mode = to_mode;
-  bool room_lowered = false;
-  if (to != Upscaler::kOff && !keep_running) {
-    uint32_t room_guest[2] = {};
-    if (GuestFrameSize(room_guest, /*quiet=*/true)) {
-      to = FitToRoom(to, &to_mode, &to_output, output_now, room_guest, &room_lowered);
-    }
-  }
-  {
-    const uint64_t key = uint64_t(room_chosen) | uint64_t(room_chosen_mode) << 8;
-    if (room_chosen == Upscaler::kOff || key != room_key_) {
-      room_lowered_ = false;
-      room_logged_key_ = 0;
-    }
-    if (room_lowered) {
-      room_lowered_ = true;
-      room_key_ = key;
-    } else if (effective_ == room_chosen && mode_in_use_ == room_chosen_mode) {
-      room_lowered_ = false;  // the choice runs
-      room_logged_key_ = 0;
-    }
-    PublishUpscalerNoRoom(room_lowered_);
-  }
   // What the frames are steered to, for the host MSAA level (UpscalerNext): its pipelines are made
   // while the path's context is, and the level changes once the path has settled (msaa_level.h).
   next_ = to;
@@ -899,7 +793,6 @@ void TemporalSystem::UpdatePath(plume::RenderCommandList* list) {
   }
   if (to == effective_ && to_mode == mode_in_use_ && to_output == output_now) {
     CancelStage(keep_running ? "DLSS is chosen and waits for the restart; the running path stays"
-                : room_lowered ? "there is no room in video memory for it; the path that runs stays"
                 : dlss_refusal_key_ != 0 ? "DLSS does not take that mode at this output; the running path stays"
                                          : "the setting is back on the path that runs");
     change_pending_ = false;
@@ -1777,7 +1670,7 @@ void TemporalSystem::UpdateDenoiserPlan() {
   // CHECK: confirm the first-start and preset-switch toggle on an RTX card after DLSS finishes starting.
   const bool default_on = in.uses_default && in.debug == rr::DebugSwitch::kRow && candidate;
   if (candidate) {
-    in.room_ok = RrRoomOk();
+    WarnOnRrMemoryPressure();
   }
   // The guide pass says it every frame (NoteRrGuides, before the anchor): last frame's word is this frame's plan, and the flag is taken back so that a frame the pass
   // did not run in does not keep it.
@@ -1824,51 +1717,22 @@ void TemporalSystem::UpdateDenoiserPlan() {
 // Ray Reconstruction's second context, the room for it and the dispatch (RR-3)
 // ---------------------------------------------------------------------------
 
-bool TemporalSystem::RrRoomOk() {
-  if (!dlss_ || !device_) {
-    return true;
+void TemporalSystem::WarnOnRrMemoryPressure() {
+  if (!dlss_ || !device_ || (rr_context_asked_ && dlss_->CompanionReady(rr_request_))) return;
+  if (!last_output_size_[0] || !last_output_size_[1] || !last_render_size_[0] || !last_render_size_[1]) return;
+  const auto now = Clock::now();
+  if (now < rr_room_until_) return;
+  rr_room_until_ = now + std::chrono::seconds(1);
+  const auto facts = dlss::GetRayReconstructionFacts();
+  const auto memory = device_->QueryVideoMemory();
+  const uint64_t guides = (rr_pass_ && rr_pass_->HeldBytes()) ? 0 : rr_guides::BytesOf(last_render_size_[0], last_render_size_[1]);
+  const uint64_t need = rr::ContextNeedBytes(last_output_size_[0], last_output_size_[1], facts.measured_bytes, facts.measured_pixels, guides);
+  const bool pressure = !rr::HasRoomForContext(memory.used, memory.budget, need);
+  if (pressure && !rr_room_warned_) {
+    REXLOG_WARN("{} video memory is nearly full ({} of {} MiB in use); Ray Reconstruction and its guides need about {} MiB",
+                kPrefix, memory.used >> 20, memory.budget >> 20, need >> 20);
   }
-  // The context exists: what it holds is in the adapter's use already, and asking again would count it twice.
-  if (rr_context_asked_ && dlss_->CompanionReady(rr_request_)) {
-    rr_room_ok_ = true;
-    rr_room_wait_ms_ = 0;
-    return true;
-  }
-  // The sizes are those of the last accepted frame; before there is one the creation itself is the judge.
-  if (last_output_size_[0] == 0 || last_output_size_[1] == 0 || last_render_size_[0] == 0 || last_render_size_[1] == 0) {
-    return true;
-  }
-  const Clock::time_point now = Clock::now();
-  if (now < rr_room_until_) {
-    return rr_room_ok_;
-  }
-  const dlss::RayReconstructionFacts facts = dlss::GetRayReconstructionFacts();
-  const backend::VideoMemory memory = device_->QueryVideoMemory();
-  // The guide images are asked for too where the pass has not made them yet; the Super Resolution context beside the new one is in the use already.
-  const uint64_t guide_bytes = (rr_pass_ && rr_pass_->HeldBytes() != 0) ? 0 : rr_guides::BytesOf(last_render_size_[0], last_render_size_[1]);
-  const uint64_t need = rr::ContextNeedBytes(last_output_size_[0], last_output_size_[1], facts.measured_bytes, facts.measured_pixels, guide_bytes);
-  const bool ok = rr::HasRoomForContext(memory.used, memory.budget, need);
-  if (ok) {
-    rr_room_ok_ = true;
-    rr_room_wait_ms_ = 0;
-    rr_room_until_ = now + std::chrono::seconds(1);
-    if (rr_room_refused_logged_) {
-      rr_room_refused_logged_ = false;
-      REXLOG_INFO("{} Ray Reconstruction: there is room in video memory for its context again (about {} MiB asked for, {} of {} MiB in use): it is made now", kPrefix, need >> 20, memory.used >> 20,
-                  memory.budget >> 20);
-    }
-  } else {
-    rr_room_ok_ = false;
-    rr_room_wait_ms_ = vram_room::NextWaitMs(rr_room_wait_ms_);
-    rr_room_until_ = now + std::chrono::milliseconds(rr_room_wait_ms_);
-    if (!rr_room_refused_logged_) {
-      rr_room_refused_logged_ = true;
-      REXLOG_INFO("{} Ray Reconstruction: no room in video memory for its context (about {} MiB: the network {} MiB and the guide images {} MiB; {} of {} MiB in use, the line is {}%): Super "
-                  "Resolution goes on, and the context is asked for again in {} s, then less often, up to a minute",
-                  kPrefix, need >> 20, (need - guide_bytes) >> 20, guide_bytes >> 20, memory.used >> 20, memory.budget >> 20, vram_room::kHighPercent, rr_room_wait_ms_ / 1000);
-    }
-  }
-  return rr_room_ok_;
+  rr_room_warned_ = pressure;
 }
 
 void TemporalSystem::ManageRrContext(const BackendRequest& base) {

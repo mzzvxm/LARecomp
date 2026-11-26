@@ -96,24 +96,12 @@ struct Level {
   bool operator==(const Level&) const = default;
 };
 
-inline Level LevelFor(gpu_class::GpuClass cls) {
+inline Level LevelFor(gpu_class::GpuClass) {
   Level level;
-  switch (cls) {
-    case gpu_class::GpuClass::kHigh:
-      level.on = true;
-      level.share = 0.40;
-      level.max_depth = 45.0f;
-      level.min_texels = 600;
-      break;
-    case gpu_class::GpuClass::kMid:
-      level.on = true;
-      level.share = 0.25;
-      level.max_depth = 30.0f;
-      level.min_texels = 600;
-      break;
-    case gpu_class::GpuClass::kLow:
-      break;
-  }
+  level.on = true;
+  level.share = 0.40;
+  level.max_depth = 45.0f;
+  level.min_texels = 600;
   return level;
 }
 

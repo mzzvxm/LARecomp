@@ -58,8 +58,6 @@ std::string Name(gc::GpuClass c, gc::RtTier t, const std::string& word) {
 
 // The rung: the tier, no more than weak on a Mid class card, none on the Low class.
 gc::RtTier ModelRung(gc::GpuClass c, gc::RtTier t) {
-  if (c == gc::GpuClass::kLow) return gc::RtTier::kNone;
-  if (c == gc::GpuClass::kMid && t == gc::RtTier::kStrong) return gc::RtTier::kWeak;
   return t;
 }
 
@@ -81,7 +79,7 @@ void CellChecks() {
         const cs::Decision d = cs::Decide(c, t, word);
         Check(d.wanted == ModelWanted(c, t, word), Name(c, t, word) + ": the word comes to " + (ModelWanted(c, t, word) ? "on" : "off"));
         // the renderer's own answer: the pass's Wanted, with the tier's class (CurrentRtClass), for a device that can trace
-        const bool host = cm::Wanted(cm::SettingOf(word), true, gc::RtClass(c, t));
+        const bool host = cm::Wanted(cm::SettingOf(word), t != gc::RtTier::kNone, c);
         Check(host == d.wanted, Name(c, t, word) + ": the row's answer is the renderer's (car_mirror_rt_rules.h Wanted with the tier's class)");
         Check(!cm::Wanted(cm::SettingOf(word), false, gc::RtClass(c, t)), Name(c, t, word) + ": a device that cannot trace the car wants nothing");
         // a grey row's setting does nothing
@@ -115,7 +113,7 @@ void RowChecks() {
   for (const gc::GpuClass c : kClasses) {
     for (const gc::RtTier t : kTiers) {
       const cs::Gate g = cs::GateFor(c, t);
-      const cs::Gate want = t == gc::RtTier::kNone ? cs::Gate::kNoRt : (c == gc::GpuClass::kLow ? cs::Gate::kTooSlow : cs::Gate::kRuns);
+      const cs::Gate want = t == gc::RtTier::kNone ? cs::Gate::kNoRt : cs::Gate::kRuns;
       Check(g == want, Name(c, t, "") + ": the gate is no ray tracing first, then the Low class");
       Check(cs::Decide(c, t, "on").gate == g, Name(c, t, "") + ": Decide carries the gate");
     }
@@ -190,7 +188,7 @@ void MenuChecks(const std::string& dir) {
   const size_t next = At(rules, "[rows.PM_RxGpuCarSelfRefl]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
   Check(Has(row, "decode = \"resolved(s.mcla_gpu_car_mirror_rt)\"") && Has(row, "gpu.rt_tier == 'none'") &&
-            Has(row, "d.rt_field_class == 'low'") && Has(row, "label = \"RT MIRRORS\""),
+            !Has(row, "d.rt_field_class") && Has(row, "label = \"RT MIRRORS\""),
         "the row decodes legacy values and names the RT capability gates");
   Check(!Has(row, "car_rt_runs") && !Has(row, "shadows") && !Has(row, "ao_on"), "RT side mirrors use an independent pass");
 
@@ -223,10 +221,10 @@ void SettingsChecks(const std::string& dir) {
 
 void HostChecks(const std::string& dir) {
   const std::string cpp = ReadFile(dir + "/car_mirror_rt.cpp");
-  Check(Has(cpp, "cm::Wanted(setting, true, gpu_class::CurrentRtClass())") && Has(cpp, "cm::LimitsFor(gpu_class::CurrentRtClass(), int("), "the host reads the setting through the pass's rule, with the ray tracing tier's class");
+  Check(Has(cpp, "cm::Wanted(setting, gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone, gpu_class::Current())") && Has(cpp, "cm::LimitsFor(gpu_class::CurrentRtClass(), int("), "the host reads the setting through the pass's rule, with the ray tracing tier's class");
   const std::string tier = ReadFile(dir + "/rt_tier.h");
-  Check(Has(tier, "kCarMirrorRt,") && Has(tier, "inline constexpr int kRtEffectCount = 7;") && Has(tier, "{\"mcla_gpu_car_mirror_rt\", \"off\", \"off\", \"off\"},") && Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_car_mirror_rt\", Page::kReflections, {\"off\", \"off\", \"off\", \"off\", \"on\"}},"),
-        "legacy Auto keeps side mirrors raster, while RT Ultra selects explicit On");
+  Check(Has(tier, "kCarMirrorRt,") && Has(tier, "inline constexpr int kRtEffectCount = 7;") && Has(tier, "{\"mcla_gpu_car_mirror_rt\", \"off\", \"off\", \"off\"},") && Has(ReadFile(dir + "/gfx_preset.h"), "{\"mcla_gpu_car_mirror_rt\", Page::kReflections, {\"off\", \"off\", \"on\"}},"),
+        "legacy Auto keeps side mirrors raster, while Enhanced RT selects explicit On");
 }
 
 void BuildChecks(const std::string& dir) {

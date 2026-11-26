@@ -88,14 +88,10 @@ class PerformanceSettings final : public rex::SettingOwner {
 
   // Below 0 is auto (gpu/gpu_class.h kScales): 1.0 (the game's own) on a high-end graphics card, 0.75 on a mid-range one, 0.5 on
   // integrated graphics and until the card is known. 0 is none, so it cannot be the sentinel as it is for the LOD scales.
-  REX_SETTING(f64, parked_car_scale, -1.0, "How many cars are parked along the roads, as a multiple of the game's own amount (0 = none, 1 = the game's). "
-    "-1 (auto, the default) is 1.0 on a high-end graphics card, 0.75 on a mid-range one and 0.5 on integrated "
-    "graphics. Fewer is faster (0 to 2; the menu has auto, 0, 0.25, 0.5, 0.75, 1, 1.5 and 2).", rex::Range{-1.0, 2.0});
+  REX_SETTING(f64, parked_car_scale, -1.0, "Parked car density multiplier. A value of 1 uses the game's density, and 0 disables parked cars. Legacy negative values use 0.75. Live.", rex::Range{-1.0, 2.0});
 
   // Below 0 is auto, as for parked_car_scale.
-  REX_SETTING(f64, ped_density_scale, -1.0, "How many people walk the streets, as a multiple of the game's own amount (0 = none, 1 = the game's). "
-    "-1 (auto, the default) is 1.0 on a high-end graphics card, 0.75 on a mid-range one and 0.5 on integrated "
-    "graphics. Fewer is faster (0 to 2; the menu has auto, 0, 0.25, 0.5, 0.75, 1, 1.5 and 2).", rex::Range{-1.0, 2.0});
+  REX_SETTING(f64, ped_density_scale, -1.0, "Pedestrian density multiplier. A value of 1 uses the game's density, and 0 disables pedestrians. Legacy negative values use 0.75. Live.", rex::Range{-1.0, 2.0});
 
   // Live. The one reader of the dev switch is sub_8235FA90, Vehicle::Draw's phase 0x10 / shadow-pass
   // routine (feature-parity/GFX-UPGRADES-DESIGN.md 13.2). The recompiled code reads node+4 with
@@ -257,9 +253,7 @@ class PerformanceSettings final : public rex::SettingOwner {
 
   // 0 is auto (gpu/gpu_class.h kScales): 400 (the game's own) on a high-end graphics card, 300 on a mid-range one, 250 on
   // integrated graphics and until the card is known. A value set by hand is held to 100 to 600.
-  REX_SETTING(f64, traffic_unspawn_dist, 0.0, "How far from you traffic cars are kept, in metres: a car further away is removed. "
-    "0 (auto, the default) is 400 (the game's own) on a high-end graphics card, 300 on a mid-range one and 250 on "
-    "integrated graphics. Less is faster (100 to 600; the menu has auto, 100, 150, 200, 250, 300, 400, 500 and 600).", rex::Range{0.0, 600.0});
+  REX_SETTING(f64, traffic_unspawn_dist, 0.0, "Traffic range in metres. Legacy zero uses 300 metres. Live.", rex::Range{0.0, 600.0});
 
   REX_SETTING(bool, vsync_fast_poll, true, "Drive the SDK's gpu_vsync_fast_poll. With vsync off the guest vblank interval is 1 ms, so "
     "fast poll keeps the GPU VSync worker spinning a whole core. Off restores the 1 ms sleep.", rex::kDebugOnly, rex::kRequiresRestart);

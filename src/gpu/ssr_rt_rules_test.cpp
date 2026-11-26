@@ -626,8 +626,8 @@ void TestDecision() {
   Check(identity, "the effect off, a card that does not trace and the debug word off all give no fallback at all (the effect is what it was)");
   Check(by_hand, "high and ultra by hand run on a strong card and on a weak one (a card that does not trace never)");
   Check(rt::Resolve({rt::Level::kHigh, rt::Choice::kUltra, gc::RtTier::kStrong}).cell.group_mask == rt::kUltraCell.group_mask, "the debug word can run ULTRA's cell under the effect's high");
-  Check(rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.ray_cap == rt::kMidCell.ray_cap && rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.reach == 60.0f,
-        "a weak card by hand takes the Mid cell, 60 m, whatever it asks for");
+  Check(rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.ray_cap == rt::kUltraCell.ray_cap && rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.reach == rt::kUltraCell.reach,
+        "Ultra uses the same rays and reach across RT tiers");
   Check(rt::ParseChoice("auto") == rt::Choice::kOff && rt::ParseChoice("off") == rt::Choice::kOff && rt::ParseChoice("high") == rt::Choice::kHigh && rt::ParseChoice("ultra") == rt::Choice::kUltra &&
             rt::ParseChoice("") == rt::Choice::kOff && rt::ParseChoice("medium") == rt::Choice::kOff,
         "legacy Auto and unrecognised values keep the fallback off");
@@ -642,8 +642,8 @@ void TestDecision() {
         "the cells' rays a pixel are the effect's own (the fallback regenerates the trace's rays)");
   Check(rt::CellFor(rt::Level::kOff, gc::RtTier::kStrong).ray_cap == 0 && rt::CellFor(rt::Level::kHigh, gc::RtTier::kNone).ray_cap == 0, "off and no ray tracing have an empty cell");
   // the tier tables agree: a strong card's rung from rt_tier.h
-  Check(gc::RtRung(gc::GpuClass::kHigh, gc::RtTier::kStrong) == gc::RtTier::kStrong && gc::RtRung(gc::GpuClass::kLow, gc::RtTier::kStrong) == gc::RtTier::kNone && gc::RtRung(gc::GpuClass::kMid, gc::RtTier::kStrong) == gc::RtTier::kWeak,
-        "the rung the decision reads is rt_tier.h's (Low is none, Mid at most weak)");
+  Check(gc::RtRung(gc::GpuClass::kHigh, gc::RtTier::kStrong) == gc::RtTier::kStrong && gc::RtRung(gc::GpuClass::kLow, gc::RtTier::kStrong) == gc::RtTier::kStrong && gc::RtRung(gc::GpuClass::kMid, gc::RtTier::kStrong) == gc::RtTier::kStrong,
+        "class does not change RT support");
   // the needs
   const mcla::gpu::rt_scene::Needs high = rt::NeedsFor(rt::Level::kHigh);
   const mcla::gpu::rt_scene::Needs ultra = rt::NeedsFor(rt::Level::kUltra);
@@ -994,11 +994,11 @@ void TestHostSources(const std::string& dir) {
         "the trace image goes to a storage layout, the select pass runs, then the trace pass, then the image goes back to a shader read");
   Check(Count(rt_cpp, "list->barriers(Stage::COMPUTE, between, 2);") >= 2 && Has(rt_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read, 1);"),
         "the control words and the list are barriered between the passes and the trace image is readable by the graphics passes after");
-  Check(Has(rt_cpp, "reset_pending_") && Has(rt_cpp, "pk::kFlagReset") && Has(rt_cpp, "ssr_rt::GroupsFor(capacity)") && Has(rt_cpp, "ssr_rt::CapacityFor(cell, governor_.step(), rays)") && Has(rt_cpp, "ssr_rt::RaysUsed(cell,"),
-        "the first frame clears the control words; the dispatch is the capacity's, the capacity the governor's step's, the rays the trace's own");
-  Check(Has(rt_cpp, "governor_.Update(now, double(cell.budget_ms))") && Has(rt_cpp, "governor_.Note(ms)") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 0);") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 1);") &&
+  Check(Has(rt_cpp, "reset_pending_") && Has(rt_cpp, "pk::kFlagReset") && Has(rt_cpp, "ssr_rt::GroupsFor(capacity)") && Has(rt_cpp, "ssr_rt::CapacityFor(cell, 0, rays)") && Has(rt_cpp, "ssr_rt::RaysUsed(cell,"),
+        "the first frame clears the control words; the dispatch is the capacity's, the capacity is the fixed level budget, the rays the trace's own");
+  Check(!Has(rt_cpp, "governor_.Update(") && Has(rt_cpp, "ms_ = ms") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 0);") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 1);") &&
             Has(rt_cpp, "frames_->RetireAction("),
-        "the governor is fed by two timestamps round the passes, read once the list has completed");
+        "pass timings come from two timestamps round the passes, read once the list has completed");
   Check(Has(rt_cpp, "world_->AddCalibration(delta.data() + ssr_rt::buf::kStatCal)") && Has(rt_cpp, "world_->StatsFrame()"), "a stats frame's calibration counters go to the world frame's one window");
   Check(Has(rt_cpp, "service_->Want(rt_scene::Consumer::kSsrFallback, ssr_rt::NeedsFor(resolved_.level, shade_cars_))") && Has(rt_cpp, "if (wanted() && service_) {") &&
             Has(rt_cpp, "ssr_rt::CarHitsEnabled(now.cell, larecomp::settings::mcla_gpu_ssr_rt_cars.Get())") && Has(rt_cpp, "if (shade_cars_) flags |= pk::kFlagCars;"),

@@ -26,8 +26,8 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_SRC = os.path.join(os.path.dirname(HERE), "src")
 
-PRESETS = ("vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra")
-LABELS = ("VANILLA", "ENHANCED", "ENHANCED ULTRA", "ENHANCED RT", "ENHANCED RT ULTRA", "CUSTOM")
+PRESETS = ("vanilla", "enhanced", "enhanced_rt")
+LABELS = ("VANILLA", "ENHANCED", "ENHANCED RT", "CUSTOM")
 PAGE_TABLES = {
     "ImageQuality": "kImageQualityItems",
     "Lighting": "kLightItems",
@@ -66,9 +66,9 @@ def array_text(text, name):
 
 
 def parse_header(text):
-    """The table as data: rows [(cvar, page, [5 cells])], the exempt and below-max notes, the never-covered names, the class rules, kIds and kLabels."""
+    """The table as data: rows [(cvar, page, [cells])], the exempt and below-max notes, the never-covered names, the class rules, kIds and kLabels."""
     rows = []
-    for m in re.finditer(r'\{\s*"(\w+)"\s*,\s*Page::(\w+)\s*,\s*\{\s*((?:"[^"]*"\s*,\s*){4}"[^"]*")\s*\}\s*\}', array_text(text, "kRows")):
+    for m in re.finditer(r'\{\s*"(\w+)"\s*,\s*Page::(\w+)\s*,\s*\{\s*((?:"[^"]*"\s*,\s*)*"[^"]*")\s*\}\s*\}', array_text(text, "kRows")):
         rows.append((m.group(1), m.group(2)[1:] if m.group(2).startswith("k") else m.group(2), re.findall(r'"([^"]*)"', m.group(3))))
     notes = lambda name: [(a, b) for a, b in re.findall(r'\{\s*"(\w+)"\s*,\s*"([^"]*)"\s*\}', array_text(text, name))]
     never = re.findall(r'"(\w+)"', array_text(text, "kNeverCovered"))
@@ -147,8 +147,8 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
         if cvar in by_cvar:
             add(f"{cvar}: twice in the table")
         by_cvar[cvar] = (page, cells)
-        if len(cells) != 5:
-            add(f"{cvar}: {len(cells)} cells, want 5")
+        if len(cells) != len(PRESETS):
+            add(f"{cvar}: {len(cells)} cells, want {len(PRESETS)}")
     exempt = {c for c, _ in header["exempt"]}
 
     # 1. the four pages
@@ -204,7 +204,7 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
         for preset, cell in zip(PRESETS, cells):
             if cell == "auto":
                 add(f"{cvar} in {preset}: a preset never holds `auto`")
-            if preset in PRESETS[:3] and ((cvar in RT_ONLY and cell != "off") or (cvar == "mcla_gpu_ao" and cell == "rt")):
+            if preset in PRESETS[:2] and ((cvar in RT_ONLY and cell != "off") or (cvar == "mcla_gpu_ao" and cell == "rt")):
                 add(f"{cvar} in {preset}: a raster preset enables ray tracing")
             if "low" in cell.split("_"):
                 add(f"{cvar} in {preset}: '{cell}': no setting has a level called low")
@@ -240,13 +240,15 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
             add(f"{name}: debug-only should be {debug}")
     if "mcla_gpu_preset" in by_cvar or "mcla_gpu_preset_from" in by_cvar:
         add("a preset covers the preset's own setting")
+    # The SDK reads the old IDs, then the game normalizes them before exposing the settings.
+    legacy = {"enhanced_ultra", "enhanced_rt_ultra"}
     want_allowed = list(PRESETS) + ["custom"]
-    got = (settings.get("mcla_gpu_preset") or {}).get("allowed")
-    if got != want_allowed:
+    got = (settings.get("mcla_gpu_preset") or {}).get("allowed") or []
+    if set(got) & legacy != legacy or [value for value in got if value not in legacy] != want_allowed:
         add(f"mcla_gpu_preset allows {got}, want {want_allowed}")
-    got = (settings.get("mcla_gpu_preset_from") or {}).get("allowed")
-    if got != ["none"] + list(PRESETS):
-        add(f"mcla_gpu_preset_from allows {got}, want none and the five named presets")
+    got = (settings.get("mcla_gpu_preset_from") or {}).get("allowed") or []
+    if set(got) & legacy != legacy or [value for value in got if value not in legacy] != ["none"] + list(PRESETS):
+        add(f"mcla_gpu_preset_from allows {got}, want none and the three named presets")
 
     # 5. the row
     if header["ids"] != want_allowed:
@@ -260,7 +262,7 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
     if not names or re.findall(r'"([^"]*)"', names.group(1)) != header["labels"]:
         add("pause_menu.cpp kGfxPresetNames is not kLabels")
     hub, _ = table_rows(menu, "kGfxHubItems")
-    if not re.search(r'NativeOnly\(\s*Str\(\s*"PM_RxGpuPreset"\s*,\s*"mcla_gpu_preset"\s*,\s*"PRESET: "\s*,\s*kGfxPresetVals\s*,\s*kGfxPresetNames\s*,\s*6\s*\)\s*\)', hub):
+    if not re.search(r'NativeOnly\(\s*Str\(\s*"PM_RxGpuPreset"\s*,\s*"mcla_gpu_preset"\s*,\s*"PRESET: "\s*,\s*kGfxPresetVals\s*,\s*kGfxPresetNames\s*,\s*4\s*\)\s*\)', hub):
         add("kGfxHubItems has no NativeOnly(Str(\"PM_RxGpuPreset\", \"mcla_gpu_preset\", ...)) row")
     if hub.find("PM_RxSubVideo") > hub.find("PM_RxGpuPreset") or hub.find("PM_RxGpuPreset") > hub.find("PM_RxSubImageQuality"):
         add("the PRESET row is not between DISPLAY and IMAGE QUALITY on the hub")
@@ -273,7 +275,7 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
         if [v["label"] for v in row.get("values", [])] != list(LABELS):
             add("ui_rules.toml PM_RxGpuPreset lists other labels than kLabels")
         for v in row.get("values", []):
-            needs_rt = v["id"] in ("enhanced_rt", "enhanced_rt_ultra")
+            needs_rt = v["id"] == "enhanced_rt"
             if needs_rt != ("when" in v) or (needs_rt and "gpu.rt_tier != 'none'" not in v["when"]):
                 add(f"ui_rules.toml PM_RxGpuPreset: {v['id']} should{' ' if needs_rt else ' not '}be listed only where the card traces rays")
         if not any("NO RT GPU" in s.get("suffix", "") for s in row.get("states", [])):
@@ -281,7 +283,7 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
     cases = doc.get("defs", {}).get("recommended_preset", {}).get("cases", [])
     want_rules = [(r[0], r[1]) for r in header["rules"]]
     got_rules = [(c.get("when", "true"), c["value"]) for c in cases]
-    word = {"kVanilla": "vanilla", "kEnhanced": "enhanced", "kEnhancedUltra": "enhanced_ultra", "kEnhancedRt": "enhanced_rt", "kEnhancedRtUltra": "enhanced_rt_ultra"}
+    word = {"kVanilla": "vanilla", "kEnhanced": "enhanced", "kEnhancedRt": "enhanced_rt"}
     want_rules = [(w, word.get(p, p)) for w, p in want_rules]
     # the header's last rule is `true`; the def's last case has no `when`
     if got_rules != want_rules:
@@ -330,16 +332,16 @@ def selftest(src):
             print("  " + p)
         failures += 1
     failures += run(lambda d: d["rows"].pop(0), "a covered row removed from the table")
-    failures += run(lambda d: d["rows"].append(("fps_limit", "WorldDetail", ["30"] * 5)), "a DISPLAY setting added to the table")
-    failures += run(lambda d: d["rows"].append(("mcla_gpu_aa", "ImageQuality", ["off"] * 5)), "the relocated Post AA still covered")
-    failures += run(lambda d: d["rows"].append(("mcla_gpu_upscaler", "Lighting", ["off"] * 5)), "an UPSCALING setting added to the table")
+    failures += run(lambda d: d["rows"].append(("fps_limit", "WorldDetail", ["30"] * len(PRESETS))), "a DISPLAY setting added to the table")
+    failures += run(lambda d: d["rows"].append(("mcla_gpu_aa", "ImageQuality", ["off"] * len(PRESETS))), "the relocated Post AA still covered")
+    failures += run(lambda d: d["rows"].append(("mcla_gpu_upscaler", "Lighting", ["off"] * len(PRESETS))), "an UPSCALING setting added to the table")
     failures += run(lambda d: d["rows"].__setitem__(0, (d["rows"][0][0], d["rows"][0][1], ["auto"] + d["rows"][0][2][1:])), "auto as a cell")
     ao = next(i for i, r in enumerate(base["rows"]) if r[0] == "mcla_gpu_ao")
     failures += run(lambda d: d["rows"].__setitem__(ao, (d["rows"][ao][0], d["rows"][ao][1], ["nonsense"] + d["rows"][ao][2][1:])), "a word the setting does not take")
     failures += run(lambda d: d["rows"].__setitem__(0, (d["rows"][0][0], "Lighting", d["rows"][0][2])), "a row on the wrong page")
     failures += run(lambda d: d["exempt"].append(("mcla_gpu_ao", "x")), "a covered row that is also exempt")
     failures += run(lambda d: d["exempt"].pop(0), "an exempt row dropped (a row of the pages with no cell)")
-    failures += run(lambda d: d["rows"].append(("mcla_gpu_new_effect", "Lighting", ["off"] * 5)), "a row for a setting that does not exist")
+    failures += run(lambda d: d["rows"].append(("mcla_gpu_new_effect", "Lighting", ["off"] * len(PRESETS))), "a row for a setting that does not exist")
     failures += run(lambda d: d["labels"].reverse(), "the labels in another order")
     failures += run(lambda d: d["rules"].pop(0), "a class rule dropped")
     failures += run(lambda d: {"menu": menu.replace('"PM_RxGpuPreset"', '"PM_RxGpuPresetX"')}, "the pause row renamed")

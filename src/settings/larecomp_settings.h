@@ -77,6 +77,8 @@ void ApplyLegacyEnvironment();
 // `file` is app.config_file. Safe when the file is missing or unreadable. Returns the number of refused values.
 // Call it AFTER ApplyStartupDefaults: both write the title layer, the last write wins.
 int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::path& file);
+// Normalize retired preset IDs after the SDK applies the file, environment and command line layers.
+void MigrateGraphicsPresetIds();
 
 // A setting by a flat LARecomp name, a flat old SDK name from sdk_names.inc, or a full name. Null when unknown.
 rex::SettingBase* Find(std::string_view name);

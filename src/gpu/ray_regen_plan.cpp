@@ -83,36 +83,19 @@ void NoteTraced(Site site, uint32_t width, uint32_t height) {
   g_traced[size_t(site)] = {0, width, height};
 }
 
-bool Planner::RoomOk(Device* device, uint64_t need) {
-  if (!device) {
-    return true;
-  }
+void Planner::WarnOnMemoryPressure(Device* device, uint64_t need) {
+  if (!device) return;
   const uint64_t now_ms = NowMs();
-  if (need == room_last_need_ && now_ms < room_next_ms_) {
-    return room_ok_;
-  }
+  if (need == room_last_need_ && now_ms < room_next_ms_) return;
   room_last_need_ = need;
-  const backend::VideoMemory memory = device->QueryVideoMemory();
-  const bool ok = vram_room::HasRoom(memory.used, memory.budget, need);
-  if (ok) {
-    room_ok_ = true;
-    room_wait_ms_ = 0;
-    room_next_ms_ = now_ms + 1000;
-    if (room_refused_logged_) {
-      room_refused_logged_ = false;
-      REXLOG_INFO("{} there is room in video memory for the context again (about {:.0f} MiB asked for, {} of {} MiB in use): it is made now", kPrefix, Mib(need), memory.used >> 20, memory.budget >> 20);
-    }
-  } else {
-    room_ok_ = false;
-    room_wait_ms_ = vram_room::NextWaitMs(room_wait_ms_);
-    room_next_ms_ = now_ms + room_wait_ms_;
-    if (!room_refused_logged_) {
-      room_refused_logged_ = true;
-      REXLOG_INFO("{} no room in video memory for new contexts and guides (about {:.0f} MiB; {} of {} MiB in use, the line is {}%); retry in {} s",
-                  kPrefix, Mib(need), memory.used >> 20, memory.budget >> 20, vram_room::kHighPercent, room_wait_ms_ / 1000);
-    }
+  room_next_ms_ = now_ms + 1000;
+  const auto memory = device->QueryVideoMemory();
+  const bool pressure = !vram_room::HasRoom(memory.used, memory.budget, need);
+  if (pressure && !room_warned_) {
+    REXLOG_WARN("{} video memory is nearly full ({} of {} MiB in use); Ray Regeneration contexts and guides need about {:.0f} MiB",
+                kPrefix, memory.used >> 20, memory.budget >> 20, Mib(need));
   }
-  return room_ok_;
+  room_warned_ = pressure;
 }
 
 // On Vulkan the row should show (D3D12 ONLY). On older Radeons a saved ON should never start the worker.
@@ -139,7 +122,6 @@ void Planner::Update(const Inputs& in) {
   std::array<ContextRequest, kSiteCount> wanted = g_traced;
   uint64_t need = 0;
   bool needs_context = false;
-  bool has_context = false;
   for (size_t i = 0; i < kSiteCount; ++i) {
     SitePlan& site = sites_[i];
     ContextRequest& request = wanted[i];
@@ -147,7 +129,6 @@ void Planner::Update(const Inputs& in) {
     site.active = request.signals != 0;
     if (!site.active || request.width == 0 || request.height == 0) continue;
     if (site.asked.Covers(request)) {
-      has_context = true;
       if (Instance().Ready(request.signals, request.width, request.height, Site(i))) continue;
     } else {
       needs_context = true;
@@ -156,11 +137,7 @@ void Planner::Update(const Inputs& in) {
     }
     need += EstimateBytes(request.signals, request.width, request.height) + guides::BytesOf(request.width, request.height);
   }
-  const bool room = !needs_context || RoomOk(in.device, need);
-  if (!room && !has_context) {
-    pi.room_ok = false;
-    plan_ = SelectRayRegen(pi);
-  }
+  if (needs_context) WarnOnMemoryPressure(in.device, need);
   chosen_ = ChooseDenoiser(plan_, in.dlss_plan);
   if (plan_.use) {
     ++counters_.frames_planned_on;
@@ -177,7 +154,7 @@ void Planner::Update(const Inputs& in) {
         REXLOG_INFO("{} the context for signals {:#x} is released after {} idle frames", kPrefix, site.asked.signals, rr::kContextHoldFrames);
         site.asked = {};
       }
-    } else if (site.active && room && request.width != 0 && request.height != 0 && !site.asked.Covers(request)) {
+    } else if (site.active && request.width != 0 && request.height != 0 && !site.asked.Covers(request)) {
       REXLOG_INFO("{} making a context in the background (signals {:#x}, up to {}x{})", kPrefix, request.signals, request.width, request.height);
       Instance().Request(request.signals, request.width, request.height, Site(i));
       site.asked = request;

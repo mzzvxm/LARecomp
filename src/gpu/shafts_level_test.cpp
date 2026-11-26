@@ -104,8 +104,8 @@ void CheckLevels() {
 
 void CheckAuto() {
   // What `auto` comes to: OFF on Low (the game's own picture on weak GPUs), DEFAULT on Mid and High.
-  const Level want[] = {Level::kOff, Level::kDefault, Level::kDefault};
-  const char* const label[] = {"AUTO (OFF)", "AUTO (DEFAULT)", "AUTO (DEFAULT)"};
+  const Level want[] = {Level::kDefault, Level::kDefault, Level::kDefault};
+  const char* const label[] = {"AUTO (DEFAULT)", "AUTO (DEFAULT)", "AUTO (DEFAULT)"};
   for (int k = 0; k < 3; ++k) {
     const std::string at = std::string("auto on ") + kClassNames[k];
     for (const char* text : {"auto", "AUTO", "Auto"}) {
@@ -135,7 +135,7 @@ void CheckOldValues() {
 
 void CheckUnknown() {
   // A hand-edited text that is no value counts as `auto`, as it always did.
-  const Level want[] = {Level::kOff, Level::kDefault, Level::kDefault};
+  const Level want[] = {Level::kDefault, Level::kDefault, Level::kDefault};
   for (int k = 0; k < 3; ++k) {
     for (const char* junk : {"", "ultra", "hgih", "on", "game", "auto ", " off", "medium", "stong", "1"}) {
       const Choice c = Resolve(kClasses[k], junk);
@@ -147,10 +147,10 @@ void CheckUnknown() {
 
 void CheckSteps() {
   // The class chooses the ray quality: Mid 32, High 64 (Low 32: only where the player turned a strength on by hand).
-  CheckNum(Steps(GpuClass::kLow, 0), 32, "steps on Low");
-  CheckNum(Steps(GpuClass::kMid, 0), 32, "steps on Mid");
+  CheckNum(Steps(GpuClass::kLow, 0), 64, "steps on Low");
+  CheckNum(Steps(GpuClass::kMid, 0), 64, "steps on Mid");
   CheckNum(Steps(GpuClass::kHigh, 0), 64, "steps on High");
-  CheckNum(mcla::gpu::gpu_class::SunShaftSteps(GpuClass::kMid), 32, "gpu_class SunShaftSteps(Mid)");
+  CheckNum(mcla::gpu::gpu_class::SunShaftSteps(GpuClass::kMid), 64, "gpu_class SunShaftSteps(Mid)");
   CheckNum(mcla::gpu::gpu_class::SunShaftSteps(GpuClass::kHigh), 64, "gpu_class SunShaftSteps(High)");
   // The debug cvar's override: any count between 8 and 128, a negative one is "by the class".
   for (int k = 0; k < 3; ++k) {

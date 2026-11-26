@@ -147,9 +147,9 @@ void TestMemory() {
       if (c.rung == r && c.level == l) return c;
     return gf::Cell{};
   };
-  Check(find(gi::Rung::kStrong, gi::Level::kUltra).memory.pixel_reserve > 0 && find(gi::Rung::kWeak, gi::Level::kUltra).memory.pixel_reserve == 0,
-        "the per-pixel images are the strong card's ULTRA only");
-  Check(find(gi::Rung::kStrong, gi::Level::kHigh).layout == gi::Layout::kStandard && find(gi::Rung::kWeak, gi::Level::kHigh).layout == gi::Layout::kLean &&
+  Check(find(gi::Rung::kStrong, gi::Level::kUltra).memory.pixel_reserve > 0 && find(gi::Rung::kWeak, gi::Level::kUltra).memory.pixel_reserve > 0,
+        "the per-pixel images are available on both RT tiers at Ultra");
+  Check(find(gi::Rung::kStrong, gi::Level::kHigh).layout == gi::Layout::kStandard && find(gi::Rung::kWeak, gi::Level::kHigh).layout == gi::Layout::kStandard &&
             find(gi::Rung::kNone, gi::Level::kUltra).layout == gi::Layout::kNone,
         "the cells' layouts");
 }

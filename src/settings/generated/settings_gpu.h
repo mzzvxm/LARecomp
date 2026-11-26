@@ -316,8 +316,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_city_rt_build_budget, true, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
 
-  REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 "
-    "(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.",
+  REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: override the full-detail radius of the city RT structures in metres. Zero uses 300 metres at High and 600 at Ultra. The far radius reaches at least four times as far. Live.",
     rex::kDebugOnly, rex::Range{0.0, 1500.0});
 
   REX_SETTING(f64, mcla_gpu_city_rt_range, 0.0, "Debug: the farthest from the camera that ray traced city shadows are applied to, in metres, up to 1000; 0 (the default) is as far "
@@ -348,8 +347,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_city_refl_coat, true, "Debug: with mcla_gpu_rt_reflections on, a reflection of the city is a mirror's, as a reflection of another car is: sharp, with the paint's clear coat "
     "layer over it, so that what is in it can be told at a glance. false: the paint's soft cone alone. Live.", rex::kDebugOnly);
 
-  REX_SETTING(f64, mcla_gpu_city_refl_reach, 0.0, "Debug: how far a reflection ray looks for the city, in metres, 5 to 3000; 0 (the default) is the level's (high 150 m, ultra 1,000 m, a weak card 60 "
-    "and 150). Live.", rex::kDebugOnly, rex::Range{0.0, 3000.0});
+  REX_SETTING(f64, mcla_gpu_city_refl_reach, 0.0, "Debug: override the reach of city reflection rays in metres. Zero uses 150 metres at High and 1000 at Ultra. Live.", rex::kDebugOnly, rex::Range{0.0, 3000.0});
 
   REX_SETTING(i32, mcla_gpu_city_refl_view, 0, "Debug: with mcla_gpu_rt_reflections on, replaces the colour a city hit shows in the car paint's ray traced image (look at it through "
     "mcla_gpu_car_selfrefl_view 2): 1 where the colour comes from (green the picture's own, red shaded, yellow both), 2 the kind of surface it hit (a ramp "
@@ -386,9 +384,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_rays, 0, "Debug: the rays a texel of an opponent's paint casts: 0 (the default) by the budget (mcla_gpu_car_rt_opp_refl_texels), 4 the whole cone, 2 the outer pair, 1 the mirror ray. Live.", rex::kDebugOnly, rex::Range{0, 4});
 
-  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_texels, 0, "Debug: the work the opponents' ray traced reflection may spend a frame, in thousands of image texels of the cars' screen rectangles at the full cone of rays (0, the default: "
-    "the graphics card's class decides: 500 on the High class, 200 on the Mid class, none on the Low class). Over it the pass casts fewer rays a texel (up to twice it: 2, over that: 1) "
-    "and leaves the smaller cars out. Live.", rex::kDebugOnly, rex::Range{0, 8000});
+  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_texels, 0, "Debug: opponent reflection budget in thousands of screen texels. Zero uses 500. Larger rectangles can use fewer rays per texel. Live.", rex::kDebugOnly, rex::Range{0, 8000});
 
   REX_SETTING(bool, mcla_gpu_car_rt_hit_shading, true, "Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, a reflection ray that hits ANOTHER car shows the part in its own material: its paint "
     "colour (the gradient of the paint's constants, the livery over it), its diffuse texture, the sun and the sky's light on it, the environment map's reflection, and the lamps lit at night. Where "
@@ -452,12 +448,11 @@ class GPUSettings final : public rex::SettingOwner {
     "hue of the car's paint row on its pixels; purple: the car has no paint row). With the check on the log also says whether the shader read the paint rows the host wrote "
     "(\"paint probe\"). 0: off. Live.", rex::kDebugOnly, rex::Range{0, 3});
 
-  REX_SETTING(std::string, mcla_gpu_car_selfrefl, "auto", "Car self-reflections: your car's paint reflects its own body, which the game's paint does not: the wing shows in the "
-    "trunk lid and the mirror in the door, and the reflection is darker where the body shades it, under a spoiler or "
-    "in a wheel arch, and it also shows the car's own colour in the reflection. on is the one level; off leaves the game's "
-    "paint as it is. auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, or the "
-    "iGPU of a desktop CPU). Costs the graphics card a little while it is on (about 0.1 ms a frame at 4K on an RTX 5080). "
-    "It works in the game, behind the pause menu and in the garage, not on the map. Live.", rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_car_selfrefl, "auto", "Car self-reflections: your car's paint reflects its own body, which the game's paint does not: the wing shows in the trunk lid "
+    "and the mirror in the door, and the reflection is darker where the body shades it, under a spoiler or in a wheel arch, and it "
+    "also shows the car's own colour in the reflection. on is the one level; off leaves the game's paint as it is. Legacy auto uses "
+    "On. Costs the graphics card a little while it is on (about 0.1 ms a frame at 4K on an RTX 5080). It works in the game, behind "
+    "the pause menu and in the garage, not on the map. Live.", rex::Allowed("auto", "off", "on"));
 
   REX_SETTING(f64, mcla_gpu_car_selfrefl_full, 0.25, "Diagnostic: the share of the car self-reflection ray's points that, all inside a part of the car, take the whole hit "
     "(0.25: 3 of the 12). A smaller one makes every hit heavier and the outline of a part a steeper step, a larger one lighter and "
@@ -531,13 +526,12 @@ class GPUSettings final : public rex::SettingOwner {
     "yellow: a hit on the player's own part, orange: on another car), 6 the clear coat's layer's amount (its fresnel by the share of the hit on another car, white is 1), "
     "7 what that layer adds (the other car's colour by the amount). 2 is the ray traced reflection alone at full intensity. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
-  REX_SETTING(std::string, mcla_gpu_car_shadow_map, "auto", "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it. The game's own sun shadows "
-    "draw the car in a rough low-detail form into maps whose texels are 1 to 25 cm, so the wing, the mirrors, the sills and the "
-    "wheels cast no shadow of their own; this draws the car again from the sun, at full detail, into a small map fitted to it "
-    "(2048 by 2048 on ultra, 1024 by 1024 on high), and the contact shadows read it. It only runs while the contact shadows "
-    "(mcla_gpu_contact_shadows) are on, in the game view, in daylight. off, high, ultra or auto (the default): ultra on a discrete "
-    "graphics card, high on an integrated one. Costs a little graphics card time (the car's triangles drawn once more, depth only) "
-    "and 8 or 32 MiB of video memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_car_shadow_map, "auto", "Car shadow map: your car casts a shadow of its real shape on itself and on the road beside it. The game's own sun shadows draw "
+    "the car in a rough low-detail form into maps whose texels are 1 to 25 cm, so the wing, the mirrors, the sills and the wheels "
+    "cast no shadow of their own; this draws the car again from the sun, at full detail, into a small map fitted to it (2048 by 2048 "
+    "on ultra, 1024 by 1024 on high), and the contact shadows read it. It only runs while the contact shadows "
+    "(mcla_gpu_contact_shadows) are on, in the game view, in daylight. off, high, ultra or legacy auto (Ultra). Costs a little "
+    "graphics card time (the car's triangles drawn once more, depth only) and 8 or 32 MiB of video memory. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(bool, mcla_gpu_car_shadow_map_owns, true, "Diagnostic: while the car shadow map is drawn and the contact shadows are at full strength "
     "(the sun 12 degrees up or more, a dry road), the game's sun shadow maps no longer draw the player's car, so its shadow on "
@@ -547,12 +541,14 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_car_shadow_map_view, 0, "Diagnostic: 1 draws the car shadow map in a square in the lower left corner of the picture (grey by depth, near the sun "
     "bright; dark blue where nothing of the car is), while the map is drawn. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; "
-    "this draws the scene's opaque objects again from the lights, depth only, into small maps (768 by 768 texels on medium, 1024 by 1024 on high, 1280 by 1280 on ultra: a texel is 1 to 2 cm wide 10 m from the car), and the lights' light reads them. medium shadows your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, "
-    "so a pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the next nearest car, gives all three cars a map for each lamp, "
-    "and is sharper. off, medium, high, ultra or auto (the default): ultra on a fast graphics card, medium on a medium one, off on an integrated one. "
-    "It only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws once more for each map) and 9 MiB (medium), "
-    "24 MiB (high) or 75 MiB (ultra) of video memory. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_light_shadows, "auto", "Light shadows: shadows from headlights (and later street lamps). The game draws no shadow from a light that is not the sun; this "
+    "draws the scene's opaque objects again from the lights, depth only, into small maps (768 by 768 texels on medium, 1024 by 1024 "
+    "on high, 1280 by 1280 on ultra: a texel is 1 to 2 cm wide 10 m from the car), and the lights' light reads them. medium shadows "
+    "your car's headlights and the nearest other car's, with one map for each car; high gives your car a map for each headlamp, so a "
+    "pole in front of it casts a shadow from each of its two lamps, and the nearest other car still has one; ultra also shadows the "
+    "next nearest car, gives all three cars a map for each lamp, and is sharper. off, medium, high, ultra or legacy auto (Medium). It "
+    "only runs while a headlight is lit, in the game view. Costs graphics card time and render thread time (the frame's opaque draws "
+    "once more for each map) and 9 MiB (medium), 24 MiB (high) or 75 MiB (ultra) of video memory. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_headlight_shadow_test, 0, "Diagnostic: 1 makes a headlight shadow map from a light of its own at the camera (shining where the camera looks, 35 degrees wide, 40 m), "
     "whenever no car's headlight is lit, so that the maps can be looked at by day with mcla_gpu_headlight_shadow_view 1: the map from the camera's own "
@@ -603,24 +599,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_census_targets, false, "Diagnostic: per report window, every pass the frames drew into (its EDRAM "
     "targets) with its draws per frame and the pixel shaders that drew there.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(std::string, mcla_gpu_class, "auto", "Diagnostic: forces the GPU class the graphics upgrades' auto values are chosen from (low: "
-    "integrated GPUs and handhelds, mid: discrete with under about 6 GiB of video memory or a "
-    "slower GPU family such as the GTX 10 and 16 series and the RX 400/500 series, high: the "
-    "rest). "
-    "auto: the class the renderer found for this GPU, logged at start as '[gpu] class: ...' with "
-    "the rule that chose it (by adapter type, by memory or by name). Only "
-    "the value auto of the upgrades follows it (shadow filter and detail, car and road reflection "
-    "detail, ambient occlusion, contact shadows, sun shafts, bounce light); "
-    "a choice of the player's own is never changed. Live.", rex::Allowed("auto", "low", "mid", "high"), rex::kDebugOnly);
+  REX_SETTING(std::string, mcla_gpu_class, "auto", "Debug: override the GPU class used for the preset recommendation and diagnostics. Auto uses the detected class. Live.", rex::Allowed("auto", "low", "mid", "high"), rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_rt_tier, "auto", "Diagnostic: forces the ray tracing tier the ray traced upgrades' auto values are chosen from (none: "
-    "the card cannot trace rays or has no ray tracing units, weak: it traces at a moderate speed, such as an RTX 3060 or an RX 6600, "
-    "strong: it traces quickly, such as an RTX 5080 or an RX 7900 XT). "
-    "auto: the tier found for this card (its table row and, when it ran, the benchmark of mcla_gpu_rt_bench), logged at start as "
-    "'[gpu] ray tracing tier: ...' with the rule that chose it; while mcla_gpu_class forces a class, the tier follows it (high: strong, "
-    "mid: weak, low: none) so that a test that says a class runs that class's cells. Only the value auto of the ray traced upgrades "
-    "(the car's reflection, occlusion and sun ray; later the city's shadows, reflections and bounce light) follows it, and the "
-    "number of cars they trace and how far; a choice of the player's own is never changed. Live.", rex::Allowed("auto", "none", "weak", "strong"), rex::kDebugOnly);
+  REX_SETTING(std::string, mcla_gpu_rt_tier, "auto", "Debug: override the reported RT tier on a device that supports ray tracing. None exercises the unsupported-device path. Weak and strong use the same effect budgets. Auto uses the detected tier. Live.", rex::Allowed("auto", "none", "weak", "strong"), rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_rt_bench, "auto", "Diagnostic: the ray tracing benchmark that can move a card between the weak and the strong tier. "
     "auto: on the first start with a card that can trace (and again after its driver or the graphics API changes) a short compute pass "
@@ -1079,17 +1060,16 @@ class GPUSettings final : public rex::SettingOwner {
     "is highlighted and never saves it; set on the command line it stays on for the run. Changes at "
     "once.");
 
-  REX_SETTING(std::string, mcla_gpu_headlights, "auto", "Headlights: the cars' headlights light the road, the world and the other cars at night (the game's own only glow). "
-    "Your car, the nearest opponents and the nearest traffic cars each get a spot light in front of them, up to four at a "
-    "time, from dusk to dawn. on is the one level; off leaves the night as the game has it. auto (the default) is on for "
-    "a discrete graphics card and off for an integrated one (a handheld, or the iGPU of a desktop CPU). Costs the "
-    "graphics card a little at night, only on the pixels the beams reach. Live; the first time the headlights show, the "
-    "graphics card builds the lit shaders' variants (a short stutter).", rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_headlights, "auto", "Headlights: the cars' headlights light the road, the world and the other cars at night (the game's own only glow). Your car, the "
+    "nearest opponents and the nearest traffic cars each get a spot light in front of them, up to four at a time, from dusk to dawn. "
+    "on is the one level; off leaves the night as the game has it. Legacy auto uses On. Costs the graphics card a little at night, "
+    "only on the pixels the beams reach. Live; the first time the headlights show, the graphics card builds the lit shaders' variants "
+    "(a short stutter).", rex::Allowed("auto", "off", "on"));
 
-  REX_SETTING(std::string, mcla_gpu_neon_light, "auto", "Neon light: the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own colour and pulse. "
-    "on is the one level; off leaves the neon as the game has it (its own glow under the car). auto (the default) is on for a discrete graphics card and off for an integrated one (a handheld, "
-    "or the iGPU of a desktop CPU). It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a few metres round the car). "
-    "Live; the first time it shows, the graphics card builds its pipeline (a short stutter).", rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_neon_light, "auto", "Neon light: the neon underglow of a car lights the ground, the kerbs, the walls and the other cars near it, in the neon's own "
+    "colour and pulse. on is the one level; off leaves the neon as the game has it (its own glow under the car). Legacy auto uses On. "
+    "It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a "
+    "few metres round the car). Live; the first time it shows, the graphics card builds its pipeline (a short stutter).", rex::Allowed("auto", "off", "on"));
 
   REX_SETTING(f64, mcla_gpu_headlight_strength, 1.0, "Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). "
     "Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
@@ -1217,8 +1197,8 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_rtao_rays, 0, "Debug: Rays per traced AO pixel. 0 uses the GPU budget. Live.", rex::kDebugOnly, rex::Range{0, 4});
   REX_SETTING(f64, mcla_gpu_rtao_reach, 0.0, "Debug: Ray reach in metres. 0 takes the AO intensity radius share. Live.", rex::kDebugOnly, rex::Range{0.0, 2.5});
   REX_SETTING(f64, mcla_gpu_rtao_range, 0.0, "Debug: Maximum distance to a traced AO receiver in metres. 0 uses the scene's safe range up to 90 m. Live.", rex::kDebugOnly, rex::Range{0.0, 90.0});
-  REX_SETTING(i32, mcla_gpu_rtao_scale, 0, "Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses the governor. Live.", rex::kDebugOnly, rex::Range{0, 4});
-  REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, true, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.", rex::kDebugOnly);
+  REX_SETTING(i32, mcla_gpu_rtao_scale, 0, "Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses half size by default. Live.", rex::kDebugOnly, rex::Range{0, 4});
+  REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, true, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies when the size divisor is 0. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_rtao_alpha, "auto", "Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.", rex::kDebugOnly, rex::Allowed("auto", "exact", "stochastic", "opaque", "exclude"));
   REX_SETTING(std::string, mcla_gpu_rtao_screen, "world", "Debug: Screen-space contribution to traced AO. World (default) takes the darker term on world surfaces, auto uses it for fallback, off disables it, and on takes it everywhere. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on", "world"));
@@ -1320,17 +1300,17 @@ class GPUSettings final : public rex::SettingOwner {
     "interval 0 and the wait alone paces the frame, so measure before turning it on.", rex::kDebugOnly, rex::kRequiresRestart);
 
   REX_SETTING(std::string, mcla_gpu_preset, "vanilla", "Graphics preset: the look of the four effect pages (IMAGE QUALITY, LIGHTING AND SHADOWS, REFLECTIONS, WORLD DETAIL) in one choice. "
-    "vanilla (the game as it shipped on the console; where a fresh install starts), enhanced, enhanced_ultra, enhanced_rt and "
-    "enhanced_rt_ultra (the last two need a graphics card that can ray trace), or custom (your own choices on those pages). While a preset "
+    "vanilla (the first-start default), enhanced, enhanced_rt (requires ray tracing) "
+    "or custom (your own choices on those pages). While a preset "
     "other than custom is chosen, its values are used for every row of those pages and are not written to larecomp.toml; changing any one of "
     "those rows in the pause menu switches this to custom and keeps the values (mcla_gpu_preset_from remembers the preset they came from). "
     "DISPLAY and UPSCALING are never changed by a preset. A larecomp.toml that has graphics values and no line for this setting (written "
     "before presets) starts as custom, so nothing changes. A value for a single row on the command line or in the environment wins over "
-    "the preset and is never saved. Live.", rex::Allowed("vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra", "custom"));
+    "the preset and is never saved. Live.", rex::Allowed("vanilla", "enhanced", "enhanced_rt", "custom", "enhanced_ultra", "enhanced_rt_ultra"));
 
   REX_SETTING(std::string, mcla_gpu_preset_from, "none", "Diagnostic: the preset a custom set of rows started from (a named preset, or none): rows that larecomp.toml does not name take that preset's "
     "value, so a row added in a later version follows the preset the player began with. Set by the game when a change in the pause menu "
-    "turns a preset into custom; none for a larecomp.toml written before presets. Live.", rex::kDebugOnly, rex::Allowed("none", "vanilla", "enhanced", "enhanced_ultra", "enhanced_rt", "enhanced_rt_ultra"));
+    "turns a preset into custom; none for a larecomp.toml written before presets. Live.", rex::kDebugOnly, rex::Allowed("none", "vanilla", "enhanced", "enhanced_rt", "enhanced_ultra", "enhanced_rt_ultra"));
 
   REX_SETTING(u32, mcla_gpu_process_memory_log, 0, "Diagnostic: every this many frames, log what the process's memory is made of (the commit "
     "charge and working set, the committed address space by kind, the private regions by size, "
@@ -1442,16 +1422,13 @@ class GPUSettings final : public rex::SettingOwner {
     "the count is in the '[gpu] shader memo:' line at shutdown and must be 0. The lookups cost as "
     "much as without the memo.", rex::kDebugOnly, rex::kRequiresRestart);
 
-  REX_SETTING(std::string, mcla_gpu_shadow_filter, "auto", "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from "
-    "pixel to pixel, a grainy edge), soft (more taps on a disk, a "
-    "smooth edge without grain, of the same width as the game's, or narrower on a finer shadow map: SHADOW DETAIL), pcss (soft, with "
-    "contact hardening: a shadow is sharp where it touches what casts it and softer with the distance "
-    "from it, as the sun's own shadows are; an integrated graphics card gets soft). auto (the default) "
-    "picks by the graphics card: game on an integrated one, pcss on the rest. Your car's own shadow "
-    "(CAR SHADOW MAP) is filtered the same way. The sun's shadows show from "
-    "8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels (pcss "
-    "about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss "
-    "shows, the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "soft", "pcss"));
+  REX_SETTING(std::string, mcla_gpu_shadow_filter, "auto", "How the sun's shadows are filtered: game (the game's own: four taps at an angle that changes from pixel to pixel, a grainy "
+    "edge), soft (more taps on a disk, a smooth edge without grain, of the same width as the game's, or narrower on a finer shadow "
+    "map: SHADOW DETAIL), pcss (soft, with contact hardening: a shadow is sharp where it touches what casts it and softer with the "
+    "distance from it, as the sun's own shadows are). Legacy auto uses PCSS. Your car's own shadow (CAR SHADOW MAP) is filtered the "
+    "same way. The sun's shadows show from 8 to 17 hours in clear weather. Costs graphics card time in the screen's shadowed pixels "
+    "(pcss about the same as soft: away from the edges it takes fewer taps). Live; the first time soft or pcss shows, the graphics "
+    "card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "soft", "pcss"));
 
   REX_SETTING(bool, mcla_gpu_shadow_filter_pcf, true, "Diagnostic: how a tap of the soft shadow filter reads the shadow map. On: "
     "it compares the four texels one by one at the receiver's own slope and blends the answers (a true "
@@ -1470,24 +1447,21 @@ class GPUSettings final : public rex::SettingOwner {
     "edge of the shadow of a car or a pole visibly softer with the distance from what casts it (the "
     "width is capped at twice the soft filter's). Live.", rex::kDebugOnly, rex::Range{0.25, 15.0});
 
-  REX_SETTING(i32, mcla_gpu_shadow_filter_taps, 0, "Diagnostic: how many taps the soft shadow filter takes, 4 to 32. 0: by the graphics card (8 on an "
-    "integrated one, 16 on the rest). Live.", rex::kDebugOnly, rex::Range{0, 32});
+  REX_SETTING(i32, mcla_gpu_shadow_filter_taps, 0, "Debug: shadow filter taps, 4 to 32. Zero uses 16. Live.", rex::kDebugOnly, rex::Range{0, 32});
 
-  REX_SETTING(std::string, mcla_gpu_shadow_resolution, "auto", "How fine the sun's shadows can be: the game draws them into four 640x640 maps in one 1280x1280 "
-    "picture, which limits how sharp an edge can get. game (the game's own 1280x1280), high "
-    "(2560x2560), ultra (3840x3840), or auto (game on an integrated graphics chip, high on any other "
-    "card). With SHADOW FILTER on soft the edge of a shadow is half as wide on high and a third as "
-    "wide on ultra; with the game's own filter it keeps its width and gets smoother. Costs a little "
-    "graphics card time and video memory (about 25 MiB for high, 56 MiB for ultra, and as much again "
-    "for the maps being drawn). The sun's shadows show from 8 to 17 hours in clear weather. Live; "
-    "the first time it changes the graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_shadow_resolution, "auto", "How fine the sun's shadows can be: the game draws them into four 640x640 maps in one 1280x1280 picture, which limits how sharp "
+    "an edge can get. game (the game's own 1280x1280), high (2560x2560), ultra (3840x3840), or legacy auto (High). With SHADOW FILTER "
+    "on soft the edge of a shadow is half as wide on high and a third as wide on ultra; with the game's own filter it keeps its width "
+    "and gets smoother. Costs a little graphics card time and video memory (about 25 MiB for high, 56 MiB for ultra, and as much "
+    "again for the maps being drawn). The sun's shadows show from 8 to 17 hours in clear weather. Live; the first time it changes the "
+    "graphics card builds its shaders (a short stutter).", rex::Allowed("auto", "game", "high", "ultra"));
 
-  REX_SETTING(std::string, mcla_gpu_side_mirrors, "auto", "The car's two side mirrors without ray tracing: the game's own rear view mirror camera is drawn once into a small picture of its own, and the glass of both side mirrors "
-    "(and the HUD's rear view mirror, when it is on) show that picture, so a mirror shows the street and the cars behind you instead of the game's blurred sky, mostly in the "
-    "first person cameras (cockpit, bumper), where the glass is big enough to read. auto picks by graphics card: off on integrated graphics (the game's own mirrors), high on a "
-    "mid range card and ultra on a fast one. high draws the picture 512 pixels wide every second frame, ultra 768 pixels wide every frame (sharper, costs more); off keeps the "
-    "game's own mirrors. Where RT SIDE MIRRORS is on (a graphics card that can ray trace) it takes the place of this setting. The pause menu's row is GRAPHICS, REFLECTIONS, "
-    "SIDE MIRRORS. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_side_mirrors, "auto", "The car's two side mirrors without ray tracing: the game's own rear view mirror camera is drawn once into a small picture of its "
+    "own, and the glass of both side mirrors (and the HUD's rear view mirror, when it is on) show that picture, so a mirror shows the "
+    "street and the cars behind you instead of the game's blurred sky, mostly in the first person cameras (cockpit, bumper), where "
+    "the glass is big enough to read. Legacy auto uses High. high draws the picture 512 pixels wide every second frame, ultra 768 "
+    "pixels wide every frame (sharper, costs more); off keeps the game's own mirrors. Where RT SIDE MIRRORS is on (a graphics card "
+    "that can ray trace) it takes the place of this setting. The pause menu's row is GRAPHICS, REFLECTIONS, SIDE MIRRORS. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(std::string, mcla_gpu_skip_shaders, "", "Workaround for a driver that dies compiling one particular shader combination: a "
     "comma-separated list of shader identities (the 16 hex digits of the pack's keys). A "
@@ -1671,9 +1645,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_sun_shafts_sky_depth, 1e-5, "Diagnostic: the stored depth (1 near, 0 far) at or under which a pixel is sky for the sun "
     "shafts. The sky is drawn at the far end, 0; raise it if the shafts find no sky. Live.", rex::kDebugOnly, rex::Range{0.0, 0.01});
 
-  REX_SETTING(i32, mcla_gpu_sun_shafts_steps, 0, "Diagnostic: how many steps each ray of the sun shafts marches (8 to 128). 0: by the graphics "
-    "card (32 on a mid-range one, 64 on a fast one). More steps make smoother rays and cost more; "
-    "the light the rays gather stays the same. Live.", rex::kDebugOnly, rex::Range{0, 128});
+  REX_SETTING(i32, mcla_gpu_sun_shafts_steps, 0, "Debug: sun shaft ray steps, 8 to 128. Zero uses 64. Live.", rex::kDebugOnly, rex::Range{0, 128});
 
   REX_SETTING(f64, mcla_gpu_sun_shafts_threshold, 0.5, "Diagnostic: the brightness (the scene's linear light, 1 is white) the sky must pass to light "
     "the sun shafts; what is under it does not shine. Lower lets more of the sky shine. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
@@ -1682,13 +1654,11 @@ class GPUSettings final : public rex::SettingOwner {
     "and the sun gives shafts): 1 the sky image the rays march over, 2 the blurred image, 3 the "
     "added light alone. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 3});
 
-  REX_SETTING(std::string, mcla_gpu_volumetrics, "auto", "Volumetric light: beams of light under the street lamps and the cars' headlights, a haze that light shows in, "
-    "and the sun's shafts between trees and buildings (through the game's own shadow cascades). It is a camera "
-    "aligned volume lit by compute passes and added to the scene once, so it costs the same whatever is on screen: "
-    "medium, high or ultra grow the volume and the number of lamps and headlights it lights. off is the game's own "
-    "picture (its fog, and in rain its cone meshes under the lamps). auto (the default) is medium on a mid-range "
-    "graphics card, high on a fast one and off on an integrated one. Nothing is added by day in clear weather with "
-    "no light on. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_volumetrics, "auto", "Volumetric light: beams of light under the street lamps and the cars' headlights, a haze that light shows in, and the sun's "
+    "shafts between trees and buildings (through the game's own shadow cascades). It is a camera aligned volume lit by compute passes "
+    "and added to the scene once, so it costs the same whatever is on screen: medium, high or ultra grow the volume and the number of "
+    "lamps and headlights it lights. off is the game's own picture (its fog, and in rain its cone meshes under the lamps). Legacy "
+    "auto uses Medium. Nothing is added by day in clear weather with no light on. Live.", rex::Allowed("auto", "off", "medium", "high", "ultra"));
 
   REX_SETTING(i32, mcla_gpu_vol_census, 0, "Diagnostic: every Nth guest frame (and the first three frames with the main view), one log line of what the "
     "volumetric light did: what became of the frame, the collector's atlas, the fog quad's colour. 0: off. Live.", rex::kDebugOnly, rex::Range{0, 100000});
@@ -1893,12 +1863,10 @@ class GPUSettings final : public rex::SettingOwner {
                       "frames (0 = off) to mcla_gpu_trace_<frame>.txt next to the executable. "
                       "Decoded by tools/gpu/trace_analyze.py. A 6000-draw frame is tens of MB.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_traffic_shadows, "auto", "Traffic and the other AI cars cast into the sun's shadow map like the player's car, so the "
-    "ground under them is dark (the game only draws the player's car into it). off: the game's own "
-    "picture. near: the nearest few cars within a short distance of the camera. all: every car "
-    "within a long distance (costs more graphics and processor time). auto (the default): near on a "
-    "discrete graphics card, off on integrated graphics. Daylight only (the game has no sun shadow "
-    "at night and in rain). Live: it applies to the next frame, to the cars already on the road.", rex::Allowed("auto", "off", "near", "all"));
+  REX_SETTING(std::string, mcla_gpu_traffic_shadows, "auto", "Traffic and the other AI cars cast into the sun's shadow map like the player's car, so the ground under them is dark (the game "
+    "only draws the player's car into it). off: the game's own picture. near: the nearest few cars within a short distance of the "
+    "camera. all: every car within a long distance (costs more graphics and processor time). Legacy auto uses Near. Daylight only "
+    "(the game has no sun shadow at night and in rain). Live: it applies to the next frame, to the cars already on the road.", rex::Allowed("auto", "off", "near", "all"));
 
   REX_SETTING(i32, mcla_gpu_traffic_shadows_cars, 0, "Diagnostic: the most cars that cast into the sun shadow map at once (the nearest ones). 0 is "
     "the setting's own (near 4, all 16); at most 24. Live.", rex::kDebugOnly, rex::Range{0, 24});

@@ -125,7 +125,6 @@ class GiPixel {
   RawOutput raw_output() const;
 
   // After FrameRing::Submit executed the slot's list: the slot's timestamps are in.
-  void OnSubmitted(uint32_t frame_slot);
   // A guest present: the interval line and the idle count.
   void OnPresent();
 
@@ -140,9 +139,6 @@ class GiPixel {
     std::unique_ptr<plume::RenderBuffer> rows;
     std::array<std::unique_ptr<plume::RenderDescriptorSet>, 2> set;   // by the depth guide's parity
     std::array<uint64_t, 2> set_key = {0, 0};
-    std::unique_ptr<plume::RenderQueryPool> stamps;
-    bool stamps_written = false;
-    bool stamps_pending = false;
   };
 
   bool MakeLayoutsAndShaders(CarRtScene& scene);
@@ -153,7 +149,6 @@ class GiPixel {
   bool EnsureSlot(uint32_t frame_slot);
   void ReleaseImages();
   void RetireSets();
-  void Harvest(Slot& slot);
   void ProcessReadback(uint64_t frame, uint64_t generation);
   void LogInterval(uint64_t frame, const std::array<uint32_t, gi_pixel::kStatWords>& delta, uint32_t frames);
   void CountWhy(gi_pixel::Why why) { ++why_counts_[uint32_t(why)]; }
@@ -178,7 +173,6 @@ class GiPixel {
   std::array<std::unique_ptr<plume::RenderShader>, kVariantCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<Slot, kFramesInFlight> slots_;
-  bool stamps_ok_ = false;
   RtDenoise denoise_;
   RayRegenRadiancePass regen_pass_;
   bool regen_initialized_ = false;
@@ -204,11 +198,10 @@ class GiPixel {
   uint64_t next_readback_ = 0;
 
   // The frame.
-  gi_pixel::Governor governor_;
   gi_pixel::Plan plan_;
   Inputs in_;
   gi::PixelParams params_;
-  uint32_t divisor_ = 1;
+  static constexpr uint32_t divisor_ = 1;
   uint32_t parity_ = 0;                // the depth guide this frame's trace writes
   bool stats_frame_ = false;
   bool history_ok_ = false;            // this frame may read the last frame's result (Begin: the previous frame at this size, no cut)
@@ -228,7 +221,7 @@ class GiPixel {
 
   // The log and the totals.
   bool first_logged_ = false;
-  uint64_t frames_run_ = 0, frames_raw_ = 0, frames_reduced_ = 0;
+  uint64_t frames_run_ = 0, frames_raw_ = 0;
   bool raw_logged_ = false;   // the raw state the log last said (a change is one line)
   std::array<uint64_t, size_t(gi_pixel::Why::kCount)> why_counts_ = {};
 };

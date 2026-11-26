@@ -21,7 +21,6 @@ namespace mcla::gpu {
 namespace {
 
 namespace sa = shadow_atlas;
-namespace lb = light_budget;
 
 constexpr const char* kPrefix = "[shadow-atlas]";
 constexpr uint32_t kNoSlot = 0xFFFFFFFFu;
@@ -86,34 +85,6 @@ uint64_t ShadowAtlas::HeldBytes() const { return texture_ ? TextureBytes(width_,
 // the plan and the texture
 // ---------------------------------------------------------------------------
 
-lb::Level ShadowAtlas::FitLevel(lb::Level wanted, int views_per_car, uint64_t frame) {
-  if (wanted == lb::Level::kOff || device_ == nullptr) {
-    return wanted;
-  }
-  if (wanted == fit_wanted_ && views_per_car == fit_views_ && frame < fit_until_) {
-    return fit_level_;
-  }
-  const bool lamps = HasProvider(sa::ProviderId::kLamps);
-  const bool lamp_static = lamps && providers_[uint32_t(sa::ProviderId::kLamps)]->wants_static_pool();
-  const sa::Fit fit = sa::FitLevel(wanted, views_per_car, lamps, lamp_static, HeldBytes(), [this](uint64_t extra) {
-    // The adapter's use now against the OS budget: what is new must keep it under the line the caches start releasing at (true when the adapter reports no budget).
-    return VideoMemoryBudget::HasRoomFor(device_->QueryVideoMemory(), extra);
-  });
-  fit_wanted_ = wanted;
-  fit_views_ = views_per_car;
-  fit_level_ = fit.level;
-  fit_until_ = frame + (fit.stepped ? kFitRefusedRetainFrames : kFitRetainFrames);
-  if (fit.stepped && !fit_logged_) {
-    fit_logged_ = true;  // reported once; the level is asked again after kFitRefusedRetainFrames
-    const std::string wanted_name(local_shadow::LevelName(wanted));
-    const std::string got_name = fit.level == lb::Level::kOff ? std::string("none") : std::string(local_shadow::LevelName(fit.level));
-    REXLOG_WARN("{} the {} level of the light shadows does not fit in video memory (the use plus what it would take is past the line the caches start releasing at): {} ({:.1f} MiB) "
-                "instead; asked again in {} frames (reported once)",
-                kPrefix, wanted_name, got_name, sa::Mib(fit.bytes), kFitRefusedRetainFrames);
-  }
-  return fit.level;
-}
-
 const sa::Layout& ShadowAtlas::Plan() {
   spec_ = sa::AtlasSpec{};
   for (ShadowProvider* p : providers_) {
@@ -143,6 +114,12 @@ bool ShadowAtlas::Ensure() {
     return true;
   }
   // Another size (a level change, a lamp provider joining): the old texture goes after the lists that name it.
+  const auto memory = device_->QueryVideoMemory();
+  if (!VideoMemoryBudget::HasRoomFor(memory, sa::Bytes(planned_)) && !memory_warned_) {
+    memory_warned_ = true;
+    REXLOG_WARN("{} video memory is nearly full ({} of {} MiB in use); allocating the selected {}x{} shadow atlas",
+                kPrefix, memory.used >> 20, memory.budget >> 20, planned_.width, planned_.height);
+  }
   Release();
   plume::RenderTextureDesc desc = plume::RenderTextureDesc::Texture2D(planned_.width, planned_.height, 1, kDepthFormat, plume::RenderTextureFlag::DEPTH_TARGET);
   desc.multisampling.sampleCount = plume::RenderSampleCounts(1);

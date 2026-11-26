@@ -233,6 +233,12 @@ def main():
 
     # Cross-check against the sources: every PM_ row of the menu tables is in the dump, and no PM_ row of the dump is missing from them.
     doc = json.load(open(first, encoding="utf-8"))
+    order = ["vanilla", "enhanced", "enhanced_rt", "custom"]
+    presets = doc.get("presets", {})
+    if presets.get("order") != order or set(presets.get("items", {})) != set(order):
+        failures.append("the export must list the four current presets in menu order")
+    if doc.get("settings", {}).get("mcla_gpu_preset", {}).get("allowed") != order:
+        failures.append("the preset setting must expose only the four current IDs")
     rows = [r for t in doc["tabs"] for s in t["sections"] for r in s["rows"]]
     dump_ids = {r["id"] for r in rows if r["id"].startswith("PM_")}
     menus = load("check_menu_rows", os.path.join(HERE, "check_menu_rows.py"))

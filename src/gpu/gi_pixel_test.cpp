@@ -103,7 +103,7 @@ void CellChecks() {
   for (gi::Rung rung : rungs) {
     for (gi::Level level : levels) {
       const gp::Cell c = gp::CellFor(rung, level);
-      const bool expect = rung == gi::Rung::kStrong && level == gi::Level::kUltra;
+      const bool expect = rung != gi::Rung::kNone && level == gi::Level::kUltra;
       Check(c.runs == expect, std::string("CELL: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)) + (expect ? " runs the pass" : " is the identity"));
       if (!c.runs) {
         Check(c.rays_per_pixel == 0 && c.reach_m == 0.0f && c.denoise_iterations == 0 && c.cap_ms == 0.0f, std::string("CELL: a cell without the pass holds no numbers: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)));
@@ -111,7 +111,7 @@ void CellChecks() {
       running += c.runs ? 1 : 0;
     }
   }
-  Check(running == 1, "CELL: exactly one of the nine cells runs the pass (strong, ULTRA)");
+  Check(running == 2, "CELL: both RT tiers run the pass at Ultra");
   const gp::Cell u = gp::CellFor(gi::Rung::kStrong, gi::Level::kUltra);
   Check(u.rays_per_pixel == 1 && u.reach_m == 12.0f && u.denoise_iterations == 3 && u.cap_ms > u.est_ms_hi && u.est_ms_lo < u.est_ms_hi, "CELL: 1 ray a pixel, 12 m, 3 iterations, a cap over the estimate");
   Check(gi::BudgetOf(gi::Layout::kExtended).pixel_rays_per_pixel == u.rays_per_pixel && gi::BudgetOf(gi::Layout::kStandard).pixel_rays_per_pixel == 0 && gi::BudgetOf(gi::Layout::kLean).pixel_rays_per_pixel == 0,
@@ -576,7 +576,7 @@ void RawChecks() {
         wanted += gp::ConsumerWanted(layout) ? 1 : 0;
       }
     }
-    Check(one_word && wanted == 1, "RAW: the consumer is wanted exactly where the pass's cell runs (the strong rung at ULTRA: one of the nine cells), whatever the rest of the frame is");
+    Check(one_word && wanted == 2, "RAW: the consumer is wanted exactly where the pass's cell runs (both RT tiers at Ultra), whatever the rest of the frame is");
     Check(!gp::ConsumerWanted(gi::Layout::kNone) && !gp::ConsumerWanted(gi::Layout::kLean) && !gp::ConsumerWanted(gi::Layout::kStandard) && gp::ConsumerWanted(gi::Layout::kExtended),
           "RAW: only the extended layout makes the bounce light a consumer of the DENOISER row (HIGH and OFF never are)");
   }

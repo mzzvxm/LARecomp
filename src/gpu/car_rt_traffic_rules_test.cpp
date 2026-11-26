@@ -201,10 +201,8 @@ int main(int argc, char** argv) {
   {
     const tr::Level high = tr::LevelFor(GpuClass::kHigh), mid = tr::LevelFor(GpuClass::kMid), low = tr::LevelFor(GpuClass::kLow);
     Check(high.on && Near(high.share, 0.40) && high.max_depth == 45.0f && high.min_texels == 600, "High: on, 40 percent of the budget, 45 m, 600 texels");
-    Check(mid.on && Near(mid.share, 0.25) && mid.max_depth == 30.0f && mid.min_texels == 600, "Mid: on, 25 percent, 30 m, 600 texels");
-    Check(!low.on && low.share == 0.0, "Low: no traffic reflection (the pass has no ray tracing there)");
-    Check(high.share > mid.share && high.max_depth > mid.max_depth, "the weaker the class the smaller the share and the nearer the limit");
-    Check(Near(double(op::TexelBudget(GpuClass::kHigh, -1, 0)) * high.share, 200000.0) && Near(double(op::TexelBudget(GpuClass::kMid, -1, 0)) * mid.share, 50000.0), "the shares are 200k texels on High and 50k on Mid");
+    Check(mid == high && low == high, "traffic uses the same distance, share and texel minimum across classes");
+    Check(Near(double(op::TexelBudget(GpuClass::kMid, -1, 0)) * mid.share, 200000.0), "the traffic share is 200k texels");
     Check(tr::LevelWith(high, -1) == high && tr::LevelWith(mid, -1) == mid && tr::LevelWith(low, -1) == low, "-1 keeps the class's level");
     Check(!tr::LevelWith(high, 0).on && !tr::LevelWith(mid, 0).on, "0 turns the traffic off");
     const tr::Level fifty = tr::LevelWith(high, 50);
@@ -286,7 +284,7 @@ int main(int argc, char** argv) {
       const tr::Level mid = tr::LevelFor(GpuClass::kMid);
       const uint64_t mid_budget = op::TexelBudget(GpuClass::kMid, -1, 0);
       const tr::TrafficPlan p = tr::PlanDispatches({Car(260000, true, 6.0f, 0), Car(30000, true, 14.0f, 5000), Car(30000, true, 16.0f, 9000)}, mid_budget, mid);
-      Check(p.traffic_admitted == 1 && p.traffic_over == 2 && p.plan.rays == op::kRaysReduced, "Mid: the first car (260k, over the budget of 200k and the share of 50k) is traced alone, with the outer pair; the others are over the share");
+      Check(p.traffic_admitted == 1 && p.traffic_over == 2 && p.plan.rays == op::kRaysFull, "the first car is traced alone; the remaining cars exceed the share");
     }
   }
 

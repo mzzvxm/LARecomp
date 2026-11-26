@@ -683,7 +683,7 @@ void PlanChecks(const std::string& dir) {
   Check(Has(fn, "rr_facts_.asked = facts.asked;") && Has(fn, "rr_facts_.loadable = facts.loadable;"), "the facts carry whether the plugin was asked for and whether a restart would load it");
   // the room is asked only where everything else says RR
   const size_t pre = At(fn, "const bool candidate = rr::SelectDenoiser(in).use_rr;");
-  Check(Has(fn, "if (candidate) {\n    in.room_ok = RrRoomOk();") && Has(fn, "snapshot.default_on = default_on;"),
+  Check(Has(fn, "if (candidate) {\n    WarnOnRrMemoryPressure();") && Has(fn, "snapshot.default_on = default_on;"),
         "the menu gets the support verdict before the per-frame guide and memory checks");
   const size_t real = At(fn, "in.guides_ready = rr_guides_ready_;");
   const size_t plan = At(fn, "rr_plan_ = rr::SelectDenoiser(in);");

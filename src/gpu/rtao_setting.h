@@ -26,9 +26,8 @@ inline Choice ParseChoice(std::string_view word) {
 
 enum class Gate : uint8_t { kRuns, kNoRt, kTooSlow, kNotBuilt };
 
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool pass_built) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier, bool pass_built) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!pass_built) return Gate::kNotBuilt;
   return Gate::kRuns;
 }
@@ -43,9 +42,8 @@ struct Decision {
   Choice chosen = Choice::kAuto;
 };
 
-inline Decision Decide(gc::GpuClass cls, bool class_known, gc::RtTier tier, Choice choice,
+inline Decision Decide(gc::GpuClass cls, bool, gc::RtTier tier, Choice choice,
                        bool pass_built) {
-  if (!class_known) cls = gc::GpuClass::kLow;
   Decision d;
   d.rung = gc::RtRung(cls, tier);
   d.gate = GateFor(cls, tier, pass_built);
@@ -84,17 +82,6 @@ inline std::string ValueLabel(Choice c, Gate gate) {
   return kNames[static_cast<uint8_t>(c)];
 }
 
-inline std::string AutoDescription() {
-  const auto title = [](std::string_view word) {
-    if (word == "rt") return std::string("Ray traced");
-    std::string text(word);
-    if (!text.empty()) text[0] = gc::Upper(word.substr(0, 1))[0];
-    return text;
-  };
-  constexpr auto ao = gc::Effect::kAmbientOcclusion;
-  return "Auto is " + title(gc::Cell(ao, gc::GpuClass::kLow)) + " on integrated graphics, " +
-         title(gc::Cell(ao, gc::GpuClass::kMid)) + " on a mid-range card, " +
-         title(gc::Cell(ao, gc::GpuClass::kHigh)) + " on a high-end card.";
-}
+inline std::string AutoDescription() { return "Legacy Auto uses High."; }
 
 }  // namespace mcla::gpu::rtao_setting

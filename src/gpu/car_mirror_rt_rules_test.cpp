@@ -386,13 +386,13 @@ int main(int argc, char** argv) {
     for (const GpuClass cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       Check(!cm::Wanted(cm::Setting::kOff, true, cls), "off is never wanted");
       Check(!cm::Wanted(cm::Setting::kOn, false, cls) && !cm::Wanted(cm::Setting::kAuto, false, cls), "a device that cannot trace wants nothing, whatever the setting says");
-      Check(cm::Wanted(cm::Setting::kOn, true, cls) == (cls != GpuClass::kLow), "on is wanted on the Mid and High classes; the Low class (no ray tracing, shared memory) never runs it, as the pause row is grey there");
+      Check(cm::Wanted(cm::Setting::kOn, true, cls), "any class can run the selected effect if RT is supported");
     }
     Check(!cm::Wanted(cm::Setting::kAuto, true, GpuClass::kHigh) && !cm::Wanted(cm::Setting::kAuto, true, GpuClass::kMid) && !cm::Wanted(cm::Setting::kAuto, true, GpuClass::kLow),
           "legacy Auto is off at every class");
     const cm::Limits high = cm::LimitsFor(GpuClass::kHigh, 0), mid = cm::LimitsFor(GpuClass::kMid, 0), low = cm::LimitsFor(GpuClass::kLow, 0);
-    Check(high.max_pixels == 160000 && mid.max_pixels == 64000 && low == mid, "the cap by class: High 160 k, Mid 64 k, Low (a test's ask) the Mid's");
-    Check(Near(high.reach, 18.0) && Near(mid.reach, 12.0) && Near(low.reach, 12.0), "the reach is the class's reach to another car (car_rt_hit_rules.h)");
+    Check(high.max_pixels == 160000 && mid == high && low == high, "the cap is 160k pixels across classes");
+    Check(Near(high.reach, 18.0) && Near(mid.reach, 18.0) && Near(low.reach, 18.0), "the reach is 18 metres across classes");
     Check(high.min_pixels == cm::kMinPixels, "the floor");
     Check(cm::LimitsFor(GpuClass::kHigh, 50).max_pixels == 50000 && cm::LimitsFor(GpuClass::kMid, 400).max_pixels == cm::kMaxPixelsOverride && cm::LimitsFor(GpuClass::kHigh, -3).max_pixels == 160000,
           "the override is in thousands, capped, and ignored below 1");
@@ -666,7 +666,7 @@ int main(int argc, char** argv) {
       Check(Has(host, "cm::RectFor(view.mirror_box[k]") && Has(host, "view.mirror.count != cm::kMaxMirrors"), "the host takes the rectangles from the view's boxes and wants a pair");
       Check(Has(host, "temporal::IsPlaySamples(samples)"), "the host leaves the pause and garage views to the game");
       Check(Has(host, "scene_->Request();"), "the host asks for the car's structures in every frame the pass is wanted");
-      Check(Has(host, "cm::Wanted(setting, true, gpu_class::CurrentRtClass())") && Has(host, "cm::LimitsFor(gpu_class::CurrentRtClass(), int(") && Has(host, "mcla_gpu_car_mirror_rt"), "the host reads the setting through the header's rule");
+      Check(Has(host, "cm::Wanted(setting, gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone, gpu_class::Current())") && Has(host, "cm::LimitsFor(gpu_class::CurrentRtClass(), int(") && Has(host, "mcla_gpu_car_mirror_rt"), "the host reads the setting through the header's rule");
       Check(Has(host, "CarMirrorRtShader()") && Has(host, "CarMirrorApplyShader()") && Has(shaders, "MCLA_GPU_HOST_SHADER_BLOB(car_mirror_rt_cs)") && Has(shaders, "MCLA_GPU_HOST_SHADER_BLOB(car_mirror_apply_ps)"),
             "the shaders' accessors");
       Check(Has(shaders, "car_mirror_rt_cs.hlsl.dxil.h") && Has(shaders, "car_mirror_rt_cs.hlsl.spirv.h") && Has(shaders, "car_mirror_apply_ps.hlsl.dxil.h") && Has(shaders, "car_mirror_apply_ps.hlsl.spirv.h"),

@@ -177,15 +177,15 @@ int main(int argc, char** argv) {
     const cmc::Decision high = cmc::Decide(cmc::World::kAuto, "high", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, crs::Data::kReady);
     Check(high.city() && Near(high.cell.reach, 150.0) && Near(high.cell.fade_from, 0.6, 1e-6), "a strong High card: 150 m, the weight full to 60 percent");
     const cmc::Decision weak_high = cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kWeak, gc::RtClass(GpuClass::kHigh, RtTier::kWeak), crs::Data::kReady);
-    Check(weak_high.city() && Near(weak_high.cell.reach, 60.0), "a weak card of the High class by hand: the Mid class's 60 m");
+    Check(weak_high.city() && Near(weak_high.cell.reach, 150.0), "a weak RT tier uses the same reach");
     const cmc::Decision mid = cmc::Decide(cmc::World::kCity, "auto", GpuClass::kMid, RtTier::kStrong, GpuClass::kMid, crs::Data::kReady);
-    Check(mid.city() && Near(mid.cell.reach, 60.0), "a Mid class card by hand: 60 m");
+    Check(mid.city() && Near(mid.cell.reach, 150.0), "Mid uses the same reach");
     // the paint's row ULTRA on a strong card: the mirror keeps HIGH's reach
     const cmc::Decision ultra_paint = cmc::Decide(cmc::World::kAuto, "ultra", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, crs::Data::kReady);
     Check(ultra_paint.city() && Near(ultra_paint.cell.reach, 150.0), "the paint at ULTRA (1,000 m): the mirror stays at HIGH's 150 m");
     // a budget class of Low with a word that wants the city (forced by hand on a card that does not trace): nothing
-    Check(!cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kStrong, GpuClass::kLow, crs::Data::kReady).city(), "a Low budget class: nothing to trace the city with");
-    Check(cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kStrong, GpuClass::kLow, crs::Data::kReady).why == cmc::Why::kCard, "... and the reason is the card");
+    Check(!cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kNone, GpuClass::kLow, crs::Data::kReady).city(), "a device without ray tracing uses the environment");
+    Check(cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kNone, GpuClass::kLow, crs::Data::kReady).why == cmc::Why::kCard, "... and the reason is the card");
     // the data's states one at a time on a strong card
     for (const crs::Data data : kDatas) {
       const cmc::Decision d = cmc::Decide(cmc::World::kAuto, "high", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, data);

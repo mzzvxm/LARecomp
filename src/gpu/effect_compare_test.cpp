@@ -156,7 +156,7 @@ void TestState() {
 void TestStanding() {
   for (const GpuClass cls : kClasses) {
     const std::string c = ClassWord(cls);
-    const bool auto_on = cls != GpuClass::kLow;
+    const bool auto_on = true;
     // The occlusion: off, high, ultra; `auto` and anything else (the low of an older larecomp.toml) is the class's cell: off on Low.
     for (const char* text : {"off", "high", "ultra", "auto", "garbage", "", "low"}) {
       const std::string word = text;
@@ -212,9 +212,8 @@ void TestStanding() {
     Check(StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", true)).on, "bloom on");
     Check(!StandingOf(Effect::kBloomFix, Make(cls, true, "off", "off", "off", "off", "game", false)).on, "bloom off");
     // The bounce light: `auto` is high on High only (gpu_class.h), by hand high or ultra; it needs the occlusion.
-    Check(StandingOf(Effect::kBounceLight, Make(cls, true, "ultra", "off", "off", "auto", "game", true)).on ==
-              (cls == GpuClass::kHigh),
-          "bounce " + c + ": auto is high on High, off elsewhere");
+    Check(!StandingOf(Effect::kBounceLight, Make(cls, true, "ultra", "off", "off", "auto", "game", true)).on,
+          "bounce " + c + ": legacy auto is off");
     for (const char* text : {"high", "ultra"}) {
       const Standing with_ao = StandingOf(Effect::kBounceLight, Make(cls, true, "ultra", "off", "off", text, "game", true));
       Check(with_ao.on && !with_ao.blocked, "bounce " + c + " " + text + " with the occlusion");
@@ -227,8 +226,8 @@ void TestStanding() {
     Check(!none.on && none.blocked, "bounce " + c + ": off with the occlusion off is blocked too");
   }
   // A class that is not known acts as Low for the shadow filter and the contact shadows (gpu_class::Known()).
-  Check(!StandingOf(Effect::kShadowFilter, Make(GpuClass::kHigh, false, "off", "off", "off", "off", "auto", true)).on,
-        "filter: auto on an unknown class acts as Low (game)");
+  Check(StandingOf(Effect::kShadowFilter, Make(GpuClass::kHigh, false, "off", "off", "off", "off", "auto", true)).on,
+        "filter: auto uses PCSS before the probe");
   Check(!StandingOf(Effect::kShadowFilter, Make(GpuClass::kHigh, false, "off", "off", "off", "off", "game", true)).on,
         "filter: game on an unknown class");
   Check(StandingOf(Effect::kShadowFilter, Make(GpuClass::kHigh, false, "off", "off", "off", "off", "soft", true)).on,
@@ -239,14 +238,14 @@ void TestStanding() {
   // is read only once the class is known, and means nothing on another class.
   {
     Saved deck = Make(GpuClass::kLow, true, "off", "off", "off", "off", "auto", true);
-    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: auto on a plain Low class is the game's");
+    Check(StandingOf(Effect::kShadowFilter, deck).on, "filter: auto uses PCSS on a Low class");
     deck.handheld = true;
     Check(StandingOf(Effect::kShadowFilter, deck).on, "filter: auto on a handheld is soft (on)");
     deck.filter = "game";
     Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: game on a handheld");
     deck.filter = "auto";
     deck.class_known = false;
-    Check(!StandingOf(Effect::kShadowFilter, deck).on, "filter: the handheld's cell waits for the class to be known");
+    Check(StandingOf(Effect::kShadowFilter, deck).on, "filter: the probe does not change the handheld effect");
     Saved mid = Make(GpuClass::kMid, true, "off", "off", "off", "off", "auto", true);
     mid.handheld = true;
     Check(StandingOf(Effect::kShadowFilter, mid).on, "filter: the flag changes nothing on Mid (auto is pcss, on)");

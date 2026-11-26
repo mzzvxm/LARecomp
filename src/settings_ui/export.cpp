@@ -68,19 +68,14 @@ void AddAuto(Table& settings) {
     for (const auto& effect : gc::kEffects) {
         if (auto* setting = settings[effect.cvar].as_table()) {
             setting->insert_or_assign("auto", Table{
-                {"by", "class"}, {"cells", Table{{"low", effect.low}, {"mid", effect.mid}, {"high", effect.high}}}});
-        }
-    }
-    for (const auto& handheld : gc::kHandheldCells) {
-        if (auto* descriptor = settings[gc::CvarName(handheld.effect)]["auto"].as_table()) {
-            descriptor->insert("handheld", Table{{"low", handheld.value}});
+                {"by", "class"}, {"cells", Table{{"low", effect.value}, {"mid", effect.value}, {"high", effect.value}}}});
         }
     }
     for (const auto& scale : gc::kScales) {
         if (auto* setting = settings[scale.cvar].as_table()) {
             setting->insert_or_assign("auto", Table{
                 {"by", "class"}, {"auto_value", scale.zero_is_auto ? 0 : -1},
-                {"cells", Table{{"low", scale.low}, {"mid", scale.mid}, {"high", scale.high}}}});
+                {"cells", Table{{"low", scale.value}, {"mid", scale.value}, {"high", scale.value}}}});
         }
     }
     // The RT table supersedes the legacy class cell for RT SHADOWS.
@@ -406,6 +401,20 @@ toml::table BuildDocument(Table settings, std::span<const Menu> menus, const Inp
     Overlay(defs, table_or_empty(rules["defs"]));
 
     AddAuto(settings);
+    // The registry accepts retired preset IDs for loading older configurations.
+    namespace gp = mcla::gpu::gfx_preset;
+    for (const auto key : {gp::kPresetSetting, gp::kFromSetting}) {
+        auto* setting = settings[key].as_table();
+        if (!setting) continue;
+        const auto* allowed = (*setting)["allowed"].as_array();
+        if (!allowed) continue;
+        Array published;
+        for (const auto& value : *allowed) {
+            const auto id = value.value_or(std::string_view{});
+            if (gp::MigrateId(id) == id) published.push_back(value);
+        }
+        setting->insert_or_assign("allowed", std::move(published));
+    }
     namespace dn = mcla::gpu::denoiser;
     if (auto* vendor = settings[dn::kVendorCvarName].as_table()) {
         Table map;

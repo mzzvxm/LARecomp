@@ -143,11 +143,6 @@ mirror_view::Class MirrorView::SizeClass() const {
     case 4: return mirror_view::Class::kHigh;
     default: break;
   }
-  switch (gpu_class::Current()) {
-    case gpu_class::GpuClass::kLow: return mirror_view::Class::kLow;
-    case gpu_class::GpuClass::kMid: return mirror_view::Class::kMid;
-    case gpu_class::GpuClass::kHigh: break;
-  }
   return mirror_view::Class::kHigh;
 }
 

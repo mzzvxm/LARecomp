@@ -165,21 +165,20 @@ struct TextureBudget {
 // M2 section 8's texture caps (128 / 256 / full) and the bytes that follow from counting a texture in 4 and 64 KiB units. The cut-out scope (the sun shadows' alpha) needs the shape of a
 // cut-out, not its detail: 128 / 256 / 512 px, a few dozen textures a sector at most. CHECK: the byte numbers are estimates until the first memory line (the retail set at full detail is 233 MB
 // of data in 8,342 pictures; its allocation under the rule above is read from the census).
-constexpr TextureBudget BudgetFor(gpu_class::GpuClass cls, Level level, TextureScope scope) {
-  if (level == Level::kOff || cls == gpu_class::GpuClass::kLow || scope == TextureScope::kNone) return TextureBudget{};
+constexpr TextureBudget BudgetFor(gpu_class::GpuClass, Level level, TextureScope scope) {
+  if (level == Level::kOff || scope == TextureScope::kNone) return TextureBudget{};
   // a Mid card asked for ultra by hand gets the High class's high, as the pool does (city_hit_pool_rules.h PoolBudgetFor)
-  const bool ultra = level == Level::kUltra && cls == gpu_class::GpuClass::kHigh;
-  const bool mid = cls == gpu_class::GpuClass::kMid;
+  const bool ultra = level == Level::kUltra;
   TextureBudget b;
   if (scope == TextureScope::kAlpha) {
-    b.cap_px = mid ? 128u : (ultra ? 512u : 256u);
-    b.bytes = (mid ? 16 : (ultra ? 32 : 24)) * kMiB;
+    b.cap_px = ultra ? 512u : 256u;
+    b.bytes = (ultra ? 32 : 24) * kMiB;
     b.upload_bytes = uint32_t(2 * kMiB);
     b.uploads = 8;
     return b;
   }
-  b.cap_px = mid ? 128u : (ultra ? 0u : 256u);
-  b.bytes = (mid ? 64 : (ultra ? 256 : 128)) * kMiB;
+  b.cap_px = ultra ? 0u : 256u;
+  b.bytes = (ultra ? 256 : 128) * kMiB;
   b.upload_bytes = uint32_t(6 * kMiB);
   b.uploads = 16;
   return b;

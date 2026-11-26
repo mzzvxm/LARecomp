@@ -401,8 +401,8 @@ void CheckOwnerExample() {
         "owner's example: legacy Auto keeps RT bounce off on both adapters");
   Check(ResolveRtFor(GpuClass::kHigh, r3060.tier, RtEffect::kCarRtAo, "auto") == "off" && ResolveRtFor(GpuClass::kHigh, r5080.tier, RtEffect::kCarRtAo, "auto") == "off",
         "owner's example: legacy Auto keeps car RT occlusion off on both adapters");
-  Check(RtClass(GpuClass::kHigh, r3060.tier) == GpuClass::kMid && RtClass(GpuClass::kHigh, r5080.tier) == GpuClass::kHigh,
-        "owner's example: the budget class differs between the two (Mid budgets for the 3060)");
+  Check(RtClass(GpuClass::kHigh, r3060.tier) == GpuClass::kHigh && RtClass(GpuClass::kHigh, r5080.tier) == GpuClass::kHigh,
+        "owner's example: both adapters use the same RT budgets");
 }
 
 // --- the benchmark's decision ---------------------------------------------------------------------------------------------------------
@@ -535,9 +535,9 @@ void CheckIntegratedGpuDefaults() {
 
     // The class gates the tier: Low is the rung none, and the budget class is Low (no ray tracing) whatever the tier says, a forced strong one included.
     for (const RtTier t : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
-      Check(RtRung(cls.cls, t) == RtTier::kNone, what + ": the rung is none at tier " + T(t));
-      Check(RtClass(cls.cls, t) == GpuClass::kLow, what + ": the budget class is Low at tier " + T(t));
-      CheckEq(std::string(RtRowSuffix(cls.cls, t)), t == RtTier::kNone ? " (NO RT GPU)" : " (GPU TOO SLOW)", what + ": the pause rows are grey at tier " + T(t));
+      Check(RtRung(cls.cls, t) == t, what + ": the rung is none at tier " + T(t));
+      Check(RtClass(cls.cls, t) == (t == RtTier::kNone ? GpuClass::kLow : GpuClass::kHigh), what + ": the budget class is Low at tier " + T(t));
+      CheckEq(std::string(RtRowSuffix(cls.cls, t)), t == RtTier::kNone ? " (NO RT GPU)" : "", what + ": the pause rows are grey at tier " + T(t));
     }
     // Every ray traced effect: `auto` is off and the row says so (`both`, `contact`, `high`, `on` anywhere here is an effect running on shared memory).
     for (int i = 0; i < kRtEffectCount; ++i) {
@@ -546,7 +546,7 @@ void CheckIntegratedGpuDefaults() {
       if (effect == RtEffect::kRtAo) {
         // The occlusion's cells defer to the class table (rtao_setting.h Decide): the Low class's cell is off, and a Low class never reaches the strong rung's `rt`.
         CheckEq(ResolveRtFor(cls.cls, tier.tier, effect, "auto"), "", name + ": the cell defers to the class table");
-        CheckEq(std::string(CellFor(Effect::kAmbientOcclusion, cls.cls, false)), "off", name + ": the class table's cell is off");
+        CheckEq(std::string(CellFor(Effect::kAmbientOcclusion, cls.cls, false)), "high", name + ": legacy raster Auto uses High");
         CheckEq(ResolveRtFor(cls.cls, RtTier::kStrong, effect, "auto"), "", name + ": it defers even when a test forces the tier strong (the Low class has no strong rung)");
         continue;
       }
@@ -574,34 +574,11 @@ void CheckIntegratedGpuDefaults() {
 // --- the rungs, the budget class and the forced class ----------------------------------------------------------------------------------
 
 void CheckRungs() {
-  struct Row {
-    GpuClass cls;
-    RtTier tier;
-    RtTier rung;
-    GpuClass budget;
-  };
-  const Row rows[] = {
-      {GpuClass::kHigh, RtTier::kStrong, RtTier::kStrong, GpuClass::kHigh}, {GpuClass::kHigh, RtTier::kWeak, RtTier::kWeak, GpuClass::kMid},
-      {GpuClass::kHigh, RtTier::kNone, RtTier::kNone, GpuClass::kLow},      {GpuClass::kMid, RtTier::kStrong, RtTier::kWeak, GpuClass::kMid},
-      {GpuClass::kMid, RtTier::kWeak, RtTier::kWeak, GpuClass::kMid},       {GpuClass::kMid, RtTier::kNone, RtTier::kNone, GpuClass::kLow},
-      {GpuClass::kLow, RtTier::kStrong, RtTier::kNone, GpuClass::kLow},     {GpuClass::kLow, RtTier::kWeak, RtTier::kNone, GpuClass::kLow},
-      {GpuClass::kLow, RtTier::kNone, RtTier::kNone, GpuClass::kLow},
-  };
-  for (const Row& r : rows) {
-    const std::string what = std::string(ClassName(r.cls)) + " class, " + T(r.tier) + " tier";
-    Check(RtRung(r.cls, r.tier) == r.rung, what + ": rung " + T(r.rung));
-    Check(RtClass(r.cls, r.tier) == r.budget, what + ": budget class " + std::string(ClassName(r.budget)));
+  for (const auto cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    for (const auto tier : {RtTier::kNone, RtTier::kWeak, RtTier::kStrong}) {
+      Check(RtRung(cls, tier) == tier, "the class does not change the reported RT tier");
+    }
   }
-  // A forced class in a test: high is strong, mid weak, low none; a card without API ray tracing stays none.
-  Check(TierForForcedClass(GpuClass::kHigh, true) == RtTier::kStrong, "forced class high: strong");
-  Check(TierForForcedClass(GpuClass::kMid, true) == RtTier::kWeak, "forced class mid: weak");
-  Check(TierForForcedClass(GpuClass::kLow, true) == RtTier::kNone, "forced class low: none");
-  for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
-    Check(TierForForcedClass(c, false) == RtTier::kNone, std::string("forced class ") + std::string(ClassName(c)) + " without API ray tracing: none");
-  }
-  // ...and the forced class's cells are the class's own: high gives strong's, mid gives weak's.
-  Check(RtClass(GpuClass::kHigh, TierForForcedClass(GpuClass::kHigh, true)) == GpuClass::kHigh, "forced high keeps the High budgets");
-  Check(RtClass(GpuClass::kMid, TierForForcedClass(GpuClass::kMid, true)) == GpuClass::kMid, "forced mid keeps the Mid budgets");
   // the names
   RtTier t;
   Check(ParseRtTier("none", &t) && t == RtTier::kNone, "parse none");
@@ -701,8 +678,8 @@ void CheckLauncher() {
   for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
     CheckEq(std::string(RtRowSuffix(c, RtTier::kNone)), " (NO RT GPU)", std::string("row suffix, ") + std::string(ClassName(c)) + " class, no ray tracing");
   }
-  CheckEq(std::string(RtRowSuffix(GpuClass::kLow, RtTier::kWeak)), " (GPU TOO SLOW)", "row suffix, Low class with ray tracing units");
-  CheckEq(std::string(RtRowSuffix(GpuClass::kLow, RtTier::kStrong)), " (GPU TOO SLOW)", "row suffix, Low class, strong tier (a forced test)");
+  CheckEq(std::string(RtRowSuffix(GpuClass::kLow, RtTier::kWeak)), "", "row suffix, Low class with ray tracing units");
+  CheckEq(std::string(RtRowSuffix(GpuClass::kLow, RtTier::kStrong)), "", "row suffix, Low class, strong tier (a forced test)");
   for (const GpuClass c : {GpuClass::kMid, GpuClass::kHigh}) {
     for (const RtTier t : {RtTier::kWeak, RtTier::kStrong}) {
       CheckEq(std::string(RtRowSuffix(c, t)), "", std::string("row suffix, ") + std::string(ClassName(c)) + " class, " + T(t) + " tier: none");

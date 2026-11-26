@@ -58,46 +58,20 @@ void CheckChoice() {
 }
 
 void CheckModes() {
-  // The table of GFX-UPGRADES-DESIGN.md section 9: auto is game / pcss / pcss (decided by the owner on 2026-11-19).
-  const Mode auto_mode[] = {Mode::kGame, Mode::kPcss, Mode::kPcss};
   for (int i = 0; i < 3; ++i) {
+    const auto cls = kClasses[i];
     const std::string at = std::string(" on ") + kClassNames[i];
-    Check(shadow_filter::ModeFor(kClasses[i], Choice::kAuto) == auto_mode[i], "auto" + at);
-    // game is never overridden (the variant is not selected: the picture is the game's); soft is the variant on
-    // every class; pcss is the variant with the blocker search where the class has it (G1c) and soft on Low.
-    Check(shadow_filter::ModeFor(kClasses[i], Choice::kGame) == Mode::kGame, "game" + at);
-    Check(shadow_filter::ModeFor(kClasses[i], Choice::kSoft) == Mode::kSoft, "soft" + at);
-    Check(shadow_filter::ModeFor(kClasses[i], Choice::kPcss) == (i == 0 ? Mode::kSoft : Mode::kPcss),
-          "pcss has its search on Mid and High, none on Low" + at);
-    Check(shadow_filter::PcssAvailable(kClasses[i]) == (i != 0), "the search is there on Mid and High only" + at);
+    for (const bool handheld : {false, true}) {
+      Check(shadow_filter::ModeFor(cls, Choice::kAuto, handheld) == Mode::kPcss, "legacy auto uses PCSS" + at);
+      Check(shadow_filter::ModeFor(cls, Choice::kGame, handheld) == Mode::kGame, "game" + at);
+      Check(shadow_filter::ModeFor(cls, Choice::kSoft, handheld) == Mode::kSoft, "soft" + at);
+      Check(shadow_filter::ModeFor(cls, Choice::kPcss, handheld) == Mode::kPcss, "PCSS" + at);
+    }
   }
-  Check(shadow_filter::ModeOfCell("game") == Mode::kGame && shadow_filter::ModeOfCell("soft") == Mode::kSoft &&
-            shadow_filter::ModeOfCell("pcss") == Mode::kPcss,
-        "a cell of the table");
-  // The table is game / pcss / pcss (owner, 2026-11-19): the contact hardening on Mid and High, the game's own on Low (a cell that said pcss
-  // there would be soft, no search, whatever it said).
-  Check(gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kHigh) == "pcss" &&
-            gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kMid) == "pcss" &&
-            gpu_class::Cell(gpu_class::Effect::kShadowFilter, GpuClass::kLow) == "game",
-        "the table's cells are game on Low, pcss on Mid and High");
-  // A handheld (the Steam Deck: kLow with gpu_class.h's kHandheldCells): auto is soft, 8 taps (the Low class's), no blocker search; the other choices
-  // are as on Low, and the flag means nothing on Mid or High.
-  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kAuto, true) == Mode::kSoft, "auto is soft on a handheld");
-  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kAuto, false) == Mode::kGame, "auto is the game's on a plain Low class");
-  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kAuto) == Mode::kGame, "the two argument ModeFor is the plain Low class");
-  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kGame, true) == Mode::kGame, "game is never overridden on a handheld");
-  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kSoft, true) == Mode::kSoft, "soft on a handheld");
-  Check(shadow_filter::ModeFor(GpuClass::kLow, Choice::kPcss, true) == Mode::kSoft, "pcss on a handheld is soft: no blocker search on a Low class");
-  Check(shadow_filter::ModeFor(GpuClass::kMid, Choice::kAuto, true) == Mode::kPcss, "the handheld flag changes nothing on Mid");
-  Check(shadow_filter::ModeFor(GpuClass::kHigh, Choice::kAuto, true) == Mode::kPcss, "the handheld flag changes nothing on High");
-  Check(shadow_filter::TapsFor(GpuClass::kLow, 0) == 8, "a handheld keeps Low's 8 taps");
-  // The mode that is selected as a variant: soft and pcss, not game (pipelines.cpp: one shader for both).
-  Check(shadow_filter::Mode::kGame != shadow_filter::Mode::kSoft && shadow_filter::Mode::kSoft != shadow_filter::Mode::kPcss,
-        "three modes");
 }
 
 void CheckTaps() {
-  CheckNum(shadow_filter::TapsFor(GpuClass::kLow, 0), 8, "8 taps on Low");
+  CheckNum(shadow_filter::TapsFor(GpuClass::kLow, 0), 16, "16 taps on Low");
   CheckNum(shadow_filter::TapsFor(GpuClass::kMid, 0), 16, "16 taps on Mid");
   CheckNum(shadow_filter::TapsFor(GpuClass::kHigh, 0), 16, "16 taps on High");
   CheckNum(shadow_filter::TapsFor(GpuClass::kHigh, 12), 12, "forced 12");
@@ -146,7 +120,7 @@ void CheckConstants() {
   CheckNum(shadow_filter::kModePcss, 2, "kModePcss is 2 (the HLSL reads `& 2u`)");
   CheckNum(shadow_filter::kSunShift, 8, "the sun's size is from bit 8 (the HLSL reads `mode >> 8u`)");
   c = shadow_filter::MakeConstants(GpuClass::kLow, 0, 1.0, 1.0f, false, false, 0);
-  CheckNum(c.taps, 8, "Low: 8 taps");
+  CheckNum(c.taps, 16, "Low: 16 taps");
   CheckNum(c.mode, 0, "Low without pcss: no mode bit");
 
   // Contact hardening (G1c): the bit and the sun's size in sixteenths of the real sun, from bit 8; Gather keeps bit 0.
@@ -160,7 +134,7 @@ void CheckConstants() {
   c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, false, 0, false, 4.0);
   CheckNum(c.mode, 0, "soft: no pcss bit and no sun, whatever the sun cvar says");
   c = shadow_filter::MakeConstants(GpuClass::kLow, 0, 1.0, 1.0f, false, false, 0, true, 4.0);
-  CheckNum(c.mode, 0, "Low never gets the search, even when the caller asks");
+  CheckNum(c.mode, 2 + 64 * 256, "PCSS uses the search on Low too");
   c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, false, 0, true, 100.0);
   CheckNum(c.mode, 2 + 240 * 256, "the sun is limited to 15 times (240 sixteenths, inside the 8 bits)");
   c = shadow_filter::MakeConstants(GpuClass::kHigh, 0, 1.0, 1.0f, false, false, 0, true, 0.0);

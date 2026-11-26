@@ -76,7 +76,6 @@ bool CityTextureSet::Initialize(Device& device, FrameRing& frames, BindlessHeap&
   budget_ = ct::TextureBudget{};
   scope_ = TextureScope::kNone;
   applied_scope_ = TextureScope::kNone;
-  growth_allowed_ = true;
   next_pressure_check_ = 0;
   slots_held_ = 0;
   logged_pressure_ = false;
@@ -362,23 +361,19 @@ bool CityTextureSet::Upload(uint32_t index, plume::RenderCommandList* list, uint
 // ---------------------------------------------------------------------------
 
 void CityTextureSet::Apply(uint64_t frame) {
-  // The pressure: a look at the adapter's video memory every few frames; when it is nearly full the set holds what it has.
-  if (frame >= next_pressure_check_) {
+  if (device_ && frame >= next_pressure_check_) {
     next_pressure_check_ = frame + ct::kPressureCheckFrames;
-    const backend::VideoMemory memory = device_->QueryVideoMemory();
-    const bool allowed = ct::GrowthAllowed(memory.used, memory.budget, ct::kGrowthMargin);
-    if (!allowed) ++stats_.growth_blocked_checks;
-    if (allowed != growth_allowed_ || (!allowed && !logged_pressure_)) {
-      logged_pressure_ = !allowed;
-      REXLOG_INFO("{} the video memory is {} ({} of {} MiB in use): the set {}", kPrefix, allowed ? "back under the line" : "nearly full", memory.used >> 20, memory.budget >> 20,
-                  allowed ? "may grow again" : "holds what it has and reads nothing new");
+    const auto memory = device_->QueryVideoMemory();
+    const bool pressure = !ct::GrowthAllowed(memory.used, memory.budget, ct::kGrowthMargin);
+    if (pressure && !logged_pressure_) {
+      REXLOG_WARN("{} video memory is nearly full ({} of {} MiB in use); city textures retain the selected detail",
+                  kPrefix, memory.used >> 20, memory.budget >> 20);
     }
-    growth_allowed_ = allowed;
+    logged_pressure_ = pressure;
   }
   if (scope_ != applied_scope_) RefreshSectors();
-  // The slots: what the others leave beyond the reserve; the class's bytes, or what is held when the video memory is full. An off budget asks for nothing: one byte of budget reads nothing.
   const uint32_t max_textures = ct::MaxTextures(scope_, heap_->textures_in_use(), slots_held_);
-  const uint64_t bytes = budget_.on() ? ct::EffectiveBytes(budget_.bytes, residency_->committed_bytes(), growth_allowed_) : 1;
+  const uint64_t bytes = budget_.on() ? budget_.bytes : 1;
   residency_->Configure(ct::ConfigFor(budget_, max_textures, bytes));
 }
 
