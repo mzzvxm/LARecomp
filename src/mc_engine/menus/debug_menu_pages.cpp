@@ -199,6 +199,9 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Bool("PM_RxDbgLampFringe", "mcla_gpu_glow_neutral", "REFLECTED LAMP FRINGE FIX: ")),
+#endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

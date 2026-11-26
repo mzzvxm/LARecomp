@@ -870,6 +870,7 @@ class Scene {
   StateMemo state_memo_;
   PipelineKey pipeline_memo_key_{};
   plume::RenderPipeline* pipeline_memo_ = nullptr;
+  bool glow_neutral_logged_ = false;
   uint64_t vs_memo_identity_ = 0;
   const ShaderStore::Entry* vs_memo_ = nullptr;
   uint64_t ps_memo_identity_ = 0;

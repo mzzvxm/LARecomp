@@ -1073,6 +1073,9 @@ class GPUSettings final : public rex::SettingOwner {
     "and three-stripe resolves, plus all EDRAM target creations and growths. 0: off; 1: every "
     "frame. Hot reload for reproducing the frame ghost.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_glow_neutral, true, "Reduce pink and green block artifacts in reflected lamp glows. "
+    "Uses the green channel for nearly gray BC1 samples and preserves the lamp tint. Applies live when the shader variant is available.", rex::kDebugOnly);
+
   REX_SETTING(std::string, mcla_gpu_glow_visibility, "soft", "How the glow of street lamps (their halo and star) and the other glow sprites decide whether they are "
     "hidden by the scene: game (the game's own: one depth test at the glow's centre, so a lamp beside a palm "
     "trunk or a pole pops fully on and off as the wind or the camera moves it by a fraction of a pixel) or "
@@ -2314,6 +2317,7 @@ inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;
 inline auto& mcla_gpu_ssr_sparkle_resolve = g_gpu.mcla_gpu_ssr_sparkle_resolve;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
+inline auto& mcla_gpu_glow_neutral = g_gpu.mcla_gpu_glow_neutral;
 inline auto& mcla_gpu_glow_visibility = g_gpu.mcla_gpu_glow_visibility;
 inline auto& mcla_gpu_gpu_based_validation = g_gpu.mcla_gpu_gpu_based_validation;
 inline auto& mcla_gpu_hdr = g_gpu.mcla_gpu_hdr;

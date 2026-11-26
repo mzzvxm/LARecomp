@@ -19,9 +19,9 @@
 // fallback, and the draw already writes its stencil there. The headlight is missing from the car's beam and the planes keep an old
 // value for the few frames the build takes; the next frame that finds the build ready takes it.
 //
-// A key with the G-buffer's planes, the road mirror blur or the headlight may defer its pipeline build
+// A key with the G-buffer's planes, a road reflection fix or the headlight may defer its pipeline build
 // whatever the game's rule says (HasFallback). Scene::Prepare walks these rungs in order: remove the planes,
-// then the road mirror blur, then the headlight. The final key keeps the game's rule: a pipeline of the game's
+// then the road reflection fix, then the headlight. The final key keeps the game's rule: a pipeline of the game's
 // own that nobody made is a gap of the starter list. While a take runs (sync_builds.h) nothing waits, as before: the
 // lookup makes the pipeline or waits for the builder, and the wait is counted.
 //
@@ -46,10 +46,10 @@ namespace mcla::gpu::variant_wait {
 struct Extras {
   bool planes = false;     // the G-buffer's planes are attached: extra colour targets, usually with the G-buffer's word
   bool headlight = false;  // the pixel word has the headlight feature
-  bool road_mirror_blur = false;
+  bool road_variant = false;
 };
 
-constexpr bool Any(const Extras& e) { return e.planes || e.headlight || e.road_mirror_blur; }
+constexpr bool Any(const Extras& e) { return e.planes || e.headlight || e.road_variant; }
 
 // Whether a key with these extras has a fallback key that draws the same thing without them: then the lookup may be answered "pending" whatever the game's rule says.
 constexpr bool HasFallback(const Extras& e) { return Any(e); }
@@ -102,8 +102,15 @@ constexpr bool HasHeadlight(uint32_t ps_word) {
   return larecomp::shaderpack::chain::HasFeature(ps_word, larecomp::shaderpack::kFeatureHeadlight);
 }
 
-constexpr bool HasRoadMirrorBlur(uint32_t ps_word) {
-  return larecomp::shaderpack::chain::HasFeature(ps_word, larecomp::shaderpack::kFeatureRoadMirrorBlur);
+constexpr uint32_t RoadFeature(uint32_t ps_word) {
+  namespace sp = larecomp::shaderpack;
+  if (sp::chain::HasFeature(ps_word, sp::kFeatureRoadMirrorBlur)) {
+    return sp::kFeatureRoadMirrorBlur;
+  }
+  if (sp::chain::HasFeature(ps_word, sp::kFeatureGlowNeutral)) {
+    return sp::kFeatureGlowNeutral;
+  }
+  return sp::chain::kNoFeature;
 }
 
 // The ladder of one draw: the rungs in the order Scene::Prepare asks for them, each with who answers "pending". `extras` are those of the full key
@@ -126,8 +133,8 @@ constexpr Ladder LadderOf(const Extras& full) {
     }
     if (at.planes) {
       at.planes = false;
-    } else if (at.road_mirror_blur) {
-      at.road_mirror_blur = false;
+    } else if (at.road_variant) {
+      at.road_variant = false;
     } else {
       at.headlight = false;
     }

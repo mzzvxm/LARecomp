@@ -436,6 +436,7 @@
 {"mcla_gpu_ssr_resolve", "MCLA/GPU"},
 {"mcla_gpu_ssr_sparkle_resolve", "MCLA/GPU"},
 {"mcla_gpu_ghost_log_interval", "MCLA/GPU"},
+{"mcla_gpu_glow_neutral", "MCLA/GPU"},
 {"mcla_gpu_glow_visibility", "MCLA/GPU"},
 {"mcla_gpu_gpu_based_validation", "MCLA/GPU"},
 {"mcla_gpu_hdr", "MCLA/GPU"},
