@@ -29,7 +29,12 @@ PassTiming::~PassTiming() {
 }
 
 void PassTiming::Initialize(Device& device, bool enabled) {
-  if (enabled_ || !enabled) {
+  if (records_labels()) {
+    return;
+  }
+  crash_labels_ = device.crash_diagnostics();
+  dred_markers_ = crash_labels_ && ActiveBackend() == Backend::kD3D12;
+  if (!enabled) {
     return;
   }
   if (!backend::TimestampsSupported(device.device())) {
@@ -44,7 +49,9 @@ void PassTiming::Initialize(Device& device, bool enabled) {
     pools_[slot] = device.CreateQueryPool(kInitialMarks, "pass timestamps");
     if (!pools_[slot]) {
       REXLOG_ERROR("[gpu] pass timing stays off: its timestamp pools could not be made");
-      Shutdown();
+      for (auto& pool : pools_) {
+        pool.reset();
+      }
       return;
     }
     pending_[slot] = false;
@@ -64,6 +71,8 @@ void PassTiming::Shutdown() {
     labels_[slot].clear();
   }
   enabled_ = false;
+  crash_labels_ = false;
+  dred_markers_ = false;
   open_ = false;
   device_ = nullptr;
 }
@@ -82,6 +91,16 @@ uint16_t PassTiming::Intern(std::string_view label) {
 
 void PassTiming::Write(plume::RenderCommandList* list, uint16_t label) {
   std::vector<uint16_t>& labels = labels_[slot_];
+  if (dred_markers_) {
+    last_marker_id_ = label;
+    backend::RecordCrashPass(list, names_[label]);
+  }
+  if (!enabled_) {
+    if (labels.size() < kMaxMarks) {
+      labels.push_back(label);
+    }
+    return;
+  }
   // The pool's last query is the frame end's.
   if (labels.size() + 1 >= pools_[slot_]->getCount()) {
     ++lost_marks_;
@@ -120,7 +139,7 @@ void PassTiming::Harvest(uint32_t slot) {
   }
   pending_[slot] = false;
   const std::vector<uint16_t>& labels = labels_[slot];
-  if (labels.size() < 2) {
+  if (!enabled_ || labels.size() < 2) {
     return;
   }
   pools_[slot]->queryResults();
@@ -140,32 +159,47 @@ void PassTiming::Harvest(uint32_t slot) {
 }
 
 void PassTiming::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
-  if (!enabled_ || !list) {
+  if (!records_labels() || !list) {
     return;
   }
   Harvest(slot);
   slot_ = slot;
-  if (wanted_ > pools_[slot]->getCount() && device_) {
-    Grow(*device_, wanted_);
-  }
   labels_[slot].clear();
-  list->resetQueryPool(pools_[slot].get(), 0, pools_[slot]->getCount());
+  if (enabled_) {
+    if (wanted_ > pools_[slot]->getCount() && device_) {
+      Grow(*device_, wanted_);
+    }
+    list->resetQueryPool(pools_[slot].get(), 0, pools_[slot]->getCount());
+  }
   open_ = true;
   Write(list, Intern(kFrameStart));
 }
 
 void PassTiming::Mark(plume::RenderCommandList* list, std::string_view label) {
-  if (!enabled_ || !open_ || !list) {
+  if (!records_labels() || !open_ || !list) {
     return;
   }
   Write(list, Intern(label));
 }
 
+void PassTiming::ResumeList(plume::RenderCommandList* list) {
+  if (dred_markers_ && open_ && list) {
+    backend::RecordCrashPass(list, names_[last_marker_id_]);
+  }
+}
+
 void PassTiming::CompleteFrame(plume::RenderCommandList* list, uint32_t slot) {
-  if (!enabled_ || !open_ || !list || slot != slot_) {
+  if (!records_labels() || !open_ || !list || slot != slot_) {
     return;
   }
   open_ = false;
+  if (!enabled_) {
+    Write(list, Intern(kFrameEnd));
+    return;
+  }
+  if (dred_markers_) {
+    backend::RecordCrashPass(list, kFrameEnd);
+  }
   std::vector<uint16_t>& labels = labels_[slot];
   const uint32_t count = pools_[slot]->getCount();
   // Write reserves this one.
@@ -178,14 +212,14 @@ void PassTiming::CompleteFrame(plume::RenderCommandList* list, uint32_t slot) {
 }
 
 void PassTiming::OnSubmitted(uint32_t slot) {
-  if (enabled_) {
+  if (records_labels()) {
     pending_[slot] = true;
   }
 }
 
 std::vector<PassTiming::RecordedFrame> PassTiming::RecordedFrames() const {
   std::vector<RecordedFrame> frames;
-  if (!enabled_) {
+  if (!records_labels()) {
     return frames;
   }
   // slot_ is the newest frame (begun last); the slot after it holds the oldest still in flight.

@@ -965,6 +965,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
           if (!next) {
             markers_.Drop();
           }
+          pass_timing_.ResumeList(next);
           scene_.OnListChanged(next);
         }
       });
@@ -1104,6 +1105,7 @@ void Renderer::MaybeFlushBatch() {
   if (!next) {
     markers_.Drop();
   }
+  pass_timing_.ResumeList(next);
   scene_.OnListChanged(next);
 }
 
@@ -2184,23 +2186,25 @@ void Renderer::ReportDeviceLost() {
   device_lost_reported_ = true;
   // What the renderer does about it is what it already did on D3D12: nothing more is submitted or
   // presented (Device::IsLost stops every creation, submit and wait), the guest runs on.
-  REXLOG_ERROR(
-      "[gpu] device lost: no more work is issued and nothing more is presented (the game runs on "
+  std::vector<std::string> lines;
+  lines.push_back(std::format(
+      "device lost: no more work is issued and nothing more is presented (the game runs on "
       "without a picture; it has to be restarted) | {} presents ({} guest, {} idle), {} skipped, "
       "device frame {}",
-      presented_, guest_presents_, idle_presents_, skipped_, device_.frame());
+      presented_, guest_presents_, idle_presents_, skipped_, device_.frame()));
   const std::vector<PassTiming::RecordedFrame> frames = pass_timing_.RecordedFrames();
   if (frames.empty()) {
-    REXLOG_ERROR(
-        "[gpu] device lost: the passes of the last frames are not kept (mcla_gpu_pass_timing is "
-        "off; with it on, they are listed here, oldest frame first)");
-    return;
+    lines.emplace_back("device lost: no recorded passes in flight");
+  } else {
+    lines.emplace_back("device lost: CPU-recorded pass trail for frames in flight");
   }
   for (const PassTiming::RecordedFrame& frame : frames) {
-    REXLOG_ERROR("[gpu] device lost: frame in slot {} ({}), {} passes: {}", frame.slot,
-                 frame.open ? "being recorded" : "submitted", frame.labels.size(),
-                 device_fault::FormatLabelTrail(frame.labels, 12));
+    lines.push_back(std::format("device lost: frame in slot {} ({}), {} passes: {}", frame.slot,
+                                frame.open ? "being recorded" : "submitted", frame.labels.size(),
+                                device_fault::FormatLabelTrail(frame.labels, 12)));
   }
+  // CHECK: on a driver reset, the Vulkan fault data and this trail appear in both files.
+  device_.AppendLossReport(lines);
 }
 
 // ---------------------------------------------------------------------------
@@ -2399,6 +2403,7 @@ bool Startup(rex::ui::IUISystem& ui, const rex::NativeWindow& window) {
 
   Renderer::Options options;
   options.device = PlannedDeviceOptions(nullptr);  // shared with the pipeline prebuild
+  options.device.game_session = true;
   options.device.force_refusal = larecomp::settings::mcla_gpu_force_refusal.Get();  // a test of the box below (not the prebuild's)
   options.swap_chain.vsync = larecomp::settings::mcla_gpu_vsync.Get();
   options.swap_chain.present_wait = larecomp::settings::mcla_gpu_present_wait.Get();

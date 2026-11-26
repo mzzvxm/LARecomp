@@ -1009,7 +1009,7 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
       return kInvalidBindlessSlot;
     }
     TransitionProduct(list, product, plume::RenderTextureLayout::SHADER_READ);
-    if (pass_timing_->enabled()) {
+    if (pass_timing_ && pass_timing_->records_labels()) {
       pass_timing_->Mark(list, std::format("resolve product reduced {}x -> {}x {}x{}", product.scale,
                                            scale, product.key.width, product.key.height));
     }
@@ -1614,7 +1614,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         in_pass = fused_push.write.scale_n != 0;
       }
       TransitionProduct(list, *p, plume::RenderTextureLayout::COLOR_WRITE);
-      if (pass_timing_->enabled()) {
+      if (pass_timing_ && pass_timing_->records_labels()) {
         const char* from = depth_source ? format::DepthTargetFormat(src_format).guest_name
                                         : format::ColorTargetFormat(src_format).guest_name;
         const char* to = format::TextureHost(key.format).guest_name;
@@ -1679,7 +1679,8 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       if (!depth_source && memory_copy.product_slot == kInvalidBindlessSlot) {
         Fail(Failure::kProduct, std::format("{}: no view for the resolve memory", key.Describe()));
       } else if (!encoded) {
-        if (depth_source && !memory_copy.from_product && pass_timing_->enabled()) {
+        if (depth_source && !memory_copy.from_product && pass_timing_ &&
+            pass_timing_->records_labels()) {
           pass_timing_->Mark(list, "resolve memory encode (depth)");
         }
         resolve_memory_->Encode(list, memory_copy);
@@ -1726,7 +1727,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
 
   // The clears the call asked for, after the copy, on the aligned rectangle. Their own mark: the
   // GPU time of the clears is not billed to the copy's last label ("resolve memory encode (depth)").
-  if ((flags & 0x300) != 0 && pass_timing_->enabled()) {
+  if ((flags & 0x300) != 0 && pass_timing_ && pass_timing_->records_labels()) {
     pass_timing_->Mark(list, "resolve clears (in the resolve call)");
   }
   if (flags & 0x100) {

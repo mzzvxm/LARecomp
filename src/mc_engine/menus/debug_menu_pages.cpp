@@ -58,6 +58,9 @@ constexpr const char* kCabinSunNames[] = {"OFF", "CONTACT", "CAR MAP", "CAR RT",
 constexpr const char* kRenderWaitVals[] = {"auto", "wait", "spin"};
 constexpr const char* kRenderWaitNames[] = {"AUTO", "WAIT", "SPIN"};
 
+constexpr const char* kCrashDiagVals[] = {"auto", "on", "off"};
+constexpr const char* kCrashDiagNames[] = {"AUTO", "ON", "OFF"};
+
 constexpr const char* kFreecamVals[]  = {"off", "free"};
 constexpr const char* kFreecamNames[] = {"OFF", "ON"};
 constexpr double kCamSpeedVals[]      = {10.0, 20.0, 40.0, 80.0, 150.0, 300.0};
@@ -141,7 +144,7 @@ constexpr double kHudAlphaVals[]          = {1.0, 0.75, 0.5, 0.25, 0.0};
 
 // ── The tables ─────────────────────────────────────────────────────────
 //
-// Every cvar named here is tagged .debug_only() and live. tools/check_settings_exposure.py reads these
+// Every cvar named here is tagged .debug_only(). tools/check_settings_exposure.py reads these
 // tables (they start with kDebug) and fails on a cvar that is not, or that is restart-only: a setting
 // that is only read at start belongs to a launch argument, not a row here (a debug row is never saved,
 // so it could not be kept for the next start).
@@ -454,8 +457,8 @@ const ItemDef kDebugToolsItems[] = {
 #endif
 };
 
-// LOGGING: the log switches that can be flipped while the game runs. The restart-only diagnostics are
-// launch arguments (SETTINGS-REVIEW.md B.2). Each one writes more lines (some a lot) to the log.
+// LOGGING: log switches and the GPU crash diagnostics choice. The latter needs
+// a launch argument (INFO > COPY LAUNCH ARGS), since DRED is set before device creation.
 const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgUiColorLog",  "ui_color_log",          "UI COLOR LOG: "),
     Bool("PM_RxDbgMapMouseLog", "map_mouse_diag",        "MAP MOUSE DIAG: "),
@@ -473,6 +476,11 @@ const ItemDef kDebugLoggingItems[] = {
     Bool("PM_RxDbgRmrDiag",     "rmr_diag",              "RMR DIAG: "),
     Bool("PM_RxDbgLowCpuProbe", "lowcpu_probe",          "LOW CPU PROBE: "),
 #if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Str("PM_RxDbgCrashDiag", "mcla_gpu_crash_diag", "GPU CRASH DIAG (RESTART): ",
+                   kCrashDiagVals, kCrashDiagNames, Len(kCrashDiagVals))),
+#if defined(_WIN32)
+    NativeOnly(Bool("PM_RxDbgRemoveGpu", "mcla_gpu_force_device_removal", "FORCE D3D12 REMOVAL: ")),
+#endif
     // Every 600 frames, the textures the HUD and menus read (what UI SHARPEN is tuned from).
     NativeOnly(Bool("PM_RxDbgUiSharpCensus", "mcla_ui_sharp_census", "UI SHARPEN CENSUS: ")),
     // The renderer's periodic logs (ghost frames, the process's memory, video memory): one block every N frames, OFF by default.

@@ -426,15 +426,8 @@ int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe) {
 // from the driver, once a command has returned VK_ERROR_DEVICE_LOST (the probe's status call is
 // one). Asked for once, by Device::CheckLost, on whichever thread saw the loss first.
 //
-// Why not VK_NV_device_diagnostic_checkpoints or VK_AMD_buffer_marker (the other two ways to learn
-// which pass a hang was in): each needs a marker recorded into every pass of every frame, through
-// a new method on Plume's backend-neutral command list (and a persistent host-visible buffer for
-// AMD's), which costs on the 2-CU iGPU and the Deck where frames are tight; each works for one
-// vendor family only (NVIDIA; AMD and Mesa); and each answers with the last marker, which only
-// helps when the renderer also names its passes -- it keeps labels only under
-// mcla_gpu_pass_timing. device_fault costs nothing until a loss; the pass labels of the frames in
-// flight (Renderer::ReportDeviceLost) cover the rest. Worth revisiting only if the fault report
-// proves empty on the drivers that matter.
+// The extension does not expose pass completion or allocation lifetimes. The
+// same report includes the CPU-recorded pass trail from Renderer::ReportDeviceLost.
 std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device) {
   auto* dev = static_cast<plume::VulkanDevice*>(device);
   if (!dev || dev->vk == VK_NULL_HANDLE) {
@@ -497,13 +490,17 @@ std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device) {
                      strnlen(vendors[i].description, sizeof(vendors[i].description))),
          vendors[i].vendorFaultCode, vendors[i].vendorFaultData});
   }
-  return device_fault::FormatFaultReport(report);
+  auto lines = device_fault::FormatFaultReport(report);
+  lines.emplace_back(
+      "VK_EXT_device_fault does not report GPU pass progress or existing/freed allocations");
+  return lines;
 }
 
-std::string DescribeLossReporting(plume::RenderDevice* device, void* probe) {
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe, bool diagnostics) {
   auto* dev = static_cast<plume::VulkanDevice*>(device);
   const char* fault =
-      !dev ? "no device"
+      !diagnostics ? "detailed crash diagnostics are off"
+      : !dev ? "no device"
       : DeviceFaultEnabled(*dev)
           ? "VK_EXT_device_fault is on: a loss logs the driver's fault report"
       : kPlumeEnablesDeviceFault ? "VK_EXT_device_fault is not offered by this driver"

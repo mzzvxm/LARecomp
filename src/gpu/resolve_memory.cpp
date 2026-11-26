@@ -1312,8 +1312,9 @@ void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, s
   }
   // The end-of-frame batch has Scene's mark; the others are timed apart from
   // what they come before.
-  const bool timed = pass_timing_ && pass_timing_->enabled() && reason != FlushReason::kEndOfFrame;
-  if (timed) {
+  const bool mark_pass =
+      pass_timing_ && pass_timing_->records_labels() && reason != FlushReason::kEndOfFrame;
+  if (mark_pass) {
     pass_timing_->Mark(list, kBatchLabels[r]);
   }
   ++stats_.flushes;
@@ -1357,7 +1358,7 @@ void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, s
     list->dispatch(p.groups_x, p.groups_y, 1);
   }
   pending_.resize(kept);
-  if (timed && reason == FlushReason::kDepthEncode) {
+  if (mark_pass && reason == FlushReason::kDepthEncode) {
     pass_timing_->Mark(list, "resolve memory encode (depth)");
   }
 }
@@ -1511,7 +1512,7 @@ bool ResolveMemory::CopyVertices(const VertexCopy& c, plume::RenderCommandList* 
   }
   // Encodes still waiting write the bytes this reads.
   FlushFor(list, FlushReason::kVertexCopy, &source_span, source_spans);
-  if (pass_timing_->enabled()) {
+  if (pass_timing_ && pass_timing_->records_labels()) {
     pass_timing_->Mark(list, "resolve memory vertex copy");
   }
   for (uint32_t page : pages_) {
@@ -1847,7 +1848,7 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
     }
   }
   FlushFor(list, FlushReason::kDecode, read_spans, read_span_count);
-  if (pass_timing_->enabled()) {
+  if (pass_timing_ && pass_timing_->records_labels()) {
     pass_timing_->Mark(list, "resolve memory decode");
   }
   for (uint32_t page : pages_) {

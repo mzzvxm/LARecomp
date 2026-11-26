@@ -266,8 +266,49 @@ std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DescribeDeviceFault(device));
 }
 
-std::string DescribeLossReporting(plume::RenderDevice* device, void* probe) {
-  return MCLA_GPU_ACTIVE(DescribeLossReporting(device, probe));
+bool EnableCrashDiagnostics() {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    return d3d12::ConfigureDred();
+  }
+#endif
+  return true;
+}
+
+void NameCrashQueue(plume::RenderCommandQueue* queue) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    d3d12::NameCrashQueue(queue);
+  }
+#endif
+}
+
+void NameCrashList(plume::RenderCommandList* list, uint32_t slot, uint32_t batch) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    d3d12::NameCrashList(list, slot, batch);
+  }
+#endif
+}
+
+void RecordCrashPass(plume::RenderCommandList* list, std::string_view label) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  // The caller only records DRED markers on D3D12.
+  d3d12::RecordCrashPass(list, label);
+#endif
+}
+
+bool ForceDeviceRemoval(plume::RenderDevice* device) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    return d3d12::ForceDeviceRemoval(device);
+  }
+#endif
+  return false;
+}
+
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe, bool diagnostics) {
+  return MCLA_GPU_ACTIVE(DescribeLossReporting(device, probe, diagnostics));
 }
 
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out) {

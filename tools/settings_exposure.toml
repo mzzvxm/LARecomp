@@ -5,7 +5,7 @@
 
 # Which pause-menu files hold rows. normal_files: the rows are for every player. dynamic_files: files that only exist to build rows; every
 # string in them that is a cvar's name counts as written by a row (the upscaling mode row names no cvar in its constructor).
-# debug_files / debug_table_pattern: rows of the hidden debug menu (SX-G4); a cvar named there must be `.debug_only()` and not restart-only.
+# debug_files / debug_table_pattern: rows of the hidden debug menu (SX-G4); a cvar named there must be `.debug_only()`.
 # Paths are relative to src/mc_engine (or to src, when the file is there); since the folder reorganisation (5b9af642) every menu file sits
 # in a topic folder. A path that names no file stops the check.
 [menus]
@@ -13,6 +13,10 @@ normal_files = ["menus/pause_menu.cpp", "menus/upscaling_menu.cpp", "menus/frame
 dynamic_files = ["menus/upscaling_menu.cpp", "menus/frame_generation_menu.cpp", "menus/display_menu.cpp"]
 debug_files = ["menus/debug_menu_pages.cpp"]
 debug_table_pattern = "^kDebug"
+
+[[debug_restart_row]]
+names = ["mcla_gpu_crash_diag"]
+why = "D3D12 DRED is configured before device creation. The row says RESTART and INFO > COPY LAUNCH ARGS exports the selection."
 
 # The exception list: cvars with no pause-menu or launcher row that are still ordinary settings of the game. They are NOT `.debug_only()`.
 [[exception]]

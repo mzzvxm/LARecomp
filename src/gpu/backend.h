@@ -244,18 +244,20 @@ void DestroyLossProbe(plume::RenderDevice* device, void* probe);
 // device_fault_format.h RemovedReasonText prints either.
 int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
 
-// What the driver can say about a device that DeviceRemovedReason found lost, as log lines
-// (device_fault_format.h FormatFaultReport): Vulkan with VK_EXT_device_fault enabled on the device
-// (Plume's VulkanDevice::deviceFaultSupported); one line saying why there is nothing otherwise.
-// Empty on D3D12 (its removal data, DRED, has to be switched on before the device is made: the
-// legacy runtime's context.cpp does, this renderer does not). Call it only after a loss was
-// reported by DeviceRemovedReason: the extension allows nothing else.
+// Opt in before creating the native device. Plume already enables the Vulkan
+// fault extension where supported. On D3D12, returns whether DRED was enabled.
+bool EnableCrashDiagnostics();
+void NameCrashQueue(plume::RenderCommandQueue* queue);
+void NameCrashList(plume::RenderCommandList* list, uint32_t slot, uint32_t batch);
+void RecordCrashPass(plume::RenderCommandList* list, std::string_view label);
+// Device-scoped D3D12 removal for the debug test. Vulkan has no equivalent.
+bool ForceDeviceRemoval(plume::RenderDevice* device);
+
+// Driver diagnostics from DRED or VK_EXT_device_fault. Call only after loss.
 std::vector<std::string> DescribeDeviceFault(plume::RenderDevice* device);
 
-// One line for the log at start-up: how a loss of this device will be noticed, and whether
-// DescribeDeviceFault has anything to add ("VK_EXT_device_fault is on", "... is not offered by
-// this driver", "... is not in the pinned Plume").
-std::string DescribeLossReporting(plume::RenderDevice* device, void* probe);
+// How loss is detected and what diagnostics this session collects.
+std::string DescribeLossReporting(plume::RenderDevice* device, void* probe, bool diagnostics);
 
 // What the window's presentation reports about its own presents (gpu.h
 // PresentObservation). D3D12: GetLastPresentCount, and GetFrameStatistics when

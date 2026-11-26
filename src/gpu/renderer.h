@@ -313,7 +313,7 @@ class Renderer final : public RenderThread::Executor {
   void ReportCityCensus();
   // Once, on the render thread, after the device was found lost (Device::CheckLost logged the reason
   // and the call that met it, from whichever thread): the renderer's own state at the loss and the
-  // passes recorded for the frames that were in flight (only with mcla_gpu_pass_timing).
+  // passes recorded for the frames that were in flight, with timing or crash diagnostics on.
   void ReportDeviceLost();
   // In the present pass, once the last guest memory it reads has been read: lets the
   // guest go on while this thread submits and presents (mcla_gpu_present_release).

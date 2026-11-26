@@ -234,6 +234,30 @@ larecomp.exe --debug_menu --mcla_gpu_pass_timing=true
 
 The same text works in the launcher's **More game options**, and as `mcla_gpu_pass_timing = true` in `larecomp.toml`. A switch takes `true` or `false`. An option the game cannot use (an empty or refused value, a name that is not a setting, a setting of a driver this run does not load) is skipped with a `[cli] ... ignored: ...` line in the log and the game starts. F4 shows each of these with its description (use the search box).
 
+### GPU device loss
+
+The native renderer writes a device loss to the game log and to a matching
+`*.gpu-crash.txt` report next to it. In **DEBUG > LOGGING**, **GPU CRASH DIAG (RESTART)**
+defaults to **AUTO**, which consumes the `gpu-device-lost` marker and enables
+detailed capture for one launch after a loss. **ON** always captures details and
+**OFF** keeps the basic report. To use a changed mode, relaunch with
+`--mcla_gpu_crash_diag=on` or `--mcla_gpu_crash_diag=off`. The debug menu's
+**INFO > COPY LAUNCH ARGS** copies non-default settings as launch arguments.
+
+D3D12 DRED adds GPU progress by named rendering pass and any GPU page-fault
+address with matching existing or recently freed allocations. GPU progress
+is approximate. Microsoft measured a 2-5% performance cost for D3D12
+auto-breadcrumbs. [Microsoft DRED specification](https://microsoft.github.io/DirectX-Specs/d3d/DeviceRemovedExtendedData.html)
+
+Vulkan includes the driver's fault address and vendor
+details when `VK_EXT_device_fault` is available. Its pass trail shows CPU
+recording order.
+
+For a D3D12 diagnostic test, launch with
+`--debug_menu --graphics_backend=d3d12 --mcla_gpu_crash_diag=on --mcla_gpu_force_device_removal=true`.
+The test removes the game device after a submission at or after frame 120.
+The picture stops. Send the log and its matching `*.gpu-crash.txt`.
+
 **Where the list comes from.** It is a snapshot of the source: every cvar whose `REXCVAR_DEFINE_*` has `.debug_only()` and a restart lifecycle (`kRequiresRestart` or `kInitOnly`), and that no row of a `kDebug*` table names. The scan used the definition parser of `tools/check_settings_exposure.py`, which reads the chained calls the same way. `perf_no_trees` and `perf_fast_vehicle_shadows` are not here: their lifecycle is live, so they are rows on the PERFORMANCE page. `break_pairwise_collision` is not here either: its hook reads it at every call, so it is live (a setting in F4 and a launch argument that also works while the game runs; it has no row). The SDK's `graphics_backend` (`d3d12` or `vulkan`) is also tagged debug-only at start (`kSdkDebugCvars` in `src/mc_engine/debug_menu.cpp`) and is a launch argument too; it is defined in the SDK, not here, so it is not counted.
 
 The list, 132 names in 15 groups (the number in brackets is the group's size):
