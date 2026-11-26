@@ -1224,8 +1224,8 @@ void Renderer::UpdateComposedPresentCeiling() {
 #endif
 
 void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
-                          int64_t ready, uint64_t guest_present, uint64_t latency_frame) {
-  const bool nowait = present_nowait_ && !dlssg_.active();
+                          int64_t ready, uint64_t guest_present, uint64_t latency_frame,
+                          PresentPath path) {
 #if defined(_WIN32)
   const uint32_t ceiling = composed_present_ceiling();
   const bool pace_present = ceiling != 0 && !dlssg_.active();
@@ -1245,9 +1245,9 @@ void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, 
     last_composed_present_ = QpcNow();
   }
 #endif
-  const PresentResult result = swap_chain_.Present(image, nowait);
+  const PresentResult result = swap_chain_.Present(image, path);
   latency::OnPresentEnd(latency_frame);
-  if (nowait) {
+  if (path != PresentPath::kDefault) {
     ReportDroppedPresents(present_drops_.OnPresent(result, PresentDrops::Clock::now()));
   }
   if (result == PresentResult::kDropped) {
@@ -1316,7 +1316,7 @@ void Renderer::FlushDeferredPresent(bool wait) {
     WaitForPresentDeadline(d.due);
   }
   PresentNow(d.image, PresentSource::kGuest, d.target, d.due, d.ready, d.guest_present,
-             d.latency_frame);
+             d.latency_frame, d.path);
 }
 
 
@@ -1582,7 +1582,9 @@ void Renderer::ExecutePresent(PresentSource source) {
     bool& flag_;
   } presenting(presenting_);
   // Frame generation presents FIFO (or immediate by its own setting), whatever mcla_gpu_vsync says.
-  swap_chain_.SetVsync(WantsSwapChainVsync());
+  const bool vsync = WantsSwapChainVsync();
+  swap_chain_.SetVsync(vsync);
+  swap_chain_.RefreshPresentTopology();
   UpdateHdr();
   UpdateDisplayAspect();
 
@@ -1610,27 +1612,57 @@ void Renderer::ExecutePresent(PresentSource source) {
     ++skipped_;
     return;
   }
+  // Retail defaults to the topology fix. Only the unlocked debug menu can turn it off.
+  const bool enabled = !larecomp::settings::debug_menu.Get() ||
+                       larecomp::settings::mcla_gpu_cross_adapter_present.Get();
+  const auto path = ChoosePresentPath(swap_chain_.present_topology(), {
+      .d3d12 = ActiveBackend() == Backend::kD3D12,
+      .enabled = enabled,
+      .vsync = vsync,
+      .present_wait = swap_chain_.present_wait_enabled(),
+      .frame_generation = fg_.active() || dlssg_.active(),
+      .capture_frame = source == PresentSource::kGuest && present_tag_ != 0,
+      .dxgi_nowait_test = present_nowait_,
+  });
+  if (path != last_present_path_) {
+    const char* name = path == PresentPath::kDxgiNowait ? "DXGI nowait"
+                       : path == PresentPath::kVulkanTryAcquire ? "Vulkan zero-timeout acquire"
+                                                               : "standard";
+    REXLOG_INFO("[gpu] present path: {}", name);
+    last_present_path_ = path;
+  }
   if (fg_.active()) {
     ExecutePresentGenerated(source);
     return;
   }
-
   if (!dlssg_.active()) {
     // Streamline's pacer owns the chain's frame latency while DLSS frame generation runs (the
     // game's Reflex sleep paces the frames instead); the waitable object is not waited on.
     swap_chain_.WaitForPresentSlot();
   }
   uint32_t image = 0;
-  if (!swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
+  auto acquired = swap_chain_.Acquire(frames_.acquire_semaphore(), &image, path);
+  if (acquired == AcquireResult::kFailed) {
     // A failed acquire did not signal the semaphore. If this present already rebuilt the
     // buffers, leave the failure pending so the next present can recover them.
-    if (rebuild_attempted || !RebuildSwapChain() ||
-        !swap_chain_.Acquire(frames_.acquire_semaphore(), &image)) {
+    if (!rebuild_attempted && RebuildSwapChain()) {
+      acquired = swap_chain_.Acquire(frames_.acquire_semaphore(), &image, path);
+    }
+    if (acquired == AcquireResult::kFailed) {
       device_.CheckLost("swap chain acquire");
       SubmitFrameWithoutPresent();
       ++skipped_;
       return;
     }
+  }
+  if (acquired == AcquireResult::kUnavailable) {
+    // CHECK: compare the ROG's acquire/present timings and displayed cadence with the fix off.
+    // The GPU still needs the guest's scene work. No acquire semaphore or present ID was issued.
+    SubmitFrameWithoutPresent();
+    latency::DetachRenderFrame();
+    ReportDroppedPresents(present_drops_.OnPresent(PresentResult::kDropped, PresentDrops::Clock::now()));
+    ++skipped_;
+    return;
   }
   if (dlssg_.active()) {
     // Streamline's fake swap chain image, which its frame generation may have left in GENERAL: the
@@ -1685,10 +1717,10 @@ void Renderer::ExecutePresent(PresentSource source) {
                           : 0;
   if (due != 0) {
     deferred_ = {true, image, present_target_, due, ready_qpc, guest_presents_ + 1,
-                 latency_frame};
+                 latency_frame, path};
   } else {
     PresentNow(image, source, present_target_, 0, ready_qpc, guest_presents_ + 1,
-               latency_frame);
+               latency_frame, path);
   }
   capture_.OnPresented();
   frames_.Advance();

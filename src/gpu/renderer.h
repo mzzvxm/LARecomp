@@ -47,6 +47,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <optional>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -221,7 +222,7 @@ class Renderer final : public RenderThread::Executor {
   // `target` the frame's plan (0 = none), `due` the time it was held to (0 = none).
   // `latency_frame` the frame the reducer's present markers name (latency::DetachRenderFrame).
   void PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
-                  int64_t ready, uint64_t guest_present, uint64_t latency_frame);
+                  int64_t ready, uint64_t guest_present, uint64_t latency_frame, PresentPath path);
   void ReportDroppedPresents(uint64_t count) const;
   // A held present (deferred_) goes out: at once, or with `wait` not before its time.
   void FlushDeferredPresent(bool wait);
@@ -401,6 +402,7 @@ class Renderer final : public RenderThread::Executor {
   uint32_t batch_draws_ = 0;    // mcla_gpu_batch_draws, read at Initialize
   bool profile_records_ = false;  // mcla_gpu_scene_profile: CPU per record type (thread_load.h)
   bool present_nowait_ = false;   // mcla_test_present_nowait, read at Initialize
+  std::optional<PresentPath> last_present_path_;
   PresentDrops present_drops_;
   bool release_early_ = false;    // mcla_gpu_present_release, read at Initialize
   // The last HDR10 metadata given to the swap chain (UpdateHdr).
@@ -451,6 +453,7 @@ class Renderer final : public RenderThread::Executor {
     int64_t ready = 0;
     uint64_t guest_present = 0;
     uint64_t latency_frame = 0;
+    PresentPath path = PresentPath::kDefault;
   };
   DeferredPresent deferred_;
   PresentSchedule schedule_;

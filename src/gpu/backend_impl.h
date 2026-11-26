@@ -75,6 +75,8 @@ void EndSwapChainFactory(plume::RenderDevice* device, void* original, void* wrap
 
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 namespace vulkan {
+AcquireResult TryAcquireImage(plume::RenderSwapChain* swap_chain,
+                              plume::RenderCommandSemaphore* signal, uint32_t* image);
 bool EnableDebugLayer();
 void InstallDebugMessageSink(plume::RenderDevice* device);
 void* CaptureDebugDevice(plume::RenderDevice* device);

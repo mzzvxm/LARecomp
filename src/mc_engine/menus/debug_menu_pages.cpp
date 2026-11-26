@@ -173,6 +173,10 @@ const ItemDef kDebugFixesItems[] = {
     // The Plume renderer's frame pacing (frame_pacing.cpp); the cvar is 0 or 1.
     NativeOnly(Str("PM_RxDbgFramePacing", "frame_pacing",   "FRAME PACING: ",
                    kOffOnVals, kOffOnNames, Len(kOffOnVals))),
+#if defined(LARECOMP_HAS_GPU) && defined(_WIN32)
+    NativeOnly(Bool("PM_RxDbgCrossAdapterPresent", "mcla_gpu_cross_adapter_present",
+                    "CROSS-ADAPTER PRESENT FIX: ")),
+#endif
     Bool("PM_RxDbgChassis",    "smooth_chassis_depth",      "SUSPENSION FIX: "),
     Bool("PM_RxDbgChaseCam",   "smooth_chase_cam",          "SMOOTH CHASE CAM: "),
     Bool("PM_RxDbgVehPhysics", "smooth_vehicle_physics",    "SMOOTH VEHICLE PHYSICS: "),

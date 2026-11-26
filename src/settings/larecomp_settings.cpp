@@ -61,6 +61,7 @@ constexpr CategoryRow kCategories[] = {
     {"cpu_limit_lp", "MCLA/Performance"},
     {"render_wait_mode", "MCLA/Performance"},
     {"mcla_gpu_vk_present_pacing", "MCLA/Performance"},
+    {"mcla_gpu_cross_adapter_present", "MCLA/Performance"},
 };
 
 struct State {

@@ -573,6 +573,7 @@ PresentResult PresentNowait(plume::RenderSwapChain* swap_chain) {
                        (chain->swapChainFlags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) != 0;
   const UINT flags = DXGI_PRESENT_DO_NOT_WAIT | (tearing ? DXGI_PRESENT_ALLOW_TEARING : 0);
   static_assert(kDxgiWasStillDrawing == DXGI_ERROR_WAS_STILL_DRAWING);
+  // CHECK: measure displayed cadence as well as the D3D12 frame-fence tail on the ROG.
   const ScopedGpuWaitDetail detail(GpuWaitKind::kPresentCall);
   return ClassifyDxgiPresentNowait(chain->d3d->Present(interval, flags));
 }

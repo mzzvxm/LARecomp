@@ -33,6 +33,7 @@
 namespace mcla::gpu {
 
 enum class PresentResult : uint8_t;
+enum class AcquireResult : uint8_t;
 
 enum class Backend : uint8_t { kD3D12, kVulkan };
 
@@ -271,8 +272,10 @@ struct PresentStatistics {
 };
 bool QueryPresentStatistics(plume::RenderSwapChain* swap_chain, PresentStatistics& out);
 
-// The D3D12 test present. The normal path uses RenderSwapChain::present.
+// DXGI's non-blocking present and Vulkan's zero-timeout acquire for an unpaced chain.
 PresentResult PresentD3D12Nowait(plume::RenderSwapChain* swap_chain);
+AcquireResult TryAcquireVulkanImage(plume::RenderSwapChain* swap_chain,
+                                    plume::RenderCommandSemaphore* signal, uint32_t* image);
 
 // Compare the existing buffers with what Plume would make on resize. Creation-only changes
 // (such as HDR or the present queue) go through SwapChain::RecreateOn separately.
@@ -294,7 +297,7 @@ struct NativeDevice {
   void* device = nullptr;                // D3D12: ID3D12Device*; Vulkan: VkDevice
   void* physical_device = nullptr;       // Vulkan: VkPhysicalDevice
   void* get_device_proc_addr = nullptr;  // Vulkan: PFN_vkGetDeviceProcAddr
-  uint64_t adapter_luid = 0;             // D3D12: the adapter's LUID (LowPart | HighPart << 32)
+  uint64_t adapter_luid = 0;             // Win32 adapter LUID (LowPart | HighPart << 32), if known
 };
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 
