@@ -798,6 +798,7 @@ target_link_libraries(larecomp_upscaler_load_policy_test PRIVATE Threads::Thread
 # GPU class, a level to a scale, the step down when the video memory is short, the class that follows the render scale, the declared sizes) have a check that
 # needs no renderer: cmake --build <dir> --target larecomp_side_view_scales_test, then run src/gpu/larecomp_side_view_scales_test (exit 0 = passed).
 add_executable(larecomp_side_view_scales_test EXCLUDE_FROM_ALL side_view_scales_test.cpp)
+add_executable(larecomp_view_hold_test EXCLUDE_FROM_ALL view_hold_test.cpp)
 # DLSS Ray Reconstruction's pure rules (dlss_rr_rules.h: the tag plan, the options, the choice of denoiser, the frame gate) have a check that needs no renderer
 # and no Streamline: cmake --build <dir> --target larecomp_dlss_rr_rules_test, then run src/gpu/larecomp_dlss_rr_rules_test (exit 0 = passed).
 add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.cpp)

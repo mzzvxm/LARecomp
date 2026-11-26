@@ -1,0 +1,12 @@
+# Hold at the west mouth of the Sixth Street underpass, then orbit the same
+# car into the covered stretch in one second. Compare the paint and glass
+# through the turn, the lighting transition, and the stop.
+scene ev2-env-hold fps 60 step 1/60
+world hour 12 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0 car player at 2132,-10.14,400.2 heading 90
+cam 0 rig orbit car:player r 8 az 0 el 10 at 0 0.5 0 fov 50
+at 3 capture fps 60 step 1/60 name ev2-env-hold
+cam 4 rig orbit car:player r 8 az 0..145 over 1 el 10 at 0 0.5 0 fov 50 ease linear
+at 7 capture off
+end 8

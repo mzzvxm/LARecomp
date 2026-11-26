@@ -237,8 +237,7 @@ native = "kRoadReflectionDynamics"
 help = "How sharp the road reflection is: the wet roads, the shop and building windows and the water show a mirror image of the city that the game draws at 256x256 and stretches over the whole screen, which is why it looks soft."
 
 [rows.PM_RxGpuCarRefl]
-native = "kCarReflectionDynamics"
-help = "How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the world around the car as a 512x256 picture for them to reflect, which is why the reflections look soft up close."
+help = "Makes reflections in car paint, windows and trim sharper. On uses a 1024x512 map. Off uses the game's 512x256 map."
 
 [rows.PM_RxGpuCarSelfRefl]
 native = "kCarSelfReflDynamics"

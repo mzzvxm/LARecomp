@@ -20,6 +20,16 @@
 #include "larecomp_log.h"
 #include "larecomp_guest.h"
 
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/cut_request.h"
+#include "gpu/env_hold_link.h"
+#include "gpu/gpu.h"
+#include "gpu/menu_world.h"
+#include "gpu/view_hold_rules.h"
+#include "gpu/world_clock.h"
+#include "mc_engine/camera/menu_camera.h"
+#endif
+
 // Which render phase bits perf_no_shadows clears.
 //
 // The game's own `noshadows` clears 0x61E0 (0x20 0x40 0x80 0x100 0x2000 0x4000)
@@ -109,6 +119,120 @@ static constexpr uint32_t kRendererPtr = 0x8287E064u;
 static constexpr uint32_t kPhaseEnableMask = 448u;   // enable mask, written by the ctor
 static constexpr uint32_t kPhaseRequested = 364u;    // phases asked for this frame
 static constexpr uint32_t kPhaseEffective = 360u;    // requested & enable, what consumers read
+
+#if defined(LARECOMP_HAS_GPU)
+namespace {
+namespace env = mcla::gpu::env_hold;
+namespace hold = mcla::gpu::view_hold;
+namespace world_clock = mcla::gpu::world_clock;
+
+constexpr uint32_t kEnvPhases = 0x4u | 0x8u;
+constexpr uint32_t kRenderBuffer = 0x827E5640u;
+
+// Only the phase loop's thread reads or writes this state.
+thread_local hold::Sample g_env_capture{};
+thread_local uint32_t g_env_renderer = 0;
+thread_local uint32_t g_env_marker = 0;
+thread_local bool g_env_have_capture = false;
+
+bool GuestPointer(uint32_t p) { return p >= 0x10000u && p < 0xE0000000u; }
+
+uint32_t EnvWorld(const uint8_t* base) {
+    const uint32_t pause = ReadGuestU32(base, 0x828CCEA0u);  // Game_IsPaused
+    const bool paused = GuestPointer(pause) && base[pause + 4] != 0 && base[pause + 10] == 0;
+    // sub_822C0320 tests the HUD manager's photo-mode byte.
+    const uint32_t hud = ReadGuestU32(base, 0x8286D8D4u);
+    const bool photo = GuestPointer(hud) && base[hud + 0x51380u] != 0;
+    // mcCineScript::IsScenePlaying: a live script or an active director handover.
+    const uint32_t cine = ReadGuestU32(base, 0x8286D8F0u);
+    const uint32_t director = ReadGuestU32(base, 0x8286D8E8u);
+    const uint32_t handover = GuestPointer(director) ? ReadGuestU32(base, director + 8) : 0;
+    const bool cinematic = GuestPointer(cine) &&
+        (base[cine + 288] != 0 || (GuestPointer(handover) && ReadGuestF32(base, handover + 120) >= 0.0f));
+    const bool garage = mcla::gpu::menu_world::GarageLighting();
+    return uint32_t(paused) | (uint32_t(photo) << 1) | (uint32_t(garage) << 2) |
+           (uint32_t(cinematic) << 3);
+}
+}  // namespace
+#endif
+
+void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
+#if defined(LARECOMP_HAS_GPU)
+    g_env_marker = 0;
+    auto* base = larecomp::guest::Membase();
+    if (!base || !mcla::gpu::Enabled() || !GuestPointer(renderer.u32) ||
+        (effective.u32 & kEnvPhases) != kEnvPhases) {
+        g_env_have_capture = false;
+        return;
+    }
+    const bool enabled = larecomp::settings::mcla_gpu_env_hold.Get();
+    const bool ready = g_env_renderer == renderer.u32 &&
+        env::g_ready_renderer.load(std::memory_order_acquire) == renderer.u32;
+    g_env_renderer = renderer.u32;
+    g_env_marker = env::kDrawn;
+    if (!enabled) {
+        g_env_have_capture = false;
+        return;
+    }
+    hold::Sample now;
+    const uint32_t buffer = ReadGuestU32(base, kRenderBuffer);
+    if (buffer < 4) {
+        const uint32_t viewport = ReadGuestU32(base, renderer.u32 + 180u + 4u * buffer);
+        if (GuestPointer(viewport)) {
+            // The main viewport's world matrix is at +64. Phase 4 reads its
+            // position from row 3 and builds the paraboloid in fixed world axes.
+            for (uint32_t i = 0; i < 3; ++i) {
+                now.camera.up[i] = ReadGuestF32(base, viewport + 80u + 4u * i);
+                now.camera.forward[i] = -ReadGuestF32(base, viewport + 96u + 4u * i);
+                now.camera.position[i] = ReadGuestF32(base, viewport + 112u + 4u * i);
+            }
+        }
+    }
+    now.time_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    const bool sharp = env::Resolution(larecomp::settings::mcla_gpu_env_resolution.Get()) == "on";
+    // A rig swap can be a cut even when both cameras point along the road.
+    const uint32_t rig = uint32_t(CurrentRenderedCameraRig()) & 0xFFu;
+    now.world = EnvWorld(base) | (uint32_t(sharp) << 4) | (rig << 8);
+    now.clock_jumps = world_clock::HourJumps();
+    now.weather = world_clock::Weather();
+    now.brightness = env::g_brightness.load(std::memory_order_relaxed);
+    // Keep refreshing while a scripted cut is in flight through the buffered
+    // renderer. The anchor is still the only consumer of the cut request.
+    now.cut = mcla::gpu::cut::Global().Pending();
+
+    // CHECK: inspect both APIs on a fast turn and across tunnel/menu transitions.
+    if (hold::Decide({}, g_env_capture, now, g_env_have_capture && ready) == hold::Decision::kHold) {
+        effective.u64 &= ~uint64_t(kEnvPhases);
+        g_env_marker = env::kHeld;
+        return;
+    }
+    g_env_have_capture = hold::Positioned(now.camera);
+    g_env_capture = now;
+#endif
+}
+
+bool Patch_SkipHeldEnvironmentPhase(PPCRegister& phase) {
+#if defined(LARECOMP_HAS_GPU)
+    if ((phase.u32 & kEnvPhases) == 0 || g_env_marker == 0) return false;
+    if (phase.u32 == 0x4u) {
+        mcla::gpu::OnGuestSceneComposited(g_env_marker, g_env_renderer);
+    }
+    return g_env_marker == env::kHeld;
+#else
+    return false;
+#endif
+}
+
+void FinishEnvViewPhase(const PPCRegister& phase) {
+#if defined(LARECOMP_HAS_GPU)
+    if (phase.u32 != 0x8u) return;
+    if (g_env_marker == env::kDrawn) {
+        mcla::gpu::OnGuestSceneComposited(env::kEnd, g_env_renderer);
+    }
+    g_env_marker = 0;
+#endif
+}
 
 static uint32_t ShadowPhaseBits() {
     const std::string s = larecomp::cvar::GetFlagByName("perf_shadow_phase_bits");
@@ -289,4 +413,5 @@ void LogRenderPhaseMaskOnce() {
 
 void StopFreezeWatchdog() {}
 bool Patch_ImpostorShadowGuard(PPCRegister& r3) { return false; }
+bool Patch_SkipHeldEnvironmentPhase(PPCRegister&) { return false; }
 #endif // REXGLUE_HAS_XEO3_TARGET

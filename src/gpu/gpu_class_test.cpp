@@ -65,8 +65,6 @@ const Row kTable[] = {
      "AUTO (PCSS)", "AUTO (PCSS)"},
     {Effect::kShadowResolution, "mcla_gpu_shadow_resolution", "game", "high", "high", "AUTO (GAME)",
      "AUTO (HIGH)", "AUTO (HIGH)"},
-    {Effect::kEnvResolution, "mcla_gpu_env_resolution", "game", "game", "high", "AUTO (GAME)",
-     "AUTO (GAME)", "AUTO (HIGH)"},
     {Effect::kReflectionResolution, "mcla_gpu_reflection_resolution", "game", "high", "high",
      "AUTO (GAME)", "AUTO (HIGH)", "AUTO (HIGH)"},
     // The cells are the words of the settings, which are the words the player sees (nothing is called low: the contact shadows,
@@ -932,7 +930,6 @@ void CheckHandheldCells() {
                               Effect::kAmbientOcclusion, Effect::kHeadlights, Effect::kLightShadows, Effect::kVolumetrics, Effect::kSsr}) {
     CheckEq(std::string(CellFor(effect, kL, true)), "off", std::string(CvarName(effect)) + " stays off on a handheld");
   }
-  CheckEq(std::string(CellFor(Effect::kEnvResolution, kL, true)), "game", "the environment detail stays the game's on a handheld");
 
   // The numbers that are the CPU's stay Low's: the Deck's four Zen 2 cores keep the game's city detail (the scales have no handheld cells).
   for (int i = 0; i < kScaleCount; ++i) {

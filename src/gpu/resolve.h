@@ -110,6 +110,7 @@ class ResolveCache {
       uint32_t cells_x = 0;
       uint32_t cells_y = 0;
       uint32_t covered = 0;
+      uint64_t last_write_frame = 0;
       std::vector<uint64_t> bits;  // row-major, cells_x per row, 64 per word
       bool complete() const { return covered == cells_x * cells_y; }
     };
@@ -219,6 +220,9 @@ class ResolveCache {
   // An active product whose guest range shares a byte with [start, start +
   // length), or null (the reinterpretation report).
   const Product* FindOverlap(uint32_t start, uint32_t length);
+  // Both environment products have to be complete before the guest can hold
+  // them. On a refresh every level must also have been written this frame.
+  bool EnvProductsReady(Scale map_scale, bool refreshed);
 
   // A lock record (24.33 M5.2c): the CPU locked a range that
   // holds a resolve destination. The resolve memory copies the range's pages

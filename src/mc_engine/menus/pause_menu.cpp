@@ -1835,10 +1835,9 @@ const char* const kNativeSsrNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
 // this GPU (the first value's label): GAME on an integrated GPU, HIGH on the rest. The same value names as
 // the road reflections'. The label is "SHADOW DETAIL" (13 characters) with a value of at most 11
 // ("AUTO (HIGH)").
-// Car reflections (mcla_gpu_env_resolution, gpu/side_view_env.cpp, live): how sharp the world the paint,
-// windows and bonnet of the cars reflect is, the game's own 512x256 (GAME), 1024x512 (HIGH) or 1536x768
-// (ULTRA). The same values and the same label rule as the road reflections' row. Width: the label is 17
-// characters and the longest value "AUTO (HIGH)" 11, 28 together, under the page's 40.
+// Car reflections use the game's 512x256 map (Off) or 1024x512 (On).
+const char* const kNativeCarReflVals[] = {"off", "on"};
+const char* const kNativeCarReflNames[] = {"OFF", "ON"};
 // Car shadows (mcla_gpu_car_shadow_map, gpu/car_shadow_map.h, live): your car casts a shadow of its real shape on itself and on the road beside
 // it (the game's own sun shadows draw it in a rough low-detail form, so the wing, the mirrors and the wheels cast none of their own): OFF, HIGH
 // (a 1024x1024 map fitted to the car) or ULTRA (2048x2048). AUTO says what it comes to on this GPU, like the other AUTO rows: ULTRA on a
@@ -2042,7 +2041,7 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(Str("PM_RxGpuRoadRefl", "mcla_gpu_reflection_resolution",
                                 "ROAD REFLECTIONS: ", kSideViewVals, kSideViewNames, 4)),
     NativeOnly(Str("PM_RxGpuCarRefl", "mcla_gpu_env_resolution",
-                                "CAR REFLECTIONS: ", kSideViewVals, kSideViewNames, 4)),
+                                "CAR REFLECTIONS: ", kNativeCarReflVals, kNativeCarReflNames, 2)),
     NativeOnly(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
                                 "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1)),
     NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections",

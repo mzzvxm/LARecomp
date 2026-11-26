@@ -183,7 +183,7 @@ inline constexpr Row kRows[] = {
 
     // --- REFLECTIONS ---
     {"mcla_gpu_reflection_resolution", Page::kReflections, {"game", "high", "high", "high", "high"}},
-    {"mcla_gpu_env_resolution", Page::kReflections, {"game", "game", "high", "game", "high"}},
+    {"mcla_gpu_env_resolution", Page::kReflections, {"off", "on", "on", "on", "on"}},
     {"mcla_gpu_car_selfrefl", Page::kReflections, {"off", "on", "on", "on", "on"}},
     // The ray traced half of CAR SELF-REFLECTIONS (the row writes both settings: off, on, ray traced). The setting takes auto or off only: the RT presets write `auto`, which the ray tracing
     // rung's table turns into `on` where the card traces (Resolved below).
@@ -226,7 +226,7 @@ inline constexpr int kExemptCount = static_cast<int>(sizeof(kExempt) / sizeof(kE
 // The rows whose ENHANCED ULTRA cell is below the row's top level because that is what the High class's `auto` was (see the header), with the top level: the final pass raises them or
 // says why not. (MSAA is below its top, 8x, on purpose. LOD TRAFFIC 3X is the ceiling that matters: gpu_class.h kScales.)
 inline constexpr Note kBelowMax[] = {
-    {"mcla_gpu_shadow_resolution", "ultra"}, {"mcla_gpu_env_resolution", "ultra"}, {"mcla_gpu_reflection_resolution", "ultra"},
+    {"mcla_gpu_shadow_resolution", "ultra"}, {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_ssgi", "ultra"}, {"mcla_gpu_volumetrics", "ultra"}, {"mcla_gpu_traffic_shadows", "all"},
     {"mcla_gpu_msaa", "8"}, {"mcla_gpu_ssr", "ultra"},
 };

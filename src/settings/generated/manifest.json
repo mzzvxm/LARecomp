@@ -3444,11 +3444,22 @@
  },
  "mcla_gpu_env_resolution": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"on\"",
   "category": "MCLA/GPU",
-  "help": "\"How sharp the reflections in the paint, windows and bonnet of the cars are: the game draws the \"\n    \"world around the car as a 512x256 picture for them to reflect, which is why the reflections look \"\n    \"soft up close. game (the game's own 512x256), high (1024x512), ultra (1536x768), or auto (game on \"\n    \"an integrated graphics chip or a card with less than about 6 GB of memory, high on any other card). \"\n    \"Costs a little graphics card time and video memory (about 4 MiB for high, 16 MiB for ultra). Live.\"",
+  "help": "\"Sharper reflections in car paint, windows and trim. On draws a \"\n    \"1024x512 environment map. Off uses the game's 512x256 map. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"game\", \"high\", \"ultra\")"
+   "rex::Allowed(\"on\", \"off\", \"auto\", \"game\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_env_hold": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reuse the car environment map until the view or lighting changes. \"\n    \"Turn off to draw it every frame for comparison. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

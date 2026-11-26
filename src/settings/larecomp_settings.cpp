@@ -16,6 +16,7 @@
 
 #include "gpu/gfx_preset.h"
 #include "gpu/denoiser_setting.h"
+#include "gpu/env_hold_link.h"
 #include "settings/immortal.h"
 #include "settings/watch_table.h"
 
@@ -215,6 +216,9 @@ std::string Get(std::string_view name) {
     return Get("gpu.resolution_scale_x");
   }
   rex::SettingBase* setting = Find(name);
+  if (setting && name == mcla::gpu::env_hold::kResolutionSetting) {
+    return std::string(mcla::gpu::env_hold::Resolution(setting->GetText()));
+  }
   return setting ? setting->GetText() : std::string();
 }
 

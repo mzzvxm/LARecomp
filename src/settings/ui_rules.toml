@@ -319,11 +319,6 @@ auto_label = true
 [rows.PM_RxGpuSsr.value."auto"]
 auto_label = true
 
-[rows.PM_RxGpuCarRefl]
-
-[rows.PM_RxGpuCarRefl.value."auto"]
-auto_label = true
-
 [rows.PM_RxGpuCarShadowMap]
 
 [rows.PM_RxGpuCarShadowMap.value."auto"]
