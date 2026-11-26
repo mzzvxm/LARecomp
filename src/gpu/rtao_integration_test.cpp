@@ -14,7 +14,7 @@ namespace fs = std::filesystem;
 namespace {
 constexpr std::array Settings{
     "mcla_gpu_rtao_rays", "mcla_gpu_rtao_reach", "mcla_gpu_rtao_range",
-    "mcla_gpu_rtao_scale", "mcla_gpu_rtao_alpha", "mcla_gpu_rtao_screen",
+    "mcla_gpu_rtao_scale", "mcla_gpu_rtao_quarter_at_4k", "mcla_gpu_rtao_alpha", "mcla_gpu_rtao_screen",
     "mcla_gpu_rtao_interior", "mcla_gpu_rtao_check", "mcla_gpu_rtao_view",
     "mcla_gpu_rtao_history", "mcla_gpu_rtao_denoise", "mcla_gpu_rtao_spatial_resolve", "mcla_gpu_rtao_cabin_guide", "mcla_gpu_rtao_raw_scale",
     "mcla_gpu_dlss_rr_rt_ao", "mcla_gpu_rtao_blend_car",

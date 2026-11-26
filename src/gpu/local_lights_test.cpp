@@ -258,6 +258,7 @@ void LayoutChecks(const std::string& hlsli) {
   // GB-NEON-CONTACT: the push flags of the contact term (the cap taken off, the term off) and the cap's number of marches
   want("LP_PUSH_FULL_CONTACT", lp::kPushFullContact);
   want("LP_PUSH_NO_CONTACT", lp::kPushNoContact);
+  want("LP_PUSH_FAR_DEPTH_SHIFT", lp::kPushFarDepthShift);
   want("LP_CONTACT_MARCHES", lp::kContactMarches);
   Check(lp::kMaxDrawLights == neon_light::kTubePoints && lp::kPushLateReach == 1u && lp::kPushFullContact == 2u && lp::kPushNoContact == 4u && lp::kCostOffMask == 7u && lp::kCostOffReachFirst == 1u &&
             lp::kCostOffMerge == 2u && lp::kCostOffContactCap == 4u && lp::kContactMarches == 2 && lp::kCostOffContactCap == (lp::kPushFullContact << 1),
@@ -640,6 +641,12 @@ void ScissorChecks() {
       rng.Direction(l.dir);
     }
     const lp::PixelRect rect = lp::ScissorOfLight(l, rows, tan_x, tan_y, w, h);
+    const lp::PixelRect sphere = lp::SphereScissorOfLight(l, rows, tan_x, tan_y, w, h);
+    lp::Selection selection;
+    selection.lights[0] = l;
+    selection.count = 1;
+    const uint32_t packed_depth = lp::FarDepthBits(selection, lp::PassDraw{0, 1, rect}, rows);
+    const float far_depth = float(packed_depth >> lp::kPushFarDepthShift) / 16.0f;
     // every world point the light can reach, in front of the camera and on the picture, lies in the rectangle
     int tested = 0;
     for (int k = 0; k < 4000 && tested < 400; ++k) {
@@ -664,8 +671,12 @@ void ScissorChecks() {
         continue;  // off the picture
       }
       Check(px >= float(rect.x0) && px <= float(rect.x1) && py >= float(rect.y0) && py <= float(rect.y1), Num("a lit point at pixel (%.1f, %.1f) is in the light's rectangle", px, py));
+      Check(px >= float(sphere.x0) && px <= float(sphere.x1) && py >= float(sphere.y0) && py <= float(sphere.y1),
+            Num("the sphere scissor contains the lit point (%.1f, %.1f)", px, py));
+      Check(far_depth >= t, "the depth bound contains the lit point");
     }
     Check(rect.x0 >= 0 && rect.y0 >= 0 && rect.x1 <= int32_t(w) && rect.y1 <= int32_t(h), "the rectangle is inside the picture");
+    Check(sphere.x0 >= 0 && sphere.y0 >= 0 && sphere.x1 <= int32_t(w) && sphere.y1 <= int32_t(h), "sphere scissor is inside the picture");
   }
   // a light behind the camera: nothing; a light the camera is inside: the whole picture; a light ahead: a smaller part
   float vi[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};  // looks along -z
@@ -674,15 +685,26 @@ void ScissorChecks() {
   const float behind_pos[3] = {0.0f, 0.0f, 200.0f};  // +z is behind
   Light lamp = GameLamp(behind_pos, 55.0f, false);
   Check(lp::ScissorOfLight(lamp, rows, 0.8f, 0.45f, 1920, 1080).Empty(), "a light whose whole reach is behind the camera has an empty rectangle");
+  Check(lp::SphereScissorOfLight(lamp, rows, 0.8f, 0.45f, 1920, 1080).Empty(), "a sphere behind the camera has an empty scissor");
   const float at_camera[3] = {0.0f, 0.0f, 0.0f};
   lamp = GameLamp(at_camera, 55.0f, false);
   const lp::PixelRect full = lp::ScissorOfLight(lamp, rows, 0.8f, 0.45f, 1920, 1080);
   Check(full.x0 == 0 && full.y0 == 0 && full.x1 == 1920 && full.y1 == 1080, "a light at the camera has the whole picture");
+  Check(lp::SphereScissorOfLight(lamp, rows, 0.8f, 0.45f, 1920, 1080).Area() == full.Area(), "a sphere overlapping the camera keeps the full scissor");
   const float ahead[3] = {0.0f, 0.0f, -300.0f};
   lamp = GameLamp(ahead, 20.0f, false);  // reach 44.7 m
   const lp::PixelRect small = lp::ScissorOfLight(lamp, rows, 0.8f, 0.45f, 1920, 1080);
   Check(!small.Empty() && small.Area() < 1920ull * 1080ull / 4ull, "a lamp 300 m ahead covers a small part of the picture");
   Check(small.x0 < 960 && small.x1 > 960 && small.y0 < 540 && small.y1 > 540, "... round the picture's centre");
+  const lp::PixelRect tighter = lp::SphereScissorOfLight(lamp, rows, 0.8f, 0.45f, 1920, 1080);
+  Check(tighter.Area() * 4 < small.Area() * 3 && tighter.x0 < 960 && tighter.x1 > 960 && tighter.y0 < 540 && tighter.y1 > 540,
+        "the tangent projection reduces a distant lamp's covered pixels by at least a quarter");
+  lp::Rows skewed = rows;
+  skewed.right[2] = 0.1f;
+  const lp::PixelRect skew_old = lp::ScissorOfLight(lamp, skewed, 0.8f, 0.45f, 1920, 1080);
+  const lp::PixelRect skew_new = lp::SphereScissorOfLight(lamp, skewed, 0.8f, 0.45f, 1920, 1080);
+  Check(skew_new.x0 == skew_old.x0 && skew_new.y0 == skew_old.y0 && skew_new.x1 == skew_old.x1 && skew_new.y1 == skew_old.y1,
+        "an unorthogonal view falls back to the legacy scissor");
   // a narrow cone's sphere is smaller than the range's ball
   float c[3], r;
   Light spot = HeadlightOf(1, 0.0f);
@@ -692,6 +714,33 @@ void ScissorChecks() {
   Light omni = GameLamp(ahead, 55.0f, false);
   lp::BoundingSphere(omni, c, &r);
   Check(r == omni.range && c[2] == ahead[2], "an omni light's sphere is the ball of its range");
+}
+
+void DepthBoundChecks() {
+  lp::Rows rows;
+  rows.right[2] = 0.1f;  // reconstruction is allowed a slightly skewed basis
+  lp::Selection selection;
+  selection.count = 2;
+  const float a[3] = {0.0f, 0.0f, 8.0f}, b[3] = {6.0f, 0.0f, 22.0f};
+  selection.lights[0] = GameLamp(a, 50.0f, false);
+  selection.lights[1] = GameLamp(b, 50.0f, false);
+  selection.lights[0].range = 2.0f;
+  selection.lights[1].range = 3.0f;
+  const lp::PassDraw group{0, 2, {}};
+  const auto in_metres = [](uint32_t word) { return double(word >> lp::kPushFarDepthShift) / 16.0; };
+  const double edge = 22.0 - 0.1 * 6.0 + 3.0 * std::sqrt(1.01);
+  const uint32_t packed = lp::FarDepthBits(selection, group, rows);
+  Check(in_metres(packed) >= edge && in_metres(packed) < edge + 0.125, "the draw uses a rounded-up bound for its farthest sphere");
+  Check((packed & ((1u << lp::kPushFarDepthShift) - 1u)) == 0, "the depth limit does not overwrite the contact or reach flags");
+  std::swap(selection.lights[0], selection.lights[1]);
+  Check(lp::FarDepthBits(selection, group, rows) == packed, "the bound includes a far light anywhere in the draw");
+  Check(in_metres(lp::FarDepthBits(selection, lp::PassDraw{1, 1, {}}, lp::Rows{})) == 10.0625,
+        "a bound exactly on the grid still leaves room for reconstruction rounding");
+  rows.forward[2] = 0.0f;
+  Check(lp::FarDepthBits(selection, group, rows) == 0, "an invalid basis disables the bound");
+  rows.forward[2] = 1.0f;
+  selection.lights[1].range = 60000.0f;
+  Check(lp::FarDepthBits(selection, group, rows) == 0, "a bound at the sky distance is unnecessary");
 }
 
 // ---------------------------------------------------------------------------
@@ -1853,8 +1902,12 @@ void SourceChecks(const std::string& src) {
         "the layout is four texture sets, the buffer's set (space 4) and the pixel push block (space 5)");
   Check(Has(ps, "uint4 slots;") && Has(ps, "uint4 info;") && Has(ps, "#include \"local_light.hlsli\""), "the shader's push block is two uint4 and it includes the twin");
   Check(Has(cpp, "push.slots[0] = summary.sample_slot;") && Has(cpp, "push.info[2] = gb.sample0;") && Has(cpp, "push.info[0] = draw.first;") && Has(cpp, "push.info[1] = draw.count;") &&
-            Has(cpp, "push.info[3] = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) | ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);"),
-        "the push fields the shader reads are filled: the draw's first light and its count, the host sample, the flags (the reach order, the contact cap, the contact term)");
+            Has(cpp, "push.info[3] = draw_flags | (use_far_depth ? ll::FarDepthBits(selection, draw, rows) : 0u);") &&
+            Has(cpp, "ll::kPushLateReach : 0u") && Has(cpp, "ll::kPushFullContact : 0u") && Has(cpp, "0u : ll::kPushNoContact"),
+        "the push carries the draw's light range, host sample, reach and contact flags, and the optional far depth");
+  Check(Has(ps, "float(g_push.info.w >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f)") && Has(ps, "far_depth > 0.0f && t > far_depth") &&
+            Has(ps, "LpWorldAtDepth(g, p, 0.0f, world)"),
+        "the shader uses the depth limit for the draw's reach test and leaves the shadow guides alone");
   // GB-NEON-CONTACT: the setting is read live, with its A/B
   Check(Has(cpp, "const bool contact_on = st::mcla_gpu_neon_contact.Get();") && Has(cpp, "contact_on_ = contact_on;"), "the pass reads mcla_gpu_neon_contact live (the A/B of the contact term)");
   // GB-NEON-COST: the pass makes its draws from the plan (a car's tube is one) and reads the A/B's setting live
@@ -2782,6 +2835,7 @@ int main(int argc, char** argv) {
   VoteChecks();
   SelectionChecks();
   ScissorChecks();
+  DepthBoundChecks();
   BufferChecks();
   ShadowBufferChecks();
   ShadowPixelChecks();

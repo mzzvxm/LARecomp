@@ -63,6 +63,7 @@
 #define LP_PUSH_LATE_REACH 1
 #define LP_PUSH_FULL_CONTACT 2
 #define LP_PUSH_NO_CONTACT 4
+#define LP_PUSH_FAR_DEPTH_SHIFT 3
 
 // ---- the street lamps' table (local_lights_rules.h kLampOffset; lamp_shadow_frame.h GpuLampTable) --------------------------------------------------
 // After the headlights' table: a 32 byte header (uint count, atlas bindless slot, atlas width, atlas height, layers of entries 0..15, layers of entries 16..31, two reserved), then twenty 96 byte views

@@ -648,6 +648,28 @@ void TestScheduler() {
   const gu::Budget ub = gu::BudgetOf(gi::BudgetOf(gi::Layout::kStandard));
   {
     Rig rig;
+    auto in = rig.Inputs();
+    in.reuse_coarse = true;
+    const gu::Plan warm = rig.sched.Make(rig.state, in, ub.max_probes);
+    Check(warm.per_cascade[1] == 8192 && warm.per_cascade[2] == 4096, "reuse keeps the full warm-up quota");
+    rig.Settle();
+    in = rig.Inputs();
+    in.reuse_coarse = true;
+    const gu::Plan steady = rig.sched.Make(rig.state, in, ub.max_probes);
+    Check(steady.per_cascade[0] == 4096 && steady.per_cascade[1] == 1024 && steady.per_cascade[2] == 512,
+          "reuse halves the coarse quotas and keeps the finest quota");
+    rig.camera[0] += 8.0;
+    rig.state.Move(rig.camera);
+    in = rig.Inputs();
+    in.reuse_coarse = true;
+    rig.sched.MarkAllStale();
+    const gu::Plan priority = rig.sched.Make(rig.state, in, ub.max_probes);
+    Check(priority.per_cascade[1] == 2048 && priority.dirty_taken[1] > 0 && priority.stale_taken[1] > 0 &&
+              priority.dirty_taken[1] + priority.stale_taken[1] == priority.per_cascade[1] && priority.per_cascade[2] == 1024,
+          "new and stale probes still take the full quota before round-robin reuse");
+  }
+  {
+    Rig rig;
     Check(rig.state.BudgetScale() == gi::kCutWarmupBudgetScale && rig.state.TotalDirty() == 49152, "a fresh field: every probe is dirty and the warm-up budget is 4x");
     const gu::Plan plan = rig.sched.Make(rig.state, rig.Inputs(), ub.max_probes);
     Check(plan.per_cascade[0] == 16384 && plan.per_cascade[1] == 8192 && plan.per_cascade[2] == 4096 && plan.Total() == 28672,

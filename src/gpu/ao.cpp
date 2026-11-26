@@ -2832,7 +2832,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
   if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
-    plan.gi.atrous = uint32_t(ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1]));
+    // CHECK: compare motion stability at neon, tail light and headlight edges in the residual bounce.
+    const bool trim_height_pass = plan.gi.lights_only && plan.render[1] >= 2160 &&
+                                  larecomp::settings::mcla_gpu_ssgi_residual_short_filter.Get();
+    plan.gi.atrous = uint32_t(ssgi_stable::AtrousIterations(int(plan.gi.atrous), plan.ao[1], trim_height_pass));
   }
 
   // The depth plane is read as a texture by every pass and by the apply (after the resolve it is
