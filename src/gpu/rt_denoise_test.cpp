@@ -1109,7 +1109,7 @@ void TestSources(const std::string& dir) {
             Has(trigger, "images_ok = EnsureImages(width, height, false, false);") && Before(trigger, "    rt = false;     // the confidence image or its framebuffer could not be made", "    raw_why = ssr::RawWhy::kImages;"),
         "R6 merge: the images are made for both modes at once, and when they cannot be the fallback goes first, then the raw mode");
   Check(Has(ssr_cpp, "if (raw) {\n    ok = ok && passes_->EnsureImage(hit_, render_width, render_height, kHitFormat, \"ssr hit distance\");\n  } else {\n    ok = ok && passes_->EnsureImage(accum_[0]") &&
-            Has(ssr_cpp, "passes_->EnsureImage(trace_, width, height, kFormat, \"ssr trace\", rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET)"),
+            Has(ssr_cpp, "passes_->EnsureImage(trace_, width, height, kFormat, \"ssr trace\", trace_flags)"),
         "R6 merge: a raw frame has the hit image and no accumulation; the trace image has the storage flags in any frame that follows the fallback, raw or not");
   Check(Has(ssr_cpp, "ScreenReflectionsPixelShader(i)") && Has(ssr_h, "kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount") && Has(shaders_h, "case 7: return MCLA_GPU_HOST_SHADER_BLOB(ssr_apply_raw_ps);") &&
             Has(shaders_h, "case 5: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ps);") && Has(shaders_h, "case 6: return MCLA_GPU_HOST_SHADER_BLOB(ssr_trace_rt_ms_ps);"),

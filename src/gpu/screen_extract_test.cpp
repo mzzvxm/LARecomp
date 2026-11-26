@@ -782,7 +782,7 @@ void SourceChecks(const std::string& gpu) {
         "the owner's kinds follow the same conditions as the old path's own variants (depth, level, and the colour chain with the bounce light's shaders): one side lists, the other does not");
   Check(Has(ao_cpp, "chain_side_ = larecomp::settings::mcla_gpu_screen_extract.Get();  // the side whose chain pipelines the start lists") && Has(ao_h, "uint32_t ChainKindsAtStart() const { return start_chain_kinds_; }"),
         "the AO remembers the side the start listed and hands its kinds to the renderer");
-  const std::string begin_frame = Between(ao_cpp, "void AmbientOcclusion::BeginFrame() {", "mode_ = mode;");
+  const std::string begin_frame = Between(ao_cpp, "void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {", "mode_ = mode;");
   Check(order(begin_frame, {"const bool chain_side = larecomp::settings::mcla_gpu_screen_extract.Get();", "if (chain_side != chain_side_) {", "chain_side_ = chain_side;", "occlusion_built_ = false;",
                             "contact_built_ = false;", "bounce_built_ = false;", "HoldUntilBuilt(&mode, &contact, &gi_mode);"}),
         "a flip of mcla_gpu_screen_extract asks HoldUntilBuilt again (before it runs), which lists the other side's pipelines on a worker and holds the effects off until they are made, instead of Pipeline() making them on the render thread");

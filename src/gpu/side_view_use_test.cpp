@@ -418,7 +418,7 @@ void CheckSource(const std::string& dir) {
         "SHARP MINIMAP enables the UI map views live");
   // The setting is a REX_SETTING row of src/settings/generated (or, before the conversion, the REXCVAR_DEFINE call of side_view_ui_map.cpp): setting_source.h reads either form.
   const setting_source::Info minimap = setting_source::Find(dir, ui_map, "mcla_ui_minimap_scale");
-  Check(setting_source::DefaultIsTrue(minimap) && !minimap.debug_only, "the setting is on by default and is no debug setting any more");
+  Check(setting_source::DefaultIsTrue(minimap) && minimap.debug_only, "the setting is on by default and a debug setting (the SHARP MINIMAP row is on the debug menu's FIXES page)");
   Check(Has(edram, "side_views::Wanted(resolution_scale_)") && Has(edram, "side_views::FollowOutput(side_scales_, output)"),
         "EdramTargets asks for the classes at the screen's scale, and a change of the render scale moves the followers with it");
   Check(!Has(edram, "{SideView::kShadow, SideView::kEnv, SideView::kReflection}"), "no loop over the classes names three of them any more");

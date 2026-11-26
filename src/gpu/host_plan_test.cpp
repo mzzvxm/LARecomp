@@ -100,9 +100,13 @@ void CheckOcclusion() {
   Check(manual.level == Level::kUltra && manual.rt && !manual.automatic && !manual.unknown,
         "available manual RT keeps Ultra as the fallback");
   const auto plan = Decide(GpuClass::kHigh, true, "auto", "off", "off", "high", "off", RtTier::kStrong, true);
-  Check(plan.of(Pass::kOcclusion).rt && plan.of(Pass::kOcclusion).automatic &&
+  Check(!plan.of(Pass::kOcclusion).rt && plan.of(Pass::kOcclusion).automatic &&
             plan.of(Pass::kOcclusion).level == Level::kUltra && plan.on(Pass::kBounce),
-        "strong Auto carries RT through the plan and keeps the bounce dependency satisfied");
+        "strong Auto is the class's raster Ultra (ray tracing is an explicit choice) and keeps the bounce dependency satisfied");
+  const auto rt_plan = Decide(GpuClass::kHigh, true, "rt", "off", "off", "high", "off", RtTier::kStrong, true);
+  Check(rt_plan.of(Pass::kOcclusion).rt && !rt_plan.of(Pass::kOcclusion).automatic &&
+            rt_plan.of(Pass::kOcclusion).level == Level::kUltra && rt_plan.on(Pass::kBounce),
+        "an explicit RT carries RT through the plan and keeps the bounce dependency satisfied");
   const auto pending = Resolve(Pass::kOcclusion, GpuClass::kHigh, true, "auto", RtTier::kStrong, false);
   Check(pending.level == Level::kUltra && !pending.rt && pending.automatic, "pending Auto plans Ultra");
 }

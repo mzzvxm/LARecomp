@@ -165,6 +165,8 @@ const ImagePair kImages[] = {
     {"car_rt_refl_denoise_cs.hlsl", "g_output", "rgba16f", "car_rt_refl.cpp", "car rt refl scratch", false, "R16G16B16A16_FLOAT"},
     {"car_rt_refl_hit_cs.hlsl", "g_output", "r16f", "car_rt_refl.cpp", "car rt refl hit distance", false, "R16_FLOAT"},
     {"ssr_rt_trace_cs.hlsl", "g_trace", "rgba16f", "ssr.cpp", "kFormat", true, "R16G16B16A16_FLOAT"},
+    // the reflection hit classes the capture stream reads (refl-hit-class: only in the SSR_REFLHIT variants of the trace)
+    {"ssr_rt_trace_cs.hlsl", "g_reflhit", "r32ui", "ssr.cpp", "kCaptureHitFormat", true, "R32_UINT"},
     {"rt_denoise_engine.hlsli", "g_dn_out", "rgba16f", "rt_denoise.cpp", "rt denoise image", false, "R16G16B16A16_FLOAT"},
     {"gi_pixel_trace_cs.hlsl", "g_signal", "rgba16f", "gi_pixel.cpp", "gi pixel signal", false, "R16G16B16A16_FLOAT"},
     {"gi_pixel_trace_cs.hlsl", "g_depth", "r32f", "gi_pixel.cpp", "gi pixel depth 0", false, "R32_FLOAT"},
@@ -186,7 +188,7 @@ const ImagePair kImages[] = {
 std::string HostFormatOf(const std::string& spirv_format) {
   static const std::map<std::string, std::string> kMap = {{"rgba8", "R8G8B8A8_UNORM"}, {"rgba16f", "R16G16B16A16_FLOAT"}, {"rg16f", "R16G16_FLOAT"},
                                                           {"r16f", "R16_FLOAT"},        {"r32f", "R32_FLOAT"},            {"r8", "R8_UNORM"},
-                                                          {"rgba8snorm", "R8G8B8A8_SNORM"}};
+                                                          {"rgba8snorm", "R8G8B8A8_SNORM"}, {"r32ui", "R32_UINT"}};
   const auto it = kMap.find(spirv_format);
   return it == kMap.end() ? std::string() : it->second;
 }
@@ -223,7 +225,7 @@ void TestStorageImageFormats(const std::filesystem::path& folder) {
     const std::string made = CppFormatOf(cpp, p.marker, p.constant);
     Check(made == p.host, label + ": the C++ makes the image in " + p.host + " (found '" + made + "')");
   }
-  // Every image format the shaders name is one of the seven the table knows: a new one is a new row above.
+  // Every image format the shaders name is one of the eight the table knows: a new one is a new row above.
   std::set<std::string> named;
   for (const auto& entry : std::filesystem::directory_iterator(folder / "hlsl")) {
     const std::string text = ReadAll(entry.path());

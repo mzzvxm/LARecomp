@@ -267,7 +267,8 @@ void TestRayTracedOcclusion() {
   Saved saved = Make(GpuClass::kHigh, true, "rt", "off", "off", "high", "game", true);
   saved.rt_tier = RtTier::kStrong;
   saved.rtao_built = true;
-  for (const char* value : {"rt", "auto"}) {
+  // (a saved legacy "auto" is no longer the ray traced arm: the class's own level is shown, and presets are the only automatic choice)
+  for (const char* value : {"rt"}) {
     saved.occlusion = value;
     const Standing standing = StandingOf(effect, saved);
     Check(standing.on && !standing.blocked && standing.rt_ao_state == "RAY TRACED", "RT AO is the starting arm");

@@ -144,15 +144,12 @@ int main(int argc, char** argv) {
           }
           // auto: the reflections' own Auto cell at the rung
           const cmc::Decision autod = cmc::Decide(cmc::World::kAuto, "auto", cls, tier, rt_class, data);
-          const bool auto_on = rung == RtTier::kStrong;
+          // a saved legacy auto is off on every rung (RT CITY REFLECTIONS is an explicit choice, a preset's): the environment map, whatever the card
           if (rt_class == GpuClass::kLow || rung == RtTier::kNone) {
             Check(autod.wanted == Level::kOff && autod.why == cmc::Why::kCard, "auto on a card that does not trace: the environment, for the card");
-          } else if (!auto_on) {
-            Check(autod.wanted == Level::kOff && autod.why == cmc::Why::kAutoOff && !autod.city(), "auto on a weak ray tracing card: the environment (the city is a strong card's look)");
-            Check(!cmc::NeedsFor(autod).any(), "... and it asks for nothing: a weak card is not made to build the city by an effect that costs it");
           } else {
-            Check(autod.wanted == Level::kHigh && autod.cell.reach > 0.0f, "auto on a strong card: the city at HIGH");
-            Check(autod.city() == (data == crs::Data::kReady), "... once the data stands");
+            Check(autod.wanted == Level::kOff && autod.why == cmc::Why::kAutoOff && !autod.city(), "auto on a card that traces: the environment (the city is an explicit choice)");
+            Check(!cmc::NeedsFor(autod).any(), "... and it asks for nothing: no card is made to build the city by an effect that costs it");
           }
           // the decision is the paint's own: the same level for the same word (the budget class Low is the one place the mirror says off for a card the paint's rule lets through)
           if (rt_class != GpuClass::kLow) {
@@ -177,7 +174,7 @@ int main(int argc, char** argv) {
       }
     }
     // the cells the classes run: a strong High card 150 m with the weight full to 60 percent; a Mid class by hand 60 m
-    const cmc::Decision high = cmc::Decide(cmc::World::kAuto, "auto", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, crs::Data::kReady);
+    const cmc::Decision high = cmc::Decide(cmc::World::kAuto, "high", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, crs::Data::kReady);
     Check(high.city() && Near(high.cell.reach, 150.0) && Near(high.cell.fade_from, 0.6, 1e-6), "a strong High card: 150 m, the weight full to 60 percent");
     const cmc::Decision weak_high = cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kWeak, gc::RtClass(GpuClass::kHigh, RtTier::kWeak), crs::Data::kReady);
     Check(weak_high.city() && Near(weak_high.cell.reach, 60.0), "a weak card of the High class by hand: the Mid class's 60 m");
@@ -191,7 +188,7 @@ int main(int argc, char** argv) {
     Check(cmc::Decide(cmc::World::kCity, "auto", GpuClass::kHigh, RtTier::kStrong, GpuClass::kLow, crs::Data::kReady).why == cmc::Why::kCard, "... and the reason is the card");
     // the data's states one at a time on a strong card
     for (const crs::Data data : kDatas) {
-      const cmc::Decision d = cmc::Decide(cmc::World::kAuto, "auto", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, data);
+      const cmc::Decision d = cmc::Decide(cmc::World::kAuto, "high", GpuClass::kHigh, RtTier::kStrong, GpuClass::kHigh, data);
       Check(d.wanted == Level::kHigh && d.data == data, "the data's state is carried");
       Check(d.city() == (data == crs::Data::kReady), "the city runs only with the data ready");
       Check(cmc::NeedsFor(d).city == Level::kHigh, "the wants are out in every state of the data");

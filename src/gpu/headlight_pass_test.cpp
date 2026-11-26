@@ -660,7 +660,7 @@ void SourceChecks(const std::string& src) {
     Check(Has(scene_cpp, "key.ps_variant = dropped_word;"), "... a masking blend that drops the stage takes its word without it");
     // the order: the dropped draw's decision replaces the first one, and the key is built from the decision that stands
     const size_t drop_at = At(scene_cpp, "forward_dropped = true;");
-    const size_t note_at = At(scene_cpp, "gbuffer_->NoteDraw(decision.why, r.ps_identity);");
+    const size_t note_at = At(scene_cpp, "gbuffer_->NoteDraw(decision.why, r.ps_identity, facts.main_samples);");
     Check(drop_at != std::string::npos && note_at != std::string::npos && drop_at < note_at, "the drop is decided before the draw is noted and its key built");
     Check(Has(rig_h, "void NoteDroppedDraw() { ++dropped_draws_; }") && Has(scene_cpp, "headlights_->NoteDroppedDraw();"), "the rig counts the draws that dropped the stage (its census line)");
   }
