@@ -1,11 +1,14 @@
-"""Validator of the four launcher-follows-the-game contract files (LAUNCHER-FOLLOWS-GAME.md): settings-ui.json, machine.json, install-manifest.json,
-launcher-recipe.json (and the small --describe document). It checks a JSON against its schema in schemas/ and then the rules a schema cannot express
+"""Validator of the launcher-follows-the-game contract files (LAUNCHER-FOLLOWS-GAME.md): settings-ui.json, machine.json, install-manifest.json,
+launcher-recipe.json (and the small --describe document and the dependency pins, cmake/deps.json). It checks a JSON against its schema in schemas/ and then the rules a schema cannot express
 (section 3, "Writers"): an expression parses, only declared namespaces and functions, every fact path is in fact-dictionary.json, a setting a row names exists,
 a value id is valid for its setting, `apply` agrees with `life`, `live.*` has a `??` fallback, presets cover what they should, facts_used is what the rules read.
 
     python -I documentation/contract/validate_contract.py [--kind K] [--strict] [--quiet] FILE...     check files (kind from their "schema" word)
     python -I documentation/contract/validate_contract.py --selftest                                   the validator's own tests (examples must pass, mutations must fail)
     python -I documentation/contract/validate_contract.py --facts-used FILE                           print the facts_used list of a settings-ui.json
+
+Several files in one run are one game build: they must carry the same optional min_launcher (the oldest launcher program that can set up this game version;
+the value of launcher-recipe.json, the one place it is edited, when the recipe is among the files). A malformed min_launcher is an error.
 
 Output: one line per finding, `ERROR|WARN|INFO <file>: <where>: <what>`; exit 0 when there is no ERROR (with --strict, no WARN either).
 As a module: validate(doc, kind=None, dictionary=None, strict=False, manifest=None) -> Report(errors, warnings, infos). Pure Python 3, no packages (the JSON Schema
@@ -27,6 +30,7 @@ KINDS = {
     'larecomp.install-manifest': 'install-manifest',
     'larecomp.launcher-recipe': 'launcher-recipe',
     'larecomp.describe': 'describe',
+    'larecomp.deps': 'deps',
 }
 SCHEMA_FILES = {
     'settings-ui': 'settings-ui.schema.json',
@@ -34,7 +38,11 @@ SCHEMA_FILES = {
     'install-manifest': 'install-manifest.schema.json',
     'launcher-recipe': 'launcher-recipe.schema.json',
     'describe': 'describe.schema.json',
+    'deps': 'deps.schema.json',
 }
+# min_launcher: 1 to 4 dot-separated non-negative integers (the launcher program's own version scheme). Read with fullmatch: a schema `$` also
+# accepts a trailing newline.
+MIN_LAUNCHER = re.compile(r'[0-9]+(\.[0-9]+){0,3}')
 FACT_NAMESPACES = ('gpu', 'api', 'features', 'os', 'display', 'cpu', 'build', 'install', 'live')
 FUNCTIONS = {'resolved': 1, 'auto_of': 1, 'known': 1, 'contains': 2, 'min': 2, 'max': 2}
 KNOWN_KINDS = ('choice', 'bool', 'number', 'text', 'color', 'action', 'link', 'carbon')
@@ -1291,13 +1299,44 @@ def lint_describe(doc, rep, facts, strict=False):
     pass
 
 
+def lint_deps(doc, rep, facts, strict=False):
+    pass
+
+
 LINTS = {
     'settings-ui': lint_settings_ui,
     'machine': lint_machine,
     'install-manifest': lint_manifest,
     'launcher-recipe': lint_recipe,
     'describe': lint_describe,
+    'deps': lint_deps,
 }
+
+
+def lint_min_launcher(doc, rep):
+    """min_launcher (every contract file): the exact shape the launcher reads. The schema's `pattern` runs as a search, so this repeats it as a
+    full match (a trailing newline is not a version)."""
+    shown = {e.split(':', 1)[0] for e in rep.errors}
+    value = doc.get('min_launcher')
+    if isinstance(value, str) and not MIN_LAUNCHER.fullmatch(value) and '$.min_launcher' not in shown:
+        rep.error('$.min_launcher', f'{value!r} is not 1 to 4 numbers separated by dots, like "1.0.0"')
+
+
+def min_launcher_findings(named_docs):
+    """The files of one game build must agree on min_launcher: (name, doc) pairs in, (name, message) pairs out. When a launcher-recipe is among
+    them it is the source: every other file carries its value (or, when the recipe has none, none). Without a recipe the files agree with the first."""
+    docs = [(n, d) for n, d in named_docs if isinstance(d, dict)]
+    recipe = next(((n, d) for n, d in docs if d.get('schema') == 'larecomp.launcher-recipe'), None)
+    source_name, source = recipe if recipe else (docs[0] if docs else (None, {}))
+    want = source.get('min_launcher')
+    out = []
+    for name, doc in docs:
+        have = doc.get('min_launcher')
+        if have != want:
+            shown = 'no min_launcher' if have is None else f'min_launcher {have!r}'
+            wanted = 'none' if want is None else repr(want)
+            out.append((name, f'{shown}, but {source_name} has {wanted}: every file of one game build carries the value of launcher-recipe.json'))
+    return out
 
 
 def validate(doc, kind=None, dictionary_doc=None, strict=False):
@@ -1311,6 +1350,7 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False):
     schema = schema_of(kind)
     for path, msg in schema_errors(doc, schema, schema):
         rep.error(path, msg)
+    lint_min_launcher(doc, rep)
     if rep.errors:
         return rep   # the rules assume the shape
     facts = FactTypes(dictionary_doc or dictionary())
@@ -1349,6 +1389,49 @@ def selftest():
         rep = validate(doc)
         check(not rep.errors and not rep.warnings, f'{f}: {(rep.errors + rep.warnings)[:3]}')
     check(len(examples) >= 7, 'the examples folder has the golden files')
+    # 2b. min_launcher: every golden file (the fleet and the dependency example too) carries the value of the recipe example, the only edit point
+    golden = []
+    for dirpath, _, names in sorted(os.walk(ex_dir)):
+        for f in sorted(names):
+            if f.endswith('.json'):
+                full = os.path.join(dirpath, f)
+                golden.append((os.path.relpath(full, ex_dir).replace(os.sep, '/'), load_json(full)))
+    check(len(golden) >= 20, 'the examples folder has the fleet and the dependency example')
+    for name, doc in golden:
+        check('min_launcher' in doc, f'{name}: has no min_launcher')
+        rep = validate(doc)
+        check(not rep.errors and not rep.warnings, f'{name}: {(rep.errors + rep.warnings)[:3]}')
+    check(not min_launcher_findings(golden), f'the examples disagree on min_launcher: {min_launcher_findings(golden)[:2]}')
+    by_schema = {doc['schema']: doc for _, doc in golden}
+    check(set(by_schema) == set(KINDS), f'an example for every kind: {sorted(set(KINDS) - set(by_schema))}')
+    recipe_example = by_schema['larecomp.launcher-recipe']
+    for bad in ('1.x', '', '1.2.3.4.5', '1..2', ' 1.0', '1.0.0\n', '-1.0', 'v1.0', 7, 1.5, None, ['1.0.0']):
+        for schema_word, doc in by_schema.items():
+            d = copy.deepcopy(doc)
+            d['min_launcher'] = bad
+            rep = validate(d)
+            check(rep.errors, f'{schema_word}: min_launcher {bad!r} is not reported')
+    for good in ('0', '1', '1.0', '1.336.600', '1.0.0.7', '12.345.678.9'):
+        for schema_word, doc in by_schema.items():
+            d = copy.deepcopy(doc)
+            d['min_launcher'] = good
+            rep = validate(d)
+            check(not rep.errors and not rep.warnings, f'{schema_word}: min_launcher {good!r} is refused: {(rep.errors + rep.warnings)[:1]}')
+    for schema_word, doc in by_schema.items():
+        d = copy.deepcopy(doc)
+        d.pop('min_launcher')
+        rep = validate(d)
+        check(not rep.errors and not rep.warnings, f'{schema_word}: a file without min_launcher means no requirement: {(rep.errors + rep.warnings)[:1]}')
+    # the files of one run agree with the recipe's value
+    for what, docs, expected in [
+        ('a file with another value', [('recipe', recipe_example), ('x', {**by_schema['larecomp.machine'], 'min_launcher': '1.0.1'})], 1),
+        ('a file without the value next to a recipe with it', [('recipe', recipe_example), ('x', {k: v for k, v in by_schema['larecomp.describe'].items() if k != 'min_launcher'})], 1),
+        ('a file with a value next to a recipe without it', [('recipe', {k: v for k, v in recipe_example.items() if k != 'min_launcher'}), ('x', by_schema['larecomp.describe'])], 1),
+        ('two files that agree, no recipe', [('a', by_schema['larecomp.machine']), ('b', by_schema['larecomp.describe'])], 0),
+        ('two files that differ, no recipe', [('a', by_schema['larecomp.machine']), ('b', {**by_schema['larecomp.describe'], 'min_launcher': '2.0'})], 1),
+        ('a recipe and nothing else', [('recipe', recipe_example)], 0),
+    ]:
+        check(len(min_launcher_findings(docs)) == expected, f'min_launcher agreement, {what}: {min_launcher_findings(docs)}')
     # 3. the parser agrees with the shared condition vectors (syntax, unsupported calls, paths, unguarded live)
     tests = load_json(os.path.join(HERE, 'condition-tests.json'))
     n = 0
@@ -1503,6 +1586,7 @@ def main(argv=None):
         ap.error('give a file, --selftest or --facts-used')
     dct = load_json(args.dictionary) if args.dictionary else None
     bad = 0
+    loaded = []
     for path in args.files:
         try:
             doc = load_json(path)
@@ -1510,6 +1594,7 @@ def main(argv=None):
             print(f'ERROR {path}: cannot read: {ex}')
             bad += 1
             continue
+        loaded.append((path, doc))
         rep = validate(doc, args.kind, dct, args.strict)
         for m in rep.errors:
             print(f'ERROR {path}: {m}')
@@ -1522,6 +1607,10 @@ def main(argv=None):
             bad += 1
         elif not args.quiet:
             print(f'ok    {path} ({len(rep.warnings)} warnings, {len(rep.infos)} notes)')
+    # the files of one run are one game build: they carry the same min_launcher (the recipe's, when it is among them)
+    for path, msg in min_launcher_findings(loaded) if len(loaded) > 1 else []:
+        print(f'ERROR {path}: {msg}')
+        bad += 1
     return 1 if bad else 0
 
 

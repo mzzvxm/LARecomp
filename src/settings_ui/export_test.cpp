@@ -105,11 +105,18 @@ values_from = {generator = "render_scale.shares", args = {renderer = "xenia"}}
 fallback_values = [{id = "1", label = "100%"}]
 )",
         "",
+        "1.336.600",
     };
     const auto doc = BuildDocument(catalog, menus, input);
     const auto json = Json(doc);
     const auto again = Json(BuildDocument(catalog, menus, input));
     check(json == again, "successive builds produce identical bytes");
+    // min_launcher is launcher-recipe.json's value, written at the top level next to min_reader; left out when the build has none.
+    check(doc["min_launcher"].value_or("") == std::string_view("1.336.600") && doc["min_reader"].value_or(0) == 1,
+          "min_launcher carries the recipe's value beside min_reader");
+    auto ungated = input;
+    ungated.min_launcher = {};
+    check(!BuildDocument(catalog, menus, ungated).contains("min_launcher"), "a build without min_launcher leaves the field out");
     const auto sections = doc["tabs"][0]["sections"];
     const auto rows = sections[1]["rows"];
     check(sections[0]["rows"][0]["target"].value_or("") == std::string_view("detail"), "hub link points at child");

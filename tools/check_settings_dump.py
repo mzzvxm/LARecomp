@@ -14,7 +14,7 @@ that with the real exporter. A row the copy misses fails the cross-check below (
 What it runs, in order, and what fails the run (exit 1):
   1. builds the program (clang++ from the labuild tools, the SDK install the settings model was built with), runs it twice;
   2. the two dumps are the same bytes (the dump is deterministic);
-  3. documentation/contract/validate_contract.py --strict on the dump: 0 errors, 0 warnings;
+  3. documentation/contract/validate_contract.py --strict on the dump: 0 errors, 0 warnings; its min_launcher is launcher-recipe.json's;
   4. tools/check_settings_ui.py on the dump (the 41-column width lint, the native markers, the settings hash);
   5. every PM_ row id the source tables name is a row of the dump, and the reverse;
   6. every setting the menu rows name is in the dump's `settings` catalog.
@@ -58,12 +58,24 @@ def read(path):
         return f.read()
 
 
+def recipe_min_launcher():
+    """min_launcher of launcher-recipe.json, the one place it is edited ("" when the recipe has none): what CMake puts in settings_ui_data.h."""
+    value = json.loads(read(os.path.join(ROOT, "launcher-recipe.json"))).get("min_launcher", "")
+    if value != "" and not re.fullmatch(r"[0-9]+(\.[0-9]+){0,3}", str(value)):
+        raise SystemExit(f"launcher-recipe.json: min_launcher {value!r} is not 1 to 4 numbers separated by dots")
+    return value
+
+
 def write_data_header(out, commit):
     data = read(os.path.join(ROOT, "src/settings_ui/ui_data.h.in"))
     for key, rel in (("UI_TEXT", "src/settings/ui_text.toml"), ("LAUNCHER_ROWS", "src/settings/launcher_rows.toml"),
                      ("PHASE_A", "src/settings_ui/phase_a.toml"), ("UI_RULES", "src/settings/ui_rules.toml")):
         data = data.replace("@GX_" + key + "@", read(os.path.join(ROOT, rel)))
     data = data.replace("@GX_COMMIT@", commit)
+    data = data.replace("@GX_MIN_LAUNCHER@", recipe_min_launcher())
+    left = re.findall(r"@GX_\w+@", data)
+    if left:
+        raise SystemExit("ui_data.h.in has placeholders this tool does not fill (CMakeLists.txt sets them): " + ", ".join(sorted(set(left))))
     with open(os.path.join(out, "settings_ui_data.h"), "w", encoding="utf-8") as f:
         f.write(data)
 
@@ -230,6 +242,13 @@ def main():
         print(text.strip()[-1500:])
         if code:
             failures.append("tools/check_settings_ui.py")
+
+    # The dump carries the recipe's min_launcher (or none when the recipe has none).
+    dumped = json.load(open(first, encoding="utf-8")).get("min_launcher")
+    want = recipe_min_launcher() or None
+    print(f"min_launcher: dump {dumped!r}, launcher-recipe.json {want!r}")
+    if dumped != want:
+        failures.append(f"the dump's min_launcher {dumped!r} is not launcher-recipe.json's {want!r}")
 
     # Cross-check against the sources: every PM_ row of the menu tables is in the dump, and no PM_ row of the dump is missing from them.
     doc = json.load(open(first, encoding="utf-8"))

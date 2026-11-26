@@ -62,6 +62,7 @@ struct Facts {
   std::vector<std::array<uint32_t, 3>> exclusive_sizes;
   std::optional<bool> hdr_capable;
   std::string os, cpu_level, game_version, commit;
+  std::string min_launcher;  // launcher-recipe.json's min_launcher; empty = none (the field is left out)
   uint32_t os_build = 0, cpu_threads = 1;
   bool exclusive_fullscreen = false, live_window_resize = false, window_size_fixed = false;
   bool hdr_output = false, real_weather = true, mouse_look = true;

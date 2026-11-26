@@ -2,6 +2,7 @@
   "schema": "larecomp.install-manifest",
   "schema_version": 1,
   "min_reader": 1,
+  "min_launcher": "1.0.0",
   "game_version": "PATCH 11 - PREVIEW 1",
   "commit": "0000000000000000000000000000000000000000",
   "contracts": { "settings_ui": 1, "machine": 1, "install_manifest": 1 },

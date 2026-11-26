@@ -284,8 +284,10 @@ std::string Serialize(const Facts& facts, bool probe, std::string_view written_u
   const Adapter* selected = gpu.selected && *gpu.selected < gpu.adapters.size()
                                 ? &gpu.adapters[*gpu.selected] : nullptr;
   JsonWriter out(true);
-  out.BeginObject().Field("schema", "larecomp.machine").Field("schema_version", 1)
-      .Field("min_reader", 1).Field("source", probe ? "probe" : "game")
+  out.BeginObject().Field("schema", "larecomp.machine").Field("schema_version", 1).Field("min_reader", 1);
+  // The oldest launcher program that can set up this game version (launcher-recipe.json); absent when the build has none.
+  if (!facts.min_launcher.empty()) out.Field("min_launcher", facts.min_launcher);
+  out.Field("source", probe ? "probe" : "game")
       .Field("final", IsFinal(probe, gpu)).Key("written_by").BeginObject()
       .Field("game_version", facts.game_version);
   if (!facts.commit.empty()) out.Field("commit", facts.commit);

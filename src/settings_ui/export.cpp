@@ -421,6 +421,8 @@ toml::table BuildDocument(Table settings, std::span<const Menu> menus, const Inp
         {"value_sets", sets}, {"defs", defs}
     };
     if (!inputs.commit.empty()) doc["generated"].as_table()->insert("commit", inputs.commit);
+    // The oldest launcher program that can set up this game version (launcher-recipe.json); left out when the build has none.
+    if (!inputs.min_launcher.empty()) doc.insert("min_launcher", inputs.min_launcher);
     // The presets come from the game's own table (gpu/gfx_preset.h) wherever the setting that holds the choice is a setting of this catalog.
     if (settings.contains(std::string_view(mcla::gpu::gfx_preset::kPresetSetting))) doc.insert("presets", BuildPresets());
 

@@ -2,6 +2,7 @@
   "schema": "larecomp.launcher-recipe",
   "schema_version": 1,
   "min_reader": 1,
+  "min_launcher": "1.0.0",
   "toolchain": { "cmake": ">=3.25", "clang": ">=20", "ninja": ">=1.11", "cxx": 23, "sdk": "0.11" },
   "presets": { "windows": "win-amd64-release", "linux": "linux-amd64-release" },
   "codegen": { "tool": "rexglue", "args": ["codegen", "larecomp_manifest.toml"], "inputs": ["default.xex"] },

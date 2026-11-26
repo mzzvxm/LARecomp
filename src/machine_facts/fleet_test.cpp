@@ -162,6 +162,7 @@ machine::Facts MakeFacts(const Spec& s, std::string* class_name, std::string* ti
   facts.cpu_level = linux_os ? "x86-64-v3" : "x86-64-v3";
   facts.game_version = "PATCH 11 - PREVIEW 1";
   facts.commit = std::string(40, 'f');
+  facts.min_launcher = "1.0.0";  // the committed examples are snapshots: they carry the recipe example's value
   facts.title_id = "545407F8";
   facts.profile_id = "B13EBABEBABEBABE";
   facts.game_folder = game;

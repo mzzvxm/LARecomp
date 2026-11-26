@@ -187,7 +187,8 @@ std::string ExecutableId(const fs::path& executable) {
 }
 
 void Export(const fs::path& output, std::string_view exe_id) {
-    const Inputs inputs{LARECOMP_VERSION_LABEL, kSettingsUiCommit, exe_id, kUiText, kLauncherRows, kUiRules, kPhaseA};
+    const Inputs inputs{LARECOMP_VERSION_LABEL, kSettingsUiCommit, exe_id, kUiText, kLauncherRows, kUiRules, kPhaseA,
+                         kSettingsUiMinLauncher};
     WriteDocument(output, Json(BuildDocument(ReadRegistry(), AllSettingsMenus(), inputs)));
 }
 

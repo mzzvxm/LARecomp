@@ -7,4 +7,5 @@ inline constexpr std::string_view kLauncherRows = R"GX_TOML(@GX_LAUNCHER_ROWS@)G
 inline constexpr std::string_view kUiRules = R"GX_TOML(@GX_UI_RULES@)GX_TOML";
 inline constexpr std::string_view kPhaseA = R"GX_TOML(@GX_PHASE_A@)GX_TOML";
 inline constexpr std::string_view kSettingsUiCommit = "@GX_COMMIT@";
+inline constexpr std::string_view kSettingsUiMinLauncher = "@GX_MIN_LAUNCHER@";
 }

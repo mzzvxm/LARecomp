@@ -119,6 +119,33 @@ function(larecomp_manifest_commit out)
     set(${out} "${commit}" PARENT_SCOPE)
 endfunction()
 
+# The oldest launcher program that can set up this game version: min_launcher of launcher-recipe.json, the one place it is
+# edited. The manifest, the --describe text, settings-ui.json and machine.json all take it from here. An empty result means
+# the recipe has none (no requirement): every file then leaves the field out. A value that is not 1 to 4 dot-separated
+# numbers is a configure error, so a typo never reaches a player.
+function(larecomp_recipe_min_launcher out)
+    set(path "${CMAKE_CURRENT_SOURCE_DIR}/launcher-recipe.json")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${path}")
+    file(READ "${path}" recipe)
+    string(JSON members ERROR_VARIABLE error LENGTH "${recipe}")
+    if(NOT error STREQUAL "NOTFOUND")
+        message(FATAL_ERROR "launcher-recipe.json is not valid JSON: ${error}")
+    endif()
+    string(JSON type ERROR_VARIABLE error TYPE "${recipe}" min_launcher)
+    if(NOT error STREQUAL "NOTFOUND")
+        set(${out} "" PARENT_SCOPE)
+        return()
+    endif()
+    if(NOT type STREQUAL "STRING")
+        message(FATAL_ERROR "launcher-recipe.json: min_launcher must be a text like \"1.0.0\", not ${type}")
+    endif()
+    string(JSON value GET "${recipe}" min_launcher)
+    if(NOT value MATCHES "^[0-9]+(\\.[0-9]+(\\.[0-9]+(\\.[0-9]+)?)?)?$")
+        message(FATAL_ERROR "launcher-recipe.json: min_launcher must be 1 to 4 numbers separated by dots, like 1.0.0 (got \"${value}\")")
+    endif()
+    set(${out} "${value}" PARENT_SCOPE)
+endfunction()
+
 function(larecomp_add_manifest_action id prefix timeout when)
     cmake_parse_arguments(PARSE_ARGV 4 action "" "FORCE_FLAG" "AFTER;ARGS;OUTPUTS;PRODUCES")
     larecomp_json_strings(after ${action_AFTER})
@@ -270,12 +297,17 @@ function(larecomp_generate_install_manifest target)
     list(JOIN stage ",\n    " stage)
 
     set(identity "\"game_version\": ${version},\n  \"commit\": \"${commit}\",\n  \"contracts\": ${contracts}")
+    larecomp_recipe_min_launcher(min_launcher)
+    set(launcher_gate "")
+    if(NOT "${min_launcher}" STREQUAL "")
+        set(launcher_gate "\"min_launcher\": \"${min_launcher}\",\n  ")
+    endif()
     string(CONFIGURE [=[
 {
   "schema": "larecomp.install-manifest",
   "schema_version": 1,
   "min_reader": 1,
-  @identity@,
+  @launcher_gate@@identity@,
   "sdk": { "generation": "@sdk_generation@" },
   "features": @features@,
   "stage": [
@@ -319,7 +351,7 @@ namespace larecomp {
 extern const char kDescribeJson[] = R"lfg({
   "schema": "larecomp.describe",
   "schema_version": 1,
-  @identity@,
+  @launcher_gate@@identity@,
   "actions": @describe_actions@
 }
 )lfg";

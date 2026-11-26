@@ -2,6 +2,7 @@
   "schema": "larecomp.settings-ui",
   "schema_version": 1,
   "min_reader": 1,
+  "min_launcher": "1.0.0",
   "expr_version": 1,
   "generated": {
     "game_version": "PATCH 11 - PREVIEW 1",

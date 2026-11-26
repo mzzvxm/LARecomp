@@ -123,6 +123,16 @@ int main(int argc, char** argv) {
     return first != body.npos && body.find("\"selected\": true", first + 1) == body.npos;
   };
   Check(contains(probe, "\"source\": \"probe\"") && contains(probe, "\"final\": false"), "probe envelope");
+  // min_launcher is launcher-recipe.json's value: written right after min_reader when the build has one, left out when it has none.
+  Check(!contains(probe, "min_launcher"), "no min_launcher field when the build has none");
+  facts.min_launcher = "1.336.600";
+  for (const bool as_probe : {true, false}) {
+    const std::string gated = machine::Serialize(facts, as_probe, kUtc);
+    Check(contains(gated, "\"min_launcher\": \"1.336.600\""), "min_launcher carries the recipe's value");
+    Check(gated.find("\"min_reader\"") < gated.find("\"min_launcher\"") && gated.find("\"min_launcher\"") < gated.find("\"source\""),
+          "min_launcher sits between min_reader and source");
+  }
+  facts.min_launcher.clear();
   Check(contains(probe, "\"hardware_id\": \"" + id + "\""), "selected adapter supplies hardware ID");
   Check(one_selected(probe) && contains(probe, "\"selected\": false"), "exactly one selected adapter");
   Check(contains(probe, "\"dlss\": null") && contains(probe, "\"dlss_modes_refused\": null"),

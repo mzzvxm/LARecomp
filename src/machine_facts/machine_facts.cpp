@@ -253,6 +253,9 @@ Facts ReadFacts(const Paths& paths, bool probe) {
 #if defined(LARECOMP_MACHINE_COMMIT)
   out.commit = LARECOMP_MACHINE_COMMIT;
 #endif
+#if defined(LARECOMP_MIN_LAUNCHER)
+  out.min_launcher = LARECOMP_MIN_LAUNCHER;  // CMake: min_launcher of launcher-recipe.json (the one place it is edited)
+#endif
   out.exclusive_fullscreen = mcla::display::ExclusiveSupported();
   out.live_window_resize = mcla::display::LiveResize();
   out.window_size_fixed = mcla::display::WindowSizeFixed();

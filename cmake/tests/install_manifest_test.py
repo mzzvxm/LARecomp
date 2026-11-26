@@ -22,7 +22,15 @@ CONSTANT_SOURCES = (
     'src/isoinstaller/larecomp_iso_installer.cpp', 'src/saveporter/larecomp_save_porter.cpp',
     'src/mc_engine/online/online_tables_core.h', 'src/shaderpack/pack_format.h',
     'src/citypack/pack_format.h', 'src/citypack/city_hit_format.h', 'src/gpu/pipelines.cpp',
+    'launcher-recipe.json', 'src/settings_ui/ui_data.h.in',
 )
+# After the real CMakeLists.txt lines that hand min_launcher to the exe (settings_ui_data.h for settings-ui.json, a compile definition of
+# machine_facts.cpp for machine.json), the fixture records what they produced.
+WIRING_REPORT = '''
+get_source_file_property(larecomp_wired_definitions src/machine_facts/machine_facts.cpp COMPILE_DEFINITIONS)
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/exe-definitions.txt" "${larecomp_wired_definitions}")
+'''
+BAD_MIN_LAUNCHERS = ('1.x', '', '1.2.3.4.5', ' 1.0', 'v1.0', 7, None)
 FIXTURE = '''
 cmake_minimum_required(VERSION 3.25)
 project(ManifestFixture NONE)
@@ -71,6 +79,7 @@ else()
 endif()
 include(setup-stage.cmake)
 include(game-stage.cmake)
+include(exe-wiring.cmake)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/lfg/describe_json.cpp" PROPERTIES HEADER_FILE_ONLY ON)
 '''
 
@@ -114,6 +123,11 @@ def check_deps():
                 for group, values in kit['groups'].items() if 'when' in values
             ]}, report, validator.FactTypes(validator.dictionary()), strict=True)
             assert not report.errors and not report.warnings, report
+    # The pins file is read by hand-edited CMake and is not generated: its min_launcher is a static copy of the recipe's, so a bump that
+    # forgets it fails here.
+    recipe = read(ROOT / 'launcher-recipe.json')
+    assert read(ROOT / 'cmake/deps.json').get('min_launcher') == recipe.get('min_launcher'), (
+        'cmake/deps.json has another min_launcher than launcher-recipe.json (the one place to edit): copy it there')
     return read(ROOT / 'cmake/deps.json')
 
 
@@ -139,17 +153,26 @@ def prepare_tree(source, deps):
     stage = cmakelists.split('    # BS-G game runtime staging.', 1)[1].split('    # Floating-point contraction', 1)[0]
     write(source / 'setup-stage.cmake', '#' + setup + '#' + mspack)
     write(source / 'game-stage.cmake', '#' + stage)
+    # The lines that give min_launcher to settings-ui.json (settings_ui_data.h) and machine.json (a compile definition), as they are.
+    header = re.search(r'^ *set\(GX_MIN_LAUNCHER [^\n]*\n *configure_file\(src/settings_ui/ui_data\.h\.in settings_ui_data\.h @ONLY\)\n',
+                       cmakelists, re.M)
+    definition = re.search(r'^ *if\(NOT "\$\{LARECOMP_MIN_LAUNCHER\}" STREQUAL ""\)\n.*?^ *endif\(\)\n', cmakelists, re.M | re.S)
+    assert header and definition, 'CMakeLists.txt no longer hands min_launcher to the settings-ui.json and machine.json writers'
+    assert 'machine_facts.cpp' in definition.group(0)
+    write(source / 'exe-wiring.cmake', header.group(0) + definition.group(0) + WIRING_REPORT)
     write(source / 'CMakeLists.txt', FIXTURE)
 
 
-def configure(cmake, source, output, *, windows, gpu=True, full=False, exports=False):
+def configure(cmake, source, output, *, windows, gpu=True, full=False, exports=False, error=None):
     write(output / 'runtime/assets/default.xex', 'synthetic codegen input')
     write(output / 'copies.txt', '')
     run([cmake, '-S', str(source), '-B', str(output), '-G', 'Ninja',
          f'-Dfixture_windows={int(windows)}', f'-Dfixture_gpu={int(gpu)}',
          f'-Dfixture_full={int(full)}', f'-Dfixture_exports={int(exports)}',
          '-Dfixture_suffix=' + ('.exe' if windows else ''),
-         '-Dfixture_lib_suffix=' + ('.dll' if windows else '.so')])
+         '-Dfixture_lib_suffix=' + ('.dll' if windows else '.so')], error=error)
+    if error is not None:
+        return None
     path = output / 'runtime/install-manifest.json'
     describe = output / 'describe.json'
     embedded = (output / 'lfg/describe_json.cpp').read_text(encoding='utf-8')
@@ -158,8 +181,51 @@ def configure(cmake, source, output, *, windows, gpu=True, full=False, exports=F
     return read(path), read(describe)
 
 
+def check_min_launcher_outputs(out, manifest, describe, expected):
+    """expected: the recipe's min_launcher, or None when the recipe has none. Every file a configure makes carries it, or none does."""
+    keys = list(manifest)
+    if expected is None:
+        assert 'min_launcher' not in manifest and 'min_launcher' not in describe
+    else:
+        assert manifest['min_launcher'] == describe['min_launcher'] == expected, (manifest.get('min_launcher'), describe.get('min_launcher'), expected)
+        assert keys[keys.index('min_reader') + 1] == 'min_launcher'
+        assert list(describe)[list(describe).index('schema_version') + 1] == 'min_launcher'
+    # settings-ui.json reads it from settings_ui_data.h, machine.json from a compile definition of machine_facts.cpp.
+    header = (out / 'settings_ui_data.h').read_text(encoding='utf-8')
+    assert f'kSettingsUiMinLauncher = "{expected or ""}";' in header, header
+    definitions = (out / 'exe-definitions.txt').read_text(encoding='utf-8')
+    assert definitions == ('NOTFOUND' if expected is None else f'LARECOMP_MIN_LAUNCHER="{expected}"'), definitions
+
+
+def check_min_launcher(cmake, source, out):
+    """The recipe's min_launcher in every writer: a given value is copied, none stays none, a malformed one stops the configure."""
+    path = source / 'launcher-recipe.json'
+    original = path.read_text(encoding='utf-8')
+    recipe = json.loads(original)
+    try:
+        for name, value in (('copied', '2.5.0.7'), ('one-number', '12'), ('zero', '0'), ('absent', None)):
+            changed = dict(recipe)
+            changed.pop('min_launcher', None)
+            if value is not None:
+                changed['min_launcher'] = value
+            write(path, json.dumps(changed, indent=2))
+            manifest, describe = configure(cmake, source, out / name, windows=True, exports=True)
+            check_min_launcher_outputs(out / name, manifest, describe, value)
+        for i, value in enumerate(BAD_MIN_LAUNCHERS):
+            write(path, json.dumps({**recipe, 'min_launcher': value}, indent=2))
+            configure(cmake, source, out / f'bad-{i}', windows=True, exports=True,
+                      error='launcher-recipe.json: min_launcher must be ' + ('a text' if not isinstance(value, str) else '1 to 4 numbers'))
+        # A recipe that is not JSON must not read as "no requirement".
+        write(path, original.replace('"min_launcher": ', '"min_launcher" ', 1))
+        configure(cmake, source, out / 'not-json', windows=True, exports=True, error='launcher-recipe.json is not valid JSON')
+    finally:
+        write(path, original)
+
+
 def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=False):
     manifest, describe = configure(cmake, source, out, windows=windows, gpu=gpu, full=full, exports=exports)
+    # The recipe at the repo root is the one place min_launcher is edited: every file of the build carries its value.
+    check_min_launcher_outputs(out, manifest, describe, read(ROOT / 'launcher-recipe.json').get('min_launcher'))
     stage = {entry['from']: entry for entry in manifest['stage']}
     action = {entry['id']: entry for entry in manifest['actions']}
     assert len(stage) == len(manifest['stage'])
@@ -341,6 +407,22 @@ MUTATIONS = (
     ('cmake/InstallManifest.cmake', '"game_root": "@game_root@"', '"game_root": "--other_root={game_root}"'),
     ('cmake/InstallManifest.cmake', '--@debug_menu@=true', '--other_debug=true'),
     ('cmake/InstallManifest.cmake', '"size": 9252864', '"size": 9252865'),
+    # min_launcher: the manifest and the --describe text drop it, carry a wrong value, a malformed or non-text value is accepted, a missing
+    # one gets a default, a "0" is lost, settings-ui.json (settings_ui_data.h) and machine.json (the compile definition) stop following the recipe.
+    ('cmake/InstallManifest.cmake', '"min_reader": 1,\n  @launcher_gate@@identity@,', '"min_reader": 1,\n  @identity@,'),
+    ('cmake/InstallManifest.cmake', '"schema_version": 1,\n  @launcher_gate@@identity@,', '"schema_version": 1,\n  @identity@,'),
+    ('cmake/InstallManifest.cmake', 'set(launcher_gate "\\"min_launcher\\": \\"${min_launcher}\\",\\n  ")',
+     'set(launcher_gate "\\"min_launcher\\": \\"9.9.9\\",\\n  ")'),
+    ('cmake/InstallManifest.cmake', 'if(NOT value MATCHES "^[0-9]+(\\\\.[0-9]+(\\\\.[0-9]+(\\\\.[0-9]+)?)?)?$")', 'if(FALSE)'),
+    ('cmake/InstallManifest.cmake', 'if(NOT type STREQUAL "STRING")', 'if(FALSE)'),
+    ('cmake/InstallManifest.cmake', 'message(FATAL_ERROR "launcher-recipe.json is not valid JSON: ${error}")', 'set(ignored ON)'),
+    ('cmake/InstallManifest.cmake', '        set(${out} "" PARENT_SCOPE)\n        return()', '        set(${out} "1.0.0" PARENT_SCOPE)\n        return()'),
+    ('cmake/InstallManifest.cmake', 'if(NOT "${min_launcher}" STREQUAL "")', 'if(min_launcher)'),
+    ('setup-stage.cmake', 'larecomp_recipe_min_launcher(LARECOMP_MIN_LAUNCHER)', ''),
+    ('exe-wiring.cmake', 'set(GX_MIN_LAUNCHER "${LARECOMP_MIN_LAUNCHER}")', 'set(GX_MIN_LAUNCHER "")'),
+    ('exe-wiring.cmake', '"LARECOMP_MIN_LAUNCHER=\\"${LARECOMP_MIN_LAUNCHER}\\""', '"LARECOMP_MIN_LAUNCHER=\\"1.0.0\\""'),
+    ('exe-wiring.cmake', 'if(NOT "${LARECOMP_MIN_LAUNCHER}" STREQUAL "")', 'if(TRUE)'),
+    ('src/settings_ui/ui_data.h.in', 'kSettingsUiMinLauncher = "@GX_MIN_LAUNCHER@"', 'kSettingsUiMinLauncher = ""'),
 )
 
 
@@ -369,6 +451,9 @@ def main():
         for i, case in enumerate(cases):
             check_runtime(args.cmake, source, temp / f'build-{i}', **case)
         print(f'{len(cases)} runtime configurations and their describe output validated')
+        check_min_launcher(args.cmake, source, temp / 'min-launcher')
+        print(f'min_launcher: copied from launcher-recipe.json into the manifest, the describe text, settings_ui_data.h and machine_facts.cpp; '
+              f'absent stays absent; {len(BAD_MIN_LAUNCHERS)} malformed values stop the configure')
         if args.mutations:
             for i, (name, old, new) in enumerate(MUTATIONS):
                 path = source / name
@@ -378,7 +463,8 @@ def main():
                 try:
                     for j, case in enumerate(cases):
                         check_runtime(args.cmake, source, temp / f'mutant-{i}-{j}', **case)
-                except (AssertionError, KeyError):
+                    check_min_launcher(args.cmake, source, temp / f'mutant-{i}-min-launcher')
+                except (AssertionError, KeyError, FileNotFoundError):
                     pass
                 else:
                     raise AssertionError(f'mutation survived: {name}: {old}')
