@@ -517,6 +517,8 @@
 {"mcla_gpu_light_shadow_bands", "MCLA/GPU"},
 {"mcla_gpu_shadow_stable_fit", "MCLA/GPU"},
 {"mcla_gpu_shadow_visible_far", "MCLA/GPU"},
+{"mcla_gpu_shadow_filter_early_out", "MCLA/GPU"},
+{"mcla_gpu_traffic_shadows_reach", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
 {"mcla_gpu_garage_fx", "MCLA/GPU"},
 {"mcla_gpu_pause_world_fx", "MCLA/GPU"},

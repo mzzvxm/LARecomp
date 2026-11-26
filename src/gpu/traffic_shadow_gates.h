@@ -106,6 +106,7 @@ enum class CarGate : size_t {
   kCameraPtr,    // neither viewport gave an eye
   kDistance,     // the distance is not a number
   kDecided,      // reached Selector::Decide
+  kReach,        // selected caster misses this cascade
   kCast,         // Decide said cast (r11 raised to 1)
   kPlayerLeftOut,  // r11 != 0 in a cascade phase and the car shadow map casts the player's car's shadow: r11 lowered to 0
   kCount,
@@ -141,6 +142,7 @@ enum class AmbientGate : size_t {
   kDepthFar,         // ... is longer than the view allows: the eye or the position is wrong
   kDepthUnknown,     // no usable depth
   kDecided,      // reached Selector::Decide
+  kReach,        // selected caster misses this cascade
   kRemapped,     // Decide said cast (r4 changed to the body phase)
   kCount,
 };
@@ -255,6 +257,7 @@ class Gates {
          n(Get(A::kRenderer)) + ", viewport ptr " + n(Get(A::kViewport)) + "), camera ptr " + n(Get(A::kCameraPtr)) +
          ", position " + n(Get(A::kPosition)) + ", distance not finite " + n(Get(A::kDistance));
     s += ", reached Decide " + n(Get(A::kDecided)) + ", cast " + n(Get(A::kRemapped));
+    s += "; beyond cascade reach: car-model " + n(Get(C::kReach)) + ", ambient " + n(Get(A::kReach));
     return s;
   }
 
@@ -276,7 +279,7 @@ class Gates {
     s += ", eye main viewport " + d(A::kEyeMain) + " / current viewport " + d(A::kEyeFallback);
     s += ", candidates' distance against the item's own view depth: consistent " + d(A::kDepthConsistent) +
          ", closer than the depth " + d(A::kDepthCloser) + ", beyond the view " + d(A::kDepthFar) + ", unknown " +
-         d(A::kDepthUnknown);
+         d(A::kDepthUnknown) + ", beyond cascade reach " + d(A::kReach);
     return s;
   }
 

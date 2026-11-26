@@ -76,8 +76,7 @@ inline Standing StandingOf(Effect effect, const Saved& saved) {
     case Effect::kShadowFilter: {
       std::string text = host_plan::Lower(saved.filter);
       // On is the variant being drawn: soft or pcss (the game's own filter is the only off).
-      out.on = shadow_filter::ModeFor(saved.class_known ? saved.cls : gpu_class::GpuClass::kLow,
-                                      shadow_filter::ParseChoice(text), saved.class_known && saved.handheld) !=
+      out.on = shadow_filter::ModeFor(shadow_filter::ParseChoice(text)) !=
                shadow_filter::Mode::kGame;
       break;
     }

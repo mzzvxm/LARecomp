@@ -106,13 +106,12 @@ mcla::gpu::LiveText& Setting() {
     return text;
 }
 
-// The mode in force: the setting with `auto` resolved for this graphics card. Until the card is known (the
-// device opens after the guest starts; the Xenia renderer never knows it) `auto` is off, the game's own.
+// Legacy auto waits for the native device to open; the compatibility
+// renderer never reports a native device.
 ts::Mode CurrentMode() {
-    namespace gc = mcla::gpu::gpu_class;
     const std::string text = Setting().Get();
-    if (text == "auto" && !gc::Known()) return ts::Mode::kOff;
-    return ts::ModeFor(gc::Current(), text);
+    if (text == "auto" && !mcla::gpu::gpu_class::Known()) return ts::Mode::kOff;
+    return ts::ModeFor(text);
 }
 
 struct State {
@@ -165,7 +164,7 @@ void ResetState(State& s, ts::Mode mode) {
 }
 
 // One line a few seconds apart and at the first frame that has a car cast: the cars the first cascade saw,
-// how many cast, how far, and the extra cascade draws that costs (the rule of thumb of traffic_shadow.h).
+// how many qualify to cast, how far, and the pre-cull estimate of the extra draw count.
 void MaybeLog(State& s, const ts::Limits& limits) {
     const ts::FrameStats& f = s.selector.last();
     ++s.window_frames;
@@ -182,7 +181,7 @@ void MaybeLog(State& s, const ts::Limits& limits) {
         "[traffic-shadows] {}: the last frame's first cascade saw {} candidate cars (nearest {:.1f} m), {} cast "
         "(farthest {:.1f} m; cutoff {:.1f} m of the radius {:.0f} m, at most {} cars, {} cascades); over the last {} "
         "frames: mean {:.2f} cars cast a frame (most {}) of {:.2f} candidates, about {:.0f} extra cascade draws a "
-        "frame [I: {} per car and cascade]",
+        "frame before reach culling [I: {} per car and cascade]",
         ts::ModeName(s.mode), f.candidates, f.nearest, f.casting, f.farthest_cast, f.cutoff, limits.radius,
         limits.cars, limits.cascades, s.window_frames, mean_casting, s.window_most,
         double(s.window_candidates) / frames, mean_casting * limits.cascades * ts::kDrawsPerCarPerCascade,
@@ -285,6 +284,47 @@ bool FindEyes(const uint8_t* base, ts::Gates& gates, bool ambient_route, bool ce
     const float* chosen = out.have_main ? out.main_eye : out.current_eye;
     for (int i = 0; i < 3; ++i) out.eye[i] = chosen[i];
     return out.have_main || out.have_current;
+}
+
+bool MissesCascade(const uint8_t* base, uint32_t phase, float distance, float length,
+                   const float (&at)[3], const Eyes& eyes) {
+    const int cascade = ts::CascadeIndex(phase);
+    if (!base || !eyes.have_main || !ts::BeyondCascadeFar(cascade, distance, length) ||
+        !larecomp::settings::mcla_gpu_traffic_shadows_reach.Get()) return false;
+
+    namespace cs = mcla::gpu::cascade_schedule;
+    const uint64_t frame = cs::FrameSerial();
+    if (frame == 0) return false;
+    struct PhaseReach {
+        uint64_t frame = 0;
+        float far_scale = 0.0f;
+        ts::CascadeReach reach;
+    };
+    static thread_local PhaseReach phases[4];
+    PhaseReach& cached = phases[cascade - 1];
+    if (cached.frame != frame) {
+        cached = {.frame = frame};
+        constexpr uint32_t kShadowManager = 0x8288D2B4;
+        constexpr uint32_t kFarSlice = 160u;
+        constexpr uint32_t kAtlasMatrix = 16u;
+        const uint32_t manager = ReadGuestU32(base, kShadowManager);
+        const auto addresses = cs::ReadTileAddresses(manager, uint8_t(cascade),
+            [base](uint32_t address) { return ReadGuestU32(base, address); });
+        if (addresses.Valid() && addresses.viewport == ReadGuestU32(base, ts::kCurrentViewportGlobal)) {
+            cached.far_scale = ReadGuestF32(base, manager + kFarSlice);
+            ts::AtlasMatrixUV matrix{};
+            // CHECK: confirm the tile matrix and current viewport at both item hooks,
+            // then inspect near-edge and low-sun shadows with the reach switch flipped.
+            for (uint32_t row = 0; row < 4; ++row) {
+                for (uint32_t col = 0; col < 2; ++col) {
+                    matrix[row][col] = ReadGuestF32(base, addresses.tile + kAtlasMatrix + 16u * row + 4u * col);
+                }
+            }
+            cached.reach = ts::MakeCascadeReach(cascade, matrix, eyes.main_eye);
+        }
+    }
+    return ts::BeyondCascadeFar(cascade, distance, length, cached.far_scale) &&
+           cached.reach.MissesTile(at, length);
 }
 
 // --- the turn of the shadow (gpu/traffic_shadow_pose.h) --------------------------------------------------------------------
@@ -455,8 +495,13 @@ void Patch_TrafficCascadeGate(PPCRegister& r11, PPCRegister& r13, PPCRegister& r
     gates.Add(Gate::kDecided);
     const ts::Limits limits = CurrentLimits(mode);
     if (DecideAndPublish(s, mode, limits, vehicle, phase, distance)) {
+        // Retain the far-cascade refresh input even if this particular tile misses.
         if (phase == ts::kCascadePhases[0]) {
             mcla::gpu::cascade_schedule::NoteCaster(vehicle, at, uint8_t(limits.cascades));
+        }
+        if (MissesCascade(base, phase, distance, ts::kOpponentLengthPadding, at, eyes)) {
+            gates.Add(Gate::kReach);
+            return;
         }
         gates.Add(Gate::kCast);
         r11.u64 = 1;
@@ -614,11 +659,11 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
         gates.Add(Gate::kDistance);
         return;
     }
+    const float radius = ReadGuestF32(base, car + kCarRadius);
     if (census_phase) {
         // Does our distance agree with the item's own view depth (the LOD update's frustum test against the main
         // viewport)? A candidate is in the main view, so it must be at least its depth from the eye and not far more.
         const float depth_plus_radius = ReadGuestF32(base, item + kItemDepth);
-        const float radius = ReadGuestF32(base, car + kCarRadius);
         switch (ts::CheckAgainstDepth(distance, depth_plus_radius, radius)) {
             case ts::DepthVerdict::kConsistent: gates.Add(Gate::kDepthConsistent); break;
             case ts::DepthVerdict::kCloserThanDepth: gates.Add(Gate::kDepthCloser); break;
@@ -631,6 +676,11 @@ void Patch_AmbientCascadeDraw(PPCRegister& r3, PPCRegister& r4, PPCRegister& r13
     const ts::Limits limits = CurrentLimits(mode);
     if (DecideAndPublish(s, mode, limits, item, phase, distance)) {
         if (census_phase) mcla::gpu::cascade_schedule::NoteCaster(item, at, uint8_t(limits.cascades));
+        if (std::isfinite(radius) && radius > 0.0f &&
+            MissesCascade(base, phase, distance, std::max(ts::kCarLengthPadding, 2.0f * radius), at, eyes)) {
+            gates.Add(Gate::kReach);
+            return;
+        }
         gates.Add(Gate::kRemapped);
         r4.u64 = ts::kAmbientBodyPhase;
     }

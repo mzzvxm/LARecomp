@@ -3671,6 +3671,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_shadow_filter_early_out": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Skip remaining sun shadow samples when the PCSS probes agree. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_shadow_filter_taps": {
   "type": "i32",
   "default": "0",
@@ -8647,6 +8658,17 @@
   "help": "\"Traffic and the other AI cars cast into the sun's shadow map like the player's car, so the ground under them is dark (the game \"\n    \"only draws the player's car into it). off: the game's own picture. near: the nearest few cars within a short distance of the \"\n    \"camera. all: every car within a long distance (costs more graphics and processor time). Legacy auto uses Near. Daylight only \"\n    \"(the game has no sun shadow at night and in rain). Live: it applies to the next frame, to the cars already on the road.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"near\", \"all\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_traffic_shadows_reach": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Skip traffic and opponent draws that cannot reach a sun cascade. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0

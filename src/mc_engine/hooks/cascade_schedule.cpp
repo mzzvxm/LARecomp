@@ -141,6 +141,8 @@ void cs::NoteCaster(uint32_t id, const float (&position)[3], uint8_t last_cascad
   }
 }
 
+uint64_t cs::FrameSerial() { return state.frame; }
+
 void Patch_CascadeFrame(PPCRegister& r21, PPCRegister& r27) {
   using namespace mcla::gpu;
   const bool daylight = (r21.u32 & cs::kCascadeMask) == cs::kCascadeMask;

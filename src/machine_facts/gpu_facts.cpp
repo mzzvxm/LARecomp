@@ -9,7 +9,6 @@
 #include "gpu/latency.h"
 #include "gpu/ray_regen_plan.h"
 #include "gpu/rt_tier.h"
-#include "gpu/shadow_filter.h"
 #include "gpu/temporal_dlss.h"
 #include "gpu/vram_warning.h"
 #include "settings/larecomp_settings.h"
@@ -296,7 +295,7 @@ void ReadTier(GpuFacts& out) {
   bool benchmarked;
   out.rt_tier_why = gc::MachineRtReason(benchmarked);
   out.rt_benchmarked = benchmarked;
-  out.pcss = shadow_filter::PcssRuns();
+  out.pcss = true;  // The sun filter supports PCSS on every native renderer device.
 }
 
 }  // namespace

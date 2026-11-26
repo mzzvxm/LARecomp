@@ -53,8 +53,8 @@
 // sees are candidates (the game's own visibility word +116, which sub_8235FA90 tests anyway: a car it
 // would not draw must not take a place), so the cars behind the camera never use up the count.
 //
-// What it costs [I, to be measured: chain-trafficcascade.ps1]: every casting car is drawn once per cascade
-// phase (4) at the forced LOD (a body and four wheels at the low model, tens of draws, not the 210 of the
+// What it costs [I, to be measured: chain-trafficcascade.ps1]: a selected car draws in each cascade it
+// can reach at the forced LOD (a body and four wheels at the low model, tens of draws, not the 210 of the
 // player's car at full detail), with the guest's own CPU cost of a car draw on the render thread and the
 // host's draw capture. ExtraDraws() is the rule of thumb the log line prints.
 //
@@ -68,6 +68,7 @@
 // ===========================================================================
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -75,7 +76,7 @@
 #include <string_view>
 #include <type_traits>
 
-#include "gpu_class.h"
+#include "gfx_preset.h"
 
 namespace mcla::gpu::traffic_shadow {
 
@@ -107,9 +108,11 @@ inline Mode ParseMode(std::string_view resolved) {
   return Mode::kOff;
 }
 
-// The mode for a GPU class and the setting's own text (`auto` is the class's cell: off on Low, near on Mid and High).
-inline Mode ModeFor(gpu_class::GpuClass cls, std::string_view setting_text) {
-  return ParseMode(gpu_class::ResolveFor(cls, gpu_class::Effect::kTrafficShadows, setting_text));
+// Legacy auto follows the Enhanced preset on all devices.
+inline Mode ModeFor(std::string_view setting_text) {
+  constexpr auto enhanced = gfx_preset::CellAt(gfx_preset::MustFindRow("mcla_gpu_traffic_shadows"),
+                                               gfx_preset::Preset::kEnhanced);
+  return ParseMode(setting_text == "auto" ? enhanced : setting_text);
 }
 
 // --- the render phases --------------------------------------------------------------------------------------
@@ -125,6 +128,68 @@ constexpr int CascadeIndex(uint32_t phase) {
     }
   }
   return 0;
+}
+
+// Receiver far edges in metres. Nearer receivers share larger cascades, so
+// there is no lower distance cutoff. A car length pads the far edge.
+inline constexpr std::array<float, 4> kCascadeFar = {15.0f, 31.0f, 80.0f, 160.0f};
+inline constexpr float kCarLengthPadding = 6.0f;
+inline constexpr float kOpponentLengthPadding = 12.0f;
+
+inline bool BeyondCascadeFar(int cascade, float distance, float length, float far_scale = 1.0f) {
+  return cascade >= 1 && cascade <= int(kCascadeFar.size()) && std::isfinite(distance) &&
+         std::isfinite(length) && length > 0.0f && std::isfinite(far_scale) && far_scale > 0.0f &&
+         distance > kCascadeFar[cascade - 1] * std::max(1.0f, far_scale) + length;
+}
+
+// The U and V columns of the guest's world-to-atlas matrix. The other
+// columns carry depth and its scale.
+using AtlasMatrixUV = std::array<std::array<float, 2>, 4>;
+
+struct CascadeReach {
+  std::array<float, 3> u{}, v{};
+  float offset_u = 0.0f, offset_v = 0.0f;
+  float scale_u = 0.0f, scale_v = 0.0f;
+  bool valid = false;
+
+  bool MissesTile(const float (&at)[3], float length) const {
+    if (!valid || !std::isfinite(length) || !(length > 0.0f)) return false;
+    // Project the car's bounding sphere. Its entire silhouette must miss
+    // the tile, even for sun rays pointing back towards the camera.
+    const float x = at[0] * u[0] + at[1] * u[1] + at[2] * u[2] + offset_u;
+    const float y = at[0] * v[0] + at[1] * v[1] + at[2] * v[2] + offset_v;
+    constexpr float kAtlasSlop = 1.0f / 1280.0f;
+    return std::isfinite(x) && std::isfinite(y) &&
+           (std::abs(x) > 0.25f + scale_u * length + kAtlasSlop ||
+            std::abs(y) > 0.25f + scale_v * length + kAtlasSlop);
+  }
+};
+
+inline CascadeReach MakeCascadeReach(int cascade, const AtlasMatrixUV& matrix, const float (&eye)[3]) {
+  if (cascade < 1 || cascade > int(kCascadeFar.size())) return {};
+  // The guest resolves to (0,0), (0,640), (640,0), (640,640).
+  const float centre_u = (cascade - 1) & 2 ? 0.75f : 0.25f;
+  const float centre_v = (cascade - 1) & 1 ? 0.75f : 0.25f;
+  CascadeReach reach;
+  for (int i = 0; i < 3; ++i) {
+    reach.u[i] = matrix[i][0];
+    reach.v[i] = matrix[i][1];
+  }
+  reach.scale_u = std::hypot(reach.u[0], reach.u[1], reach.u[2]);
+  reach.scale_v = std::hypot(reach.v[0], reach.v[1], reach.v[2]);
+  if (!(reach.scale_u > 0.0f && std::isfinite(reach.scale_u) &&
+        reach.scale_v > 0.0f && std::isfinite(reach.scale_v))) return {};
+  float axis_dot = 0.0f;
+  for (int i = 0; i < 3; ++i) axis_dot += (reach.u[i] / reach.scale_u) * (reach.v[i] / reach.scale_v);
+  if (!(std::abs(axis_dot) < 0.01f)) return {};
+  const float eye_u = eye[0] * reach.u[0] + eye[1] * reach.u[1] + eye[2] * reach.u[2] + matrix[3][0];
+  const float eye_v = eye[0] * reach.v[0] + eye[1] * reach.v[1] + eye[2] * reach.v[2] + matrix[3][1];
+  // The view eye lies inside the fitted cone and must map into this tile.
+  if (!(std::abs(eye_u - centre_u) <= 0.25f && std::abs(eye_v - centre_v) <= 0.25f)) return {};
+  reach.offset_u = matrix[3][0] - centre_u;
+  reach.offset_v = matrix[3][1] - centre_v;
+  reach.valid = true;
+  return reach;
 }
 
 // The current viewport is needed for fallback and for the census that compares the two eyes.

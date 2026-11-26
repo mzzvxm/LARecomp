@@ -14,6 +14,10 @@
 // -fvk-use-dx-layout, and without -spirv for DXIL).
 
 #include <algorithm>
+#include <array>
+#include <bit>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -48,6 +52,89 @@ size_t Count(std::string_view text, std::string_view needle) {
     ++count;
   }
   return count;
+}
+
+constexpr uint32_t kBlockerProbe = 0xE6u;
+constexpr uint32_t kPcfProbe = 0x2E8u;
+
+// Twin of the centre and five outer votes. A fractional PCF compare cannot
+// give unanimity. With a mixed probe, every weighted tap still contributes.
+template <size_t Taps>
+float ProbeResult(float centre, const std::array<float, Taps>& disk, uint32_t mask) {
+  if (centre != 0.0f && centre != 1.0f) return -1.0f;
+  for (size_t i = 0; i < Taps; ++i) {
+    if ((mask & (1u << i)) && disk[i] != centre) return -1.0f;
+  }
+  return centre;
+}
+
+void CheckEarlyOut() {
+  for (float centre : {0.0f, 1.0f}) {
+    for (uint32_t votes = 0; votes < 256; ++votes) {
+      std::array<float, 8> disk{};
+      for (size_t j = 0; j < disk.size(); ++j) disk[j] = float((votes >> j) & 1u);
+      const bool all_agree = centre == 0.0f ? (votes & 0xE6u) == 0 : (votes & 0xE6u) == 0xE6u;
+      Check(ProbeResult(centre, disk, kBlockerProbe) == (all_agree ? centre : -1.0f),
+            "blocker unanimity uses the centre and exactly five votes");
+    }
+  }
+  for (float centre : {0.0f, 0.5f, 1.0f}) {
+    std::array<float, 16> disk{};
+    disk.fill(centre);
+    Check(ProbeResult(centre, disk, kPcfProbe) == (centre == 0.5f ? -1.0f : centre),
+          "only fully lit or fully shadowed PCF votes can agree");
+    for (size_t i = 0; i < disk.size(); ++i) {
+      disk.fill(centre);
+      disk[i] = 0.25f;
+      const bool sampled = i == 3 || i == 5 || i == 6 || i == 7 || i == 9;
+      Check(ProbeResult(centre, disk, kPcfProbe) == (sampled || centre == 0.5f ? -1.0f : centre),
+            "a fractional sample on any probe lane falls through");
+    }
+  }
+
+  // A one-texel pole rasterized across a rotated disk. Compare the full
+  // weighted mean on mixed probes and measure the missed weight separately.
+  constexpr float kGoldenAngle = 2.399963f;
+  unsigned mixed = 0;
+  unsigned changed = 0;
+  float max_error = 0.0f;
+  for (int turn = 0; turn < 32; ++turn) {
+    const float angle = float(turn) * (6.2831853f / 32.0f);
+    for (int step = -48; step <= 48; ++step) {
+      const float x = float(step) / 16.0f;
+      std::array<float, 16> disk{};
+      std::array<float, 5> cached{};
+      float sum = 0.0f, total = 0.0f;
+      for (size_t i = 0; i < disk.size(); ++i) {
+        const float share = (float(i) + 0.5f) / float(disk.size());
+        const float weight = 1.0f - 0.5f * share;
+        const float u = x + 2.0f * std::sqrt(share) * std::cos(angle + float(i) * kGoldenAngle);
+        disk[i] = std::abs(u) >= 0.5f ? 1.0f : 0.0f;
+        if (kPcfProbe & (1u << i)) cached[std::popcount(kPcfProbe & ((1u << i) - 1u))] = disk[i];
+        sum += weight * disk[i];
+        total += weight;
+      }
+      const float centre = std::abs(x) >= 0.5f ? 1.0f : 0.0f;
+      const float probe = ProbeResult(centre, disk, kPcfProbe);
+      if (probe < 0.0f) {
+        ++mixed;
+        float resumed = 0.0f;
+        for (size_t i = 0; i < disk.size(); ++i) {
+          const float share = (float(i) + 0.5f) / float(disk.size());
+          const float tap = kPcfProbe & (1u << i) ? cached[std::popcount(kPcfProbe & ((1u << i) - 1u))] : disk[i];
+          resumed += (1.0f - 0.5f * share) * tap;
+        }
+        Check(resumed == sum, "mixed pole probes resume the full weighted sum in the original order");
+      } else if (probe != sum / total) {
+        ++changed;
+        max_error = std::max(max_error, std::abs(probe - sum / total));
+      }
+      if (centre == 0.0f) Check(probe != 1.0f, "a centred thin pole cannot be classified as fully lit");
+    }
+  }
+  Check(mixed > 0 && changed > 0, "the pole fixture exercises mixed probes and approximate returns");
+  Check(max_error < 0.27f, "this probe pattern limits the peak error in the synthetic pole fixture");
+  std::printf("PCSS pole fixture: %u mixed, %u approximate changes, peak %.3f visibility error\n", mixed, changed, max_error);
 }
 
 bool Contains(std::string_view text, std::string_view part) { return text.find(part) != std::string_view::npos; }
@@ -217,6 +304,19 @@ void CheckEdited(const Shape& shape, const std::string& hlsl) {
   // The game's own reads of its light matrix stay where they were (the helper's are another text: `+ base`).
   Check(Count(out, "gLightMatrixArr(0 + a0)") == 1 && Count(out, "gLightMatrixArr(3 + a0)") == 1,
         what + "the game's reads of its light matrix are untouched");
+  Check(Contains(out, "bool earlyOut = (mode & 8u) != 0u") &&
+        Contains(out, "kShadowFilterBlockerProbe = 0xE6u") &&
+        Contains(out, "kShadowFilterPcfProbe = 0x2E8u") &&
+        Contains(out, "kShadowFilterPcfTaps = 16"), what + "early-out bit and sample patterns match the twin");
+  Check(Contains(out, "bool centreBlocked = centreStored < depth;") &&
+        Contains(out, "unanimous && ((stored < depth + dot(slope, offset)) == centreBlocked)") &&
+        Contains(out, "return centreBlocked ? 0.0 : 1.0;"), what + "blocker unanimous test uses the receiver plane");
+  Check(Contains(out, "earlyOut && count == kShadowFilterPcfTaps") &&
+        Contains(out, "centreLit == 0.0 || centreLit == 1.0") &&
+        Contains(out, "unanimous && lit == centreLit"), what + "PCF skips only on fully unanimous probes");
+  Check(Contains(out, "stored = probe[ShadowFilterProbeSlot(kShadowFilterBlockerProbe, j)]") &&
+        Contains(out, "lit = pcfProbe[ShadowFilterProbeSlot(kShadowFilterPcfProbe, i)]"),
+        what + "fallback reuses the sampled taps");
   Check(out.find("#ifndef __spirv__\n[shader(\"pixel\")]") != std::string::npos, what + "main's attribute is kept");
   // Everything else is as it was: the text without the edits' lines equals the fixture's.
   Check(Contains(out, "\tr0.y = -ShaderGlobals.z + c253.x;\n\toC0.xyzw = max(r0.xxxw, r0.xxxw);\n\treturn;\n}\n"),
@@ -369,6 +469,7 @@ void CheckGameFiles(const std::filesystem::path& folder, const std::filesystem::
 
 int main(int argc, char** argv) {
   CheckFixtures();
+  CheckEarlyOut();
   if (argc > 1) {
     CheckGameFiles(argv[1], argc > 2 ? std::filesystem::path(argv[2]) : std::filesystem::path());
   }

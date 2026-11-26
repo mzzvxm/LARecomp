@@ -18,6 +18,7 @@
 #include <string>
 #include <vector>
 
+#include "gpu_class.h"
 #include "traffic_shadow.h"
 #include "traffic_shadow_gates.h"
 #include "traffic_shadow_pose.h"
@@ -51,16 +52,11 @@ void SettingAndClasses() {
   Check(ParseMode("") == Mode::kOff && ParseMode("auto") == Mode::kOff && ParseMode("Near") == Mode::kOff && ParseMode("on") == Mode::kOff,
         "anything else is off (auto is resolved before)");
   Check(ModeName(Mode::kNear) == "near" && ModeName(Mode::kAll) == "all" && ModeName(Mode::kOff) == "off", "the names");
-  // auto: near on Mid and High, off on Low (the owner's rule); the player's own choice is never changed.
   using gpu_class::GpuClass;
-  Check(ModeFor(GpuClass::kLow, "auto") == Mode::kNear, "auto on Low: near");
-  Check(ModeFor(GpuClass::kMid, "auto") == Mode::kNear, "auto on Mid: near");
-  Check(ModeFor(GpuClass::kHigh, "auto") == Mode::kNear, "auto on High: near");
-  for (GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
-    Check(ModeFor(c, "off") == Mode::kOff, "off stays off on every class");
-    Check(ModeFor(c, "near") == Mode::kNear, "near stays near on every class (a Low-class player may ask for it)");
-    Check(ModeFor(c, "all") == Mode::kAll, "all stays all on every class");
-  }
+  Check(ModeFor("auto") == Mode::kNear, "legacy auto uses Enhanced");
+  Check(ModeFor("off") == Mode::kOff, "explicit off");
+  Check(ModeFor("near") == Mode::kNear, "explicit near");
+  Check(ModeFor("all") == Mode::kAll, "explicit all");
   // The row's label for auto.
   Check(gpu_class::AutoLabelFor(GpuClass::kLow, gpu_class::Effect::kTrafficShadows) == "AUTO (NEAR)", "the row says AUTO (NEAR) on Low");
   Check(gpu_class::AutoLabelFor(GpuClass::kHigh, gpu_class::Effect::kTrafficShadows) == "AUTO (NEAR)", "the row says AUTO (NEAR) on High");
@@ -72,6 +68,51 @@ void Phases() {
   for (uint32_t p : {0u, 0x1u, 0x2u, 0x10u, 0x200u, 0x400u, 0x1000u, 0x2000u, 0x4000u, 0x10000u, 0x1000000u, 0x60u}) {
     Check(CascadeIndex(p) == 0, "phase " + Num("%.0f", double(p)) + " is not a cascade (the collector 0x1000 and the night phase 0x400 included)");
   }
+}
+
+void Reach() {
+  constexpr float far_edges[] = {15.0f, 31.0f, 80.0f, 160.0f};
+  constexpr float tile_centres[][2] = {{0.25f, 0.25f}, {0.25f, 0.75f}, {0.75f, 0.25f}, {0.75f, 0.75f}};
+  constexpr float length = 6.0f;
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float eye[] = {100.0f, 0.0f, 30.0f};
+  for (int cascade = 1; cascade <= 4; ++cascade) {
+    const float far = far_edges[cascade - 1];
+    Check(!BeyondCascadeFar(cascade, far + length, length), "the split includes a car straddling the edge");
+    Check(BeyondCascadeFar(cascade, far + length + 0.001f, length), "each split uses its own far edge");
+    Check(!BeyondCascadeFar(cascade, far + length + 0.001f, 2.0f * length), "longer cars retain the split");
+    Check(!BeyondCascadeFar(cascade, far + length + 0.001f, length, 1.2f), "the guest can extend the split");
+    Check(!BeyondCascadeFar(cascade, far, length, 0.5f), "a smaller guest split keeps the coarse test conservative");
+
+    const float scale = 0.25f / far;
+    const auto& centre = tile_centres[cascade - 1];
+    AtlasMatrixUV matrix{};
+    matrix[0][0] = scale;
+    matrix[2][1] = -scale;  // the light-space V axis flips as in the atlas transform
+    matrix[3] = {centre[0] - scale * eye[0], centre[1] + scale * eye[2]};
+    const auto bounds = MakeCascadeReach(cascade, matrix, eye);
+    Check(bounds.valid, "the current cascade's quadrant and nonzero translation are accepted");
+    const float just_inside[] = {eye[0] + far + length, 1.0f, eye[2]};
+    const float just_inside_v[] = {eye[0], 1.0f, eye[2] - far - length};
+    const float outside_u[] = {eye[0] + far + length + 1.0f, 1.0f, eye[2]};
+    const float outside_v[] = {eye[0], 1.0f, eye[2] - far - length - 1.0f};
+    const float same_shadow_ray[] = {eye[0], 200.0f, eye[2]};
+    const float bad_position[] = {outside_u[0], 1.0f, nan};
+    Check(!bounds.MissesTile(just_inside, length), "touching the padded light-space edge retains the car");
+    Check(!bounds.MissesTile(just_inside_v, length), "touching the vertical padded edge retains the car");
+    Check(bounds.MissesTile(outside_u, length), "car fully outside the horizontal edge is skipped");
+    Check(bounds.MissesTile(outside_v, length), "car fully outside the vertical edge is skipped");
+    Check(!bounds.MissesTile(same_shadow_ray, length), "a distant caster along a light ray can still reach the tile");
+    Check(!bounds.MissesTile(outside_v, nan) && !bounds.MissesTile(bad_position, length), "unknown caster bounds draw");
+    Check(!MakeCascadeReach(cascade % 4 + 1, matrix, eye).valid, "the wrong tile fails open");
+    matrix[0][1] = scale;
+    matrix[3][1] -= scale * eye[0];
+    Check(!MakeCascadeReach(cascade, matrix, eye).valid, "non-orthogonal light-space axes fail open");
+  }
+  Check(!BeyondCascadeFar(0, 200.0f, length) && !BeyondCascadeFar(5, 200.0f, length), "non-cascade phases have no reach cull");
+  Check(!BeyondCascadeFar(1, nan, length) && !BeyondCascadeFar(1, 200.0f, length, 0.0f), "unknown view data fails open");
+  const CascadeReach unknown{};
+  Check(!unknown.MissesTile(eye, length), "an unavailable matrix keeps the original draw");
 }
 
 void LimitsOfTheModes() {
@@ -402,6 +443,9 @@ void ValueCountsAndGates() {
   gates.Add(AmbientGate::kEyeFallback);
   gates.Add(AmbientGate::kLodCoarse);
   gates.Add(CarGate::kEyeMain);
+  gates.Add(CarGate::kReach);
+  gates.Add(AmbientGate::kReach);
+  gates.Add(AmbientGate::kReach);
   Check(gates.Get(CarGate::kCalls) == 5 && gates.Get(CarGate::kGameCaster) == 2, "car counters count");
   Check(gates.Get(AmbientGate::kLeafCalls) == 1 && gates.Get(AmbientGate::kRemapped) == 1 && gates.Get(AmbientGate::kDecided) == 0,
         "ambient counters count and stay apart from the car's");
@@ -421,6 +465,7 @@ void ValueCountsAndGates() {
   Check(line.find("reached Decide 0, cast 0; traffic route") != std::string::npos, "the car route ends, the traffic route starts: " + line);
   Check(line.find("item draw calls 1 (cascade 1, other phases") != std::string::npos, "the item draw's calls: " + line);
   Check(line.find("cast 1") != std::string::npos, "the traffic route's casts: " + line);
+  Check(line.find("beyond cascade reach: car-model 1, ambient 2") != std::string::npos, "reach counts both routes");
   for (const char* part : {"mode off", "no memory", "vehicle ptr", "ineligible", "+593 clear", "+6478 set", "+6467 set", "+123 set", "+116 zero", "+120 zero",
                            "entity ptr", "camera ptr", "distance not finite", "reached Decide", "phase loop", "mask widened", "item ptr", "car ptr", "buffer",
                            "+36 zero", "car +500", "models<3", "LOD<0", "LOD 2", "position", "eye main viewport", "current viewport", "renderer ptr",
@@ -448,12 +493,14 @@ void WindowAndCensusLines() {
   gates.Add(AmbientGate::kRemapped);
   for (int i = 0; i < 5; ++i) gates.Add(AmbientGate::kDepthConsistent);
   gates.Add(AmbientGate::kDepthFar);
+  gates.Add(AmbientGate::kReach);
   const std::string w1 = gates.WindowLine();
   Check(w1.rfind("[traffic-shadows] window: ", 0) == 0 && w1.find('\n') == std::string::npos, "the window line: tag, one line: " + w1);
   Check(w1.find("item draws in cascades 10, turned away 4 [+36 zero 0, car +500 0, models<3 0, LOD<0 3, LOD 2 1], reached Decide 6, cast 1") != std::string::npos,
         "the first window counts from the start: " + w1);
   Check(w1.find("eye main viewport 6 / current viewport 0") != std::string::npos, "... with the eye counters: " + w1);
   Check(w1.find("consistent 5, closer than the depth 0, beyond the view 1, unknown 0") != std::string::npos, "... and the depth check: " + w1);
+  Check(w1.find("beyond cascade reach 1") != std::string::npos, "first window includes skipped draws");
   // More traffic: the next window shows only the new counts.
   for (int i = 0; i < 7; ++i) gates.Add(AmbientGate::kLeafCascade);
   gates.Add(AmbientGate::kDecided);
@@ -462,6 +509,7 @@ void WindowAndCensusLines() {
   const std::string w2 = gates.WindowLine();
   Check(w2.find("item draws in cascades 7, turned away 0 [+36 zero 0, car +500 0, models<3 0, LOD<0 0, LOD 2 0], reached Decide 1, cast 2") != std::string::npos,
         "the second window counts what is new: " + w2);
+  Check(w2.find("beyond cascade reach 0") != std::string::npos, "the reach window resets with the other counters");
   const std::string w3 = gates.WindowLine();
   Check(w3.find("item draws in cascades 0, turned away 0") != std::string::npos && w3.find("reached Decide 0, cast 0") != std::string::npos,
         "a window with nothing new is all zero: " + w3);
@@ -848,6 +896,7 @@ void YawRules() {
 int main() {
   SettingAndClasses();
   Phases();
+  Reach();
   LimitsOfTheModes();
   Candidates();
   VehicleRejects();
