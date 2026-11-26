@@ -27,8 +27,8 @@
 // recorded and is cleared when the structure is given back (the range later, when the GPU is done). The worker reads the hit blob beside the base mesh. Structures built before the
 // pool was made (or under another pool) have no blocks: they are given back and built again, once (CityHitScene::epoch). Without hit data nothing below changes.
 //
-// MEMORY. A structure is 57 to 96 bytes a triangle (no compaction: Plume has no post-build compaction query; a Plume change that adds one shrinks this by a third or
-// more, and Budget's cap is in structure bytes, so it needs no change here). The class budgets are city_rt_rules.h BudgetFor: Mid 96 MiB (hi detail within 150 m),
+// MEMORY. Stream admission charges the ordinary (compaction opt-in disabled) prebuild sizes in both A/B arms. Compaction saves resident bytes without changing sector selection.
+// The class budgets are city_rt_rules.h BudgetFor: Mid 96 MiB (hi detail within 150 m),
 // High 256 MiB (300 m), ultra 512 MiB (600 m). Everything is given back after kIdleReleaseFrames frames without a request.
 //
 // D3D12 with DXR 1.1 (inline ray queries) and, where Plume's ray query work is in the pin, Vulkan: the same decision as the car scene (CarRtSupported).
@@ -54,6 +54,7 @@
 #include "citypack/city_hit_format.h"
 #include "citypack/pack_reader.h"
 #include "city_rt_rules.h"
+#include "rt_as_rules.h"
 #include "rt_scene_bounds.h"
 #include "frame.h"
 #include "temporal_math.h"
@@ -111,7 +112,9 @@ class CityRtScene {
   // Called by CarRtScene::OnResolve in the frame's trigger, after the cars' instances are made and before the top level is described: reads, plan, builds (recorded on
   // `list`, outside any render pass; `slot` is the frame's slot), and the city's instances appended to `instances` (in the frame's view space). `view` is the frame's
   // camera (world to view, row vectors), `flip_z` the car scene's decision about its z. Returns the instances appended. Nothing when not wanted or the pack is not there.
-  uint32_t Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances, rt_scene::Bounds* bounds);
+  uint32_t Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list,
+                   uint32_t slot, std::vector<plume::RenderTopLevelASInstance>& instances,
+                   std::vector<rt_as::InstanceKey>& keys, rt_scene::Bounds* bounds);
   // True when Prepare recorded GPU work in this frame's list (the caller's list state is gone then, as the car scene's builds).
   bool recorded() const { return recorded_; }
 
@@ -145,6 +148,14 @@ class CityRtScene {
     uint64_t build_triangles = 0;
     uint64_t evictions = 0;
     uint64_t failures = 0;
+    uint64_t query_batches = 0;
+    uint64_t compact_copies = 0;
+    uint64_t compacted = 0;
+    uint64_t compact_saved_bytes = 0;
+    uint64_t compact_no_gain = 0;
+    uint64_t compact_failures = 0;
+    uint64_t compact_cancelled = 0;
+    uint64_t compact_peak_extra_bytes = 0;
   };
   Stats stats() const;
   // The video memory the structures, their scratch and the meshes waiting hold now.
@@ -163,9 +174,34 @@ class CityRtScene {
     std::array<float, 3> lo{};
     std::array<float, 3> hi{};
     bool bounds_known = false;
+    uint64_t generation = 0;
   };
   struct SectorSlot {
     Structure hi, lod;
+  };
+  struct SectorRef {
+    uint32_t sector = 0;
+    city_rt::Detail detail = city_rt::Detail::kHi;
+    uint64_t generation = 0;
+  };
+  struct SizeRequest {
+    SectorRef ref;
+    uint64_t retry_frame = 0;
+  };
+  struct CopyRequest {
+    SectorRef ref;
+    uint64_t bytes = 0;
+    uint64_t retry_frame = 0;
+  };
+  struct PendingBuild {
+    SectorRef ref;
+    FrameWork work;
+  };
+  struct PendingCopy {
+    CopyRequest request;
+    Structure destination;
+    FrameWork work;
+    uint64_t reserved_bytes = 0;
   };
   // A mesh the worker read, waiting for the trigger's build.
   struct Staged {
@@ -182,6 +218,7 @@ class CityRtScene {
     uint32_t sector = 0;
     city_rt::Detail detail = city_rt::Detail::kHi;
     bool with_hit = false;
+    uint64_t generation = 0;
   };
   struct LoadResult {
     LoadRequest request;
@@ -195,6 +232,10 @@ class CityRtScene {
   struct SlotResources {
     std::unique_ptr<plume::RenderBuffer> scratch;  // the builds' scratch (one after the other, a barrier between)
     uint64_t scratch_bytes = 0;
+    std::unique_ptr<plume::RenderASCompactedSizeQuery> compact_sizes;
+    std::array<SizeRequest, rt_as::kQueriesPerBatch> queries;
+    uint32_t query_count = 0;
+    FrameWork query_work;
   };
 
   bool OpenPack();
@@ -207,6 +248,12 @@ class CityRtScene {
   // A mesh read without the hit blob before the hit data's pool existed (city_rt::ReadBeforePool): the sector detail goes back to kNone and the plan asks again, with the blob.
   void GiveBackForReread(uint32_t sector, city_rt::Detail detail);
   void PollLoads();
+  Structure* Find(const SectorRef& ref);
+  void CheckBuilds();
+  void FinishCompaction(bool allow_publish);
+  bool RecordCompaction(plume::RenderCommandList* list, uint32_t slot);
+  bool RecordCompactCopies(plume::RenderCommandList* list);
+  bool RecordCompactSizes(plume::RenderCommandList* list, SlotResources& slot);
   void Plan(const double camera[3]);
   // What a staged mesh takes of the staging: the pool block's bytes when the hit data rides with it, else positions and indices.
   uint64_t StagedBytesOf(const Staged& staged) const;
@@ -256,6 +303,13 @@ class CityRtScene {
   uint64_t structure_bytes_ = 0;
   uint64_t staged_bytes_ = 0;
   std::array<SlotResources, kFramesInFlight> slots_;
+  uint64_t next_generation_ = 0;
+  uint64_t query_retry_frame_ = 0;
+  std::vector<PendingBuild> pending_builds_;
+  std::deque<SizeRequest> needs_size_;
+  std::deque<CopyRequest> needs_copy_;
+  std::vector<PendingCopy> pending_copies_;
+  std::shared_ptr<rt_as::CompactionMemory> compact_memory_;
 
   // The worker that reads the pack.
   std::thread worker_;

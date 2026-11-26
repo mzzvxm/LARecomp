@@ -41,6 +41,7 @@ class RtSceneService {
   void NoteCarWant() { board_.Want(rt_scene::Consumer::kCars, CarsNeeds()); }
   // A top level was built with the car frame's camera (CarRtScene::OnResolve), for the census.
   void NoteCarTop() { ++counts_.car_tops; }
+  void NoteTopLevel(bool reused, uint32_t city_instances);
 
   // The merged wants of this frame and the last (what the structures and the pool are told, and what the plan below judges).
   rt_scene::Needs Needs() const { return board_.Now(); }
@@ -83,6 +84,9 @@ class RtSceneService {
     uint64_t city_only_tops = 0;  // ... and without the car, in the predicted camera
     uint64_t held_pose = 0;       // of those, frames the predicted pose was a held one (a cut, or one pose known)
     uint64_t no_camera = 0;       // frames the city was wanted, the car was not found and no camera was known
+    uint64_t tlas_builds = 0;
+    uint64_t tlas_reuses = 0;
+    uint64_t city_ready_frames = 0;
     uint64_t nothing = 0;         // frames nothing needed a top level
   } counts_;
   int logged_why_ = -1;

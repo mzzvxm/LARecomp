@@ -351,6 +351,9 @@ const ItemDef kDebugPerformanceItems[] = {
 #if defined(_WIN32)
     NativeOnly(Bool("PM_RxDbgVkPresentPacing", "mcla_gpu_vk_present_pacing", "VULKAN PRESENT PACING: ")),
 #endif
+    NativeOnly(Bool("PM_RxDbgCityCompact", "mcla_gpu_city_rt_compaction", "CITY RT COMPACTION: ")),
+    NativeOnly(Bool("PM_RxDbgTlasReuse", "mcla_gpu_rt_tlas_reuse", "RT TOP LEVEL REUSE: ")),
+    NativeOnly(Bool("PM_RxDbgTlasFastBuild", "mcla_gpu_rt_tlas_fast_build", "RT TOP LEVEL FAST BUILD: ")),
     Bool("PM_RxDbgPumpWake",   "pump_wake_on_demand",    "FRAME PACING WAKE: "),
     // CHECK: flipped on after the game made its surfaces, are they past the 2048 EDRAM tiles
     // Patch_EdramLimit lets through only while this is on (graphics.cpp)? A live ON may misbehave.

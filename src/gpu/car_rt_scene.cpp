@@ -212,6 +212,9 @@ bool CarRtScene::MakeCheck(HostPasses& passes) {
 
 void CarRtScene::Shutdown() {
   // The GPU is idle and the FrameRing drained (the deferred frees ran): everything goes at once.
+  pending_meshes_.clear();
+  tlas_instances_.clear();
+  tlas_keys_.clear();
   ++generation_;
   lights_source_.SetEnabled(false);  // the hook notes no kind for this consumer any more (LU-8)
   lamp_set_.Clear();
@@ -569,13 +572,18 @@ bool CarRtScene::WantsResolve(bool gate_unused) const {
 bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            uint32_t slot) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtBuild);
-  if (!ready_ || !list || slot >= kFramesInFlight || !IsTrigger(record, summary)) {
+  if (!ready_ || !device_ || !device_->device() || device_->IsLost() || !frames_ ||
+      !pass_timing_ || !car_frame_ || !list || slot >= kFramesInFlight ||
+      !IsTrigger(record, summary)) {
     return false;
   }
   trigger_seen_ = true;
   ++stats_counts_.triggers;
   view_ = CarRtView{};
   check_due_ = false;
+  CheckMeshBuilds();
+  tlas_instances_.clear();
+  tlas_keys_.clear();
   if (!Wants()) {
     return OnResolveCityOnly(list, slot);  // nobody asked for the cars: the city may still be wanted (rt_scene_service.h)
   }
@@ -665,6 +673,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     m.page = page;
     m.structure_offset = offset;
     m.structure_size = size;
+    m.as_generation = ++next_as_generation_;
     m.bytes = uint64_t(m.vertex_count) * 28 + uint64_t(m.index_count) * 4 + size;  // positions, normals and texture coordinates, indices, structure
     m.structure = std::move(structure);
     scratch_needed = std::max(scratch_needed, p.info.scratchSize);
@@ -757,16 +766,18 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   walked_stats_.painted_drawn += instances_.drawn_painted();
   stats_counts_.missing_mesh += cars.stats.missing_mesh;
   stats_counts_.bad_matrix += cars.stats.bad_matrix;
-  std::vector<plume::RenderTopLevelASInstance> instances;
-  instances.reserve(cars.items.size());
   rt_scene::Bounds scene_bounds;
+  tlas_instances_.reserve(cars.items.size());
+  tlas_keys_.reserve(cars.items.size());
   for (uint32_t index = 0; index < cars.items.size(); ++index) {
     const car_rt_instances::Item& item = cars.items[index];
     const Mesh& m = meshes_.at(item.mesh_key);
     plume::RenderTopLevelASInstance instance(plume::RenderBufferReference(pages_[m.page].buffer.get(), m.structure_offset), index, item.mask, 0,
                                              /*cullDisable=*/true, plume::RenderAffineTransform());
     std::memcpy(instance.transform.m, item.transform, sizeof(item.transform));
-    instances.push_back(instance);
+    instance.bottomLevelASObject = m.structure.get();
+    tlas_instances_.push_back(instance);
+    tlas_keys_.push_back(rt_as::KeyOf(instance, m.as_generation));
     scene_bounds.IncludeTransformed(m.bounds_min, m.bounds_max, item.transform, m.has_bounds);
   }
   // The instances' rows, then the other cars' records: one table. A top level that holds only the city (no car has a built mesh yet) still has a table of one row (the buffer is made
@@ -780,19 +791,22 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // described in the frame's view space with the cars' own transform and the mask kMaskCity, which none of the cars' passes traces and the city's shadow pass does. Nothing when the
   // city scene is off or has no pack.
   bool city_recorded = false;
+  uint32_t city_count = 0;
   if (city_ != nullptr && city_->wanted()) {
-    city_->Prepare(frame.view, flip_z, list, slot, &instances, &scene_bounds);
+    city_count = city_->Prepare(frame.view, flip_z, list, slot, tlas_instances_, tlas_keys_,
+                                &scene_bounds);
     city_recorded = city_->recorded();
   }
   // === END OF THE CITY-RT BLOCK ===
 
   // The top level's own description and the slot's buffers for it (the slot's GPU work is done: the FrameRing waited for it).
   SlotResources& res = slots_[slot];
-  const uint32_t count = uint32_t(instances.size());
+  const uint32_t count = uint32_t(tlas_instances_.size());
   plume::RenderTopLevelASBuildInfo tlas_info;
+  bool reused_top = false;
   std::vector<uint32_t> material_words;  // RT-HIT-SHADING: the frame's lighting rows and the instances' materials (car_rt_material_rules.h)
   if (count != 0) {
-    device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
+    reused_top = DescribeTopLevel(res, tlas_info, larecomp::settings::mcla_gpu_rt_tlas_fast_build.Get());
     const cpu_timing::Scope material_time(cpu_timing::Section::kRtInstances);
     BuildMaterialRows(frame, flip_z, cars, &material_words);
   }
@@ -836,6 +850,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     list->barriers(plume::RenderBarrierStage::COMPUTE,
                    plume::RenderBufferBarrier(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
     list->buildBottomLevelAS(mesh->structure.get(), plume::RenderBufferReference(res.scratch.get(), 0), p.info);
+    pending_meshes_.push_back({p.key, mesh->as_generation, frames_->TrackWork()});
     recorded = true;
   }
 
@@ -843,20 +858,12 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     // CHECK: the BLAS and TLAS builds on the D3D12 debug layer: the inputs are moved from COPY_DEST to ALL_SHADER_RESOURCE by SetAccess
     // (a buffer in COMMON would rely on implicit promotion), the scratch is in UNORDERED_ACCESS by its barrier, the structures stay in
     // RAYTRACING_ACCELERATION_STRUCTURE, whose barrier is a UAV barrier.
-    std::memcpy(res.instances_cpu, tlas_info.instancesBufferData.data(), tlas_info.instancesBufferData.size());
     std::memcpy(res.table_cpu, rows.data(), rows.size() * sizeof(rr::InstanceRow));
     std::memcpy(res.materials_cpu, material_words.data(), material_words.size() * sizeof(uint32_t));
-    std::vector<plume::RenderBufferBarrier> before_top;
-    before_top.reserve(pages_.size() + 1);
-    for (const Page& page : pages_) {
-      before_top.emplace_back(page.buffer.get(), plume::RenderBufferAccess::READ);
+    if (!RecordTopLevel(res, list, tlas_info, reused_top, /*with_car_pages=*/true)) {
+      return recorded;
     }
-    before_top.emplace_back(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE);
-    list->barriers(plume::RenderBarrierStage::COMPUTE, before_top.data(), uint32_t(before_top.size()), nullptr, 0);
-    list->buildTopLevelAS(res.tlas.get(), plume::RenderBufferReference(res.scratch.get(), 0), plume::RenderBufferReference(res.instances.get(), 0),
-                          tlas_info);
-    list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
-                   plume::RenderBufferBarrier(res.tlas_buffer.get(), plume::RenderBufferAccess::READ));
+    if (service_) service_->NoteTopLevel(reused_top, city_count);
     BindSceneDescriptors(res, uint64_t(rows.size()) * sizeof(rr::InstanceRow),
                          uint64_t(material_words.size()) * sizeof(uint32_t));
     NoteMaterials(cars, material_words);
@@ -935,29 +942,27 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
   if (!service_->PredictedView(&view, &flip_z)) {
     return false;
   }
-  std::vector<plume::RenderTopLevelASInstance> instances;
   rt_scene::Bounds scene_bounds;
-  city_->Prepare(view, flip_z, list, slot, &instances, &scene_bounds);
+  city_->Prepare(view, flip_z, list, slot, tlas_instances_, tlas_keys_, &scene_bounds);
   bool recorded = city_->recorded();
-  const uint32_t count = uint32_t(instances.size());
+  const uint32_t count = uint32_t(tlas_instances_.size());
   if (count == 0) {
     return recorded;
   }
   SlotResources& res = slots_[slot];
   plume::RenderTopLevelASBuildInfo tlas_info;
-  device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
+  const bool reused_top = DescribeTopLevel(res, tlas_info, larecomp::settings::mcla_gpu_rt_tlas_fast_build.Get());
   static const rr::InstanceRow kOneRow{};  // the table the set names: one row, no instance of this top level looks at it
   if (!EnsureSlot(res, slot, tlas_info.accelerationStructureSize, tlas_info.scratchSize, tlas_info.instancesBufferData.size(), sizeof(rr::InstanceRow), sizeof(uint32_t) * 4)) {
     REXLOG_ERROR("{} the frame slot's buffers could not be made: no top level of the city this frame", kPrefix);
     return recorded;
   }
-  std::memcpy(res.instances_cpu, tlas_info.instancesBufferData.data(), tlas_info.instancesBufferData.size());
   std::memcpy(res.table_cpu, &kOneRow, sizeof(rr::InstanceRow));
   std::memset(res.materials_cpu, 0, sizeof(uint32_t) * 4);  // RT-HIT-SHADING's materials binding (t5): one empty row, no instance of this top level is a car
-  list->barriers(plume::RenderBarrierStage::COMPUTE, plume::RenderBufferBarrier(res.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE));
-  list->buildTopLevelAS(res.tlas.get(), plume::RenderBufferReference(res.scratch.get(), 0), plume::RenderBufferReference(res.instances.get(), 0), tlas_info);
-  list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
-                 plume::RenderBufferBarrier(res.tlas_buffer.get(), plume::RenderBufferAccess::READ));
+  if (!RecordTopLevel(res, list, tlas_info, reused_top, /*with_car_pages=*/false)) {
+    return recorded;
+  }
+  service_->NoteTopLevel(reused_top, count);
   BindSceneDescriptors(res, sizeof(rr::InstanceRow), sizeof(uint32_t) * 4);
   hit_->Bind(res.set.get(), hit_bindings_, slot);
   hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);
@@ -1753,6 +1758,8 @@ void CarRtScene::ReleaseSlot(SlotResources& slot) {
   frames_->Retire(std::move(slot.table));
   frames_->Retire(std::move(slot.materials));
   slot.tlas_bytes = slot.scratch_bytes = slot.instances_bytes = slot.table_bytes = slot.materials_bytes = 0;
+  slot.tlas_work.reset();
+  slot.tlas_keys.clear();
   slot.instances_cpu = nullptr;
   slot.table_cpu = nullptr;
   slot.materials_cpu = nullptr;
@@ -2077,6 +2084,54 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
   std::erase_if(staged_order_, [&](uint64_t key) { return !staged_.contains(key); });
 }
 
+void CarRtScene::CheckMeshBuilds() {
+  std::erase_if(pending_meshes_, [&](const PendingMesh& pending) {
+    if (pending.work && *pending.work == FrameWorkStatus::kDiscarded) {
+      const auto mesh = meshes_.find(pending.key);
+      if (mesh != meshes_.end() && rt_as::MatchesGeneration(pending.generation, mesh->second.as_generation)) Evict(pending.key);
+    }
+    return FrameWorkSettled(pending.work);
+  });
+}
+
+bool CarRtScene::DescribeTopLevel(const SlotResources& slot, plume::RenderTopLevelASBuildInfo& info, bool fast_build) {
+  const bool reuse = rt_as::CanReuse(larecomp::settings::mcla_gpu_rt_tlas_reuse.Get(), slot.tlas && FrameWorkCompleted(slot.tlas_work),
+                                    fast_build, slot.tlas_fast_build, slot.tlas_keys, tlas_keys_);
+  if (!reuse && device_ && device_->device()) {
+    device_->device()->setTopLevelASBuildInfo(info, tlas_instances_.data(), uint32_t(tlas_instances_.size()), fast_build, !fast_build);
+  }
+  return reuse;
+}
+
+bool CarRtScene::RecordTopLevel(SlotResources& slot, plume::RenderCommandList* list, const plume::RenderTopLevelASBuildInfo& info, bool reused,
+                               bool with_car_pages) {
+  if (reused) return true;
+  if (!list || !pass_timing_ || !frames_ || !slot.instances_cpu || !slot.instances || !slot.scratch || !slot.tlas || !slot.tlas_buffer) return false;
+
+  pass_timing_->Mark(list, "rt tlas build");
+  std::memcpy(slot.instances_cpu, info.instancesBufferData.data(), info.instancesBufferData.size());
+  const plume::RenderBufferBarrier scratch(slot.scratch.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE);
+  if (with_car_pages) {
+    std::vector<plume::RenderBufferBarrier> before_top;
+    before_top.reserve(pages_.size() + 1);
+    for (const Page& page : pages_) {
+      if (page.buffer) before_top.emplace_back(page.buffer.get(), plume::RenderBufferAccess::READ);
+    }
+    before_top.push_back(scratch);
+    list->barriers(plume::RenderBarrierStage::COMPUTE, before_top.data(), uint32_t(before_top.size()), nullptr, 0);
+  } else {
+    list->barriers(plume::RenderBarrierStage::COMPUTE, scratch);
+  }
+  list->buildTopLevelAS(slot.tlas.get(), plume::RenderBufferReference(slot.scratch.get(), 0), plume::RenderBufferReference(slot.instances.get(), 0), info);
+  list->barriers(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE, plume::RenderBufferBarrier(slot.tlas_buffer.get(), plume::RenderBufferAccess::READ));
+  // CHECK: steady reuse with both camera sources, and rebuilds when a compacted
+  // city address or a recycled car BLAS range replaces a prior generation.
+  slot.tlas_work = frames_->TrackWork();
+  slot.tlas_keys.swap(tlas_keys_);
+  slot.tlas_fast_build = info.preferFastBuild;
+  return true;
+}
+
 bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_bytes, uint64_t scratch_bytes, uint64_t instance_bytes,
                             uint64_t table_bytes, uint64_t material_bytes) {
   if (!s.set) {
@@ -2107,6 +2162,8 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
     s.tlas_buffer = std::move(buffer);
     s.tlas = std::move(structure);
     s.tlas_bytes = bytes;
+    s.tlas_work.reset();
+    s.tlas_keys.clear();
   }
   if (scratch_bytes != 0 && s.scratch_bytes < scratch_bytes) {
     const uint64_t bytes = room(scratch_bytes);

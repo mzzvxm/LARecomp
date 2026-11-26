@@ -321,6 +321,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_city_rt_build_budget, true, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_city_rt_car_coverage, true, "Trace city sun shadows on vehicles and include cars within 150 metres of the camera in the ray tracing scene. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_city_rt_compaction, true, "Compact static city ray tracing structures to save memory. Changes apply to future compaction work. Start a fresh session for a memory comparison.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_tlas_reuse, true, "Reuse the frame slot's ray tracing top level when its ordered instances and bottom level generations match. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_tlas_fast_build, false, "Prefer building ray tracing top levels faster. Use this to compare build and trace times with the default fast trace mode. Live.", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: override the full-detail radius of the city RT structures in metres. Zero uses 300 metres at High and 600 at Ultra. The far radius reaches at least four times as far. Live.",
     rex::kDebugOnly, rex::Range{0.0, 1500.0});
 
@@ -2180,6 +2185,9 @@ inline auto& mcla_gpu_city_rt_alpha_ref = g_gpu.mcla_gpu_city_rt_alpha_ref;
 inline auto& mcla_gpu_city_rt_alpha_view = g_gpu.mcla_gpu_city_rt_alpha_view;
 inline auto& mcla_gpu_city_rt_build_budget = g_gpu.mcla_gpu_city_rt_build_budget;
 inline auto& mcla_gpu_city_rt_car_coverage = g_gpu.mcla_gpu_city_rt_car_coverage;
+inline auto& mcla_gpu_city_rt_compaction = g_gpu.mcla_gpu_city_rt_compaction;
+inline auto& mcla_gpu_rt_tlas_reuse = g_gpu.mcla_gpu_rt_tlas_reuse;
+inline auto& mcla_gpu_rt_tlas_fast_build = g_gpu.mcla_gpu_rt_tlas_fast_build;
 inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
 inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
 inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;
