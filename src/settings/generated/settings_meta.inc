@@ -639,6 +639,7 @@
 {"mcla_gpu_vol_far", "MCLA/GPU"},
 {"mcla_gpu_atmosphere_merge", "MCLA/GPU"},
 {"mcla_gpu_atmosphere_menu_views", "MCLA/GPU"},
+{"mcla_gpu_vol_amortize", "MCLA/GPU"},
 {"mcla_gpu_vol_history_medium", "MCLA/GPU"},
 {"mcla_gpu_vol_near", "MCLA/GPU"},
 {"mcla_gpu_vol_temporal", "MCLA/GPU"},

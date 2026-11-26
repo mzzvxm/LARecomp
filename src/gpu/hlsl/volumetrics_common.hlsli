@@ -62,6 +62,8 @@ static const uint kO_headlights = 3792;
 static const uint kO_shadow_views = 4048;
 static const uint kO_prev_counts = 4816;
 static const uint kO_prev_headlights = 4832;
+static const uint kO_lamp_changes = 5088;
+static const uint kO_retired_lamps = 5104;
 
 float4 VolF4(uint offset) { return asfloat(g_vol.Load4(offset)); }
 uint4 VolU4(uint offset) { return g_vol.Load4(offset); }

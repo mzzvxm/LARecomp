@@ -288,6 +288,8 @@ struct VolGpuConstants {
   // every offset above stays where it was.
   uint32_t prev_counts[4];  // x the headlight count of the history's volume (0: none, or no history); yzw unused
   std::array<VolLamp, kMaxHeadlights> prev_headlights;
+  uint32_t lamp_changes[4];  // xy current lamp bits, z previous changed lamp count, w unused
+  std::array<VolLamp, kMaxLamps> retired_lamps;
 };
 static_assert(sizeof(VolGpuConstants) % 16 == 0);
 static_assert(offsetof(VolGpuConstants, world) == 192);
@@ -310,6 +312,8 @@ struct Offsets {
   static constexpr uint32_t shadow_views = offsetof(VolGpuConstants, shadow_views);
   static constexpr uint32_t prev_counts = offsetof(VolGpuConstants, prev_counts);
   static constexpr uint32_t prev_headlights = offsetof(VolGpuConstants, prev_headlights);
+  static constexpr uint32_t lamp_changes = offsetof(VolGpuConstants, lamp_changes);
+  static constexpr uint32_t retired_lamps = offsetof(VolGpuConstants, retired_lamps);
 };
 
 // ---------------------------------------------------------------------------

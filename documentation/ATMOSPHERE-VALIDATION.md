@@ -105,6 +105,89 @@ matched full-resolution shots with the diagnostic paths and sweep the camera
 past the sun. Check the fade and temporal trail on both APIs. Validate
 single-effect frames and MSAA with the graphics debug layers.
 
+## POST-3 froxel amortization
+
+Merge `perf/vol-amortize` into `test/vol-amortize-opt` with the same scene and
+VISMET harness as above. Build and package once on the main PC. Use that
+executable on both sides of each comparison. The FIXES row **REUSE VOLUME
+SAMPLES** switches the path live. The first volume log reports which path ran.
+
+```powershell
+& .\perf\scripts\build-set-011.ps1 -Name vol-amortize -Ref test/vol-amortize-opt -Sdk setm -ExtraTargets larecomp_volumetrics_amortize_test
+& .\perf\scripts\make-pack-011.ps1 -Name vol-amortize -Exe vol-amortize -Ref test/vol-amortize-opt
+```
+
+Run the following from the harness workspace on each host. Use D3D12 on the
+main PC and Vulkan on the ROG. Stage the same exe, packs and scenes on the ROG,
+including `perf\out\volumetrics\vol-rain.scene` from the volumetrics chain.
+Use the exact adapter name from the host's log if it has more than one GPU.
+
+```powershell
+. .\perf\scripts\lockrun-lease.ps1
+$volLock = Find-LockrunPy
+$volApi = 'd3d12' # main PC. Use 'vulkan' on the ROG.
+$volExe = 'vol-amortize'
+$volPacks = "$PWD\ports\scratch\packs-$volExe"
+$volStarter = "$PWD\ports\scratch\starter\merged-1.bin"
+$volShare = @('--exe-dir', "$PWD\ports\exe\$volExe", '--backend', $volApi, '--window', '1280x720', '--scale', '1.5', '--save', 'mzlate', '--starter', $volStarter)
+$volSettings = @('--mcla_gpu_preset=custom', '--mcla_gpu_hdr=off', '--mcla_gpu_upscaler=off', '--mcla_gpu_sun_shafts=off', '--mcla_gpu_headlights=on', '--mcla_gpu_light_shadows=ultra', '--mcla_gpu_vol_stable=true')
+$volTakes = "ports\takes\post3-$volApi"
+foreach ($volMode in 'base', 'change', 'reference') {
+    $volReuse = if ($volMode -eq 'change') { 'true' } else { 'false' }
+    $volTemporal = if ($volMode -eq 'reference') { 'false' } else { 'true' }
+    foreach ($volScene in 'vol-hl-pass', 'vol-stable-chase-fog', 'vol-stable-dolly') {
+        if ($volMode -eq 'reference' -and $volScene -ne 'vol-hl-pass') { continue }
+        $volInput = @{ 'vol-hl-pass' = 2; 'vol-stable-chase-fog' = 3; 'vol-stable-dolly' = 1 }[$volScene]
+        $volView = if ($volScene -eq 'vol-hl-pass') { 1 } else { 2 }
+        python -I $volLock --lock --keep-display --game --max-min 15 --log "perf\logs\post3-$volApi-$volScene-$volMode.log" -- python -I .\ports\scripts\scene_run.py @volShare --scene $volScene --out "$volTakes\$volScene-$volMode" --shader-pack-dir $volPacks --extra @volSettings '--mcla_gpu_volumetrics=high' "--mcla_gpu_vol_inputs=$volInput" "--mcla_gpu_vol_view=$volView" "--mcla_gpu_vol_amortize=$volReuse" "--mcla_gpu_vol_temporal=$volTemporal"
+    }
+}
+foreach ($volMode in 'base', 'change') {
+    python .\perf\scripts\vol_stable_metric.py trail "$volTakes\vol-hl-pass-$volMode" "$volTakes\vol-hl-pass-reference"
+}
+foreach ($volScene in 'vol-stable-chase-fog', 'vol-stable-dolly') {
+    python .\perf\scripts\vol_stable_metric.py measure "$volTakes\$volScene-base" --json
+    python .\perf\scripts\vol_stable_metric.py measure "$volTakes\$volScene-change" --json
+}
+```
+
+Read the trail percentage (at most 1.76%) and the VOL-STABLE flicker and pop
+metrics. Smoke the scenes first. For viewport and cockpit proof, prepare
+matched frame captures and run the resulting capture plan. Append
+`--mcla_gpu_vol_view=1` to both sides of a second capture for the isolated light.
+Use the final-colour pair for the look verdict.
+
+```powershell
+$volTag = "post3-look-$volApi"
+python -B .\perf\scripts\vismet\accept.py --prepare $volTag --ab --config PLAYER --views night-rain-street,tunnel,cockpit --exe $volExe --lockrun $volLock --backend $volApi --set mcla_gpu_vol_amortize=true --set mcla_gpu_volumetrics=medium --set mcla_gpu_vol_temporal=true --set mcla_gpu_vol_history_medium=true --set mcla_gpu_vol_near=2.0 --set mcla_gpu_sun_shafts=off
+Get-Content "perf\out\look-$volTag\capture-plan.txt" | ForEach-Object {
+    if ($_ -match 'opt_run\.py' -and $_ -match "look-$volTag[\\/]BASE[\\/]") {
+        $_ + " '--mcla_gpu_vol_amortize=false' '--mcla_gpu_volumetrics=medium' '--mcla_gpu_vol_temporal=true' '--mcla_gpu_vol_history_medium=true' '--mcla_gpu_vol_near=2.0' '--mcla_gpu_sun_shafts=off'"
+    } else { $_ }
+}
+python -B .\perf\scripts\vismet\accept.py --ab "perf\out\look-$volTag\BASE" "perf\out\look-$volTag\CHANGE" --name $volTag --run-tag $volTag --views night-rain-street,tunnel,cockpit
+```
+
+Use the POST-0 timing tour above with Medium, history on and the 2 m near
+plane in both arms. For a wet-night pair with the same harness flags:
+
+```powershell
+foreach ($volReuse in 'false', 'true') {
+    $volRun = "post3-cost-$volApi-$volReuse"
+    python -I $volLock --lock --keep-display --game --max-min 18 --log "perf\logs\$volRun.log" -- python -I .\ports\scripts\opt_run.py --name $volRun @volShare --msaa 2 --fps-limit 0 --log-level info --no-pm --max-run-s 850 --tour-timeout-s 730 --time-of-day 23 --weather stormy --tour volumetrics-views --tour-var "SCENE=$PWD\perf\out\volumetrics\vol-rain.scene" --tour-var 'LEVELS=medium' --tour-var 'SPLIT=0' --tour-var 'SWITCH_SETTLE=480s' --no-tour-shots --extra @volSettings "--shader_pack_dir=$volPacks" '--mcla_gpu_volumetrics=medium' '--mcla_gpu_vol_temporal=true' '--mcla_gpu_vol_history_medium=true' '--mcla_gpu_vol_near=2.0' '--mcla_gpu_pass_timing=true' '--mcla_gpu_scene_profile=true' "--mcla_gpu_vol_amortize=$volReuse"
+    rg 'vol cull|vol inject|vol integrate|vol apply|atmosphere apply|first volume' "ports\run\$volRun"
+}
+```
+
+Compare complete 3600-frame windows. Add `vol cull` to `vol inject + integrate`
+on CHANGE and compare to `vol inject` plus `vol integrate` on BASE. The
+POST-3 target is at least 55% less compute time on the iGPU and GTX 1650,
+with 0.03 ms as the timing noise floor. Check composite timing separately.
+Run the short pairs again with D3D12 validation (`--mcla_gpu_debug_layer=true`)
+and with Vulkan validation (a Debug Plume build on the ROG). Inspect for
+descriptor or barrier warnings and flip the FIXES row during a camera cut,
+in cockpit and during a resize. The proof runs and visual verdicts are unproven.
+
 ## Integration
 
 When merging feat/pause-photo-fx and feat/garage-fx, keep their G-buffer and

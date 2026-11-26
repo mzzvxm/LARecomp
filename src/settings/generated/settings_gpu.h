@@ -1742,12 +1742,13 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_atmosphere_menu_views, true, "Apply volumetric light in pause, photo mode and the garage. Allow the world light to place sun shafts in pause and photo mode. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_vol_amortize, true, "Reuse alternating froxel samples, cull lamps per tile, and integrate in the same pass. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_vol_history_medium, false, "Enable froxel history on Medium for comparison with Ultra. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_vol_near, 0.5, "Start of the volumetric grid in metres. A higher start uses fewer depth slices. Live.", rex::kDebugOnly, rex::Range{0.5, 2.0});
 
-  REX_SETTING(bool, mcla_gpu_vol_temporal, true, "Diagnostic: blends each frame's volume with the last frame's, moved to where the camera is now (high and "
-    "ultra; medium has none). Off: the volume shows its noise. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_vol_temporal, true, "Reproject volumetric lighting history. Off updates every froxel each frame. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_vol_early, false, "Diagnostic: adds the volumetric light at the game's mid-scene depth copy, before the fog and the particles, "
     "instead of at the game's copy of the main colour after them, to compare the two. Without it the light goes in "
@@ -2490,6 +2491,7 @@ inline auto& mcla_gpu_vol_extinction = g_gpu.mcla_gpu_vol_extinction;
 inline auto& mcla_gpu_vol_far = g_gpu.mcla_gpu_vol_far;
 inline auto& mcla_gpu_atmosphere_merge = g_gpu.mcla_gpu_atmosphere_merge;
 inline auto& mcla_gpu_atmosphere_menu_views = g_gpu.mcla_gpu_atmosphere_menu_views;
+inline auto& mcla_gpu_vol_amortize = g_gpu.mcla_gpu_vol_amortize;
 inline auto& mcla_gpu_vol_history_medium = g_gpu.mcla_gpu_vol_history_medium;
 inline auto& mcla_gpu_vol_near = g_gpu.mcla_gpu_vol_near;
 inline auto& mcla_gpu_vol_temporal = g_gpu.mcla_gpu_vol_temporal;

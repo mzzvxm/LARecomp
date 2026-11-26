@@ -9,8 +9,8 @@
 // throw shafts), the street lamps of the game's per frame list, the cars' headlights (and their shadow maps), and the game's own fog colour.
 //
 // WHERE (the frame, as the sun shafts: shafts.h, AO-DESIGN.md 2.1): two points of the main view.
-//   1. the mid-scene depth copy (phase 0x02000000 into 078B0000: shafts.h kTriggerDestination): the INJECT and INTEGRATE compute passes
-//      (hlsl/volumetrics_inject_cs.hlsl, volumetrics_integrate_cs.hlsl) run here, after the car shadow map, the headlights' shadow replay and the
+//   1. the mid-scene depth copy (phase 0x02000000 into 078B0000: shafts.h kTriggerDestination): the lamp cull and fused INJECT/INTEGRATE
+//      (hlsl/volumetrics_inject_cs.hlsl, volumetrics_cull_cs.hlsl) run here, after the car shadow map, the headlights' shadow replay and the
 //      ambient occlusion have recorded, so the beams see THIS frame's shadow atlas. The inputs of the frame are gathered by then: the sun's
 //      constants from the main view's draws, the cascades from the shadow collector's draws (phase 0x1000), the camera from the vertex
 //      constants once they are trusted else the previous frame's, the fog quad's colour of the last frame.
@@ -148,11 +148,13 @@ class Volumetrics {
   };
   static_assert(sizeof(MergedPush) == 80);
 
-  // The pipelines: the two compute passes and the composite per colour target's sample count.
+  // The compute paths and the composite per colour target's sample count.
   enum Variant : uint32_t {
     kVInject = 0,
     kVIntegrate = 1,
-    kVApplyBase = 2,  // + log2(samples)
+    kVCull = 2,
+    kVFused = 3,
+    kVApplyBase = 4,  // + log2(samples)
     kVMergedBase = kVApplyBase + 4,
     kVariantCount = kVMergedBase + 4,
   };
@@ -230,6 +232,7 @@ class Volumetrics {
   void ReleaseResources();
   bool EnsureConstantSet(uint32_t slot);
   bool EnsureUavSet(uint32_t index, const HostImage& image);
+  bool EnsureLampTiles(const volumetrics::GridDesc& grid);
   void RetireUav(UavSet& uav);
   plume::RenderPipeline* Pipeline(uint32_t variant);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
@@ -247,6 +250,7 @@ class Volumetrics {
   bool keep_cones_ = false;
   float test_flags_ = 0.0f;
   bool stable_ = true;      // mcla_gpu_vol_stable: the VOL-STABLE rules (volumetrics_stable.h); false is the first version, for the A/B
+  bool amortize_ = true;
   uint32_t view_ = 0;       // mcla_gpu_vol_view: 0 the picture, 1 the volume's light alone, 2 the same x8, 3 x32
 
   // --- the frame ---
@@ -300,6 +304,8 @@ class Volumetrics {
 
   // The history: the previous volume's camera and grid, the frames between, the smoothed ground.
   volumetrics::HistoryUse history_;
+  std::array<volumetrics::VolLamp, volumetrics::kMaxLamps> history_lamps_{};
+  uint32_t history_lamp_count_ = 0;
   uint64_t history_frame_ = 0;
   Level history_level_ = Level::kOff;
   float ground_y_ = 0.0f;
@@ -327,6 +333,10 @@ class Volumetrics {
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::unique_ptr<plume::RenderShader> inject_shader_;
   std::unique_ptr<plume::RenderShader> integrate_shader_;
+  plume::RenderDescriptorSetBuilder fused_uav_builder_;
+  std::unique_ptr<plume::RenderPipelineLayout> fused_layout_;
+  std::unique_ptr<plume::RenderShader> cull_shader_;
+  std::unique_ptr<plume::RenderShader> fused_shader_;
   std::array<std::unique_ptr<plume::RenderShader>, 4> apply_shaders_;  // plain/MS depth, standalone/merged
   std::unique_ptr<plume::RenderPipelineLayout> merged_layout_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
@@ -342,6 +352,9 @@ class Volumetrics {
   std::array<std::unique_ptr<plume::RenderBuffer>, kFramesInFlight> cb_;
   std::array<std::unique_ptr<plume::RenderDescriptorSet>, kFramesInFlight> cb_set_;
   std::array<UavSet, 3> uav_sets_;  // scatter 0, scatter 1, accum
+  std::array<std::unique_ptr<plume::RenderDescriptorSet>, 2> fused_sets_;
+  std::unique_ptr<plume::RenderBuffer> lamp_tiles_;
+  uint64_t lamp_tile_bytes_ = 0;
   uint32_t unused_frames_ = 0;
   bool resources_failed_logged_ = false;
   bool first_logged_ = false;
