@@ -140,7 +140,30 @@ bool Writer::Finish(std::string& why) {
             if (n) file << ',';
             file << written.frames[n];
         }
-        file << "]}\n";
+        file << ']';
+        if (i == kRefl) {
+            file << ",\"source\":\"" << (written.plane.alternate ? "car-rt-history" : "ssr-resolve-input") << '"';
+        }
+        if (i == kReflHit) {
+            const auto& plane = written.plane;
+            file << ",\"domain\":\"reflection-hit-v1\",\"source\":\""
+                 << (plane.alternate ? "native-material" : "surface-trace") << '"'
+                 << ",\"source_w\":" << plane.width << ",\"source_h\":" << plane.height;
+            if (plane.crop.x || plane.crop.y || plane.crop.width != plane.width || plane.crop.height != plane.height) {
+                file << ",\"x\":" << plane.crop.x << ",\"y\":" << plane.crop.y;
+            }
+            file << ",\"channel_names\":[\"visible\",\"rt_query\"],\"ids\":{"
+                    "\"0\":\"none\",\"1\":\"ssr_vehicle\",\"2\":\"ssr_building\",\"3\":\"ssr_road\","
+                    "\"4\":\"ssr_sky\",\"5\":\"ssr_emissive\",\"6\":\"ssr_other\","
+                    "\"7\":\"road_view\",\"8\":\"environment\","
+                    "\"16\":\"rt_city_unclassified\",\"17\":\"rt_city_world\",\"18\":\"rt_city_road\","
+                    "\"19\":\"rt_city_wet_road\",\"20\":\"rt_city_sidewalk\",\"21\":\"rt_city_terrain\","
+                    "\"22\":\"rt_city_lod\",\"23\":\"rt_city_foliage\",\"24\":\"rt_city_paint\","
+                    "\"25\":\"rt_city_chrome\",\"26\":\"rt_city_metal\",\"27\":\"rt_city_glass\","
+                    "\"28\":\"rt_city_skin\",\"29\":\"rt_city_emissive\",\"30\":\"rt_city_interior\","
+                    "\"31\":\"rt_city_water\",\"32\":\"rt_car\",\"33\":\"rt_miss\",\"34\":\"rt_city_unresolved\"}";
+        }
+        file << "}\n";
         file.close();
         std::error_code ec;
         if (file) std::filesystem::rename(temp, folder / "meta.json", ec);

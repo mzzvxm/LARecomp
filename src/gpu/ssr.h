@@ -100,6 +100,7 @@
 
 #include "constants.h"
 #include "edram.h"
+#include "frame.h"
 #include "guest_frame.h"
 #include "host_passes.h"
 #include "ray_regen_guides.h"
@@ -117,7 +118,6 @@ class AmbientOcclusion;
 class BindlessHeap;
 class CarRtScene;
 class Device;
-class FrameRing;
 class GBuffer;
 class PassTiming;
 class RtSceneService;
@@ -156,6 +156,7 @@ class ScreenReflections {
 
   // The owners of what the effect reads (not owned; null: the effect is off). The AO gives the camera (optional). Render thread, before the first frame; Shutdown stops this class first.
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  void SetResolveCache(ResolveCache* resolves) { resolves_ = resolves; }
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
 
@@ -174,6 +175,9 @@ class ScreenReflections {
   // RR-4a: this frame's hit distance image (R16_FLOAT, the picture's size, readable) when the frame ran RAW and wrote it, else null. Valid until the next frame's trigger.
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   const HostImage* CaptureSignal() const { return capture_signal_; }
+  const HostImage* CaptureHit() const { return capture_hit_ready_ ? &capture_hit_ : nullptr; }
+  static bool RoadViewDrawn(const EdramTargets& edram, uint32_t frame);
+  void SetCaptureHitWanted(bool wanted);
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
@@ -214,6 +218,31 @@ class ScreenReflections {
                    const plume::RenderPipeline* pipeline, const ssr::Push& push, bool compute_read);
   bool EnsureHistory(uint32_t width, uint32_t height);
   void ReleaseHistory();
+  // The trace with confidence and/or capture IDs, in addition to radiance.
+  void DrawTraceMrt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push, bool rt, bool capture);
+  plume::RenderPipeline* PrepareCaptureHit(bool rt, bool ms);
+  void ReleaseCaptureHit();
+
+  plume::RenderDescriptorSet* UploadHandoff(const reflection_handoff::Frame& handoff);
+
+  struct HandoffSlot {
+    std::unique_ptr<plume::RenderBuffer> buffer;
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+  };
+  std::array<HandoffSlot, kFramesInFlight> handoff_slots_;
+  plume::RenderDescriptorSetBuilder handoff_builder_;
+  FrameRing* frames_ring_ = nullptr;
+  ResolveCache* resolves_ = nullptr;
+  plume::RenderDescriptorSet* handoff_set_ = nullptr;
+  ssr::HistoryKey reuse_key_;
+  std::array<float, 4> reuse_projection_{};
+  std::array<float, 2> reuse_tan_{};
+  std::array<uint32_t, 2> reuse_render_{};
+  uint32_t reuse_samples_ = 0;
+  float reuse_near_ = 0.0f;
+  float reuse_exposure_ = 1.0f;
+  bool handoff_enabled_ = false;
+  bool last_handoff_enabled_ = false;
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
@@ -231,6 +260,13 @@ class ScreenReflections {
   std::array<bool, kVariantCount> failed_{};
   bool ready_ = false;                // the layout and the shaders exist
   const HostImage* capture_signal_ = nullptr;
+  HostImage capture_hit_;
+  bool capture_hit_wanted_ = false;
+  bool capture_hit_ready_ = false;
+  std::array<std::unique_ptr<plume::RenderPipeline>, 4> capture_hit_pipelines_;
+  std::array<bool, 4> capture_hit_pipeline_failed_{};
+  std::unique_ptr<plume::RenderFramebuffer> capture_hit_framebuffer_;
+  std::array<uint64_t, 3> capture_hit_serials_{};
 
   // the settings of this frame
   ssr::Level level_ = ssr::Level::kOff;

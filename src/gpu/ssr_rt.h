@@ -74,6 +74,7 @@ class ScreenReflectionsRt {
     plume::RenderCommandList* list = nullptr;
     HostImage* trace = nullptr;       // RGBA16F storage image at the SSR size, left in a shader-read layout by the trace pass
     const HostImage* confidence = nullptr;  // R8G8_UNORM, the trace pass's second target, shader-read
+    HostImage* capture_hit = nullptr;  // optional R32_UINT trace MRT for VISMET
     ssr::Push push;                   // the trace pass's push block (the road view's word and share set): the fallback adds its words to a copy
     uint32_t width = 0;               // the SSR images' size
     uint32_t height = 0;
@@ -84,10 +85,12 @@ class ScreenReflectionsRt {
   };
   // Records the select and trace passes. False: nothing was recorded (no top level in this frame, no set); `trace` is as it was.
   bool Record(const Frame& frame);
+  bool PrepareCaptureHit(const HostImage& trace, const HostImage& hit, bool multisampled);
+  void ReleaseCaptureSet();
 
   // The trace image the output set names was made again or given back (ScreenReflections::EnsureImages, ReleaseImages): the set goes back now. EnsureSet compares the texture's POINTER, and a texture
   // made after the old one was freed can take its address: a stale set (a view of the destroyed image) would be taken for the new image's.
-  void NoteTraceChanged() { RetireSet(); }
+  void NoteTraceChanged() { RetireSet(); ReleaseCaptureSet(); }
 
   // The frame boundary: idle bookkeeping.
   void OnPresent();
@@ -101,6 +104,8 @@ class ScreenReflectionsRt {
   struct Timer;
 
   bool MakeLayoutAndShaders(Device& device, HostPasses& passes, CarRtScene& scene);
+  std::unique_ptr<plume::RenderPipelineLayout> MakeLayout(const plume::RenderDescriptorSetBuilder& output,
+                                                         const CarRtScene& scene, const char* name);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
   plume::RenderPipeline* Pipeline(uint32_t variant);
   bool EnsureSet(const HostImage& trace);
@@ -129,6 +134,12 @@ class ScreenReflectionsRt {
   std::unique_ptr<plume::RenderBuffer> readback_;
   std::unique_ptr<plume::RenderDescriptorSet> set_;
   const plume::RenderTexture* set_texture_ = nullptr;
+  plume::RenderDescriptorSetBuilder capture_builder_;
+  std::unique_ptr<plume::RenderPipelineLayout> capture_layout_;
+  std::unique_ptr<plume::RenderPipeline> capture_select_;
+  std::array<std::unique_ptr<plume::RenderPipeline>, 2> capture_trace_;
+  std::unique_ptr<plume::RenderDescriptorSet> capture_set_;
+  std::array<uint64_t, 2> capture_serials_{};
   bool readback_busy_ = false;
   bool reset_pending_ = true;                          // the control words are cleared by the first frame's select pass
   uint64_t generation_ = 0;

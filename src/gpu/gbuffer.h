@@ -139,6 +139,8 @@ class GBuffer {
   const HostImage* DrawCaptureClass(plume::RenderCommandList* list, const HostImage* depth,
                                     const HostImage* ui, uint32_t ui_gap);
   void ReleaseCaptureClass();
+  const HostImage* DrawCaptureReflectionFallback(plume::RenderCommandList* list, const HostImage* depth, bool planar);
+  void ReleaseCaptureReflectionFallback();
 
   // True once after a call that left the planes' own framebuffer bound on the list (a clear): the Scene then forgets which framebuffer it had bound.
   bool TakeFramebufferDirty() {
@@ -184,6 +186,9 @@ class GBuffer {
   // The images, one per plane of the stage's set (a plane outside it has none).
   std::array<HostImage, gbuffer::kPlaneCount> images_;
   HostImage capture_class_;
+  HostImage capture_reflection_fallback_;
+  std::array<std::unique_ptr<plume::RenderPipeline>, 2> capture_reflection_pipelines_;
+  std::array<bool, 2> capture_reflection_pipeline_failed_{};
   uint32_t image_planes_ = 0;  // PlaneBit of the planes that have an image now
   uint32_t generation_ = 0;
   bool needs_clear_ = true;  // the images are new: their contents are not 0 until a clear

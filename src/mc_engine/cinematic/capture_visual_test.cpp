@@ -21,7 +21,12 @@ using uint = uint32_t;
 #define GB_CLASS_PAINT uint(SurfaceClass::kPaint)
 #define GB_CLASS_CHROME uint(SurfaceClass::kChrome)
 #define GB_CLASS_METAL uint(SurfaceClass::kMetal)
+#define GB_CLASS_EMISSIVE uint(SurfaceClass::kEmissive)
+#define GB_CLASS_WATER uint(SurfaceClass::kWater)
+#define GB_FLAG_VEHICLE mcla::gpu::gbuffer::kMaterialFlagVehicle
+#define GB_FLAG_SSR mcla::gpu::gbuffer::kMaterialFlagSsr
 #include "../../gpu/hlsl/visual_class.hlsli"
+#include "../../gpu/hlsl/reflhit.hlsli"
 
 namespace {
 int checks, failed;
@@ -43,7 +48,8 @@ void Options() {
     uint32_t mask = 0;
     Check(vis::ParseBuffers("", mask) && !mask, "default disabled");
     Check(vis::ParseBuffers("off", mask) && !mask, "explicit off");
-    Check(vis::ParseBuffers("all", mask) && mask == 127, "all streams");
+    Check(vis::ParseBuffers("all", mask) && mask == 255, "all streams");
+    Check(vis::ParseBuffers("reflhit", mask) && mask == vis::Bit(vis::kReflHit), "hit stream alone");
     Check(vis::ParseBuffers("class,hdr", mask) && mask == (vis::Bit(vis::kClass) | vis::Bit(vis::kHdr)), "named subset");
     for (auto bad : {"motion,motion", "final,", ",class", "unknown"}) {
         Check(!vis::ParseBuffers(bad, mask), "invalid list");
@@ -74,6 +80,34 @@ void Classes() {
     }
 }
 
+void ReflectionIds() {
+    constexpr std::array<uint, 16> screen{6, 6, 3, 3, 6, 6, 6, 6, 1, 6, 6, 6, 6, 5, 2, 6};
+    for (uint cls = 0; cls < screen.size(); ++cls) {
+        Check(ReflHitScreen(cls, 0, false) == screen[cls], "SSR hit uses the hit material");
+        Check(ReflHitScreen(cls, GB_FLAG_VEHICLE, false) == 1, "material vehicle wins");
+        Check(ReflHitScreen(cls, 0, true) == 1, "depth vehicle wins");
+        Check(ReflHitCity(cls) == 16 + cls, "city class is preserved");
+    }
+    Check(ReflHitCity(255) == 16 && kReflHitSsrSky == 4, "unknown city material and SSR sky");
+    Check(ReflHitFallback(GB_CLASS_ROAD, 0, true) == 7 && ReflHitFallback(GB_CLASS_WET_ROAD, 0, true) == 7, "native road view");
+    Check(ReflHitFallback(GB_CLASS_ROAD, GB_FLAG_SSR, false) == 0, "road without a current planar view");
+    Check(ReflHitFallback(GB_CLASS_ROAD, GB_FLAG_VEHICLE, true) == 0, "vehicle receiver excluded");
+    Check(ReflHitFallback(GB_CLASS_GLASS, GB_FLAG_SSR, true) == 7 && ReflHitFallback(GB_CLASS_WATER, GB_FLAG_SSR, true) == 7, "native glass and water planar source");
+    Check(ReflHitFallback(GB_CLASS_GLASS, GB_FLAG_SSR, false) == 8 && ReflHitFallback(GB_CLASS_METAL, GB_FLAG_SSR, true) == 8, "environment fallback");
+    Check(ReflHitFallback(GB_CLASS_METAL, 0, false) == 0, "matte non-receiver");
+    Check(ReflHitDominant(1, .25f, 17, .25f, 7) == 7, "native fallback has most weight");
+    Check(ReflHitDominant(1, .40f, 17, .30f, 7) == 1, "SSR has most weight");
+    Check(ReflHitDominant(1, .20f, 17, .49f, 7) == 17, "RT has most weight");
+    Check(ReflHitDominant(1, .50f, 17, .50f, 7) == 1, "SSR wins the tie");
+    Check(ReflHitDominant(1, .10f, 17, 0.f, 0) == 1, "no native fallback");
+    Check(ReflHitDominant(0, 0.f, kReflHitRtMiss, 0.f, 7) == 7, "unshaded miss preserves the native result");
+    Check(ReflHitDominant(0, 0.f, kReflHitRtCar, 0.f, 0) == 0, "unshaded car is absent from the visible lane");
+    const auto packed = ReflHitPack(1, kReflHitRtCar, 5, 7);
+    Check(packed == 0x07052001u && ReflHitScreenId(packed) == 5 && ReflHitFallbackId(packed) == 7,
+          "visible and query bytes precede the scratch bytes");
+    Check(ReflHitPack(7, kReflHitRtMiss, 0, 7) == 0x07002107u && kReflHitRtUnresolved == 34, "RT query codes");
+}
+
 void Writers(const fs::path& take) {
     vis::Writer writer;
     writer.Reset(take);
@@ -83,7 +117,7 @@ void Writers(const fs::path& take) {
         frame.planes[i] = vis::Place({2, 1, 2, 2}, 8, 4, vis::kStreams[i].max_source_bytes,
                                     i == vis::kGi ? 2 : 0, i == vis::kFinal, end);
     }
-    Check(frame.planes[vis::kHdr].offset == 512 && end == 3584, "D3D12 placement alignment");
+    Check(frame.planes[vis::kHdr].offset == 512 && end == 4096, "D3D12 placement alignment");
     uint64_t odd_end = 1;
     const auto odd = vis::Place({0, 0, 257, 1}, 257, 1, 1, 0, false, odd_end);
     Check(odd.offset == 512 && odd.row_pitch == 512 && odd_end == 1024, "unaligned footprint");
@@ -97,7 +131,13 @@ void Writers(const fs::path& take) {
         }
     }
     std::string why;
-    Check(writer.Write(frame, bytes, why), "write seven streams");
+    const auto& hit_plane = frame.planes[vis::kReflHit];
+    const std::array hit_words{ReflHitPack(1, 32, 1, 7), ReflHitPack(7, 33, 0, 7), ReflHitPack(18, 18, 6, 7), ReflHitPack(8, 0, 0, 8)};
+    for (size_t i = 0; i < hit_words.size(); ++i) {
+        const size_t offset = hit_plane.offset + i / 2 * hit_plane.row_pitch + i % 2 * sizeof(uint32_t);
+        for (size_t b = 0; b < sizeof(uint32_t); ++b) bytes[offset + b] = uint8_t(hit_words[i] >> (8 * b));
+    }
+    Check(writer.Write(frame, bytes, why), "write eight streams");
     frame.index = 4;
     frame.planes[vis::kFinal].swap_rb = false;
     frame.planes[vis::kRefl] = {};
@@ -111,8 +151,14 @@ void Writers(const fs::path& take) {
     Check(Read(root / "class/frame_0.bin") == std::string("\1\11\41\51", 4), "packed class bytes");
     Check(Read(root / "motion/frame_0.bin").substr(0, 8) == std::string("\1\2\3\4\11\12\13\14", 8), "packed two-channel motion");
     Check(Read(root / "motion/meta.json") == "{\"w\":2,\"h\":2,\"channels\":2,\"encoding\":\"f16le\",\"space\":\"motion-px\",\"frames\":[0,4]}\n", "exact motion metadata");
-    Check(Read(root / "refl/meta.json") == "{\"w\":2,\"h\":2,\"channels\":3,\"encoding\":\"f16le\",\"space\":\"linear-scene\",\"frames\":[0]}\n" &&
+    Check(Read(root / "refl/meta.json") == "{\"w\":2,\"h\":2,\"channels\":3,\"encoding\":\"f16le\",\"space\":\"linear-scene\",\"frames\":[0],\"source\":\"ssr-resolve-input\"}\n" &&
           !fs::exists(root / "refl/frame_4.bin"), "missing frame stays absent");
+    Check(Read(root / "reflhit/frame_4.bin") == std::string("\1\40\7\41\22\22\10\0", 8), "hit IDs without scratch bytes or padding");
+    const auto hit_meta = Read(root / "reflhit/meta.json");
+    Check(hit_meta.starts_with("{\"w\":2,\"h\":2,\"channels\":2,\"encoding\":\"u8\",\"space\":\"class-id\",\"frames\":[0,4],") &&
+          hit_meta.contains("\"domain\":\"reflection-hit-v1\",\"source\":\"surface-trace\"") &&
+          hit_meta.contains("\"x\":2,\"y\":1,\"channel_names\":[\"visible\",\"rt_query\"]") &&
+          hit_meta.contains("\"32\":\"rt_car\",\"33\":\"rt_miss\""), "hit stream metadata");
     Check(!writer.Write(frame, bytes, why), "duplicate frame index refused");
     frame.index++;
     frame.planes[vis::kFinal].alternate = true;
@@ -122,6 +168,12 @@ void Writers(const fs::path& take) {
     Check(!writer.Write(frame, bytes, why), "moving crop refused");
     writer.Reset(take / "truncated");
     Check(!writer.Write(frame, std::span(bytes).first(255), why), "truncated readback refused");
+    writer.Reset(take / "native");
+    vis::Frame native;
+    native.planes[vis::kReflHit] = hit_plane;
+    native.planes[vis::kReflHit].alternate = true;
+    Check(writer.Write(native, bytes, why) && writer.Finish(why) &&
+          Read(take / "native/buffers/reflhit/meta.json").contains("\"source\":\"native-material\""), "native source is tagged");
     writer.Reset(take / "empty");
     Check(writer.Write({}, {}, why) && writer.Finish(why) && !fs::exists(take / "empty"), "absent streams produce no files");
 }
@@ -132,6 +184,7 @@ int main() {
     const auto take = fs::temp_directory_path() / ("larecomp-visual-unit-" + std::to_string(stamp));
     Options();
     Classes();
+    ReflectionIds();
     Writers(take);
     std::error_code ec;
     fs::remove_all(take, ec);

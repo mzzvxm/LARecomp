@@ -112,23 +112,7 @@ bool ScreenReflectionsRt::MakeLayoutAndShaders(Device& device, HostPasses& passe
   output_builder_.addReadWriteByteAddressBuffer(1);    // u1: the control and statistics words
   output_builder_.addReadWriteByteAddressBuffer(2);    // u2: the list
   output_builder_.end();
-
-  // The SSR host pass layout (ssr.cpp Initialize: the four texture sets, the samplers, the push block at (b0, space4)) with this pass's output set at 5 and the car scene's ray tracing set at 6.
-  plume::RenderPipelineLayoutBuilder builder;
-  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
-  for (uint32_t set = 0; set < 4; ++set) {
-    builder.addDescriptorSet(heap_->texture_set_builder());
-  }
-  const uint32_t sampler_set = builder.addDescriptorSet(heap_->sampler_set_builder());
-  const uint32_t output_set = builder.addDescriptorSet(output_builder_);
-  const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());
-  builder.addPushConstant(0, 4, sizeof(ssr::Push), plume::RenderShaderStageFlag::COMPUTE);
-  builder.end();
-  if (sampler_set != 4 || output_set != 5 || scene_set != 6) {
-    REXLOG_ERROR("{} the layout's sets are not in the order the shaders declare them", kPrefix);
-    return false;
-  }
-  layout_ = device.CreatePipelineLayout(builder, "ssr rt layout");
+  layout_ = MakeLayout(output_builder_, scene, "ssr rt layout");
   if (!layout_) {
     return false;
   }
@@ -144,11 +128,36 @@ bool ScreenReflectionsRt::MakeLayoutAndShaders(Device& device, HostPasses& passe
   return ok && ctl_ && list_ && readback_;
 }
 
+std::unique_ptr<plume::RenderPipelineLayout> ScreenReflectionsRt::MakeLayout(const plume::RenderDescriptorSetBuilder& output,
+                                                                           const CarRtScene& scene, const char* name) {
+  if (!device_ || !heap_) return nullptr;
+  // The SSR host pass layout (ssr.cpp Initialize: the four texture sets, the samplers, the push block at (b0, space4)) with this pass's output set at 5 and the car scene's ray tracing set at 6.
+  plume::RenderPipelineLayoutBuilder builder;
+  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  for (uint32_t set = 0; set < 4; ++set) {
+    builder.addDescriptorSet(heap_->texture_set_builder());
+  }
+  const uint32_t sampler_set = builder.addDescriptorSet(heap_->sampler_set_builder());
+  const uint32_t output_set = builder.addDescriptorSet(output);
+  const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());
+  builder.addPushConstant(0, 4, sizeof(ssr::Push), plume::RenderShaderStageFlag::COMPUTE);
+  builder.end();
+  if (sampler_set != 4 || output_set != 5 || scene_set != 6) {
+    REXLOG_ERROR("{} the layout's sets are not in the order the shaders declare them", kPrefix);
+    return nullptr;
+  }
+  return device_->CreatePipelineLayout(builder, name);
+}
+
 void ScreenReflectionsRt::Shutdown() {
   if (passes_) {
     passes_->precache().Stop();  // the host builder's functions name this object's layout and shaders: stop it first
   }
   ++generation_;
+  capture_set_.reset();
+  capture_select_.reset();
+  for (auto& pipeline : capture_trace_) pipeline.reset();
+  capture_layout_.reset();
   set_.reset();
   set_texture_ = nullptr;
   for (auto& pipeline : pipelines_) pipeline.reset();
@@ -288,6 +297,51 @@ void ScreenReflectionsRt::RetireSet() {
   set_texture_ = nullptr;
 }
 
+bool ScreenReflectionsRt::PrepareCaptureHit(const HostImage& trace, const HostImage& hit, bool multisampled) {
+  if (!ready_ || !device_ || !car_scene_ || !passes_ || !ctl_ || !list_ || !shaders_[kVSelect] ||
+      !trace.texture || !trace.view || !hit.texture || !hit.view) return false;
+  // Keep the normal output layout and its descriptor count on the regular path.
+  if (!capture_layout_) {
+    capture_builder_.begin();
+    capture_builder_.addReadWriteTexture(0);
+    capture_builder_.addReadWriteByteAddressBuffer(1);
+    capture_builder_.addReadWriteByteAddressBuffer(2);
+    capture_builder_.addReadWriteTexture(3);
+    capture_builder_.end();
+    capture_layout_ = MakeLayout(capture_builder_, *car_scene_, "ssr rt capture layout");
+    if (!capture_layout_) return false;
+  }
+  if (!capture_select_) {
+    capture_select_ = device_->CreateComputePipeline(
+        plume::RenderComputePipelineDesc(capture_layout_.get(), shaders_[kVSelect].get(), ssr_rt::kTile, ssr_rt::kTile, 1),
+        "ssr rt capture select");
+  }
+  auto& pipeline = capture_trace_[multisampled];
+  if (!pipeline) {
+    const auto blob = ScreenReflectionsRtHitShader(multisampled);
+    const auto shader = passes_->CreateShader(blob.data, blob.size, blob.name);
+    if (shader) pipeline = device_->CreateComputePipeline(
+        plume::RenderComputePipelineDesc(capture_layout_.get(), shader.get(), ssr_rt::kThreads, 1, 1), blob.name);
+  }
+  if (!capture_select_ || !pipeline) return false;
+  const std::array serials{trace.serial, hit.serial};
+  if (capture_set_ && capture_serials_ == serials) return true;
+  ReleaseCaptureSet();
+  capture_set_ = device_->CreateDescriptorSet(capture_builder_, 4, 0, "ssr rt capture output");
+  if (!capture_set_) return false;
+  capture_set_->setTexture(0, trace.texture.get(), plume::RenderTextureLayout::GENERAL, trace.view.get());
+  capture_set_->setBuffer(1, ctl_.get(), ssr_rt::buf::kBytes);
+  capture_set_->setBuffer(2, list_.get(), ssr_rt::kListBytes);
+  capture_set_->setTexture(3, hit.texture.get(), plume::RenderTextureLayout::GENERAL, hit.view.get());
+  capture_serials_ = serials;
+  return true;
+}
+
+void ScreenReflectionsRt::ReleaseCaptureSet() {
+  if (capture_set_ && frames_) frames_->Retire(std::move(capture_set_));
+  capture_set_.reset();
+}
+
 bool ScreenReflectionsRt::Record(const Frame& in) {
   if (!ready_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !car_scene_ || !world_ || !wanted()) {
     return false;
@@ -295,15 +349,17 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   plume::RenderCommandList* list = in.list;
   const ssr_rt::Cell& cell = resolved_.cell;
   const CarRtView& view = car_scene_->View();
-  plume::RenderPipeline* select_pipeline = Pipeline(kVSelect);
-  plume::RenderPipeline* trace_pipeline = Pipeline(in.multisampled ? kVTraceMs : kVTrace);
+  HostImage* hit = in.capture_hit;
+  if (hit && !hit->texture) return false;
+  plume::RenderPipeline* select_pipeline = hit ? capture_select_.get() : Pipeline(kVSelect);
+  plume::RenderPipeline* trace_pipeline = hit ? capture_trace_[in.multisampled].get() : Pipeline(in.multisampled ? kVTraceMs : kVTrace);
 
   ssr_rt::FrameFacts facts;
   facts.resolved = resolved_;
   facts.stub = false;   // ScreenReflections does not call this for the stub
   facts.pipelines_ready = select_pipeline != nullptr && trace_pipeline != nullptr;
   facts.scene_valid = view.scene_valid && view.set != nullptr;
-  facts.images_ok = EnsureSet(*in.trace);
+  facts.images_ok = hit ? capture_set_ != nullptr : EnsureSet(*in.trace);
   const ssr_rt::Why why = ssr_rt::DecideFrame(facts);
   last_why_ = why;
   if (why != ssr_rt::Why::kRuns) {
@@ -363,15 +419,21 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
     const plume::RenderTextureBarrier write(in.trace->texture.get(), Layout::GENERAL);
     list->barriers(Stage::COMPUTE, nullptr, 0, &write, 1);
     in.trace->layout = Layout::GENERAL;
+    // CHECK: validate the capture MRT -> storage image -> readback on both APIs.
+    if (hit) {
+      const plume::RenderTextureBarrier write_hit(hit->texture.get(), Layout::GENERAL);
+      list->barriers(Stage::COMPUTE, nullptr, 0, &write_hit, 1);
+      hit->layout = Layout::GENERAL;
+    }
     const plume::RenderBufferBarrier buffers[2] = {{ctl_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}, {list_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}};
     list->barriers(Stage::COMPUTE, buffers, 2);
   }
-  list->setComputePipelineLayout(layout_.get());
+  list->setComputePipelineLayout(hit ? capture_layout_.get() : layout_.get());
   for (uint32_t set = 0; set < 4; ++set) {
     list->setComputeDescriptorSet(heap_->texture_set(), set);
   }
   list->setComputeDescriptorSet(heap_->sampler_set(), 4);
-  list->setComputeDescriptorSet(set_.get(), 5);
+  list->setComputeDescriptorSet(hit ? capture_set_.get() : set_.get(), 5);
   list->setComputeDescriptorSet(view.set, 6);
 
   const uint32_t tiles_x = (in.width + ssr_rt::kTile - 1) / ssr_rt::kTile;
@@ -397,6 +459,11 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
     const plume::RenderTextureBarrier read(in.trace->texture.get(), Layout::SHADER_READ);
     list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read, 1);
     in.trace->layout = Layout::SHADER_READ;
+    if (hit) {
+      const plume::RenderTextureBarrier read_hit(hit->texture.get(), Layout::SHADER_READ);
+      list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read_hit, 1);
+      hit->layout = Layout::SHADER_READ;
+    }
   }
   if (timer_slot >= 0) {
     list->writeTimestamp(timer_->pools[timer_slot].get(), 1);

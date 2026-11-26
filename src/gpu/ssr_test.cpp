@@ -2522,7 +2522,8 @@ void TestSources(const std::string& dir) {
   const std::string reflection_rule = Read(dir, "side_view_reflection.cpp");
   Check(Has(reflection_rule, "constexpr uint16_t kPitch = " + std::to_string(sr::roadview::kPitch) + ";") && Has(reflection_rule, "constexpr uint8_t kSamples = " + std::to_string(sr::roadview::kGuestSamples) + ";") &&
             Has(reflection_rule, "constexpr uint16_t kColorBase = " + std::to_string(sr::roadview::kColorBase) + ";") && Has(reflection_rule, "constexpr uint32_t kDeclared = " + std::to_string(sr::roadview::kDeclared) + ";") &&
-            Has(reflection_rule, "key.format == uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT)") && Has(trigger, "road_key.format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);"),
+            Has(reflection_rule, "key.format == uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT)") && Has(trigger, "const EdramKey road_key = RoadViewKey();") &&
+            Has(FunctionText(cpp, "EdramKey RoadViewKey()"), "key.format = uint8_t(rex::xenos::ColorRenderTargetFormat::k_2_10_10_10_FLOAT);"),
         "ssr_rules.h roadview:: is the road reflection side view's identity (tile, pitch, samples, declared size, format)");
   const size_t road_find = trigger.find("edram_->Find(road_key)");
   const size_t road_transition = trigger.find("edram_->Transition(list, *road_target, plume::RenderTextureLayout::SHADER_READ)");

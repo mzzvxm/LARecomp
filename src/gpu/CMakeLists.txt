@@ -1212,6 +1212,8 @@ larecomp_gpu_host_shader(upscaler_masks_ms_ps ps_6_0 SOURCE upscaler_masks_ps DE
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(gbuffer_view_ps ps_6_0 DEFINES GB_VIEW_MS=0)
 larecomp_gpu_host_shader(gbuffer_view_ms_ps ps_6_0 SOURCE gbuffer_view_ps DEFINES GB_VIEW_MS=1)
+larecomp_gpu_host_shader(reflhit_native_ps ps_6_0 DEFINES GB_VIEW_MS=0)
+larecomp_gpu_host_shader(reflhit_native_ms_ps ps_6_0 SOURCE reflhit_native_ps DEFINES GB_VIEW_MS=1)
 # The deferred local light pass (local_lights.h, GB-H1): one scissored additive draw per light into the main colour, the surface from the G-buffer and the main depth; once for planes with one
 # sample, once for the host's MSAA level.
 larecomp_gpu_host_shader(local_light_ps ps_6_0 DEFINES LL_PASS_MS=0)
@@ -1230,9 +1232,15 @@ larecomp_gpu_host_shader(ssr_trace_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_
 # Shader Model 6.0) and the rays into the city's top level (inline ray queries: Shader Model 6.5, SPIR-V 1.5 on Vulkan), the latter over plain and multisampled planes.
 larecomp_gpu_host_shader(ssr_trace_rt_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1)
 larecomp_gpu_host_shader(ssr_trace_rt_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1)
+larecomp_gpu_host_shader(ssr_trace_reflhit_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_REFLHIT=1)
+larecomp_gpu_host_shader(ssr_trace_reflhit_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_REFLHIT=1)
+larecomp_gpu_host_shader(ssr_trace_rt_reflhit_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=0 SSR_RT=1 SSR_REFLHIT=1)
+larecomp_gpu_host_shader(ssr_trace_rt_reflhit_ms_ps ps_6_0 SOURCE ssr_trace_ps DEFINES SSR_MS=1 SSR_RT=1 SSR_REFLHIT=1)
 larecomp_gpu_host_shader(ssr_rt_select_cs cs_6_0)
 larecomp_gpu_host_shader_rt(ssr_rt_trace_cs cs_6_5 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader_rt(ssr_rt_trace_ms_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=1)
+larecomp_gpu_host_shader_rt(ssr_rt_trace_reflhit_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=0 SSR_REFLHIT=1)
+larecomp_gpu_host_shader_rt(ssr_rt_trace_reflhit_ms_cs cs_6_5 SOURCE ssr_rt_trace_cs DEFINES SSR_MS=1 SSR_REFLHIT=1)
 larecomp_gpu_host_shader(ssr_temporal_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ps ps_6_0 DEFINES SSR_MS=0)
 larecomp_gpu_host_shader(ssr_apply_ms_ps ps_6_0 SOURCE ssr_apply_ps DEFINES SSR_MS=1)
