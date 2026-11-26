@@ -372,9 +372,9 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .call = "screen_->RecordNormals(list, chain, depth_base, NormalRecipeFor(normals_));", .label_file = "screen_extract.cpp", .label = "ao normals", .reads = data::kAoDepth, .soft_reads = data::kPlanes,
      .makes = data::kAoNormal},
     {.step = Step::kColourPre, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "colour_pre capture (capped, only while the bounce light is on)", .file = "ao.cpp",
-     .call = "screen_->RecordColourPre(list, chain, base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot));", .label_file = "screen_extract.cpp", .label = "ssgi colour chain",
+     .call = "screen_->RecordColourPre(list, GiFrame(plan), base, *gi_colour, ColourRecipeFor(plan, base, *gi_colour, gi_colour_slot, gi_normal_slot));", .label_file = "screen_extract.cpp", .label = "ssgi colour chain",
      .reads_previous = data::kLightHistory, .makes = data::kColourChain,
-     .note = "the main colour BEFORE the apply: the bounce light must see the colour the occlusion has not multiplied yet. GI-BOUNCE-SS: its level 0 also takes what the deferred light pass added in the LAST frame "
+     .note = "The quarter trace builds its own guides before capturing colour. The main colour is captured before the apply. GI-BOUNCE-SS: its level 0 also takes what the deferred light pass added in the LAST frame "
              "(the pair of captures the last frame left: kLightHistory), reprojected with the AO's camera motion and depth history under the same cap, so neon, headlights and street lamps bounce; the lights of THIS "
              "frame come after the apply and are in the next frame's chain (perf/GI-BOUNCE.md). With no usable history (the first frame, a cut, a frame after one without a light pass) the chain is what it always was"},
     {.step = Step::kCarRtAo, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "ray traced occlusion and sun term of the cars", .file = "ao.cpp",
@@ -388,7 +388,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
        .call = "rtao_->RecordFilter(list, rtao_filter_in)", .label_file = "rtao.cpp", .label = "rtao denoise", .reads = data::kRtAoSignal,
        .note = "the history is the last frame's result by the camera's and the vehicles' motion (the AO's FrameMotion and vehicle table, made inside this frame by the AO's own history planning)"},
     {.step = Step::kAoVisibility, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "visibility, bounce, denoise, accumulation", .file = "ao.cpp",
-     .call = "pass_timing_->Mark(list, plan.gi.on ? \"ssgi visibility\" : \"ao visibility\");", .label_file = "ao.cpp", .label = "ao visibility", .reads = data::kAoDepth,
+     .call = "pass_timing_->Mark(list, plan.SharedGi() ? \"ssgi visibility\" : \"ao visibility\");", .label_file = "ao.cpp", .label = "ao visibility", .reads = data::kAoDepth,
      .soft_reads = data::kAoNormal | data::kColourChain | data::kRtOcclusion, .makes = data::kAoTerm},
       {.step = Step::kRtAoCompose, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "RTAO: the AO term image (power, floor, upsample, the screen-space term where RTAO has no answer)", .file = "ao.cpp",
        .call = "rtao_slot = rtao_->RecordCompose(list, rtao_compose_in)", .label_file = "rtao.cpp", .label = "rtao compose", .reads = data::kAoDepth | data::kRtAoSignal,
@@ -401,7 +401,8 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .call = "applied = RecordApply(list, summary, plan, push);", .label_file = "ao.cpp", .label = "ao apply", .reads = data::kAoDepth,
      .soft_reads = data::kAoTerm | data::kContactTerm | data::kAoNormal | data::kCarSunMap,
        .deps = {{{Step::kColourPre, "the bounce light's colour is captured BEFORE the apply multiplies the occlusion into it"},
-                 {Step::kRtAoCompose, "the apply reads the term the compose wrote"}}}},
+                 {Step::kRtAoCompose, "the apply reads the term the compose wrote"}}},
+     .note = "Quarter-size bounce is traced, accumulated and filtered after the optional RTAO compose, and is read separately by the apply"},
     {.step = Step::kScreenPublish, .phase = Phase::kTrigger, .kind = Kind::kInner, .umbrella = Step::kAo, .name = "screen frame published, Hi-Z made", .file = "ao.cpp",
      .call = "PublishScreen(list, summary, plan, base);", .label_file = "screen_shared.cpp", .label = "screen hiz", .reads = data::kAoDepth, .soft_reads = data::kAoNormal | data::kColourChain,
      .makes = data::kLinDepth | data::kLinDepthFull | data::kNormal | data::kColourPre | data::kHizMin,

@@ -461,9 +461,9 @@ void CheckSources(const std::string& gpu) {
   Check(Has(cpp, "history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]"), "ao.cpp: a change of the traced size throws the history away (kSize)");
   // The apply uses the depth-aware upsample for the occlusion's and the bounce's images, and not for the contact image beside them.
   Check(Has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle, thin,") && Has(apply, "GiAt(g_push.slots.z, ColourSlot()"), "the apply upsamples the occlusion's and the bounce's images with the depth-aware weights");
-  Check(Has(apply, "AoContactFull() ? g_textures[g_push.slots2.x].Load(int3(pixel, 0)).x : VisibilityAt(g_push.slots2.x, pixel, tc)"),
+  Check(Has(apply, "AoContactFull() ? g_textures[ContactSlot()].Load(int3(pixel, 0)).x : VisibilityAt(ContactSlot(), pixel, tc)"),
         "the apply reads a full size contact image as it is");
-  Check(Has(apply, "AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize()"), "the folded contact filter takes the contact image's own depth and size");
+  Check(Has(apply, "AoBilateralEdgeFolded(ContactSlot(), ContactDepthSlot(), pixel, ContactImageSize()"), "the folded contact filter takes the contact image's own depth and size");
   Check(Has(apply, "const float dz = abs(td - tc) / max(0.02f * tc, 0.05f);"), "the apply's depth weights are the old ones (2% of the depth, 5 cm)");
   // The colour chain: one sample, the host sample in slots2.x.
   Check(Has(color, "bool AoOneSample()") && Has(color, "TakeColour(p, first + s)") && Has(color, "g_push.slots2.x"), "ao_color_ps.hlsl: one sample of each pixel, the host sample in slots2.x");

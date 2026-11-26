@@ -33,6 +33,7 @@
 #define AO_ROTATING_GRID 1
 #include "ao_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
+#include "ssgi_quarter.hlsli"
 
 #ifndef AO_NORMAL_MS
 #define AO_NORMAL_MS 0
@@ -59,7 +60,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float3 pc = AoViewPos(float2(pixel) + 0.5f, size, tc);
   // The texel of RT1 that belongs to this pixel: its own, or at half size the block's sample the depth is of.
   int2 source = pixel;
-  if (AoLow()) {
+  if ((g_push.slots2.z & kSsgiQuarterFlag) != 0u) {
+    source = SsgiQuarterSource(pixel, AoGbSourceOf(tc), int2(g_push.extra.xy) - 1);
+  } else if (AoLow()) {
     const uint index = AoGbSourceOf(tc);
     source = pixel * 2 + int2(int(index & 1u), int(index >> 1u));
   }

@@ -690,6 +690,11 @@ void CheckSources(const std::string& gpu) {
         ao_call(Step::kRtAoFilter) < ao_call(Step::kAoVisibility) &&
         ao_call(Step::kAoVisibility) < ao_call(Step::kRtAoCompose) &&
         ao_call(Step::kRtAoCompose) < ao_call(Step::kContact), "the RTAO calls bracket visibility before contact");
+  const size_t gi_guides = ao.find("gi_normal_slot = RecordGiGuides(list, summary, plan, base);");
+  const size_t gi_trace = ao.find("RecordQuarterGi(list, plan, base,");
+  Check(gi_guides < ao_call(Step::kColourPre) &&
+        ao_call(Step::kRtAoCompose) < gi_trace && gi_trace < ao_call(Step::kAoApply),
+        "quarter guides precede colour and the independent bounce reaches the apply after RTAO");
 
   // every call stands in its file, once
   std::array<size_t, N> pos{};

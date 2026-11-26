@@ -694,6 +694,8 @@ class AmbientOcclusion {
     // (EnsureNormalShader), with its pipeline in the background (NormalPipelineReady); not the bounce light's, so EnsureGiShaders leaves it alone.
     kPassNormal,
     kPassNormalMs,
+    kPassMainGiQuarterHigh,
+    kPassMainGiQuarterHighExact,
     kPassCount,
   };
   // A pass the occlusion needs (made at the start with the others), against the bounce light's (made when it is on).
@@ -743,7 +745,9 @@ class AmbientOcclusion {
     kVNormalMs = kVNormal + 1,
     kVTemporalCheap = kVNormalMs + 1,
     kVTemporalCheapMs = kVTemporalCheap + 1,
-    kVariantCount = kVTemporalCheapMs + 1,
+    kVMainGiQuarterHigh = kVTemporalCheapMs + 1,
+    kVMainGiQuarterHighExact,
+    kVariantCount,
   };
   static uint32_t ApplyVariant(bool debug, uint32_t host_samples);
   static uint32_t GiApplyVariant(bool debug, uint32_t host_samples);
@@ -835,6 +839,8 @@ class AmbientOcclusion {
   struct GiPlan {
     uint32_t cabin_id = 0;
     bool on = false;
+    bool quarter = false;          // independent 1/4-width, 1/4-height trace
+    uint32_t sample_key = 0;       // host sample count and sample used by the depth guide
     float thickness = 0.0f;        // the back face of a sample, world units: 0 = a solid (GTAO's horizons)
     float facing = 1.0f;           // the weight of the facing test (0: surfaces are taken to face the pixel)
     float view_gain = 1.0f;
@@ -904,6 +910,7 @@ class AmbientOcclusion {
     uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
     ContactPlan contact;
     GiPlan gi;
+    bool SharedGi() const { return gi.on && !gi.quarter; }
     // The contact filter is done by the apply pass (mcla_gpu_contact_shadows_fast): the march's image goes to it as
     // it is and the denoise pass does not run for the contact shadows. Only at the picture's size: at half size the
     // apply upsamples a filtered image (hlsl/ao_apply_ps.hlsl VisibilityAt), and that pass is a quarter of the pixels.
@@ -932,6 +939,7 @@ class AmbientOcclusion {
       f.contact = contact.mode != Mode::kOff;
       f.contact_fast = contact.fast;
       f.bounce = gi.on;
+      f.bounce_quarter = gi.quarter;
       return f;
     }
   };
@@ -983,6 +991,12 @@ class AmbientOcclusion {
   // not made, where there is no owner (SetScreenShared): no bounce light then.
   bool EnsureGiImages(const Plan& plan);
   void ReleaseGiImages();
+  screen::extract::Frame GiFrame(const Plan& plan) const;
+  uint32_t RecordGiGuides(plume::RenderCommandList* list, const ResolveCache::Summary& summary,
+                          const Plan& plan, const Push& base);
+  void RecordQuarterGi(plume::RenderCommandList* list, const Plan& plan, const Push& base,
+                       uint32_t stencil_slot, bool ms, uint32_t normal_slot, uint32_t vehicle_slot,
+                       HostImage*& history, HostImage*& bounce);
   // The colour chain's image of `level` (0 the AO's size, 1 and 2 half and a quarter of it): the owner's (screen_shared.h). Only while the bounce light runs (the owner is set then).
   HostImage& Colour(uint32_t level) const;
   // The shared screen products' images this class's passes read and the owner records into (SS-2; the owner is set whenever a frame runs: Run returns without it): the depth chain's level
@@ -999,7 +1013,8 @@ class AmbientOcclusion {
   // The frame's sizes as the extraction takes them (screen_extract.h Frame).
   screen::extract::Frame ExtractFrame(const Plan& plan) const;
   // What the owner's colour chain takes of the frame (screen_extract.h): the cap and the source of the frame's light (ssgi_light.h).
-  screen::extract::ColourRecipe ColourRecipeFor(const Plan& plan, const Push& base, const EdramTargets::Target& colour, uint32_t colour_slot) const;
+  screen::extract::ColourRecipe ColourRecipeFor(const Plan& plan, const Push& base, const EdramTargets::Target& colour,
+                                                 uint32_t colour_slot, uint32_t quarter_normal = 0) const;
   // A resolve of the frame into the game's shadow mask page: remembers its texture key.
   void NoteMaskResolve(const ResolveRecord& record);
   // The bindless slot of the game's shadow mask product, if this frame's resolve made it and it is
@@ -1132,6 +1147,7 @@ class AmbientOcclusion {
   // Decides the frame's history: its use, and the matrix that moves this frame's view space into
   // the history's.
   HistoryUse ChooseHistory(const Plan& plan) const;
+  HistoryUse ChooseQuarterHistory(const Plan& plan) const;
   // The same for the contact image's own history (NOISE-RESOLVE): the contact_hist_ state in place of the occlusion's, the same camera motion and cap.
   HistoryUse ChooseContactHistory(const Plan& plan) const;
   // The motion of the trigger's frame's camera into the previous frame's (true unless the
@@ -1434,6 +1450,23 @@ class AmbientOcclusion {
   HostImage gi_dn_;
   HostImage gi_hist_[2];
   HostImage gi_weight_;
+  // The independent trace ping-pongs its linear depth alongside its history.
+  HostImage gi_depth_[2];
+  HostImage gi_depth_mip_[2];
+  HostImage gi_normal_;
+  struct QuarterHistory {
+    uint64_t frame = 0;
+    uint32_t index = 0;
+    uint32_t render[2] = {};
+    float tan_half[2] = {};
+    menu_world::World world = menu_world::World::kNone;
+    Mode mode = Mode::kOff;
+    uint32_t cabin_id = 0;
+    uint32_t far_steps = 0;
+    uint32_t sample_key = 0;
+    bool valid = false;
+  } quarter_history_;
+  uint32_t gi_quarter_logged_[3] = {};
   bool history_gi_ = false;
   bool history_cheap_ = false;
   uint32_t history_grid_ = 0;

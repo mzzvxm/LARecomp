@@ -573,9 +573,13 @@ void CheckSources(const std::string& gpu) {
   Check(Has(ao, "g.lights_floor = ssgi_lights::FloorOf(larecomp::settings::mcla_gpu_ssgi_lights_floor.Get());") && Has(ao, "lights.cap_floor = plan.gi.lights_floor;"),
         "ao.cpp: the lights' own floor is read through the header and goes into the recipe");
   Check(Has(ao, "screen_->WantLights(plan.gi.on && plan.gi.lights);"), "ao.cpp: the owner is told once a frame whether the lights are wanted, and of which partition");
-  Check(Has(ao, "const HistoryUse use = ChooseHistory(plan);\n    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on);"), "ao.cpp: the history is the accumulation pass's own choice, of the partition the chain wants");
+  Check(Has(ao, "const HistoryUse use = recipe.quarter ? ChooseQuarterHistory(plan) : ChooseHistory(plan);") &&
+        Has(ao, "trigger_pause_, gi_frame.traced[0], gi_frame.traced[1], use.on && previous.texture);"),
+        "ao.cpp: the light pair uses the selected trace's size and history");
   Check(Has(ao, "lights.motion[j * 4 + k] = float(sign * use.motion.m[k][j]);") && Has(ao, "const double sign = ((k == 2) != (j == 2)) ? -1.0 : 1.0;"), "ao.cpp: the 3x4 is the accumulation pass's (S G S, row by row)");
-  Check(Has(ao, "lights.depth_slot = Depth(0).slot;") && Has(ao, "lights.depth_prev_slot = DepthPrev().slot;") && Has(ao, "lights.tan_prev[0] = history_tan_[0];"), "ao.cpp: this frame's depth, the depth history and the last frame's lens");
+  Check(Has(ao, "lights.depth_slot = recipe.quarter ? recipe.matched_depth_slot : Depth(0).slot;") &&
+        Has(ao, "lights.depth_prev_slot = previous.slot;") && Has(ao, "lights.tan_prev[0] = tan_half[0];"),
+        "ao.cpp: the selected trace's current depth, previous depth and previous lens");
   Check(Has(temporal, "push.lin[k] = motion(k, 0);") || Has(ao, "push.lin[k] = motion(k, 0);"), "(the accumulation pass is given lin = motion(k, 0), shape = motion(k, 1), light = motion(k, 2))");
   Check(Has(ao, "push.shape[k] = motion(k, 1);") && Has(ao, "push.light[k] = motion(k, 2);"), "ao.cpp: the accumulation pass's rows are the ones the lights' 3x4 repeats");
   // the owner

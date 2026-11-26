@@ -207,6 +207,7 @@ const ItemDef kDebugFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgAtmMerge", "mcla_gpu_atmosphere_merge", "MERGE ATMOSPHERE BLENDS: ")),
     NativeOnly(Bool("PM_RxDbgAtmViews", "mcla_gpu_atmosphere_menu_views", "MENU ATMOSPHERE: ")),
     NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgSsgiQuarter", "mcla_gpu_ssgi_quarter", "QUARTER-SIZE BOUNCE: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

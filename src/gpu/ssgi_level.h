@@ -41,6 +41,13 @@
 
 namespace mcla::gpu::ssgi_level {
 
+// LT-8 near taps per side of a slice. Ultra keeps its earlier 3x3 pattern;
+// High uses two slices with four steps. The far ring remains separate.
+inline constexpr uint32_t kQuarterHighSlices = 2;
+inline constexpr uint32_t kQuarterHighSteps = 4;
+inline constexpr uint32_t kQuarterFlag = 1u << 30;
+inline constexpr uint32_t kQuarterApplyFlag = 1u << 14;
+
 enum class Level : uint8_t { kLight, kDefault, kStrong, kStronger, kStrongest };
 inline constexpr int kLevelCount = 5;
 inline constexpr Level kDefaultLevel = Level::kDefault;

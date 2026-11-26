@@ -26,6 +26,7 @@
 #include "ao_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
 #include "ao_rate_rules.hlsli"
+#include "ssgi_quarter.hlsli"
 #include "cabin_shadow_rules.hlsli"
 #if AO_HIZ0
 #include "screen_hiz.hlsli"
@@ -65,16 +66,18 @@ float AoDepthTexel(float2 position_xy) {
   float t;
   int2 source;
   uint source_index = 0u;
-  if (AoLow() && AoRotatingGrid()) {
+  const bool quarter = (g_push.slots2.z & kSsgiQuarterFlag) != 0u;
+  if (!quarter && AoLow() && AoRotatingGrid()) {
     source_index = AoGridPhase();
     source = int2(AoSourceAxis(pixel.x, source_index & 1u, last.x),
                   AoSourceAxis(pixel.y, source_index >> 1u, last.y));
     t = AoLinearDepth(AoLoadStored(source));
-  } else if (AoLow()) {
-    const int2 p0 = min(pixel * 2 + int2(0, 0), last);
-    const int2 p1 = min(pixel * 2 + int2(1, 0), last);
-    const int2 p2 = min(pixel * 2 + int2(0, 1), last);
-    const int2 p3 = min(pixel * 2 + int2(1, 1), last);
+  } else if (AoLow() || quarter) {
+    const int2 base = quarter ? pixel * 4 + 1 : pixel * 2;
+    const int2 p0 = min(base, last);
+    const int2 p1 = min(base + int2(1, 0), last);
+    const int2 p2 = min(base + int2(0, 1), last);
+    const int2 p3 = min(base + int2(1, 1), last);
     float4 d;
     d.x = AoLinearDepth(AoLoadStored(p0));
     d.y = AoLinearDepth(AoLoadStored(p1));
@@ -113,6 +116,9 @@ float AoDepthTexel(float2 position_xy) {
   const uint id = DepthVehicleId(source);
   float marked = AoSetVehicleBit(t, id != 0u);
   marked = g_push.slots2.w != 0u ? AoGbSetSource(marked, source_index) : marked;
+  if (quarter) {
+    marked = SsgiQuarterMarkVehicle(marked, id);
+  }
   // In source-isolation modes, one more low depth bit marks the player, using the same sample as the vehicle tag.
   return asfloat(CabinMarkDepth(asuint(marked), g_push.slots.w, id));
 }

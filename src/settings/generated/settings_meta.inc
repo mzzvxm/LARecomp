@@ -559,6 +559,7 @@
 {"mcla_gpu_ssgi", "MCLA/GPU"},
 {"mcla_gpu_ssgi_clamp", "MCLA/GPU"},
 {"mcla_gpu_ssgi_far_steps", "MCLA/GPU"},
+{"mcla_gpu_ssgi_quarter", "MCLA/GPU"},
 {"mcla_gpu_ssgi_half", "MCLA/GPU"},
 {"mcla_gpu_ssgi_fast_gather", "MCLA/GPU"},
 {"mcla_gpu_ssgi_fast_filter_plane", "MCLA/GPU"},

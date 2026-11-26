@@ -55,6 +55,7 @@
 //            times 0.3 so that 1.0 reads below the tone map's white; the gain multiplies that)
 
 #include "ao_common.hlsli"
+#include "ssgi_quarter.hlsli"
 #include "ao_gbuffer_normal.hlsli"
 #include "interior_camera_rules.hlsli"
 #include "ssgi_common.hlsli"
@@ -162,6 +163,7 @@ float3 LightsHistory(int2 pixel) {
 
 float4 main(float4 position : SV_Position) : SV_Target {
   const bool low = AoLow();
+  const bool quarter = (g_push.slots2.z & kSsgiQuarterFlag) != 0u;
   const int2 base = int2(position.xy) * (low ? 2 : 1);
   const int2 last = int2(g_push.sizes.zw) - 1;
   const int across = low ? 2 : 1;
@@ -176,7 +178,10 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const uint first = 0u;
 #endif
   float4 result;
-  if (match_depth) {
+  if (quarter) {
+    const uint source = AoGbSourceOf(AoLoadLinear(g_push.slots2.y, int2(position.xy)));
+    result = TakeColour(SsgiQuarterSource(int2(position.xy), source, last), first);
+  } else if (match_depth) {
     // Match the spatial representative and guest sample used by the linear depth.
     const uint source = low ? AoGbSourceOf(AoLoadLinear(g_push.slots2.y, int2(position.xy))) : 0u;
     const int2 p = min(base + int2(source & 1u, source >> 1u), last);

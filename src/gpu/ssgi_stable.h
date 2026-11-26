@@ -82,6 +82,11 @@ inline float ClipHistory(float history, float mean, float deviation, float width
 // the a-trous filter's passes (ao.cpp, hlsl/ao_atrous_ps.hlsl)
 // ---------------------------------------------------------------------------
 
+constexpr bool QuarterHistoryMatches(bool valid, uint64_t last, uint64_t now,
+                                     const uint32_t previous[2], const uint32_t render[2]) {
+  return valid && now > last && now - last == 1 && previous[0] == render[0] && previous[1] == render[1];
+}
+
 inline constexpr int kMaxAtrous = 5;  // taps 1, 2, 4, 8, 16 pixels apart
 
 // The passes of the filter for a bounce image `ao_height` lines high, `base` being the setting's number at 720 lines

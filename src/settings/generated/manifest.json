@@ -789,6 +789,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ssgi_quarter": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use a quarter-width and quarter-height trace for screen-space bounce light. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ssgi_half": {
   "type": "bool",
   "default": "true",

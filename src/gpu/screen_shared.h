@@ -214,6 +214,12 @@ class ScreenShared {
   // The AO says, once a frame in which its bounce light runs with the lights' share (Plan::GiPlan::lights), that the colour before and after the deferred light pass is wanted. Per frame, not sticky: the
   // images go back after a couple of seconds without it.
   void WantLights(bool on) { lights_wanted_ = on; }
+  // The SSGI light pair must sample the same source pixels as the quarter guide.
+  void SetQuarterLightGuide(uint32_t depth_slot, uint32_t host_sample) {
+    lights_quarter_ = true;
+    lights_quarter_depth_slot_ = depth_slot;
+    lights_quarter_sample_ = host_sample;
+  }
   bool lights_wanted() const { return lights_wanted_; }
   bool lights_before_done() const { return lights_before_done_; }
   // The last frame's two captures for the colour chain of THIS frame (the owner's frame count), in a view of kind `pause`, at the traced size width x height, when the AO's own history holds this frame
@@ -401,6 +407,9 @@ class ScreenShared {
   bool lights_wanted_ = false;       // the AO's want of this frame (BeginFrame turns it into the idle count)
   // True in a frame whose captures may be made: the screen frame is published and the colour chain ran (the whole-pass pair) or the pair is a residual one (no chain needed).
   bool LightsFrameMade() const { return published_ && pre_made_; }
+  bool lights_quarter_ = false;
+  uint32_t lights_quarter_depth_slot_ = 0;
+  uint32_t lights_quarter_sample_ = 0;
   bool lights_before_done_ = false;  // this frame's captures
   bool lights_after_done_ = false;
   bool lights_pause_ = false;

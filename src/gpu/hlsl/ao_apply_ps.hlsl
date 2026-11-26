@@ -129,6 +129,7 @@
 
 #include "ao_common.hlsli"
 #include "ao_rate_rules.hlsli"
+#include "ssgi_quarter.hlsli"
 #include "cabin_shadow_rules.hlsli"
 #include "host_pass_samplers.hlsli"
 #include "nan_guard.hlsli"
@@ -172,6 +173,9 @@ uint ApplyNormalSlot() { return g_push.slots.w >> 16; }
 uint ContactDepthSlot() { return AoContactFull() ? (g_push.slots2.y >> 16) : ApplyDepthSlot(); }
 int2 ContactImageSize() { return AoContactFull() ? int2(g_push.sizes.xy) : int2(g_push.sizes.zw); }
 uint ColourSlot() { return g_push.slots2.y & 0xFFFFu; }
+uint AoVisibilitySlot() { return g_push.slots.z & 0xFFFFu; }
+uint ContactSlot() { return g_push.slots2.x & 0xFFFFu; }
+bool GiQuarter() { return (g_push.slots.y & kSsgiQuarterApply) != 0u; }
 // The paint power's code (ao_paint.h): flags bits 17-20, the place of the denoise's radius, which this pass does not read (ao.cpp
 // clears them): the power is (code + 1) sixteenths, and code 15, the power 1, is off (the paint is darkened like the world).
 uint AoPaintCode() { return (g_push.slots2.z >> 17) & 0xFu; }
@@ -302,6 +306,55 @@ float CarAwareSunVisibility(float mask_vis, bool vehicle, float3 pc) {
 }
 
 #if AO_GI
+uint QuarterReceiverVehicle(int2 pixel) {
+  const uint stencil_slot = g_push.slots2.w >> 16;
+  if (stencil_slot == 0xFFFFu) {
+    return 0u;
+  }
+#if AO_DEPTH_MS
+  const uint stencil = StencilOf(g_utextures_ms[stencil_slot].Load(pixel, g_push.slots.y & 0xFFu));
+#else
+  const uint stencil = StencilOf(g_utextures[stencil_slot].Load(int3(pixel, 0)));
+#endif
+  const uint id = stencil >> 2;
+  return id <= 23u ? id : 0u;
+}
+
+void QuarterGiAt(int2 pixel, float tc, float3 pc, float3 normal, uint vehicle,
+                 out float3 bounce, out float4 colour) {
+  const int2 size = (int2(g_push.sizes.xy) + 3) / 4;
+  const float2 q = (float2(pixel) + 0.5f) * 0.25f - 0.5f;
+  const int2 q0 = int2(floor(q));
+  const float2 f = q - float2(q0);
+  const uint depth_slot = g_push.slots2.x >> 16;
+  const uint gi_slot = g_push.slots.z >> 16;
+  const uint colour_slot = ColourSlot();
+  float weights = 0.0f;
+  float3 sum = 0.0f;
+  float4 colour_sum = 0.0f;
+  [unroll] for (int y = 0; y < 2; ++y) {
+    [unroll] for (int x = 0; x < 2; ++x) {
+      const int2 tap = clamp(q0 + int2(x, y), int2(0, 0), size - 1);
+      const float td = AoLoadLinear(depth_slot, tap);
+      if (td >= kAoSky * 0.5f || SsgiQuarterVehicle(td) != vehicle) {
+        continue;
+      }
+      const float3 p = AoViewPos(float2(tap) + 0.5f, float2(size), td);
+      const float bilinear = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y);
+      const float w = bilinear * SsgiQuarterWeight(td, tc, dot(normal, p - pc));
+      if (w <= 0.0f) {
+        continue;
+      }
+      sum += g_textures[gi_slot].Load(int3(tap, 0)).yzw * w;
+      colour_sum += g_textures[colour_slot].Load(int3(tap, 0)) * w;
+      weights += w;
+    }
+  }
+  // Fade out when the trace has little or no coverage of this surface.
+  bounce = sum / max(weights, 0.05f);
+  colour = colour_sum / max(weights, 1e-5f);
+}
+
 // The image of the visibility and the bounce (`gi_slot`) and the colour chain's level 0 (`colour_slot`) at the
 // pixel of the picture: as they are, or, from the half resolution ones, one bilinear upsample whose weights fall
 // with the difference of linear depth (VisibilityAt's), the two images by the same weights. `vehicle` is the share
@@ -350,7 +403,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const bool ao_on = AoTermOn();
   const bool contact_on = ContactOn();
   const float fade_end = g_push.extra.y;
-  const float reach = max(ao_on ? fade_end : 0.0f, contact_on ? g_push.lens.w : 0.0f);
+  const float reach = max((ao_on || GiQuarter()) ? fade_end : 0.0f, contact_on ? g_push.lens.w : 0.0f);
   if (view == 0u && tc >= reach) {
     discard;
   }
@@ -358,12 +411,21 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The occlusion's visibility.
 #if AO_GI
   // From the image of the bounce light too (the pass is only used with the occlusion on).
-  float4 gi_image;
-  float4 gi_colour;
-  float gi_vehicle;
-  GiAt(g_push.slots.z, ColourSlot(), pixel, tc, gi_image, gi_colour, gi_vehicle);
-  const float ao = gi_image.x;
-  const float ao_vehicle = gi_vehicle;
+  const bool quarter = GiQuarter();
+  float4 gi_image = 0.0f;
+  float4 gi_colour = 0.0f;
+  float gi_vehicle = 0.0f;
+  float ao_vehicle = 0.0f;
+  float ao = 1.0f;
+  if (quarter) {
+    if (ao_on) {
+      ao = VisibilityAt(AoVisibilitySlot(), pixel, tc, ao_vehicle);
+    }
+  } else {
+    GiAt(g_push.slots.z, ColourSlot(), pixel, tc, gi_image, gi_colour, gi_vehicle);
+    ao = gi_image.x;
+    ao_vehicle = gi_vehicle;
+  }
 #else
   float ao_vehicle = 0.0f;
   const bool optimized = (g_push.slots2.z & (1u << 31)) != 0u;
@@ -435,7 +497,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float contact_fade = 1.0f - smoothstep(g_push.lens.z, g_push.lens.w, tc);
     const float contact_weight = g_push.extra.w * sun_share * contact_fade;
     if (!AoContactFilter()) {
-      cs = AoContactFull() ? g_textures[g_push.slots2.x].Load(int3(pixel, 0)).x : VisibilityAt(g_push.slots2.x, pixel, tc);
+      cs = AoContactFull() ? g_textures[ContactSlot()].Load(int3(pixel, 0)).x : VisibilityAt(ContactSlot(), pixel, tc);
     } else if (view != 0u || contact_weight > kFoldedFilterSkip) {
       // mcla_gpu_contact_shadows_fast: slots2.x is the march's own image, and the filter the denoise pass would
       // have made of it is done here, with the depths read above for the normal (the passes' size is the
@@ -453,7 +515,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
         tt = LinearAt(pixel + int2(0, -1), last);
         tb = LinearAt(pixel + int2(0, 1), last);
       }
-      cs = AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize(), tc, pc, normal,
+      cs = AoBilateralEdgeFolded(ContactSlot(), ContactDepthSlot(), pixel, ContactImageSize(), tc, pc, normal,
                                  float4(tl, tr, tt, tb));
     }
     // Give back a share of the sun removed by the combined mask, after filtering and history.
@@ -482,6 +544,12 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // lamp, headlights) or is one (neon, a glint): then the albedo is taken to be 1 (T is the chain's luma,
   // so the pixel gets B at most), and a pixel the chain says is a source of light (its alpha, ramped from where
   // a source starts) is not a surface and gets less, none when it is entirely one.
+  const uint receiver_vehicle = quarter ? QuarterReceiverVehicle(pixel) : 0u;
+  if (quarter && tc < fade_end) {
+    // CHECK: Verify the four-tap resolve on kerbs, thin props and vehicle silhouettes.
+    QuarterGiAt(pixel, tc, pc, normal, receiver_vehicle, gi_image.yzw, gi_colour);
+    gi_vehicle = receiver_vehicle != 0u ? 1.0f : 0.0f;
+  }
   float gi_sun_vis = 1.0f;
   if (MaskOn()) {
     const float2 gi_uv = (float2(pixel) + 0.5f) / size;
@@ -490,7 +558,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
                                                                   gi_uv, 0.0f).x);
   }
   if (MaskOn() || CarSunOn()) {
-    gi_sun_vis = CarAwareSunVisibility(gi_sun_vis, PixelIsVehicle(pixel), pc);
+    gi_sun_vis = CarAwareSunVisibility(gi_sun_vis, quarter ? receiver_vehicle != 0u : PixelIsVehicle(pixel), pc);
   }
   const float light_t = max(ambient + sun * gi_sun_vis, 1e-3f);
   const float luma_c = dot(gi_colour.rgb, kLuma);
