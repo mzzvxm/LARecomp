@@ -18,13 +18,7 @@ struct DrawAddress { uint64_t address; };
 ConstantBuffer<MirrorOverlayDraw> g_draw : register(b0, space4);
 #endif
 
-struct PsInput {
-  float4 position : SV_Position;
-  float3 view_pos : TEXCOORD0;
-  float2 mask_uv : TEXCOORD1;
-};
-
-float4 main(PsInput input) : SV_Target {
+float4 main(MirrorOverlayVaryings input) : SV_Target {
   const MirrorOverlayDraw draw = g_draw;
   const MirrorOverlayPush p = draw.mirror;
   const float3 uv = MirrorOverlayUv(p, input.view_pos);

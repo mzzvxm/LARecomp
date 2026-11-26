@@ -41,6 +41,16 @@ struct MirrorOverlayDraw {
   float4 mask_meta;
 };
 
+#ifndef __cplusplus
+// One declaration keeps DXIL registers and SPIR-V locations in the same order.
+// CHECK: confirm the repaired pipeline draws the rear view in the EV-6 census on both APIs.
+struct MirrorOverlayVaryings {
+  float4 position : SV_Position;
+  float3 view_pos : TEXCOORD0;
+  float2 mask_uv : TEXCOORD1;
+};
+#endif
+
 // The vertex in the main camera's view space, eye-relative.
 float3 MirrorOverlayViewPos(MirrorOverlayPush p, float3 position) {
   return float3(position.x * p.col_x.x + position.y * p.col_x.y + position.z * p.col_x.z + p.col_x.w,
