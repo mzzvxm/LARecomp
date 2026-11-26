@@ -178,7 +178,16 @@
                   "items": {
                     "type": "object",
                     "required": ["value"],
-                    "properties": { "when": { "$ref": "#/$defs/expression" }, "value": { "type": "string" }, "live_only": { "type": "boolean" } }
+                    "properties": {
+                      "when": { "$ref": "#/$defs/expression" },
+                      "value": {
+                        "oneOf": [
+                          { "type": "string" },
+                          { "type": "object", "required": ["expr"], "properties": { "expr": { "$ref": "#/$defs/expression" } } }
+                        ]
+                      },
+                      "live_only": { "type": "boolean" }
+                    }
                   }
                 }
               }

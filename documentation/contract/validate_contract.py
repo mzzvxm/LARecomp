@@ -1022,8 +1022,9 @@ def lint_row_form(doc, rep, ec, f, fw, row, settings, value_sets, referenced_set
     dec = f.get('decode')
     if isinstance(dec, str):
         ec.check(dec, f'{fw}.decode', bool_needed=False)
-        if not re.fullmatch(r'd\.[a-z0-9_]+', dec):
-            rep.warn(fw, 'a decode that is a text is the name of a def (d.name)')
+        # a def's name (d.name), or the setting's value with `auto` resolved through its auto descriptor (resolved(s.name): the legacy word shows as what it comes to on this PC)
+        if not re.fullmatch(r'd\.[a-z0-9_]+', dec) and not re.fullmatch(r'resolved\(s\.[a-z0-9_]+\)', dec):
+            rep.warn(fw, 'a decode that is a text is the name of a def (d.name) or resolved(s.name)')
     elif isinstance(dec, dict):
         for ci, c in enumerate(dec.get('cases', [])):
             cw = f'{fw}.decode.cases[{ci}]'
@@ -1031,7 +1032,10 @@ def lint_row_form(doc, rep, ec, f, fw, row, settings, value_sets, referenced_set
                 ec.check(c['when'], f'{cw}.when', live_only=bool(c.get('live_only') or row_live(f)))
             elif ci != len(dec['cases']) - 1:
                 rep.error(cw, 'a case without when is the default: it must be the last')
-            if ids and c['value'] not in ids:
+            if isinstance(c['value'], dict):
+                # {expr}: the value is computed (a saved legacy word such as auto is shown as the setting's effective value, or the saved number is shown as itself)
+                ec.check(c['value']['expr'], cw + '.value.expr', bool_needed=False, live_only=bool(c.get('live_only') or row_live(f)))
+            elif ids and c['value'] not in ids:
                 rep.error(cw, f'decodes to {c["value"]!r}, which is not a value id of the row')
     # apply and life (lint 4)
     apply_ = f.get('apply')

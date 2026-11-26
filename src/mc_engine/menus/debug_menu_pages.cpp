@@ -201,8 +201,6 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
-    NativeOnly(Bool("PM_RxDbgPipelineWarm", "mcla_gpu_pipeline_warm", "PIPELINE WARMUP: ")),
-    NativeOnly(Bool("PM_RxDbgCityRtBudget", "mcla_gpu_city_rt_build_budget", "CITY RT BUILD BUDGET: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 
@@ -211,7 +209,6 @@ const ItemDef kDebugFixesItems[] = {
 // stochastic effects), each with the switch that turns it off. The rows were the second half of FIXES, which had 30 rows against the 24 a page can
 // hold. Every row is NativeOnly, so the hub lists the page only while the Plume renderer runs.
 const ItemDef kDebugPictureFixesItems[] = {
-    NativeOnly(Bool("PM_RxDbgPauseFx", "mcla_gpu_pause_world_fx", "PAUSE AND PHOTO FX: ")),
     NativeOnly(Str("PM_RxDbgCabinSun", "mcla_gpu_cabin_sun_shadow", "CABIN SUN FIX: ",
                    kCabinSunVals, kCabinSunNames, Len(kCabinSunVals))),
     NativeOnly(Bool("PM_RxDbgDither", "mcla_gpu_present_dither", "PRESENT DITHER: ")),
@@ -307,6 +304,10 @@ const ItemDef kDebugPerformanceItems[] = {
     Bool("PM_RxDbgNoTrees",    "perf_no_trees",          "FOLIAGE: ", true, " (ON RELOAD)"),
     Dbl ("PM_RxDbgBreakFps",   "breaking_frame_rate_limit", "BREAK FPS FLOOR: ",
          kBreakFpsVals, Len(kBreakFpsVals), "%g", "", "STOCK"),
+    // The switches of the stutter work and the pause effects: they were on FIXES and PICTURE FIXES, which they took over their 24 rows (a page that is over does not open).
+    NativeOnly(Bool("PM_RxDbgPipelineWarm", "mcla_gpu_pipeline_warm", "PIPELINE WARMUP: ")),
+    NativeOnly(Bool("PM_RxDbgCityRtBudget", "mcla_gpu_city_rt_build_budget", "CITY RT BUILD BUDGET: ")),
+    NativeOnly(Bool("PM_RxDbgPauseFx", "mcla_gpu_pause_world_fx", "PAUSE AND PHOTO FX: ")),
 };
 
 // RENDERING: the Plume renderer's debug views and logs, and the picture's shape.

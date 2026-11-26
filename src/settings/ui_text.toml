@@ -264,12 +264,12 @@ help = "HDR output for an HDR10 display."
 [rows.PM_RxGpuHdrWhite]
 native = "kHdrPaperWhiteDynamics"
 help = "How bright the game's white is in HDR, in nits (Windows' own slider covers 80 to 480)."
-value = { "0" = { "label" = "AUTO" }, "80" = { "label" = "80 NITS" }, "100" = { "label" = "100 NITS" }, "120" = { "label" = "120 NITS" }, "160" = { "label" = "160 NITS" }, "200" = { "label" = "200 NITS" }, "240" = { "label" = "240 NITS" }, "280" = { "label" = "280 NITS" }, "320" = { "label" = "320 NITS" }, "400" = { "label" = "400 NITS" }, "480" = { "label" = "480 NITS" } }
+value = { "80" = { "label" = "80 NITS" }, "100" = { "label" = "100 NITS" }, "120" = { "label" = "120 NITS" }, "160" = { "label" = "160 NITS" }, "200" = { "label" = "200 NITS" }, "240" = { "label" = "240 NITS" }, "280" = { "label" = "280 NITS" }, "320" = { "label" = "320 NITS" }, "400" = { "label" = "400 NITS" }, "480" = { "label" = "480 NITS" } }
 
 [rows.PM_RxGpuHdrPeak]
 native = "kHdrPeakDynamics"
 help = "The brightest level HDR output may reach, in nits (200 to 4000 covers most displays)."
-value = { "0" = { "label" = "AUTO" }, "200" = { "label" = "200 NITS" }, "400" = { "label" = "400 NITS" }, "600" = { "label" = "600 NITS" }, "800" = { "label" = "800 NITS" }, "1000" = { "label" = "1000 NITS" }, "1200" = { "label" = "1200 NITS" }, "1500" = { "label" = "1500 NITS" }, "2000" = { "label" = "2000 NITS" }, "3000" = { "label" = "3000 NITS" }, "4000" = { "label" = "4000 NITS" } }
+value = { "200" = { "label" = "200 NITS" }, "400" = { "label" = "400 NITS" }, "600" = { "label" = "600 NITS" }, "800" = { "label" = "800 NITS" }, "1000" = { "label" = "1000 NITS" }, "1200" = { "label" = "1200 NITS" }, "1500" = { "label" = "1500 NITS" }, "2000" = { "label" = "2000 NITS" }, "3000" = { "label" = "3000 NITS" }, "4000" = { "label" = "4000 NITS" } }
 
 [rows.PM_RxGpuHdrHighlights]
 native = "kHdrHighlightDynamics"
