@@ -285,6 +285,7 @@ class CarSelfRefl {
   bool pause_view_ = false;  // ... the pause menu's, the garage's or the map's (4 guest samples); never both in a usable frame
   uint32_t stencil_ids_ = 0;      // the vehicle IDs the main view's draws wrote before the anchor
   uint32_t frame_paint_draws_ = 0;  // draws of the paint through the variant so far this frame (the car is on the screen)
+  bool rt_history_reset_ = true;
   bool history_pending_ = false;  // the pass was recorded this frame; the anchor says whose camera it goes with
 
   // The camera the trigger worked with: the previous frame's anchor camera, from the shared screen products' camera history (Previous), copied when the history pass is recorded. Its lens

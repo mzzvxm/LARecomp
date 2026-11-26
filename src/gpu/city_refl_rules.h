@@ -148,7 +148,7 @@ inline Level LevelFor(gpu_class::GpuClass cls, gpu_class::RtTier tier, std::stri
   if (gpu_class::RtRung(cls, tier) == gpu_class::RtTier::kNone) {
     return Level::kOff;
   }
-  const Choice choice = city_rt::ParseChoice(text);
+  const Choice choice = text == "on" ? Choice::kHigh : city_rt::ParseChoice(text);
   switch (choice) {
     case Choice::kOff: return Level::kOff;
     case Choice::kHigh: return Level::kHigh;
@@ -159,6 +159,13 @@ inline Level LevelFor(gpu_class::GpuClass cls, gpu_class::RtTier tier, std::stri
 }
 
 // The cell with the debug reach override (0: the level's).
+constexpr Cell PaintCell(Level level, float reach) {
+  if (level == Level::kOff) {
+    return {};
+  }
+  return {Level::kHigh, reach, 0.6f, 1u, 250000, 1u, TextureScope::kAll, true};
+}
+
 constexpr Cell WithReach(Cell c, float reach) {
   if (reach > 0.0f && c.level != Level::kOff) {
     c.reach = std::clamp(reach, 5.0f, 3000.0f);

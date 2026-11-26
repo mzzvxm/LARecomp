@@ -271,7 +271,8 @@ void CarRtScene::Shutdown() {
   car_frame_ = nullptr;
 }
 
-void CarRtScene::Request() {
+void CarRtScene::Request(bool uniform_paint) {
+  uniform_paint_requested_ |= uniform_paint;
   if (service_) {
     service_->NoteCarWant();  // the board knows the car effects too (rt_scene_service.h)
   }
@@ -282,7 +283,8 @@ void CarRtScene::RequestCollect() {
   requested_ = true;
   if (car_frame_) {
     // The draws of the player's car and, within the class's limits, of the cars beside it (car_rt_instances_rules.h); the debug cvars are read here.
-    car_frame_->RequestOtherCars(instances_.CurrentLimits(), instances_.ModelMode(), instances_.TrafficCars(), instances_.WheelsOn());
+    const auto limits = instances_.CurrentLimits(uniform_paint_requested_);
+    car_frame_->RequestOtherCars(limits, instances_.ModelMode(), instances_.TrafficCars(limits), instances_.WheelsOn());
   }
 }
 
@@ -2159,6 +2161,7 @@ void CarRtScene::OnPresent() {
   }
   requested_prev_ = requested_;
   requested_ = false;
+  uniform_paint_requested_ = false;
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;

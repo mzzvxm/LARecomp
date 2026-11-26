@@ -412,7 +412,10 @@ bool CarSelfRefl::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     history_valid_ = false;
     return false;
   }
+  const temporal::Camera previous_trigger = trigger_camera_;
   trigger_camera_ = *previous;
+  rt_history_reset_ = !history_valid_ || history_frame_ + 1 != frame_ || history_pause_ != pause ||
+                      temporal::TestCut(trigger_camera_, previous_trigger, temporal::CutMotion{}).fires;
   // The world of the frame by that camera, and whether the effect runs in it: the game view, the pause menu's world and the
   // garage, not the map (menu_world.h).
   trigger_world_ = pause ? menu_world::Classify(true, menu_world::LensOf(&trigger_camera_), menu_world::GarageLighting())
@@ -432,6 +435,9 @@ bool CarSelfRefl::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
 }
 
 bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+  if (!list || !summary.source) {
+    return false;
+  }
   EdramTargets::Target& depth = *summary.source;
   const uint32_t width = std::min(summary.dest_width, depth.width);
   const uint32_t height = std::min(summary.dest_height, depth.height);
@@ -512,6 +518,10 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   push.sizes[0] = float(render_w);
   push.sizes[1] = float(render_h);
   push.sizes[2] = float(divisor);
+  // Clear once, then let the exact stencil discard non-vehicle fragments. The
+  // history must cover every vehicle, including cockpit draws outside the RT TLAS.
+  const bool discard_background = larecomp::settings::mcla_gpu_car_rt_paint_one_ray.Get();
+  push.sizes[3] = discard_background ? 1.0f : 0.0f;
   // The previous frame's lens (view space to clip, row vectors): the rows the linearisation reads.
   const temporal::Mat4& p = trigger_camera_.projection;
   push.lin[0] = float(p.m[2][2]);
@@ -529,6 +539,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.tan_y = 1.0 / std::max(std::fabs(p.m[1][1]), 1e-9);
     info.frame = frame_;
     info.upscaler = upscaler_running_;
+    info.reset_history = rt_history_reset_;
     info.raw = raw_;  // RR-4b: DLSS Ray Reconstruction is this frame's denoiser (no filter on the trace, its hit distance written)
     // While a scene runs the phase follows the scene's noise index like the other noise (scene_noise.h): the same scene frame gets the same ray pattern. It is the pattern's step for this frame; whether it is used
     // (an upscaler averages it, or the pass's own history does: NOISE-RESOLVE) is CarRtRefl::OnHistory's to say, which sets the pattern still where nothing averages it.
@@ -538,7 +549,8 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     FillCityScreen(&info.screen);
   }
   pass_timing_->Mark(list, "car history");
-  passes_->DrawInto(list, history_, pipeline, &push, sizeof(push));
+  // CHECK: compare history bytes and car history timing with the full write on both APIs.
+  passes_->DrawInto(list, history_, pipeline, &push, sizeof(push), discard_background);
   if (shared) {
     ++passes_shared_;
   }

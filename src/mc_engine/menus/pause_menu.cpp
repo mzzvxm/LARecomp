@@ -1910,8 +1910,8 @@ const char* const kNativeCarSelfReflNames[] = {"AUTO"};
 // while the game builds the city pack and the hit data from the game files in the background (the launcher's setup has them ready at the first start) the label says " (BUILDING DATA)" and the row
 // stays on: the setting is kept and the city comes into the paint by itself when the data is done. Width ("Page width" above ItemRowLabel): the whole label "RT CITY REFLECTIONS" is 19; the reasons
 // follow "RT CITY" (7), at most 23 as a label ("RT CITY (BUILDING DATA)"), so the page stays as wide as REFLECTIONS ON SURFACES makes it (23 + 17 = 40 of the 41).
-const char* const kNativeRtCityVals[]  = {"auto", "off", "high", "ultra"};
-const char* const kNativeRtCityNames[] = {"AUTO", "OFF", "HIGH", "ULTRA"};
+const char* const kNativeRtCityVals[]  = {"off", "on"};
+const char* const kNativeRtCityNames[] = {"OFF", "ON"};
 // Side mirrors without ray tracing (mcla_gpu_side_mirrors, gpu/mirror_setting.h, gpu/mirror_view.h, gpu/mirror_glass.h, live): the two side mirrors of your car show the street and the cars behind you, taken from the game's own rear
 // view mirror camera, drawn once into a small picture (also the HUD's rear view mirror's picture while it runs), on any graphics card. The pair of RT SIDE MIRRORS, as BOUNCE LIGHT is of RT BOUNCE LIGHT: where the traced mirrors
 // run they REPLACE this row, which then says " (REPLACED)" after its label (nothing of it runs, the word applies again the moment RT SIDE MIRRORS goes off); the row is never grey. Two levels, so the words are AUTO / OFF / HIGH / ULTRA
@@ -2046,7 +2046,7 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(Str("PM_RxGpuCarSelfRefl", "mcla_gpu_car_selfrefl",
                                 "CAR SELF-REFLECTIONS: ", kNativeCarSelfReflVals, kNativeCarSelfReflNames, 1)),
     NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections",
-                                "RT CITY REFLECTIONS: ", kNativeRtCityVals, kNativeRtCityNames, 4)),
+                                "RT CITY REFLECTIONS: ", kNativeRtCityVals, kNativeRtCityNames, 2)),
     NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors",
                                 "SIDE MIRRORS: ", kNativeSideMirrorsVals, kNativeSideMirrorsNames, 4)),
     NativeOnly(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt",

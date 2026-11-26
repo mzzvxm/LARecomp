@@ -26,8 +26,9 @@ constexpr uint64_t kWindowFrames = 300;
 
 }  // namespace
 
-ci::Limits CarRtInstances::CurrentLimits() const {
-  return ci::LimitsFor(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
+ci::Limits CarRtInstances::CurrentLimits(bool uniform_paint) const {
+  const auto budget_class = uniform_paint ? gpu_class::GpuClass::kHigh : gpu_class::CurrentRtClass();
+  return ci::LimitsFor(budget_class, int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
 }
 
 bool CarRtInstances::RememberedOn() const {
@@ -38,8 +39,8 @@ car_model_rt::Mode CarRtInstances::ModelMode() const {
   return car_model_rt::Mode(std::clamp<int>(int(larecomp::settings::mcla_gpu_car_rt_cars_model.Get()), 0, 2));
 }
 
-uint32_t CarRtInstances::TrafficCars() const {
-  return car_model_parts::TrafficCarsFor(CurrentLimits(), int(larecomp::settings::mcla_gpu_car_rt_cars_traffic.Get()));
+uint32_t CarRtInstances::TrafficCars(const ci::Limits& limits) const {
+  return car_model_parts::TrafficCarsFor(limits, int(larecomp::settings::mcla_gpu_car_rt_cars_traffic.Get()));
 }
 
 bool CarRtInstances::WheelsOn() const {
@@ -100,7 +101,9 @@ const ci::List& CarRtInstances::Build(const car_frame::Frame& frame, const ci::L
     }
     ++list_.stats.player_instances;
     if (ref.has_bounds) {
-      ci::GrowBox(&list_.player_box, item.transform, ref);  // (a mesh without a box would add its origin alone: left out)
+      ci::GrowBox(&list_.player_box, item.transform, ref);
+    } else {
+      list_.player_box.complete = false;
     }
   }
   // The pair of mirror glasses (two or none): their rows are flagged, their boxes in the frame's view space are kept for the pass's rectangles.

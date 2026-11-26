@@ -12,6 +12,7 @@
 #include <rex/logging/log_category.h>
 
 #include "city_refl_setting.h"
+#include "car_rt_hit_rules.h"
 #include "device.h"
 #include "gpu_class.h"
 #include "live_text.h"
@@ -99,7 +100,7 @@ void CityRefl::Shutdown() {
 // the setting and the wants
 // ---------------------------------------------------------------------------
 
-void CityRefl::BeginFrame(bool pass_active) {
+void CityRefl::BeginFrame(bool pass_active, bool one_ray) {
   pass_active_ = false;
   glass_wanted_ = false;
   g_chrome_wanted.store(false, std::memory_order_relaxed);
@@ -110,12 +111,15 @@ void CityRefl::BeginFrame(bool pass_active) {
   // What the word comes to on this card, and whether the city's data stands (city_refl_setting.h: the pause menu's row reads the same decision). The pass is running here, so the ray traced car
   // reflection is on; the data's state is the scenes' (the pack's and the hit file's probes).
   namespace crs = city_refl_setting;
-  const crs::Decision decision = crs::Decide(gpu_class::Current(), gpu_class::CurrentRtTier(), Setting().Get(), true, crs::DataNow());
+  const auto decide = one_ray ? crs::DecidePaint : crs::Decide;
+  const crs::Decision decision = decide(gpu_class::Current(), gpu_class::CurrentRtTier(), Setting().Get(), true, crs::DataNow());
   NoteGate(decision);
   if (decision.wanted == cr::Level::kOff) {
     return;
   }
-  const cr::Cell cell = cr::WithReach(cr::CellFor(decision.wanted, gpu_class::CurrentRtClass()), float(larecomp::settings::mcla_gpu_city_refl_reach.Get()));
+  const cr::Cell base = one_ray ? cr::PaintCell(decision.wanted, car_rt_hit::kPaintCityReach)
+                                : cr::CellFor(decision.wanted, gpu_class::CurrentRtClass());
+  const cr::Cell cell = cr::WithReach(base, float(larecomp::settings::mcla_gpu_city_refl_reach.Get()));
   if (cell.level == cr::Level::kOff) {
     return;
   }

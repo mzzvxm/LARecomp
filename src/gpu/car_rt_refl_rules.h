@@ -306,6 +306,18 @@ inline Disc ConeDisc(int ray, float turns) {
 // slots.w bit 17 of the pass's push: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue), else the first version's gradient noise (hlsl/car_rt_refl_cs.hlsl kConeBlueFlag).
 inline constexpr uint32_t kConeBlueFlag = 1u << 17;
 inline constexpr uint32_t kFullConeFlag = 1u << 28;  // above car_rt_hit::PackPhaseRays's phase field
+inline constexpr uint32_t kSingleRayFlag = 1u << 29;
+
+// Four phases cover the two balanced rings once. The spatial offset staggers the
+// rings over neighbouring texels, and the turn changes once per four-phase block.
+constexpr uint32_t PaintConeIndex(uint32_t phase, uint32_t spatial_phase) {
+  return (phase + spatial_phase) & 3u;
+}
+constexpr uint32_t PaintConeTurn(uint32_t phase) { return phase >> 2; }
+
+// Select one lobe with its mixture weight as the probability. The selected ray
+// contributes its full premultiplied sample, including zero on a miss.
+constexpr bool PaintSamplesCoat(float roll, float share) { return roll < share; }
 
 constexpr bool SkipInnerCone(bool full_cone, int slot, bool found) {
   return !full_cone && slot == kFirstRays && !found;

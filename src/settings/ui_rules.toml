@@ -58,7 +58,11 @@ car_selfrefl_choice.cases = [
   { value = "off" },
 ]
 car_rt_runs = "api.car_rt && (d.car_selfrefl_choice == 'ray_traced' || (d.car_selfrefl_choice == 'auto' && auto_of('mcla_gpu_car_selfrefl') == 'on'))"
-rt_city_wanted = "resolved(s.mcla_gpu_rt_reflections) in ['high','ultra']"
+rt_city_wanted = "s.mcla_gpu_rt_reflections != 'off'"
+rt_city_choice.cases = [
+  { when = "d.rt_city_wanted", value = "on" },
+  { value = "off" },
+]
 renderer_choice = "live.renderer_choice ?? 'larecomp'"
 frame_gen_available = "live.frame_generation_choice_available ?? d.frame_gen_on"
 shown_per_rendered.cases = [
@@ -390,18 +394,17 @@ states = [
 ]
 
 [rows.PM_RxGpuRtCityRefl]
+reads = ["mcla_gpu_rt_reflections"]
+decode = "d.rt_city_choice"
+values = [
+  { id = "off", label = "OFF", writes = [{ setting = "mcla_gpu_rt_reflections", value = "off" }] },
+  { id = "on", label = "ON", writes = [{ setting = "mcla_gpu_rt_reflections", value = "on" }] },
+]
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT CITY" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT CITY" },
   { when = "!d.car_rt_runs", enabled = false, suffix = " (NEEDS CAR RT)", label = "RT CITY" },
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'unavailable'", enabled = false, suffix = " (NOT READY)", label = "RT CITY" },
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'building'", enabled = true, suffix = " (BUILDING DATA)", label = "RT CITY" },
-]
-
-[rows.PM_RxGpuRtCityRefl.value."auto"]
-auto_label = true
-label_rules = [
-  { when = "d.rt_field_class == 'low'", label = "AUTO (OFF)" },
 ]
 
 [rows.PM_RxGpuSideMirrors]

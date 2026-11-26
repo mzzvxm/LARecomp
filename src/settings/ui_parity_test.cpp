@@ -120,7 +120,6 @@ void Lighting(Fixture& f) {
         }
         f.Label("PM_RxGpuCarShadowMap", "auto", "mcla_gpu_car_shadow_map",
                 gc::AutoLabelOf(mcla::gpu::car_shadow_map::LevelName(mcla::gpu::car_shadow_map::AutoLevel(cls))));
-        f.Label("PM_RxGpuRtCityRefl", "auto", "mcla_gpu_rt_reflections", city::AutoLabel(cls, tier));
         constexpr std::string_view scale_rows[] = {
             "PM_RxLodCity", "PM_RxLodTraffic", "PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars",
         };
@@ -218,7 +217,7 @@ void Lighting(Fixture& f) {
                 f.F("live.city_data", data == city::Data::kBuilding ? "building" :
                     data == city::Data::kUnavailable ? "unavailable" : data == city::Data::kReady ? "ready" : "unknown");
                 f.S("mcla_gpu_rt_reflections", city_word);
-                const auto decision = city::Decide(cls, tier, city_word, car_rt, data);
+                const auto decision = city::DecidePaint(cls, tier, city_word, car_rt, data);
                 f.State("PM_RxGpuRtCityRefl", city::RowEnabled(decision.gate), city::RowSuffix(decision.gate),
                         decision.gate == city::Gate::kRuns ? "" : city::RowLabel(decision.gate));
             }

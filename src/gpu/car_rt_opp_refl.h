@@ -104,6 +104,7 @@ class CarRtOppRefl {
 
   // RT-PARKED-PAINT: what ParkedMarks needs of the frame (the history pass is about to draw: it has the lens it linearises the history with and the image's size, the opponents' pass has not run).
   struct MarkInput {
+    bool one_ray = false;
     const CarRtView* view = nullptr;
     uint32_t render_width = 0;                 // the picture's
     uint32_t render_height = 0;
