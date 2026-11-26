@@ -3,18 +3,16 @@
 // MCLA GPU renderer -- the probe update (CITY-RT M3, package G2 of perf/CITY-RT-M3.md sections 3.1 to 3.3, 6, 7)
 // ===========================================================================
 // G1 made the field (gi_field.h) and gave it the seams; this is what fills it with light. gi_update_rules.h is the specification of everything that needs no device (the ray set, the classification, the
-// blend, the scheduler, the governor, the budgets, the census), hlsl/gi_update_common.hlsli its twin, hlsl/gi_update_trace_cs.hlsl and hlsl/gi_update_blend_cs.hlsl the passes. This file is the Plume side:
+// blend, the scheduler, the budgets, the census), hlsl/gi_update_common.hlsli its twin, hlsl/gi_update_trace_cs.hlsl and hlsl/gi_update_blend_cs.hlsl the passes. This file is the Plume side:
 //
 //   WHEN      GiIntegration::OnResolve calls Record between GiField::RecordMaintenance and RecordFinish (gi_field.h THE FRAME, step 3), at the mid-scene depth copy, outside any render pass, in the list the top
 //             level of the frame was built in (CarRtScene::OnResolve and RtWorldFrame::OnTrigger have run: scene.cpp), and only where the hit data's pool stands (CityHitScene::ready(), a block committed): a
 //             hit with no data would be shaded black and the field would fade in as a field of zeros that has replaced the screen-space bounce light. GiIntegration::BeginFrame calls OnWant (before the field's own BeginFrame): the scene service
 //             is asked for the city's structures and its hit data at the setting's level, which is how the safe range the field needs exists at all.
-//   WHAT      a PLAN (the scheduler: the field's dirty probes, the stale ones, the round robin; gi_update_rules.h Scheduler), made into chunks of the layout's probes a frame (the ray buffer's capacity: G1's
+//   WHAT      a PLAN (dirty and stale probes plus a phased cohort; gi_update_rules.h Scheduler), made into chunks of the layout's probes a frame (the ray buffer's capacity: G1's
 //             update_reserve exactly; the warm-up after a cut is up to four chunks). For each chunk two compute dispatches: TRACE (one thread a ray: the closest hit in the city, shaded in the city hit
 //             library's GI mode, one ray record each) and BLEND (one 10 x 10 group a probe: classification, integration, the blend with adaptive hysteresis, the tile, the state word). The field's three textures
 //             are sampled by the trace (the field one frame old is the hit's second bounce) and written as storage images by the blend: a transition between the two (GENERAL <-> SHADER_READ) for each chunk.
-//   GOVERNOR  two timestamps around the update (a pool a frame slot, read back when the slot comes round: the GpuTiming rule) feed gi_update_rules.h Governor, which scales the later cascades' share of the
-//             budget between 0.5 and 1.5 against the layout's cap. Without timestamps the scale stays 1.
 //   CENSUS    the passes add to a counters buffer (never cleared); every kReadbackEveryFrames frames it is copied to a readback buffer and the difference is printed as the '[rt gi]' lines the chain's report
 //             reads (perf/city-rt-m3/scenes/README.md). The pass-timing labels are `rt gi trace` and `rt gi blend` (mcla_gpu_pass_timing).
 //
@@ -35,13 +33,14 @@
 //   G2-c  typed UAV loads of RGBA16F and RG16F in the blend (D3D12 TypedUAVLoadAdditionalFormats: every DX12 card of the strong tier has them; Vulkan reads with the format given to SPIR-V explicitly)
 //   G2-d  the units: the trace shades in the paint's units (params.units = 1), the field's, as gi_frame.h says; the apply's baseline and cap are in the same units (gi_apply.h G3h)
 //   G2-e  the shadow rays of the hit shading see the cars in the top level (the library's sun and lamp rays use every mask): a car's shadow enters the probes beside it
-//   G2-f  the stale boxes: a built sector marks the probes near it in the scheduler's own set (not the field's dirty sets: they drive the field's fade), CityRtScene::DrainBuilt
+//   G2-f  streaming marks nearby probes stale in the scheduler's set, while the field's dirty sets drive its fade (CityRtScene::DrainChanges).
 //   G2-h  the cost against M3 section 6 (trace 0.4 to 0.7 ms, blend 0.1 to 0.2 at HIGH on a 5080 at 4K): the first cost run decides every number marked COST PASS in gi_frame.h and gi_update_rules.h
 // ===========================================================================
 
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -85,7 +84,6 @@ class GiUpdate {
   void OnWant(gi::Level level);
   // The probe update (gi_integration.h UpdateFn): records the frame's chunks on `list`. Does nothing where THE IDENTITY (above) says.
   void Record(plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame);
-  // After FrameRing::Submit executed the slot's list (not after an abandoned one): the slot's timestamps are in.
 
   // What the update has done (for the tests of the order and the log).
   bool recorded_this_frame() const { return recorded_frame_ == frame_; }
@@ -100,12 +98,12 @@ class GiUpdate {
   // The push block both passes read (hlsl/gi_update_*_cs.hlsl GiuPush), 64 bytes.
   struct Push {
     uint32_t control[4];  // the probes in this chunk, the rays a probe, the chunk's first probe in the list, the frame's serial
-    uint32_t flags[4];    // the counters on, 0, 0, 0
+    uint32_t flags[4];    // counters on, scheduling on, steady phased visits, reserved
     float tune[4];        // the bounce weight, the rays' reach, the hysteresis, the jump hysteresis
     float tune2[4];       // the tangent of a ray's cone's half angle, 0, 0, 0
   };
   static_assert(sizeof(Push) == gi_update::kPushBytes, "the push block is 64 bytes (hlsl/gi_update_trace_cs.hlsl GiuPush)");
-  // Per frame slot: the rows' and the probe list's upload buffers, the pass set naming them with the ray buffer, the textures, the state and the counters, and the timestamps.
+  // Per frame slot: upload buffers for the rows and probe list, and the pass set binding them with the rays, textures, state and counters.
   struct Slot {
     std::unique_ptr<plume::RenderBuffer> rows;
     std::unique_ptr<plume::RenderBuffer> list;
@@ -123,8 +121,8 @@ class GiUpdate {
   uint64_t SetKey() const;
   void RetireSets();
   void ReleaseBuffers();
-  void DrainBuiltSectors();
-  void ProcessReadback(uint64_t frame, uint64_t generation);
+  void DrainSectorChanges(bool scheduled);
+  void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t frames, uint32_t field_generation);
   void LogInterval(uint64_t frame, const gi_update::StatSummary& stats, uint32_t frames);
 
   Device* device_ = nullptr;
@@ -171,6 +169,10 @@ class GiUpdate {
   uint64_t next_readback_ = 0;
   double last_camera_[3] = {0, 0, 0};
   bool have_camera_ = false;
+  gi_update::ViewMotion view_motion_;
+  std::optional<gi_update::Lighting> lighting_;
+  std::vector<gi_update::ProbeLight> previous_lights_;
+  std::vector<gi_update::ProbeLight> current_lights_;
 
   // The log and the totals.
   bool first_logged_ = false;
@@ -178,12 +180,10 @@ class GiUpdate {
   uint64_t frames_run_ = 0;
   uint64_t rays_planned_ = 0;
   uint64_t cuts_ = 0;
-  std::array<uint64_t, gi::kMaxCascades> interval_probes_ = {};
-  uint64_t interval_frames_ = 0;
-  uint64_t interval_planned_rays_ = 0;
+  uint32_t interval_frames_ = 0;
   uint32_t no_scene_ = 0, no_world_ = 0, no_hit_data_ = 0, not_ready_ = 0, no_resources_ = 0, not_usable_ = 0;
   uint64_t stale_marked_ = 0;
-  uint64_t sectors_built_seen_ = 0;
+  uint64_t sector_changes_seen_ = 0;
 };
 
 }  // namespace mcla::gpu

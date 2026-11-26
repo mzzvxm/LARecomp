@@ -16,11 +16,8 @@
 //                           none for a probe with no history (new, or back from being inside geometry).
 //   THE CLASSIFICATION      a probe is INSIDE geometry (switched off: weight 0, no light) when more than kInsideBackShare of its rays hit back faces (the geometric normal against the ray) or its nearest hit is
 //                           nearer than kInsideNearestSpacings of a spacing. It is traced again at one visit in eight (SkipInside) so that streaming geometry is noticed. CHECK C1: the pack's winding.
-//   THE SCHEDULER           Scheduler: each frame, per cascade, the probes the field's dirty set names first (new ones the window's move exposed, ones a built sector or a cut made stale), nearest the camera
-//                           first, then a round robin over the cascade's slots so that every probe is traced once in `interval_frames` (gi_frame.h Budget); the budget of a cascade is its ProbesPerFrame times
-//                           the field's warm-up scale (4x for 12 frames after a cut) and, for the cascades after the finest, the governor's scale. A probe beyond M1's safe range is not traced (its weight
-//                           is 0 and it stays dirty). The finest cascade is never scaled down: "never below the minimum that keeps the near cascade fresh".
-//   THE GOVERNOR            Governor: an EWMA of the update's GPU time against the cell's cap scales the later cascades' budget between gi::kGovernorMin and gi::kGovernorMax.
+//   THE SCHEDULER           New and stale probes go first, nearest to the camera. Fixed cohorts reserve visits for every in-range slot, even while other probes are dirty.
+//                           The GPU can skip alternate visits for settled far probes, and retests inside probes on a separate, bounded phase.
 //   THE BUDGETS             BudgetOf(fit): rays a probe, the chunk (the probes one pass of the two holds: the ray buffer is sized for the layout's rays a frame, G1's update_reserve; a larger plan, the
 //                           warm-up's, runs in several chunks), the ray buffer's bytes, the cap of the governor, per (tier, level) cell through the layout (gi::LayoutFor).
 //   THE CENSUS              the counters' words the two passes add to (Stats), their decode (DecodeStats) and the text of the four '[rt gi]' lines (perf/city-rt-m3/scenes/README.md).
@@ -78,7 +75,10 @@ inline constexpr uint32_t kRayHit = 1;            // GIU_RAY_*: the flags of a r
 inline constexpr uint32_t kRayBack = 2;
 inline constexpr uint32_t kRayLod = 4;
 inline constexpr uint32_t kRaySkipped = 8;
+inline constexpr uint32_t kRaySleeping = 16;
 inline constexpr uint32_t kProbeDirty = 1;        // GIU_PROBE_DIRTY: the probe word's flags
+inline constexpr uint32_t kProbeMaySleep = 2;
+inline constexpr uint32_t kProbeRetestInside = 4;
 inline constexpr uint32_t kProbeFlagsShift = 2;
 inline constexpr uint32_t kProbeIndexShift = 6;
 
@@ -148,6 +148,90 @@ constexpr uint32_t ProbeWord(uint32_t cascade, uint32_t flags, uint32_t index) {
 constexpr uint32_t ProbeCascade(uint32_t word) { return word & 3u; }
 constexpr uint32_t ProbeFlags(uint32_t word) { return (word >> kProbeFlagsShift) & 15u; }
 constexpr uint32_t ProbeIndex(uint32_t word) { return word >> kProbeIndexShift; }
+
+inline constexpr uint32_t kStableShift = 28;
+inline constexpr uint32_t kStableVisits = 4;
+inline constexpr uint32_t kInsidePeriod = 4;  // in visits, each cascade has its own visit interval
+
+constexpr uint32_t StableVisits(uint32_t state) { return state >> kStableShift; }
+inline uint32_t NextStableVisits(uint32_t state, bool reset, float change, float error, float ray_mean) {
+  if (reset || !(change <= 0.08f && error <= 0.15f * std::max(ray_mean, kJumpFloor))) return 0;
+  return std::min(StableVisits(state) + 1u, kStableVisits);
+}
+
+constexpr uint32_t ScheduledSkip(bool inside, uint32_t state, uint32_t flags) {
+  if ((flags & kProbeDirty) != 0) return 0;
+  if (inside) return (flags & kProbeRetestInside) == 0 ? kRaySkipped : 0u;
+  return (flags & kProbeMaySleep) != 0 && StableVisits(state) >= kStableVisits ? kRaySleeping : 0u;
+}
+
+// Use the same threshold relative to the last accepted light, so a slow change
+// accumulates until it wakes the field. The direction and camera axes are unit vectors.
+struct Lighting {
+  gi::Vec3 sun, ambient_up, ambient_down, to_sun;
+  float street = 0, fill = 0;
+  uint32_t weather = 0;
+};
+inline bool ColourChanged(gi::Vec3 a, gi::Vec3 b) {
+  const float scale = std::max({a.x, a.y, a.z, b.x, b.y, b.z, 0.05f});
+  const gi::Vec3 step = a - b;
+  return std::max({std::abs(step.x), std::abs(step.y), std::abs(step.z)}) > 0.10f * scale;
+}
+inline bool LightingChanged(const Lighting& a, const Lighting& b) {
+  const gi::Vec3 sun_step = a.to_sun - b.to_sun;
+  return a.weather != b.weather || std::abs(a.street - b.street) > 0.05f || std::abs(a.fill - b.fill) > 0.05f ||
+         gi::Dot(sun_step, sun_step) > 0.00274f || ColourChanged(a.sun, b.sun) ||
+         ColourChanged(a.ambient_up, b.ambient_up) || ColourChanged(a.ambient_down, b.ambient_down);
+}
+inline bool CameraMoving(gi::Vec3 step, gi::Vec3 forward, gi::Vec3 previous_forward) {
+  return gi::Dot(step, step) > 0.35f * 0.35f || gi::Dot(forward, previous_forward) < 0.99939f;  // 2 degrees
+}
+
+class ViewMotion {
+ public:
+  bool Observe(gi::Vec3 camera, gi::Vec3 forward) {
+    const bool moved = have_pose_ && CameraMoving(camera - camera_, forward, forward_);
+    if (!have_pose_ || moved) {
+      camera_ = camera;
+      forward_ = forward;
+      have_pose_ = true;
+    }
+    if (moved) awake_left_ = 4;
+    if (awake_left_ == 0) return false;
+    --awake_left_;
+    return true;
+  }
+
+ private:
+  gi::Vec3 camera_, forward_;
+  uint32_t awake_left_ = 0;
+  bool have_pose_ = false;
+};
+
+struct ProbeLight {
+  uint64_t key = 0;
+  gi::Vec3 centre;
+  float reach = 0.0f;
+  bool operator<(const ProbeLight& other) const { return key < other.key; }
+};
+
+// Both inputs are sorted by the light's world-space signature. Added and
+// removed light each wake their own footprint, independently of list order.
+template <class Fn>
+void VisitChangedLights(const std::vector<ProbeLight>& previous, const std::vector<ProbeLight>& current, Fn&& wake) {
+  auto old = previous.begin();
+  auto next = current.begin();
+  while (old != previous.end() && next != current.end()) {
+    if (*old < *next) wake(*old++);
+    else if (*next < *old) wake(*next++);
+    else {
+      ++old;
+      ++next;
+    }
+  }
+  while (old != previous.end()) wake(*old++);
+  while (next != current.end()) wake(*next++);
+}
 
 // A float as an IEEE half, to nearest even; and back. Overflow goes to infinity (the records never hold more than kMaxRadiance).
 inline uint32_t FloatToHalf(float f) {
@@ -276,12 +360,12 @@ inline uint32_t HistBin(float mean) {
 inline float HistBinUpper(uint32_t bin) { return std::exp2(float(bin + 1) * 0.5f - 10.0f); }
 
 // What the blend does to the state word (the twin of the shader's last lines, see hlsl/gi_update_blend_cs.hlsl): a probe that is inside keeps its count and its new bit; one that is not has its count raised
-// and the new bit cleared; the inside bit and the back face share are this update's; the frame's low 14 bits go in the reserved bits.
-constexpr uint32_t StateAfterBlend(uint32_t state, bool inside, uint32_t back_byte, uint32_t frame) {
+// and the new bit cleared. The remaining bits hold the frame stamp and the streak of settled visits.
+constexpr uint32_t StateAfterBlend(uint32_t state, bool inside, uint32_t back_byte, uint32_t frame, uint32_t stable = 0) {
   const uint32_t kept = state & ~(gi_field::kStateInside | gi_field::kStateBackMask);
   uint32_t next = inside ? kept : gi_field::StateAfterUpdate(kept);
   next = next | (inside ? gi_field::kStateInside : 0u) | (back_byte << gi_field::kStateBackShift);
-  return (next & 0x3FFFFu) | ((frame & 0x3FFFu) << 18u);
+  return (next & 0x3FFFFu) | ((frame & 0x3FFu) << 18u) | (stable << kStableShift);
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +431,8 @@ struct PlanInputs {
   float governor_scale = 1.0f;   // the governor's, for the cascades after the finest
   float warmup_scale = 1.0f;     // gi_field_rules.h FieldState::BudgetScale
   bool reuse_coarse = false;
+  bool phased = false;
+  bool camera_moving = false;
 };
 
 struct Plan {
@@ -364,6 +450,18 @@ inline uint32_t CascadeShare(const gi::CascadeSpec& spec, float scale) {
   return std::min<uint32_t>(std::max<uint32_t>(uint32_t(n), 1u), spec.dims.Probes());
 }
 
+// Distinct, equally sized cohorts for the shipped layouts. Permuting the lanes
+// within each block scatters visits in space while preserving slot identity.
+constexpr uint32_t CohortIndex(uint32_t block, uint32_t phase, uint32_t period) {
+  return block * period + (phase + Hash(block)) % period;
+}
+
+constexpr uint32_t VisitFlags(uint64_t cycle, uint32_t index, bool distant) {
+  const uint32_t visit = uint32_t(cycle) + Hash(index);
+  return (distant && (visit & 1u) != 0 ? kProbeMaySleep : 0u) |
+         ((visit & (kInsidePeriod - 1u)) == 0 ? kProbeRetestInside : 0u);
+}
+
 class Scheduler {
  public:
   void Start(const gi::Budget& budget) {
@@ -373,6 +471,7 @@ class Scheduler {
       stale_[c].Resize(c < budget.cascade_count ? budget.cascade[c].dims.Probes() : 0);
     }
     steps_ = 0;
+    phase_ = 0;
   }
   uint32_t cursor(uint32_t c) const { return c < gi::kMaxCascades ? cursor_[c] : 0; }
   uint64_t steps() const { return steps_; }
@@ -407,6 +506,9 @@ class Scheduler {
   Plan Make(gi_field::FieldState& state, const PlanInputs& in, uint32_t max_probes) {
     Plan plan;
     if (!state.running() || budget_.cascade_count == 0) return plan;
+    // The upload buffer holds four nominal shares. The scheduled path can
+    // issue at most two (one for dirty work and one for the cohort).
+    if (in.phased && in.warmup_scale == 1.0f && max_probes >= 2u * BudgetOf(budget_).probes_per_frame) return MakePhased(state, in);
     uint32_t left = max_probes;
     for (uint32_t c = 0; c < budget_.cascade_count && left > 0; ++c) {
       const gi::CascadeSpec& spec = budget_.cascade[c];
@@ -426,6 +528,7 @@ class Scheduler {
       };
       const auto take = [&](uint32_t index, uint32_t flags) {
         taken[index >> 6] |= 1ull << (index & 63);
+        if (in.phased && (flags & kProbeDirty) != 0) stale_[c].Clear(index);
         plan.words.push_back(ProbeWord(c, flags, index));
         ++chosen;
       };
@@ -482,10 +585,87 @@ class Scheduler {
   }
 
  private:
+  Plan MakePhased(gi_field::FieldState& state, const PlanInputs& in) {
+    Plan plan;
+    const gi::Vec3 camera = {float(in.camera[0]), float(in.camera[1]), float(in.camera[2])};
+    for (uint32_t c = 0; c < budget_.cascade_count; ++c) {
+      const gi::CascadeSpec& spec = budget_.cascade[c];
+      const gi::Dims& dims = spec.dims;
+      const gi::Coord origin = state.origin(c);
+      const uint32_t priority_limit = gi::ProbesPerFrame(spec);
+      const uint32_t period = spec.interval_frames * (in.reuse_coarse && c != 0 ? 2u : 1u);
+      const uint32_t phase = uint32_t(phase_ % period);
+      const uint64_t cycle = phase_ / period;
+      const auto position = [&](uint32_t index) {
+        const gi::Position p = gi::ProbeWorld(gi_field::CoordOfIndex(origin, dims, index), spec.spacing_m);
+        return gi::Vec3{float(p.x), float(p.y), float(p.z)};
+      };
+      const auto take = [&](uint32_t index, uint32_t regular_flags) {
+        const bool dirty = state.NoteTraced(c, index);
+        const bool stale = stale_[c].Clear(index);
+        plan.dirty_taken[c] += dirty;
+        plan.stale_taken[c] += !dirty && stale;
+        plan.words.push_back(ProbeWord(c, dirty || stale ? kProbeDirty : regular_flags, index));
+        ++plan.per_cascade[c];
+      };
+      const auto& dirty = state.dirty(c);
+      gi_field::DirtySet taken;
+      if (dirty.Count() != 0 || stale_[c].Count() != 0) {
+        taken.Resize(dims.Probes());
+        // Collect only in-range candidates. Use the slot as the final ordering key.
+        using Key = std::pair<float, uint32_t>;
+        std::vector<Key> priority;
+        priority.reserve(dirty.Count() + stale_[c].Count());
+        const auto add = [&](uint32_t index, bool is_dirty) {
+          const gi::Vec3 p = position(index);
+          if (gi_field::ProbeInRange(p, camera, in.safe_range_m)) {
+            const gi::Vec3 step = p - camera;
+            priority.emplace_back(gi::Dot(step, step), index);
+          } else {
+            plan.left_dirty_out_of_range += is_dirty;
+          }
+        };
+        const auto sort_and_take = [&] {
+          const size_t count = std::min<size_t>(priority.size(), priority_limit - plan.per_cascade[c]);
+          std::partial_sort(priority.begin(), priority.begin() + count, priority.end());
+          for (size_t i = 0; i < count; ++i) {
+            const uint32_t index = priority[i].second;
+            take(index, 0);
+            taken.Mark(index);
+          }
+          priority.clear();
+        };
+        dirty.ForEach([&](uint32_t index) { add(index, true); });
+        sort_and_take();
+        if (plan.per_cascade[c] < priority_limit) {
+          stale_[c].ForEach([&](uint32_t index) {
+            if (!taken.Test(index)) add(index, false);
+          });
+          sort_and_take();
+        }
+      }
+      // The extra cohort is bounded by the nominal share. It cannot be consumed
+      // by dirty work, out-of-range slots or inside skips on the GPU.
+      for (uint32_t block = 0; block * period < dims.Probes(); ++block) {
+        const uint32_t index = CohortIndex(block, phase, period);
+        if (index >= dims.Probes() || taken.Test(index)) continue;
+        const gi::Vec3 p = position(index);
+        if (!gi_field::ProbeInRange(p, camera, in.safe_range_m)) continue;
+        const gi::Vec3 step = p - camera;
+        const float near_m = 8.0f * spec.spacing_m;
+        const bool distant = !in.camera_moving && gi::Dot(step, step) > near_m * near_m;
+        take(index, VisitFlags(cycle, index, distant));
+      }
+    }
+    ++phase_;
+    return plan;
+  }
+
   gi::Budget budget_;
   std::array<uint32_t, gi::kMaxCascades> cursor_ = {};
   std::array<gi_field::DirtySet, gi::kMaxCascades> stale_ = {};
   uint64_t steps_ = 0;
+  uint64_t phase_ = 0;
 };
 
 // The chunks of a plan: [first, first + count) of its words, `chunk_probes` at most each.
@@ -496,7 +676,7 @@ struct Chunk {
 
 // Streaming, relighting and warm-up keep the original angular coverage.
 constexpr uint32_t RefreshRays(uint32_t word, uint32_t rays, float warmup, bool enabled) {
-  return enabled && rays == 64u && warmup == 1.0f && ProbeFlags(word) == 0u ? 32u : rays;
+  return enabled && rays == 64u && warmup == 1.0f && (ProbeFlags(word) & kProbeDirty) == 0u ? 32u : rays;
 }
 inline std::vector<Chunk> ChunksOf(uint32_t total, uint32_t chunk_probes) {
   std::vector<Chunk> out;
@@ -572,15 +752,18 @@ inline constexpr uint32_t kStatBlended = 13;   // probes blended (not inside)
 inline constexpr uint32_t kStatLumaSum = 14;   // the sum of the blended probes' mean irradiance luminance x kFixedScale
 inline constexpr uint32_t kStatSkySum = 15;    // ... of their mean sky visibility
 inline constexpr uint32_t kStatSkipped = 16;   // inside probes the trace did not look at
+inline constexpr uint32_t kStatSleeping = 17;  // settled far probes the trace did not look at
 inline constexpr uint32_t kStatHist0 = 18;     // 18..49: the histogram of the blended probes' mean luminance (HistBin)
 inline constexpr uint32_t kStatWords = 50;
 inline constexpr uint64_t kStatBytes = 256;    // the buffer (kStatWords x 4 = 200 bytes, rounded up)
 static_assert(kStatHist0 + kHistBins == kStatWords && kStatWords * 4 <= kStatBytes, "the counters' words");
 
 struct StatSummary {
+  std::array<uint32_t, gi::kMaxCascades> probes = {};
   uint64_t rays = 0;
   double hit_share = 0, escaped_share = 0, back_share = 0, lod_share = 0;  // of the rays, 0..1
   uint64_t probes_blended = 0, probes_inside = 0, probes_skipped = 0, probes_relit = 0;
+  uint64_t probes_sleeping = 0;
   double changed_share = 0, converged_share = 0;                            // of the blended probes
   double mean_irradiance = 0, p5 = 0, p95 = 0, mean_sky = 0;
 };
@@ -592,6 +775,7 @@ inline void StatDelta(const uint32_t now[kStatWords], const uint32_t last[kStatW
 
 inline StatSummary DecodeStats(const uint32_t d[kStatWords]) {
   StatSummary s;
+  for (uint32_t c = 0; c < gi::kMaxCascades; ++c) s.probes[c] = d[kStatCascade0 + c];
   s.rays = d[kStatRays];
   if (s.rays > 0) {
     s.hit_share = double(d[kStatHit]) / double(s.rays);
@@ -602,6 +786,7 @@ inline StatSummary DecodeStats(const uint32_t d[kStatWords]) {
   s.probes_blended = d[kStatBlended];
   s.probes_inside = d[kStatInside];
   s.probes_skipped = d[kStatSkipped];
+  s.probes_sleeping = d[kStatSleeping];
   s.probes_relit = d[kStatRelit];
   if (s.probes_blended > 0) {
     s.changed_share = double(d[kStatChanged]) / double(s.probes_blended);
@@ -634,10 +819,10 @@ inline StatSummary DecodeStats(const uint32_t d[kStatWords]) {
 struct IntervalInfo {
   uint64_t frame = 0;
   uint32_t frames = 0;                                        // the interval's length
-  std::array<uint64_t, gi::kMaxCascades> probes = {};         // planned in each cascade over the interval
+  std::array<uint64_t, gi::kMaxCascades> probes = {};         // classified in each cascade over the interval
   uint32_t cascades = 0;
   uint64_t cuts = 0;
-  float budget_scale = 1.0f;                                  // the governor's scale now
+  float budget_scale = 1.0f;                                  // the steady budget scale
   double finest_dirty_share = 0;                              // 0..1
 };
 

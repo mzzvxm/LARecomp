@@ -310,6 +310,7 @@ void CityRtScene::Release(uint32_t sector, city_rt::Detail detail) {
     hit_->Evict(sector, detail == city_rt::Detail::kLod);  // the row is cleared now; the range comes back when the GPU is done with the frames in flight
   }
   if (s.structure || s.buffer) {
+    NoteSectorChange(sector, true);
     hitch::Note(hitch::Event::kCityEvict, 0.0, s.bytes);
     structure_bytes_ -= std::min(structure_bytes_, s.bytes);
     counts_.triangles -= std::min<uint64_t>(counts_.triangles, s.triangles);
@@ -613,21 +614,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     structure_bytes_ += j.size;
     counts_.triangles += target.triangles;
     ++counts_.builds;
-    {
-      // the probe update's log (DrainBuilt): the sector's box in the world
-      const citypack::SectorRecord& built_rec = pack_.sector(s.sector);
-      if (built_log_.size() < kBuiltLogMax) {
-        BuiltBox box;
-        for (int a = 0; a < 3; ++a) {
-          box.lo[a] = double(built_rec.aabb_min[a]);
-          box.hi[a] = double(built_rec.aabb_max[a]);
-        }
-        box.hi_detail = s.detail == city_rt::Detail::kHi;
-        built_log_.push_back(box);
-      } else {
-        ++built_dropped_;
-      }
-    }
+    NoteSectorChange(s.sector, false);
     counts_.build_triangles += target.triangles;
     city_rt::SectorState& st = states_[s.sector];
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kResident;
@@ -765,15 +752,30 @@ float CityRtScene::SafeRange(float game_hi_radius) const {
   return city_rt::SafeReceiverRange(in, sectors_, states_, game_hi_radius);
 }
 
-void CityRtScene::DrainBuilt(std::vector<BuiltBox>* out, uint32_t* dropped) {
+void CityRtScene::NoteSectorChange(uint32_t sector, bool evicted) {
+  if (!pack_.is_open() || changed_sectors_.size() >= kChangeLogMax) {
+    ++dropped_changes_;
+    return;
+  }
+  const citypack::SectorRecord& rec = pack_.sector(sector);
+  ChangedBox box;
+  box.evicted = evicted;
+  for (int axis = 0; axis < 3; ++axis) {
+    box.lo[axis] = rec.aabb_min[axis];
+    box.hi[axis] = rec.aabb_max[axis];
+  }
+  changed_sectors_.push_back(box);
+}
+
+void CityRtScene::DrainChanges(std::vector<ChangedBox>* out, uint32_t* dropped) {
   if (out != nullptr) {
-    out->insert(out->end(), built_log_.begin(), built_log_.end());
+    out->assign(changed_sectors_.begin(), changed_sectors_.end());
   }
   if (dropped != nullptr) {
-    *dropped = built_dropped_;
+    *dropped = dropped_changes_;
   }
-  built_log_.clear();
-  built_dropped_ = 0;
+  changed_sectors_.clear();
+  dropped_changes_ = 0;
 }
 
 CityRtScene::Stats CityRtScene::stats() const {

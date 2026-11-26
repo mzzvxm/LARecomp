@@ -35,8 +35,13 @@
 #define GIU_RAY_BACK 2u
 #define GIU_RAY_LOD 4u
 #define GIU_RAY_SKIPPED 8u              // record 0 of a probe the trace left alone (an inside probe that is not re-tested this visit): the blend does nothing for it
+#define GIU_RAY_SLEEPING 16u            // a settled far probe whose optional visit was skipped
 
 #define GIU_PROBE_DIRTY 1u              // probe word flags: traced because its data is stale or its light changed (not because it is new): the jump hysteresis
+#define GIU_PROBE_MAY_SLEEP 2u
+#define GIU_PROBE_RETEST_INSIDE 4u
+#define GIU_STABLE_SHIFT 28u
+#define GIU_STABLE_VISITS 4u
 #define GIU_PROBE_WORD_FLAGS_SHIFT 2u
 #define GIU_PROBE_WORD_INDEX_SHIFT 6u
 
@@ -329,6 +334,19 @@ uint GiuBackByte(uint backCount, uint rayCount)
 bool GiuSkipInside(bool inside, uint frame, uint probeNumber)
 {
     return inside && (GiuHash(frame * 0x9E3779B1u + probeNumber) & GIU_INSIDE_RETEST_MASK) != 0u;
+}
+
+uint GiuScheduledSkip(bool inside, uint state, uint flags)
+{
+    if ((flags & GIU_PROBE_DIRTY) != 0u) return 0u;
+    if (inside) return (flags & GIU_PROBE_RETEST_INSIDE) == 0u ? GIU_RAY_SKIPPED : 0u;
+    return (flags & GIU_PROBE_MAY_SLEEP) != 0u && (state >> GIU_STABLE_SHIFT) >= GIU_STABLE_VISITS ? GIU_RAY_SLEEPING : 0u;
+}
+
+uint GiuNextStableVisits(uint state, bool reset, float change, float error, float rayMean)
+{
+    if (reset || !(change <= 0.08f && error <= 0.15f * max(rayMean, GIU_JUMP_FLOOR))) return 0u;
+    return min((state >> GIU_STABLE_SHIFT) + 1u, GIU_STABLE_VISITS);
 }
 
 // ---- the blend ---------------------------------------------------------------------------------------------------------------------------------------

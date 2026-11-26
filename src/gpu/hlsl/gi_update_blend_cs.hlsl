@@ -85,17 +85,23 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
     const uint t = thread.y * 10u + thread.x;
     const uint rays = min(max(g_push.control.y, 1u), 64u);
     const uint slot = group.y * GIU_GROUPS_X + group.x;
-    const bool inChunk = slot < g_push.control.x;
-    const uint word = inChunk ? g_probes.Load((g_push.control.z + slot) * 4u) : 0u;
+    if (slot >= g_push.control.x) return;
+    const uint4 first = g_rays.Load4((slot * rays) * GIU_RAY_BYTES);
+    const uint skipped = (first.y >> 16u) & (GIU_RAY_SKIPPED | GIU_RAY_SLEEPING);
+    // All lanes in this group work on the same probe. Skips need no tile work
+    // or group barriers.
+    if (skipped != 0u)
+    {
+        if (t == 0u && g_push.flags.x != 0u) Count(skipped == GIU_RAY_SLEEPING ? 17u : 16u, 1u);
+        return;
+    }
+    const uint word = g_probes.Load((g_push.control.z + slot) * 4u);
     const uint cascade = GiuProbeCascade(word);
     const uint index = GiuProbeIndex(word);
     const uint frame = g_push.control.w;
     const GiCascade k = GiLoadCascade(cascade);
     const uint stateAt = StateBase(cascade) + index;
-    const uint state = inChunk ? g_state.Load(stateAt * 4u) : 0u;
-    const uint4 first = inChunk ? g_rays.Load4((slot * rays) * GIU_RAY_BYTES) : uint4(0u, 0u, 0u, 0u);
-    const bool skipped = (GiuUnpackRay(first).flags & GIU_RAY_SKIPPED) != 0u;
-    const bool active = inChunk && !skipped;
+    const uint state = g_state.Load(stateAt * 4u);
 
     if (t < 9u)
     {
@@ -104,7 +110,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
     GroupMemoryBarrierWithGroupSync();
 
     // the rays: a thread a ray (up to 64 of the 100)
-    if (active && t < rays)
+    if (t < rays)
     {
         const GiuRay r = GiuUnpackRay(g_rays.Load4((slot * rays + t) * GIU_RAY_BYTES));
         const bool hit = (r.flags & GIU_RAY_HIT) != 0u;
@@ -141,24 +147,14 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
     const uint2 tile = uint2((sx + k.dimX * sy) * GI_PROBE_TILE, k.atlasY + sz * GI_PROBE_TILE);
     const uint2 own = tile + uint2(thread.x, thread.y);
     const uint2 from = tile + uint2(src.x, src.y);
-    float4 oldIrradiance = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    float2 oldMoments = float2(0.0f, 0.0f);
-    GiuTexel texel;
-    texel.irradiance = float3(0.0f, 0.0f, 0.0f);
-    texel.sky = 0.0f;
-    texel.meanDistance = k.maxDistance;
-    texel.meanDistanceSq = k.maxDistance * k.maxDistance;
-    if (active)
+    const float4 oldIrradiance = g_irradiance[from];
+    const float2 oldMoments = g_moments[from];
+    const GiuTexel texel = GiuIntegrateTexel(GiuTexelDirection(src.x, src.y), rays, k.maxDistance);
+    if (interior)
     {
-        oldIrradiance = g_irradiance[from];
-        oldMoments = g_moments[from];
-        texel = GiuIntegrateTexel(GiuTexelDirection(src.x, src.y), rays, k.maxDistance);
-        if (interior)
-        {
-            InterlockedAdd(gsCount[4], (uint)(GiuLuma(float3(oldIrradiance.x, oldIrradiance.y, oldIrradiance.z)) * GIU_FIXED_SCALE + 0.5f));
-            InterlockedAdd(gsCount[5], (uint)(GiuLuma(texel.irradiance) * GIU_FIXED_SCALE + 0.5f));
-            InterlockedAdd(gsCount[6], (uint)(texel.sky * GIU_FIXED_SCALE + 0.5f));
-        }
+        InterlockedAdd(gsCount[4], (uint)(GiuLuma(float3(oldIrradiance.x, oldIrradiance.y, oldIrradiance.z)) * GIU_FIXED_SCALE + 0.5f));
+        InterlockedAdd(gsCount[5], (uint)(GiuLuma(texel.irradiance) * GIU_FIXED_SCALE + 0.5f));
+        InterlockedAdd(gsCount[6], (uint)(texel.sky * GIU_FIXED_SCALE + 0.5f));
     }
     GroupMemoryBarrierWithGroupSync();
 
@@ -173,7 +169,7 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
     const bool isNew = GifStateNew(state) || updates == 0u || GifStateInside(state);
     const bool dirty = (GiuProbeFlags(word) & GIU_PROBE_DIRTY) != 0u;
     const float h = GiuHysteresis(updates, isNew, dirty, jumped, g_push.tune.z, g_push.tune.w);
-    if (active && !inside)
+    if (!inside)
     {
         const float3 blended = GiuBlend3(float3(oldIrradiance.x, oldIrradiance.y, oldIrradiance.z), texel.irradiance, h);
         const float sky = GiuBlend1(oldIrradiance.w, texel.sky, h);
@@ -181,14 +177,18 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
         g_irradiance[own] = float4(blended.x, blended.y, blended.z, sky);
         g_moments[own] = moments;
     }
-    if (t == 0u && active)
+    if (t == 0u)
     {
-        // the state word: the count rises and the new bit goes only for a probe that was blended; the inside bit and the back face share are this update's; the frame's low bits are the last update's
+        // The count rises for a blended probe. Store the latest classification,
+        // update frame and consecutive low-variability visits.
         const uint back = GiuBackByte(gsCount[0], rays);
         const uint kept = state & ~(GIF_STATE_INSIDE | GIF_STATE_BACK_MASK);
         uint next = inside ? kept : GifStateAfterUpdate(kept);
         next = next | (inside ? GIF_STATE_INSIDE : 0u) | (back << GIF_STATE_BACK_SHIFT);
-        next = (next & 0x3FFFFu) | ((frame & 0x3FFFu) << 18u);
+        const float rayMean = (float)gsCount[7] / (GIU_RAY_FIXED * (float)rays);
+        const bool reset = g_push.flags.y == 0u || inside || isNew || dirty;
+        const uint stable = GiuNextStableVisits(state, reset, change, standardError, rayMean);
+        next = (next & 0x3FFFFu) | ((frame & 0x3FFu) << 18u) | (stable << GIU_STABLE_SHIFT);
         g_state.Store(stateAt * 4u, next);
         if (g_push.flags.x != 0u)
         {
@@ -205,9 +205,5 @@ void main(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID)
                 Count(18u + GiuHistBin(newMean), 1u);
             }
         }
-    }
-    else if (t == 0u && inChunk && skipped && g_push.flags.x != 0u)
-    {
-        Count(16u, 1u);
     }
 }

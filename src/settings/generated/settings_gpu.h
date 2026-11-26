@@ -969,6 +969,7 @@ class GPUSettings final : public rex::SettingOwner {
     "0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
   REX_SETTING(bool, mcla_gpu_rt_gi_reuse_coarse_probes, true, "Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_gi_field_schedule, true, "Reuse settled distant RT bounce probes between scheduled refreshes.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rt_gi_short_refresh_rays, true, "Debug: Use fewer rays to refresh established RT bounce probes. Keep full coverage during warm-up and streaming. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rt_gi_quarter_lookup, true, "Debug: Sample the RT bounce field at quarter size in exterior 4K views and use the full field lookup at unsupported edges. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rt_gi_fast_lookup_apply, true, "Debug: Use the dominant RT bounce probe where it accounts for almost all the light and reuse matching upsample guides. Live.", rex::kDebugOnly);
@@ -2285,6 +2286,7 @@ inline auto& mcla_gpu_rt_gi_view = g_gpu.mcla_gpu_rt_gi_view;
 inline auto& mcla_gpu_rt_gi_daylight_recovery = g_gpu.mcla_gpu_rt_gi_daylight_recovery;
 inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
 inline auto& mcla_gpu_rt_gi_reuse_coarse_probes = g_gpu.mcla_gpu_rt_gi_reuse_coarse_probes;
+inline auto& mcla_gpu_rt_gi_field_schedule = g_gpu.mcla_gpu_rt_gi_field_schedule;
 inline auto& mcla_gpu_rt_gi_short_refresh_rays = g_gpu.mcla_gpu_rt_gi_short_refresh_rays;
 inline auto& mcla_gpu_rt_gi_quarter_lookup = g_gpu.mcla_gpu_rt_gi_quarter_lookup;
 inline auto& mcla_gpu_rt_gi_fast_lookup_apply = g_gpu.mcla_gpu_rt_gi_fast_lookup_apply;

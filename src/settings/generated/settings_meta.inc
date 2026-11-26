@@ -426,6 +426,7 @@
 {"mcla_gpu_rt_gi_daylight_recovery", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_bounces", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_reuse_coarse_probes", "MCLA/GPU"},
+{"mcla_gpu_rt_gi_field_schedule", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_short_refresh_rays", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_quarter_lookup", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_fast_lookup_apply", "MCLA/GPU"},

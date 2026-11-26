@@ -155,12 +155,16 @@ void main(uint3 group : SV_GroupID, uint tid : SV_GroupIndex)
         const GiCascade k = GiLoadCascade(cascade);
         const uint stateAt = GiuStateBase(cascade) + index;
         const uint state = g_state.Load(stateAt * 4u);
-        if (GiuSkipInside(GifStateInside(state), frame, stateAt))
+        const uint probeFlags = GiuProbeFlags(word);
+        const bool inside = GifStateInside(state);
+        const bool scheduled = g_push.flags.y != 0u && (g_push.flags.z != 0u || (probeFlags & GIU_PROBE_DIRTY) != 0u);
+        const uint skip = scheduled ? GiuScheduledSkip(inside, state, probeFlags) : (GiuSkipInside(inside, frame, stateAt) ? GIU_RAY_SKIPPED : 0u);
+        if (skip != 0u)
         {
-            // an inside probe that is not looked at this visit: record 0 says so (the blend reads it) and nothing else is done
+            // Record 0 tells the blend why this probe did not trace.
             if (ray == 0u)
             {
-                g_rays.Store4((slot * rays) * GIU_RAY_BYTES, GiuPackRay(float3(0.0f, 0.0f, 0.0f), 0.0f, GIU_RAY_SKIPPED, 0u));
+                g_rays.Store4((slot * rays) * GIU_RAY_BYTES, GiuPackRay(float3(0.0f, 0.0f, 0.0f), 0.0f, skip, 0u));
             }
         }
         else

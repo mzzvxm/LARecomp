@@ -329,6 +329,7 @@ struct LampInput {
   float hour = -1.0f;
   Schedule schedule;
   LampBudget budget;
+  bool track_probe_lamps = false;
 };
 
 struct LampStats {
@@ -343,6 +344,11 @@ struct LampStats {
 
 // What the frame's lamp buffer holds, on the host as the words gRtLamps has, and the window the rows 36 to 38 describe.
 struct LampFrame {
+  struct ProbeLamp {
+    uint64_t key;
+    float position[3];
+    float reach;
+  };
   float cell_m = kCellMetres;
   int32_t cx0 = 0;
   int32_t cz0 = 0;
@@ -352,6 +358,7 @@ struct LampFrame {
   uint32_t lamp_row_base = 1;
   LampStats stats;
   std::vector<uint32_t> words;  // 4 per row
+  std::vector<ProbeLamp> probe_lamps;  // selected lamps in world space for GI invalidation
   // GI-BOUNCE-RT: the emitters appended after the lamps' rows (AppendEmitters): how many, the row the first is at, how many of them are static
   uint32_t emitter_count = 0;
   uint32_t emitter_row_base = 0;
@@ -531,6 +538,7 @@ inline void BuildLampFrame(const LampInput& in, LampFrame* out) {
   });
   f.stats.kept = uint32_t(candidates.size());
   f.lamp_count = f.stats.kept;
+  if (in.track_probe_lamps) f.probe_lamps.reserve(f.lamp_count);
 
   // the words
   const uint32_t cells = f.nx * f.nz;
@@ -545,6 +553,22 @@ inline void BuildLampFrame(const LampInput& in, LampFrame* out) {
     uint32_t rows[3][4];
     MakeLampRecord(*c.lamp, c.activity / factor, in.camera, in.axes, rows);
     std::memcpy(&f.words[size_t(f.lamp_row_base + kLampRowsEach * i) * 4u], rows, sizeof(rows));
+    if (in.track_probe_lamps) {
+      const ch::Lamp& lamp = *c.lamp;
+      // Distance fade and camera transforms change as the view moves. Keep the
+      // lamp's identity and intrinsic light properties for local invalidation.
+      uint64_t key = ch::LampKeyOf(lamp);
+      const auto add = [&](float value) {
+        key = (key ^ rt_hit::Bits(value)) * 1099511628211ull;
+      };
+      for (float value : lamp.colour) add(value);
+      for (float value : lamp.dir) add(value);
+      add(lamp.intensity);
+      add(lamp.cone_deg);
+      add(lamp.spread_deg);
+      add(float(lamp.spot));
+      f.probe_lamps.push_back({key, {lamp.pos[0], lamp.pos[1], lamp.pos[2]}, ch::LampReach(lamp.intensity)});
+    }
   }
   f.words[0] = f.lamp_count;
   f.words[1] = cells;
