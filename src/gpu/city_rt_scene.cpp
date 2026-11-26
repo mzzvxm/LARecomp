@@ -2,6 +2,8 @@
 
 #include "city_rt_scene.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -666,6 +668,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
 }
 
 uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtCity);
   recorded_ = false;
   instances_this_frame_ = 0;
   if (!device_ || !frames_ || !upload_ || !instances || level_ == city_rt::Level::kOff ||

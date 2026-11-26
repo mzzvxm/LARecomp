@@ -7,6 +7,8 @@
 
 #include "screen_shared.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <string>
 
@@ -131,6 +133,7 @@ bool ScreenShared::CaptureLightsInto(HostImage& image, const char* label, const 
 }
 
 bool ScreenShared::CaptureLightsBefore(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kScreenCapture);
   if (!ssgi_lights::CaptureBefore(lights_wanted_, LightsFrameMade(), true) || lights_before_done_) {
     return false;
   }
@@ -144,6 +147,7 @@ bool ScreenShared::CaptureLightsBefore(const ResolveRecord& record, const Resolv
 }
 
 bool ScreenShared::CaptureLightsAfter(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kScreenCapture);
   if (!ssgi_lights::CaptureAfter(lights_wanted_, LightsFrameMade(), lights_before_done_, true) || lights_after_done_) {
     return false;
   }

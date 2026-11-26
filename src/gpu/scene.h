@@ -665,7 +665,7 @@ class Scene {
   // reused while the TextureCache's epoch is unchanged (textures.h) and, for a
   // binding good for one frame only, within that frame.
   struct FetchMemo {
-    uint32_t dwords[6] = {};
+    render_cpu::FetchMemoKey<guest::kFetchGroupBytes> key;
     uint64_t epoch = 0;     // 0 = empty
     uint64_t frame = 0;     // the frame a per-frame binding was made in, 0 = any
     uint32_t texture = 0;   // table value (bindless slot | gamma bit)
@@ -684,6 +684,8 @@ class Scene {
   static constexpr size_t kFetchMemoSets = 2048;
   std::array<FetchMemo, kFetchMemoWays * kFetchMemoSets> fetch_memo_{};
   uint64_t fetch_memo_clock_ = 0;
+  bool fetch_memo_raw_ = true;
+  bool batch_constant_banks_ = true;
   // The entry each fetch slot used last (reblue's
   // SamplerSlotCache): a slot whose fetch constant repeats skips the hash and
   // the set search; the entry is checked as the search checks a way.

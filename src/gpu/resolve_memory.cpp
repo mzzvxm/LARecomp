@@ -18,6 +18,7 @@
 #include <rex/xenos/texture.h>
 #include <rex/logging/log_category.h>
 
+#include "cpu_timing.h"
 #include "descriptors.h"
 #include "device.h"
 #include "edram.h"
@@ -26,6 +27,7 @@
 #include "host_passes.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
+#include "thread_load.h"
 #include "upload.h"
 #include "watch.h"
 
@@ -509,6 +511,7 @@ bool ResolveMemory::MakeSets() {
 }
 
 void ResolveMemory::BeginFrame(uint32_t slot) {
+  level_memo_enabled_ = larecomp::settings::mcla_gpu_resolve_layout_memo.Get();
   slot_ = slot;
   ++frame_;
   // mcla_gpu_work_17oct off: as before 17/10 -- every encode at the end of its frame,
@@ -644,6 +647,7 @@ bool ResolveMemory::GrowPool(plume::RenderCommandList* list) {
 }
 
 void ResolveMemory::UploadTable(plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUploadPages);
   const uint64_t bytes = uint64_t(kChunkCount) * 4;
   const UploadSpan span = upload_->Allocate(slot_, bytes, 256);
   if (!span) {
@@ -717,6 +721,7 @@ void ResolveMemory::UploadPages(plume::RenderCommandList* list,
   if (pages.empty()) {
     return;
   }
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUploadPages);
   const UploadSpan span = upload_->Allocate(slot_, uint64_t(pages.size()) * kPageBytes, 256);
   if (!span) {
     Fail("no upload memory for guest pages", std::format("{} pages", pages.size()));
@@ -777,6 +782,7 @@ void ResolveMemory::UploadPages(plume::RenderCommandList* list,
 }
 
 void ResolveMemory::ArmPages(const std::vector<uint32_t>& pages) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kArmPages);
   // Runs of consecutive pages, one Arm each.
   uint32_t run_start = 0, run_count = 0;
   const auto flush = [&]() {
@@ -802,6 +808,7 @@ void ResolveMemory::ArmPages(const std::vector<uint32_t>& pages) {
 }
 
 void ResolveMemory::TouchDecoded(uint32_t start, uint32_t length, bool cpu) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTouchDecoded);
   decoded_regions_.ForEachOverlap(start, length, [&](RegionIndex::Id id) {
     if (id >= decoded_owners_.size()) {
       return;
@@ -834,6 +841,7 @@ void ResolveMemory::TouchDecoded(uint32_t start, uint32_t length, bool cpu) {
 bool ResolveMemory::TouchPages(const TextureLevelStorage& storage, uint32_t bpb_log2,
                                uint32_t pitch, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                                uint32_t* first_page_out, uint32_t* page_span_out) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTouchPages);
   const texture_decode::Source& source = storage.request.source;
   // Storage coordinates (blocks, with the packed tail's offset).
   const int32_t sx0 = x0 + int32_t(source.offset_x);
@@ -892,7 +900,33 @@ bool ResolveMemory::TouchPages(const TextureLevelStorage& storage, uint32_t bpb_
   return inside;
 }
 
+bool ResolveMemory::LevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage& out) {
+  if (!level_memo_enabled_) {
+    return GetTextureLevelStorage(key, level, &out);
+  }
+  const LevelKey lookup{key, level};
+  const size_t hash = TextureKeyHash{}(key) ^ (size_t(level) * 0x9E3779B9u);
+  auto& memo = level_memo_[hash & (kLevelMemoEntries - 1)];
+  const LevelResult& result = memo.GetOrCompute(lookup, [&] {
+    LevelResult stored;
+    stored.present = GetTextureLevelStorage(key, level, &stored.storage);
+    return stored;
+  });
+  // Only address and layout are cached. They depend on the full key and level.
+  // CHECK: compare resolve-memory reference results through format and mip changes.
+  if (result.present) {
+    out = result.storage;
+  }
+  return result.present;
+}
+
 bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, FusedWrite* fused) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kEncode);
+  if (!copy.key) {
+    ++stats_.encode_failures;
+    Fail("missing resolve destination", "");
+    return false;
+  }
   const TextureKey& key = *copy.key;
   const auto fail = [&](const char* what) {
     ++stats_.encode_failures;
@@ -909,7 +943,10 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
     return true;
   }
   TextureLevelStorage storage;
-  if (!GetTextureLevelStorage(key, copy.level, &storage)) {
+  cpu_timing::Scope layout_timed(cpu_timing::Section::kEncodeLayout);
+  const bool have_storage = LevelStorage(key, copy.level, storage);
+  layout_timed.Stop();
+  if (!have_storage) {
     return fail("the destination level has no storage");
   }
   const texture_decode::Source& source = storage.request.source;
@@ -931,6 +968,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
   }
   pages_.clear();
   uint32_t low_page = UINT32_MAX, high_page = 0;
+  cpu_timing::Scope scan_timed(cpu_timing::Section::kEncodePages);
   for (uint32_t i = 0; i < page_span; ++i) {
     if (!touched_[i].first) {
       continue;
@@ -945,12 +983,14 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
       pages_.push_back(page);
     }
   }
+  scan_timed.Stop();
   // A depth copy reads the EDRAM planes now, unless its product holds the same
   // bytes (from_product): then it joins the batch like a colour copy.
   const bool from_edram = copy.depth && !copy.from_product;
   // A fused copy (copy.fuse) is written by the resolve's pixel shader, in the pass that
   // follows this call; everything else is as for any copy that reads the EDRAM planes now.
   const bool in_pass = from_edram && copy.fuse && fused != nullptr;
+  cpu_timing::Scope order_timed(cpu_timing::Section::kEncodeOrder);
   if (from_edram) {
     // Recorded now, after every colour encode waiting: their pages may overlap.
     const PageSpan span{low_page, high_page};
@@ -982,6 +1022,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
       FlushFor(list, FlushReason::kUpload, upload_spans_.data(), upload_spans_.size());
     }
   }
+  order_timed.Stop();
   if (table_dirty_) {
     UploadTable(list);
   }
@@ -1111,6 +1152,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
     writer_key_index_.emplace(key, writer);
   }
   pages_.clear();
+  cpu_timing::Scope mark_timed(cpu_timing::Section::kEncodeMark);
   for (uint32_t i = 0; i < page_span; ++i) {
     if (!touched_[i].first) {
       continue;
@@ -1131,6 +1173,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
     newer_high_page_ = std::max(newer_high_page_, page);
     pages_.push_back(page);
   }
+  mark_timed.Stop();
   ArmPages(pages_);
   TouchDecoded(storage.address, uint32_t(std::min<uint64_t>(storage.extent, UINT32_MAX)), false);
   ++stats_.encodes;
@@ -1142,6 +1185,7 @@ bool ResolveMemory::Encode(plume::RenderCommandList* list, const Copy& copy, Fus
 
 void ResolveMemory::BeforeResolve(plume::RenderCommandList* list, const TextureKey& key,
                                   uint32_t level, int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kResolveBefore);
   if (counters_ && !last_batch_.empty()) {
     // The count of the last end-of-frame batch's encodes that a resolve of
     // the next frame writes again whole.
@@ -1199,6 +1243,7 @@ bool ResolveMemory::Waiting(const TextureKey& key) const {
 
 template <typename Seed>
 size_t ResolveMemory::Choose(Seed&& seed) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kBatchChoose);
   chosen_.assign(pending_.size(), 0);
   choose_spans_.clear();
   size_t count = 0;
@@ -1280,6 +1325,7 @@ void ResolveMemory::FlushForLock(plume::RenderCommandList* list, uint32_t addres
 
 void ResolveMemory::Record(plume::RenderCommandList* list, FlushReason reason, size_t needed,
                            bool all) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kBatchRecord);
   const auto recorded = [&](size_t i) { return all || chosen_[i] != 0; };
   if (reason == FlushReason::kEndOfFrame && counters_) {
     // For the count of the ones the next frame writes again (BeforeResolve).
@@ -1379,6 +1425,7 @@ void ResolveMemory::GuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
   h ^= h >> 15;
   RangesMemo& memo = ranges_memo_[h & (kRangesMemoEntries - 1)];
   if (!memo.valid || !(memo.key == key)) {
+    const cpu_timing::Scope cpu_scope(cpu_timing::Section::kHoldsLayout);
     memo.key = key;
     TextureGuestRanges(key, memo.ranges);
     memo.valid = true;
@@ -1387,6 +1434,7 @@ void ResolveMemory::GuestRanges(const TextureKey& key, uint32_t ranges[2][2]) {
 }
 
 bool ResolveMemory::Holds(const TextureKey& key) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kHolds);
   ++stats_.holds_checks;
   if (newer_low_page_ > newer_high_page_) {
     return false;
@@ -1638,6 +1686,7 @@ void ResolveMemory::BindFused(plume::RenderCommandList* list) {
 ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t host_swizzle,
                                               plume::RenderCommandList* list, uint32_t* slot,
                                               bool* state_changed, std::string* why) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kMemoryBind);
   ++stats_.binds;
   *state_changed = false;
   uint32_t kind = 0;
@@ -1885,7 +1934,10 @@ ResolveMemory::BindResult ResolveMemory::Bind(const TextureKey& key, uint16_t ho
   }
   for (uint32_t level = 0; level < key.levels(); ++level) {
     TextureLevelStorage storage;
-    if (!GetTextureLevelStorage(key, level, &storage)) {
+    cpu_timing::Scope layout_timed(cpu_timing::Section::kLayoutOther);
+    const bool have_storage = LevelStorage(key, level, storage);
+    layout_timed.Stop();
+    if (!have_storage) {
       continue;  // no storage: never sampled (the base of a mips-only key)
     }
     const texture_decode::Source& source = storage.request.source;
@@ -2187,11 +2239,18 @@ int64_t ResolveMemory::WriteBack(uint32_t address, uint32_t size,
   flush();
   list->end();
   const plume::RenderCommandList* lists[] = {list};
-  device_->queue()->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, readback_fence_.get());
+  auto* queue = device_ ? device_->queue() : nullptr;
+  if (!queue || !readback_fence_) {
+    return -1;
+  }
+  queue->executeCommandLists(lists, 1, nullptr, 0, nullptr, 0, readback_fence_.get());
   if (device_->CheckLost("lock write-back")) {
     return -1;
   }
-  device_->queue()->waitForCommandFence(readback_fence_.get());
+  {
+    const ScopedGpuWait wait;
+    queue->waitForCommandFence(readback_fence_.get());
+  }
   const auto* mapped = static_cast<const uint8_t*>(readback_buffer_->map());
   if (!mapped) {
     Fail("the lock write-back's readback buffer could not be mapped", "");
@@ -2286,7 +2345,10 @@ void ResolveMemory::MarkInherited(const TextureKey& key, uint32_t level, int32_t
     return;
   }
   TextureLevelStorage storage;
-  if (!GetTextureLevelStorage(key, level, &storage)) {
+  cpu_timing::Scope layout_timed(cpu_timing::Section::kLayoutOther);
+  const bool have_storage = LevelStorage(key, level, storage);
+  layout_timed.Stop();
+  if (!have_storage) {
     return;  // no storage: the encode wrote nothing there either
   }
   const uint32_t bpb_log2 = BlockLog2(storage.request.source.bytes_per_block);

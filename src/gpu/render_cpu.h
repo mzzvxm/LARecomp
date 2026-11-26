@@ -13,7 +13,10 @@
 // Threading: pure.
 // ===========================================================================
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace mcla::gpu::render_cpu {
 
@@ -131,6 +134,14 @@ class LastAnswer {
     }
     return false;
   }
+  template <class Compute>
+  const Result& GetOrCompute(const Key& key, Compute&& compute) {
+    if (!valid_ || !(key == key_)) {
+      Put(key, compute());
+    }
+    return result_;
+  }
+
   void Put(const Key& key, const Result& result) {
     key_ = key;
     result_ = result;
@@ -141,6 +152,49 @@ class LastAnswer {
   Key key_{};
   Result result_{};
   bool valid_ = false;
+};
+
+// A failed reservation leaves the cursor where the next ordinary allocation expects it.
+inline bool ReserveUpload(uint64_t& used, uint64_t capacity, uint64_t size,
+                          uint64_t alignment, uint64_t& offset) {
+  const uint64_t padding = (0 - used) & (alignment - 1);
+  const uint64_t remaining = capacity - used;
+  if (padding > remaining || size > remaining - padding) {
+    return false;
+  }
+  offset = used + padding;
+  used = offset + size;
+  return true;
+}
+
+// A memo stores either wire bytes or decoded host words, selected at frame setup.
+template <size_t Bytes>
+struct FetchMemoKey {
+  std::array<uint8_t, Bytes> bytes{};
+  bool Matches(const void* key) const {
+    return key && std::memcmp(bytes.data(), key, Bytes) == 0;
+  }
+  void Set(const void* key) {
+    if (key) {
+      std::memcpy(bytes.data(), key, Bytes);
+    }
+  }
+};
+
+// One stable descriptor binding in a frame slot. The caller resets it when the backing
+// resource or set is replaced, including if a replacement could reuse the same address.
+struct DescriptorBinding {
+  bool Update(bool enabled, const void* object, uint64_t bytes = 0) {
+    const bool changed = !enabled || !valid || resource != object || range != bytes;
+    resource = object;
+    range = bytes;
+    valid = true;
+    return changed;
+  }
+
+  const void* resource = nullptr;
+  uint64_t range = 0;
+  bool valid = false;
 };
 
 }  // namespace mcla::gpu::render_cpu

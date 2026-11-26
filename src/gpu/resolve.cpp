@@ -28,6 +28,7 @@
 #include <rex/xenos/format.h>
 #include <rex/logging/log_category.h>
 
+#include "cpu_timing.h"
 #include "descriptors.h"
 #include "device.h"
 #include "draw_decode.h"
@@ -612,6 +613,7 @@ bool ResolveCache::EnvProductsReady(Scale map_scale, bool refreshed) {
 void ResolveCache::OnLock(const LockRecord& record,
                           const std::function<void()>& submit_recorded) {
   // A CPU write since the resolve already took the range from the products.
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kLock);
   DrainInvalidations();
   ++stats_.locks;
   lock_hits_.clear();
@@ -634,7 +636,10 @@ void ResolveCache::OnLock(const LockRecord& record,
   // over another's bytes owes guest memory only what the resolves wrote.
   const auto t0 = Clock::now();
   std::vector<ResolveMemory::AddressRange> read_ahead;
-  LockReadAheadRanges(*memory_, record, &read_ahead);
+  {
+    const cpu_timing::Scope layout_timed(cpu_timing::Section::kLockLayout);
+    LockReadAheadRanges(*memory_, record, &read_ahead);
+  }
   const int64_t pages =
       resolve_memory_->WriteBack(record.address, record.size, submit_recorded, &read_ahead);
   const uint64_t ns = uint64_t(
@@ -714,6 +719,7 @@ void ResolveCache::DrainInherited() {
   if (!edram_ || !edram_->has_inherited_resolves()) {
     return;
   }
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kResolveEdram);
   edram_->TakeInheritedResolves(&inherited_ids_);
   // A copy split over tiles comes back once per tile.
   std::sort(inherited_ids_.begin(), inherited_ids_.end());
@@ -782,6 +788,7 @@ plume::RenderFramebuffer* ResolveCache::LevelFramebuffer(Product& p, uint32_t le
 ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::RenderFormat format,
                                               Scale scale, plume::RenderCommandList* list,
                                               std::string* why) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kResolveActivate);
   auto it = products_.find(key);
   Product* p = it != products_.end() ? it->second.get() : nullptr;
   if (p && p->scale != scale) {
@@ -853,7 +860,10 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
         return nullptr;
       }
     }
-    TextureGuestRanges(key, product->ranges);
+    {
+      const cpu_timing::Scope layout_timed(cpu_timing::Section::kResolveLayout);
+      TextureGuestRanges(key, product->ranges);
+    }
     // Every level cleared before anything reads or writes it: a render target
     // from an unzeroed heap must be (D3D12 debug layer id 1422), and memory the
     // guest never wrote reads as zeros here.
@@ -916,9 +926,12 @@ ResolveCache::Product* ResolveCache::Activate(const TextureKey& key, plume::Rend
     IndexRanges(*p);
     active_by_image_[ImageKey(p->key)] = p;
     // A CPU write into these bytes from now on deactivates the product.
-    for (const auto& r : p->ranges) {
-      if (r[1]) {
-        memory_->Arm(r[0], r[1]);
+    {
+      const cpu_timing::Scope arm_timed(cpu_timing::Section::kResolveArm);
+      for (const auto& r : p->ranges) {
+        if (r[1]) {
+          memory_->Arm(r[0], r[1]);
+        }
       }
     }
     ++stats_.activated;
@@ -1062,6 +1075,7 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
 ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
                                             plume::RenderCommandList* list, bool float_scene,
                                             bool capture_hdr) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kResolveCall);
   Summary summary;
   ++stats_.resolves;
   if (!list) {
@@ -1410,6 +1424,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       // Unless all of it is the source's own and unmarked, the map sees it:
       // an inherited copy comes back by its number (reach).
       if (edram_->aliasing()) {
+        const cpu_timing::Scope notes_timed(cpu_timing::Section::kResolveEdram);
         const plume::RenderRect read(tx0 - dx, ty0 - dy, tx1 - dx, ty1 - dy);
         EdramTargets::Accesses access;
         access.aspect[EdramTargets::kMain] = EdramTargets::Access::kRead;
@@ -1710,6 +1725,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       }
       // The cells this activation now holds (the rectangle is 8-aligned
       // except where it stops at the level's edge).
+      cpu_timing::Scope cells_timed(cpu_timing::Section::kResolveCells);
       if (level < p->coverage.size()) {
         Product::Coverage& c = p->coverage[level];
         c.last_write_frame = frame_;
@@ -1737,6 +1753,7 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         UpdateInheritedCells(p->inherited[level], level_width, level_height, tx0, ty0, tx1, ty1,
                              false);
       }
+      cells_timed.Stop();
       if (!depth_source && memory_copy.product_slot == kInvalidBindlessSlot) {
         Fail(Failure::kProduct, std::format("{}: no view for the resolve memory", key.Describe()));
       } else if (!encoded) {

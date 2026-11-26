@@ -18,6 +18,7 @@
 #include <random>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "native_gfx/guest/physical_alias.h"
@@ -647,6 +648,62 @@ void BenchSampler() {
               (unsigned long long)taken);
 }
 
+void TestRenderThreadCuts() {
+  FetchMemoKey<24> fetch;
+  std::array<uint8_t, 24> wire{};
+  wire[0] = 1;
+  wire[23] = 7;
+  fetch.Set(wire.data());
+  Check(fetch.Matches(wire.data()), "a repeated encoded fetch hits");
+  wire[23] = 8;
+  Check(!fetch.Matches(wire.data()), "a change in the last fetch byte misses");
+  fetch = {};
+  Check(!fetch.Matches(wire.data()), "reset drops the previous representation");
+  const uint32_t decoded[6] = {0x1000000, 0, 0, 0, 0, 8};
+  fetch.Set(decoded);
+  Check(fetch.Matches(decoded), "the decoded representation remains cacheable");
+
+  LastAnswer<std::pair<int, int>, int> layouts;
+  int computed = 0;
+  const auto compute = [&](int result) {
+    return [&computed, result] {
+      ++computed;
+      return result;
+    };
+  };
+  Check(layouts.GetOrCompute({2, 0}, compute(60)) == 60, "resolve base layout");
+  Check(layouts.GetOrCompute({2, 0}, compute(0)) == 60 && computed == 1, "reuse the exact layout");
+  Check(layouts.GetOrCompute({2, 1}, compute(80)) == 80, "different mip sharing the memo entry");
+  Check(layouts.GetOrCompute({3, 1}, compute(-1)) == -1, "different texture replaces the layout");
+  Check(layouts.GetOrCompute({3, 1}, compute(0)) == -1 && computed == 3, "missing mip is cacheable");
+
+  const int a = 1;
+  const int b = 2;
+  DescriptorBinding binding;
+  Check(binding.Update(true, &a, 40), "bind first use");
+  Check(!binding.Update(true, &a, 40), "reuse unchanged binding");
+  Check(binding.Update(true, &a, 80), "range change on same resource");
+  Check(binding.Update(true, &b, 80), "resource change at same range");
+  Check(binding.Update(false, &b, 80), "A/B forces a descriptor write");
+  binding = {};
+  Check(binding.Update(true, &b, 80), "slot or resource replacement forces a write");
+  DescriptorBinding empty;
+  Check(empty.Update(true, nullptr, 0), "validity is independent of the initial key bytes");
+
+  uint64_t used = 17;
+  uint64_t offset = 99;
+  Check(!ReserveUpload(used, 767, 512, 256, offset) && used == 17 && offset == 99,
+        "failed batch preserves both outputs for the single-bank fallback");
+  Check(ReserveUpload(used, 768, 512, 256, offset) && offset == 256 && used == 768,
+        "two aligned banks fit exactly at the end of the same chunk");
+  used = 17;
+  Check(ReserveUpload(used, 767, 256, 256, offset) && offset == 256 && used == 512,
+        "fallback can still use the end of the chunk for the first bank");
+  used = 1;
+  Check(!ReserveUpload(used, 5, 1, 256, offset) && used == 1,
+        "padding alone can exhaust a chunk");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -666,6 +723,7 @@ int main(int argc, char** argv) {
   TestLastEntryAvoidsLookups();
   TestLastEntryForgetAndCopy();
   TestLastAnswer();
+  TestRenderThreadCuts();
   if (g_bench) {
     BenchSampler();
     BenchAlias();

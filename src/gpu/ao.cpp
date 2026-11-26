@@ -2,6 +2,8 @@
 
 #include "ao.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -1661,6 +1663,7 @@ bool AmbientOcclusion::IsLaterTile(const ResolveCache::Summary& summary) const {
 
 bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
                                  plume::RenderCommandList* list, bool upscaler_running) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kAmbientOcclusion);
   if (contact_mode_ != Mode::kOff || gi_active_) {
     NoteMaskResolve(record);  // the bounce light reads the sun's shadow mask too (the albedo estimate)
     NoteCarSunResolve(record);  // and takes a car's sun from the car sun image, as the contact shadows do

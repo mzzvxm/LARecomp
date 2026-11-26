@@ -2,6 +2,8 @@
 
 #include "car_rt_scene.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -132,6 +134,7 @@ bool CarRtScene::Initialize(Device& device, FrameRing& frames, UploadRing& uploa
   set_builder_.end();
   for (SlotResources& slot : slots_) {
     // The views the ranges add up to: t0 the top level and t1..t5 (6), the hit data's four, the world frame's two. D3D12 sizes a set by this count, not by the ranges.
+    slot.bindings = {};
     slot.set = device.CreateDescriptorSet(set_builder_, 6 + CityHitScene::kBindingCount + RtWorldFrame::kBindingCount, 0, "car rt set");
     if (!slot.set) {
       REXLOG_ERROR("{} the descriptor set could not be made: no car ray tracing this session", kPrefix);
@@ -307,6 +310,7 @@ uint64_t CarRtScene::HeldBytes() const {
 // ---------------------------------------------------------------------------
 
 void CarRtScene::OnPlayerDraw(const car_frame::Draw& draw, const car_frame::MeshReader& reader) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtCarStage);
   if (!ready_ || !Wants()) {
     return;  // another effect asked CarFrame for the draws: nothing to read for this one
   }
@@ -341,6 +345,7 @@ void CarRtScene::OnPlayerDraw(const car_frame::Draw& draw, const car_frame::Mesh
 // A draw of another car the selection kept (car_rt_instances_rules.h): the same read, within what the other cars may spend in a frame (the triangles
 // read, the share of the video memory the player's own car does not need) and never at the player's expense: the frame's total budget counts them too.
 void CarRtScene::OnOtherCarDraw(const car_frame::OtherDraw& draw, const car_frame::MeshReader& reader) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtCarStage);
   if (!ready_ || !Wants() || draw.mesh_key == 0) {
     return;
   }
@@ -390,6 +395,7 @@ void CarRtScene::OnOtherCarDraw(const car_frame::OtherDraw& draw, const car_fram
 // the other cars' share of the video memory and the frame's total. A mesh already built, staged or failed is skipped (one mesh per buffer address: the cars of one
 // model share them).
 void CarRtScene::OnWalkedCars(const std::vector<car_model_walk::WalkedCar>& cars, const car_model_walk::MeshSource& source) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtCarStage);
   walked_spent_ = car_model_rt::StageBudget{};
   if (!ready_ || !Wants() || !car_frame_->others_on()) {
     return;
@@ -563,6 +569,7 @@ bool CarRtScene::WantsResolve(bool gate_unused) const {
 
 bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                            uint32_t slot) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtBuild);
   trigger_this_call_ = false;
   if (!ready_ || !list || slot >= kFramesInFlight || !IsTrigger(record, summary)) {
     return false;
@@ -731,6 +738,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   car_rt_instances::Limits build_limits = car_frame_->other_limits();
   build_limits.cars = std::min<uint32_t>(build_limits.cars + walked_traffic_placed_, car_rt_instances::kMaxCars);
   UpdateLamps(frame, build_limits.On());  // LU-8: the game's lamps of this frame, for the other cars' lenses
+  cpu_timing::Scope instances_time(cpu_timing::Section::kRtInstances);
   const car_rt_instances::List& cars = instances_.Build(
       frame, build_limits, flip_z, glass_rule, [&](uint64_t key, car_rt_instances::MeshRef* ref) {
         const auto it = meshes_.find(key);
@@ -766,6 +774,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // for the set; no instance names it).
   static const std::vector<rr::InstanceRow>& kOneRow = larecomp::Leak<const std::vector<rr::InstanceRow>>(1);   // never destroyed (EXIT-HARD)
   const std::vector<rr::InstanceRow>& rows = cars.rows.empty() ? kOneRow : cars.rows;
+  instances_time.Stop();
   // === END OF THE RT-CARS BLOCK ===
 
   // === CITY-RT BLOCK (city_rt_scene.h, CITY-RT M1): the city's structures join the top level. They are read, planned and built here (recorded on this list), and their instances are
@@ -785,6 +794,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   std::vector<uint32_t> material_words;  // RT-HIT-SHADING: the frame's lighting rows and the instances' materials (car_rt_material_rules.h)
   if (count != 0) {
     device_->device()->setTopLevelASBuildInfo(tlas_info, instances.data(), count, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
+    const cpu_timing::Scope material_time(cpu_timing::Section::kRtInstances);
     BuildMaterialRows(frame, flip_z, cars, &material_words);
   }
   const bool slot_ok = count != 0 ? EnsureSlot(res, slot, tlas_info.accelerationStructureSize, std::max(scratch_needed, tlas_info.scratchSize),
@@ -848,18 +858,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
                           tlas_info);
     list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
                    plume::RenderBufferBarrier(res.tlas_buffer.get(), plume::RenderBufferAccess::READ));
-    // The set: written for this slot now (its last use is finished), so a consumer binds it as it is.
-    const plume::RenderBufferStructuredView rows_view(sizeof(rr::InstanceRow), 0);
-    res.set->setAccelerationStructure(tlas_index_, res.tlas.get());
-    res.set->setBuffer(table_index_, res.table.get(), uint64_t(rows.size()) * sizeof(rr::InstanceRow), &rows_view);
-    // The shared mesh buffers exist only once a car mesh was placed; a top level that holds the city and no placed car mesh (the car's draws are in the frame, their meshes were not built or were
-    // given up) names the stand-in instead, as OnResolveCityOnly does: Plume's Vulkan setBuffer ignores a null buffer, which would leave this slot's binding as it was (unwritten, or a buffer
-    // retired since), and a set that names nothing is not valid on every backend.
-    res.set->setBuffer(indices_index_, indices_.buffer ? indices_.buffer.get() : standin_.get(), 0);
-    res.set->setBuffer(normals_index_, normals_.buffer ? normals_.buffer.get() : standin_.get(), 0);
-    const plume::RenderBufferStructuredView materials_view(sizeof(uint32_t) * 4, 0);
-    res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);
-    res.set->setBuffer(materials_index_, res.materials.get(), uint64_t(material_words.size()) * sizeof(uint32_t), &materials_view);
+    BindSceneDescriptors(res, uint64_t(rows.size()) * sizeof(rr::InstanceRow),
+                         uint64_t(material_words.size()) * sizeof(uint32_t));
     NoteMaterials(cars, material_words);
     if (hit_) {
       // The set has rt-hit-shading's t4 and t5 and the hit data's t6..t9 after them (6 + CityHitScene::kBindingCount views, Initialize).
@@ -964,15 +964,7 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
   list->buildTopLevelAS(res.tlas.get(), plume::RenderBufferReference(res.scratch.get(), 0), plume::RenderBufferReference(res.instances.get(), 0), tlas_info);
   list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
                  plume::RenderBufferBarrier(res.tlas_buffer.get(), plume::RenderBufferAccess::READ));
-  // The set, as the car path writes it, with the stand-in where a car mesh buffer does not exist yet.
-  const plume::RenderBufferStructuredView rows_view(sizeof(rr::InstanceRow), 0);
-  res.set->setAccelerationStructure(tlas_index_, res.tlas.get());
-  res.set->setBuffer(table_index_, res.table.get(), sizeof(rr::InstanceRow), &rows_view);
-  res.set->setBuffer(indices_index_, indices_.buffer ? indices_.buffer.get() : standin_.get(), 0);
-  res.set->setBuffer(normals_index_, normals_.buffer ? normals_.buffer.get() : standin_.get(), 0);
-  const plume::RenderBufferStructuredView materials_view(sizeof(uint32_t) * 4, 0);
-  res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);
-  res.set->setBuffer(materials_index_, res.materials.get(), sizeof(uint32_t) * 4, &materials_view);
+  BindSceneDescriptors(res, sizeof(rr::InstanceRow), sizeof(uint32_t) * 4);
   hit_->Bind(res.set.get(), hit_bindings_, slot);
   hit_->RecordProbe(list, res.set.get(), set_builder_.descriptorSetDesc, *passes_, *heap_);
   if (world_) {
@@ -997,6 +989,43 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
 // consumer), polled once a frame before the instance list is built (the points of the last 100 ms become cars, car_lights.h Build) and flattened into the lamp set the list reads
 // (car_rt_lights_rules.h MakeLampSet). Cars are ranked by the distance to the player's vehicle, the player's own first (the lamps of cars the scene does not hold are of no use here, and
 // the table holds at most light_frame.h kMaxCars). With the setting off, or no other cars, the set is empty and every lens keeps the night factor's guess.
+void CarRtScene::BindSceneDescriptors(SlotResources& slot, uint64_t rows_bytes,
+                                      uint64_t materials_bytes) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtDescriptors);
+  if (!slot.set) {
+    return;
+  }
+  const bool memo = larecomp::settings::mcla_gpu_rt_descriptor_memo.Get();
+  // The FrameRing has finished the slot's previous use. The views retain their old values
+  // when the buffer, range and fixed view type match. Missing meshes bind the stand-in.
+  // CHECK: validate both API paths with slot reuse, mesh-buffer growth and city-only frames.
+  if (slot.tlas && slot.bindings[0].Update(memo, slot.tlas.get())) {
+    slot.set->setAccelerationStructure(tlas_index_, slot.tlas.get());
+  }
+  struct BufferBinding {
+    uint32_t index;
+    plume::RenderBuffer* buffer;
+    uint64_t bytes;
+    uint32_t stride;
+  };
+  const BufferBinding buffers[] = {
+      {table_index_, slot.table.get(), rows_bytes, sizeof(rr::InstanceRow)},
+      {indices_index_, indices_.buffer ? indices_.buffer.get() : standin_.get(), 0, 0},
+      {normals_index_, normals_.buffer ? normals_.buffer.get() : standin_.get(), 0, 0},
+      {uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0, 0},
+      {materials_index_, slot.materials.get(), materials_bytes, sizeof(uint32_t) * 4},
+  };
+  static_assert(std::size(buffers) + 1 == std::tuple_size_v<decltype(slot.bindings)>);
+  for (size_t i = 0; i < std::size(buffers); ++i) {
+    const auto& b = buffers[i];
+    // A null buffer preserves Plume's existing per-backend null write behavior.
+    if (slot.bindings[i + 1].Update(memo, b.buffer, b.bytes)) {
+      const plume::RenderBufferStructuredView view(b.stride, 0);
+      slot.set->setBuffer(b.index, b.buffer, b.bytes, b.stride ? &view : nullptr);
+    }
+  }
+}
+
 void CarRtScene::UpdateLamps(const car_frame::Frame& frame, bool others_on) {
   namespace cl = larecomp::gpu::car_lights;
   const bool want = others_on && larecomp::settings::mcla_gpu_car_rt_lamps.Get();
@@ -1712,6 +1741,7 @@ void CarRtScene::ReleaseAll(const char* why) {
 }
 
 void CarRtScene::ReleaseSlot(SlotResources& slot) {
+  slot.bindings = {};
   if (slot.instances && slot.instances_cpu) {
     slot.instances->unmap(0, nullptr);
   }
@@ -1820,9 +1850,15 @@ bool CarRtScene::GrowVertices(plume::RenderCommandList* list, uint64_t needed_ve
     frames_->Retire(std::move(positions_.buffer));
   }
   if (normals_.buffer) {
+    for (SlotResources& slot : slots_) {
+      slot.bindings = {};
+    }
     frames_->Retire(std::move(normals_.buffer));
   }
   if (uvs_.buffer) {
+    for (SlotResources& slot : slots_) {
+      slot.bindings = {};
+    }
     frames_->Retire(std::move(uvs_.buffer));
   }
   positions_ = std::move(positions);
@@ -1856,6 +1892,9 @@ bool CarRtScene::GrowIndices(plume::RenderCommandList* list, uint64_t needed_ind
     indices.copied_bytes = used_bytes;  // as for the vertices
   }
   if (indices_.buffer) {
+    for (SlotResources& slot : slots_) {
+      slot.bindings = {};
+    }
     frames_->Retire(std::move(indices_.buffer));
   }
   indices_ = std::move(indices);
@@ -1921,6 +1960,7 @@ bool CarRtScene::AllocStructure(uint64_t size, uint32_t* page, uint64_t* offset)
 }
 
 void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std::vector<Placed>* placed) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtCarStage);
   if (staged_order_.empty()) {
     return;
   }
@@ -2045,6 +2085,9 @@ void CarRtScene::PlaceStaged(plume::RenderCommandList* list, uint32_t slot, std:
 
 bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_bytes, uint64_t scratch_bytes, uint64_t instance_bytes,
                             uint64_t table_bytes, uint64_t material_bytes) {
+  if (!s.set) {
+    return false;
+  }
   const auto room = [](uint64_t bytes) { return AlignUp(bytes + bytes / 4, 4096); };
   if (tlas_bytes != 0 && s.tlas_bytes < tlas_bytes) {
     // The top level sits at offset 0 of a buffer of its own: Plume's D3D12 descriptor for an acceleration structure used the buffer's base
@@ -2064,6 +2107,7 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
     if (!structure) {
       return false;
     }
+    s.bindings = {};
     frames_->Retire(std::move(s.tlas));
     frames_->Retire(std::move(s.tlas_buffer));
     s.tlas_buffer = std::move(buffer);
@@ -2103,6 +2147,7 @@ bool CarRtScene::EnsureSlot(SlotResources& s, uint32_t index, uint64_t tlas_byte
     if (target && cpu) {
       target->unmap(0, nullptr);
     }
+    s.bindings = {};
     frames_->Retire(std::move(target));
     target = std::move(buffer);
     cpu = mapped;

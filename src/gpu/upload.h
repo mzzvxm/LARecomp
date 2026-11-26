@@ -114,6 +114,10 @@ class UploadRing {
   // empty span when the memory cannot be had (logged).
   UploadSpan Allocate(uint32_t slot, uint64_t size, uint64_t alignment);
 
+  // Try a batched reservation in the current chunk. On failure, the caller can
+  // still make its original requests at the same offsets or across chunks.
+  UploadSpan TryAllocateCurrent(uint32_t slot, uint64_t size, uint64_t alignment);
+
   // After the FrameRing waited `slot`'s fence: everything allocated from it is
   // free again.
   void ResetSlot(uint32_t slot);
@@ -141,6 +145,7 @@ class UploadRing {
   static constexpr uint32_t kSpareSlot = ~0u;
   bool CreateChunk(uint32_t slot, uint64_t size, Chunk& out);
   static void DestroyChunk(Chunk& chunk);
+  static UploadSpan AllocateFromChunk(Chunk& chunk, uint64_t size, uint64_t alignment);
 
   // Whether `extra` more chunks keep the adapter's use under kTargetPercent of the budget (true
   // when it reports none). Makes new spares only; see the top of the file.

@@ -4,6 +4,8 @@
 #include "renderer.h"
 #include "env_hold_link.h"
 
+#include "cpu_timing.h"
+
 #include "mc_engine/cinematic/capture_mode.h"
 #include "settings/immortal.h"
 
@@ -897,6 +899,8 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       release_sequence_ = (header.flags & kRecordSync) != 0 ? header.sequence : 0;
       present_target_ = record.target_qpc;
       ExecutePresent(PresentSource::kGuest);
+      static_assert(Scene::kReportInterval == cpu_timing::kWindowFrames);
+      cpu_timing::FinishFrame(guest_frames_);
       present_tag_ = 0;
       present_target_ = 0;
       release_sequence_ = 0;
@@ -907,7 +911,8 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       TraceHitch(guest_timing, slot);
       return;
     }
-    case RecordType::kDraw:
+    case RecordType::kDraw: {
+      const cpu_timing::Scope cpu_scope(cpu_timing::Section::kDrawDispatch);
       if (validate_) {
         validator_.OnDraw(payload);
       }
@@ -924,6 +929,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
         prefetch_ahead_ = 0;
       }
       return;
+    }
     case RecordType::kClear: {
       const auto& record = *reinterpret_cast<const ClearRecord*>(payload);
       if (validate_) {
@@ -1199,6 +1205,7 @@ void Renderer::MaybeFlushBatch() {
 }
 
 void Renderer::SubmitFrameWithoutPresent() {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kEndOfList);
   if (!frames_.is_open()) {
     return;
   }
@@ -1316,6 +1323,7 @@ void Renderer::UpdateComposedPresentCeiling() {
 
 void Renderer::PresentNow(uint32_t image, PresentSource source, int64_t target, int64_t due,
                           int64_t ready, uint64_t guest_present, uint64_t latency_frame) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kPresent);
   const bool nowait = present_nowait_ && !dlssg_.active();
 #if defined(_WIN32)
   const uint32_t ceiling = composed_present_ceiling();
@@ -1633,6 +1641,7 @@ void Renderer::UpdateDisplayAspect() {
 }
 
 void Renderer::ExecutePresent(PresentSource source) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kPresent);
   // Capture mode: a guest present tagged as a frame of the capture take must be read back (RecordPresentPass) or reported lost,
   // whichever way this function returns. An untagged present (every present, when no take runs) costs a flag test.
   capture_readback_.BeginPresent(source == PresentSource::kGuest ? present_tag_ : 0);

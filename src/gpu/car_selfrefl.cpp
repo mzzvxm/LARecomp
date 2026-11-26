@@ -2,6 +2,8 @@
 
 #include "car_selfrefl.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -398,6 +400,7 @@ EdramTargets::Target* CarSelfRefl::ColourTarget(const EdramKey& key, plume::Rend
 
 bool CarSelfRefl::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
                             plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kCarHistory);
   if (!list || !ready_ || !IsTrigger(record, summary)) {
     return false;
   }

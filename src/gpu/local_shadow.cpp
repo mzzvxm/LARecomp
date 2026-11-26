@@ -2,6 +2,8 @@
 
 #include "local_shadow.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -726,6 +728,7 @@ void LocalShadow::BeginFrame(gbuffer::PauseFxView pause_fx, bool pause_ready) {
 }
 
 void LocalShadow::OnMainDraw(const MainDraw& d) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kShadowCollect);
   if (anchor_seen_ || composite_seen_ || trigger_seen_ || !d.key || !d.vs || !d.geometry || !d.banks || !d.shared || !d.input_layout) {
     return;
   }
@@ -891,6 +894,7 @@ bool LocalShadow::IsTrigger(const ResolveRecord& record, const ResolveCache::Sum
 // ---------------------------------------------------------------------------
 
 bool LocalShadow::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t slot) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kShadowReplay);
   const bool had_trigger = trigger_seen_;
   const bool recorded = RecordMaps(record, summary, list, slot);
   if (trigger_seen_ && !had_trigger) {

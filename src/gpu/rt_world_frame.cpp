@@ -2,6 +2,8 @@
 
 #include "rt_world_frame.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -359,6 +361,7 @@ void RtWorldFrame::RefreshLiveList() {
 }
 
 bool RtWorldFrame::OnTrigger(uint32_t slot_index) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtWorld);
   if (!device_ || slot_index >= kFramesInFlight) {
     return false;
   }

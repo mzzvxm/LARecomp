@@ -2,6 +2,8 @@
 
 #include "gbuffer.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <atomic>
 #include <bit>
@@ -415,6 +417,7 @@ void GBuffer::FillSidecar(Sidecar* out) const {
 }
 
 bool GBuffer::Attach(plume::RenderCommandList* list, EdramTargets::Target& colour0, Sidecar* out) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGBufferAttach);
   if (!CheckAffordable(colour0) || !EnsureImages(colour0.scale.Edge(colour0.width), colour0.scale.Edge(colour0.height), colour0.host_samples)) {
     return false;
   }
@@ -483,6 +486,7 @@ void GBuffer::OnColorClear(plume::RenderCommandList* list, EdramTargets::Target&
 }
 
 bool GBuffer::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool composite_seen) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGBufferPublish);
   if (!active() || !list) {
     return false;
   }

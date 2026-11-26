@@ -3,6 +3,8 @@
 
 #include "local_lights.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -393,6 +395,7 @@ void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
 }
 
 bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kLocalLights);
   (void)record;
   const gi_bounce::Pair* const pair = pair_;  // GI-BOUNCE-JOIN: for this call only
   pair_ = nullptr;

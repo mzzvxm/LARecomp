@@ -2,6 +2,8 @@
 
 #include "volumetrics.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -885,6 +887,7 @@ EdramTargets::Target* Volumetrics::TargetOf(const EdramKey& key, plume::RenderCo
 
 bool Volumetrics::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t frame_slot,
                             bool upscaler_running) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kVolumetrics);
   if (!list || !ready_ || !IsFirstPoint(record, summary)) {
     return false;
   }
@@ -1194,6 +1197,7 @@ bool Volumetrics::ColourSourceKey(const ResolveRecord& r, EdramKey* key) {
 }
 
 bool Volumetrics::BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kVolumetrics);
   // Only after the first point of a frame whose volume was made, before the anchor draw, and until a copy of the main colour has come.
   if (!recorded_this_frame_ || copy_seen_ || !list || !ready_) {
     return false;

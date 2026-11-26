@@ -1,4 +1,6 @@
 #pragma once
+
+#include "render_cpu.h"
 // ===========================================================================
 // MCLA GPU renderer -- the resolve memory: what resolves write, as guest bytes
 // ===========================================================================
@@ -249,6 +251,7 @@ class ResolveMemory {
   // microsecond, asked on every bind of a fetch (Holds) and again when the
   // texture is made. Render thread, like the rest of this class.
   void GuestRanges(const TextureKey& key, uint32_t ranges[2][2]);
+  bool LevelStorage(const TextureKey& key, uint32_t level, TextureLevelStorage& out);
 
   // Vertex streams over memory a resolve wrote: the console's
   // resolve-to-vertex-buffer. MCLA's rain renders its particle state with
@@ -569,6 +572,18 @@ class ResolveMemory {
   };
   static constexpr uint32_t kRangesMemoEntries = 2048;  // about 90 KiB
   std::vector<RangesMemo> ranges_memo_;
+  struct LevelKey {
+    TextureKey texture;
+    uint32_t level = 0;
+    bool operator==(const LevelKey&) const = default;
+  };
+  struct LevelResult {
+    TextureLevelStorage storage;
+    bool present = false;
+  };
+  static constexpr size_t kLevelMemoEntries = 128;
+  std::array<render_cpu::LastAnswer<LevelKey, LevelResult>, kLevelMemoEntries> level_memo_;
+  bool level_memo_enabled_ = true;
 
   std::unordered_map<TextureKey, std::unique_ptr<Decoded>, TextureKeyHash> decoded_;
   RegionIndex decoded_regions_;

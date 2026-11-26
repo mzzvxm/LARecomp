@@ -122,9 +122,14 @@ class DrawView {
     return RegisterWindow(record_.registers, guest::kRegisterWindowBegin,
                           guest::kRegisterWindowBytes);
   }
+  // Exact encoded bytes of one fetch group. The record owns them.
+  const uint8_t* FetchBytes(uint32_t group) const {
+    return record_.fetch + group * guest::kFetchGroupBytes;
+  }
+
   // Fetch group `group` (0..31) as six host-order dwords.
   void FetchGroup(uint32_t group, uint32_t out[6]) const {
-    const uint8_t* p = record_.fetch + group * guest::kFetchGroupBytes;
+    const uint8_t* p = FetchBytes(group);
     for (uint32_t i = 0; i < 6; ++i) {
       out[i] = LoadBe32(p + 4 * i);
     }

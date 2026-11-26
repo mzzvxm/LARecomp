@@ -8,6 +8,9 @@
 #include <atomic>
 #include "upload.h"
 
+#include "cpu_timing.h"
+#include "render_cpu.h"
+
 #include <format>
 #include <string>
 
@@ -179,7 +182,30 @@ void UploadRing::DestroyChunk(Chunk& chunk) {
   chunk.buffer.reset();
 }
 
+UploadSpan UploadRing::AllocateFromChunk(Chunk& chunk, uint64_t size, uint64_t alignment) {
+  uint64_t offset;
+  if (!chunk.buffer || !chunk.cpu ||
+      !render_cpu::ReserveUpload(chunk.used, chunk.size, size, alignment, offset)) {
+    return {};
+  }
+  return {chunk.buffer.get(), offset, chunk.cpu + offset, size, chunk.device_address + offset};
+}
+
+UploadSpan UploadRing::TryAllocateCurrent(uint32_t slot, uint64_t size, uint64_t alignment) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUploadRing);
+  if (!device_ || slot >= kFramesInFlight || size == 0 ||
+      !IsPowerOfTwo(alignment) || alignment > kChunkSize) {
+    return {};
+  }
+  Slot& s = slots_[slot];
+  if (s.current >= s.chunks.size()) {
+    return {};
+  }
+  return AllocateFromChunk(s.chunks[s.current], size, alignment);
+}
+
 UploadSpan UploadRing::Allocate(uint32_t slot, uint64_t size, uint64_t alignment) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUploadRing);
   if (!device_ || slot >= kFramesInFlight) {
     return {};
   }
@@ -205,11 +231,8 @@ UploadSpan UploadRing::Allocate(uint32_t slot, uint64_t size, uint64_t alignment
   }
 
   while (s.current < s.chunks.size()) {
-    Chunk& c = s.chunks[s.current];
-    const uint64_t offset = AlignUp(c.used, alignment);
-    if (offset + size <= c.size) {
-      c.used = offset + size;
-      return {c.buffer.get(), offset, c.cpu + offset, size, c.device_address + offset};
+    if (const UploadSpan span = AllocateFromChunk(s.chunks[s.current], size, alignment)) {
+      return span;
     }
     ++s.current;
   }

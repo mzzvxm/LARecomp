@@ -2,6 +2,8 @@
 
 #include "ssr.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <chrono>
@@ -688,6 +690,7 @@ bool ScreenReflections::RoadViewDrawn(const EdramTargets& edram, uint32_t frame)
 }
 
 bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested, bool upscaler_running, const RegenAsk& ask) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kReflections);
   if (std::max(level_, garage_level_) == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_ || !edram_) {
     return false;
   }

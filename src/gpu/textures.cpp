@@ -24,6 +24,7 @@
 #include <rex/logging/log_category.h>
 
 #include "constants.h"
+#include "cpu_timing.h"
 #include "device.h"
 #include "frame.h"
 #include "hitch.h"
@@ -565,6 +566,7 @@ void TextureCache::BeginFrame(uint32_t slot) {
 }
 
 void TextureCache::Sync() {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kSync);
   DrainInvalidations();
   resolve_->Sync();
   resolve_memory_->Sync();
@@ -610,6 +612,7 @@ TextureCache::Binding TextureCache::Fail(const TextureKey& key, const char* what
 
 TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale reader_scale,
                                            plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTextureBind);
   ++stats_.lookups;
   const uint32_t gamma_bit = fetch.gamma ? kTextureGammaBit : 0u;
   const TextureKey& key = fetch.key;
@@ -1140,6 +1143,7 @@ void TextureCache::Prefetch(const uint32_t dwords[6], uint64_t sequence) {
 }
 
 bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string* why) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTextureUpload);
   // What the pool decoded ahead of this draw, if anything: taken out of the entry whichever way
   // the upload goes.
   std::shared_ptr<PrefetchedTexture> ahead = std::move(e.prefetch);
