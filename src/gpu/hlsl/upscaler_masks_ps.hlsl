@@ -21,7 +21,7 @@
 // samples drawn. The mask of the mean would not be: the gain saturates (a glass pixel of alpha 0.3
 // covering 2 of 4 samples is 0.5 here, 0.6 from the mean alpha).
 //
-// mode 1 is the diagnostic (mcla_gpu_upscaler_mask_test): every pixel 1, nothing read, to see whether
+// A zero sample count is the diagnostic (mcla_gpu_upscaler_mask_test): every pixel 1, nothing read, to see whether
 // an upscaler takes the mask at all (the picture loses its accumulation).
 
 #include "host_pass_common.hlsli"
@@ -30,13 +30,18 @@
 #define MASKS_MS 0
 #endif
 
-struct MaskPush {
-  uint coverage;      // slot: the coverage image, RGBA8 (not read in mode 1)
+struct MaskInput {
+  uint coverage;      // slot: the coverage image, RGBA8
   float gain;         // the mask's value for an opaque layer, and the share a fainter one keeps
   float color_gain;   // the same for the added colour
-  uint mode;          // 0 the coverage image, 1 every pixel 1
-  uint samples;       // MASKS_MS only: the coverage image's sample count, 2, 4 or 8
-  uint3 reserved;
+  uint samples;       // 0 all ones, 1 single sample, 2/4/8 multisampled
+};
+
+struct MaskPush {
+  MaskInput first;
+#if MASKS_PAIR
+  MaskInput second;
+#endif
 };
 
 #ifdef __spirv__
@@ -45,24 +50,43 @@ struct MaskPush {
 ConstantBuffer<MaskPush> g_push : register(b0, space4);
 #endif
 
-float MaskOf(float4 layers) {
+float MaskOf(float4 layers, MaskInput input) {
   const float added = max(layers.r, max(layers.g, layers.b));
-  return saturate(max(layers.a * g_push.gain, added * g_push.color_gain));
+  return saturate(max(layers.a * input.gain, added * input.color_gain));
 }
 
-float4 main(float4 position : SV_Position) : SV_Target {
-  if (g_push.mode == 1u) {
-    return float4(1.0f, 0.0f, 0.0f, 0.0f);
+float ResolveMask(int2 at, MaskInput input) {
+  if (input.samples == 0u) {
+    return 1.0f;
   }
-  const int2 at = int2(position.xy);
-#if MASKS_MS
-  float sum = 0.0f;
-  for (uint i = 0u; i < g_push.samples; ++i) {
-    sum += MaskOf(g_textures_ms[g_push.coverage & 0x7FFFFFFFu].Load(at, i));
+  const uint coverage = input.coverage & 0x7FFFFFFFu;
+#if MASKS_MS || MASKS_PAIR
+  if (input.samples > 1u) {
+    float sum = 0.0f;
+    for (uint i = 0u; i < input.samples; ++i) {
+      sum += MaskOf(g_textures_ms[coverage].Load(at, i), input);
+    }
+    return sum / float(input.samples);
   }
-  return float4(sum / float(max(g_push.samples, 1u)), 0.0f, 0.0f, 0.0f);
-#else
-  return float4(MaskOf(g_textures[g_push.coverage & 0x7FFFFFFFu].Load(int3(at, 0))), 0.0f, 0.0f,
-                0.0f);
 #endif
+  return MaskOf(g_textures[coverage].Load(int3(at, 0)), input);
 }
+
+#if MASKS_PAIR
+struct MaskOutputs {
+  float reactive : SV_Target0;
+  float transparency : SV_Target1;
+};
+
+MaskOutputs main(float4 position : SV_Position) {
+  const int2 at = int2(position.xy);
+  MaskOutputs out_px;
+  out_px.reactive = ResolveMask(at, g_push.first);
+  out_px.transparency = ResolveMask(at, g_push.second);
+  return out_px;
+}
+#else
+float main(float4 position : SV_Position) : SV_Target {
+  return ResolveMask(int2(position.xy), g_push.first);
+}
+#endif

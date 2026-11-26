@@ -47,6 +47,26 @@ constexpr bool FramebufferAgrees(uint32_t depth_samples, uint32_t coverage_sampl
   return depth_samples != 0 && depth_samples == coverage_samples;
 }
 
+enum class ResolveSource : uint8_t { kNone, kCoverage, kOnes, kWrongSize };
+
+constexpr ResolveSource SourceFor(bool drawn, bool size_matches, bool force_ones) {
+  if (force_ones) {
+    return ResolveSource::kOnes;
+  }
+  if (!drawn) {
+    return ResolveSource::kNone;
+  }
+  return size_matches ? ResolveSource::kCoverage : ResolveSource::kWrongSize;
+}
+
+constexpr bool Resolves(ResolveSource source) {
+  return source == ResolveSource::kCoverage || source == ResolveSource::kOnes;
+}
+
+constexpr bool FuseResolves(bool lean, bool reactive_ready, bool transparency_ready) {
+  return lean && reactive_ready && transparency_ready;
+}
+
 // ---- how the mask images are stored ----------------------------------------------------------------
 
 // Each mask is one value in [0, 1] a pixel at the render size. D3D12 keeps it in 8 bits (R8_UNORM). Vulkan keeps it in a half float (R16_FLOAT): Streamline's Vulkan back end (sl.chi vulkan.cpp getFormat,

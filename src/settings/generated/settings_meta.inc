@@ -619,6 +619,8 @@
 {"mcla_gpu_upscaler", "MCLA/GPU"},
 {"mcla_gpu_upscaler_lazy_load", "MCLA/GPU"},
 {"mcla_gpu_upscaler_mask_test", "MCLA/GPU"},
+{"mcla_gpu_upscaler_inputs_lean", "MCLA/GPU"},
+{"mcla_gpu_upscaler_inputs_verify", "MCLA/GPU"},
 {"mcla_gpu_upscaler_masks", "MCLA/GPU"},
 {"mcla_gpu_upscaler_post_reads_output", "MCLA/GPU"},
 {"mcla_gpu_upscaler_sharpness", "MCLA/GPU"},

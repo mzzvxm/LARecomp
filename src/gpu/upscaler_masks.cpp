@@ -29,6 +29,8 @@ plume::RenderFormat MaskFormat() {
 }
 
 using Kind = UpscalerMasks::Kind;
+constexpr uint64_t kWaterDropPs = 0x458E761B68FD72CDull;
+constexpr uint64_t kRainStreakPs = 0x313E112776627E41ull;
 
 // One pixel shader the masks take, with the vertex shader it must be drawn with (0: any). Every value
 // is a LARecomp identity (native_gfx/shader_identity.h), read off the shipped shader containers with
@@ -84,11 +86,11 @@ constexpr Entry kEntries[] = {
     {0xA370020CD18DB19Cull, 0, Kind::kParticle},
     {0x1F4D56E84D8C66FFull, 0, Kind::kParticle},
     {0x6F102D8EDB7C38FAull, 0, Kind::kParticle},
-    {0x458E761B68FD72CDull, 0, Kind::kParticle},
+    {kWaterDropPs, 0, Kind::kParticle},
     // xSoftPtx PSSoftPtx
     {0x72A4CA34BE7FB389ull, 0, Kind::kParticle},
     // xrain_system ParticleRenderPS (the rain's streaks)
-    {0x313E112776627E41ull, 0, Kind::kParticle},
+    {kRainStreakPs, 0, Kind::kParticle},
     // xlightning PS
     {0x96653B3EC5F735B8ull, 0, Kind::kParticle},
 
@@ -143,6 +145,10 @@ UpscalerMasks::Kind UpscalerMasks::KindOf(uint64_t vs_identity, uint64_t ps_iden
     return Kind::kNone;
   }
   return it->second.vs == 0 || it->second.vs == vs_identity ? it->second.kind : Kind::kNone;
+}
+
+bool UpscalerMasks::IsRainShader(uint64_t ps_identity) {
+  return ps_identity == kRainStreakPs || ps_identity == kWaterDropPs;
 }
 
 const char* UpscalerMasks::KindName(Kind kind) {
@@ -226,6 +232,7 @@ void UpscalerMasks::Initialize(HostPasses& passes, PassTiming& pass_timing) {
 
 void UpscalerMasks::Shutdown() {
   // The GPU is idle and the heap goes later: the slots are not handed back (TemporalMotion::Shutdown).
+  pair_targets_ = {};
   for (LayerState& l : layers_) {
     l.depth_framebuffer.reset();
     l.fb_depth = nullptr;
@@ -240,6 +247,9 @@ void UpscalerMasks::Shutdown() {
   shader_.reset();
   pipeline_ms_.reset();
   shader_ms_.reset();
+  pipeline_pair_.reset();
+  shader_pair_.reset();
+  pair_pipeline_failed_ = false;
   for (uint32_t& samples : logged_samples_) {
     samples = 0;
   }
@@ -262,6 +272,7 @@ void UpscalerMasks::Release() {
   if (!initialized_ || !passes_) {
     return;
   }
+  pair_targets_.Release(*passes_);
   for (LayerState& l : layers_) {
     DropFramebuffer(l);
     passes_->ReleaseImage(l.coverage);
@@ -297,8 +308,11 @@ void UpscalerMasks::BeginFrame() {
 
 HostImage* UpscalerMasks::Target(Layer layer, uint32_t width, uint32_t height, uint32_t samples,
                                  bool* clear) {
+  if (!clear) {
+    return nullptr;
+  }
   *clear = false;
-  if (!initialized_ || failed_ || width == 0 || height == 0 || samples == 0) {
+  if (!initialized_ || !passes_ || failed_ || width == 0 || height == 0 || samples == 0) {
     return nullptr;
   }
   LayerState& l = layers_[size_t(layer)];
@@ -367,7 +381,7 @@ bool UpscalerMasks::Prepare(bool multisampled) {
   if (pipeline) {
     return true;
   }
-  if (failed_ || !initialized_) {
+  if (failed_ || !initialized_ || !passes_) {
     return false;
   }
   const HostShaderBlob blob = multisampled ? UpscalerMasksMsPixelShader() : UpscalerMasksPixelShader();
@@ -386,25 +400,49 @@ bool UpscalerMasks::Prepare(bool multisampled) {
   return true;
 }
 
+bool UpscalerMasks::PreparePair() {
+  if (pipeline_pair_ || pair_pipeline_failed_) {
+    return bool(pipeline_pair_);
+  }
+  const HostShaderBlob blob = UpscalerMasksPairPixelShader();
+  shader_pair_ = passes_->CreateShader(blob.data, blob.size, blob.name);
+  if (shader_pair_) {
+    const plume::RenderFormat format = MaskFormat();
+    const plume::RenderFormat formats[] = {format, format};
+    pipeline_pair_ = passes_->CreateMrtPipeline(passes_->layout(), *shader_pair_, formats, 2,
+                                               "upscaler mask resolve pair");
+  }
+  pair_pipeline_failed_ = !pipeline_pair_;
+  if (pair_pipeline_failed_) {
+    REXLOG_WARN("{} using separate mask resolves after MRT pipeline failure", kPrefix);
+  }
+  return bool(pipeline_pair_);
+}
+
 bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_width,
-                            uint32_t render_height) {
+                            uint32_t render_height, bool lean, bool verify) {
+  using upscaler_mask_plan::ResolveSource;
+  static_assert(kLayerCount == 2);
+  constexpr const char* names[] = {"reactive mask", "transparency mask"};
   const uint32_t test = uint32_t(larecomp::settings::mcla_gpu_upscaler_mask_test.Get());
-  const bool ready = list && initialized_ && !failed_;
-  bool any = false;
+  const bool ready = list && passes_ && pass_timing_ && initialized_ && !failed_;
+  MaskInput inputs[kLayerCount] = {};
+  bool prepared[kLayerCount] = {};
   for (size_t i = 0; i < kLayerCount; ++i) {
     LayerState& l = layers_[i];
     l.mask_valid = false;
     const bool had = l.drawn;
     l.drawn = false;  // taken: a draw of a later frame starts a new image
-    const bool ones = ((test >> i) & 1u) != 0;
-    if (!ready || (!had && !ones)) {
+    if (!ready) {
       continue;
     }
     if (had) {
       ++stats_.frames[i];
     }
-    if (had && !ones &&
-        (l.coverage.width != render_width || l.coverage.height != render_height)) {
+    const ResolveSource source = upscaler_mask_plan::SourceFor(
+        had, l.coverage.width == render_width && l.coverage.height == render_height,
+        ((test >> i) & 1u) != 0);
+    if (source == ResolveSource::kWrongSize) {
       // The draws' viewport was not the render size (a draw in a view of another size): no mask, and
       // never a mask that is a different picture from the colour.
       ++stats_.size_mismatch;
@@ -414,25 +452,21 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
                     "frames (the first of its kind)",
                     kPrefix, l.coverage.width, l.coverage.height, render_width, render_height);
       }
+    }
+    if (!upscaler_mask_plan::Resolves(source)) {
       continue;
     }
-    const char* name = i == size_t(Layer::kReactive) ? "reactive mask" : "transparency mask";
-    // The coverage image has the samples of the game's depth (Target): the mask pass takes the mean of
-    // its samples' masks when it has several. The all-ones diagnostic reads nothing.
-    const uint32_t samples = ones ? 1u : std::max<uint32_t>(l.coverage.samples, 1u);
-    if (!Prepare(samples > 1) ||
-        !passes_->EnsureImage(l.mask, render_width, render_height, MaskFormat(), name)) {
+    if (l.mask.width != render_width || l.mask.height != render_height) {
+      pair_targets_.Release(*passes_);
+    }
+    if (!passes_->EnsureImage(l.mask, render_width, render_height, MaskFormat(), names[i])) {
       ++stats_.image_failures;
       continue;
     }
-    MaskPush push{};
+    MaskInput& push = inputs[i];
     push.gain = i == size_t(Layer::kReactive) ? kReactiveGain : kTransparencyGain;
     push.color_gain = kAddedLightGain;
-    push.samples = samples;
-    if (ones) {
-      push.mode = 1;
-      ++stats_.forced[i];
-    } else {
+    if (source == ResolveSource::kCoverage && l.coverage.texture) {
       // The second draws left the image a render target; the pass reads it.
       if (l.coverage.layout != plume::RenderTextureLayout::SHADER_READ) {
         list->barriers(plume::RenderBarrierStage::GRAPHICS,
@@ -441,14 +475,48 @@ bool UpscalerMasks::Resolve(plume::RenderCommandList* list, uint32_t render_widt
         l.coverage.layout = plume::RenderTextureLayout::SHADER_READ;
       }
       push.coverage = l.coverage.slot;
+      push.samples = l.coverage.samples;
+    } else if (source != ResolveSource::kOnes) {
+      continue;
     }
-    pass_timing_->Mark(list, name);
-    passes_->DrawInto(list, l.mask, samples > 1 ? pipeline_ms_.get() : pipeline_.get(), &push,
-                      sizeof(push));
+    prepared[i] = true;
+  }
+
+  // CHECK: compare both mask attachments with the separate resolves on D3D12 and Vulkan,
+  // including MSAA and a frame with only one layer.
+  const bool paired = upscaler_mask_plan::FuseResolves(lean, prepared[0], prepared[1]) &&
+                      PreparePair() &&
+                      pair_targets_.Ensure(*passes_, layers_[0].mask, layers_[1].mask,
+                                           "upscaler mask resolve framebuffer");
+  bool any = false;
+  for (size_t i = 0; i < kLayerCount; ++i) {
+    if (!prepared[i]) {
+      continue;
+    }
+    LayerState& l = layers_[i];
+    const bool multisampled = inputs[i].samples > 1;
+    if (!paired || verify) {
+      if (!Prepare(multisampled)) {
+        ++stats_.image_failures;
+        if (!paired) {
+          continue;
+        }
+      } else {
+        pass_timing_->Mark(list, names[i]);
+        passes_->DrawInto(list, l.mask, multisampled ? pipeline_ms_.get() : pipeline_.get(),
+                          &inputs[i], sizeof(inputs[i]));
+      }
+    }
     l.mask_valid = true;
     ++stats_.resolved[i];
-    stats_.resolved_ms[i] += samples > 1 ? 1 : 0;
+    stats_.resolved_ms[i] += multisampled ? 1 : 0;
+    stats_.forced[i] += inputs[i].samples == 0 ? 1 : 0;
     any = true;
+  }
+  if (paired) {
+    pass_timing_->Mark(list, "upscaler masks resolve");
+    passes_->DrawMrtPair(*list, *pair_targets_.framebuffer, layers_[0].mask, layers_[1].mask,
+                        *pipeline_pair_, inputs, sizeof(inputs));
   }
   return any;
 }

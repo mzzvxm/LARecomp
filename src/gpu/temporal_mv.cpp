@@ -14,8 +14,6 @@
 #include <rex/xenos/format.h>
 #include <rex/logging/log_category.h>
 
-#include "descriptors.h"
-#include "device.h"
 #include "format.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
@@ -84,10 +82,7 @@ TemporalMotion::~TemporalMotion() {
   Shutdown();
 }
 
-void TemporalMotion::Initialize(Device& device, BindlessHeap& heap, HostPasses& passes,
-                                PassTiming& pass_timing) {
-  device_ = &device;
-  heap_ = &heap;
+void TemporalMotion::Initialize(HostPasses& passes, PassTiming& pass_timing) {
   passes_ = &passes;
   pass_timing_ = &pass_timing;
   masks_.Initialize(passes, pass_timing);
@@ -97,6 +92,9 @@ void TemporalMotion::Initialize(Device& device, BindlessHeap& heap, HostPasses& 
 
 void TemporalMotion::Shutdown() {
   // The GPU is idle and the heap goes later: the slots are not handed back (PostAa::Shutdown).
+  for (HostMrtPair& targets : fused_targets_) {
+    targets = {};
+  }
   for (HostImage& image : depth_) {
     image = HostImage{};
   }
@@ -107,13 +105,14 @@ void TemporalMotion::Shutdown() {
   table_pipeline_.reset();
   depth_pipeline_.reset();
   motion_pipeline_.reset();
+  fused_pipeline_.reset();
   table_shader_.reset();
   depth_shader_.reset();
   motion_shader_.reset();
+  fused_shader_.reset();
   motion_layout_.reset();
+  fused_pipeline_failed_ = false;
   recorded_ = false;
-  device_ = nullptr;
-  heap_ = nullptr;
   passes_ = nullptr;
   pass_timing_ = nullptr;
   initialized_ = false;
@@ -122,6 +121,9 @@ void TemporalMotion::Shutdown() {
 void TemporalMotion::Release() {
   if (!initialized_ || !passes_) {
     return;
+  }
+  for (HostMrtPair& targets : fused_targets_) {
+    targets.Release(*passes_);
   }
   for (HostImage& image : depth_) {
     passes_->ReleaseImage(image);
@@ -149,70 +151,78 @@ uint64_t TemporalMotion::HeldBytes() const {
 }
 
 bool TemporalMotion::Prepare() {
-  if (motion_pipeline_) {
+  if (motion_layout_) {
     return true;
   }
-  if (failed_ || !initialized_) {
+  if (failed_ || !initialized_ || !passes_) {
     return false;
   }
-  // The host pass layout (host_passes.h) with 96 bytes of push constants instead of 48: the four
-  // texture sets, the sampler set, the push range at (b0, space4), for both stages as there.
-  plume::RenderPipelineLayoutBuilder builder;
-  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
-  for (uint32_t set = 0; set < 4; ++set) {
-    builder.addDescriptorSet(heap_->texture_set_builder());
-  }
-  builder.addDescriptorSet(heap_->sampler_set_builder());
-  builder.addPushConstant(0, 4, kMotionPushBytes,
-                          plume::RenderShaderStageFlag::VERTEX | plume::RenderShaderStageFlag::PIXEL);
-  builder.end();
-  motion_layout_ = device_->CreatePipelineLayout(builder, "temporal motion layout");
+  motion_layout_ = passes_->CreateLayout(kMotionPushBytes, "temporal motion layout");
 
-  const HostShaderBlob motion = TemporalMotionPixelShader();
-  const HostShaderBlob depth = TemporalCopyPixelShader();
-  const HostShaderBlob table = TemporalVehicleTablePixelShader();
-  motion_shader_ = passes_->CreateShader(motion.data, motion.size, motion.name);
-  depth_shader_ = passes_->CreateShader(depth.data, depth.size, depth.name);
-  table_shader_ = passes_->CreateShader(table.data, table.size, table.name);
-  bool ok = motion_layout_ && motion_shader_ && depth_shader_;
-  if (ok) {
-    motion_pipeline_ = passes_->CreatePipeline(*motion_layout_, *motion_shader_, kMotionFormat,
-                                               "temporal motion vectors");
-    depth_pipeline_ = passes_->CreatePipeline(*depth_shader_, kDepthFormat, "temporal depth copy");
-    ok = motion_pipeline_ && depth_pipeline_;
-  }
-  if (ok) {
-    // The vehicle table's rows are drawn with the host pass layout as it is (up to 64 bytes of push
-    // constants). Without it the vectors are the camera's for every pixel, as before the vehicles.
-    if (table_shader_) {
-      table_pipeline_ =
-          passes_->CreatePipeline(*table_shader_, kTableFormat, "temporal vehicle table");
-    }
-    if (!table_pipeline_) {
-      REXLOG_ERROR("{} the vehicle table's pass could not be made: no vehicle vectors this session "
-                   "(the camera's motion for every pixel)",
-                   kPrefix);
-    }
-  }
-  if (!ok) {
+  if (!motion_layout_) {
     failed_ = true;
-    motion_pipeline_.reset();
-    REXLOG_ERROR("{} the passes could not be made (layout, shaders or pipelines): no motion "
-                 "vectors this session",
-                 kPrefix);
+    REXLOG_ERROR("{} the motion layout could not be made", kPrefix);
     return false;
+  }
+  const HostShaderBlob table = TemporalVehicleTablePixelShader();
+  table_shader_ = passes_->CreateShader(table.data, table.size, table.name);
+  if (table_shader_) {
+    table_pipeline_ = passes_->CreatePipeline(*table_shader_, kTableFormat, "temporal vehicle table");
+  }
+  if (!table_pipeline_) {
+    REXLOG_ERROR("{} the vehicle table's pass could not be made: using camera vectors", kPrefix);
   }
   REXLOG_INFO("{} passes ready: depth {}, vectors {} (render size), vehicle table {}", kPrefix,
               "R32_FLOAT", "R16G16_FLOAT", table_pipeline_ ? "yes" : "NO");
   return true;
 }
 
+bool TemporalMotion::PrepareSeparate() {
+  if (motion_pipeline_ && depth_pipeline_) {
+    return true;
+  }
+  const HostShaderBlob motion = TemporalMotionPixelShader();
+  const HostShaderBlob depth = TemporalCopyPixelShader();
+  motion_shader_ = passes_->CreateShader(motion.data, motion.size, motion.name);
+  depth_shader_ = passes_->CreateShader(depth.data, depth.size, depth.name);
+  if (motion_shader_ && depth_shader_) {
+    motion_pipeline_ = passes_->CreatePipeline(*motion_layout_, *motion_shader_, kMotionFormat,
+                                               "temporal motion vectors");
+    depth_pipeline_ = passes_->CreatePipeline(*depth_shader_, kDepthFormat, "temporal depth copy");
+  }
+  if (!motion_pipeline_ || !depth_pipeline_) {
+    failed_ = true;
+    REXLOG_ERROR("{} the separate depth and motion passes could not be made", kPrefix);
+    return false;
+  }
+  return true;
+}
+
+bool TemporalMotion::PrepareFused() {
+  if (fused_pipeline_ || fused_pipeline_failed_) {
+    return bool(fused_pipeline_);
+  }
+  const HostShaderBlob blob = TemporalMotionDepthPixelShader();
+  fused_shader_ = passes_->CreateShader(blob.data, blob.size, blob.name);
+  if (fused_shader_) {
+    const plume::RenderFormat formats[] = {kMotionFormat, kDepthFormat};
+    fused_pipeline_ = passes_->CreateMrtPipeline(*motion_layout_, *fused_shader_, formats, 2,
+                                                "temporal depth + motion vectors");
+  }
+  fused_pipeline_failed_ = !fused_pipeline_;
+  if (fused_pipeline_failed_) {
+    REXLOG_WARN("{} using separate depth and motion passes after MRT pipeline failure", kPrefix);
+  }
+  return bool(fused_pipeline_);
+}
+
 // ---------------------------------------------------------------------------
 // the frame
 // ---------------------------------------------------------------------------
 
-bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
-  if (!list || !f.camera || !available() || !Prepare()) {
+bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f, bool upscaling, bool lean,
+                            bool verify) {
+  if (!list || !f.camera || !pass_timing_ || !available() || !Prepare()) {
     return false;
   }
   const uint32_t rw = f.render_size[0];
@@ -221,14 +231,30 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
     return false;
   }
   // This frame's images are the other half of the pair; the previous frame's stay where they are.
-  cur_ ^= 1u;
-  HostImage& depth = depth_[cur_];
+  const uint32_t next = cur_ ^ 1u;
+  HostImage& depth = depth_[next];
   const bool has_previous = f.previous != nullptr;
   recorded_ = false;
+  if (motion_.width != rw || motion_.height != rh) {
+    for (HostMrtPair& targets : fused_targets_) {
+      targets.Release(*passes_);
+    }
+  } else if (depth.width != rw || depth.height != rh) {
+    fused_targets_[next].Release(*passes_);
+  }
   if (!passes_->EnsureImage(depth, rw, rh, kDepthFormat, "temporal depth") ||
       !passes_->EnsureImage(motion_, rw, rh, kMotionFormat, "temporal motion vectors")) {
     return false;
   }
+  // CHECK: compare both attachments at the anchor on D3D12 and Vulkan, including a reset frame.
+  const bool fused = lean && PrepareFused() &&
+                     fused_targets_[next].Ensure(*passes_, motion_, depth,
+                                                 "temporal depth + motion framebuffer");
+  const bool separate = !fused || verify;
+  if (separate && !PrepareSeparate()) {
+    return false;
+  }
+  cur_ = next;
 
   if (rw != logged_size_[0] || rh != logged_size_[1]) {
     logged_size_[0] = rw;
@@ -240,10 +266,11 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
   }
   // CHECK: the depth product the anchor binds is the render size (the guest size at the scene's
   // scale), not a copy reduced to another scale (census CHECK 2: the host depth is 1 near, 0 far).
-  CopyPush copy{};
-  pass_timing_->Mark(list, "temporal depth copy");
-  copy.source = f.depth_slot;
-  passes_->DrawInto(list, depth, depth_pipeline_.get(), &copy, sizeof(copy));
+  if (separate) {
+    const CopyPush copy{f.depth_slot};
+    pass_timing_->Mark(list, "temporal depth copy");
+    passes_->DrawInto(list, depth, depth_pipeline_.get(), &copy, sizeof(copy));
+  }
 
   // The stencil view the vehicles' IDs are read from: the component that holds the stencil byte comes
   // from the fetch constant, not from a pinned swizzle.
@@ -283,24 +310,15 @@ bool TemporalMotion::Record(plume::RenderCommandList* list, const Frame& f) {
     }
   }
 
-  pass_timing_->Mark(list, "temporal motion vectors");
-  RecordMotion(list, f, has_previous, stencil, table_slot);
+  RecordMotion(list, f, has_previous, stencil, table_slot, fused, separate);
 
   // The masks of the draws the Scene drew again (they need no previous frame).
-  mask_recorded_ = masks_.Resolve(list, rw, rh);
+  mask_recorded_ = upscaling && masks_.Resolve(list, rw, rh, lean, verify);
 
   recorded_ = true;
   recorded_frame_ = f.frame;
   motion_zero_ = !has_previous;
   return true;
-}
-
-void TemporalMotion::BindMotion(plume::RenderCommandList* list) const {
-  list->setGraphicsPipelineLayout(motion_layout_.get());
-  for (uint32_t set = 0; set < 4; ++set) {
-    list->setGraphicsDescriptorSet(heap_->texture_set(), set);
-  }
-  list->setGraphicsDescriptorSet(heap_->sampler_set(), 4);
 }
 
 bool TemporalMotion::RecordVehicleTable(plume::RenderCommandList* list, const Frame& f) {
@@ -346,7 +364,8 @@ bool TemporalMotion::RecordVehicleTable(plume::RenderCommandList* list, const Fr
 }
 
 void TemporalMotion::RecordMotion(plume::RenderCommandList* list, const Frame& f,
-                                  bool has_previous, uint32_t stencil, uint32_t table) {
+                                  bool has_previous, uint32_t stencil, uint32_t table, bool fused,
+                                  bool separate) {
   MotionPush push{};
   push.depth = f.depth_slot;
   push.stencil = stencil;
@@ -358,7 +377,7 @@ void TemporalMotion::RecordMotion(plume::RenderCommandList* list, const Frame& f
   push.size[1] = float(f.render_size[1]);
   push.to_render[0] = float(double(f.render_size[0]) / double(f.guest_size[0]));
   push.to_render[1] = float(double(f.render_size[1]) / double(f.guest_size[1]));
-  if (has_previous) {
+  if (has_previous && f.previous && f.camera) {
     float m[16];
     ToFloats(temporal::CameraToPreviousPixels(*f.camera, *f.previous), m);
     SetColumns(push, m);
@@ -366,37 +385,16 @@ void TemporalMotion::RecordMotion(plume::RenderCommandList* list, const Frame& f
     push.mode = 2;  // zero: the history starts again
   }
 
-  // The same sequence as HostPasses::DrawInto, with this pass's own layout.
-  // CHECK: 96 bytes of push constants for the vertex and the pixel stage on both backends (the
-  // resolve memory's fused pass already uses 72; Vulkan guarantees 128, D3D12 has 64 dwords of root
-  // signature for 24 of them and the five tables) and the host layout's four texture sets and
-  // sampler set bound again by BindMotion; the D3D12 debug layer and Vulkan validation over this
-  // pass settle it.
-  HostImage& image = motion_;
-  const bool first_use = image.layout == plume::RenderTextureLayout::UNKNOWN;
-  if (image.layout != plume::RenderTextureLayout::COLOR_WRITE) {
-    list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                   plume::RenderTextureBarrier(image.texture.get(),
-                                               plume::RenderTextureLayout::COLOR_WRITE));
-    image.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  if (separate) {
+    pass_timing_->Mark(list, "temporal motion vectors");
+    passes_->DrawInto(list, motion_, motion_pipeline_.get(), &push, sizeof(push), false,
+                      motion_layout_.get());
   }
-  list->setFramebuffer(image.framebuffer.get());
-  if (first_use) {
-    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+  if (fused) {
+    pass_timing_->Mark(list, "temporal depth + motion vectors");
+    passes_->DrawMrtPair(*list, *fused_targets_[cur_].framebuffer, motion_, depth_[cur_],
+                        *fused_pipeline_, &push, sizeof(push), motion_layout_.get());
   }
-  const plume::RenderViewport viewport{0.0f, 0.0f, float(image.width), float(image.height)};
-  list->setViewports(&viewport, 1);
-  const plume::RenderRect scissor(0, 0, int32_t(image.width), int32_t(image.height));
-  list->setScissors(&scissor, 1);
-  BindMotion(list);
-  list->setPipeline(motion_pipeline_.get());
-  list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
-  list->drawInstanced(3, 1, 0, 0);
-  list->setFramebuffer(nullptr);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS,
-                 plume::RenderTextureBarrier(image.texture.get(),
-                                             plume::RenderTextureLayout::SHADER_READ));
-  image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
 TemporalMotion::Kept TemporalMotion::kept() const {

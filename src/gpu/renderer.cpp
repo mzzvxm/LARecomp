@@ -488,7 +488,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     capture_readback_.Initialize(device_, frames_, pass_timing_, swap_chain_.format());  // capture mode: made on a take's first frame
     // The temporal groundwork's passes: made on first use, never fail the renderer.
     // The upscaler backend (FidelityFX, when the build has it) is probed on a worker thread.
-    temporal_.Initialize(device_, frames_, heap_, passes_, pass_timing_, textures_, resolve_,
+    temporal_.Initialize(device_, frames_, passes_, pass_timing_, textures_, resolve_,
                          edram_);
     temporal_.SetRrGuidePass(&rr_guides_);  // the upscale runs the guide pass where Ray Reconstruction (or a guide view) wants it
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.

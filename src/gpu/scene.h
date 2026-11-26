@@ -467,7 +467,8 @@ class Scene {
   // The draw `d` was just recorded: records it again into the coverage image (its own framebuffer with
   // the game's depth beside it, and pipeline; everything else the draw's), the way RecordHdrDuplicate
   // does.
-  void RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list);
+  void RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list,
+                          uint64_t ps_identity);
   static bool AlwaysMaySkip(const void*) { return true; }
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,

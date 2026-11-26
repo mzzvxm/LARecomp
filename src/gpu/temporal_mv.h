@@ -5,8 +5,8 @@
 // feature-parity/F4-DESIGN.md 2.4 and 6.1, as the census of the real game corrected them
 // (feature-parity/CENSUS-FINDINGS.md section 3 and Round 2). TemporalSystem (temporal.h) finds the
 // anchor draw and calls Record() for it, before the anchor's own draw is recorded, with the list
-// outside any render pass. The passes (all full-screen triangles, the renderer's host pass layout
-// of host_passes.h, hlsl/temporal_*.hlsl, DXIL and SPIR-V):
+// outside any render pass. With an upscaler, one full-screen draw writes depth and motion as two
+// attachments and shares the depth load (hlsl/temporal_mv_ps.hlsl).
 //
 //   depth    the scene's depth from the product the anchor's fetch 2 reads, kept: R32_FLOAT, render
 //            size, 1 near / 0 far as the guest stores it, jittered like the scene.
@@ -46,8 +46,6 @@
 
 namespace mcla::gpu {
 
-class BindlessHeap;
-class Device;
 class PassTiming;
 
 class TemporalMotion {
@@ -95,7 +93,7 @@ class TemporalMotion {
   TemporalMotion& operator=(const TemporalMotion&) = delete;
 
   // Nothing is made until the first Record: this only keeps what the passes need.
-  void Initialize(Device& device, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing);
+  void Initialize(HostPasses& passes, PassTiming& pass_timing);
   // GPU idle (every retire action run), before HostPasses and the BindlessHeap shut down.
   void Shutdown();
   // The switch went off: the images go (retired behind the frames that name them); the passes stay.
@@ -108,7 +106,8 @@ class TemporalMotion {
 
   // The anchor draw of a frame, `list` outside any render pass. Records the passes; false when
   // nothing was recorded (the caller keeps its list state).
-  bool Record(plume::RenderCommandList* list, const Frame& frame);
+  bool Record(plume::RenderCommandList* list, const Frame& frame, bool upscaling, bool lean,
+              bool verify);
 
   Kept kept() const;
 
@@ -169,33 +168,35 @@ class TemporalMotion {
 
   // The layout, shaders and pipelines, on first use. False (and failed_) when one cannot be made.
   bool Prepare();
+  bool PrepareSeparate();
+  bool PrepareFused();
   // The vehicle table: one draw of 4 x 1 pixels a usable vehicle into its row of table_. False when
   // there is none (the vector pass then gives every pixel the camera's motion).
   bool RecordVehicleTable(plume::RenderCommandList* list, const Frame& frame);
   // The vector image: one draw over all of it. `stencil` is StencilRef of the frame's view, `table`
   // the vehicle table's slot or kNoTable.
   void RecordMotion(plume::RenderCommandList* list, const Frame& frame, bool has_previous,
-                    uint32_t stencil, uint32_t table);
-  void BindMotion(plume::RenderCommandList* list) const;
-
-  Device* device_ = nullptr;
-  BindlessHeap* heap_ = nullptr;
+                    uint32_t stencil, uint32_t table, bool fused, bool separate);
   HostPasses* passes_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
   bool initialized_ = false;
   bool failed_ = false;
 
-  std::unique_ptr<plume::RenderPipelineLayout> motion_layout_;  // the host layout with 80 bytes of push
+  std::unique_ptr<plume::RenderPipelineLayout> motion_layout_;
   std::unique_ptr<plume::RenderShader> motion_shader_;
+  std::unique_ptr<plume::RenderShader> fused_shader_;
   std::unique_ptr<plume::RenderShader> depth_shader_;
   std::unique_ptr<plume::RenderShader> table_shader_;
   std::unique_ptr<plume::RenderPipeline> motion_pipeline_;
+  std::unique_ptr<plume::RenderPipeline> fused_pipeline_;
   std::unique_ptr<plume::RenderPipeline> depth_pipeline_;
   std::unique_ptr<plume::RenderPipeline> table_pipeline_;
 
   // The images. [cur_] is this frame's; the other one holds the frame before's.
   HostImage depth_[2];
   HostImage motion_;
+  HostMrtPair fused_targets_[2];
+  bool fused_pipeline_failed_ = false;
   HostImage table_;  // the vehicle table: R32G32B32A32_FLOAT, 4 x 24, a row a stencil ID
   UpscalerMasks masks_;  // the reactive and the transparency mask (upscaler_masks.h)
   uint32_t cur_ = 0;

@@ -1974,6 +1974,10 @@ class GPUSettings final : public rex::SettingOwner {
     "flicker); one that does not read it looks as before. Only while FSR or DLSS runs. 0: the real "
     "masks. Live.", rex::Range{0, 3}, rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_upscaler_inputs_lean, true, "Combine the upscaler's depth and motion passes and resolve both masks together when present. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_upscaler_inputs_verify, false, "Record separate and combined upscaler input passes in the same frame for GPU capture. The combined passes write last. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_upscaler_masks, true, "Whether the upscalers get the reactive mask (the cars' shadow decals, particles, light "
     "volumes) and the transparency and composition mask (car glass): on, they are drawn "
     "(upscaler_masks.h). Off: no mask is made and the upscaler trusts its history everywhere, "
@@ -2558,6 +2562,8 @@ inline auto& mcla_gpu_traffic_shadows_rotation = g_gpu.mcla_gpu_traffic_shadows_
 inline auto& mcla_gpu_upscaler = g_gpu.mcla_gpu_upscaler;
 inline auto& mcla_gpu_upscaler_lazy_load = g_gpu.mcla_gpu_upscaler_lazy_load;
 inline auto& mcla_gpu_upscaler_mask_test = g_gpu.mcla_gpu_upscaler_mask_test;
+inline auto& mcla_gpu_upscaler_inputs_lean = g_gpu.mcla_gpu_upscaler_inputs_lean;
+inline auto& mcla_gpu_upscaler_inputs_verify = g_gpu.mcla_gpu_upscaler_inputs_verify;
 inline auto& mcla_gpu_upscaler_masks = g_gpu.mcla_gpu_upscaler_masks;
 inline auto& mcla_gpu_upscaler_post_reads_output = g_gpu.mcla_gpu_upscaler_post_reads_output;
 inline auto& mcla_gpu_upscaler_sharpness = g_gpu.mcla_gpu_upscaler_sharpness;

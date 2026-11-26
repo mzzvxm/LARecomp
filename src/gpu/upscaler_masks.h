@@ -21,7 +21,9 @@
 // (one per layer) with the game's own depth and stencil test, the depth not written, only the coverage
 // written (VariantKey), the way HdrToneMap duplicates its draws. The same vertex shader, pixel shader and
 // constants, so the same jitter, and the pixel shader's alpha or colour is what is left. At the anchor
-// Resolve() turns each image into its R8 mask (upscaler_masks_ps.hlsl).
+// Resolve() writes both masks in one fullscreen draw when both layers are present. The two coverage
+// images preserve independent RGB sums and alpha unions. In particular, summing per-draw RGB maxima
+// does not give the maximum of the accumulated RGB.
 //
 // The samples. Under an upscaler the host's MSAA level is 1 and the coverage images have one sample.
 // With mcla_gpu_msaa_with_upscaler on the game's depth has the player's level (2, 4 or 8 samples), and a
@@ -98,6 +100,7 @@ class UpscalerMasks {
   // What a draw with these shader identities is (kNone: nothing the masks take). The Scene asks for the
   // draws of the main view before the anchor that write one colour target.
   static Kind KindOf(uint64_t vs_identity, uint64_t ps_identity);
+  static bool IsRainShader(uint64_t ps_identity);
   static const char* KindName(Kind kind);
   static Layer LayerOf(Kind kind) {
     return kind == Kind::kGlass ? Layer::kTransparency : Layer::kReactive;
@@ -152,7 +155,8 @@ class UpscalerMasks {
   // At the anchor, outside any render pass: the R8 masks of this frame at the render size. A layer
   // gets one when the frame drew into it (or mcla_gpu_upscaler_mask_test asks for all ones); false
   // when neither has one. The mask is null for a layer that has none.
-  bool Resolve(plume::RenderCommandList* list, uint32_t render_width, uint32_t render_height);
+  bool Resolve(plume::RenderCommandList* list, uint32_t render_width, uint32_t render_height,
+               bool lean, bool verify);
   // This frame's mask of `layer` when Resolve made one, SHADER_READ; else null.
   const HostImage* mask(Layer layer) const {
     const LayerState& l = layers_[size_t(layer)];
@@ -170,15 +174,13 @@ class UpscalerMasks {
   std::string StateText(bool enabled) const;
 
  private:
-  struct MaskPush {  // hlsl/upscaler_masks_ps.hlsl
+  struct MaskInput {  // hlsl/upscaler_masks_ps.hlsl
     uint32_t coverage;
     float gain;
     float color_gain;
-    uint32_t mode;
-    uint32_t samples;  // the multisampled shader only: the coverage image's sample count
-    uint32_t reserved[3];
+    uint32_t samples;  // 0 all ones, otherwise the coverage image's sample count
   };
-  static_assert(sizeof(MaskPush) == 32);
+  static_assert(sizeof(MaskInput) == 16);
 
   struct LayerState {
     HostImage coverage;  // RGBA8: the second draws' coverage, cleared at the layer's first draw of a frame
@@ -209,6 +211,7 @@ class UpscalerMasks {
 
   // The mask pass's pipeline for a coverage image of one sample, or of several (the other shader).
   bool Prepare(bool multisampled);
+  bool PreparePair();
   void DropFramebuffer(LayerState& layer);
 
   HostPasses* passes_ = nullptr;
@@ -219,6 +222,10 @@ class UpscalerMasks {
   std::unique_ptr<plume::RenderPipeline> pipeline_;
   std::unique_ptr<plume::RenderShader> shader_ms_;
   std::unique_ptr<plume::RenderPipeline> pipeline_ms_;
+  std::unique_ptr<plume::RenderShader> shader_pair_;
+  std::unique_ptr<plume::RenderPipeline> pipeline_pair_;
+  HostMrtPair pair_targets_;
+  bool pair_pipeline_failed_ = false;
   uint32_t logged_samples_[kLayerCount] = {};  // the count of each layer's last "coverage image" line
   LayerState layers_[kLayerCount];
   uint64_t frame_drawn_ = 0;  // second draws in the frame being recorded

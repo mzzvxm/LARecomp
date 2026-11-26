@@ -212,9 +212,11 @@
 #include "smaa_weights_ps.hlsl.dxil.h"
 #include "temporal_copy_ps.hlsl.dxil.h"
 #include "temporal_mv_ps.hlsl.dxil.h"
+#include "temporal_mv_depth_ps.hlsl.dxil.h"
 #include "temporal_vehicle_table_ps.hlsl.dxil.h"
 #include "upscaler_masks_ms_ps.hlsl.dxil.h"
 #include "upscaler_masks_ps.hlsl.dxil.h"
+#include "upscaler_masks_pair_ps.hlsl.dxil.h"
 #endif
 #if defined(LARECOMP_GPU_HAS_VULKAN)
 #include "ao_apply_gi_ms_ps.hlsl.spirv.h"
@@ -411,9 +413,11 @@
 #include "smaa_weights_ps.hlsl.spirv.h"
 #include "temporal_copy_ps.hlsl.spirv.h"
 #include "temporal_mv_ps.hlsl.spirv.h"
+#include "temporal_mv_depth_ps.hlsl.spirv.h"
 #include "temporal_vehicle_table_ps.hlsl.spirv.h"
 #include "upscaler_masks_ms_ps.hlsl.spirv.h"
 #include "upscaler_masks_ps.hlsl.spirv.h"
+#include "upscaler_masks_pair_ps.hlsl.spirv.h"
 #endif
 
 namespace mcla::gpu {
@@ -769,6 +773,10 @@ inline HostShaderBlob TemporalMotionPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_mv_ps);
 }
 
+inline HostShaderBlob TemporalMotionDepthPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(temporal_mv_depth_ps);
+}
+
 inline HostShaderBlob TemporalCopyPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(temporal_copy_ps);
 }
@@ -786,6 +794,10 @@ inline HostShaderBlob UpscalerMasksPixelShader() {
 // The same masks from a coverage image with several samples (the host's MSAA level under an upscaler).
 inline HostShaderBlob UpscalerMasksMsPixelShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(upscaler_masks_ms_ps);
+}
+
+inline HostShaderBlob UpscalerMasksPairPixelShader() {
+  return MCLA_GPU_HOST_SHADER_BLOB(upscaler_masks_pair_ps);
 }
 
 // Frame generation (frame_generation.h): the scene prepared for the interpolation, the generated

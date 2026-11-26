@@ -217,6 +217,7 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgCarShadowReuse", "mcla_gpu_car_shadow_reuse", "CAR SHADOW REUSE: ")),
     NativeOnly(Bool("PM_RxDbgLightShadowBands", "mcla_gpu_light_shadow_bands", "LIGHT SHADOW DISTANCE BANDS: ")),
     NativeOnly(Bool("PM_RxDbgLightComposite", "mcla_gpu_light_composite", "LIGHT COMPOSITE: ")),
+    NativeOnly(Bool("PM_RxDbgUpInputsLean", "mcla_gpu_upscaler_inputs_lean", "COMBINED UPSCALER INPUT PASSES: ")),
     NativeOnly(Bool("PM_RxDbgLampFringe", "mcla_gpu_glow_neutral", "REFLECTED LAMP FRINGE FIX: ")),
     NativeOnly(Bool("PM_RxDbgImpostorSize", "mcla_gpu_impostor_native_size", "NATIVE FOLIAGE BAKE: ")),
     NativeOnly(Bool("PM_RxDbgHudMapHold", "mcla_gpu_hud_map_hold", "HUD RADAR HOLD: ")),
