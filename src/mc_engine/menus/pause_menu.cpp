@@ -1749,7 +1749,7 @@ const ItemDef kReflectionItems[] = {
     NativeOnly(Str("PM_RxGpuCarSelfReflRt", "mcla_gpu_car_selfrefl_rt", "CAR SELF-REFLECTIONS RT: ",
                    kOnOffVals, kOnOffNames, 2)),
     NativeOnly(Str("PM_RxGpuRtCityRefl", "mcla_gpu_rt_reflections", "CITY IN CAR PAINT RT: ",
-                   kQualityVals, kQualityNames, 3)),
+                   kOnOffVals, kOnOffNames, 2)),
     NativeOnly(Str("PM_RxGpuSideMirrors", "mcla_gpu_side_mirrors", "SIDE MIRRORS: ",
                    kQualityVals, kQualityNames, 3)),
     NativeOnly(Str("PM_RxGpuRtMirror", "mcla_gpu_car_mirror_rt", "SIDE MIRRORS RT: ",

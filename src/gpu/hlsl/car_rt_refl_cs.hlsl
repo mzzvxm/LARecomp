@@ -129,6 +129,9 @@ struct CarRtReflPush
     // bits: the glass's reflection is scaled by it), w reserved. The primary ray's parts (slots.z) are the player's glass alone there.
     uint4 glass;
 #endif
+#if !defined(CAR_RT_REFL_OPPONENTS) && !defined(CAR_RT_REFL_GLASS)
+    uint4 region;
+#endif
 };
 
 #ifdef __spirv__
@@ -147,6 +150,7 @@ ConstantBuffer<CarRtReflPush> g_push : register(b0, space4);
 
 static const uint kStatsFlag = 65536u;  // slots.w bit 16: this is a stats frame
 static const uint kConeBlueFlag = 131072u;  // slots.w bit 17: the cone's turn is the blue noise tile's (mcla_gpu_noise_blue; car_rt_refl_rules.h kConeBlueFlag), else the first version's gradient noise
+static const uint kSingleRayFlag = 1u << 29;
 static const uint kFullConeFlag = 1u << 28;  // player paint resolve: trace the inner pair even after two misses
 static const uint kStatTexels = 0u;
 static const uint kStatRays = 1u;
@@ -813,6 +817,39 @@ float4 ChromeTexel(float3 hitPoint, float3 viewDirection, float3 normal, float n
 // one texel
 // ---------------------------------------------------------------------------------------------------------------------
 
+// EV-9: an independently dithered clear-coat choice competes with the cone
+// for the same ray. The original simultaneous mirror-hit override needs two
+// rays at the same texel. CHECK: compare sharp edges on a car beside the player.
+bool TracePaintSample(Texture2D<float4> history, uint2 texel, float3 origin, float3 mirror, float3 normal, float nv,
+                      uint instance, uint primitive, out float fade, out float visible, out float3 seen,
+                      out float distance, out bool other, out float3 hidden, out bool car)
+{
+    const uint phase = ConePhase(g_push.slots.w);
+    const bool blue = (g_push.slots.w & kConeBlueFlag) != 0u;
+    const float rotation = ConeRotation(texel, phase >> 2, blue);
+    const uint spatial = uint(ConeRotation(texel, 0u, blue) * 4.0);
+    const uint sampleIndex = (phase + spatial) & 3u;
+    const float coatShare = g_push.tune.w > 0.0 && g_push.coat.w > 0.0
+        ? CarCoatShare(nv, CarMatFresnelPower(instance), g_push.coat.w) : 0.0;
+    const float noise = ConeRotation(texel.yx + uint2(31u, 17u), phase, blue);
+    const float spread = noise < coatShare ? 0.0 : g_push.tune.w;
+    const float3 direction = spread > 0.0 ? ConeDirection(mirror, normal, spread, int(sampleIndex), rotation) : mirror;
+    return TraceRay(history, origin, direction, g_push.lens.w, spread, instance, primitive, normal,
+                    fade, visible, seen, distance, other, hidden, car);
+}
+
+float4 PaintSampleResult(float fade, float visible, float3 seen, float3 hidden, bool car, float distance, inout float4 aux)
+{
+    const float weight = fade * lerp(g_push.tune.y, 1.0, visible);
+    if (weight < 1.0 / 512.0)
+    {
+        return float4(0.0, 0.0, 0.0, 1.0);
+    }
+    aux.x = EncodeHitDistance(distance, g_push.lens.w);
+    const float3 colour = NgHeld3(lerp(hidden, seen, visible), kMaxColour);
+    return float4(colour, car ? -(1.0 + weight) : 1.0 + weight);
+}
+
 float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux)
 {
     aux = float4(0.0, 0.0, 0.0, 0.0);
@@ -882,11 +919,28 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
 
     // 2. the clear coat's ray (one ray along the exact mirror direction, the share of it by the paint's fresnel), then the cone of reflection rays, both off the surface along the normal
     const float3 mirror = reflect(viewDirection, normal);
+    const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
+    [branch]
+    if ((g_push.slots.w & kSingleRayFlag) != 0u)
+    {
+        float fade, visible, distance;
+        float3 seen, hidden;
+        bool other, car;
+        if (!TracePaintSample(history, texel, origin, mirror, normal, nv, primaryInstance, primaryPrimitive,
+                              fade, visible, seen, distance, other, hidden, car))
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+        if (!other && visible < 1.0)
+        {
+            hidden = SurfaceMean(history, texel, t, nv) * g_push.tune.x;
+        }
+        return PaintSampleResult(fade, visible, seen, hidden, car, distance, aux);
+    }
     const float reach = g_push.lens.w;
     const float tanHalf = g_push.tune.w;
     const uint levelRays = LevelRays(g_push.slots.w);
     const float rays = tanHalf > 0.0 ? float(levelRays) : 1.0;
-    const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
     const float turns = ConeRotation(texel, ConePhase(g_push.slots.w), (g_push.slots.w & kConeBlueFlag) != 0u);
     float coatShare = 0.0;
     float coatFade = 0.0;
@@ -1037,6 +1091,9 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
 void main(uint3 id : SV_DispatchThreadID)
 {
     const uint2 size = uint2(g_push.image.xy);
+#if !defined(CAR_RT_REFL_OPPONENTS) && !defined(CAR_RT_REFL_GLASS)
+    id.xy += g_push.region.xy;
+#endif
     if (any(id.xy >= size))
     {
         return;

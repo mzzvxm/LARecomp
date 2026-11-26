@@ -2,7 +2,8 @@
 // ===========================================================================
 // MCLA GPU renderer -- the city in the car paint's reflections: the SETTING and its pause row (CITY-RT M2, package R8 of perf/CITY-RT-M2.md section 9)
 // ===========================================================================
-// One row on GRAPHICS > REFLECTIONS, right after CAR SELF-REFLECTIONS whose ray traced pass it rides on: RT CITY REFLECTIONS, AUTO / OFF / HIGH / ULTRA (mcla_gpu_rt_reflections, live, saved). This header is
+// RT CITY REFLECTIONS on GRAPHICS > REFLECTIONS offers Off and On. Legacy
+// values still load, and the four-ray debug arm keeps the old decision. This header is
 // every decision about it that needs no device, so that city_refl_setting_test.cpp (and the pause menu, which includes it) can check them: what a setting's word comes to on a card, the gate that
 // greys the row and what it says, how the state of the city's files becomes a word on the row, and AUTO's label. city_refl_setting.cpp holds the two flags the render thread sets for the menu's thread.
 // city_refl_rules.h has the levels and the cells (LevelFor, CellFor); this is the part the menu and the host share.
@@ -123,9 +124,9 @@ enum class Gate : uint8_t {
 };
 
 // `wanted`: the word comes to something above off (the data's state only matters then).
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool car_rt_on, bool wanted, Data data) {
+constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool car_rt_on, bool wanted, Data data, bool one_ray = false) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
+  if (!one_ray && cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!car_rt_on) return Gate::kNeedsCarRt;
   if (wanted && data == Data::kUnavailable) return Gate::kNotReady;
   if (wanted && data == Data::kBuilding) return Gate::kBuilding;
@@ -194,6 +195,17 @@ inline Decision Decide(gc::GpuClass cls, gc::RtTier tier, std::string_view word,
   d.wanted = cr::LevelFor(cls, tier, word);
   d.data = data;
   d.gate = GateFor(cls, tier, car_rt_on, d.wanted != Level::kOff, data);
+  d.level = (d.gate == Gate::kRuns && data == Data::kReady) ? d.wanted : Level::kOff;
+  return d;
+}
+
+// Paint has one enabled level. Legacy enabled words all decode to On.
+inline Decision DecidePaint(gc::GpuClass cls, gc::RtTier tier, std::string_view word, bool car_rt_on, Data data) {
+  Decision d;
+  d.rung = tier;
+  d.wanted = tier != gc::RtTier::kNone && word != "off" ? Level::kHigh : Level::kOff;
+  d.data = data;
+  d.gate = GateFor(cls, tier, car_rt_on, d.wanted != Level::kOff, data, true);
   d.level = (d.gate == Gate::kRuns && data == Data::kReady) ? d.wanted : Level::kOff;
   return d;
 }

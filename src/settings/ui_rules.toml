@@ -49,10 +49,14 @@ active_upscaler.cases = [
   { when = "d.shown_upscaler in ['fsr31','fsr4']", value = { expr = "d.shown_upscaler" } },
   { value = "off" },
 ]
-car_rt_runs = "api.car_rt && gpu.rt_rung != 'none' && resolved(s.mcla_gpu_car_selfrefl) == 'on' && s.mcla_gpu_car_selfrefl_rt == 'on'"
+car_rt_runs = "api.car_rt && resolved(s.mcla_gpu_car_selfrefl) == 'on' && s.mcla_gpu_car_selfrefl_rt == 'on'"
 ssr_on = "resolved(s.mcla_gpu_ssr) in ['high','ultra']"
 contact_on = "resolved(s.mcla_gpu_contact_shadows) in ['high','ultra']"
-rt_city_wanted = "resolved(s.mcla_gpu_rt_reflections) in ['high','ultra']"
+rt_city_wanted = "s.mcla_gpu_rt_reflections != 'off'"
+rt_city_choice.cases = [
+  { when = "d.rt_city_wanted", value = "on" },
+  { value = "off" },
+]
 renderer_choice = "live.renderer_choice ?? 'larecomp'"
 frame_gen_available = "live.frame_generation_choice_available ?? d.frame_gen_on"
 shown_per_rendered.cases = [
@@ -325,10 +329,14 @@ states = [
 ]
 
 [rows.PM_RxGpuRtCityRefl]
-decode = "resolved(s.mcla_gpu_rt_reflections)"
+reads = ["mcla_gpu_rt_reflections"]
+decode = "d.rt_city_choice"
+values = [
+  { id = "off", label = "OFF", writes = [{ setting = "mcla_gpu_rt_reflections", value = "off" }] },
+  { id = "on", label = "ON", writes = [{ setting = "mcla_gpu_rt_reflections", value = "on" }] },
+]
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT CITY" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT CITY" },
   { when = "!d.car_rt_runs", enabled = false, suffix = " (NEEDS CAR RT)", label = "RT CITY" },
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'unavailable'", enabled = false, suffix = " (NOT READY)", label = "RT CITY" },
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'building'", enabled = true, suffix = " (BUILDING DATA)", label = "RT CITY" },

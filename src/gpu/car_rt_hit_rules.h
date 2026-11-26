@@ -97,6 +97,8 @@ namespace mcla::gpu::car_rt_hit {
 
 // A car's half length, metres: a car whose centre is this much farther than the reach still has its near end in reach.
 inline constexpr float kCarHalfLength = 2.0f;
+inline constexpr float kPaintCarReach = 18.0f;
+inline constexpr float kPaintCityReach = 150.0f;
 
 struct Level {
   float others_reach = 0.0f;       // m: how far a reflection ray goes to find another car (0: no farther than the player's own parts' reach)
@@ -129,6 +131,24 @@ inline Level LevelFor(gpu_class::GpuClass cls) {
       break;
   }
   return level;
+}
+
+// The one-ray path uses the same paint workload on every ray-query-capable device.
+// Keep LevelFor for the four-ray comparison and the separate mirror effect.
+constexpr Level PaintLevel() { return {kPaintCarReach, 0.75f, 1.0f, 1u, true, true}; }
+
+// Distance between two view-space boxes is a lower bound on distance between
+// their surfaces. A parked car beyond reach does not need a receiver ray.
+inline bool PaintBoxInReach(const float player_min[3], const float player_max[3], const float parked_min[3], const float parked_max[3]) {
+  if (!player_min || !player_max || !parked_min || !parked_max) {
+    return true;
+  }
+  float distance_sq = 0.0f;
+  for (int axis = 0; axis < 3; ++axis) {
+    const float gap = std::max({0.0f, parked_min[axis] - player_max[axis], player_min[axis] - parked_max[axis]});
+    distance_sq += gap * gap;
+  }
+  return distance_sq <= kPaintCarReach * kPaintCarReach;
 }
 
 // The class's level with the two debug overrides: `reach_override` above 0 replaces the others' reach (clamped to the ray's longest), `coat_override` below 0 keeps the class's, 0 turns the

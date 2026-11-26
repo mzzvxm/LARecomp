@@ -33,14 +33,14 @@ class CarRtInstances {
 
   // The limits of the other cars in force now: the graphics class's cell with the two debug overrides (mcla_gpu_car_rt_cars, mcla_gpu_car_rt_cars_radius).
   // Reads the cvars: once a frame, by the scene's Request.
-  car_rt_instances::Limits CurrentLimits() const;
+  car_rt_instances::Limits CurrentLimits(bool uniform_paint) const;
   // Whether the cars the camera does not see are placed from memory (mcla_gpu_car_rt_cars_memory, debug, live).
   bool RememberedOn() const;
   // How the cars built from their own model data are taken (mcla_gpu_car_rt_cars_model, debug, live; car_model_rt_rules.h Mode).
   car_model_rt::Mode ModelMode() const;
   // RT-MODEL-PARTS: how many traffic and parked cars the walk takes besides the racers (mcla_gpu_car_rt_cars_traffic; -1: the class's count, 0: none) and whether the racers' wheels
   // are walked (mcla_gpu_car_rt_cars_wheels). Both debug, live; read once a frame by the scene's Request.
-  uint32_t TrafficCars() const;
+  uint32_t TrafficCars(const car_rt_instances::Limits& limits) const;
   bool WheelsOn() const;
   // How near the mean of a drawn car's draws must be to a vehicle of the game's list to be that vehicle (mcla_gpu_car_rt_cars_match; 0: the rules' default).
   double MatchMetres() const;

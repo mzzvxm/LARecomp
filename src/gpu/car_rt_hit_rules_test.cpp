@@ -560,11 +560,11 @@ int main(int argc, char** argv) {
 
       Check(Has(host_h, "float coat[4];") && Has(host_h, "static_assert(sizeof(Push) == 96);") && Has(opp_h, "float coat[4];") && Has(opp_h, "static_assert(sizeof(Push) == 112);") && Has(opp_h, "kBasePushBytes = 96;"),
             "the host's push blocks are the shader's: 96 bytes with coat, 112 with the opponents' opp");
-      Check(Has(host, "car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),") &&
+      Check(Has(host, "car_rt_hit::LevelWith(base_level, double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),") &&
                 Has(host, "double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));") && Has(host, "car_rt_hit::CastReach(parts, self_reach, others_reach)") &&
                 Has(host, "car_rt_hit::PackPhaseRays(pattern_phase, cone_rays)") && Has(host, "const uint32_t cone_rays = city.on ? std::min(level.cone_rays, city.cell.cone_rays) : level.cone_rays;") &&
                 Has(host, "push.coat[0] = self_reach;") && Has(host, "push.coat[1] = others_reach;") &&
-                Has(host, "push.coat[2] = level.others_fade_from;") && Has(host, "push.coat[3] = level.coat;") && Has(host, "float(info.tan_y), length, tan_half);"),
+                Has(host, "push.coat[2] = level.others_fade_from;") && Has(host, "push.coat[3] = level.coat;") && Has(host, "float(info.tan_y), length, tan_half, trace_regions);"),
             "the host's push is the level's: the reaches, the fade, the clear coat's gain, the cone's rays; the denoise decodes distances by the reach that was cast");
       Check(Has(opp_cpp, "std::memcpy(&push, f.base_push, kBasePushBytes);"), "the opponents' push is the player's with opp");
       Check(Has(scene, "vol_->CurrentSun(&sun, &fade)") && Has(scene, "car_rt_->SetSunCascades(cascades);") && Has(vol_h, "bool CurrentSun(volumetrics::VolSun* sun, float* fade) const;") &&
@@ -641,6 +641,20 @@ int main(int argc, char** argv) {
       }
       Check(!cmake.empty() && Has(cmake, "larecomp_car_rt_hit_rules_test"), "the CMake file builds this test");
     }
+  }
+
+  {
+    const auto paint = hr::PaintLevel();
+    Check(paint.cone_rays == 1u && paint.others_reach == 18.0f && paint.coat == 1.0f,
+          "EV-9 uses one sample for the cone and coat at a fixed reach");
+    const float lo[3] = {-1.0f, -1.0f, -1.0f};
+    const float hi[3] = {1.0f, 1.0f, 1.0f};
+    const float near_lo[3] = {19.0f, -1.0f, -1.0f};
+    const float far_lo[3] = {19.0f, 2.0f, -1.0f};
+    const float parked_hi[3] = {23.0f, 4.0f, 1.0f};
+    Check(hr::PaintBoxInReach(lo, hi, near_lo, parked_hi), "a parked car on the reach boundary is retained");
+    Check(!hr::PaintBoxInReach(lo, hi, far_lo, parked_hi), "diagonal gaps count toward the parked car reach");
+    Check(hr::PaintBoxInReach(nullptr, hi, far_lo, parked_hi), "unknown bounds keep a parked car");
   }
 
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

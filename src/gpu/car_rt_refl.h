@@ -176,6 +176,7 @@
 #include "car_rt_hit_rules.h"
 #include "car_rt_opp_refl.h"
 #include "car_rt_parked_paint_rules.h"
+#include "car_rt_paint_tiles.h"
 #include "car_rt_refl_rules.h"
 #include "car_selfrefl_rules.h"
 #include "city_refl.h"
@@ -222,6 +223,7 @@ class CarRtRefl {
     double tan_y = 0.0;             //   (1 / |P00| and 1 / |P11| of the previous frame's projection, as the AO takes them)
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
     bool garage = false;
+    bool reset_history = true;
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
     uint32_t pattern_phase = 0;     // 0 .. 1023: the pattern's step for this frame (the scene's noise index): used while an upscaler runs or the pass's own history does (NOISE-RESOLVE: OnHistory says which); else the pattern stands still
     bool raw = false;               // RR-4b: DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().CarRefl()): no filter, the hit distance written
@@ -278,15 +280,21 @@ class CarRtRefl {
     float coat[4];      // the reach of a hit on the player's own parts, the reach of a hit on another car, where its fade starts (a share of it), the clear-coat ray's gain (0: none)
   };
   static_assert(sizeof(Push) == 96);
-  // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush), 64 bytes.
+  struct TracePush {
+    Push base;
+    uint32_t region[4];  // xy: dispatch offset in history texels
+  };
+  static_assert(sizeof(TracePush) == 112);
+  // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush).
   struct DenoisePush {
     uint32_t slots[4];  // history slot, the image to filter, the aux image, the pass (0: taps one texel apart, 1: two)
     float image[4];     // the image's size in texels
     float lens[4];      // tan half the vertical field of view, the reflection ray's length, the tangent of the cone's half angle
     float tune[4];      // the first pass's footprint where it starts and where it is in full, the second pass's
+    uint32_t region[4];  // xy: dispatch offset, z: one-ray reconstruction
   };
-  static_assert(sizeof(DenoisePush) == 64);
-  // The push block of the raw mode's hit distance pass (hlsl/car_rt_refl_hit_cs.hlsl CarRtHitPush), 64 bytes: the denoise's layout (its push range is 64 bytes at space 2).
+  static_assert(sizeof(DenoisePush) == 80);
+  // The push block of the raw mode's hit distance pass (hlsl/car_rt_refl_hit_cs.hlsl CarRtHitPush), 64 bytes within the denoise layout's push range.
   struct HitPush {
     uint32_t slots[4];  // the aux image's slot
     float image[4];     // the output's size (the picture's), the trace image's size in texels
@@ -341,7 +349,8 @@ class CarRtRefl {
   // One compute dispatch of the denoise: `input` filtered into the image `output` names, `pass` 0 or 1; pass 2 (NOISE-RESOLVE) averages `input` with the image in bindless slot `previous_slot` at the weight `keep`.
   void DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
                        const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length, float tan_half,
-                       bool resolve_paint = false, float keep = 0.0f, uint32_t previous_slot = 0);
+                       const car_rt_refl::PaintRects& regions, bool resolve_paint = false,
+                       float keep = 0.0f, uint32_t previous_slot = 0, bool one_ray = false);
   // NOISE-RESOLVE: the history's two images (the finished image averaged with the last frame's, hlsl/car_rt_refl_denoise_cs.hlsl pass 2), made while the pass's own history runs.
   bool EnsureStableImages(uint32_t width, uint32_t height);
   void ReleaseStable();
@@ -353,6 +362,7 @@ class CarRtRefl {
   PassTiming* pass_timing_ = nullptr;
   CarRtScene* scene_ = nullptr;
 
+  bool one_ray_ = false;
   bool supported_ = false;      // the device can trace the car (CarRtSupported)
   bool ready_ = false;          // layout and shader exist
   bool listed_ = false;         // the pipeline was listed (at the start, or in the background after it)
@@ -395,6 +405,9 @@ class CarRtRefl {
   OutputSet final_set_;   // u0 image_
   // NOISE-RESOLVE: while no temporal upscaler runs the cone's pattern changes every frame and the finished image is averaged with the last frame's result (noise_resolve.h): two images of the same size
   // that take turns (the paint reads the one written last), their sets, and what the next frame needs to know of it.
+  car_rt_refl::PaintCoverage trace_coverage_;
+  car_rt_refl::PaintCoverage scratch_coverage_;
+  car_rt_refl::PaintCoverage stable_coverage_[2];
   HostImage stable_[2];
   OutputSet stable_set_[2];       // u0 stable_[i]
   noise_resolve::HistoryLifetime stable_life_;   // NOISE-FOLLOW: how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
@@ -403,6 +416,12 @@ class CarRtRefl {
   bool stable_garage_ = false;
   bool stable_valid_ = false;     // stable_[stable_index_] holds the result of `stable_frame_`
   bool stable_resolve_paint_ = false;
+  bool stable_one_ray_ = false;
+  bool stable_city_ = false;
+  float stable_length_ = 0.0f;
+  float stable_spread_ = 0.0f;
+  float stable_coat_ = 0.0f;
+  int stable_exp_bias_ = 0;
   uint64_t stable_frame_ = 0;
   uint32_t stable_frames_ = 0;    // frames of history the last result holds
   bool result_in_stable_ = false; // the paint reads stable_[stable_index_] for the frame `recorded_frame_`

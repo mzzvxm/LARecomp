@@ -691,7 +691,7 @@ int main(int argc, char** argv) {
       Check(Has(player, "city_refl::ReflectionParts(parts,") && Has(player, "city_refl::CastLength(reflection_parts, car_length, city.cell.reach)") && Has(player, "std::min(level.cone_rays, city.cell.cone_rays)"),
             "car_rt_refl.cpp: the parts, the cast length and the cone's rays follow the cell");
       Check(Has(player, "push.slots[1] = reflection_parts;") && Has(player, "city_.Prepare(frames_->slot(), info.screen, info.frame, stats_frame)"), "car_rt_refl.cpp: the push's parts and the rows' frame slot");
-      Check(Has(player, "city_.BeginFrame(true)") && Has(player, "city_.BeginFrame(false)") && Has(player, "city_.StatsBegin(list)") && Has(player, "city_.StatsEnd(list, info.frame)"), "car_rt_refl.cpp: the city's frame and its counters' frames");
+      Check(Has(player, "city_.BeginFrame(true, one_ray_)") && Has(player, "city_.BeginFrame(false)") && Has(player, "city_.StatsBegin(list)") && Has(player, "city_.StatsEnd(list, info.frame)"), "car_rt_refl.cpp: the city's frame and its counters' frames");
       Check(Has(opp_host, "builder.addDescriptorSet(city_builder)") && Has(opp_host, "list->setComputeDescriptorSet(f.city->set, kCitySet);") && Has(opp_host, "city_refl::OppBudget(") && Has(opp_host, "city_refl::OppRays(plan.rays,") &&
                 Has(opp_host_h, "kPushSpace = CityRefl::kPushSpace"),
             "car_rt_opp_refl: the city's set, the cell's budget and rays, the push space");
@@ -745,9 +745,17 @@ int main(int argc, char** argv) {
       const size_t at = settings.find("std::string, mcla_gpu_rt_reflections, \"off\", ");
       const size_t next = at == std::string::npos ? std::string::npos : settings.find("\n  REX_SET" "TING(", at);
       const std::string def = at == std::string::npos ? "" : settings.substr(at, next == std::string::npos ? std::string::npos : next - at);
-      Check(!def.empty() && def.find("rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")") != std::string::npos && def.find("kDebugOnly") == std::string::npos,
-            "mcla_gpu_rt_reflections is off by default, with the four words, and not debug-only (R8 gave it its row)");
+      Check(!def.empty() && def.find("rex::Allowed(\"auto\", \"off\", \"on\", \"high\", \"ultra\")") != std::string::npos && def.find("kDebugOnly") == std::string::npos,
+            "mcla_gpu_rt_reflections is On plus compatible legacy words, and not debug-only (R8 gave it its row)");
     }
+  }
+
+  {
+    const auto cell = cr::PaintCell(cm::Level::kHigh, 150.0f);
+    Check(cell == cr::PaintCell(cm::Level::kUltra, 150.0f) && cell.level == cm::Level::kHigh &&
+          cell.reach == 150.0f && cell.cone_rays == 1u && cell.opp_rays == 1u,
+          "EV-9 maps legacy city levels to the same 150 m one-ray signal");
+    Check(cr::PaintCell(cm::Level::kOff, 150.0f).level == cm::Level::kOff, "EV-9 city Off requests no work");
   }
 
   std::printf("city_refl_rules_test: %d checks, %d failed\n", g_checks, g_failed);

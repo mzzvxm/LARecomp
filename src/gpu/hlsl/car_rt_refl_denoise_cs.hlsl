@@ -52,6 +52,7 @@ struct CarRtDenoisePush
     float4 lens;
     // x, y the first pass's footprint (texels) where it starts and where it is in full, z, w the second pass's
     float4 tune;
+    uint4 region;
 };
 
 #ifdef __spirv__
@@ -106,7 +107,16 @@ void Temporal(int2 centre, int2 size)
     // the clear coat's mirror share (the aux image's w, EncodeAuxSharp) is not noise: left as it is
     const float4 ownAux = g_textures[g_push.slots.z].Load(int3(centre, 0));
     const float sharp = ownAux.w > 0.5 ? saturate((1.0 - ownAux.w) / kAuxSharpScale) : 0.0;
+    const bool oneRay = g_push.region.z != 0u;
+    if (oneRay && !(ownAux.w > 0.5))
+    {
+        g_output[centre] = own;  // chrome carries a different alpha payload
+        return;
+    }
     const float keep = strength * (1.0 - sharp);
+    Texture2D<float4> history = g_textures[g_push.slots.x];
+    const float centreDepth = HistoryDistance(history.Load(int3(centre, 0)).a);
+    const float pixelMetres = PixelMeters(centreDepth, g_push.lens.x, float(size.y));
     // the range of the neighbourhood's decoded values, the texels that hold data
     Decoded now = Decode(own);
     Decoded lo = now;
@@ -123,6 +133,16 @@ void Temporal(int2 centre, int2 size)
         if (!(abs(tap.a) >= kMinCode))
         {
             continue;
+        }
+        if (oneRay)
+        {
+            const float4 tapAux = g_textures[g_push.slots.z].Load(int3(at, 0));
+            const float depth = HistoryDistance(history.Load(int3(at, 0)).a);
+            if (tapAux.w <= 0.5 || tapAux.y != ownAux.y ||
+                !(MatchWeight(depth, centreDepth, Tolerance(centreDepth, pixelMetres, 1.414214, ownAux.z)) > 0.0))
+            {
+                continue;
+            }
         }
         const Decoded d = Decode(tap);
         lo.weight = min(lo.weight, d.weight);
@@ -142,7 +162,14 @@ void Temporal(int2 centre, int2 size)
     // (the clamp alone would let it trail the ramp by up to a texel: the neighbourhood's own range)
     const float3 colourDiff = abs(raw.colour - now.colour) / (hi.colour + 0.01);
     const float stale = max(max(abs(raw.weight - now.weight), abs(raw.hidden - now.hidden)), max(colourDiff.x, max(colourDiff.y, colourDiff.z)));
-    const float kept = keep * (1.0 - smoothstep(kStaleFrom, kStaleTo, stale));
+    // A one-ray hit/miss can differ by the entire weight. Measure staleness
+    // against the same-surface neighbourhood envelope before blending.
+    const float3 outsideColour = abs(raw.colour - before.colour) / (hi.colour + 0.01);
+    const float outside = max(max(abs(raw.weight - before.weight), abs(raw.hidden - before.hidden)),
+                              max(outsideColour.x, max(outsideColour.y, outsideColour.z)));
+    // CHECK: the envelope retains valid running samples without trails when the
+    // camera turns or the reflection crosses a moving car.
+    const float kept = keep * (1.0 - smoothstep(kStaleFrom, kStaleTo, oneRay ? outside : stale));
     const float mixedWeight = lerp(now.weight, before.weight, kept);
     const float mixedHidden = lerp(now.hidden, before.hidden, kept);
     const float3 mixedColour = lerp(now.colour, before.colour, kept);
@@ -158,7 +185,7 @@ void Temporal(int2 centre, int2 size)
 void main(uint3 id : SV_DispatchThreadID)
 {
     const int2 size = int2(g_push.image.xy);
-    const int2 centre = int2(id.xy);
+    const int2 centre = int2(id.xy + g_push.region.xy);
     if (any(centre >= size))
     {
         return;

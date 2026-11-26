@@ -340,7 +340,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_city_hit_probe, false, "Debug: with mcla_gpu_city_hit_data on, a compute pass reads the city hit data's pool and tables through the ray tracing descriptor set every frame, the way the hit shading will, and every 240 frames the log says under [city hit] whether what it read is what was copied (a checksum of every block, the sector table's rows, the first material and texture rows). The proof of the pool's offsets and bindings on this backend. Live.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_gpu_rt_reflections, "off", "Traces streets and buildings reflected in car paint. Needs car self-reflections RT and the city data. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_rt_reflections, "off", "Traces streets and buildings reflected in car paint up to 150 m away. City in Car Paint RT needs car self-reflections RT and the city data. Live.", rex::Allowed("auto", "off", "on", "high", "ultra"));
 
   REX_SETTING(bool, mcla_gpu_city_refl_screen, true, "Debug: with mcla_gpu_rt_reflections on, a reflected point that is in the picture takes the picture's own colour (the game's lighting, foliage and "
     "lamps as drawn). false: every reflected point is shaded from the city's own materials, for comparing. Live.", rex::kDebugOnly);
@@ -489,6 +489,8 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_denoise, 2, "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
     "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
     "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.", rex::kDebugOnly, rex::Range{0, 2});
+  REX_SETTING(bool, mcla_gpu_car_rt_paint_one_ray, true, "Debug: trace one reflection ray per car paint texel, accumulate it over time, and skip background writes to car history. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_car_selfrefl_rt_resolve, false, "Debug: trace the full glossy cone and filter narrower reflections on player paint when the built-in filter runs. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_car_selfrefl_rt_gloss, 2.5, "Diagnostic: the half angle, in degrees, of the cone the ray traced car self-reflection casts its rays over: the paint's gloss. A part of "
@@ -2197,6 +2199,7 @@ inline auto& mcla_gpu_car_mirror_rt_pixels = g_gpu.mcla_gpu_car_mirror_rt_pixels
 inline auto& mcla_gpu_car_mirror_rt_strength = g_gpu.mcla_gpu_car_mirror_rt_strength;
 inline auto& mcla_gpu_car_mirror_rt_world = g_gpu.mcla_gpu_car_mirror_rt_world;
 inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_denoise;
+inline auto& mcla_gpu_car_rt_paint_one_ray = g_gpu.mcla_gpu_car_rt_paint_one_ray;
 inline auto& mcla_gpu_car_selfrefl_rt_resolve = g_gpu.mcla_gpu_car_selfrefl_rt_resolve;
 inline auto& mcla_gpu_car_selfrefl_rt_gloss = g_gpu.mcla_gpu_car_selfrefl_rt_gloss;
 inline auto& mcla_gpu_car_selfrefl_rt_length = g_gpu.mcla_gpu_car_selfrefl_rt_length;

@@ -446,6 +446,8 @@ struct ViewBox {
   float min[3] = {0, 0, 0};
   float max[3] = {0, 0, 0};
   bool valid = false;
+  bool complete = true;  // false if any instance lacks mesh bounds
+  bool chrome = false;
   // Some instance of the car this box is of is another car's draw of the paint's shader (car_rt_opp_refl_rules.h MarkPaintBoxes): the opponents' reflection pass looks at the box.
   bool paint = false;
   // ... and the car's paint draws are the TRAFFIC paint's (no draw of the customisable paint): the pass's class rule treats the box as a traffic car's (car_rt_traffic_rules.h).
@@ -493,7 +495,11 @@ inline bool BoundsOf(const std::vector<float>& positions, float lo[3], float hi[
 // Grows `box` by an instance of the mesh `ref` placed by `transform` (the instance's 3x4 in view space, the translation in column 3): the eight
 // corners of the mesh's box, or the origin alone where the mesh's box is not known.
 inline void GrowBox(ViewBox* box, const float transform[3][4], const MeshRef& ref) {
+  if (!box) {
+    return;
+  }
   if (!ref.has_bounds) {
+    box->complete = false;
     const float origin[3] = {transform[0][3], transform[1][3], transform[2][3]};
     box->Add(origin);
     return;
@@ -727,7 +733,9 @@ inline void AppendOthers(List* list, const std::vector<OtherDraw>& draws, const 
       }
       list->materials.push_back(im);
     }
-    GrowBox(&car_boxes[size_t(slot)], item.transform, ref);
+    ViewBox& box = car_boxes[size_t(slot)];
+    box.chrome |= (item.mask & rr::kMaskOtherChrome) != 0;
+    GrowBox(&box, item.transform, ref);
     ++list->stats.other_instances;
     list->stats.other_chrome += (item.mask & rr::kMaskOtherChrome) != 0 ? 1u : 0u;
     list->stats.remembered_instances += cars[plan[size_t(slot)]].remembered ? 1u : 0u;

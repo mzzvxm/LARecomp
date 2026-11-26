@@ -224,7 +224,7 @@ class CarRtScene final : public car_frame::Listener {
 
   // A user wants the structures: call it in every frame it needs them (any time in the frame). A request counts for the frame and the
   // next, and asks CarFrame to collect the car's draws.
-  void Request();
+  void Request(bool uniform_paint = false);
   // The car frame's collection only (the scene service's: it keeps the wants by consumer itself).
   void RequestCollect();
 
@@ -459,6 +459,7 @@ class CarRtScene final : public car_frame::Listener {
   uint64_t frame_ = 0;
   uint64_t generation_ = 0;  // bumped when everything is given back: a deferred free of an older generation is dropped
   bool requested_ = false;
+  bool uniform_paint_requested_ = false;
   bool requested_prev_ = false;
   uint32_t idle_frames_ = 0;
   bool anchor_seen_ = false;

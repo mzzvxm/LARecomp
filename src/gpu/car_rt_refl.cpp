@@ -8,6 +8,7 @@
 #include <cstring>
 #include <format>
 #include <initializer_list>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -47,8 +48,8 @@ LiveText& Setting() {
   return text;
 }
 
-car_rt_refl::Setting SettingNow() {
-  if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) return car_rt_refl::Setting::kOff;
+car_rt_refl::Setting SettingNow(bool one_ray) {
+  if (!one_ray && gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) return car_rt_refl::Setting::kOff;
   return car_rt_refl::SettingOf(Setting().Get());
 }
 
@@ -68,7 +69,9 @@ std::atomic<bool> g_available{false};
 // The device can run it AND the ray tracing tier lets it: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the shaders) and the Low
 // class (shared memory) trace nothing, so the pause row does not offer RAY TRACED there (rt_tier.h: the rung is none).
 bool CarRtReflAvailable() {
-  return g_available.load(std::memory_order_relaxed) && gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone;
+  const bool one_ray = larecomp::settings::mcla_gpu_car_rt_paint_one_ray.Get();
+  return g_available.load(std::memory_order_relaxed) &&
+         (one_ray ? gpu_class::CurrentRtTier() : gpu_class::CurrentRtRung()) != gpu_class::RtTier::kNone;
 }
 
 CarRtRefl::~CarRtRefl() = default;
@@ -108,13 +111,14 @@ void CarRtRefl::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap
     passes.precache().Note("ray traced car self-reflections: the denoise's layout or shader could not be made (the raw trace is read)", 0);
   }
   // The opponents' cars' pass (car_rt_opp_refl.h): optional, listed beside the trace's pipeline where the reflection is on at the start.
-  opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_, city_.Builder(),
-                  reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kOn);
+  const bool paint_at_start = reflection_on_at_start &&
+      SettingNow(larecomp::settings::mcla_gpu_car_rt_paint_one_ray.Get()) == car_rt_refl::Setting::kOn;
+  opp_.Initialize(device, passes, heap, pass_timing, *scene, output_builder_, city_.Builder(), paint_at_start);
   // The player's windows (car_rt_glass_refl.h): optional too, on the same layout of sets.
-  glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(), reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kOn);
+  glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(), paint_at_start);
   // Listed with the start's precache only where the car self-reflections are on at the start and this is not switched off; else it is
   // made in the background when first wanted (PipelineReady).
-  if (reflection_on_at_start && SettingNow() == car_rt_refl::Setting::kOn) {
+  if (paint_at_start) {
     uint32_t added = passes.precache().Add(PipelineKey(), kPipelineName, [this] { return MakePipeline(); }) ? 1u : 0u;
     if (denoise_ready_) {
       added += passes.precache().Add(DenoiseKey(), kDenoiseName, [this] { return MakeDenoisePipeline(); }) ? 1u : 0u;
@@ -164,7 +168,7 @@ bool CarRtRefl::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtSce
   const uint32_t output_set = builder.addDescriptorSet(output_builder_);                // space 1: the outputs
   const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());                 // space 2: the car's structures (CAR_RT_SPACE)
   const uint32_t city_set = builder.addDescriptorSet(city_.Builder());                  // space 3: the city's rows and counters (city_refl.h)
-  builder.addPushConstant(0, kPushSpace, sizeof(Push), plume::RenderShaderStageFlag::COMPUTE);
+  builder.addPushConstant(0, kPushSpace, sizeof(TracePush), plume::RenderShaderStageFlag::COMPUTE);
   builder.end();
   if (texture_set != kTextureSet || output_set != kOutputSet || scene_set != kSceneSet || city_set != kCitySet) {
     REXLOG_ERROR("{} the layout's sets are not in the order the shader declares them", kPrefix);
@@ -224,6 +228,10 @@ void CarRtRefl::Shutdown() {
   }
   stable_valid_ = false;
   result_in_stable_ = false;
+  trace_coverage_ = {};
+  scratch_coverage_ = {};
+  stable_coverage_[0] = {};
+  stable_coverage_[1] = {};
   stats_.reset();
   stats_zero_.reset();
   stats_readback_.reset();
@@ -365,13 +373,14 @@ bool CarRtRefl::PipelineReady() {
 
 void CarRtRefl::BeginFrame(bool reflection_on, bool garage) {
   active_ = false;
+  one_ray_ = larecomp::settings::mcla_gpu_car_rt_paint_one_ray.Get();
   glass_.NewFrame();
   city_.BeginFrame(false);  // the city's want and cell are this frame's: reset until the pass is known to run
   hit_ready_ = false;
   if (!ready_ || !scene_) {
     return;
   }
-  const bool wanted = car_rt_refl::Wanted(SettingNow(), supported_, reflection_on);
+  const bool wanted = car_rt_refl::Wanted(SettingNow(one_ray_), supported_, reflection_on);
   if (!wanted) {
     return;
   }
@@ -382,8 +391,8 @@ void CarRtRefl::BeginFrame(bool reflection_on, bool garage) {
   active_ = true;
   // The scene builds a frame's structures only for a frame that asked in the one before (as CarFrame): ask in every frame this is on.
   // CHECK: the name of CarRtScene's per-frame request (written as CarFrame::Request, car_frame.h).
-  scene_->Request();
-  if (!garage) city_.BeginFrame(true);  // CITY-RT M2: the city in the reflections (the setting's cell; the scene service's wants)
+  scene_->Request(one_ray_);
+  if (!garage) city_.BeginFrame(true, one_ray_);  // CITY-RT M2: the city in the reflections (the setting's cell; the scene service's wants)
 }
 
 // RT-PARKED-PAINT: see car_rt_refl.h. The view is the one OnHistory will trace against (the scene built it before the trigger).
@@ -393,6 +402,7 @@ std::vector<car_rt_parked_paint::Mark> CarRtRefl::ParkedMarks(const HistoryInfo&
   }
   CarRtOppRefl::MarkInput input;
   input.view = &scene_->View();
+  input.one_ray = one_ray_;
   input.render_width = info.render_width;
   input.render_height = info.render_height;
   input.divisor = info.divisor;
@@ -432,7 +442,9 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   const float tan_half = car_rt_refl::ConeTan(gloss);
   // RT-HIT-SHADING part two: the class's level (the reach to another car, the cone's rays, the clear coat), the two debug overrides on it. The ray is cast as far as the longer reach where the
   // parts it may hit include another car; a hit's weight falls over the reach of the part it is on (the shader's coat.x and coat.y).
-  const car_rt_hit::Level level = car_rt_hit::LevelWith(car_rt_hit::LevelFor(gpu_class::Current()), double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),
+  const bool one_ray = one_ray_;
+  const car_rt_hit::Level base_level = one_ray ? car_rt_hit::PaintLevel() : car_rt_hit::LevelFor(gpu_class::Current());
+  const car_rt_hit::Level level = car_rt_hit::LevelWith(base_level, double(larecomp::settings::mcla_gpu_car_rt_hit_reach.Get()),
                                                         double(larecomp::settings::mcla_gpu_car_rt_clearcoat.Get()));
   const float others_reach = level.others_reach > 0.0f ? car_rt_refl::ClampedLength(level.others_reach) : self_reach;
   // CITY-RT M2: the city in the reflections. A stats frame (car_rt_hit_rules.h census::) is decided first: the city's counters ride the same frames. Prepare writes this frame slot's rows and gives the
@@ -476,7 +488,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   const bool resolve_paint = denoise_passes > 0 && larecomp::settings::mcla_gpu_car_selfrefl_rt_resolve.Get();
   // NOISE-RESOLVE: with no temporal upscaler the cone's pattern changes every frame and the finished image is averaged with the last frame's result (the denoise's third pass); that needs the denoise
   // (it makes the image to average), its two images and the switch. Else the pattern stands still on the screen as the first fixes left it, and what the a-trous passes leave is all there is.
-  const bool resolve_history = denoise_passes > 0 && !info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);
+  const bool resolve_history = denoise_passes > 0 && (one_ray || !info.upscaler) && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);
   // NOISE-FOLLOW: the images stay over the frames a temporal upscaler takes (the plain frames of an upscaler session, a pause toggle, would make them again); `stable_valid_` / `stable_frame_` say what they hold is stale
   // (have_last below), and they go back after kHistoryKeepFrames frames of the cone's passes in a row without the resolve, with the setting off, or at another size.
   const bool stable_held = stable_[0].texture || stable_[1].texture;
@@ -488,7 +500,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {
     ReleaseStable();
   }
-  const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;
+  const uint32_t pattern_phase = (one_ray || noise_resolve::Varies(info.upscaler, resolve_history)) ? info.pattern_phase : 0u;
 
   // Another car's chrome (car_chrome_rt_rules.h): found by the primary ray too, and its probes traced, where the chrome variant is drawn at all and the switch for
   // this is on; else the primary ray is the player's body alone, as it was (no instance of the scene has the chrome's bit then that a ray here would take).
@@ -502,7 +514,8 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   // mcla_gpu_noise_blue is off, for the A/B.
   push.slots[3] = car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(pattern_phase, cone_rays), stats_frame) |
                   (larecomp::settings::mcla_gpu_noise_blue.Get() ? car_rt_refl::kConeBlueFlag : 0u) |
-                  (resolve_paint ? car_rt_refl::kFullConeFlag : 0u);
+                  (resolve_paint ? car_rt_refl::kFullConeFlag : 0u) |
+                  (one_ray ? car_rt_refl::kSingleRayFlag : 0u);
   push.image[0] = float(history.width);
   push.image[1] = float(history.height);
   push.image[2] = float(info.render_width);
@@ -561,8 +574,34 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   list->setComputeDescriptorSet(view.set, kSceneSet);
   list->setComputeDescriptorSet(city.set, kCitySet);
   list->setPipeline(pipeline);
-  list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);
+  namespace paint = car_rt_refl;
+  const paint::PaintRect full{0, 0, int32_t(history.width), int32_t(history.height)};
+  paint::PaintRects current;
+  if (one_ray) {
+    const auto add_box = [&](const car_rt_instances::ViewBox& box) {
+      current.push_back(paint::PaintTilesForBox(box, info.tan_x, info.tan_y, info.render_width, info.render_height,
+                                               std::max(info.divisor, 1u), full));
+    };
+    add_box(view.player_box);
+    if (view.boxes) {
+      for (uint32_t i = 0; i < view.box_count; ++i) {
+        if (view.boxes[i].paint || (chrome_others && view.boxes[i].chrome)) {
+          add_box(view.boxes[i]);
+        }
+      }
+    } else if (view.box_count != 0) {
+      current = {full};
+    }
+    current = car_rt_opp_refl::MergeRects(std::move(current), std::numeric_limits<uint32_t>::max());
+  }
+  // CHECK: compare masked and full coverage in chase, cockpit and parked traffic,
+  // including resize, camera cuts, disappearing receivers, and both backends.
+  const auto trace_regions = paint::PaintDispatch(trace_coverage_, image_.serial, current, full, one_ray);
+  for (const paint::PaintRect& rect : trace_regions) {
+    const TracePush trace_push{push, {uint32_t(rect.x0), uint32_t(rect.y0), 0u, 0u}};
+    list->setComputePushConstants(0, &trace_push, 0, sizeof(trace_push));
+    list->dispatch(car_rt_opp_refl::GroupsX(rect, kGroup), car_rt_opp_refl::GroupsY(rect, kGroup), 1);
+  }
 
   // The opponents' cars (car_rt_opp_refl.h): the same pass for the paint of the cars beside the player, a second dispatch into the same two images (nothing is recorded where no
   // other car's paint is in the scene).
@@ -632,10 +671,11 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     // written again. One pass leaves its result in the scratch image.
     pass_timing_->Mark(list, "car rt denoise");
     transition(Stage::COMPUTE, {{&image_, Layout::SHADER_READ}, {&aux_, Layout::SHADER_READ}, {&scratch_, Layout::GENERAL}});
-    DispatchDenoise(list, denoise, history.slot, image_, first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half, resolve_paint);
+    const auto scratch_regions = paint::PaintDispatch(scratch_coverage_, scratch_.serial, current, full, one_ray);
+    DispatchDenoise(list, denoise, history.slot, image_, first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half, scratch_regions, resolve_paint || one_ray);
     if (denoise_passes >= 2) {
       transition(Stage::COMPUTE, {{&scratch_, Layout::SHADER_READ}, {&image_, Layout::GENERAL}});
-      DispatchDenoise(list, denoise, history.slot, scratch_, final_set_, 1, history.width, history.height, float(info.tan_y), length, tan_half);
+      DispatchDenoise(list, denoise, history.slot, scratch_, final_set_, 1, history.width, history.height, float(info.tan_y), length, tan_half, trace_regions);
       transition(Stage::GRAPHICS, {{&image_, Layout::SHADER_READ}});
     } else {
       result_in_scratch_ = true;
@@ -645,11 +685,12 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
       // The third pass: the finished image (the trace's after two passes, the scratch after one) averaged with the last frame's result into the other stable image, which the paint reads. The history is the
       // frame before's (consecutive guest frames, the same size); without one the pass copies the finished image (weight 0) and the next frame has a history.
       const car_rt_refl::ConePose pose{view.camera_view, view.player_world, view.player_mesh_key};
-      const bool have_last = stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_frame_ + 1 == info.frame &&
+      const bool have_last = (!one_ray || !info.reset_history) && stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_one_ray_ == one_ray &&
+                             stable_city_ == city.on && stable_length_ == length && stable_spread_ == tan_half &&
+                             stable_coat_ == level.coat && stable_exp_bias_ == info.exp_bias && stable_frame_ + 1 == info.frame &&
                              stable_[0].width == history.width && stable_[0].height == history.height &&
                              car_rt_refl::ConeHistoryMatches(stable_garage_, info.garage, stable_pose_, pose);
-      // CHECK: compare the spatially filtered moving orbit against a held
-      // garage camera and confirm history restarts on a vehicle swap.
+      // CHECK: confirm history restarts on a garage transition and a vehicle swap.
       stable_pose_ = pose;
       stable_garage_ = info.garage;
       const float keep = have_last ? noise_resolve::ConeHistoryWeight(stable_frames_) : 0.0f;
@@ -657,11 +698,19 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
       HostImage& finished = result_in_scratch_ ? scratch_ : image_;
       pass_timing_->Mark(list, "car rt temporal");
       transition(Stage::COMPUTE, {{&finished, Layout::SHADER_READ}, {&stable_[stable_index_], Layout::SHADER_READ}, {&stable_[out], Layout::GENERAL}});
-      DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, false, keep, stable_[stable_index_].slot);
+      const auto stable_regions = paint::PaintDispatch(stable_coverage_[out], stable_[out].serial, current, full, one_ray);
+      DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half,
+                      stable_regions, false, keep, stable_[stable_index_].slot, one_ray);
       transition(Stage::GRAPHICS, {{&stable_[out], Layout::SHADER_READ}});
       stable_index_ = out;
       stable_valid_ = true;
       stable_resolve_paint_ = resolve_paint;
+      stable_one_ray_ = one_ray;
+      stable_city_ = city.on;
+      stable_length_ = length;
+      stable_spread_ = tan_half;
+      stable_coat_ = level.coat;
+      stable_exp_bias_ = info.exp_bias;
       stable_frame_ = info.frame;
       stable_frames_ = have_last ? std::min(stable_frames_ + 1u, 64u) : 0u;
       result_in_stable_ = true;
@@ -732,10 +781,12 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
                 "the colours the pass makes up from a paint constant are multiplied by {} (the history's units over the paint's, the main target's exponent bias {})",
                 kPrefix, info.frame, history.width, history.height, info.render_width, info.render_height, info.divisor,
                 view.instance_count, length, self_reach, others_reach, 100.0 * double(level.others_fade_from), parts,
-                gloss > 0.0f ? std::min<uint32_t>(level.cone_rays, car_rt_refl::kConeRays) : 1, gloss,
+                gloss > 0.0f ? cone_rays : 1u, gloss,
                 info.upscaler ? " (the pattern turns with the frame: a temporal upscaler runs)" : (resolve_history ? " (the pattern turns with the frame: the pass's own history averages it)" : ""),
-                level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4 ? std::format("on, strength {:.2f} (mcla_gpu_car_rt_clearcoat)", level.coat) : std::string("off"),
-                level.coat > 0.0f && gloss > 0.0f && level.cone_rays >= 4
+                level.coat > 0.0f && gloss > 0.0f && (one_ray || cone_rays >= 4)
+                    ? std::format("on, strength {:.2f} (mcla_gpu_car_rt_clearcoat)", level.coat) : std::string("off"),
+                one_ray ? std::string(" (one reflection sample, shared by the coat and cone)")
+                    : level.coat > 0.0f && gloss > 0.0f && cone_rays >= 4
                     ? std::format(" (another car in the reflection: the mirror is at least {:.0f}% of the texel, the cone's hits on it are dropped where the mirror missed it; the paint's clear coat layer: {})",
                                   100.0 * double(car_rt_hit::kOthersSharpShare), larecomp::settings::mcla_gpu_car_rt_coat_layer.Get() ? "on" : "off (mcla_gpu_car_rt_coat_layer)")
                     : std::string(" (a level with no mirror ray: the cone alone for another car too)"),
@@ -747,7 +798,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
 
 void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, uint32_t history_slot, const HostImage& input,
                                 const OutputSet& output, uint32_t pass, uint32_t width, uint32_t height, float tan_y, float length,
-                                float tan_half, bool resolve_paint, float keep, uint32_t previous_slot) {
+                                float tan_half, const car_rt_refl::PaintRects& regions, bool resolve_paint, float keep, uint32_t previous_slot, bool one_ray) {
   DenoisePush push = {};
   push.slots[0] = history_slot;
   push.slots[1] = input.slot;
@@ -769,8 +820,13 @@ void CarRtRefl::DispatchDenoise(plume::RenderCommandList* list, plume::RenderPip
   list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
   list->setComputeDescriptorSet(output.set.get(), kOutputSet);
   list->setPipeline(pipeline);
-  list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch((width + kGroup - 1) / kGroup, (height + kGroup - 1) / kGroup, 1);
+  push.region[2] = one_ray ? 1u : 0u;
+  for (const auto& rect : regions) {
+    push.region[0] = uint32_t(rect.x0);
+    push.region[1] = uint32_t(rect.y0);
+    list->setComputePushConstants(0, &push, 0, sizeof(push));
+    list->dispatch(car_rt_opp_refl::GroupsX(rect, kGroup), car_rt_opp_refl::GroupsY(rect, kGroup), 1);
+  }
 }
 
 bool CarRtRefl::EnsureOutput(uint32_t width, uint32_t height) {

@@ -12,6 +12,8 @@
 #include <rex/logging/log_category.h>
 
 #include "car_rt_parked_paint_rules.h"
+#include "car_rt_hit_rules.h"
+#include "car_rt_paint_tiles.h"
 #include "car_rt_scene.h"
 #include "car_rt_traffic_rules.h"
 #include "descriptors.h"
@@ -40,20 +42,28 @@ uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kCarRtRefl, 2); 
 
 // The class's traffic level (the ray tracing tier's, rt_tier.h: a weak card of the High class is Mid, none is Low: the GPU class would give a weak card the traffic share of a strong one) with the
 // debug override.
-traffic::Level TrafficLevel() {
-  return traffic::LevelWith(traffic::LevelFor(gpu_class::CurrentRtClass()), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()));
+traffic::Level TrafficLevel(gpu_class::GpuClass budget_class) {
+  return traffic::LevelWith(traffic::LevelFor(budget_class), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()));
 }
 
 // The screen rectangle of each other car's box with a paint instance (BoxRect, in image texels), and which box each rectangle is of: the pass's own rectangles and the parked cars' marks (RT-PARKED-PAINT)
 // are made from the same ones, so the cars marked are the cars traced.
 void CarRects(const CarRtView& view, double tan_x, double tan_y, uint32_t render_width, uint32_t render_height, uint32_t divisor, uint32_t image_width, uint32_t image_height,
-              std::vector<traffic::CarRect>* rects, std::vector<uint32_t>* rect_box) {
+              std::vector<traffic::CarRect>* rects, std::vector<uint32_t>* rect_box, bool one_ray) {
+  if (!rects || !rect_box) {
+    return;
+  }
   rects->clear();
   rect_box->clear();
   rects->reserve(view.box_count);
   for (uint32_t i = 0; i < view.box_count && view.boxes; ++i) {
     if (!view.boxes[i].paint) {
       continue;  // a car with no draw of a paint shader this frame (a car placed from memory): no pixel of it to find
+    }
+    const auto& box = view.boxes[i];
+    if (one_ray && box.parked && car_rt_refl::CompleteBox(box) && car_rt_refl::CompleteBox(view.player_box) &&
+        !car_rt_hit::PaintBoxInReach(view.player_box.min, view.player_box.max, box.min, box.max)) {
+      continue;
     }
     traffic::CarRect car;
     car.rect = opp::BoxRect(view.boxes[i], tan_x, tan_y, double(render_width), double(render_height), double(std::max<uint32_t>(divisor, 1)), int32_t(image_width), int32_t(image_height));
@@ -183,7 +193,11 @@ bool CarRtOppRefl::Record(const Frame& f) {
   // The traffic cars' paint (RT-TRAFFIC-REFL) is paint to find where the class rule is on; with it off a frame with only traffic paint has nothing to do.
   // The class is the ray tracing tier's (rt_tier.h: a weak card of the High class is Mid, none is Low), as the pass's own budget below and the structures' counts are: the GPU class would give a
   // weak card the traffic share of a strong one.
-  const traffic::Level traffic_level = TrafficLevel();
+  Push push = {};
+  std::memcpy(&push, f.base_push, kBasePushBytes);
+  const bool one_ray = (push.slots[3] & car_rt_refl::kSingleRayFlag) != 0u;
+  const auto budget_class = one_ray ? gpu_class::GpuClass::kHigh : gpu_class::CurrentRtClass();
+  const traffic::Level traffic_level = TrafficLevel(budget_class);
   const uint32_t traffic_paint = std::min(view.traffic_paint_instances, view.other_paint_instances);
   if (view.other_paint_instances - traffic_paint == 0 && (!traffic_level.on || traffic_paint == 0)) {
     ++window_.no_paint;  // no other car's paint in the list: nothing to find (cars not drawn this frame, no other car, traffic paint with the traffic off)
@@ -192,7 +206,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
   // CITY-RT M2 R2: with the city in the reflections the budget is the smaller of the class's and the level's cell's (city_refl_rules.h OppBudget), and a texel casts at most the cell's rays (OppRays).
   const city_refl::Cell& cell = f.city->cell;
   const uint64_t budget = city_refl::OppBudget(
-      opp::TexelBudget(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get())), f.city->on ? cell : city_refl::Cell{});
+      opp::TexelBudget(budget_class, int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get())), f.city->on ? cell : city_refl::Cell{});
   if (budget == 0) {
     ++window_.off;
     return false;
@@ -206,7 +220,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
   // where to look: the screen rectangle of each other car's box
   std::vector<traffic::CarRect> rects;
   std::vector<uint32_t> rect_box;
-  CarRects(view, f.tan_x, f.tan_y, f.render_width, f.render_height, f.divisor, f.image_width, f.image_height, &rects, &rect_box);
+  CarRects(view, f.tan_x, f.tan_y, f.render_width, f.render_height, f.divisor, f.image_width, f.image_height, &rects, &rect_box, one_ray);
   const traffic::TrafficPlan traffic_plan =
       traffic::PlanDispatches(rects, budget, traffic_level, uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_rt_opp_refl_rays.Get(), 0, 4)));
   const opp::Plan& plan = traffic_plan.plan;
@@ -215,8 +229,6 @@ bool CarRtOppRefl::Record(const Frame& f) {
     return false;
   }
 
-  Push push = {};
-  std::memcpy(&push, f.base_push, kBasePushBytes);
   push.slots[2] = opp::kPrimaryParts;
   push.opp[2] = view.player_row;
   push.opp[3] = city_refl::OppRays(plan.rays, f.city->on ? cell : city_refl::Cell{});
@@ -292,15 +304,17 @@ std::vector<car_rt_parked_paint::Mark> CarRtOppRefl::ParkedMarks(const MarkInput
       !larecomp::settings::mcla_gpu_car_rt_opp_refl.Get() || !larecomp::settings::mcla_gpu_car_rt_parked_paint.Get()) {
     return marks;
   }
-  const traffic::Level level = TrafficLevel();
+  const bool one_ray = in.one_ray;
+  const auto budget_class = one_ray ? gpu_class::GpuClass::kHigh : gpu_class::CurrentRtClass();
+  const traffic::Level level = TrafficLevel(budget_class);
   const uint64_t budget =
-      opp::TexelBudget(gpu_class::CurrentRtClass(), int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get()));
+      opp::TexelBudget(budget_class, int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), int(larecomp::settings::mcla_gpu_car_rt_opp_refl_texels.Get()));
   if (!level.on || budget == 0) {
     return marks;
   }
   std::vector<traffic::CarRect> rects;
   std::vector<uint32_t> rect_box;
-  CarRects(*in.view, in.tan_x, in.tan_y, in.render_width, in.render_height, in.divisor, in.image_width, in.image_height, &rects, &rect_box);
+  CarRects(*in.view, in.tan_x, in.tan_y, in.render_width, in.render_height, in.divisor, in.image_width, in.image_height, &rects, &rect_box, one_ray);
   const traffic::TrafficPlan plan = traffic::PlanDispatches(rects, budget, level, uint32_t(std::clamp<int32_t>(larecomp::settings::mcla_gpu_car_rt_opp_refl_rays.Get(), 0, 4)));
   marks = car_rt_parked_paint::PlanMarks(in.view->boxes, in.view->box_count, rects, rect_box, plan);
   return marks;

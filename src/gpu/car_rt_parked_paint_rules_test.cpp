@@ -375,7 +375,8 @@ void WiringTests(const std::string& src) {
   Check(Has(history, "if (g_push.slots2.y != 0u) {") && Has(history, "if (id != 0u || g_push.slots.z == kNoSlot) {\n      discard;") &&
             Has(history, "if (!(t > 0.0f && t >= asfloat(g_push.slots2.z) && t <= asfloat(g_push.slots2.w))) {\n      discard;") && Has(history, "return float4(HeldColour(ReadColour(p)), -t);"),
         "the history pass's mark mode: a texel with an ID or no stencil plane, or outside the range, is discarded; the rest is the scene colour and the negated distance");
-  Check(Has(history, "return float4(HeldColour(colour), LinearDistance(stored));") && Has(history, "if (id < kFirstVehicleId || id > kLastVehicleId) {\n    return float4(0.0f, 0.0f, 0.0f, 0.0f);"),
+  Check(Has(history, "return float4(HeldColour(colour), LinearDistance(stored));") && Has(history, "if (id < kFirstVehicleId || id > kLastVehicleId) {") &&
+            Has(history, "if (g_push.sizes.w != 0.0f) {\n      discard;") && Has(history, "return float4(0.0f, 0.0f, 0.0f, 0.0f);"),
         "the history pass's own mode is as it was: a vehicle's texel, the positive distance");
   // the readers that ask a > 0 are left alone, the ray traced passes read the distance of either kind
   Check(Has(common, "float HistoryDistance(float alpha)") && Has(common, "return abs(alpha);"), "the shaders' common header: HistoryDistance is abs");
@@ -390,7 +391,7 @@ void WiringTests(const std::string& src) {
         "the denoise judges the taps by the distance of either kind");
   // the host: the history pass draws the marks before anything reads the image
   const size_t marks_at = selfrefl.find("rt_->ParkedMarks(info)");
-  const size_t draw_at = selfrefl.find("passes_->DrawInto(list, history_, pipeline, &push, sizeof(push));");
+  const size_t draw_at = selfrefl.find("passes_->DrawInto(list, history_, pipeline, &push, sizeof(push), discard_background);");
   const size_t dump_at = selfrefl.find("dump_->OnHistoryImage(list, history_, divisor, p);");
   const size_t trace_at = selfrefl.find("rt_->OnHistory(list, info);");
   Check(draw_at != std::string::npos && marks_at != std::string::npos && dump_at != std::string::npos && trace_at != std::string::npos && draw_at < marks_at && marks_at < dump_at && dump_at < trace_at,
@@ -412,9 +413,9 @@ void WiringTests(const std::string& src) {
             Has(opp_cpp, "!larecomp::settings::mcla_gpu_car_rt_opp_refl.Get() || !larecomp::settings::mcla_gpu_car_rt_parked_paint.Get()) {") && Has(opp_cpp, "if (!level.on || budget == 0) {") && Has(opp_cpp, "marks = car_rt_parked_paint::PlanMarks(in.view->boxes, in.view->box_count, rects, rect_box, plan);") &&
             Has(opp_h, "std::vector<car_rt_parked_paint::Mark> ParkedMarks(const MarkInput& input);"),
         "the opponents' pass says which parked cars it will trace: the same level, the same budget, the same rectangles");
-  Check(Has(opp_cpp, "CarRects(view, f.tan_x, f.tan_y, f.render_width, f.render_height, f.divisor, f.image_width, f.image_height, &rects, &rect_box);") &&
-            Has(opp_cpp, "CarRects(*in.view, in.tan_x, in.tan_y, in.render_width, in.render_height, in.divisor, in.image_width, in.image_height, &rects, &rect_box);") &&
-            Has(opp_cpp, "traffic::LevelWith(traffic::LevelFor(gpu_class::CurrentRtClass()), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()))"),
+  Check(Has(opp_cpp, "CarRects(view, f.tan_x, f.tan_y, f.render_width, f.render_height, f.divisor, f.image_width, f.image_height, &rects, &rect_box, one_ray);") &&
+            Has(opp_cpp, "CarRects(*in.view, in.tan_x, in.tan_y, in.render_width, in.render_height, in.divisor, in.image_width, in.image_height, &rects, &rect_box, one_ray);") &&
+            Has(opp_cpp, "traffic::LevelWith(traffic::LevelFor(budget_class), int(larecomp::settings::mcla_gpu_car_rt_traffic_refl.Get()))"),
         "the pass and the marks are made from the same rectangles and the same class level");
   // the constants
   Check(Has(selfrefl, "const bool parked = !pause_view_ && car_rt_parked_paint::StillConstantsFor(ids, traffic_paint, larecomp::settings::mcla_gpu_car_rt_parked_paint.Get());") &&

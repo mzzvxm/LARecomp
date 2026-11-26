@@ -109,10 +109,39 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
     // 2. the clear coat's ray and the cone of reflection rays, off the surface along the normal: as the player's, with the push's number of rays (the level's at most)
     const uint maxRays = min(g_push.opp.w, LevelRays(g_push.slots.w));
     const float3 mirror = reflect(viewDirection, normal);
+    const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
+    [branch]
+    if ((g_push.slots.w & kSingleRayFlag) != 0u)
+    {
+        float fade, visible, distance;
+        float3 seen, hidden;
+        bool other, car;
+        if (!TracePaintSample(history, texel, origin, mirror, normal, nv, primaryInstance, primaryPrimitive,
+                              fade, visible, seen, distance, other, hidden, car))
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+        if (!other && visible < 1.0)
+        {
+            float3 playerColour;
+            if (PlayerCarColour(history, playerColour) >= kOtherCarMinShare)
+            {
+                hidden = playerColour * g_push.tune.x;
+            }
+            else if (visible > 0.0)
+            {
+                hidden = seen * g_push.tune.x;
+            }
+            else
+            {
+                return float4(0.0, 0.0, 0.0, 1.0);
+            }
+        }
+        return PaintSampleResult(fade, visible, seen, hidden, car, distance, aux);
+    }
     const float reach = g_push.lens.w;
     const float tanHalf = maxRays >= 2u ? g_push.tune.w : 0.0;
     const float rays = tanHalf > 0.0 ? float(min(maxRays, 4u)) : 1.0;
-    const float3 origin = direction * hitT + normal * (0.004 + 0.002 * hitT);
     const float turns = ConeRotation(texel, ConePhase(g_push.slots.w), (g_push.slots.w & kConeBlueFlag) != 0u);
     float coatShare = 0.0;
     float coatFade = 0.0;

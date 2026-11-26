@@ -106,7 +106,7 @@ class CityRefl {
 
   // The frame's start (CarRtRefl::BeginFrame): `pass_active` is the pass's own want (the ray traced reflection is on and can be recorded). Reads the setting, asks the scene service for
   // what it needs.
-  void BeginFrame(bool pass_active);
+  void BeginFrame(bool pass_active, bool one_ray = false);
   // What the pass asks the screen owner for (screen_frame.h products), 0 while off.
   uint32_t ScreenProducts() const;
   bool on() const { return cell_.level != city_refl::Level::kOff && pass_active_; }

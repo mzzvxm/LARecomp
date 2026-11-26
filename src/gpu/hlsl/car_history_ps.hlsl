@@ -39,7 +39,7 @@ struct CarHistoryPush {
   uint4 slots;
   // x the host sample that is the guest's sample 0; y 1 for a mark draw (the mode above), z and w the mark's near and far view distance as float bits
   uint4 slots2;
-  // xy the picture in host pixels, z the divisor (1: the image is the picture's size, 2: half of it in each direction)
+  // xy the picture in host pixels, z the divisor, w 1 if the target was cleared this frame
   float4 sizes;
   // the projection's rows P22, P23, P32, P33 (view space to clip, row vectors, the camera looking down -z)
   float4 lin;
@@ -129,6 +129,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     return float4(HeldColour(ReadColour(p)), -t);
   }
   if (id < kFirstVehicleId || id > kLastVehicleId) {
+    if (g_push.sizes.w != 0.0f) {
+      discard;
+    }
     return float4(0.0f, 0.0f, 0.0f, 0.0f);  // not a vehicle: nothing the paint reads
   }
 #if CAR_HISTORY_MS == 2

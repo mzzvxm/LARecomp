@@ -1385,6 +1385,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_rt_paint_one_ray": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: trace one reflection ray per car paint texel, accumulate it over time, and skip background writes to car history. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_selfrefl_rt_resolve": {
   "type": "bool",
   "default": "false",
@@ -1597,9 +1608,9 @@
   "type": "std::string",
   "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Traces streets and buildings reflected in car paint. Needs car self-reflections RT and the city data. Live.\"",
+  "help": "\"Traces streets and buildings reflected in car paint up to 150 m away. City in Car Paint RT needs car self-reflections RT and the city data. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
+   "rex::Allowed(\"auto\", \"off\", \"on\", \"high\", \"ultra\")"
   ],
   "comments": [],
   "pp_depth": 0

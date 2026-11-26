@@ -211,6 +211,7 @@ const ItemDef kDebugFixesItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
 #endif
+    NativeOnly(Bool("PM_RxDbgCarRtPaintOneRay", "mcla_gpu_car_rt_paint_one_ray", "RT PAINT ONE RAY: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

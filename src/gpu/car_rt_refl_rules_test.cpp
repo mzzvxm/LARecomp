@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "car_rt_refl_rules.h"
+#include "car_rt_paint_tiles.h"
 #include "dlss_rr_rules.h"
 
 namespace rt = mcla::gpu::car_rt_refl;
@@ -381,12 +382,20 @@ void RawChecks(const std::string& dir) {
             Has(trace, "kFullConeFlag = 1u << 28") && Has(trace, "(g_push.slots.w & kFullConeFlag) != 0u") &&
             Has(trace, "if (!fullCone && slot == 2 && !found)"),
         "the live paint resolve is off by default and only takes the full cone with our denoiser");
-  Check(Has(cpp, "first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half, resolve_paint") &&
+  Check(Has(cpp, "first_set_, 0, history.width, history.height, float(info.tan_y), length, tan_half, scratch_regions, resolve_paint || one_ray") &&
             Has(cpp, "FirstDenoiseRange(resolve_paint)") && Has(cpp, "push.tune[0] = first_range.from;") &&
             Has(cpp, "push.tune[1] = first_range.to;") && Has(denoise, "smoothstep(g_push.tune.x, g_push.tune.y, footprint)"),
         "the first spatial pass consumes the selected paint footprint range");
   Check(Has(cpp, "stable_resolve_paint_ == resolve_paint") && Has(cpp, "stable_resolve_paint_ = resolve_paint;"),
         "changing paint resolve discards the previous filter's accumulated image");
+  const std::string sample = FunctionOf(trace, "bool TracePaintSample(");
+  Check(Count(sample, "TraceRay(") == 1 && Has(sample, "(phase + spatial) & 3u") &&
+            Has(sample, "phase >> 2") && Has(sample, "noise < coatShare"),
+        "player and opponent use one reflection query and share it across the cone and coat");
+  Check(Has(trace, "return PaintSampleResult(") &&
+            Has(Read(dir, "hlsl/car_rt_refl_opp.hlsli"), "return PaintSampleResult(") &&
+            Has(trace, "aux.x = EncodeHitDistance(distance, g_push.lens.w);"),
+        "one-ray receivers retain the hit distance and sign contract");
   // the shader: what the C++ twin says
   Check(Has(hit, "const int divisor = int(max(g_push.lens.y, 1.0));") && Has(hit, "const int2 texel = min(pixel / divisor, texels - 1);") && Has(hit, "if (aux.w > 0.5)") &&
             Has(hit, "result = aux.x > 0.0 ? aux.x * aux.x * g_push.lens.x : g_push.lens.z;") && Has(hit, "g_output[pixel] = result;") && Has(hit, "[[vk::image_format(\"r16f\")]]") &&
@@ -416,7 +425,7 @@ void RawChecks(const std::string& dir) {
         "RR-4b: the filter's passes go through the rules' DenoisePassesFor (the setting's, none when raw); the setting-only DenoisePassCount is read once, by the history's stable_gap");
   Check(Has(cpp, "raw = HitPipeline() != nullptr && info.render_width != 0 && info.render_height != 0 && EnsureHitImage(info.render_width, info.render_height);"),
         "RR-4b: a frame is raw only with the pipeline made and the image made (else it is a plain frame with its filter)");
-  const size_t trace_at = cpp.find("list->dispatch((history.width + kGroup - 1) / kGroup, (history.height + kGroup - 1) / kGroup, 1);");
+  const size_t trace_at = cpp.find("for (const paint::PaintRect& rect : trace_regions)");
   const size_t opp_at = cpp.find("opp_.Record(opponents);");
   const size_t hit_at = cpp.find("  if (raw) {\n    // RR-4b: how far each reflection went");
   const size_t closing_at = cpp.find("pass_timing_->Mark(list, \"after car rt refl\");");
@@ -1425,6 +1434,82 @@ int main(int argc, char** argv) {
     Check(Near(rt::OtherCarStep(1.6f, 0.01f), rt::kOtherCarMaxStep) && Near(rt::OtherCarStep(1.6f, 2.0f), 1.0) && Near(rt::OtherCarStep(1.6f, 0.2f), 4.0, 1e-5) &&
               Near(rt::OtherCarStep(1.6f, 0.0f), 1.0),
           "the taps' spacing follows the car's size in texels, from one texel to the most");
+  }
+
+  {
+    for (uint32_t phase = 0; phase < 1024; phase += 4) {
+      for (uint32_t spatial = 0; spatial < 4; ++spatial) {
+        uint32_t visited = 0;
+        for (uint32_t step = 0; step < 4; ++step) {
+          const uint32_t ray = rt::PaintConeIndex(phase + step, spatial);
+          Check(ray == (step + spatial) % 4, "EV-9 staggers the cone order across texels");
+          visited |= 1u << ray;
+          Check(rt::PaintConeTurn(phase + step) == phase / 4, "the ring rotation stays fixed within a four-frame block");
+        }
+        Check(visited == 15u, "every block visits both sides of both rings");
+      }
+    }
+    int coat = 0;
+    for (int i = 0; i < 100; ++i) {
+      coat += rt::PaintSamplesCoat((i + 0.5f) / 100.0f, 0.45f);
+    }
+    Check(coat == 45, "the one-ray lobe selection preserves the expected coat share");
+    Check(!rt::PaintSamplesCoat(0.45f, 0.45f) && !rt::PaintSamplesCoat(0.0f, 0.0f),
+          "equality stays on the cone and zero share never adds a coat ray");
+  }
+  {
+    const rt::PaintRect full{0, 0, 1919, 1081};
+    const rt::PaintRect a{16, 32, 96, 128};
+    const rt::PaintRect b{160, 192, 192, 208};
+    const rt::PaintRect c{32, 96, 112, 160};
+    rt::PaintCoverage coverage;
+    Check(rt::PaintDispatch(coverage, 1, {a}, full, true) == rt::PaintRects{full},
+          "a new trace or temporal UAV gets a complete initialization");
+    Check(rt::PaintDispatch(coverage, 1, {b}, full, true) == (rt::PaintRects{a, b}),
+          "initialize newly covered tiles and clear the tiles a car vacated");
+    Check(rt::PaintDispatch(coverage, 1, {c}, full, true) == (rt::PaintRects{b, c}),
+          "a cleared footprint is dropped from the next frame");
+    Check(rt::PaintDispatch(coverage, 1, {a}, full, true) == rt::PaintRects{{16, 32, 112, 160}},
+          "merged dispatches do not write the same tile twice");
+    Check(rt::PaintDispatch(coverage, 2, {a}, full, true) == rt::PaintRects{full},
+          "reallocating an image resets its coverage even at the same size");
+    Check(rt::PaintDispatch(coverage, 2, {b}, full, false) == rt::PaintRects{full} &&
+          rt::PaintDispatch(coverage, 2, {b}, full, true) == rt::PaintRects{full},
+          "the first tiled frame clears a prior full-image reference");
+    Check(rt::PaintDispatch(coverage, 2, {}, full, true) == rt::PaintRects{b} &&
+          rt::PaintDispatch(coverage, 2, {}, full, true).empty(),
+          "the last visible car disappearing clears its footprint once");
+
+    mcla::gpu::car_rt_instances::ViewBox box;
+    Check(rt::PaintTilesForBox(box, 1, 1, 1919, 1081, 1, full) == full, "unknown bounds take full coverage");
+    const float lo[3] = {-1.1f, -0.7f, 8.0f};
+    const float hi[3] = {0.8f, 1.2f, 10.0f};
+    box.Add(lo);
+    box.Add(hi);
+    for (int divisor : {1, 2}) {
+      const rt::PaintRect image{0, 0, (1919 + divisor - 1) / divisor, (1081 + divisor - 1) / divisor};
+      const auto r = rt::PaintTilesForBox(box, 1.1, 0.9, 1919, 1081, divisor, image);
+      Check(r.x0 % 16 == 0 && r.y0 % 16 == 0 && r.x1 % 16 == 0 && r.y1 % 16 == 0 && r.Area() < image.Area(),
+            "a finite box bins into aligned tiles smaller than the image");
+      for (int sample = 0; sample <= 32; ++sample) {
+        const double t = sample / 32.0;
+        const double z = std::lerp(lo[2], hi[2], t);
+        for (float x : {lo[0], hi[0]}) {
+          for (float y : {lo[1], hi[1]}) {
+            const int tx = int((0.5 + 0.5 * x / (z * 1.1)) * 1919 / divisor);
+            const int ty = int((0.5 - 0.5 * y / (z * 0.9)) * 1081 / divisor);
+            Check(tx >= r.x0 && tx < r.x1 && ty >= r.y0 && ty < r.y1, "projected vehicle texels stay inside the tile mask");
+          }
+        }
+      }
+    }
+    box.min[2] = 0.01f;
+    Check(rt::PaintTilesForBox(box, 1, 1, 1919, 1081, 1, full) == full, "a cockpit box crossing the trace near plane takes full coverage");
+    box.min[2] = -10.0f;
+    box.max[2] = -1.0f;
+    Check(rt::PaintTilesForBox(box, 1, 1, 1919, 1081, 1, full).Empty(), "a box behind the eye needs no new tiles");
+    box.complete = false;
+    Check(rt::PaintTilesForBox(box, 1, 1, 1919, 1081, 1, full) == full, "one missing instance bound makes the whole projection uncertain");
   }
 
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

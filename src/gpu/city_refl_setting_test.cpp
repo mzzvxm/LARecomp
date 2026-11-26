@@ -118,6 +118,14 @@ void CellChecks() {
   Check(crs::Decide(gc::GpuClass::kMid, gc::RtTier::kStrong, "auto", true, crs::Data::kReady).level == cm::Level::kOff, "AUTO on a Mid class runs nothing (its rung is at most weak)");
   Check(crs::Decide(gc::GpuClass::kMid, gc::RtTier::kWeak, "high", true, crs::Data::kReady).level == cm::Level::kHigh, "a weak card by hand runs HIGH (the Mid class's cell)");
   Check(crs::Decide(gc::GpuClass::kMid, gc::RtTier::kWeak, "ultra", true, crs::Data::kReady).level == cm::Level::kUltra, "a weak card by hand runs ULTRA");
+  for (std::string_view word : {"on", "auto", "high", "ultra"}) {
+    Check(crs::DecidePaint(gc::GpuClass::kMid, gc::RtTier::kWeak, word, true, crs::Data::kReady).level == cm::Level::kHigh,
+          "an enabled paint setting has the same single level on a weak ray-query device");
+  }
+  Check(crs::DecidePaint(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", true, crs::Data::kReady).level == cm::Level::kOff,
+        "the paint city setting keeps explicit Off");
+  Check(crs::DecidePaint(gc::GpuClass::kMid, gc::RtTier::kNone, "on", true, crs::Data::kReady).level == cm::Level::kOff,
+        "city paint needs ray queries");
   Check(crs::Decide(gc::GpuClass::kHigh, gc::RtTier::kStrong, "off", true, crs::Data::kReady).level == cm::Level::kOff, "OFF is off on a strong card");
   Check(crs::Decide(gc::GpuClass::kLow, gc::RtTier::kStrong, "ultra", true, crs::Data::kReady).level == cm::Level::kOff, "the Low class never runs it");
   // the row's AUTO is the table's cell; the table is rt_tier.h's
@@ -323,13 +331,16 @@ void MenuChecks(const std::string& dir) {
         "the city paint row is grouped with the traced car paint");
   Check(Has(page, "NativeOnly(Str(\"PM_RxGpuRtCityRefl\", \"mcla_gpu_rt_reflections\", \"CITY IN CAR PAINT RT: \""),
         "city paint is a native-only RT row");
+  Check(Has(page, "kOnOffVals, kOnOffNames, 2"), "the row offers Off and On");
   const std::string rules = ReadFile(dir + "/../settings/ui_rules.toml");
   const size_t begin = At(rules, "[rows.PM_RxGpuRtCityRefl]");
   const size_t next = At(rules, "[rows.PM_RxGpuSideMirrors]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
-  Check(Has(row, "d.car_rt_runs") && Has(row, "live.city_data") &&
-            Has(row, "decode = \"resolved(s.mcla_gpu_rt_reflections)\"") && Has(menu, "city_refl_setting::DataNow()"),
-        "the row decodes old settings and evaluates the car reflection and city-data facts");
+  Check(Has(row, "d.car_rt_runs") && Has(row, "live.city_data") && Has(row, "decode = \"d.rt_city_choice\"") &&
+            Has(menu, "city_refl_setting::DataNow()"),
+        "the row evaluates the car reflection and the live city-data facts");
+  Check(Has(rules, "car_rt_runs =") && Has(rules, "s.mcla_gpu_car_selfrefl_rt"),
+        "the city gate uses the separate traced car self-reflections setting");
   Check(!row.empty() && !Has(row, "shadows") && !Has(row, "ao_on"),
         "city paint reflections are independent of shadows and occlusion");
 
@@ -350,13 +361,14 @@ void SettingsChecks(const std::string& dir) {
   // (Written in pieces: tools/check_settings_exposure.py takes a literal definition macro anywhere in src for a setting definition.)
   const std::string define = std::string("REX_SET") + "TING(";
   const std::string def = DefinitionOf(header, define + "std::string, mcla_gpu_rt_reflections, \"off\"");
-  Check(!def.empty() && Has(def, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"), "mcla_gpu_rt_reflections is a string setting, off by default, with the four words");
+  Check(!def.empty() && Has(def, "rex::Allowed(\"auto\", \"off\", \"on\", \"high\", \"ultra\")"), "the city row accepts On and reads legacy saves");
   Check(!def.empty() && !Has(def, "kDebugOnly") && !Has(def, "kRestart") && Has(def, "Live."), "it is not debug-only any more (it has its row), and it is live (no restart trait)");
   Check(Has(header, "inline auto& mcla_gpu_rt_reflections = g_gpu.mcla_gpu_rt_reflections;") && Has(meta, "{\"mcla_gpu_rt_reflections\", \"MCLA/GPU\"},"), "the alias and the meta list have it");
   const size_t mat = At(manifest, "\"mcla_gpu_rt_reflections\": {");
   const size_t mend = mat == std::string::npos ? 0 : manifest.find("\"comments\"", mat);
   const std::string entry = mat == std::string::npos ? "" : manifest.substr(mat, mend - mat);
-  Check(!entry.empty() && Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"off\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"high\\\", \\\"ultra\\\")") && !Has(entry, "kDebugOnly"),
+  Check(!entry.empty() && Has(entry, "\"type\": \"std::string\"") && Has(entry, "\"default\": \"\\\"off\\\"\"") && Has(entry, "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"on\\\", \\\"high\\\", \\\"ultra\\\")") && !Has(entry, "kDebugOnly") &&
+            Has(entry, "City in Car Paint RT needs"),
         "the manifest entry is the same setting: live, not debug-only, with the row named in its help");
   // the debug settings around it stay debug-only
   for (const char* name : {"mcla_gpu_city_refl_screen", "mcla_gpu_city_refl_coat", "mcla_gpu_city_refl_reach", "mcla_gpu_city_refl_view"}) {
@@ -382,7 +394,7 @@ void SceneChecks(const std::string& dir) {
 void HostChecks(const std::string& dir) {
   const std::string host = ReadFile(dir + "/city_refl.cpp");
   const std::string host_h = ReadFile(dir + "/city_refl.h");
-  Check(Has(host, "const crs::Decision decision = crs::Decide(gpu_class::Current(), gpu_class::CurrentRtTier(), Setting().Get(), true, crs::DataNow());") && Has(host, "LiveText text(\"mcla_gpu_rt_reflections\")"),
+  Check(Has(host, "const auto decide = one_ray ? crs::DecidePaint : crs::Decide;") && Has(host, "LiveText text(\"mcla_gpu_rt_reflections\")"),
         "the host decides with the same function the menu uses: the setting read live, the pass running (the car's ray traced reflection on), the data's state");
   // the wants go out before the pass waits for the data (they make the app build it), the cell only once the data stands
   const size_t want = At(host, "service_->Want(rt_scene::Consumer::kCityReflections, needs);");
