@@ -911,10 +911,10 @@ void TestHostSources(const std::string& dir) {
   Check(Has(rt_cpp, "static LiveText text(\"mcla_gpu_ssr_rt\");") && Has(rt_cpp, "ssr_rt::Resolve({ssr_level, ssr_rt::ParseChoice(Setting().Get()), gpu_class::CurrentRtRung()})"), "the level is the setting's word, the effect's level and the card's rung through the rules");
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
-  Check(Has(ssr_cpp, "if (rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
+  Check(Has(ssr_cpp, "if (!garage && rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
             Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push);\n  }"),
         "without the fallback the images are the old ones (default flags, no confidence) and the pass is the plain one");
-  Check(Has(ssr_cpp, "rt_.BeginFrame(level_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") && Has(ssr_cpp, "return bytes + rt_.HeldBytes() + denoise_.HeldBytes();"), "the effect's frame start, present, shutdown and memory call the fallback");
+  Check(Has(ssr_cpp, "rt_.BeginFrame(garage ? ssr::Level::kOff : level_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") && Has(ssr_cpp, "return bytes + rt_.HeldBytes() + denoise_.HeldBytes();"), "the effect's frame start, present, shutdown and memory call the fallback");
   const size_t m_trace = At(ssr_cpp, "Mark(list, \"ssr trace\")");
   const size_t m_rt = At(ssr_cpp, "Mark(list, \"ssr rt\")");
   const size_t m_temporal = At(ssr_cpp, "Mark(list, \"ssr temporal\")");

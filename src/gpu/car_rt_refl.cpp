@@ -364,7 +364,7 @@ bool CarRtRefl::PipelineReady() {
 // the frame
 // ---------------------------------------------------------------------------
 
-void CarRtRefl::BeginFrame(bool reflection_on) {
+void CarRtRefl::BeginFrame(bool reflection_on, bool garage) {
   active_ = false;
   glass_.NewFrame();
   city_.BeginFrame(false);  // the city's want and cell are this frame's: reset until the pass is known to run
@@ -384,7 +384,7 @@ void CarRtRefl::BeginFrame(bool reflection_on) {
   // The scene builds a frame's structures only for a frame that asked in the one before (as CarFrame): ask in every frame this is on.
   // CHECK: the name of CarRtScene's per-frame request (written as CarFrame::Request, car_frame.h).
   scene_->Request();
-  city_.BeginFrame(true);  // CITY-RT M2: the city in the reflections (the setting's cell; the scene service's wants)
+  if (!garage) city_.BeginFrame(true);  // CITY-RT M2: the city in the reflections (the setting's cell; the scene service's wants)
 }
 
 // RT-PARKED-PAINT: see car_rt_refl.h. The view is the one OnHistory will trace against (the scene built it before the trigger).
@@ -406,7 +406,7 @@ std::vector<car_rt_parked_paint::Mark> CarRtRefl::ParkedMarks(const HistoryInfo&
 
 bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& info) {
   recorded_ = false;
-  if (!list || !active_ || !ready_ || !info.image || !info.image->texture || info.image->slot == kNoSlot) {
+  if (!list || !active_ || !ready_ || !scene_ || !info.image || !info.image->texture || info.image->slot == kNoSlot) {
     return false;
   }
   HostImage& history = *info.image;
@@ -643,7 +643,13 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     if (resolve_history) {
       // The third pass: the finished image (the trace's after two passes, the scratch after one) averaged with the last frame's result into the other stable image, which the paint reads. The history is the
       // frame before's (consecutive guest frames, the same size); without one the pass copies the finished image (weight 0) and the next frame has a history.
-      const bool have_last = stable_valid_ && stable_frame_ + 1 == info.frame && stable_[0].width == history.width && stable_[0].height == history.height;
+      const car_rt_refl::ConePose pose{view.camera_view, view.player_world, view.player_mesh_key};
+      const bool have_last = stable_valid_ && stable_frame_ + 1 == info.frame && stable_[0].width == history.width && stable_[0].height == history.height &&
+                             car_rt_refl::ConeHistoryMatches(stable_garage_, info.garage, stable_pose_, pose);
+      // CHECK: compare the spatially filtered moving orbit against a held
+      // garage camera and confirm history restarts on a vehicle swap.
+      stable_pose_ = pose;
+      stable_garage_ = info.garage;
       const float keep = have_last ? noise_resolve::ConeHistoryWeight(stable_frames_) : 0.0f;
       const uint32_t out = 1 - stable_index_;
       HostImage& finished = result_in_scratch_ ? scratch_ : image_;

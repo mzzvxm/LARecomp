@@ -5,10 +5,13 @@
 
 namespace mcla::gpu::gbuffer {
 
-enum class PauseFxView : uint8_t { kNone, kPause, kPhoto };
+enum class PauseFxView : uint8_t { kNone, kPause, kPhoto, kGarage };
 
-constexpr PauseFxView PauseFxViewOf(bool enabled, std::string_view movie, bool garage_lighting) {
-  if (!enabled || garage_lighting) return PauseFxView::kNone;
+constexpr PauseFxView PauseFxViewOf(bool city_enabled, std::string_view movie, bool garage_lighting, bool garage_enabled = false) {
+  if (garage_lighting) {
+    return garage_enabled && movie != "NAVSYSMOVIE" ? PauseFxView::kGarage : PauseFxView::kNone;
+  }
+  if (!city_enabled) return PauseFxView::kNone;
   if (movie == "PHOTOALBUMMOVIE") return PauseFxView::kPhoto;
   if (movie == "PAUSEMOVIE") return PauseFxView::kPause;
   return PauseFxView::kNone;

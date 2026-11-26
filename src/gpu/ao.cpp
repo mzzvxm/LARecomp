@@ -1076,7 +1076,7 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
 }
 
 void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
-  if (pause_fx_ != pause_fx && previous_pause_) {
+  if (gbuffer::PauseFxCameraChanged(previous_pause_, pause_fx_, pause_fx)) {
     // AO and screen-space bounce share a history. Contact shadows can also
     // keep their own. Start both over when the pause camera changes mode.
     have_previous_ = false;
@@ -2947,7 +2947,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   record_car(plan.rtao.on);
   // === CITY-RT BLOCK (city_rt_shadow.h, CITY-RT M1): the sun's rays against the city's structures and the cars, over the whole picture, into an image of the car's layout; where the car's own
   // pass was recorded its g channel is combined (the darker). The contact march reads this image in place of the car's alone.
-  if (city_shadow_ && city_shadow_->wanted() && contact) {
+  if (city_shadow_ && city_shadow_->wanted() && contact && !plan.contact.indoor) {
     CityRtShadow::Inputs city_in;
     city_in.depth = &Depth(0);  // (SS-2: the depth chain belongs to the screen owner now; Depth(level) is its image)
     city_in.tan_x = base.lens[0];
@@ -3289,13 +3289,13 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (contact) {
     // The game's sun shadow mask is found first: with mcla_gpu_contact_shadows_fast the march leaves out the pixels
     // under it that the apply cannot use (RecordContact). The apply gets the very same slot.
-    const uint32_t contact_mask = FindMaskSlot();
+    const uint32_t contact_mask = plan.contact.indoor ? kNoSlot : FindMaskSlot();
     contact_slot = RecordContact(list, plan, base, contact_mask);
     if (contact_slot != kNoSlot) {
       mask_slot = contact_mask;
     }
   }
-  if (mask_slot == kNoSlot && plan.gi.apply) {
+  if (mask_slot == kNoSlot && plan.gi.apply && !menu_world::GarageFxRuns(trigger_world_, pause_fx_)) {
     mask_slot = FindMaskSlot();  // the bounce light's albedo estimate takes the sun's shadow into account
   }
   const bool contact_applied = contact_slot != kNoSlot;
@@ -3304,7 +3304,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // kNoSlot, and a vehicle's pixel takes a sun visibility of 1.
   uint32_t car_sun_slot = kNoSlot;
   uint32_t car_sun_lookup_slot = kNoSlot;
-  if (plan.apply && (contact_applied || plan.gi.apply) && larecomp::settings::mcla_gpu_contact_shadows_car_sun.Get() != 0) {
+  if (plan.apply && (contact_applied || plan.gi.apply) && !menu_world::GarageFxRuns(trigger_world_, pause_fx_) &&
+      larecomp::settings::mcla_gpu_contact_shadows_car_sun.Get() != 0) {
     car_sun_slot = FindCarSunSlot();
     float lookup_columns[12];
     if (car_sun_slot != kNoSlot && CarSunLookupColumns(lookup_columns)) {
@@ -3714,6 +3715,7 @@ bool AmbientOcclusion::PickWet(float* value) const {
 void AmbientOcclusion::PlanContact(Plan* plan) {
   plan->contact = ContactPlan{};
   ContactState state = ContactState::kOff;
+  const bool garage = menu_world::GarageFxRuns(trigger_world_, pause_fx_);
   const auto finish = [&] {
     contact_state_ = state;
     if (uint32_t(state) != contact_state_logged_) {
@@ -3733,6 +3735,10 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
                       contact_wet_, contact_gate_wet_);
           break;
         case ContactState::kActive:
+          if (garage) {
+            REXLOG_INFO("[gpu] contact shadows: on with the garage key light, strength {:.2f}", contact_strength_);
+            break;
+          }
           REXLOG_INFO("[gpu] contact shadows: on: the sun is at {:.1f} degrees (gate {:.2f}), the "
                       "wetness {:.1f} (gate {:.2f}), strength {:.2f} (logged when the state "
                       "changes)",
@@ -3772,7 +3778,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   contact_gate_sun_ = Smoothstep(kGateOffDegrees, kGateFullDegrees, elevation);
   contact_gate_wet_ = 1.0f - std::clamp((wet - kWetDry) / kWetSpan, 0.0f, 1.0f);
   const float setting = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_strength.Get(), 0.0, 2.0));
-  contact_strength_ = setting * contact_gate_sun_ * contact_gate_wet_;
+  contact_strength_ = contact_trace::LightStrength(setting, contact_gate_sun_, contact_gate_wet_, garage);
   if (!(contact_strength_ > 0.002f) || !(Luma(sun) > 1e-4f)) {
     state = ContactState::kGated;
     finish();
@@ -3782,9 +3788,10 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
   ContactPlan& c = plan->contact;
   c.mode = contact_mode_;
   c.strength = contact_strength_;
+  c.indoor = garage;
   // The ray grows with a low sun (its shadows are long): 0.7 / tan(elevation), 1 to 3 times.
   c.length = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_length.Get(), 0.1, 3.0) *
-                   contact_trace::LengthGrow(elevation));
+                   (garage ? 1.0 : contact_trace::LengthGrow(elevation)));
   c.thickness = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_thickness.Get(), 0.05, 3.0));
   c.steps = contact_mode_ == Mode::kHigh ? contact_trace::kStepsHigh : contact_trace::kStepsUltra;
   c.end_fade_start = float(std::clamp(larecomp::settings::mcla_gpu_contact_shadows_fade.Get(),
@@ -3792,7 +3799,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
                                       double(contact_trace::kFadeStartMax)));
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
-  if (city_shadow_ && city_shadow_->FadeRange() > kContactFadeEnd) {
+  if (!garage && city_shadow_ && city_shadow_->FadeRange() > kContactFadeEnd) {
     // === CITY-RT BLOCK: the traced sun term holds as far as the structures are the game's own hi detail (city_rt_shadow.h FadeRange), so the contact term reaches that far. CHECK: the short march
     // runs on the pixels the longer fade keeps, a cost the run plan measures (perf/CITY-RT-M1-RUNPLAN.md R4).
     c.fade_end = city_shadow_->FadeRange();
@@ -4116,7 +4123,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   // one the march reads it for the pixels it covers (the push block has no room for the matrix: the shader reads its three rows from the
   // 4 x 1 matrix texture; slots.w the map's slot, slots2.x the matrix's, flag bit 28 = a map is there). Without one, the pass is as it was.
   uint32_t map_flags = 0;
-  if (car_shadow_map_ != nullptr) {
+  if (car_shadow_map_ != nullptr && !c.indoor) {
     // CHECK: CarShadowMap::View() is the contract's accessor (car_shadow_map.h): the map of THIS frame's player car, recorded on this list
     // before the AO's passes, left in the shader-read layout (the map and its matrix texture), valid == false when none was drawn.
     const CarShadowMapView& map = car_shadow_map_->View();

@@ -160,9 +160,9 @@ class ScreenReflections {
 
   // A frame's first list: reads the settings, declares what the effect wants of the shared products and of the G-buffer (ssr_rules.h WantedProducts / WantedPlanes: only while it is on; sticky; the
   // owners read them at their own frame start, which Scene::BeginFrame runs AFTER this call, so the wants take effect in this very frame: frame_order.h kBeginSsr, lag 0), forgets the frame's draws.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView pause_fx);
   // True while the effect is on: the Scene then tells it the main view's draws (the wetness).
-  bool wants_draws() const { return level_ != ssr::Level::kOff; }
+  bool wants_draws() const { return level_ != ssr::Level::kOff || garage_level_ != ssr::Level::kOff; }
   // A prepared draw of the main view, before the trigger: its vertex constants' wetness (VS c43.x, gReflectionParams.x: 0.095 dry, 1.17 in rain) is a vote for the road's.
   void OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks);
   // The trigger's colour capture was just recorded (ScreenShared::CapturePost returned true): runs the passes. True when passes were recorded (the caller's list state is gone). Once a frame.
@@ -228,6 +228,7 @@ class ScreenReflections {
 
   // the settings of this frame
   ssr::Level level_ = ssr::Level::kOff;
+  ssr::Level garage_level_ = ssr::Level::kOff;
   ssr::Level logged_level_ = ssr::Level::kOff;
   bool logged_level_once_ = false;
   ssr::View view_ = ssr::View::kOff;

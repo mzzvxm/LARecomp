@@ -230,7 +230,7 @@ void TestSources(const std::string& dir) {
     Check(false, "the sources could not be read (run the test with the src/gpu folder as its argument)");
     return;
   }
-  const std::string ssr_begin = Between(ssr, "void ScreenReflections::BeginFrame() {", "\nvoid ScreenReflections::OnMainDraw(");
+  const std::string ssr_begin = Between(ssr, "void ScreenReflections::BeginFrame(gbuffer::PauseFxView pause_fx) {", "\nvoid ScreenReflections::OnMainDraw(");
   // (feat/rr-int RR-4a puts `hit_ready_ = false;` between the ran mark and the wet votes: the raw frame's hit distance is the guest frame's)
   Check((Has(ssr_begin, "if (guest_.Begin()) {\n    trigger_done_ = false;\n    ran_ = false;\n    wet_votes_.Reset();\n    ++frames_;\n  } else if (guest_frame::LogDue(guest_.repeats())) {") ||
          (Has(ssr_begin, "if (guest_.Begin()) {\n    trigger_done_ = false;\n    ran_ = false;\n    hit_ready_ = false;") &&

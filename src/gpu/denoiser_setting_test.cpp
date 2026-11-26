@@ -555,20 +555,20 @@ void ConsumerWiringChecks(const std::string& dir) {
   Check(Has(rules, "{\"ray traced city reflections\", true, false},") && Has(rules, "{\"ray traced bounce light\", true, false},"),
         "dlss_rr_rules.h: the city's reflections (the fallback, CITY-RT R6) and the bounce light's per-pixel pass (CITY-RT G6) have a raw mode and are not trusted to AUTO");
   const std::string ssr = ReadFile(dir + "/ssr.cpp");
-  const size_t sb = At(ssr, "void ScreenReflections::BeginFrame() {");
+  const size_t sb = At(ssr, "void ScreenReflections::BeginFrame(gbuffer::PauseFxView pause_fx) {");
   const size_t se = At(ssr, "\n}\n", sb == std::string::npos ? 0 : sb);
   const std::string sfn = (sb == std::string::npos || se == std::string::npos) ? std::string() : ssr.substr(sb, se - sb);
   Check(!sfn.empty() && Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);"), "ScreenReflections::BeginFrame tells the board whether SSR is on");
   Check(Before(sfn, "level_ = level;", "denoiser::NoteConsumer(rr::Consumer::kSsr"), "... after the level is settled (a setting that cannot be made reads as off)");
-  Check(Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());") && Before(sfn, "rt_.BeginFrame(level_);", "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections"),
+  Check(Has(sfn, "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());") && Before(sfn, "rt_.BeginFrame(garage ? ssr::Level::kOff : level_);", "denoiser::NoteConsumer(rr::Consumer::kCityRtReflections"),
         "ScreenReflections::BeginFrame tells the board whether the ray traced fallback is wanted (CITY-RT R6), after the fallback has decided its level");
   Check(Has(ssr, "#include \"denoiser_setting.h\""), "ssr.cpp includes the board");
   const std::string car = ReadFile(dir + "/car_selfrefl.cpp");
-  const size_t cb = At(car, "void CarSelfRefl::BeginFrame() {");
+  const size_t cb = At(car, "void CarSelfRefl::BeginFrame(gbuffer::PauseFxView pause_fx) {");
   const size_t ce = At(car, "\n}\n", cb == std::string::npos ? 0 : cb);
   const std::string cfn = (cb == std::string::npos || ce == std::string::npos) ? std::string() : car.substr(cb, ce - cb);
   Check(!cfn.empty() && Has(cfn, "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections, rt_ && rt_->active());"), "CarSelfRefl::BeginFrame tells the board whether the ray traced reflections run");
-  Check(Before(cfn, "rt_->BeginFrame(mode != Mode::kOff);", "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections"), "... after the ray traced pass has decided whether it is wanted");
+  Check(Before(cfn, "rt_->BeginFrame(mode != Mode::kOff, garage_fx_);", "denoiser::NoteConsumer(rr::Consumer::kCarRtReflections"), "... after the ray traced pass has decided whether it is wanted");
   Check(Has(car, "#include \"denoiser_setting.h\""), "car_selfrefl.cpp includes the board");
   // CITY-RT G6: the bounce light's per-pixel pass says it is wanted from the probe field's apply (gi_apply.cpp) at the frame's start, before the temporal system's boundary (frame_order.h: kBeginGiApply is before
   // kBeginTemporal, so the plan does not lag); nobody else claims to be it

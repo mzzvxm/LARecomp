@@ -250,7 +250,13 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
 
 const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }
 
-void CarSelfRefl::BeginFrame() {
+void CarSelfRefl::BeginFrame(gbuffer::PauseFxView pause_fx) {
+  const bool garage = pause_fx == gbuffer::PauseFxView::kGarage;
+  if (garage_fx_ != garage) {
+    history_valid_ = false;
+    history_pending_ = false;
+    garage_fx_ = garage;
+  }
   raw_ = false;  // RR-4b: the Scene says it again before the trigger's history pass, in a frame Ray Reconstruction takes
   Mode mode = ReadMode();
   if (!ready_ && mode != Mode::kOff && !shaders_failed_ && MakeShaders()) {
@@ -280,7 +286,7 @@ void CarSelfRefl::BeginFrame() {
     screen_->Want(screen::Consumer::kCarHistory, mode != Mode::kOff && source_ == 2 ? screen::ProductBit(screen::kColourPost) : 0u);
   }
   if (rt_) {
-    rt_->BeginFrame(mode != Mode::kOff);  // the ray traced image of this frame's trigger, where it is wanted and can be made
+    rt_->BeginFrame(mode != Mode::kOff, garage_fx_);  // the ray traced image of this frame's trigger, where it is wanted and can be made
     if (screen_) {
       // CITY-RT M2: the city in the reflections reads the picture where a hit is on the screen (ResolveHit): colour_post with its mip chain and lin_depth, wanted while it is on (0 withdraws). Declared after
       // the owner has read its wants for the frame (frame_order.h kBeginCarRefl), so the first frame after a switch has none: its hits are shaded by the model alone.
@@ -328,7 +334,7 @@ void CarSelfRefl::OnMainDraw(const temporal::MainMatch& match, uint32_t stencil_
   }
 }
 
-void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
+void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks, bool requested_cut) {
   anchor_seen_ = true;
   const bool had_history = history_pending_;
   history_pending_ = false;
@@ -355,7 +361,9 @@ void CarSelfRefl::OnAnchor(const ConstantBanks::Banks& banks) {
   // The history written at this frame's trigger belongs to this camera, when the lens it was linearised with (the previous frame's) is this frame's.
   if (had_history) {
     const bool lens_agrees = screen_->Cameras().LensAgrees(shared_frame);
-    history_valid_ = lens_agrees;
+    const temporal::Camera* before = screen_->Cameras().Before(shared_frame + 1, pause);
+    const bool garage_cut = garage_fx_ && pause && (requested_cut || !before || temporal::TestCut(*camera, *before, nullptr).fires);
+    history_valid_ = lens_agrees && !garage_cut;
     if (!lens_agrees) {
       ++lens_changed_;
     }
@@ -533,6 +541,7 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);
     info.exp_bias = exp_bias_;
     info.colour_samples = depth.host_samples;
+    info.garage = garage_fx_ && trigger_world_ == menu_world::World::kGarage;
     FillCityScreen(&info.screen);
   }
   pass_timing_->Mark(list, "car history");

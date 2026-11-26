@@ -680,7 +680,7 @@ void LocalShadow::BeginFrame(gbuffer::PauseFxView pause_fx, bool pause_ready) {
     --lit_frames_left_;
   }
   // LAMP-SHADOWS-4: by night, with mcla_gpu_lamp_shadows on, the street lamps are shadowed too: the draws are collected for them whether a headlight is lit or not.
-  const bool lamps_active = lamps_ != nullptr && lamps_->Poll(wanted_, frame_);
+  const bool lamps_active = lamps_ != nullptr && lamps_->Poll(wanted_, frame_, pause_fx == gbuffer::PauseFxView::kGarage);
   collecting_ = wanted_ && (lit_frames_left_ > 0 || test_mode_ != 0 || lamps_active);
   // LU-5: the level the video memory allows (the atlas is only made when a map is recorded: nothing is asked by day). The plan below is for that level.
   if (use_atlas_ && collecting_) {

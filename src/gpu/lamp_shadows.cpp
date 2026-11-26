@@ -83,7 +83,7 @@ bool LampShadows::Enabled() const {
   return la::LampsEnabled(int(larecomp::settings::mcla_gpu_lamp_shadows.Get()), pass_runs_);
 }
 
-bool LampShadows::Poll(bool wanted, uint64_t frame) {
+bool LampShadows::Poll(bool wanted, uint64_t frame, bool garage) {
   namespace st = larecomp::settings;
   serial_ = frame;
   on_ = Enabled();
@@ -96,7 +96,7 @@ bool LampShadows::Poll(bool wanted, uint64_t frame) {
   mode_ = la::ModeOf(int(st::mcla_gpu_lamp_shadows_mode.Get()));
   debug_view_ = uint32_t(std::clamp<int>(int(st::mcla_gpu_lamp_shadows_view.Get()), 0, 3));  // 0..3 (local_lights_rules.h kDebug*): 3 is the units check "remove"
   lamps_override_ = int(st::mcla_gpu_lamp_shadows_lamps.Get());
-  cache_ = st::mcla_gpu_lamp_shadows_cache.Get() != 0;
+  cache_ = !garage && st::mcla_gpu_lamp_shadows_cache.Get() != 0;  // replay the garage casters in the current view
   const bool want = on_ && wanted && atlas_ != nullptr;
   vol_lamps::SetWantedBy(vol_lamps::kWantedByLampShadows, want);
   active_ = false;
@@ -115,8 +115,20 @@ bool LampShadows::Poll(bool wanted, uint64_t frame) {
     }
     return false;
   }
+  if (garage_ != garage) {
+    garage_ = garage;
+    picker_.Reset();
+    have_last_ = false;
+    list_.clear();
+    lamps_.clear();
+    list_seq_ = 0;
+  }
   bool stale = false;
-  if (vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kListMaxAge)) {
+  bool list_in_garage = false;
+  if (vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kListMaxAge, vol_lamps::Table::Clock::now(), &list_in_garage)) {
+    // CHECK: verify that indoor fixture records reach the cone list during
+    // MANAGE VEHICLES and that its copy is tagged before the GPU records replay.
+    if (list_in_garage != garage) list_.clear();
     lamps_.clear();
     lamps_.reserve(list_.size());
     for (const vol_lamps::GameLamp& g : list_) {
@@ -128,7 +140,7 @@ bool LampShadows::Poll(bool wanted, uint64_t frame) {
     list_seq_ = 0;
     lamps_.clear();
   }
-  if (vol_lamps::Global().published() == 0) {
+  if (!garage && vol_lamps::Global().published() == 0) {
     if (!table_lamps_.empty()) {
       lamps_ = table_lamps_;  // no list ever came: the static table's selection of the frame (a toolkit scene, a build without the hook)
     } else if (!hook_warned_ && ++hook_silent_frames_ >= kHookWarnFrames) {

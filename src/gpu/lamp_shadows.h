@@ -75,7 +75,7 @@ class LampShadows final : public ShadowProvider {
   void Reset();
 
   // 1. Reads the settings and the lamp list. `wanted` = LIGHT SHADOWS is not off (the replay is on). True when lamps are to be shadowed this frame.
-  bool Poll(bool wanted, uint64_t frame);
+  bool Poll(bool wanted, uint64_t frame, bool garage);
   bool active() const { return active_; }
   // Whether the lamps are to be shadowed at all: mcla_gpu_lamp_shadows (-1 follows LIGHT SHADOWS while the deferred light pass runs for anything else, 0 off, 1 on: lamp_shadows_rules.h LampsEnabled)
   // and SetPassRuns. Read from the settings each time (live).
@@ -138,6 +138,7 @@ class LampShadows final : public ShadowProvider {
   bool pass_runs_ = false;  // the deferred light pass runs without the lamps (SetPassRuns)
   bool enabled_logged_ = false;  // the state the log last said (Poll logs a change once)
   bool active_ = false;
+  bool garage_ = false;
   lamp_shadows::LampMode mode_ = lamp_shadows::LampMode::kSubtract;
   uint32_t debug_view_ = 0;
   int lamps_override_ = 0;

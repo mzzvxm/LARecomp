@@ -627,7 +627,7 @@ void SourceChecks(const std::string& src) {
             Has(pass_cpp, "const hp::Route route = headlight_rig::CurrentRoute();"),
         "the route is read once a frame through LiveText (SampleRoute); the rig and the pass take it from CurrentRoute()");
   const size_t sample_at = At(scene, "headlight_rig::SampleRoute();");
-  const size_t lights_at = At(scene, "local_lights_->BeginFrame();");
+  const size_t lights_at = At(scene, "local_lights_->BeginFrame(pause_fx_candidate);");
   const size_t rig_at = At(scene, "headlights_->BeginFrame();");
   Check(sample_at != std::string::npos && lights_at != std::string::npos && rig_at != std::string::npos && sample_at < lights_at && lights_at < rig_at,
         "the Scene samples the route before the light pass's BeginFrame and the rig's");
@@ -655,7 +655,7 @@ void SourceChecks(const std::string& src) {
     Check(Has(scene_cpp, "key.ps_variant = dropped_word;"), "... a masking blend that drops the stage takes its word without it");
     // the order: the dropped draw's decision replaces the first one, and the key is built from the decision that stands
     const size_t drop_at = At(scene_cpp, "forward_dropped = true;");
-    const size_t note_at = At(scene_cpp, "gbuffer_->NoteDraw(decision.why, r.ps_identity);");
+    const size_t note_at = At(scene_cpp, "gbuffer_->NoteDraw(decision.why, r.ps_identity, facts.main_samples);");
     Check(drop_at != std::string::npos && note_at != std::string::npos && drop_at < note_at, "the drop is decided before the draw is noted and its key built");
     Check(Has(rig_h, "void NoteDroppedDraw() { ++dropped_draws_; }") && Has(scene_cpp, "headlights_->NoteDroppedDraw();"), "the rig counts the draws that dropped the stage (its census line)");
   }
@@ -665,8 +665,8 @@ void SourceChecks(const std::string& src) {
   Check(Has(rig_h, "bool SettingOn();") && Has(rig_h, "CurrentRoute();") && Has(rig_h, "SampleRoute();") && Has(rig_h, "#include \"headlight_pass_rules.h\""), "the rig's header offers the setting's state and the route");
 
   // the pass: the route makes it run and lights the frame's headlights
-  Check(Has(pass_cpp, "const bool on_for_lights = hp::PassOn(route, setting_on);") && Has(pass_cpp, "hp::SourcesFor(route,"), "the pass runs for the route and adds the frame's source");
-  Check(Has(pass_cpp, "planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
+  Check(Has(pass_cpp, "const bool on_for_lights = garage || hp::PassOn(route, setting_on);") && Has(pass_cpp, "hp::SourcesFor(route,"), "the pass runs for the route and adds the frame's source");
+  Check(Has(pass_cpp, "planes_wanted_ = enabled_ && (garage || setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
         "the planes are wanted for the route only while HEADLIGHTS is on (GB-NEON: and for a lit neon car; the same as before without one)");
   Check(Has(pass_h, "bool wants_draws() const { return enabled_ && planes_wanted_; }"), "the Scene feeds the pass's votes only while its planes are wanted");
 

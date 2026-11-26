@@ -95,7 +95,8 @@ enum class SurfaceClass : uint8_t {
   kEmissive = 13,  // neon, signs, lamp glass, traffic signals: the lit weight is 0
   kInterior = 14,  // the store interiors' light model
   kWater = 15,
-  kCount = 16,
+  kGarageFloor = 16,
+  kCount = 17,
 };
 inline constexpr uint32_t kClassBits = 5;
 inline constexpr uint32_t kClassMask = (1u << kClassBits) - 1;  // 31: the largest class value there will ever be

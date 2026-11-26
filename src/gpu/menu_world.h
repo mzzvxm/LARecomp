@@ -144,7 +144,11 @@ constexpr Rules RulesFor(World world) {
 }
 
 constexpr bool PauseFxRuns(World world, gbuffer::PauseFxView view) {
-  return world == World::kPause && gbuffer::IsPauseFx(view);
+  return world == World::kPause && (view == gbuffer::PauseFxView::kPause || view == gbuffer::PauseFxView::kPhoto);
+}
+
+constexpr bool GarageFxRuns(World world, gbuffer::PauseFxView view) {
+  return world == World::kGarage && view == gbuffer::PauseFxView::kGarage;
 }
 
 // Play and the admitted pause/photo city can place the sun from its world light.

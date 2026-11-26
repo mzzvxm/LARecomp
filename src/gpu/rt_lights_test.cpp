@@ -2194,7 +2194,7 @@ void TestSources(const std::string& src) {
         Has(host, "la::MakePassLight(lamp, none, la::LampMode::kSubtract)") && Has(host, "if (present) {"));
 
   // THE LIGHT PASS'S USE: the order of the calls is the contract (the lamps are handed over before the selection, the pick after it, the trace before the buffer, the table in the buffer), and nothing runs unless wanted
-  const size_t begin = At(ll_cpp, "rt_lights_->BeginFrame(planes_wanted_, tier_ == ll::Tier::kUltra);");
+  const size_t begin = At(ll_cpp, "rt_lights_->BeginFrame(planes_wanted_, tier_ == ll::Tier::kUltra, garage);");
   const size_t append = At(ll_cpp, "rt_lights_->AppendLampLights(rows.position, &extras_);");
   const size_t select = At(ll_cpp, "ll::Selection selection = ll::SelectPassLights(");
   const size_t plan = At(ll_cpp, "rt_ran = rt_lights_->Plan(rin, &selection);");

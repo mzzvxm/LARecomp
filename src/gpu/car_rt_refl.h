@@ -208,7 +208,7 @@ class CarRtRefl {
 
   // The frame's start (CarSelfRefl::BeginFrame): reads the setting. `reflection_on` is whether the car self-reflections are on. When the
   // pass is wanted and can run, asks the scene for this frame's structures.
-  void BeginFrame(bool reflection_on);
+  void BeginFrame(bool reflection_on, bool garage);
   // True while the pass is wanted this frame.
   bool active() const { return active_; }
 
@@ -221,6 +221,7 @@ class CarRtRefl {
     double tan_x = 0.0;             // tan of half the horizontal and vertical field of view the history was linearised with
     double tan_y = 0.0;             //   (1 / |P00| and 1 / |P11| of the previous frame's projection, as the AO takes them)
     uint64_t frame = 0;             // the guest frame the history is of (what SlotFor is asked with)
+    bool garage = false;
     bool upscaler = false;          // a temporal upscaler works on this frame: the cone's pattern turns by the frame (it averages the pattern out)
     uint32_t pattern_phase = 0;     // 0 .. 1023: the pattern's step for this frame (the scene's noise index): used while an upscaler runs or the pass's own history does (NOISE-RESOLVE: OnHistory says which); else the pattern stands still
     bool raw = false;               // RR-4b: DLSS Ray Reconstruction takes this frame and this effect's switch is on (TemporalSystem::RawModes().CarRefl()): no filter, the hit distance written
@@ -397,6 +398,8 @@ class CarRtRefl {
   OutputSet stable_set_[2];       // u0 stable_[i]
   noise_resolve::HistoryLifetime stable_life_;   // NOISE-FOLLOW: how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   uint32_t stable_index_ = 0;
+  car_rt_refl::ConePose stable_pose_;
+  bool stable_garage_ = false;
   bool stable_valid_ = false;     // stable_[stable_index_] holds the result of `stable_frame_`
   uint64_t stable_frame_ = 0;
   uint32_t stable_frames_ = 0;    // frames of history the last result holds

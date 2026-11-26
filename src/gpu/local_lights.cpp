@@ -249,18 +249,20 @@ bool LocalLights::NeonLightReachesPicture() {
   return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view, neon_reach_scale_, neon_tuned_));
 }
 
-void LocalLights::BeginFrame() {
+void LocalLights::BeginFrame(gbuffer::PauseFxView pause_fx) {
+  const bool garage = pause_fx == gbuffer::PauseFxView::kGarage;
+  garage_ = garage;
   namespace st = larecomp::settings;
   // GB-H2: the headlight route (headlight_pass_rules.h): `pass` and `both` give this pass the frame's headlights and run it whatever mcla_gpu_local_lights says.
   const hp::Route route = headlight_rig::CurrentRoute();  // read once for the frame by the Scene (headlight_rig::SampleRoute, through LiveText: the debug menu's thread writes the cvar)
   // LAMP-SHADOWS-4: the street lamps' shadows are drawn by this pass. mcla_gpu_lamp_shadows -1 (auto, the default) follows the LIGHT SHADOWS row while the pass runs for anything else (the provider is told
   // whether it does), 1 runs the pass for the lamps (and wants the planes) whatever mcla_gpu_local_lights says, 0 is off.
   if (lamp_shadows_ != nullptr) {
-    lamp_shadows_->SetPassRuns(hp::PassOn(route, st::mcla_gpu_local_lights.Get()));
+    lamp_shadows_->SetPassRuns(garage || hp::PassOn(route, st::mcla_gpu_local_lights.Get()));
   }
   const bool lamps_on = lamp_shadows_ != nullptr && lamp_shadows_->active();  // lamps are live now (enabled, by night): by day the pass and the G-buffer's planes cost nothing for them
   const bool setting_on = st::mcla_gpu_local_lights.Get() || lamps_on;
-  const bool on_for_lights = hp::PassOn(route, setting_on);
+  const bool on_for_lights = garage || hp::PassOn(route, setting_on);
   // GB-NEON: NEON LIGHT runs the pass for the cars' underglow whatever the setting and the route say, and tells the hook whether anyone reads the game's neon (it reads nothing while off).
   const bool neon_now = NeonSettingOn();
   if (neon_now != neon_on_) {
@@ -291,6 +293,8 @@ void LocalLights::BeginFrame() {
     sources_ &= ll::kSourceNeon;
     ab_ = ll::Ab::kGrid;
   }
+  sources_ = ll::GarageSources(sources_, garage);
+  if (garage) ab_ = ll::Ab::kGrid;
   gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_gain.Get()), 0.0, 16.0));
   car_gain_ = float(std::clamp(double(st::mcla_gpu_local_lights_car_gain.Get()), 0.0, 16.0));
   // GB-NEON-COST: the A/B of the cost savings (0: the reach test before the planes, one draw for a car's tube and the contact term's cap are on): the picture is the same either way (the cap
@@ -343,11 +347,11 @@ void LocalLights::BeginFrame() {
   // player with no neon car, or with only cars out of reach (100 m away, behind the camera), pays nothing. Every consumer has its own want: the reflections' and the others' stay whatever this says.
   // The camera history is kept while NEON LIGHT is on (the frame's own camera comes after the trigger: the probe uses the last frame's).
   if (screen_ != nullptr) {
-    screen_->WantCamera(screen::Consumer::kLocalLights, neon_on_);
+    screen_->WantCamera(screen::Consumer::kLocalLights, neon_on_ || garage);
   }
   neon_hold_ = nl::NextHold(neon_on_, neon_on_ && NeonLightReachesPicture(), neon_hold_);
   neon_active_ = neon_on_ && neon_hold_ > 0;
-  planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);
+  planes_wanted_ = enabled_ && (garage || setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);
   if (gbuffer_ != nullptr) {
     gbuffer_->Want(gbuffer::Consumer::kLocalLights, planes_wanted_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);
   }
@@ -358,7 +362,7 @@ void LocalLights::BeginFrame() {
     manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);
   }
   if (rt_lights_ != nullptr) {
-    rt_lights_->BeginFrame(planes_wanted_, tier_ == ll::Tier::kUltra);   // RT-LIGHTS-D1: reads its settings and asks for the structures while it is wanted
+    rt_lights_->BeginFrame(planes_wanted_, tier_ == ll::Tier::kUltra, garage);   // RT-LIGHTS-D1: reads its settings and asks for the structures while it is wanted
   }
   votes_.Reset();
   trigger_seen_ = false;
@@ -402,6 +406,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   const screen::ScreenFrame& sf = screen_->Frame();
   const bool pause = (sf.flags & screen::kFramePause) != 0;
   const gbuffer::PauseFxView pause_fx = gbuffer_->published_pause_fx();
+  if (garage_ != (pause_fx == gbuffer::PauseFxView::kGarage)) return false;
   // CHECK: the photo camera receives neon and local shadows with matching
   // depth, normals and albedo while still and during a slow pan.
   if ((sf.camera.flags & screen::kCameraValid) == 0 || sf.frame_serial != gb.frame_serial || !gbuffer::MatchesPauseFxView(pause, pause_fx) || !(sf.camera.tan_half_fov[0] > 0.0f) ||
@@ -453,7 +458,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     lamp_shadows_->AppendPassLights(&extras_);  // the picked street lamps with views (this trigger's: the replay recorded them just before)
   }
   const uint32_t lamp_extras = uint32_t(extras_.size()) - extras_before_lamps;
-  if (rt_lights_ != nullptr && rt_lights_->wanted()) {
+  if (rt_lights_ != nullptr && rt_lights_->wanted() && pause_fx != gbuffer::PauseFxView::kGarage) {
     // RT-LIGHTS-D1: the nearest street lamps the atlas did not pick, as lights the game lights with no views: they are in the pass only to get a ray (a lamp not picked for a channel is trimmed below)
     rt_lights_->AppendLampLights(rows.position, &extras_);
   }

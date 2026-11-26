@@ -945,7 +945,7 @@ void TextChecks(const std::string& dir) {
   Check(at_ao != std::string::npos && at_gi != std::string::npos && at_ll != std::string::npos && at_ao < at_gi && at_gi < at_ll,
         "ORDER: the occlusion's apply, then the probe field's apply, then the deferred lights (scene.cpp OnResolve)");
   const size_t begin_gi = scene.find("gi_apply_->BeginFrame();");
-  const size_t begin_gb = scene.find("gbuffer_->BeginFrame(frame_serial_);");
+  const size_t begin_gb = scene.find("gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);");
   Check(begin_gi != std::string::npos && begin_gb != std::string::npos && begin_gi < begin_gb, "ORDER: the pass is told of the frame's start before the G-buffer reads the wants it makes");
   // THE SSGI SWITCH in the occlusion's plan: asked once, not under the debug override, the strength scaled, nothing built at share 0
   const std::string ao = ReadFile(dir + "/ao.cpp");

@@ -1916,8 +1916,8 @@ void SourceChecks(const std::string& src) {
         "mod_lights.cpp builds the grid with the lamps off in the A/B's pass and control modes");
   Check(Has(mod, "published = MakeSet(grid, mult);") && Has(mod, "r.intensity = l.intensity * mult;"), "the published set keeps the real lamp (the pass reads it)");
   // the Scene's hooks: its BeginFrame before the G-buffer's, the vote with the AO's, the pass after the AO's apply and before the sun shafts' own
-  const size_t lb = At(scene, "local_lights_->BeginFrame();");
-  const size_t gb = At(scene, "gbuffer_->BeginFrame(frame_serial_);");
+  const size_t lb = At(scene, "local_lights_->BeginFrame(pause_fx_candidate);");
+  const size_t gb = At(scene, "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);");
   Check(lb != std::string::npos && gb != std::string::npos && lb < gb, "the pass's BeginFrame runs before the G-buffer's (they read its wants)");
   const size_t ao = At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning());");
   const size_t pass = At(scene, "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);");
@@ -1930,7 +1930,7 @@ void SourceChecks(const std::string& src) {
         "the renderer makes, hands over and shuts down the pass (both shutdown paths)");
   // the wants that switch the G-buffer on only while it runs
   Check(Has(cpp, "gbuffer_->Want(gbuffer::Consumer::kLocalLights, planes_wanted_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights) : 0u);") && Has(cpp, "screen_->Want(screen::Consumer::kLocalLights, planes_wanted_ ?") &&
-            Has(cpp, "manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);") && Has(cpp, "planes_wanted_ = enabled_ && (setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
+            Has(cpp, "manager_->Want(planes_wanted_ && (sources_ & (ll::kSourceFrame | ll::kSourceCars)) != 0);") && Has(cpp, "planes_wanted_ = enabled_ && (garage || setting_on || (hp::PassLightsHeadlights(route) && headlight_rig::SettingOn()) || neon_active_);"),
         "the wants are the pass's while it is on and HEADLIGHTS (or its own setting) wants the planes, and 0 otherwise");
   Check(Has(manager, "(every <= 0 && flips == 0 && !wanted_)") && Has(manager, "if (Checking()) {\n      Upload();") && Has(manager, "const bool cars = every > 0 || wanted_;"),
         "the light manager runs for a consumer of its frame, polls the cars for it and uploads only for its census");
@@ -2760,6 +2760,11 @@ void ContactCapChecks() {
 }  // namespace
 
 int main(int argc, char** argv) {
+  const uint32_t outdoor = lp::kSourceFrame | lp::kSourceMod | lp::kSourceTest | lp::kSourceNeon;
+  Check(lp::GarageSources(outdoor, false) == outdoor &&
+        lp::GarageSources(outdoor, true) == (lp::kSourceFrame | lp::kSourceCars | lp::kSourceNeon) &&
+        lp::GarageSources(0, true) == lp::kSourceCars,
+        "garage lights use the active headlight route and car lamps without outdoor mods or tool lights");
   std::string src = argc > 1 ? argv[1] : std::string();
   if (src.empty()) {
     std::string here = __FILE__;

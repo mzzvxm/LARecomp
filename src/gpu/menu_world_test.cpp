@@ -96,6 +96,12 @@ void ShaftsNeedSkyOutsideTheGameView() {
   Check(!ShaftsRun(World::kMap, true), "the map never runs them");
   Check(!ShaftsRun(World::kNone, true), "no 3D view never");
   using mcla::gpu::gbuffer::PauseFxView;
+  Check(GarageFxRuns(World::kGarage, PauseFxView::kGarage) &&
+        !GarageFxRuns(World::kGarage, PauseFxView::kNone) &&
+        !GarageFxRuns(World::kMap, PauseFxView::kGarage) &&
+        !GarageFxRuns(World::kPlay, PauseFxView::kGarage), "only the admitted garage world uses the indoor rules");
+  Check(!PauseFxRuns(World::kPause, PauseFxView::kGarage) &&
+        !ShaftsRun(World::kGarage, false, PauseFxView::kGarage), "the garage cannot take the city sun from the pause view");
   Check(!PauseFxRuns(World::kPause, PauseFxView::kNone), "the switch is required to admit the pause city to new effects");
   for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto}) {
     Check(PauseFxRuns(World::kPause, view) && ShaftsRun(World::kPause, false, view),
