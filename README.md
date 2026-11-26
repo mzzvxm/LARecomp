@@ -1,7 +1,7 @@
 # LARecomp
 
 > [!CAUTION]
-> At this point, I'm not granting permission to use LARecomp's features in your own recomps. Once we officially launch, feel free to use our code as a reference, but please don't copy and paste our code.
+> LARecomp's code is not free to take. It is licensed under GPL-3.0-only with additional terms: if you use any of it in your own recomp, your whole project must be released under the same licence with its source published, and LARecomp must be credited. Copying it into private or uncredited projects is a licence violation. See [License](#license).
 > Contributions to the repository are welcome.
 
 A static recompilation of **Midnight Club: Los Angeles (Complete Edition)** for Windows x86-64, built on the [ReXGlue SDK](https://github.com/rexglue/rexglue).
