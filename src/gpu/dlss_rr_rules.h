@@ -529,6 +529,9 @@ struct PlanInputs {
   bool consumers_any = false;        // (RR-5) the row's RR value's: some effect that has a raw mode built is on (a superset of the one above: the rules treat `active` as implying it)
   bool guides_ready = false;         // the frame's guide images exist and were handed over (TemporalSystem::NoteRrGuides, RR-3; the pass that makes them is RR-2's rr_guides.h)
   bool room_ok = true;               // (RR-3) video memory has room for the RR context (ContextNeedBytes); true where it is not asked (the context exists, or the sizes are not known yet)
+  bool uses_default = false;         // no explicit player or debug choice
+  bool rtx_adapter = false;
+  bool rt_consumer_on = false;
 };
 
 enum class Why : uint8_t {
@@ -546,6 +549,8 @@ enum class Why : uint8_t {
   kRrFailed,            // (RR-3) RR failed in this session and stays off until the game is started again; Super Resolution goes on
   kNoRoom,              // (RR-3) video memory has no room for the RR context; Super Resolution goes on, the context is asked again after a wait
   kNotLoaded,           // (RR-5) Streamline was started without the RR plugin (the row said OURS then): it can load only at the next start
+  kNeedsRtx,
+  kNoRtConsumer,
 };
 constexpr const char* WhyText(Why w) {
   switch (w) {
@@ -563,6 +568,8 @@ constexpr const char* WhyText(Why w) {
     case Why::kRrFailed: return "Ray Reconstruction failed in this session (the log says why) and stays off until the game is started again; Super Resolution goes on";
     case Why::kNoRoom: return "there is no room in video memory for the Ray Reconstruction context; Super Resolution goes on";
     case Why::kNotLoaded: return "Streamline was started without the Ray Reconstruction plugin (the row said OURS then): it loads at the next start";
+    case Why::kNeedsRtx: return "the default requires an NVIDIA RTX graphics card";
+    case Why::kNoRtConsumer: return "the default requires an active ray traced effect that RR can denoise";
   }
   return "?";
 }
@@ -627,6 +634,10 @@ constexpr bool AnyConsumerOn(uint32_t on_mask, const ConsumerTable& table = kCon
   }
   return false;
 }
+constexpr bool AnyRtConsumerOn(uint32_t on_mask, const ConsumerTable& table = kConsumers) {
+  // SSR is a consumer, but its screen-space path does not require hardware ray tracing.
+  return AnyConsumerOn(on_mask & ~ConsumerBit(Consumer::kSsr), table);
+}
 constexpr bool AnyAutoConsumerOn(uint32_t on_mask, const ConsumerTable& table = kConsumers) {
   for (size_t i = 0; i < kConsumerCount; ++i) {
     if (((on_mask >> i) & 1u) != 0 && table[i].raw_mode_built && table[i].auto_uses_rr) return true;
@@ -647,6 +658,11 @@ inline Plan SelectDenoiser(const PlanInputs& in) {
   const Denoiser setting = in.debug == DebugSwitch::kOn ? Denoiser::kRr : in.setting;
   if (setting == Denoiser::kOurs) return no(Why::kSettingOurs);
   if (in.debug == DebugSwitch::kRow) {
+    if (in.uses_default) {
+      if (!in.rtx_adapter) return no(Why::kNeedsRtx);
+      if (!in.rt_consumer_on) return no(Why::kNoRtConsumer);
+      if (!in.upscaler_is_dlss) return no(Why::kUpscalerNotDlss);
+    }
     if (setting == Denoiser::kAuto && !in.consumers_active) return no(Why::kNoConsumer);
     if (setting == Denoiser::kRr && !in.consumers_active && !in.consumers_any) return no(Why::kNoConsumer);
   }

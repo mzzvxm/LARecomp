@@ -4359,9 +4359,9 @@
  },
  "mcla_gpu_vendor_denoiser": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
-  "help": "\"The pause menu's DLSS RAY RECONSTRUCTION row (a GeForce RTX card) or AMD FSR RAY REGENERATION row (a Radeon RX 9000 series card on Windows 11): \"\n    \"the graphics card maker's denoiser, who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light). Other cards have no such row and use our own denoisers. \"\n    \"Off (the default): our own denoisers. On: NVIDIA's DLSS Ray Reconstruction (it does the upscaling too, in place of DLSS Super Resolution, for the frames it takes, so it needs DLSS as the upscaler) or \"\n    \"AMD's FSR Ray Regeneration (Direct3D 12; it cleans before the upscaler runs, whatever the upscaler is), wherever an effect that it can clean is on and this PC can run it. \"\n    \"A switch is live and the frames in between are the upscaler's own; only DLSS Ray Reconstruction's plugin is loaded when the game starts, so turning it on in a game that started with it off asks for a restart. \"\n    \"Live.\"",
+  "help": "\"The pause menu's DLSS RAY RECONSTRUCTION row (a GeForce RTX card) or AMD FSR RAY REGENERATION row (a Radeon RX 9000 series card on Windows 11): \"\n    \"the graphics card maker's denoiser, who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light). Other cards have no such row and use our own denoisers. \"\n    \"Off uses LARecomp's denoisers. Without a saved choice, DLSS Ray Reconstruction defaults on with DLSS upscaling, the required files and an active ray traced effect it supports. \"\n    \"AMD FSR Ray Regeneration defaults on when the card and installed files support it on Direct3D 12. It works with any upscaler. \"\n    \"A switch is live and the frames in between are the upscaler's own; only DLSS Ray Reconstruction's plugin is loaded when the game starts, so turning it on in a game that started with it off asks for a restart. \"\n    \"Live.\"",
   "traits": [],
   "comments": [],
   "pp_depth": 0

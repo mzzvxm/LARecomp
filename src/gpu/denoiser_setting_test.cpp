@@ -109,7 +109,7 @@ void WordChecks() {
   }
   Check(std::string(dn::kCvarName) == "mcla_gpu_denoiser" && std::string(dn::kVendorCvarName) == "mcla_gpu_vendor_denoiser", "the debug chooser's cvar keeps its name (the A/B chains set it) and the row has its own");
   Check(dn::LegacyVendorPreference("rr") == true, "saved DLSS RR or FSR RAY REGEN migrates to ON");
-  Check(dn::LegacyVendorPreference("auto") == false, "saved AUTO migrates to OFF");
+  Check(!dn::LegacyVendorPreference("auto"), "saved AUTO follows the hardware default");
   Check(dn::LegacyVendorPreference("ours") == false, "saved OURS migrates to OFF");
   Check(!dn::LegacyVendorPreference("row") && !dn::LegacyVendorPreference(""), "the default chooser and absent values do not migrate");
   Check(rr::NameLooksLikeRtx("NVIDIA GeForce RTX 5080") && rr::NameLooksLikeRtx("Quadro rTx 8000") &&
@@ -410,7 +410,6 @@ void PageWidthChecks(const std::string& dir) {
       {"CONSOLE", "pause_menu.cpp", "kDisplayGammaVals"},
       {"UNCAPPED", "pause_menu.cpp", "\"UNCAPPED\""},
       {"ON + BOOST", "pause_menu.cpp", "\"ON + BOOST\""},
-      {"AUTO (OFF)", "ui_rules.toml", "AUTO (OFF)"},
       {"DLSS (SETUP)", "ui_rules.toml", "DLSS (SETUP)"},
       {"NATIVE AA (100%)", "ui_rules.toml", "NATIVE AA (100%)"},
       {"PERFORMANCE (50%)", "ui_rules.toml", "PERFORMANCE (50%)"},
@@ -499,6 +498,83 @@ void EffectiveChecks() {
 // the text of the wiring
 // ---------------------------------------------------------------------------
 
+void DefaultChecks() {
+  namespace rg = mcla::gpu::rayregen;
+  const auto legacy_auto = dn::LegacyVendorPreference("auto");
+  const auto automatic = dn::ResolvePreference("row", legacy_auto);
+  Check(automatic.uses_default && automatic.setting == rr::Denoiser::kRr, "legacy AUTO requests the vendor default");
+  Check(dn::ToggleOn(legacy_auto, true) && !dn::ToggleOn(legacy_auto, false), "legacy AUTO follows eligibility in both directions");
+  Check(dn::ToggleOn(true, false) && !dn::ToggleOn(false, true), "explicit values win over either hardware default");
+  const auto on = dn::ResolvePreference("row", true);
+  const auto off = dn::ResolvePreference("row", false);
+  Check(!on.uses_default && on.setting == rr::Denoiser::kRr, "saved ON is an explicit choice");
+  Check(!off.uses_default && off.setting == rr::Denoiser::kOurs, "saved OFF is an explicit choice");
+  const auto debug_auto = dn::ResolvePreference("auto", std::nullopt);
+  Check(!debug_auto.uses_default && debug_auto.setting == rr::Denoiser::kAuto, "the live debug auto keeps its A/B policy");
+  Check(dn::ResolvePreference("rr", false).setting == rr::Denoiser::kRr, "the debug chooser still overrides saved OFF");
+
+  const uint32_t ssr = rr::ConsumerBit(rr::Consumer::kSsr);
+  const uint32_t rt_ao = rr::ConsumerBit(rr::Consumer::kRtAo);
+  Check(!rr::AnyRtConsumerOn(0) && !rr::AnyRtConsumerOn(ssr), "Vanilla or SSR alone does not request the automatic RR path");
+  Check(rr::AnyRtConsumerOn(rt_ao) && rr::AnyRtConsumerOn(ssr | rt_ao), "an active RT effect qualifies with or without SSR");
+  auto table = rr::kConsumers;
+  table[size_t(rr::Consumer::kRtAo)].raw_mode_built = false;
+  Check(!rr::AnyRtConsumerOn(rt_ao, table), "the RT effect must be able to feed RR");
+
+  rr::PlanInputs rr_in;
+  rr_in.setting = automatic.setting;
+  rr_in.uses_default = automatic.uses_default;
+  rr_in.rtx_adapter = true;
+  rr_in.rt_consumer_on = true;
+  rr_in.consumers_any = true;
+  rr_in.upscaler_is_dlss = true;
+  rr_in.guides_ready = true;
+  rr_in.facts.build_has_rr = rr_in.facts.files_ok = rr_in.facts.streamline_running = true;
+  rr_in.facts.asked = rr_in.facts.supported = true;
+  Check(rr::SelectDenoiser(rr_in).use_rr, "RTX with DLSS, the files and a compatible RT effect defaults to RR");
+  const auto refuses_rr = [&](bool rr::PlanInputs::*field, rr::Why why, const char* message) {
+    auto in = rr_in;
+    in.*field = false;
+    const auto plan = rr::SelectDenoiser(in);
+    Check(!plan.use_rr && plan.why == why, message);
+  };
+  refuses_rr(&rr::PlanInputs::rtx_adapter, rr::Why::kNeedsRtx, "non-RTX defaults off");
+  refuses_rr(&rr::PlanInputs::upscaler_is_dlss, rr::Why::kUpscalerNotDlss, "non-DLSS upscaling defaults off");
+  refuses_rr(&rr::PlanInputs::rt_consumer_on, rr::Why::kNoRtConsumer, "SSR alone defaults off");
+  rr_in.facts.streamline_running = false;
+  refuses_rr(&rr::PlanInputs::upscaler_is_dlss, rr::Why::kUpscalerNotDlss, "report that DLSS is off even before Streamline starts");
+  rr_in.facts.streamline_running = true;
+  rr_in.facts.files_ok = false;
+  Check(rr::SelectDenoiser(rr_in).why == rr::Why::kFilesMissing, "missing RR files leave the default off");
+  rr_in.facts.files_ok = true;
+  rr_in.facts.supported = false;
+  Check(rr::SelectDenoiser(rr_in).why == rr::Why::kNotSupported, "a rejected NVIDIA driver leaves the default off");
+  rr_in.facts.supported = true;
+  rr_in.rt_consumer_on = false;
+  rr_in.setting = on.setting;
+  rr_in.uses_default = on.uses_default;
+  Check(rr::SelectDenoiser(rr_in).use_rr, "saved ON can still use RR with SSR alone");
+  rr_in.rt_consumer_on = true;
+  rr_in.setting = off.setting;
+  Check(rr::SelectDenoiser(rr_in).why == rr::Why::kSettingOurs, "saved OFF keeps ours with every prerequisite met");
+
+  rg::Facts amd;
+  amd.build_has = amd.files_ok = amd.probed = amd.supported = true;
+  amd.device = rg::DeviceVerdict::kOk;
+  Check(rg::DefaultOn(amd, rr::DebugSwitch::kRow), "an eligible RX 9000 defaults to Ray Regeneration without an upscaler or signal prerequisite for the toggle");
+  const auto refuses_amd = [&](bool rg::Facts::*field, const char* message) {
+    auto facts = amd;
+    facts.*field = false;
+    Check(!rg::DefaultOn(facts, rr::DebugSwitch::kRow), message);
+  };
+  refuses_amd(&rg::Facts::build_has, "AMD default is off without the runtime build");
+  refuses_amd(&rg::Facts::files_ok, "AMD default is off without its files");
+  refuses_amd(&rg::Facts::probed, "AMD default is off while support is unknown");
+  refuses_amd(&rg::Facts::supported, "AMD default is off when the provider refuses the card");
+  amd.device = rg::DeviceVerdict::kNotD3D12;
+  Check(!rg::DefaultOn(amd, rr::DebugSwitch::kRow), "AMD default is off on Vulkan");
+}
+
 void MenuChecks(const std::string& dir) {
   const std::string menu = ReadFile(dir + "/../mc_engine/menus/upscaling_menu.cpp");
   const std::string pause = ReadFile(dir + "/../mc_engine/menus/pause_menu.cpp");
@@ -515,6 +591,10 @@ void MenuChecks(const std::string& dir) {
   Check(Has(rules, "[rows.PM_RxGpuDenoiser]") && Has(rules, "d.denoiser_state") &&
         Has(rules, "live.denoiser_gate ?? d.denoiser_fallback"),
         "the row evaluates the vendor gate in the declarative states");
+  Check(Has(pause, "return mcla_menu::VendorDenoiserOn() ? \"true\" : \"false\";") &&
+            Has(menu, "dn::ToggleOn(saved, dn::Current().default_on)") &&
+            Has(menu, "dn::ToggleOn(saved, rg::DefaultOn(rg::MenuFacts(), rg::ReadDebugSwitch()))"),
+        "row display and clicks use the same vendor default and preserve explicit settings");
   Check(!Has(menu, "kDenoiserVals") && !Has(menu, "kDenoiserNames") && !Has(menu, "\"DENOISER: \""),
         "the three-way AUTO / DLSS RR / OURS row is gone");
   Check(Has(menu, "mcla::gpu::denoiser::GateOf(DenoiserInputs())") &&
@@ -525,7 +605,7 @@ void MenuChecks(const std::string& dir) {
         "which row a PC has: the AMD one by the card's name and Windows, the DLSS one on RTX");
   Check(Has(menu, "#include \"gpu/denoiser_setting.h\"") && Has(menu, "#include \"gpu/ray_regen_plan.h\""), "the menu includes the rules");
   Check(Has(menu, "m.dlss_chosen = Chosen() == Upscaler::kDlss;") && Has(menu, "m.dlss_waits_for_restart = DlssWaitsForRestart();") && Has(menu, "m.dlss_listed = DenoiserRowKind()") &&
-            Has(menu, "m.setting = dn::Setting();") && !Has(menu, "\"mcla_gpu_denoiser\"") && Has(menu, "m.facts = snapshot.facts;"),
+            Has(menu, "m.setting = preference.uses_default && !snapshot.default_on") && !Has(menu, "\"mcla_gpu_denoiser\"") && Has(menu, "m.facts = snapshot.facts;"),
         "the menu's inputs: DLSS as listed, chosen and waiting for a restart, the effective setting (the row and the debug chooser), the renderer's facts");
   // the page: UPSCALING is not a page any more, DISPLAY has its rows
   Check(!Has(pause, "RxUpscalingMenu") && !Has(pause, "PM_RxSubUpscaling") && !Has(pause, "PM_RxTabUpscaling"), "UPSCALING is not a page or a hub row any more");
@@ -538,7 +618,7 @@ void MenuChecks(const std::string& dir) {
   const size_t push_upscaling = At(pause, "for (int i = 0; i < upscaling_count; ++i) made->rows.push_back(upscaling[i]);");
   Check(latency_at != std::string::npos && upscaling_at != std::string::npos && latency_at < upscaling_at && push_latency != std::string::npos && push_upscaling != std::string::npos && push_latency < push_upscaling,
         "DISPLAY's extra rows are the latency row, then the upscaling block");
-  Check(Has(pause, "DISPLAY (kVideoItems, DisplayPageRows: the latency row, the upscaler's rows with the denoiser row where this PC has one, and frame generation's: 15 rows at most)") && Has(pause, "24 + 17 = 41"),
+  Check(Has(pause, "Display has up to 17 rows.") && Has(pause, "at or under 41 characters"),
         "the page's width comment counts the page");
   Check(Has(fg_h, "const mcla_menu::ItemDef* UpscalingPageRows(int& count);") && Has(fg_h, "bool UpscalingMenuRelayout(bool apply);") && Has(fg, "bool UpscalingMenuRelayout(bool apply) {") &&
             Has(fg, "return g_built != nullptr && (live != g_built || count != g_built_count);"),
@@ -595,13 +675,16 @@ void PlanChecks(const std::string& dir) {
   const size_t end = At(t, "// Ray Reconstruction's second context, the room for it and the dispatch (RR-3)", at == std::string::npos ? 0 : at);
   const std::string fn = (at == std::string::npos || end == std::string::npos) ? std::string() : t.substr(at, end - at);
   Check(!fn.empty(), "UpdateDenoiserPlan is where it was");
-  Check(Has(fn, "in.setting = denoiser::Setting();"), "the plan reads the effective setting (the row's bool and the chooser's LiveText: the menu's thread writes the cvars)");
+  Check(Has(fn, "const auto preference = denoiser::ReadPreference();") && Has(fn, "in.uses_default = preference.uses_default;") &&
+            Has(fn, "in.rt_consumer_on = rr::AnyRtConsumerOn(consumers_on);"), "the plan applies the RT consumer requirement only to the default");
   Check(Has(fn, "const uint32_t consumers_on = denoiser::ConsumersOn();") && Has(fn, "in.consumers_active = rr::AnyAutoConsumerOn(consumers_on);") && Has(fn, "in.consumers_any = rr::AnyConsumerOn(consumers_on);"),
         "the effects that are on are read from the board, AUTO's list and the row's");
   Check(Has(fn, "in.debug = rr::DebugSwitch::kRow;"), "an unreadable debug switch leaves the row to decide");
   Check(Has(fn, "rr_facts_.asked = facts.asked;") && Has(fn, "rr_facts_.loadable = facts.loadable;"), "the facts carry whether the plugin was asked for and whether a restart would load it");
   // the room is asked only where everything else says RR
-  const size_t pre = At(fn, "in.room_ok = true;\n  in.guides_ready = true;\n  if (rr::SelectDenoiser(in).use_rr) {\n    in.room_ok = RrRoomOk();");
+  const size_t pre = At(fn, "const bool candidate = rr::SelectDenoiser(in).use_rr;");
+  Check(Has(fn, "if (candidate) {\n    in.room_ok = RrRoomOk();") && Has(fn, "snapshot.default_on = default_on;"),
+        "the menu gets the support verdict before the per-frame guide and memory checks");
   const size_t real = At(fn, "in.guides_ready = rr_guides_ready_;");
   const size_t plan = At(fn, "rr_plan_ = rr::SelectDenoiser(in);");
   Check(pre != std::string::npos && real != std::string::npos && plan != std::string::npos && pre < real && real < plan, "the room is asked only where the rules, with the room and the guides taken as met, say RR; then the real guides; then the plan");
@@ -625,9 +708,10 @@ void PluginChecks(const std::string& dir) {
   Check(!fn.empty(), "WantRayReconstructionPlugin is where it was");
   Check(Has(fn, "in.setting = denoiser::Setting();") && Has(fn, "in.raw_mode_built = rr::AnyRawModeBuilt();"), "the plugin request reads the effective setting and whether any effect has a raw mode");
   const size_t files = At(fn, "in.files_ok = RrFilesOk(ExeDirectory(), &why);");
-  const size_t wanted = At(fn, "if (rr::PluginWantedByChoice(in)) {");
+  const size_t wanted = At(fn, "if (loadable && rr::PluginWantedByChoice(in)) {");
   Check(files != std::string::npos && wanted != std::string::npos && wanted < files, "the files are looked at only where the choice wants the plugin (a row on OURS costs nothing)");
-  Check(Has(fn, "what_if.setting = rr::Denoiser::kRr;") && Has(fn, "g_rr_loadable.store(rr::WantRrPlugin(what_if)"), "loadable is what a start with the row ON would do");
+  Check(Has(fn, "what_if.setting = rr::Denoiser::kRr;") && Has(fn, "const bool loadable = rr::WantRrPlugin(what_if);") &&
+        Has(fn, "g_rr_loadable.store(loadable"), "loadable is what a start with the row ON would do");
   Check(Has(fn, "return rr::WantRrPlugin(in);"), "the rules decide");
   Check(Has(d, "std::atomic<bool> g_rr_loadable{false};") && Has(d, "std::atomic<bool> g_rr_files_bad{false};"), "the two flags are atomics set before slInit");
   Check(Has(d, "facts.files_ok = !g_rr_files_bad.load(std::memory_order_relaxed);") && Has(d, "facts.loadable = !rt.rr_asked && g_rr_loadable.load(std::memory_order_relaxed);"), "the facts carry them");
@@ -649,16 +733,16 @@ void SettingsChecks(const std::string& dir) {
   const std::string header = ReadFile(dir + "/../settings/generated/settings_gpu.h");
   const std::string manifest = ReadFile(dir + "/../settings/generated/manifest.json");
   const std::string meta = ReadFile(dir + "/../settings/generated/settings_meta.inc");
-  // the player's row: a bool, off by default, live, not debug-only
+  // The bool requests vendor support by default; the vendor rules resolve the row and the plan.
   const std::string row = DefinitionOf(header, "mcla_gpu_vendor_denoiser", "bool");
-  Check(!row.empty() && Has(row, "mcla_gpu_vendor_denoiser, false, \""), "mcla_gpu_vendor_denoiser is a bool setting, off by default (the owner's decision until the RR-DECIDE A/B)");
+  Check(!row.empty() && Has(row, "mcla_gpu_vendor_denoiser, true, \""), "mcla_gpu_vendor_denoiser requests the vendor denoiser by default");
   Check(!row.empty() && !Has(row, "kDebugOnly") && !Has(row, "kRequiresRestart") && Has(row, "Live.") && Has(row, "DLSS RAY RECONSTRUCTION") && Has(row, "AMD FSR RAY REGENERATION"),
         "it is a player setting (not debug-only), live (no restart trait), and its help names both rows");
   Check(Has(header, "inline auto& mcla_gpu_vendor_denoiser = g_gpu.mcla_gpu_vendor_denoiser;") && Has(meta, "{\"mcla_gpu_vendor_denoiser\", \"MCLA/GPU\"},") && Has(manifest, "\"mcla_gpu_vendor_denoiser\": {"),
         "it has its alias, its meta line and its manifest entry");
   const size_t rm0 = At(manifest, "\"mcla_gpu_vendor_denoiser\": {");
   const std::string rentry0 = rm0 == std::string::npos ? std::string() : manifest.substr(rm0, At(manifest, "\"comments\"", rm0) - rm0);
-  Check(Has(rentry0, "\"type\": \"bool\"") && Has(rentry0, "\"default\": \"false\"") && !Has(rentry0, "kDebugOnly") && !Has(rentry0, "kRequiresRestart"), "the manifest entry is the same setting");
+  Check(Has(rentry0, "\"type\": \"bool\"") && Has(rentry0, "\"default\": \"true\"") && !Has(rentry0, "kDebugOnly") && !Has(rentry0, "kRequiresRestart"), "the manifest entry is the same setting");
   // the old chooser: still there under its name for the A/B chains, debug-only, with the row's word first
   const std::string den = DefinitionOf(header, "mcla_gpu_denoiser", "std::string");
   Check(!den.empty() && Has(den, "mcla_gpu_denoiser, \"row\", \"") && Has(den, "rex::kDebugOnly, rex::Allowed(\"row\", \"auto\", \"rr\", \"ours\")"), "mcla_gpu_denoiser is the debug chooser: a string setting, row by default, with row, auto, rr, ours");
@@ -694,7 +778,8 @@ void BuildChecks(const std::string& dir) {
   const std::string cpp = ReadFile(dir + "/denoiser_setting.cpp");
   Check(Has(cpp, "LiveText text(\"mcla_gpu_denoiser\");") &&
             Has(cpp, "ls::mcla_gpu_denoiser.GetLayer() >= rex::SettingLayer::kEnvironment") &&
-            Has(cpp, "Effective(debug_override ? Chooser().Get() : kChooserRow, ls::mcla_gpu_vendor_denoiser.Get())") && Has(cpp, "g_consumers.fetch_or(bit") &&
+            Has(cpp, "ResolvePreference(debug_override ? Chooser().Get() : kChooserRow, PlayerPreference())") &&
+            Has(cpp, "toggle.GetLayer() == rex::SettingLayer::kDefault") && Has(cpp, "g_consumers.fetch_or(bit") &&
             Has(cpp, "g_consumers.fetch_and(~bit"),
         "the effective setting is the chooser (a LiveText) and the row's bool, and the board is atomic");
   const std::string config = ReadFile(dir + "/../settings/larecomp_settings.cpp");
@@ -747,6 +832,7 @@ int main(int argc, char** argv) {
   RowChecks();
   PageWidthChecks(dir);
   EffectiveChecks();
+  DefaultChecks();
   MenuChecks(dir);
   ConsumerWiringChecks(dir);
   PlanChecks(dir);

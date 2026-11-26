@@ -1739,11 +1739,15 @@ void TemporalSystem::UpdateDenoiserPlan() {
   if (!rr::ParseDebugSwitch(larecomp::settings::mcla_gpu_dlss_rr.Get(), &in.debug)) {
     in.debug = rr::DebugSwitch::kRow;
   }
-  in.setting = denoiser::Setting();
+  const auto preference = denoiser::ReadPreference();
+  in.setting = preference.setting;
+  in.uses_default = preference.uses_default;
+  in.rtx_adapter = in.uses_default && denoiser::RtxAdapter();
   // The effects that are on and have a raw mode (they say it every frame: denoiser::NoteConsumer): AUTO takes the ones RR is known to clean better than ours, the row's RR value any of them.
   const uint32_t consumers_on = denoiser::ConsumersOn();
   in.consumers_active = rr::AnyAutoConsumerOn(consumers_on);
   in.consumers_any = rr::AnyConsumerOn(consumers_on);
+  in.rt_consumer_on = rr::AnyRtConsumerOn(consumers_on);
   // What Streamline and the files said. Every 16 frames, and every frame while Ray Reconstruction is wanted (the failure flag moves the plan at once); the copy holds two strings and the menu's
   // row reads the same facts through the snapshot below.
   if (in.debug != rr::DebugSwitch::kOff && (!rr_facts_valid_ || (frame_number_ & 15u) == 0 || rr::ContextWanted(rr_plan_.why))) {
@@ -1769,7 +1773,10 @@ void TemporalSystem::UpdateDenoiserPlan() {
   // nothing is asked of the adapter for an RR that is not wanted.
   in.room_ok = true;
   in.guides_ready = true;
-  if (rr::SelectDenoiser(in).use_rr) {
+  const bool candidate = rr::SelectDenoiser(in).use_rr;
+  // CHECK: confirm the first-start and preset-switch toggle on an RTX card after DLSS finishes starting.
+  const bool default_on = in.uses_default && in.debug == rr::DebugSwitch::kRow && candidate;
+  if (candidate) {
     in.room_ok = RrRoomOk();
   }
   // The guide pass says it every frame (NoteRrGuides, before the anchor): last frame's word is this frame's plan, and the flag is taken back so that a frame the pass
@@ -1778,8 +1785,9 @@ void TemporalSystem::UpdateDenoiserPlan() {
   rr_guides_ready_ = false;
   rr_plan_ = rr::SelectDenoiser(in);
   if (!rr_plan_logged_ || rr_plan_.use_rr != rr_plan_last_.use_rr || rr_plan_.why != rr_plan_last_.why) {
-    REXLOG_INFO("{} denoiser: {} ({}; DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, rr_plan_.use_rr ? "DLSS Ray Reconstruction" : "ours (no Ray Reconstruction)",
-                rr::WhyText(rr_plan_.why), denoiser::WordOf(in.setting), rr::DebugSwitchName(in.debug));
+    const auto row = in.uses_default && !default_on ? rr::Denoiser::kOurs : in.setting;
+    REXLOG_INFO("{} denoiser: {} ({}{}; DENOISER row = {}, mcla_gpu_dlss_rr = {})", kPrefix, rr_plan_.use_rr ? "DLSS Ray Reconstruction" : "ours (no Ray Reconstruction)",
+                rr::WhyText(rr_plan_.why), in.uses_default ? ", vendor default" : "", denoiser::WordOf(row), rr::DebugSwitchName(in.debug));
     rr_plan_last_ = rr_plan_;
     rr_plan_logged_ = true;
   }
@@ -1791,6 +1799,7 @@ void TemporalSystem::UpdateDenoiserPlan() {
   snapshot.facts = rr_facts_;
   snapshot.upscaler_is_dlss = in.upscaler_is_dlss;
   snapshot.context_making = rr_context_asked_ && dlss_ && !dlss_->CompanionReady(rr_request_);
+  snapshot.default_on = default_on;
   snapshot.plan = rr_plan_;
   denoiser::Publish(snapshot);
   // RG-3: AMD FSR Ray Regeneration's plan beside it (one vendor: at most one of the two is ever on). Nothing happens on a PC that is not a Radeon RX 9000 on Direct3D 12 with the row on its value.
@@ -1799,6 +1808,7 @@ void TemporalSystem::UpdateDenoiserPlan() {
     regen_in.device = device_;
     regen_in.frames = frames_;
     regen_in.setting = in.setting;
+    regen_in.uses_default = in.uses_default;
     regen_in.consumers_on = consumers_on;
     regen_in.frame = frame_number_;
     regen_in.dlss_plan = rr_plan_;

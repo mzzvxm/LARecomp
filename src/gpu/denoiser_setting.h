@@ -2,7 +2,7 @@
 // ===========================================================================
 // MCLA GPU renderer -- the denoiser setting and its pause row (perf/DLSS-RR.md section 5, package RR-5; the one on / off row: backlog DENOISER-TOGGLE, owner 2026-11-23)
 // ===========================================================================
-// One row on GRAPHICS > DISPLAY, after SHARPNESS: the GPU maker's ray tracing denoiser, ON / OFF (mcla_gpu_vendor_denoiser, live, saved, off by default), the way other PC games list it: who cleans the grain out of the
+// One row on GRAPHICS > DISPLAY, after SHARPNESS: the GPU maker's ray tracing denoiser, ON / OFF (mcla_gpu_vendor_denoiser, live, saved), the way other PC games list it: who cleans the grain out of the
 // noisy effects (the screen-space reflections, the ray traced reflections, the ray traced bounce light). It is shown only where this PC can run the maker's denoiser:
 //   an RTX card                      DLSS RAY RECONSTRUCTION   ON = NVIDIA's DLSS Ray Reconstruction (this file and dlss_rr_rules.h), OFF = ours
 //   a Radeon RX 9000, Windows 11     AMD FSR RAY REGENERATION  ON = AMD's FSR Ray Regeneration (ray_regen_rules.h and ray_regen_plan.h), OFF = ours
@@ -17,8 +17,8 @@
 //   OURS               our denoisers, always (the row OFF). Streamline's plugin is not asked for at the start, so nothing of RR costs memory or start time.
 //   RR (the row ON)    the vendor's denoiser wherever it can run: an RTX card Streamline says supports it, DLSS as the upscaler, and an effect on that has a raw mode (a CONSUMER: dlss_rr_rules.h kConsumers).
 //   AUTO (debug only)  Ray Reconstruction where an effect is on that RR is known to clean better than ours (kConsumers' auto_uses_rr: the A/B pictures say so); our denoisers everywhere else.
-// The default is OFF for both vendors until the RR-DECIDE A/B has been seen (owner 2026-11-23: one default rule for both, ON or OFF): our own denoisers cost far less than RR (0.03 ms for the cars' reflections
-// against 0.7 to 2.1 ms on a fast RTX card) and RR is slightly softer where it has little to clean.
+// Without a saved preference, the toggle follows support. DLSS Ray Reconstruction also requires DLSS and an active ray traced consumer. The plugin is loaded when Streamline starts so a preset can turn on
+// that consumer live. AMD FSR Ray Regeneration's default follows the runtime's support verdict. Presets leave the toggle alone and select the effects the denoisers can use.
 // Four effects have a raw mode (RR-INT: the screen-space reflections, RR-4a, and the cars' ray traced reflections, RR-4b; CITY-RT R6: the city's ray traced reflections, the screen-space reflections' fallback;
 // CITY-RT G6: the bounce light's per-pixel pass; they say they are on through NoteConsumer). The row ON takes a frame while one is on. Streamline is started with the plugin wherever the row is not OFF (and the PC
 // can: an RTX card, D3D12 or Vulkan with DLSS saved). A switch of the row is live (the next frame): RR's context is made in the background beside Super Resolution's (RR-3), and the frames in between are
@@ -58,7 +58,7 @@ namespace mcla::gpu::denoiser {
 
 // The stored words of the effective setting (the rules' own, rr::ParseDenoiser; "rr" is the vendor's denoiser whichever vendor: a saved setting survives a change of graphics card).
 inline constexpr const char* kWords[3] = {"auto", "rr", "ours"};
-// The player's row: a bool, ON = the vendor's denoiser, OFF = ours. Off by default.
+// The player's row: a bool, ON = the vendor's denoiser, OFF = ours.
 inline constexpr const char* kVendorCvarName = "mcla_gpu_vendor_denoiser";
 // The debug chooser (A/B chains, tours): "row" (the default: the row above decides), or auto / rr / ours, which override the row.
 inline constexpr const char* kCvarName = "mcla_gpu_denoiser";
@@ -84,10 +84,23 @@ inline rr::Denoiser Effective(std::string_view chooser, bool vendor_row_on) {
   return vendor_row_on ? rr::Denoiser::kRr : rr::Denoiser::kOurs;
 }
 
-// Both vendor labels in the old menu used the stored word "rr".
+struct Preference {
+  rr::Denoiser setting;
+  bool uses_default;
+};
+
+inline Preference ResolvePreference(std::string_view chooser, std::optional<bool> saved) {
+  return {Effective(chooser, saved.value_or(true)), !saved.has_value() && !IsOverride(chooser)};
+}
+
+constexpr bool ToggleOn(std::optional<bool> saved, bool supported_default) {
+  return saved.value_or(supported_default);
+}
+
+// Both vendor labels in the old menu used "rr". A saved "auto" leaves the new default in effect.
 inline std::optional<bool> LegacyVendorPreference(std::string_view saved) {
   rr::Denoiser choice = rr::Denoiser::kOurs;
-  if (!rr::ParseDenoiser(saved, &choice)) return std::nullopt;
+  if (!rr::ParseDenoiser(saved, &choice) || choice == rr::Denoiser::kAuto) return std::nullopt;
   return choice == rr::Denoiser::kRr;
 }
 
@@ -229,12 +242,15 @@ struct Snapshot {
   rr::Facts facts;
   bool upscaler_is_dlss = false;
   bool context_making = false;
+  bool default_on = false;      // support and the RT consumer are ready, independent of frame guides or memory
   rr::Plan plan;
 };
 void Publish(const Snapshot& snapshot);
 Snapshot Current();
 // The render thread reads the player toggle unless auto, rr or ours was set via the environment,
 // command line or a live debug override. ApplyPlayerConfig handles the old saved values.
+std::optional<bool> PlayerPreference();
+Preference ReadPreference();
 rr::Denoiser Setting();
 bool RtxAdapter();
 // The effects that are on and have a raw mode say it here, once a frame, from the render thread (RR-4's packages): `on` is whether the effect runs this frame.

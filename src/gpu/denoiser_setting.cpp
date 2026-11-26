@@ -27,12 +27,20 @@ std::atomic<uint32_t> g_consumers{0};
 
 }  // namespace
 
-rr::Denoiser Setting() {
+std::optional<bool> PlayerPreference() {
+  const auto& toggle = larecomp::settings::mcla_gpu_vendor_denoiser;
+  if (toggle.GetLayer() == rex::SettingLayer::kDefault) return std::nullopt;
+  return toggle.Get();
+}
+
+Preference ReadPreference() {
   namespace ls = larecomp::settings;
   // A saved chooser value is legacy player data. ApplyPlayerConfig maps it to the bool.
   const bool debug_override = ls::mcla_gpu_denoiser.GetLayer() >= rex::SettingLayer::kEnvironment;
-  return Effective(debug_override ? Chooser().Get() : kChooserRow, ls::mcla_gpu_vendor_denoiser.Get());
+  return ResolvePreference(debug_override ? Chooser().Get() : kChooserRow, PlayerPreference());
 }
+
+rr::Denoiser Setting() { return ReadPreference().setting; }
 
 bool RtxAdapter() {
   const auto* device = MachineFactsDevice();

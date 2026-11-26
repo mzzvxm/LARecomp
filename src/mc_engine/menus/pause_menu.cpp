@@ -913,11 +913,14 @@ std::string TomlLineKey(const std::string& line) {
 }
 
 std::string CvarGet(const char* name) {
+    if (!name) return {};
     {
         std::lock_guard<std::mutex> lock(g_deferred_mutex);
         for (const auto& [k, v] : g_deferred)
             if (k == name) return v;
     }
+    if (std::string_view(name) == "mcla_gpu_vendor_denoiser")
+        return mcla_menu::VendorDenoiserOn() ? "true" : "false";
     return larecomp::cvar::GetFlagByName(name);
 }
 

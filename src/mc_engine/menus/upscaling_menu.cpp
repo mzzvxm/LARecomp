@@ -244,8 +244,7 @@ List SharpnessList(bool fsr1) {
 
 // ONE on / off row for the graphics card maker's denoiser (owner 2026-11-23; gpu/denoiser_setting.h has every rule and the words): "DLSS RAY RECONSTRUCTION" on a GeForce RTX card (ON is NVIDIA's DLSS
 // Ray Reconstruction, which does the upscale too; OFF is ours), "AMD FSR RAY REGENERATION" on a Radeon RX 9000 series card on Windows 11 (ON is AMD's FSR Ray Regeneration, which works with any upscaler; OFF is
-// ours). Any other card has no row (DenoiserListed), and uses ours. It is the player's own setting, mcla_gpu_vendor_denoiser (live, saved, off by default); the old three-way chooser, mcla_gpu_denoiser, is a debug
-// setting now and overrides it when it says auto, rr or ours (denoiser_setting.h Effective), so the A/B chains and tours keep working.
+// ours). Any other card has no row and uses ours. A saved mcla_gpu_vendor_denoiser takes precedence over the hardware default. The old three-way chooser, mcla_gpu_denoiser, overrides it for debug runs.
 // The row is grey, with its reason after its label (NVIDIA's guidelines: disable it where the driver cannot run it, where DLSS Super Resolution is not on and where there is no ray traced content): " (N/A)",
 // " (NEEDS DLSS)", " (SETUP)", " (FAILED)", " (NOT NEEDED)" on an RTX card; on a Radeon " (D3D12 ONLY)" on Vulkan (AMD ships no Vulkan provider), " (N/A)", " (SETUP)", " (FAILED)", " (NOT NEEDED)". It says
 // " (RESTART)" while the row is ON in a game whose Streamline was started without the plugin (the "Restart now?" prompt reads the word) and " (APPLYING)" while the denoiser's context is being made. It is grey
@@ -272,7 +271,8 @@ mcla::gpu::denoiser::MenuInputs DenoiserInputs() {
     m.dlss_waits_for_restart = DlssWaitsForRestart();
     m.dlss_needs_setup = a.dlss_needs_setup && !a.dlss;
     m.debug = snapshot.valid ? snapshot.debug : mcla::gpu::rr::DebugSwitch::kRow;
-    m.setting = dn::Setting();  // the effective one: the row, or the debug chooser when it says auto, rr or ours (no cvar named here: the chooser is debug-only)
+    const auto preference = dn::ReadPreference();
+    m.setting = preference.uses_default && !snapshot.default_on ? mcla::gpu::rr::Denoiser::kOurs : preference.setting;
     m.consumers_on = dn::ConsumersOn();
     m.context_making = snapshot.context_making;
     return m;
@@ -414,6 +414,23 @@ std::string_view VendorDenoiserState() {
     }
 #endif
     return "ok";
+}
+
+bool VendorDenoiserOn() {
+#if defined(LARECOMP_HAS_GPU)
+    namespace dn = mcla::gpu::denoiser;
+    namespace rg = mcla::gpu::rayregen;
+    const auto saved = dn::PlayerPreference();
+    switch (DenoiserRowKind()) {
+    case dn::VendorRow::kDlssRr:
+        return dn::ToggleOn(saved, dn::Current().default_on);
+    case dn::VendorRow::kRayRegen:
+        return dn::ToggleOn(saved, rg::DefaultOn(rg::MenuFacts(), rg::ReadDebugSwitch()));
+    case dn::VendorRow::kNone:
+        break;
+    }
+#endif
+    return false;
 }
 
 }  // namespace mcla_menu

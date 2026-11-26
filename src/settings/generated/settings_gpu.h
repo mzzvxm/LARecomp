@@ -733,10 +733,10 @@ class GPUSettings final : public rex::SettingOwner {
     "the test on, 1 alone, then 2 alone, then 4 alone; the one that makes the picture lose its "
     "smoothness over time is read. Live.", rex::Range{0, 7}, rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_vendor_denoiser, false, "The pause menu's DLSS RAY RECONSTRUCTION row (a GeForce RTX card) or AMD FSR RAY REGENERATION row (a Radeon RX 9000 series card on Windows 11): "
+  REX_SETTING(bool, mcla_gpu_vendor_denoiser, true, "The pause menu's DLSS RAY RECONSTRUCTION row (a GeForce RTX card) or AMD FSR RAY REGENERATION row (a Radeon RX 9000 series card on Windows 11): "
     "the graphics card maker's denoiser, who cleans the grain out of the noisy effects (the reflections on surfaces, the ray traced reflections, the ray traced bounce light). Other cards have no such row and use our own denoisers. "
-    "Off (the default): our own denoisers. On: NVIDIA's DLSS Ray Reconstruction (it does the upscaling too, in place of DLSS Super Resolution, for the frames it takes, so it needs DLSS as the upscaler) or "
-    "AMD's FSR Ray Regeneration (Direct3D 12; it cleans before the upscaler runs, whatever the upscaler is), wherever an effect that it can clean is on and this PC can run it. "
+    "Off uses LARecomp's denoisers. Without a saved choice, DLSS Ray Reconstruction defaults on with DLSS upscaling, the required files and an active ray traced effect it supports. "
+    "AMD FSR Ray Regeneration defaults on when the card and installed files support it on Direct3D 12. It works with any upscaler. "
     "A switch is live and the frames in between are the upscaler's own; only DLSS Ray Reconstruction's plugin is loaded when the game starts, so turning it on in a game that started with it off asks for a restart. "
     "Live.");
 

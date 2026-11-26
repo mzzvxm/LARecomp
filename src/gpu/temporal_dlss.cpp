@@ -351,7 +351,7 @@ bool RrFilesOk(const std::wstring& dir, std::string* why) {
 
 // Whether Streamline is started with the Ray Reconstruction plugin (InitLocked; the rules are dlss_rr_rules.h WantRrPlugin): the DLSS RAY RECONSTRUCTION row is not OFF (or the debug chooser or switch forces it) and an effect has
 // a raw mode, this build has it, its files are in place and signed, the card looks like an RTX one, and on Vulkan DLSS is the saved choice (the device is made through Streamline then). Plugins cannot
-// be added after slInit, so turning the row ON later says "(RESTART)" (denoiser_setting.h). The files are looked at only when the plugin is wanted (a row OFF costs the player nothing).
+// be added after slInit. With the default preference, load it even if the current preset has no ray traced effects, so a later preset can use it live.
 bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_saved_at_start) {
   rr::PluginInputs in;
   in.debug = RrDebugSwitch();
@@ -367,8 +367,9 @@ bool WantRayReconstructionPlugin(Backend backend, bool looks_rtx, bool dlss_save
   rr::PluginInputs what_if = in;
   what_if.setting = rr::Denoiser::kRr;
   what_if.files_ok = true;
-  g_rr_loadable.store(rr::WantRrPlugin(what_if), std::memory_order_relaxed);
-  if (rr::PluginWantedByChoice(in)) {
+  const bool loadable = rr::WantRrPlugin(what_if);
+  g_rr_loadable.store(loadable, std::memory_order_relaxed);
+  if (loadable && rr::PluginWantedByChoice(in)) {
     std::string why;
     in.files_ok = RrFilesOk(ExeDirectory(), &why);
     if (!in.files_ok) {

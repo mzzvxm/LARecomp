@@ -130,7 +130,8 @@ void Planner::Update(const Inputs& in) {
   // The runtime is opened live where the plan would want it and the card could run it (a start with the row on OURS opened nothing; Ray Regeneration needs no restart).
   const bool debug_asks = debug_ == rr::DebugSwitch::kOn || debug_ == rr::DebugSwitch::kProbe;
   const bool row_asks = (in.setting == rr::Denoiser::kRr && pi.consumers_any) || (in.setting == rr::Denoiser::kAuto && pi.consumers_active);
-  if (debug_ != rr::DebugSwitch::kOff && (debug_asks || row_asks) && RowListed() && in.device && in.frames) {
+  if (debug_ != rr::DebugSwitch::kOff && (debug_asks || row_asks) && RowListed() && in.device && in.frames &&
+      g_d3d12.load(std::memory_order_relaxed)) {
     ProbeNow(*in.device, *in.frames);
   }
   pi.facts = MenuFacts();
@@ -183,9 +184,13 @@ void Planner::Update(const Inputs& in) {
     }
   }
 
-  if (!plan_logged_ || plan_.use != plan_last_.use || plan_.why != plan_last_.why || chosen_ != chosen_last_) {
+  const bool default_on = in.uses_default && DefaultOn(pi.facts, debug_);
+  if (!plan_logged_ || plan_.use != plan_last_.use || plan_.why != plan_last_.why || chosen_ != chosen_last_ || default_on != default_on_last_) {
     plan_logged_ = true;
-    REXLOG_INFO("{} denoiser: {} ({}; DENOISER row = {}, mcla_gpu_ray_regen = {})", kPrefix, DenoiserKindName(chosen_), WhyText(plan_.why), denoiser::WordOf(in.setting), rr::DebugSwitchName(debug_));
+    default_on_last_ = default_on;
+    const auto row = in.uses_default && !default_on ? rr::Denoiser::kOurs : in.setting;
+    REXLOG_INFO("{} denoiser: {} ({}{}; DENOISER row = {}, mcla_gpu_ray_regen = {})", kPrefix, DenoiserKindName(chosen_), WhyText(plan_.why),
+                in.uses_default ? ", vendor default" : "", denoiser::WordOf(row), rr::DebugSwitchName(debug_));
     plan_last_ = plan_;
     chosen_last_ = chosen_;
   }
