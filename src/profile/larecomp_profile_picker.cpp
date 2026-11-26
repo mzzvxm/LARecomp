@@ -502,7 +502,7 @@ class ProfilePickerDialog final : public ui::ImGuiDialog {
     constexpr float kGap = 4.0f;
     constexpr const char* kLinesBottomUp[] = {
         larecomp::kVersionLabel,
-        "LARecomp: mzzvxm (author and maintainer), BadassBaboon, RenanQueiroz, Grien25, Vi.",
+        "LARecomp team: mzzvxm (author and maintainer), BadassBaboon, RenanQueiroz - contributor: Grien25",
         "LARecomp is free software under GPL-3.0 with additional terms - see LICENSE",
     };
     const float wrap_width = std::max(kPx, io.DisplaySize.x - 2.0f * kMargin);
