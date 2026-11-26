@@ -262,6 +262,7 @@ class ScreenReflections {
   bool env_enabled_ = false;
   env_fallback::ProbeFrame env_probe_;
   bool last_handoff_enabled_ = false;
+  bool last_specular_ao_ = false;
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;

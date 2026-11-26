@@ -125,10 +125,16 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float wx = (k & 1) != 0 ? f.x : 1.0f - f.x;
     const float wy = (k >> 1) != 0 ? f.y : 1.0f - f.y;
     float w = 0.0f;
+    float3 radiance = t.xyz;
 #if SSR_RAW
     if (t.w != 0.0f) {
       const float dz = (SsrHizAt(SsrHz(), q.x, q.y) - z) / sigma;
       w = wx * wy / (1.0f + dz * dz);
+    }
+    // Ray Regeneration accepts nonnegative radiance. When the high slot
+    // names the original trace, put its signed subtraction back before blending.
+    if (trace_slot != accum_slot && t.w != 0.0f) {
+      radiance += min(g_textures[trace_slot].Load(int3(q, 0)).xyz, 0.0f);
     }
 #else
     if (t.w > 0.0f) {
@@ -141,7 +147,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       }
     }
 #endif
-    sum += t.xyz * w;
+    sum += radiance * w;
     total += w;
   }
   if (!(total > 1.0e-3f)) {

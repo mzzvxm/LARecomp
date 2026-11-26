@@ -1015,6 +1015,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_specular_occlusion, true, "Use ambient occlusion to darken planar and environment reflection fallbacks and car paint reflections. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_classify, true, "Classify surface reflection tiles to concentrate rays where they are useful. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_handoff, true, "Blend surface reflections through screen history, RT, planar and environment sources. Live.", rex::kDebugOnly);
 
@@ -2325,6 +2326,7 @@ inline auto& mcla_gpu_ssr_rt_cars = g_gpu.mcla_gpu_ssr_rt_cars;
 inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;
 inline auto& mcla_gpu_rt_denoise_v2 = g_gpu.mcla_gpu_rt_denoise_v2;
 inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
+inline auto& mcla_gpu_specular_occlusion = g_gpu.mcla_gpu_specular_occlusion;
 inline auto& mcla_gpu_ssr_classify = g_gpu.mcla_gpu_ssr_classify;
 inline auto& mcla_gpu_ssr_handoff = g_gpu.mcla_gpu_ssr_handoff;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;

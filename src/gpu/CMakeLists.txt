@@ -515,6 +515,7 @@ add_executable(larecomp_ssr_test EXCLUDE_FROM_ALL ssr_test.cpp)
 #   cmake --build <dir> --target larecomp_ssr_rt_rules_test, then run src/gpu/larecomp_ssr_rt_rules_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_ssr_rt_rules_test EXCLUDE_FROM_ALL ssr_rt_rules_test.cpp)
 add_executable(larecomp_ssr_classify_test EXCLUDE_FROM_ALL ssr_classify_test.cpp)
+add_executable(larecomp_spec_occlusion_test EXCLUDE_FROM_ALL spec_occlusion_test.cpp)
 # RtDenoise (rt_denoise_rules.h: the radius law, the weights, the temporal rules; ssr_denoise_rules.h: the reflections' use, the decision, the setting, the census; it compiles
 # hlsl/rt_denoise_common.hlsli as C++ and compares it with the twins, runs a CPU model of the two stages on synthetic frames, and reads the sources it is given) likewise:
 #   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).

@@ -67,6 +67,8 @@
 #include "scene_noise.h"
 #include "shafts.h"
 #include "shaderpack/variant_chain.h"
+#include "shaderpack/variants/car_selfrefl.h"
+#include "spec_occlusion_rules.h"
 #include "side_views.h"
 #include "volumetrics.h"
 #include "sync_builds.h"
@@ -2710,6 +2712,10 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
       car_selfrefl::CarSelfReflConstants block = car_selfrefl::OffConstants();
       if (car_refl_) {
         car_refl_->FillConstants(d.state, UpscalerRunning(), d.ps ? d.ps->key : 0, &block);
+      }
+      if (d.ps && d.ps->key == sp::kCarPaint.key && larecomp::settings::mcla_gpu_specular_occlusion.Get() &&
+          d.key.color_count != 0 && temporal::MainColorSamples(ColorEdramKey(d.state, 0)) != 0) {
+        block.c[3] |= spec_occlusion::kPaintFlag;
       }
       std::memcpy(out, &block, sizeof(block));
       return;

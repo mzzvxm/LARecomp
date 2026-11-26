@@ -90,10 +90,10 @@ float4 SsrRtScreenProxy(CityHitScreen s, CityHitRay ray, CityHitInstance inst, C
 
 // CHECK: compare the map's exposure and colour on day, wet night and tunnel captures. Only a known planar
 // term can be replaced, and the hit shader leaves the SSR distance guide alone on an environment miss.
-float3 SsrRtEnvironmentTerm(RtHitFrame f, float3 dir, float alpha, float units, float3 fallback, float cap) {
+float3 SsrRtEnvironmentTerm(RtHitFrame f, float3 dir, float alpha, float units, float visibility, float3 fallback, float cap) {
   const float lod = clamp(0.5f + 3.0f * alpha, 0.5f, 3.0f);
   const float3 colour = min(NgFinite3(RtHitEnvAt(f, dir, lod) * units), float3(cap, cap, cap));
-  return colour - fallback;
+  return colour * visibility - fallback;
 }
 
 float3 SsrRtCarLamps(CityHitParams p, RtWorld w, float3 position, float3 normal) {
@@ -278,7 +278,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   }
 
   // Replace only the fallback radiance represented by the uncovered share.
-  const SsrFallback lower = SsrSurfaceFallback(r.cls, r.texel, r.pc, r.n, r.smoothness, handoff);
+  const SsrFallback lower = SsrSurfaceFallback(r.cls, r.texel, r.pc, r.n, r.to_camera, r.smoothness, handoff);
   const float3 fallback = lower.planar + lower.env;
   const bool has_planar = lower.has_planar;
 
@@ -343,7 +343,7 @@ void main(uint3 id : SV_DispatchThreadID) {
       }
       const float sky_weight = sky_miss ? SsrRtSkyWeight(up, 0.0f) : 0.0f;
       if (sky_weight > 0.0f) {
-        sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * (sky_weight * ray_share);
+        sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, lower.visibility, fallback, cap) * (sky_weight * ray_share);
         filled = true;
 #if SSR_REFLHIT
         rt_fades += sky_weight * ray_share;
@@ -369,7 +369,7 @@ void main(uint3 id : SV_DispatchThreadID) {
           sum += (min(colour, float3(cap, cap, cap)) - fallback) * (fade * ray_share);
           const float sky_weight = sky_miss ? SsrRtSkyWeight(up, fade) : 0.0f;
           if (sky_weight > 0.0f) {
-            sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * (sky_weight * ray_share);
+            sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, lower.visibility, fallback, cap) * (sky_weight * ray_share);
           }
           nearest = min(nearest, hit.t);
           hit_coverage += fade * ray_share;
@@ -440,7 +440,7 @@ void main(uint3 id : SV_DispatchThreadID) {
     sum += (min(res.colour, float3(cap, cap, cap)) - fallback) * (fade * ray_share);
     const float sky_weight = sky_miss ? SsrRtSkyWeight(up, fade) : 0.0f;
     if (sky_weight > 0.0f) {
-      sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * (sky_weight * ray_share);
+      sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, lower.visibility, fallback, cap) * (sky_weight * ray_share);
     }
     if (!ground || fade >= 0.5f) {
       nearest = min(nearest, hit.t);

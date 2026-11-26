@@ -688,8 +688,8 @@ void CheckWiring(const std::string& dir) {
             Has(ssr_cpp, "if (!regen_ok) {\n      ++regen_fallbacks_;") &&
             Has(ssr_cpp, "const HostImage* resolve_source = filtered_v2 ? filtered_v2 : &accum_[write_];"),
         "a refused dispatch is counted, then the internal v2 filter or the legacy accumulation supplies the resolve");
-  Check(Has(ssr_cpp, "apply.Set(pk::kSrc, ssr::PackSlots(denoised_slot, denoised_slot));") && Has(ssr_cpp, "regen_pass_.image(rgd::Image::kDenoised).slot") && Has(ssr_cpp, "(regen_ok ? regen_apply_pipeline : apply_pipeline)"),
-        "the resolve reads the DENOISED image only after a dispatch that was recorded (the signal and the guides are never read as the result)");
+  Check(Has(ssr_cpp, "apply.Set(pk::kSrc, ssr::PackSlots(denoised_slot, specular_ao ? trace_.slot : denoised_slot));") && Has(ssr_cpp, "regen_pass_.image(rgd::Image::kDenoised).slot") && Has(ssr_cpp, "(regen_ok ? regen_apply_pipeline : apply_pipeline)"),
+        "the resolve reads the DENOISED image only after a dispatch that was recorded (the signed trace supplies specular occlusion)");
   Check(Has(ssr_cpp, "regen_key_ = now;") && Has(ssr_cpp, "regen_key_.valid = false;   // the next regen frame starts the runtime's history again") && Has(ssr_cpp, "ssr::HistoryUsable(regen_key_, now, motion_usable)"),
         "the runtime's history is kept only across consecutive regen frames of one size with a known camera motion; anything else resets it");
   Check(Has(ssr_cpp, "const bool dispatched = rayregen::Instance().Dispatch(list, frame);") && Has(ssr_cpp, "if (!dispatched) {\n    return false;") && Has(ssr_cpp, "regen_pass_.ReadDenoised(list);") && Has(ssr_cpp, "regen_pass_.PrepareDenoised(list);"),

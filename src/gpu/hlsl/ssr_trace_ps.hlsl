@@ -153,7 +153,7 @@ float4 SsrTraceBody(float4 position) {
   const bool stable = SsrStableTrace();
   const float cap = SsrF(SSR_W_CAP);
 
-  const SsrFallback fallback = SsrSurfaceFallback(surface.cls, texel, pc, n, smoothness, handoff);
+  const SsrFallback fallback = SsrSurfaceFallback(surface.cls, texel, pc, n, to_camera, smoothness, handoff);
 #if SSR_REFLHIT
   if (handoff) {
     native = fallback.has_planar ? kReflHitPlanar : (fallback.has_env ? kReflHitEnvironment : kReflHitNone);

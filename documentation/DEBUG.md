@@ -195,6 +195,8 @@ GRAPHICS > DISPLAY places the vendor's denoiser after SHARPNESS. An RTX card sho
 
 `mcla_gpu_ssr_classify` (debug-only, live, default on) uses reprojected 8x8 reflection tiles to concentrate screen and hardware rays on unresolved surfaces. **REFLECTION TILE CLASSIFICATION** in FIXES switches the classifier and fixed-work ray allocation on or off together for captures.
 
+`mcla_gpu_specular_occlusion` (debug-only, live, default on) uses frame AO to darken the planar and environment fallbacks. Customizable car paint uses its baked vertex AO for its environment reflection. **REFLECTION FALLBACK OCCLUSION** in FIXES switches both paths for captures.
+
 `mcla_gpu_ray_regen_ssr` (debug-only, live; 0 or 1, default 1) controls the reflection trace while AMD FSR Ray Regeneration is selected. City RT reflections merge their radiance and hit distance into that trace before AMD reads it. Set the switch to 0 to compare against LARecomp's filter for the combined trace.
 
 Per-pixel RT bounce light uses a separate indirect diffuse context at the trace size, including when the governor reduces that size. The trace's coverage and hit distance determine the signal and passthrough texels. The GI apply mixes the denoised irradiance with the probe field and applies receiver albedo. The local filter handles frames without a usable dispatch.

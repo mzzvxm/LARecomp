@@ -46,6 +46,7 @@
 #include "pipeline_wait.h"
 #include "pipeline_warm_order.h"
 #include "shadow_filter.h"
+#include "shaderpack/variants/car_selfrefl.h"
 #include "side_views.h"
 #include "stencil_ref.h"
 #include "temporal_backend.h"
@@ -151,7 +152,8 @@ uint32_t WantedFeatures(const ShaderStore::Entry& ps, bool startup = false) {
   // not compose (variant_pack.cpp), because only one of them would ever draw.
   const bool car_refl = (has(sp::kFeatureCarSelfRefl) || has(sp::kFeatureCarChrome)) &&
                         (startup ? CarSelfRefl::WantedAtStartup() : CarSelfRefl::Selected());
-  if (has(sp::kFeatureCarSelfRefl) && car_refl) {
+  if (has(sp::kFeatureCarSelfRefl) &&
+      (car_refl || (ps.key == sp::kCarPaint.key && larecomp::settings::mcla_gpu_specular_occlusion.Get()))) {
     want(sp::kFeatureCarSelfRefl);
   }
   // The car's chrome (the tailpipes, the rims): the same history image and constants as the paint's, a shader of its own (the pack step

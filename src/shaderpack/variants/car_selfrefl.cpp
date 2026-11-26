@@ -17,6 +17,9 @@ using namespace textedit;
 
 namespace {
 
+#define SPEC_OCCLUSION_SHADER_CODE(...) constexpr std::string_view kSpecularOcclusionHlsl = #__VA_ARGS__ "\n";
+#include "gpu/hlsl/spec_occlusion.hlsli"
+
 // The two environment reads of the paint and the last write of its colour, as the translator writes them.
 constexpr std::string_view kSharpRead =
     "r10.xyz = tfetch2DGrad(dpFrontSampler_Texture2DDescriptorIndex, dpFrontSampler_SamplerDescriptorIndex, r1.yw, "
@@ -32,8 +35,18 @@ constexpr std::string_view kFinalWrite = "oC0.xyz = r3.www * -r0.xzy + r0.xzy;";
 // the car's matrices, oTexCoord6 = (V, N.V) with V towards the camera: xCarPaintCustomizable__VS_CarPaint.hlsl).
 constexpr std::string_view kAfterSharpRead =
     "\n\tcarRefl = CarReflTrace(iTexCoord1.xyz, iTexCoord2.xyz, iTexCoord6.xyz);"
+    "\n\tr10.xyz *= carEnvVisibility;"
     "\n\tr10.xyz = CarReflApply(r10.xyz, carRefl, 1.0);";
-constexpr std::string_view kAfterBlurredRead = "\n\tr13.xyz = CarReflApply(r13.xyz, carRefl, 0.5);";
+constexpr std::string_view kAfterBlurredRead =
+    "\n\tr13.xyz *= carEnvVisibility;"
+    "\n\tr13.xyz = CarReflApply(r13.xyz, carRefl, 0.5);";
+// Use the interpolated baked AO and N.V even when the self-reflection history is off.
+// Both reads belong to the same paint material. Only their environment input is attenuated.
+constexpr std::string_view kPaintVisibility =
+    "\n\tfloat carEnvVisibility = 1.0f;"
+    "\n\t[branch] if ((g_CarReflC.w & kSpecularOcclusionPaintFlag) != 0u) {"
+    "\n\t\tcarEnvVisibility = SpecularOcclusion(iTexCoord6.w, iTexCoord4.w, kSpecularOcclusionPaintRoughness);"
+    "\n\t}";
 // Version 8: the clear coat's layer over the paint's finished colour (CarReflCoat: a reflection of another car at the coat's own fresnel), then the debug view, which replaces the colour;
 // iTexCoord4.w is the baked vertex AO (r4.w of the game's lines).
 constexpr std::string_view kAfterFinalWrite =
@@ -711,8 +724,12 @@ bool AddLocalConstantsAndHelper(std::string& text, const VariantShader& shader, 
   static constexpr Piece kMain[] = {Lit("#ifndef __spirv__"), Ws(0), Lit("[shader(\"pixel\")]"), Ws(0),
                                     Lit("#endif"),            Ws(0), Lit("void main(")};
   if (!ReplaceOnce(text, kCubeMap, 0, 0, "the start of main's registers",
-                   [](std::string_view group) {
-                     return std::string(group) + "\n\tCarReflResult carRefl = (CarReflResult)0;";
+                   [&shader](std::string_view group) {
+                     std::string local = std::string(group) + "\n\tCarReflResult carRefl = (CarReflResult)0;";
+                     if (shader.name == kCarPaint.name) {
+                       local += kPaintVisibility;
+                     }
+                     return local;
                    },
                    &why)) {
     *error = std::string(shader.name) + ": " + why;
@@ -786,7 +803,8 @@ VariantTransformResult TransformCarSelfReflHlsl(const VariantShader& shader, std
   }
 
   // 2. The anchored edits: the local result, the constants of both backends and the helper.
-  if (!AddLocalConstantsAndHelper(text, shader, ctx, &error)) {
+  // CHECK: build both pack formats and compare the paint and cockpit regions with the switch off and on.
+  if (!AddLocalConstantsAndHelper(text, shader, ctx, &error, std::string(kSpecularOcclusionHlsl) + std::string(kHelper))) {
     result.error = error;
     return result;
   }
