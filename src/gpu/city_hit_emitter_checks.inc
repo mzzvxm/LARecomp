@@ -147,23 +147,28 @@ void EmitterTwinChecks(Lcg& rng) {
     CHECK(short_reach == 0.0f);
   }
   // the estimate: over a stratified set of noise the one emitter's estimate averages to the sum of the emitters that are not blocked (the same as the lamps' estimator); with the cap, to the capped sum when none is
-  // blocked. Emitters in front of and behind a "wall" the blocking test names: x > 3 is blocked.
+  // blocked. Keep lit emitters on both sides of the wall (x > 3 is blocked) for every run.
+  // CHECK: Run this fixture and the randomized shading comparison in the Linux test binary.
   {
-    std::vector<hlsl_shim::EmitterRec> list = list_of(9, 0.2f, 5.0f);
-    for (auto& e : list) e.range = 80.0f;
+    const std::vector<hlsl_shim::EmitterRec> list = {
+        {{-1.0f, 2.5f, 6.0f}, {0.2f, 0.1f, 0.3f}, 80.0f, 4.0f},
+        {{1.0f, 3.5f, 5.0f}, {0.1f, 0.3f, 0.2f}, 80.0f, 4.0f},
+        {{5.0f, 3.5f, 6.0f}, {0.6f, 0.4f, 0.2f}, 80.0f, 4.0f},
+    };
+    const uint32_t count = uint32_t(list.size());
     const auto wall = [](cs::V3 o, cs::V3 d, float reach) { return o.x + d.x * reach > 3.0f; };
     cs::V3 expected;
-    for (uint32_t i = 0; i < 9; ++i) {
+    for (uint32_t i = 0; i < count; ++i) {
       const cs::V3 to = to_of(list)(i);
       const float distance = cs::Length(to);
       const bool blocked = wall(position + n * cs::Lift(position.z), to * (1.0f / distance), distance - cs::kEmitterEnd);
       if (!blocked) expected = expected + TwinEmitterRadiance(list, i, position, n);
     }
-    const cs::EmitterLight sum = cs::Emitters(9, radiance_of(list));
+    const cs::EmitterLight sum = cs::Emitters(count, radiance_of(list));
     CHECK(!sum.cap_sum && cs::Luma(expected) > 0.0f && cs::Luma(expected) < cs::Luma(sum.light));
     cs::V3 mean;
     const int samples = 9000;
-    for (int i = 0; i < samples; ++i) mean = mean + cs::EmittersPick(9, radiance_of(list), to_of(list), position, n, (float(i) + 0.5f) / float(samples), position.z, wall).light;
+    for (int i = 0; i < samples; ++i) mean = mean + cs::EmittersPick(count, radiance_of(list), to_of(list), position, n, (float(i) + 0.5f) / float(samples), position.z, wall).light;
     mean = mean * (1.0f / float(samples));
     Check(Near(mean.x, expected.x, 6e-3) && Near(mean.y, expected.y, 6e-3) && Near(mean.z, expected.z, 6e-3), Num2("the one emitter's estimate averages to the sum of the emitters in the open (%.4f against %.4f)", mean.x, expected.x));
     // with the cap and nothing blocked: the capped sum
@@ -297,7 +302,7 @@ void EmitterTextChecks(const std::string& src) {
   const std::string glue = ReadFile(src + "/gpu/hlsl/rt_emitters.hlsli");
   const std::string refl = ReadFile(src + "/gpu/hlsl/city_refl.hlsli");
   if (refl.empty() || lib.empty() || update.empty() || pixel.empty() || glue.empty()) {
-    std::printf("the sources were not found under %s: the emitters' text checks are skipped\n", src.c_str());
+    Check(false, "cannot read emitter shader sources under " + src);
     return;
   }
   const auto has = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };

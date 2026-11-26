@@ -7,8 +7,8 @@ denoiser_vendor.cases = [
   { when = "features.denoiser.vendor == 'amd' && (gpu.rx9000 ?? true) && (os.name ?? 'windows') == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
   { when = "features.denoiser.vendor == 'nvidia' && (gpu.rtx ?? true)", value = "nvidia" },
   { when = "known(features.denoiser.vendor)", value = "none" },
-  { when = "gpu.vendor == 'amd' && (gpu.rx9000 ?? true) && os.name == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
-  { when = "gpu.vendor == 'nvidia' && (gpu.rtx ?? true)", value = "nvidia" },
+  { when = "gpu.vendor == 'amd' && (gpu.rx9000 ?? false) && os.name == 'windows' && ((os.build ?? 0) == 0 || os.build >= 22000)", value = "amd" },
+  { when = "gpu.vendor == 'nvidia' && (gpu.rtx ?? false)", value = "nvidia" },
   { value = "none" },
 ]
 denoiser_fallback.cases = [

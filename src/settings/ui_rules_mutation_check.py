@@ -46,7 +46,10 @@ MUTATIONS = {
     "latency reason while frame generation runs": ('suffix = " (FRAME GEN)", label = "REFLEX"',
                                                   'suffix = " (PAUSED)", label = "REFLEX"'),
     "Radeon denoiser label": ('label = "AMD FSR RAY REGENERATION"', 'label = "AMD RAY REGENERATION"'),
-    "launcher denoiser listing fallback": ("gpu.rx9000 ?? true", "gpu.rx9000 ?? false"),
+    "NVIDIA fallback allows unknown GPU generation": (
+        "gpu.vendor == 'nvidia' && (gpu.rtx ?? false)", "gpu.vendor == 'nvidia' && (gpu.rtx ?? true)"),
+    "AMD fallback allows unknown GPU generation": (
+        "gpu.vendor == 'amd' && (gpu.rx9000 ?? false)", "gpu.vendor == 'amd' && (gpu.rx9000 ?? true)"),
 }
 
 
