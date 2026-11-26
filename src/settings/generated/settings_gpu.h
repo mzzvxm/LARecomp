@@ -1087,7 +1087,7 @@ class GPUSettings final : public rex::SettingOwner {
     "It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a "
     "few metres round the car). Live; the first time it shows, the graphics card builds its pipeline (a short stutter).", rex::Allowed("auto", "off", "on"));
 
-  REX_SETTING(std::string, mcla_gpu_light_bounce, "on", "Surface-coloured light reflected from car headlights, tail lights and neon. Applies live.", rex::Allowed("off", "on"));
+  REX_SETTING(std::string, mcla_gpu_light_bounce, "on", "Light reflected from headlights, tail lights, neon, street lamps and decorative lights. Applies live.", rex::Allowed("off", "on"));
 
   REX_SETTING(f64, mcla_gpu_headlight_strength, 1.0, "Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). "
     "Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
@@ -1812,6 +1812,7 @@ class GPUSettings final : public rex::SettingOwner {
     "4 the cap of the neon contact term's reads (a pixel of a tube of three or four lights marches the depth for the two strongest lights only, the others take the nearest one's answer: up to 10 depth reads a vehicle pixel where each light marching for itself made up to 20). "
     "0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
+  REX_SETTING(bool, mcla_gpu_light_composite, true, "Combine smooth local lights and indirect lighting in one pass. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_local_lights_depth_bound, true, "Debug: reject pixels beyond the reach of every light in a deferred draw before reconstructing their world positions. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_local_lights_reach_mask, true, "Debug: Reuse per-light reach tests in grouped deferred light draws. Live.", rex::kDebugOnly);
 
@@ -2506,6 +2507,7 @@ inline auto& mcla_gpu_neon_light_gain = g_gpu.mcla_gpu_neon_light_gain;
 inline auto& mcla_gpu_neon_light_reach = g_gpu.mcla_gpu_neon_light_reach;
 inline auto& mcla_gpu_neon_light_tuned = g_gpu.mcla_gpu_neon_light_tuned;
 inline auto& mcla_gpu_local_lights_cost_off = g_gpu.mcla_gpu_local_lights_cost_off;
+inline auto& mcla_gpu_light_composite = g_gpu.mcla_gpu_light_composite;
 inline auto& mcla_gpu_local_lights_depth_bound = g_gpu.mcla_gpu_local_lights_depth_bound;
 inline auto& mcla_gpu_local_lights_reach_mask = g_gpu.mcla_gpu_local_lights_reach_mask;
 inline auto& mcla_gpu_local_lights_sphere_scissor = g_gpu.mcla_gpu_local_lights_sphere_scissor;

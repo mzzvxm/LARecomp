@@ -13,6 +13,7 @@
 #include "car_rt_scene.h"
 #include "device.h"
 #include "gbuffer.h"
+#include "gi_apply.h"
 #include "gfx_preset_apply.h"
 #include "gi_bounce_settings.h"
 #include "gi_setting.h"
@@ -20,6 +21,7 @@
 #include "host_shaders.h"
 #include "hlsl/interior_camera_rules.hlsli"
 #include "light_manager.h"
+#include "light_composite_rules.h"
 #include "live_text.h"
 #include "mc_engine/camera/menu_camera.h"
 #include "menu_world.h"
@@ -91,8 +93,12 @@ void VirtualBounce::Initialize(Device& device, FrameRing& frames, BindlessHeap& 
 }
 
 void VirtualBounce::Shutdown() {
-  if (passes_) passes_->ReleaseImage(irradiance_);
+  ReleaseImages();
   if (lights_) lights_->WantBounce(false);
+  if (world_) world_->WantBounceEmitters(false);
+  vol_lamps::SetWantedBy(vol_lamps::kWantedByVirtualBounce, false);
+  street_lamps_.clear();
+  street_sequence_ = 0;
   for (Slot& slot : slots_) {
     slot.set.reset();
     slot.input.reset();
@@ -107,9 +113,20 @@ void VirtualBounce::Shutdown() {
   logged_.fill(false);
 }
 
+void VirtualBounce::ReleaseImages() {
+  if (!passes_) return;
+  passes_->RetireFramebuffer(std::move(irradiance_mrt_));
+  passes_->ReleaseImage(direct_irradiance_);
+  passes_->ReleaseImage(irradiance_);
+}
+
 void VirtualBounce::BeginFrame(uint64_t frame) {
   frame_ = frame;
   recorded_ = false;
+  hit_recorded_ = false;
+  irradiance_recorded_ = false;
+  composite_recorded_ = false;
+  composite_enabled_ = st::mcla_gpu_light_composite.Get();
   cockpit_ = interior_camera::IsCockpit(CurrentRenderedCameraRig());
   static LiveText bounce("mcla_gpu_light_bounce");
   enabled_ = bounce.Get() == "on" && gi_bounce::AnyGroup(gi_bounce::GroupsNow());
@@ -118,6 +135,8 @@ void VirtualBounce::BeginFrame(uint64_t frame) {
       rt_world::ScheduleAt(larecomp::citypack::LampHours{}, hour, 0.0f).fill <= 0.0f) enabled_ = false;
   rt_requested_ = enabled_ && rt_ && rt_->ready() &&
       (gfx_preset::NeedsRt(gfx_preset::Current()) || gi_setting::Current().level != gi::Level::kOff);
+  if (world_) world_->WantBounceEmitters(composite_enabled_ && rt_requested_);
+  vol_lamps::SetWantedBy(vol_lamps::kWantedByVirtualBounce, composite_enabled_ && enabled_);
   if (rt_requested_ && rt_service_) {
     rt_scene::Needs needs;
     needs.city = city_rt::Level::kHigh;
@@ -127,7 +146,7 @@ void VirtualBounce::BeginFrame(uint64_t frame) {
   if (screen_) screen_->Want(screen::Consumer::kVirtualBounce, enabled_ ? screen::ProductBit(screen::kLinDepth) : 0);
   if (lights_) lights_->WantBounce(enabled_);
   if (enabled_ && car_) car_->RequestStencilCentres();
-  if (++idle_ == 120 && passes_) passes_->ReleaseImage(irradiance_);
+  if (++idle_ == 120) ReleaseImages();
 }
 
 bool VirtualBounce::EnsureResources(uint32_t index) {
@@ -137,11 +156,14 @@ bool VirtualBounce::EnsureResources(uint32_t index) {
     set_desc_.addByteAddressBuffer(0);
     set_desc_.addReadWriteByteAddressBuffer(1);
     set_desc_.addByteAddressBuffer(2);
+    set_desc_.addByteAddressBuffer(3);
+    set_desc_.addByteAddressBuffer(4);
     set_desc_.end();
     plume::RenderPipelineLayoutBuilder desc;
     desc.begin(false, false);
     for (uint32_t i = 0; i < 4; ++i) desc.addDescriptorSet(heap_->texture_set_builder());
     desc.addDescriptorSet(set_desc_);
+    desc.addDescriptorSet(heap_->sampler_set_builder());
     desc.end();
     layout_ = device_->CreatePipelineLayout(desc, "virtual bounce layout");
     if (!layout_) return false;
@@ -154,18 +176,18 @@ bool VirtualBounce::EnsureResources(uint32_t index) {
   Slot& slot = slots_[index];
   if (!slot.set) {
     slot.input = device_->CreateBuffer(plume::RenderBufferDesc::UploadBuffer(
-        sizeof(vpl::Frame), plume::RenderBufferFlag::STORAGE), "virtual bounce frame");
+        sizeof(vpl::CompositeFrame), plume::RenderBufferFlag::STORAGE), "virtual bounce frame");
     if (!slot.input) return false;
-    slot.set = device_->CreateDescriptorSet(set_desc_, 3, 0, "virtual bounce set");
+    slot.set = device_->CreateDescriptorSet(set_desc_, 5, 0, "virtual bounce set");
     if (!slot.set) return false;
-    slot.set->setBuffer(0, slot.input.get(), sizeof(vpl::Frame));
+    slot.set->setBuffer(0, slot.input.get(), sizeof(vpl::CompositeFrame));
     slot.set->setBuffer(1, history_.get(), kHistoryBytes);
     slot.set->setBuffer(2, history_.get(), kHistoryBytes);
   }
   return true;
 }
 
-bool VirtualBounce::EnsurePrograms(Format format, uint32_t samples, bool ray) {
+bool VirtualBounce::EnsurePrograms(Format format, uint32_t samples, bool ray, bool beams, bool direct, bool combined) {
   if (!passes_ || !layout_ || !device_ || !heap_ || samples == 0 || samples > 8 || (samples & (samples - 1)) != 0) return false;
   Programs& p = programs_[samples == 8 ? 3 : samples == 4 ? 2 : samples == 2 ? 1 : 0];
   const auto shader = [this, samples](uint32_t stage) {
@@ -182,32 +204,41 @@ bool VirtualBounce::EnsurePrograms(Format format, uint32_t samples, bool ray) {
     rt_layout_ = device_->CreatePipelineLayout(desc, "virtual bounce ray layout");
   }
   auto& hit = ray ? p.hit_rt : p.hit;
-  if (!hit && (!ray || rt_layout_)) {
+  if (beams && !hit && (!ray || rt_layout_)) {
     if (const auto cs = shader(ray ? 1u : 0u)) {
       hit = device_->CreateComputePipeline({ray ? rt_layout_.get() : layout_.get(), cs.get(), 16, 1, 1}, "vpl hit");
     }
   }
-  if (!p.irradiance) {
+  if (beams && !direct && !p.irradiance) {
     if (const auto ps = shader(2)) {
       p.irradiance = passes_->CreatePipeline(*layout_, *ps, kIrradianceFormat, "vpl irradiance");
     }
   }
-  if (!p.composite || p.format != format) {
-    if (const auto ps = shader(3)) {
+  if (direct && !p.combined_irradiance) {
+    if (const auto ps = shader(4)) {
+      const Format formats[] = {kIrradianceFormat, kIrradianceFormat};
+      p.combined_irradiance = passes_->CreateMrtPipeline(*layout_, *ps, formats, 2, "light irradiance");
+    }
+  }
+  auto& pipeline = combined ? p.combined_composite : p.composite;
+  auto& pipeline_format = combined ? p.combined_format : p.format;
+  if (!pipeline || pipeline_format != format) {
+    if (const auto ps = shader(combined ? 5u : 3u)) {
       auto blend = plume::RenderBlendDesc::Copy();
       blend.blendEnabled = true;
       blend.srcBlend = plume::RenderBlend::ONE;
       blend.dstBlend = plume::RenderBlend::ONE;
       blend.renderTargetWriteMask = uint8_t(plume::RenderColorWriteEnable::RED) | uint8_t(plume::RenderColorWriteEnable::GREEN) |
                                     uint8_t(plume::RenderColorWriteEnable::BLUE);
-      auto composite = passes_->CreatePipeline(*layout_, *ps, format, blend, samples, "vpl composite");
-      if (!composite) return false;
-      if (p.composite && frames_) frames_->Retire(std::move(p.composite));
-      p.composite = std::move(composite);
-      p.format = format;
+      auto result = passes_->CreatePipeline(*layout_, *ps, format, blend, samples, combined ? "light composite" : "vpl composite");
+      if (!result) return false;
+      if (pipeline && frames_) frames_->Retire(std::move(pipeline));
+      pipeline = std::move(result);
+      pipeline_format = format;
     }
   }
-  return hit && p.irradiance && p.composite && p.format == format;
+  return (!beams || (hit && (direct || p.irradiance))) &&
+         (!direct || p.combined_irradiance) && pipeline && pipeline_format == format;
 }
 
 float VirtualBounce::VirtualShare(const lg::Light& light, float field_share) const {
@@ -288,10 +319,71 @@ void VirtualBounce::Gather(const float eye[3], float night, float field_share) {
            !(ll::detail::Dist2(light.pos, eye) <= 70.0f * 70.0f);
   });
   ll::RankByScore(&beams_, eye, vpl::kMaxLights);
+  if (composite_enabled_) GatherWorld(eye, night, field_share);
+}
+
+void VirtualBounce::GatherWorld(const float eye[3], float night, float field_share) {
+  namespace re = rt_emitters;
+  if (beams_.size() >= vpl::kMaxLights || !(night > 0.0f)) return;
+  const bool pair = screen_ && screen_->lights_wanted();
+  const bool with_streets = light_composite::WorldVirtual(true, pair, field_share);
+  const bool with_decor = light_composite::WorldVirtual(false, pair, field_share) &&
+                          (gi_bounce::GroupsNow() & re::kGroupOther) != 0;
+  if (!with_streets && !with_decor) return;
+
+  world_beams_.clear();
+  if (with_streets) {
+    bool stale = false;
+    vol_lamps::Global().Latest(&street_lamps_, &street_sequence_, &stale, std::chrono::milliseconds(500));
+    if (stale) {
+      street_lamps_.clear();
+      street_sequence_ = 0;
+    }
+    for (const auto& lamp : street_lamps_) {
+      if (!lamp.on || !vol_lamps::Plausible(lamp)) continue;
+      auto light = lg::LightFromGameLamp(lamp);
+      light.range = std::min(light.range, 38.0f);
+      world_beams_.push_back(light);
+    }
+  }
+  if (with_decor) {
+    if (lights_ && lights_->active()) {
+      const auto& frame = lights_->Frame();
+      for (uint32_t i = 0; i < frame.count && i < frame.lights.size(); ++i) {
+        const auto& light = frame.lights[i];
+        if (!re::IsVehicleLight(light) && light.source != lg::LightSource::kLamp) world_beams_.push_back(light);
+      }
+    }
+    if (st::mod_lights.Get()) {
+      const auto mods = re::mls::Global().Current();
+      ll::GatherModLamps(re::mls::Global().Built(), mods.get(), ll::Ab::kGrid, eye, &world_beams_);
+    }
+  }
+  const float gain = Gain(st::mcla_gpu_local_lights_gain.Get());
+  for (auto& light : world_beams_) {
+    const float share = light.source == lg::LightSource::kLamp ? 1.0f - field_share : VirtualShare(light, field_share);
+    for (float& colour : light.color) colour = std::isfinite(colour) ? std::max(0.0f, colour * gain * night * share) : 0.0f;
+  }
+  std::erase_if(world_beams_, [eye](const auto& light) {
+    return light.id == lg::kNoLightId || !gi_bounce::Bounces(light, 1.0f, 1.0f) ||
+           ll::detail::Dist2(light.pos, eye) > 70.0f * 70.0f;
+  });
+  ll::RankByScore(&world_beams_, eye, uint32_t(world_beams_.size()));
+  // CHECK: inspect street and decorative landing points, including a moving
+  // car crossing a street pool and both RT and screen-space day/night fades.
+  uint32_t streets = 0;
+  for (const auto& light : world_beams_) {
+    if (beams_.size() >= vpl::kMaxLights) break;
+    const bool street = light.source == lg::LightSource::kLamp;
+    if (street && streets == 8) continue;
+    if (std::any_of(beams_.begin(), beams_.end(), [&](const auto& placed) { return placed.id == light.id; })) continue;
+    beams_.push_back(light);
+    streets += street;
+  }
 }
 
 uint32_t VirtualBounce::SourceStencil(const lg::Light& light) const {
-  if (!car_) return 0;
+  if (!car_ || !rt_emitters::IsVehicleLight(light)) return 0;
   const auto& car = car_->Current();
   if ((light.flags & lg::kLightFlagPlayer) != 0) return car.valid ? car.player_id : 0;
   const float* source = light.pos;
@@ -344,10 +436,12 @@ uint32_t VirtualBounce::WriteBeams(vpl::Frame* input) {
     auto& beam = input->beams[i];
     const bool head = light.source == lg::LightSource::kHeadlight;
     const bool neon = light.source == lg::LightSource::kNeon;
-    const bool rear = light.source == lg::LightSource::kOther;
-    const bool down = neon || (!head && !rear);
-    float height = neon ? 0.35f : head ? 0.65f : rear ? 0.55f : 1.55f;
-    if (lights_ && lights_->active()) {
+    const bool rear = light.source == lg::LightSource::kOther && light.car_key != 0;
+    const bool world = !rt_emitters::IsVehicleLight(light);
+    const bool world_spot = world && light.law == lg::LightLaw::kGameLamp;
+    const bool down = neon || (!head && !rear && !world_spot);
+    float height = neon ? 0.35f : head ? 0.65f : rear ? 0.55f : world ? 5.0f : 1.55f;
+    if (!world && lights_ && lights_->active()) {
       const auto& cars = lights_->Cars();
       for (uint32_t j = 0; j < cars.count; ++j) {
         const auto& car = cars.cars[j];
@@ -361,17 +455,17 @@ uint32_t VirtualBounce::WriteBeams(vpl::Frame* input) {
     beam.aim_ground = {down ? 0.0f : light.dir[0], down ? -1.0f : std::min(light.dir[1], -0.03f),
                        down ? 0.0f : light.dir[2], height};
     beam.colour_law = {light.color[0], light.color[1], light.color[2], light.law_a};
-    beam.meta = {indices[i], reset ? 1u : 0u, SourceStencil(light), uint32_t(light.law) | (neon ? 4u : 0u)};
+    beam.meta = {indices[i], reset ? 1u : 0u, SourceStencil(light), uint32_t(light.law) | (neon ? 4u : 0u) | (world ? 8u : 0u)};
   }
   history_ids_ = ids;
   return count;
 }
 
 void VirtualBounce::Draw(plume::RenderCommandList* list, const Slot& slot, plume::RenderPipeline& program,
-                         plume::RenderFramebuffer& target, uint32_t width, uint32_t height, bool clear) const {
+                         plume::RenderFramebuffer& target, uint32_t width, uint32_t height, uint32_t clear_targets) const {
   if (!list || !layout_ || !heap_ || !slot.set) return;
   list->setFramebuffer(&target);
-  if (clear) list->clearColor(0, plume::RenderColor(0, 0, 0, 0));
+  for (uint32_t i = 0; i < clear_targets; ++i) list->clearColor(i, plume::RenderColor(0, 0, 0, 0));
   const plume::RenderViewport viewport{0, 0, float(width), float(height)};
   const plume::RenderRect scissor(0, 0, int32_t(width), int32_t(height));
   list->setViewports(&viewport, 1);
@@ -379,16 +473,30 @@ void VirtualBounce::Draw(plume::RenderCommandList* list, const Slot& slot, plume
   list->setGraphicsPipelineLayout(layout_.get());
   for (uint32_t i = 0; i < 4; ++i) list->setGraphicsDescriptorSet(heap_->texture_set(), i);
   list->setGraphicsDescriptorSet(slot.set.get(), 4);
+  list->setGraphicsDescriptorSet(heap_->sampler_set(), 5);
   list->setPipeline(&program);
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
 }
 
 bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
-                              bool planes, uint32_t index, float field_share) {
-  if (recorded_ || !enabled_ || !list || !screen_ || !ao_ || !edram_ || !passes_ || !timing_ || !heap_) return false;
+                              bool planes, uint32_t index, float field_share, GiApply* gi, const Direct* direct) {
+  if (composite_recorded_ || recorded_) return false;
+  if (Record(summary, list, planes, index, field_share, composite_enabled_, gi, direct)) return true;
+  if (composite_enabled_) Record(summary, list, planes, index, field_share, false, nullptr, nullptr);
+  return false;
+}
+
+bool VirtualBounce::Record(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
+                           bool planes, uint32_t index, float field_share, bool combined,
+                           GiApply* gi, const Direct* direct) {
+  const auto* gi_push = combined && gi ? gi->CompositePush() : nullptr;
+  auto* gi_buffer = gi_push && gi ? gi->CompositeBuffer() : nullptr;
+  const bool has_direct = combined && direct && direct->buffer && direct->frame.info[0] != 0;
+  if (composite_recorded_ || (!enabled_ && !has_direct && !gi_buffer) ||
+      !list || !screen_ || !ao_ || !edram_ || !passes_ || !timing_ || !heap_) return false;
   const auto& sf = screen_->Frame();
-  if (sf.frame_serial != uint32_t(frame_) || !menu_world::RulesFor(ao_->FrameWorld()).bounce ||
+  if (sf.frame_serial != uint32_t(frame_) ||
       !(sf.camera.flags & screen::kCameraValid) || sf.lin_depth_slot[0] == kNoSlot ||
       sf.traced[0] == 0 || sf.traced[1] == 0 || sf.render[0] == 0 || sf.render[1] == 0 ||
       sf.camera.tan_half_fov[0] <= 0 || sf.camera.tan_half_fov[1] <= 0 ||
@@ -396,9 +504,20 @@ bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::Rende
   AmbientOcclusion::FrameCameraOut axes;
   float view[16];
   bool own;
-  if (!ao_->FrameCameraNow(&axes) || !axes.have_rows || !ao_->TriggerViewInverse(view, &own)) return false;
+  const bool bounce = enabled_ && menu_world::RulesFor(ao_->FrameWorld()).bounce &&
+                      ao_->FrameCameraNow(&axes) && axes.have_rows && ao_->TriggerViewInverse(view, &own);
+  if (!bounce && !has_direct && !gi_buffer) return false;
+  if (!bounce) {
+    std::memcpy(view, sf.camera.view_inverse, sizeof(view));
+    ll::Rows rows;
+    if (!ll::RowsFromViewInverse(view, &rows)) return false;
+    std::copy_n(rows.right, 3, axes.right);
+    std::copy_n(rows.up, 3, axes.up);
+    std::copy_n(rows.forward, 3, axes.forward);
+  }
 
-  vpl::Frame in{};
+  vpl::CompositeFrame input{};
+  vpl::Frame& in = input.bounce;
   for (uint32_t i = 0; i < 3; ++i) {
     in.right[i] = axes.right[i];
     in.up[i] = axes.up[i];
@@ -406,12 +525,16 @@ bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::Rende
     in.eye[i] = view[12 + i];
   }
   in.eye[3] = std::clamp(sf.camera.exposure_bias, 1.0f, 16.0f);
-  float ambient[3], sun[3];
-  double sun_dir[3];
-  const float night_hint = ao_->FrameLight(ambient, sun, sun_dir) ? rt_hit::NightFactor(sun) : -1.0f;
-  const float night = rt_world::ScheduleAt(larecomp::citypack::LampHours{}, world_clock::Hour(), night_hint).fill;
-  Gather(in.eye.data(), night, field_share);
-  if (beams_.empty()) return false;
+  beams_.clear();
+  if (bounce) {
+    float ambient[3], sun[3];
+    double sun_dir[3];
+    const float night_hint = ao_->FrameLight(ambient, sun, sun_dir) ? rt_hit::NightFactor(sun) : -1.0f;
+    const float night = rt_world::ScheduleAt(larecomp::citypack::LampHours{}, world_clock::Hour(), night_hint).fill;
+    Gather(in.eye.data(), night, field_share);
+  }
+  const bool has_beams = !beams_.empty();
+  if (!has_beams && !has_direct && !gi_buffer) return false;
 
   EdramKey key;
   key.base_tiles = temporal::kMainColorBase;
@@ -420,28 +543,41 @@ bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::Rende
   key.samples = summary.source_key.samples;
   const EdramTargets::Target* found = edram_->Find(key);
   if (!found || !found->texture || found->host_samples != sf.host_samples ||
-      found->scale.Edge(found->width) != sf.render[0] || found->scale.Edge(found->height) != sf.render[1]) return false;
+      found->scale.Edge(found->width) < sf.render[0] || found->scale.Edge(found->height) < sf.render[1]) return false;
+  const uint32_t target_width = found->scale.Edge(found->width);
+  const uint32_t target_height = found->scale.Edge(found->height);
   bool unset = false;
   auto* colour = edram_->Get(key, found->height, found->scale, 0, list, &unset);
   if (!colour || !colour->texture) return false;
 
   const uint32_t samples = sf.host_samples;
   const auto* top = rt_requested_ && rt_ && world_ && world_->Valid() ? &rt_->View() : nullptr;
-  bool ray = top && top->scene_valid && top->set;
+  bool ray = has_beams && top && top->scene_valid && top->set;
   if (!EnsureResources(index)) return false;
-  if (!EnsurePrograms(colour->format, samples, ray)) {
-    if (!ray || !EnsurePrograms(colour->format, samples, false)) return false;
+  if (!EnsurePrograms(colour->format, samples, ray, has_beams, has_direct, combined)) {
+    if (!ray || !EnsurePrograms(colour->format, samples, false, has_beams, has_direct, combined)) return false;
     ray = false;
   }
   Programs& program = programs_[samples == 8 ? 3 : samples == 4 ? 2 : samples == 2 ? 1 : 0];
   const uint32_t width = (sf.render[0] + 1) / 2, height = (sf.render[1] + 1) / 2;
-  if (!passes_->EnsureImage(irradiance_, width, height, kIrradianceFormat, "vpl irradiance") ||
-      !irradiance_.framebuffer || !irradiance_.texture) return false;
+  if (irradiance_.width != width || irradiance_.height != height) ReleaseImages();
+  if ((has_beams || has_direct) &&
+      (!passes_->EnsureImage(irradiance_, width, height, kIrradianceFormat, "vpl irradiance") ||
+       !irradiance_.framebuffer || !irradiance_.texture)) return false;
+  if (has_direct) {
+    if (!passes_->EnsureImage(direct_irradiance_, width, height, kIrradianceFormat, "direct irradiance") ||
+        !direct_irradiance_.texture) return false;
+    if (!irradiance_mrt_) {
+      const plume::RenderTexture* attachments[] = {irradiance_.texture.get(), direct_irradiance_.texture.get()};
+      irradiance_mrt_ = passes_->CreateMrtFramebuffer(attachments, 2, "light irradiance");
+      if (!irradiance_mrt_) return false;
+    }
+  }
   EdramTargets::Target* targets[] = {colour};
   auto* target = edram_->Framebuffer(targets, 1, nullptr);
   if (!target) return false;
   uint32_t main_sample = kNoSlot, unused = kNoSlot;
-  if (!edram_->SampleSlots(*colour, &main_sample, &unused)) main_sample = kNoSlot;
+  if (has_beams && !edram_->SampleSlots(*colour, &main_sample, &unused)) main_sample = kNoSlot;
 
   const double now = mc::cinematic::SceneClockNowMs(frame_) * 1.0e-3;
   const double elapsed = now - history_time_;
@@ -465,6 +601,7 @@ bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::Rende
   }
   in.apply[0] = irradiance_.slot;
   in.apply[2] = cockpit_;
+  in.apply[3] = has_direct ? direct_irradiance_.slot : kNoSlot;
   in.sizes = {sf.render[0], sf.render[1], width, height};
   in.counts = {sf.traced[0], sf.traced[1], count, sf.sample0};
   in.slots = {sf.lin_depth_slot[0], sf.lin_depth_slot[1], sf.lin_depth_slot[2], summary.sample_slot};
@@ -478,52 +615,87 @@ bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::Rende
   in.guides = {albedo, main_sample, ao ? ov.visibility_slot : kNoSlot, summary.stencil_slot};
   const Slot& slot = slots_[index];
   if (!slot.input || !slot.set) return false;
+  if (has_direct) input.direct = direct->frame;
+  input.gi_push.fill(kNoSlot);
+  if (gi_buffer && gi_push) std::memcpy(input.gi_push.data(), gi_push, sizeof(*gi_push));
+  slot.set->setBuffer(3, has_direct ? direct->buffer : slot.input.get(),
+                      has_direct ? direct->size : sizeof(input));
+  slot.set->setBuffer(4, gi_buffer ? gi_buffer : slot.input.get(),
+                      gi_buffer ? gi_apply::kBufferAlloc : sizeof(input));
   void* mapped = slot.input->map();
   if (!mapped) return false;
-  std::memcpy(mapped, &in, sizeof(in));
+  std::memcpy(mapped, &input, sizeof(input));
   slot.input->unmap();
 
   // CHECK: confirm depth/colour and UAV handoffs on both APIs, including MSAA
   // sample zero in cockpit views and the world-frame transform on RT cuts.
   edram_->Transition(list, *summary.source, Layout::SHADER_READ);
   if (main_sample != kNoSlot) edram_->Transition(list, *colour, Layout::SHADER_READ);
-  for (uint32_t level = 0; level < screen::kDepthLevels; ++level) {
-    const auto& image = screen_->Depth(level);
-    if (image.texture) {
-      const plume::RenderTextureBarrier depth_read(image.texture.get(), Layout::SHADER_READ);
-      list->barriers(Stage::GRAPHICS_AND_COMPUTE, &depth_read, 1);
+  if (has_beams) {
+    for (uint32_t level = 0; level < screen::kDepthLevels; ++level) {
+      const auto& image = screen_->Depth(level);
+      if (image.texture) {
+        const plume::RenderTextureBarrier depth_read(image.texture.get(), Layout::SHADER_READ);
+        list->barriers(Stage::GRAPHICS_AND_COMPUTE, &depth_read, 1);
+      }
     }
-  }
-  const plume::RenderBufferBarrier hit_write(history_.get(), Access::READ | Access::WRITE);
-  list->barriers(Stage::COMPUTE, &hit_write, 1);
-  timing_->Mark(list, "vpl hit");
-  list->setComputePipelineLayout(ray ? rt_layout_.get() : layout_.get());
-  for (uint32_t i = 0; i < 4; ++i) list->setComputeDescriptorSet(heap_->texture_set(), i);
-  list->setComputeDescriptorSet(slot.set.get(), 4);
-  if (ray && top) list->setComputeDescriptorSet(top->set, 5);
-  list->setPipeline(ray ? program.hit_rt.get() : program.hit.get());
-  list->dispatch(1, 1, 1);
+    const plume::RenderBufferBarrier hit_write(history_.get(), Access::READ | Access::WRITE);
+    list->barriers(Stage::COMPUTE, &hit_write, 1);
+    timing_->Mark(list, "vpl hit");
+    list->setComputePipelineLayout(ray ? rt_layout_.get() : layout_.get());
+    for (uint32_t i = 0; i < 4; ++i) list->setComputeDescriptorSet(heap_->texture_set(), i);
+    list->setComputeDescriptorSet(slot.set.get(), 4);
+    if (ray && top) list->setComputeDescriptorSet(top->set, 5);
+    list->setPipeline(ray ? program.hit_rt.get() : program.hit.get());
+    list->dispatch(1, 1, 1);
 
-  const plume::RenderBufferBarrier hit_read(history_.get(), Access::READ);
-  const plume::RenderTextureBarrier irradiance_write(irradiance_.texture.get(), Layout::COLOR_WRITE);
-  list->barriers(Stage::GRAPHICS, &hit_read, 1, &irradiance_write, 1);
-  timing_->Mark(list, "vpl irradiance");
-  Draw(list, slot, *program.irradiance, *irradiance_.framebuffer, width, height, irradiance_.layout == Layout::UNKNOWN);
-  const plume::RenderTextureBarrier irradiance_read(irradiance_.texture.get(), Layout::SHADER_READ);
-  list->barriers(Stage::GRAPHICS, &irradiance_read, 1);
-  irradiance_.layout = Layout::SHADER_READ;
+    const plume::RenderBufferBarrier hit_read(history_.get(), Access::READ);
+    list->barriers(Stage::GRAPHICS, &hit_read, 1);
+    hit_recorded_ = true;
+    history_frame_ = frame_;
+    history_time_ = now;
+    generation_ = sf.generation;
+  }
+  if (has_beams || has_direct) {
+    // CHECK: verify both attachment transitions with Vulkan validation and
+    // D3D12's debug layer, including live toggles and a padded render target.
+    plume::RenderTextureBarrier barriers[] = {
+        {irradiance_.texture.get(), Layout::COLOR_WRITE},
+        {direct_irradiance_.texture.get(), Layout::COLOR_WRITE},
+    };
+    list->barriers(Stage::GRAPHICS, barriers, has_direct ? 2u : 1u);
+    if (combined) timing_->Mark(list, "light irradiance");
+    else timing_->Mark(list, "vpl irradiance");
+    const bool clear = irradiance_.layout == Layout::UNKNOWN ||
+                       (has_direct && direct_irradiance_.layout == Layout::UNKNOWN);
+    if (has_direct) {
+      Draw(list, slot, *program.combined_irradiance, *irradiance_mrt_, width, height, clear ? 2u : 0u);
+    } else {
+      Draw(list, slot, *program.irradiance, *irradiance_.framebuffer, width, height, clear);
+    }
+    const plume::RenderTextureBarrier reads[] = {
+        {irradiance_.texture.get(), Layout::SHADER_READ},
+        {direct_irradiance_.texture.get(), Layout::SHADER_READ},
+    };
+    list->barriers(Stage::GRAPHICS, reads, has_direct ? 2u : 1u);
+    irradiance_.layout = Layout::SHADER_READ;
+    if (has_direct) direct_irradiance_.layout = Layout::SHADER_READ;
+    irradiance_recorded_ = combined;
+    idle_ = 0;
+  }
 
   edram_->Transition(list, *colour, Layout::COLOR_WRITE);
-  timing_->Mark(list, "vpl composite");
-  Draw(list, slot, *program.composite, *target, sf.render[0], sf.render[1], false);
-  timing_->Mark(list, "after vpl");
-  history_frame_ = frame_;
-  history_time_ = now;
-  generation_ = sf.generation;
-  idle_ = 0;
-  recorded_ = true;
+  if (combined) timing_->Mark(list, "light composite");
+  else timing_->Mark(list, "vpl composite");
+  auto* composite = combined ? program.combined_composite.get() : program.composite.get();
+  Draw(list, slot, *composite, *target, combined ? target_width : sf.render[0],
+       combined ? target_height : sf.render[1], false);
+  if (combined) timing_->Mark(list, "after light composite");
+  else timing_->Mark(list, "after vpl");
+  recorded_ = has_beams;
+  composite_recorded_ = combined;
   const uint32_t path = ray ? 1u : 0u;
-  if (!logged_[path]) {
+  if (has_beams && !logged_[path]) {
     logged_[path] = true;
     REXLOG_INFO("[gpu] vpl: {} placement, {} beams, {}x{} irradiance, {} samples",
                 ray ? "ray query" : "depth chain", count, width, height, samples);
@@ -532,7 +704,8 @@ bool VirtualBounce::OnTrigger(const ResolveCache::Summary& summary, plume::Rende
 }
 
 uint64_t VirtualBounce::HeldBytes() const {
-  return uint64_t(irradiance_.width) * irradiance_.height * 8 + (history_ ? kHistoryBytes : 0);
+  return uint64_t(irradiance_.width) * irradiance_.height * 8 + uint64_t(direct_irradiance_.width) * direct_irradiance_.height * 8 +
+         (history_ ? kHistoryBytes : 0);
 }
 
 }  // namespace mcla::gpu

@@ -63,6 +63,10 @@ struct LocalLightPush {
   uint4 info;   // x the first light's index in the buffer, y the number of lights of the draw (0 is 1; at most LP_MAX_DRAW_LIGHTS), z the host sample that is the guest's sample 0, w flags (LP_PUSH_*)
 };
 
+#ifdef LP_COMPOSITE
+static LocalLightPush g_push;
+ByteAddressBuffer g_lights : register(t3, space4);
+#else
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<LocalLightPush> g_push;
 #else
@@ -70,6 +74,7 @@ ConstantBuffer<LocalLightPush> g_push : register(b0, space5);
 #endif
 
 ByteAddressBuffer g_lights : register(t0, space4);
+#endif
 
 // The atlas's size and the table's layers, read once from the table's header (main) and held for the seams below: a pixel that is lit by a shadowed light takes 16 taps of the atlas for each
 // view (the 4 x 4 footprint), and asking the texture for its size each time would cost as much again.
@@ -435,7 +440,13 @@ float4 LpCappedLights(uint first, uint count, uint reach_mask, LpGlobals g, uint
   return float4(total, any_light ? 1.0f : 0.0f);
 }
 
+#ifdef LP_COMPOSITE
+#define LP_EMPTY return 0.0f
+float4 LpEvaluateDraw(float4 position) {
+#else
+#define LP_EMPTY discard
 float4 main(float4 position : SV_Position) : SV_Target {
+#endif
   const int2 p = int2(position.xy);
   const uint first = g_push.info.x;
   const uint count = clamp(g_push.info.y, 1u, uint(LP_MAX_DRAW_LIGHTS));
@@ -449,28 +460,28 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (reach_first) {
     const float far_depth = float((g_push.info.w & ~LP_PUSH_REACH_MASK) >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f);
     if (!LpWorldAtDepth(g, p, far_depth, world)) {
-      discard;
+      LP_EMPTY;
     }
     // CHECK: compare neon draw timing in chase view when only part of a tube
     // reaches the receiver. Each surviving light keeps its original order.
     if (count > 1u && (g_push.info.w & LP_PUSH_REACH_MASK) != 0u) {
       reach_mask = LpReachMask(first, count, world);
     } else if (!LpAnyReaches(first, count, world)) {
-      discard;
+      LP_EMPTY;
     }
     if (reach_mask == 0u) {
-      discard;
+      LP_EMPTY;
     }
   }
 
   // The surface: no normal, no albedo or no light to take, nothing to add.
   const float2 rt1 = LoadPlane(g_push.slots.y, p).xy;
   if (!GbRt1Valid(rt1)) {
-    discard;
+    LP_EMPTY;
   }
   const float4 rt2 = LoadPlane(g_push.slots.z, p);
   if (!any(rt2 > 0.0f) || !(rt2.w > 0.0f)) {
-    discard;
+    LP_EMPTY;
   }
   const uint flags = g_lights.Load(LP_OFF_COUNT + 4);
   bool vehicle = false;  // GB-NEON-BLEED: RT3's vehicle flag (a frame without RT3 says no)
@@ -478,7 +489,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
     const float2 rt3 = LoadPlane(g_push.slots.w, p).xy;
     const uint surface_class = GbRt3Class(rt3);
     if (surface_class == uint(LP_CLASS_NONE) || surface_class == uint(LP_CLASS_EMISSIVE)) {
-      discard;
+      LP_EMPTY;
     }
     vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;
   }
@@ -486,7 +497,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The position, in the old order: after the planes.
   if (!reach_first) {
     if (!LpWorldAt(g, p, world)) {
-      discard;
+      LP_EMPTY;
     }
   }
 
@@ -515,7 +526,9 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
   }
   if (!any_light) {
-    discard;
+    LP_EMPTY;
   }
   return float4(total, 0.0f);
 }
+
+#undef LP_EMPTY

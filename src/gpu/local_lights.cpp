@@ -3,6 +3,10 @@
 
 #include "local_lights.h"
 
+#include "gi_apply.h"
+#include "light_composite_rules.h"
+#include "vpl.h"
+
 #include "cpu_timing.h"
 
 #include <algorithm>
@@ -394,7 +398,7 @@ void LocalLights::OnMainDraw(const ConstantBanks::Banks& banks, bool colour) {
               LoadBe32(ps + size_t(kPsOcclusionInfo) * 16 + 8)});
 }
 
-bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot) {
+bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, VirtualBounce* composite, GiApply* gi) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kLocalLights);
   (void)record;
   const gi_bounce::Pair* const pair = pair_;  // GI-BOUNCE-JOIN: for this call only
@@ -657,9 +661,50 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   } else {
     draws_outside = ll::PlanDraws(selection, rects.data(), cost_off_, plan.data());
   }
+  // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
+  // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
+  // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
+  const uint32_t draw_flags = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) |
+                              ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact) |
+                              (larecomp::settings::mcla_gpu_local_lights_reach_mask.Get() ? ll::kPushReachMask : 0u);
+  // CHECK: compare coverage and pass time for full-screen neon tubes in chase view.
+  const bool use_far_depth = (draw_flags & ll::kPushLateReach) == 0 && larecomp::settings::mcla_gpu_local_lights_depth_bound.Get();
+  std::array<bool, ll::kMaxPassLights> in_composite{};
+  bool combined = false;
+  if (composite && composite->composite_enabled()) {
+    VirtualBounce::Direct direct;
+    if (gb.Has(gbuffer::kPlaneMaterial)) {
+      static_assert(vpl::kMaxDraws == ll::kMaxPassLights);
+      direct.buffer = slot.buffer.get();
+      direct.size = ll::kBufferAlloc;
+      direct.frame.slots = {summary.sample_slot, gb.slot[gbuffer::kPlaneNormal],
+                            gb.slot[gbuffer::kPlaneAlbedo], gb.slot[gbuffer::kPlaneMaterial]};
+      direct.frame.info[1] = gb.sample0;
+      for (uint32_t d = 0; d < draws_outside + draws_pair; ++d) {
+        const ll::PassDraw& draw = plan[d];
+        const auto first = selection.lights.begin() + draw.first;
+        const bool in_capture = d >= draws_outside;
+        if (!std::all_of(first, first + draw.count, [in_capture](const auto& light) {
+              return light_composite::Smooth(light, in_capture);
+            })) continue;
+        const uint32_t flags = draw_flags | (use_far_depth ? ll::FarDepthBits(selection, draw, rows) : 0u);
+        auto& packed = direct.frame.draws[direct.frame.info[0]++];
+        packed.info = {draw.first, draw.count, flags, 0u};
+        packed.rect = {draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1};
+        in_composite[d] = true;
+      }
+    }
+    const float field_share = gi ? gi->AppliedFieldShare() : 0.0f;
+    combined = composite->OnTrigger(summary, list, gbuffer_published, frame_slot, field_share, gi, &direct);
+    if (gi) gi->FinishComposite(list, combined);
+  }
   // The "before" capture is made only for a pair with a light in the picture (a frame without one makes no pair and costs nothing), and only through the Scene's hook.
   const bool bracket = pair != nullptr && draws_pair != 0 && static_cast<bool>(pair->capture_before);
-  if (bracket && draws_outside == 0) {
+  const bool legacy_outside = !combined
+      ? draws_outside != 0
+      : std::any_of(in_composite.begin(), in_composite.begin() + draws_outside, [](bool moved) { return !moved; });
+  const bool legacy = legacy_outside || draws_pair != 0;
+  if (bracket && !legacy_outside) {
     pair->capture_before();  // nothing is drawn outside the pair: the capture stands just ahead of the pass, as it did before the partition
   }
   edram_->Transition(list, depth, plume::RenderTextureLayout::SHADER_READ);
@@ -682,25 +727,21 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     list->setGraphicsDescriptorSet(slot.set.get(), 4);
     list->setPipeline(pipeline);
   };
-  begin_run();
+  if (legacy) begin_run();
   ll::PassPush push = {};
   push.slots[0] = summary.sample_slot;
   push.slots[1] = gb.slot[gbuffer::kPlaneNormal];
   push.slots[2] = gb.slot[gbuffer::kPlaneAlbedo];
   push.slots[3] = gb.Has(gbuffer::kPlaneMaterial) ? gb.slot[gbuffer::kPlaneMaterial] : larecomp::gpu::kNoLightSlot;
   push.info[2] = gb.sample0;
-  // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
-  // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
-  // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
-  const uint32_t draw_flags = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) |
-                              ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact) |
-                              (larecomp::settings::mcla_gpu_local_lights_reach_mask.Get() ? ll::kPushReachMask : 0u);
-  // CHECK: compare coverage and pass time for full-screen neon tubes in chase view.
-  const bool use_far_depth = (draw_flags & ll::kPushLateReach) == 0 && larecomp::settings::mcla_gpu_local_lights_depth_bound.Get();
   uint32_t drawn = 0;
   const auto run = [&](uint32_t from, uint32_t to) {
     for (uint32_t d = from; d < to; ++d) {
       const ll::PassDraw& draw = plan[d];
+      if (combined && in_composite[d]) {
+        for (uint32_t i = draw.first; i < draw.first + draw.count; ++i) drawn += !rects[i].Empty();
+        continue;
+      }
       const plume::RenderRect scissor(draw.rect.x0, draw.rect.y0, draw.rect.x1, draw.rect.y1);
       list->setScissors(&scissor, 1);
       push.info[0] = draw.first;
@@ -716,7 +757,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     }
   };
   run(0, draws_outside);
-  if (bracket && draws_outside > 0) {
+  if (bracket && legacy_outside) {
     // The lights outside the pair are in the colour: close the pass, capture it ("before"), and start the pair's run the way the first one started (the capture leaves its own target, layout and pipeline bound).
     list->setFramebuffer(nullptr);
     pair->capture_before();
@@ -724,8 +765,10 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     begin_run();
   }
   run(draws_outside, draws_outside + draws_pair);
-  list->setFramebuffer(nullptr);
-  pass_timing_->Mark(list, "after local lights");
+  if (legacy) {
+    list->setFramebuffer(nullptr);
+    pass_timing_->Mark(list, "after local lights");
+  }
 
   Count(Skip::kRecorded);
   lights_drawn_ += drawn;

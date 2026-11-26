@@ -1937,7 +1937,7 @@ void SourceChecks(const std::string& src) {
     Check(main_at != std::string::npos && early != std::string::npos && planes != std::string::npos && late != std::string::npos && sum_at != std::string::npos && main_at < early && early < planes && planes < late &&
               late < sum_at,
           "main: the reach test (when first) comes before the planes' reads, the position after them in the old order, and the lights' sum after both");
-    Check(Has(ps, "if (one.w > 0.0f) {\n        total += one.xyz;\n        any_light = true;") && Has(ps, "if (!any_light) {\n    discard;\n  }\n  return float4(total, 0.0f);"),
+    Check(Has(ps, "if (one.w > 0.0f) {\n        total += one.xyz;\n        any_light = true;") && Has(ps, "if (!any_light) {\n    LP_EMPTY;\n  }\n  return float4(total, 0.0f);"),
           "a light that adds nothing is left out of the sum, and a pixel none of them lights is discarded (as its own draw was)");
   }
 
@@ -1985,7 +1985,7 @@ void SourceChecks(const std::string& src) {
   const size_t gb = At(scene, "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);");
   Check(lb != std::string::npos && gb != std::string::npos && lb < gb, "the pass's BeginFrame runs before the G-buffer's (they read its wants)");
   const size_t ao = At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning());");
-  const size_t pass = At(scene, "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);");
+  const size_t pass = At(scene, "local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_,");
   const size_t shafts = At(scene, "shafts_->OnResolve(record, summary, list, UpscalerRunning());");
   Check(ao != std::string::npos && pass != std::string::npos && shafts != std::string::npos && ao < pass && pass < shafts, "the pass runs after the AO's apply and before the sun shafts");
   Check(Has(scene, "gbuffer_published = gbuffer_->OnResolve(record, summary, list, scene_marker_seen_);"), "the Scene hands the pass the G-buffer's own answer for the resolve");

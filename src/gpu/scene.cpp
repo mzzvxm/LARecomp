@@ -4440,6 +4440,7 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     regen_ask.city = regen_modes.City();
     temporal_->FrameJitter(regen_ask.jitter);
   }
+  const bool light_composite = vpl_ && vpl_->composite_enabled();
   if (gi_apply_ && gi_apply_->wants_draws()) {
     // The probe field's apply (gi_apply.h, CITY-RT M3 G3): the bounce light the field carries, added to the main colour from the G-buffer's normal and albedo and the main depth, multiplied by the
     // occlusion's visibility, right after the occlusion's apply (which has multiplied the colour) and before the lamps' direct light (which neither of them multiplies). Binds its own layout, pipeline and
@@ -4447,14 +4448,27 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
     // CITY-RT G6: while DLSS Ray Reconstruction takes the frame the per-pixel pass (ULTRA on a strong card) runs RAW (no filter of its own; its hit distance goes to the guide pass): TemporalSystem::RawModes,
     // false with the plan not RR, and asked only while the pass is wanted (the census counts the frames asked).
     const bool raw_gi = gi_apply_->pixel_pass_wanted() && temporal_ && temporal_->RawModes().RtGi();
-    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi, regen_modes.Bounce() ? regen_ask.jitter : nullptr);
+    const bool gi_apply_ran = gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi, regen_modes.Bounce() ? regen_ask.jitter : nullptr, light_composite);
     order_.Note(frame_order::Step::kGiApply, gi_apply_ran);
   }
-  if (vpl_) {
+  bool vpl_ran = false;
+  if (vpl_ && !light_composite) {
     const float field_share = gi_apply_ ? gi_apply_->AppliedFieldShare() : 0.0f;
-    const bool vpl_ran = vpl_->OnTrigger(summary, list, gbuffer_published, slot_, field_share);
-    order_.Note(frame_order::Step::kVirtualBounce, vpl_ran);
+    vpl_ran = vpl_->OnTrigger(summary, list, gbuffer_published, slot_, field_share);
   }
+  const auto finish_composite = [&] {
+    if (light_composite && vpl_ && !vpl_->composite_recorded()) {
+      const float field_share = gi_apply_ ? gi_apply_->AppliedFieldShare() : 0.0f;
+      const bool ran = vpl_->OnTrigger(summary, list, gbuffer_published, slot_, field_share, gi_apply_);
+      if (gi_apply_) gi_apply_->FinishComposite(list, ran);
+    }
+    const bool bounce_recorded = light_composite && vpl_ ? vpl_->hit_recorded() : vpl_ran;
+    order_.Note(frame_order::Step::kVirtualBounce, bounce_recorded);
+    const bool light_irradiance = vpl_ && vpl_->irradiance_recorded();
+    order_.Note(frame_order::Step::kLightIrradiance, light_irradiance);
+    const bool light_composited = vpl_ && vpl_->composite_recorded();
+    order_.Note(frame_order::Step::kLightComposite, light_composited);
+  };
   if (local_lights_ && local_lights_->wants_draws()) {
     // The deferred local lights (local_lights.h, perf/LIGHT-UNIFY.md 5.3): one scissored additive draw per light into the main colour, from the G-buffer's planes and the main depth,
     // AFTER the occlusion's apply (so it does not darken the light) and before the sun shafts, the volumetric light and the game's own light volumes and glows. Binds its own layout, pipeline
@@ -4476,13 +4490,17 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
       };
     }
     local_lights_->SetLightsPair(want_pair ? &lights_pair : nullptr);
-    const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);
+    const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_,
+                                                          light_composite ? vpl_ : nullptr, gi_apply_);
+    finish_composite();
     order_.Note(frame_order::Step::kLightsBefore, lights_before);
     order_.Note(frame_order::Step::kLocalLights, local_lights_ran);
     if (lights_before && local_lights_ran) {
       const bool lights_after = screen_->CaptureLightsAfter(record, summary, list);
       order_.Note(frame_order::Step::kLightsAfter, lights_after);
     }
+  } else {
+    finish_composite();
   }
   bool shafts_ran = false;
   bool vol_ran = false;

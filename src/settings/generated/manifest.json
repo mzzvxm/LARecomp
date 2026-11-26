@@ -2831,7 +2831,7 @@
   "type": "std::string",
   "default": "\"on\"",
   "category": "MCLA/GPU",
-  "help": "\"Surface-coloured light reflected from car headlights, tail lights and neon. Applies live.\"",
+  "help": "\"Light reflected from headlights, tail lights, neon, street lamps and decorative lights. Applies live.\"",
   "traits": [
    "rex::Allowed(\"off\", \"on\")"
   ],
@@ -4420,6 +4420,17 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Debug: Reuse per-light reach tests in grouped deferred light draws. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_light_composite": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Combine smooth local lights and indirect lighting in one pass. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

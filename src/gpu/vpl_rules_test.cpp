@@ -99,7 +99,7 @@ int main(int argc, char** argv) {
         "range * f * f", "height / max(down, 0.001f)", "beam >= surface",
         "saturate(albedo) * (kBounceFraction * footprint * footprint)", "9.0f * size_sq",
         "distance_sq + size_sq", "receiver != 0u && receiver == source",
-        "if (InCabin(v, world, id)) discard", "lerp(flux, previous_flux, old_weight)"}) {
+        "if (InCabin(v, world, id)) return 0.0f", "lerp(flux, previous_flux, old_weight)"}) {
       Check(shader.find(text) != std::string::npos, text);
     }
   }

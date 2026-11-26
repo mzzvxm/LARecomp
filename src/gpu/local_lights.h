@@ -147,6 +147,8 @@ struct Pair;
 
 
 class AmbientOcclusion;
+class GiApply;
+class VirtualBounce;
 class BindlessHeap;
 class Device;
 class FrameRing;
@@ -197,7 +199,7 @@ class LocalLights {
   void OnMainDraw(const ConstantBanks::Banks& banks, bool colour);
   // At every resolve, after the AO's apply: `gbuffer_published` is the G-buffer's own answer for this resolve (it was the trigger and the planes were published). Records the pass then and
   // returns true (the caller's list state is gone). `frame_slot` is the frame's slot of the upload ring and of this class's buffers.
-  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot);
+  bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, VirtualBounce* composite = nullptr, GiApply* gi = nullptr);
   // GI-BOUNCE-JOIN (gi_bounce_carrier.h): `pair` (null: none: the pass is what it was) is handed, just before OnResolve and for that call only, while the screen-space bounce light wants the pair of captures around the
   // lights it carries. The pass then draws the lights it does NOT carry (the probe field's, the per-pixel pass's, the switched-off groups', the ones too dark to light anything) first, makes the "before" capture through
   // `pair->capture_before`, draws the pair's lights, and returns; the Scene makes the "after" capture. With no light outside the pair the capture is made just ahead of the first draw, as it was ahead of the pass.
