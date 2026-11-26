@@ -819,6 +819,7 @@ add_executable(larecomp_ray_regen_guides_test EXCLUDE_FROM_ALL ray_regen_guides_
 # reflections' depth through a surface of another size) a target of its own (side_views.h):
 #   cmake --build <dir> --target larecomp_side_view_use_test, then run src/gpu/larecomp_side_view_use_test <src/gpu dir>.
 add_executable(larecomp_side_view_use_test EXCLUDE_FROM_ALL side_view_use_test.cpp)
+add_executable(larecomp_env_fallback_test EXCLUDE_FROM_ALL env_fallback_test.cpp)
 # The camera cut requests and the motion blur constants of a cut (cut_request.h) have one too:
 #   cmake --build <dir> --target larecomp_cut_request_test, then run src/gpu/larecomp_cut_request_test (exit 0 = passed).
 add_executable(larecomp_cut_request_test EXCLUDE_FROM_ALL cut_request_test.cpp cut_request.cpp)
