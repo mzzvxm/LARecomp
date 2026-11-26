@@ -115,10 +115,9 @@ namespace backend {
 // .\D3D12\; the system's copy belongs to the OS runtime.
 bool EnableDebugLayer();
 
-// After the device exists, with the debug layer on: routes the layer's
-// warnings and errors into the log (ID3D12InfoQueue1 callback). Without it they
-// only reach OutputDebugString, which nothing reads outside a debugger.
-void InstallDebugMessageSink(plume::RenderDevice* device);
+// Routes D3D12 debug-layer warnings and errors into the log if the device
+// provides an InfoQueue. Warn if it is missing after an explicit request.
+void InstallDebugMessageSink(plume::RenderDevice* device, bool requested);
 
 // With the debug layer on: keeps the device's debug interface across the
 // release of every wrapper, so what is still alive afterwards -- a leak, by
@@ -143,6 +142,11 @@ class LiveObjectReport {
 // plume::CreateD3D12Interface / CreateVulkanInterface. Plume declares neither
 // in a header; consumers declare them.
 std::unique_ptr<plume::RenderInterface> CreateInterface();
+
+// On failure, returns null and fills failure with the native call's result and
+// any debug-layer messages from that call.
+std::unique_ptr<plume::RenderPipeline> CreateGraphicsPipeline(
+    plume::RenderDevice& device, const plume::RenderGraphicsPipelineDesc& desc, std::string& failure);
 
 // Plume's create* calls hand back a live wrapper around a null native object
 // when the backend call failed (plume_d3d12.cpp D3D12Texture ctor prints

@@ -261,9 +261,7 @@ bool Device::Open(const Options& options) {
     });
   }
   debug_layer_ = debug_layer;
-  if (debug_layer_) {
-    backend::InstallDebugMessageSink(device_.get());
-  }
+  backend::InstallDebugMessageSink(device_.get(), debug_layer_);
   const char* names_reason =
       crash_diagnostics_ ? "GPU crash diagnostics" : ObjectNamesReason(debug_layer_);
   names_ = names_reason != nullptr;
@@ -603,11 +601,11 @@ std::unique_ptr<plume::RenderPipeline> Device::CreateGraphicsPipeline(
   if (!device_ || IsLost()) {
     return nullptr;
   }
-  auto pipeline = device_->createGraphicsPipeline(desc);
-  if (backend::IsNullBacked(pipeline.get())) {
-    if (LogThisFailure()) {
-      REXLOG_ERROR("[gpu] graphics pipeline '{}' failed", name ? name : "?");
-    }
+  std::string failure;
+  auto pipeline = backend::CreateGraphicsPipeline(*device_, desc, failure);
+  if (!pipeline) {
+    REXLOG_ERROR("[gpu] graphics pipeline '{}' failed: {}", name ? name : "?", failure);
+    LogThisFailure();  // Rate-limit the follow-up VRAM query and report.
     ReportCreationFailure("graphics pipeline", name);
     return nullptr;
   }

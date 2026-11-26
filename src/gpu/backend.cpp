@@ -140,8 +140,8 @@ bool EnableDebugLayer() {
   return MCLA_GPU_ACTIVE(EnableDebugLayer());
 }
 
-void InstallDebugMessageSink(plume::RenderDevice* device) {
-  MCLA_GPU_ACTIVE(InstallDebugMessageSink(device));
+void InstallDebugMessageSink(plume::RenderDevice* device, bool requested) {
+  MCLA_GPU_ACTIVE(InstallDebugMessageSink(device, requested));
 }
 
 LiveObjectReport::~LiveObjectReport() {
@@ -167,6 +167,23 @@ void LiveObjectReport::ReportAndRelease() {
 
 std::unique_ptr<plume::RenderInterface> CreateInterface() {
   return MCLA_GPU_ACTIVE(CreateInterface());
+}
+
+std::unique_ptr<plume::RenderPipeline> CreateGraphicsPipeline(
+    plume::RenderDevice& device, const plume::RenderGraphicsPipelineDesc& desc, std::string& failure) {
+  PipelineDebugCapture capture;
+  auto pipeline = device.createGraphicsPipeline(desc);
+  if (!IsNullBacked(pipeline.get())) {
+    return pipeline;
+  }
+
+  failure = pipeline ? MCLA_GPU_ACTIVE(DescribeGraphicsPipelineFailure(*pipeline))
+                     : "Plume returned no pipeline wrapper";
+  if (!capture.text().empty()) {
+    failure += "; debug layer: ";
+    failure += capture.text();
+  }
+  return nullptr;
 }
 
 bool IsNullBacked(const plume::RenderTexture* texture) {
