@@ -376,6 +376,18 @@ inline Plan SelectRayRegen(const PlanInputs& in) {
   return Plan{true, Why::kOn};
 }
 
+// The toggle defaults on when this device and its files support Ray Regeneration.
+// A frame still needs a signal from an effect.
+inline bool DefaultOn(const Facts& facts, rr::DebugSwitch debug) {
+  PlanInputs in;
+  in.setting = rr::Denoiser::kRr;
+  in.debug = debug;
+  in.facts = facts;
+  in.consumers_any = true;
+  in.guides_ready = true;
+  return SelectRayRegen(in).use;
+}
+
 // Which denoiser takes the frame: AMD FSR Ray Regeneration where it can run, else NVIDIA DLSS Ray Reconstruction, else ours. One adapter is one vendor, so at most one of the two plans is ever on;
 // the order only says what a PC would do if both were (an NVIDIA card and an AMD one in the same renderer cannot happen today).
 enum class DenoiserKind : uint8_t { kOurs, kRayRegen, kDlssRr };

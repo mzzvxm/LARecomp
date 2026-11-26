@@ -26,5 +26,6 @@ GeneratedChoices Fsr1ModeChoices();
 GeneratedChoices SharpnessChoices(std::string_view setting);
 std::string_view VendorDenoiserKind();
 std::string_view VendorDenoiserState();
+bool VendorDenoiserOn();
 
 }  // namespace mcla_menu

@@ -401,8 +401,8 @@ int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::p
   // --- everything else, key by key ----------------------------------------------------------------
   std::vector<std::pair<std::string, std::string>> leaves;
   CollectLeaves(table, {}, leaves);
-  // The old player row saved auto/rr/ours. Seed the new bool below the file layer so an explicit
-  // toggle wins. The renderer only treats the chooser as an override at the environment layer or
+  // Seed the old rr/ours choice below the file layer so an explicit toggle wins. Legacy auto
+  // follows the hardware default. The renderer treats the chooser as an override at the environment layer or
   // above, including when the SDK reads the same legacy line again after OnConfigure.
   namespace dn = mcla::gpu::denoiser;
   const auto& chooser = mcla_gpu_denoiser;

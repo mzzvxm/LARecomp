@@ -527,7 +527,7 @@ help = "Adjusts edge sharpening when a FidelityFX upscaler is active."
 
 [rows.PM_RxGpuDenoiser]
 native = "kDenoiserDynamics"
-help = "On uses your GPU's denoiser for supported effects. Off uses LARecomp's denoisers and is the default. DLSS Ray Reconstruction also requires DLSS upscaling. AMD FSR Ray Regeneration requires Direct3D 12."
+help = "Defaults on when supported. DLSS Ray Reconstruction requires DLSS upscaling and defaults on when a compatible ray traced effect is active. AMD FSR Ray Regeneration requires Direct3D 12. Off uses LARecomp's denoisers."
 
 [rows.PM_RxGpuFrameGen]
 native = "kFrameGenerationDynamics"

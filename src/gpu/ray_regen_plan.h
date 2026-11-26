@@ -60,6 +60,7 @@ class Planner {
     Device* device = nullptr;
     FrameRing* frames = nullptr;
     rr::Denoiser setting = rr::Denoiser::kAuto;   // the DENOISER row
+    bool uses_default = false;
     uint32_t consumers_on = 0;                    // rr::Consumer bits (denoiser::ConsumersOn)
     uint64_t frame = 0;
     rr::Plan dlss_plan;                           // DLSS Ray Reconstruction's plan of this frame (the choice is made beside it)
@@ -93,6 +94,7 @@ class Planner {
   rr::Denoiser setting_ = rr::Denoiser::kAuto;
   bool plan_logged_ = false;
   Plan plan_last_;
+  bool default_on_last_ = false;
   DenoiserKind chosen_last_ = DenoiserKind::kOurs;
   bool modes_logged_ = false;
   rr::RawModes modes_last_;

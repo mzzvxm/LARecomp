@@ -748,14 +748,15 @@ RayRegen& Instance() {
 
 void StartIfWanted(Device& device, FrameRing& frames) {
   const rr::DebugSwitch debug = ReadDebugSwitch();
-  const bool row_is_ours = denoiser::Setting() == rr::Denoiser::kOurs;
-  if (!ProbeWanted(debug, AnySignalBuilt(), row_is_ours)) {
+  const auto setting = denoiser::Setting();
+  if (!ProbeWanted(debug, AnySignalBuilt(), setting == rr::Denoiser::kOurs)) {
     return;
   }
-  if (debug == rr::DebugSwitch::kRow && uint32_t(device.description().vendor) != kVendorAmd) {
-    return;   // the row decides and the card is not a Radeon: nothing of AMD's is asked on this PC (the debug switch's probe and on still ask, for a test)
+  // CHECK: confirm the provider opens on RX 9000 / D3D12 with the shipped files and is skipped on older cards.
+  if (debug == rr::DebugSwitch::kRow && (!RowListed() || ActiveBackend() != Backend::kD3D12)) {
+    return;
   }
-  REXLOG_INFO("{} mcla_gpu_ray_regen = {}, DENOISER row = {}: asking this device", kPrefix, rr::DebugSwitchName(debug), denoiser::WordOf(denoiser::Setting()));
+  REXLOG_INFO("{} mcla_gpu_ray_regen = {}, DENOISER row = {}: asking this device", kPrefix, rr::DebugSwitchName(debug), denoiser::WordOf(setting));
   Instance().Probe(device, frames);
 }
 
