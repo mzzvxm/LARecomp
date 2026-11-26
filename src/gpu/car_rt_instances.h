@@ -33,7 +33,7 @@ class CarRtInstances {
 
   // The limits of the other cars in force now: the graphics class's cell with the two debug overrides (mcla_gpu_car_rt_cars, mcla_gpu_car_rt_cars_radius).
   // Reads the cvars: once a frame, by the scene's Request.
-  car_rt_instances::Limits CurrentLimits(bool uniform_paint) const;
+  car_rt_instances::Limits CurrentLimits(bool uniform_paint, bool shadow_coverage) const;
   // Whether the cars the camera does not see are placed from memory (mcla_gpu_car_rt_cars_memory, debug, live).
   bool RememberedOn() const;
   // How the cars built from their own model data are taken (mcla_gpu_car_rt_cars_model, debug, live; car_model_rt_rules.h Mode).

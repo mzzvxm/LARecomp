@@ -54,6 +54,7 @@
 #include "car_rt_opp_refl_rules.h"
 #include "car_rt_parked_paint_rules.h"
 #include "city_refl.h"
+#include "descriptors.h"
 #include "host_passes.h"
 
 namespace mcla::gpu {
@@ -86,6 +87,7 @@ class CarRtOppRefl {
     const CarRtView* view = nullptr;           // this frame's top level and the boxes
     const void* base_push = nullptr;           // the player's dispatch's push block (CarRtRefl::Push), copied
     uint32_t base_push_bytes = 0;
+    uint32_t tile_slot = kInvalidBindlessSlot;
     plume::RenderDescriptorSet* output_set = nullptr;  // u0 the image, u1 the aux image: the player's trace set
     HostImage* image = nullptr;                // both are in GENERAL, written by the player's dispatch
     HostImage* aux = nullptr;
@@ -130,8 +132,9 @@ class CarRtOppRefl {
     float up[4];
     float coat[4];
     uint32_t opp[4];
+    uint32_t coverage[4];  // x: stencil tile slot plus one (0: no mask)
   };
-  static_assert(sizeof(Push) == 112);
+  static_assert(sizeof(Push) == 128);
   static constexpr uint32_t kBasePushBytes = 96;  // CarRtRefl::Push, checked at run time (the type is private to it)
   static constexpr uint32_t kTextureSet = 0;
   static constexpr uint32_t kOutputSet = 1;

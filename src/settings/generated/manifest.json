@@ -1349,6 +1349,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_history_tiles": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Capture car reflection history in stencil tiles and reuse their coverage in RT paint. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_car_rt_paint_one_ray": {
   "type": "bool",
   "default": "true",
@@ -1481,6 +1492,17 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_car_coverage": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Trace city sun shadows on vehicles and include cars within 150 metres of the camera in the ray tracing scene. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

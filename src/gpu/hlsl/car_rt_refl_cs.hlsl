@@ -123,6 +123,7 @@ struct CarRtReflPush
     // the opponents' variant only (car_rt_opp_refl.h, hlsl/car_rt_refl_opp.hlsli): x, y the first image texel of the rectangle the dispatch covers, z the row of the player's car's
     // record in the instances' table (0: none), w the rays a texel casts (4, 2 or 1)
     uint4 opp;
+    uint4 coverage;  // x: stencil tile slot plus one (0: no mask)
 #endif
 #ifdef CAR_RT_REFL_GLASS
     // the glass variant only (car_rt_glass_refl.h, hlsl/car_rt_refl_glass.hlsli): x, y the first image texel of the rectangle the dispatch covers (the group grid starts at it), z the strength (float
@@ -130,7 +131,7 @@ struct CarRtReflPush
     uint4 glass;
 #endif
 #if !defined(CAR_RT_REFL_OPPONENTS) && !defined(CAR_RT_REFL_GLASS)
-    uint4 region;
+    uint4 region;  // xy: dispatch offset, z: stencil tile slot plus one (0: no mask)
 #endif
 };
 
@@ -1084,6 +1085,14 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
 #ifdef CAR_RT_REFL_OPPONENTS
 #define main CarRtReflPlayerMain  // the opponents' variant has the entry point `main` of its own, below (hlsl/car_rt_refl_opp.hlsli)
 #endif
+// Transparent glass can lack stencil coverage. Its primary trace uses the
+// geometric bounds and scene depth instead of this paint mask.
+bool StencilTileCovered(uint2 texel, uint slotPlusOne)
+{
+    if (slotPlusOne == 0u) return true;
+    return g_textures[slotPlusOne - 1u].Load(int3(texel / 16u, 0)).r > 0.0;
+}
+
 #ifdef CAR_RT_REFL_GLASS
 #define main CarRtReflPlayerMain  // the glass variant has the entry point `main` of its own, below (hlsl/car_rt_refl_glass.hlsli)
 #endif
@@ -1098,15 +1107,20 @@ void main(uint3 id : SV_DispatchThreadID)
     {
         return;
     }
-    Texture2D<float4> history = g_textures[g_push.slots.x];
-    const float4 own = history.Load(int3(id.xy, 0));
     float4 result = float4(0.0, 0.0, 0.0, kNoData);
     float4 aux = float4(0.0, 0.0, 0.0, 0.0);
-    // Most of the image is no vehicle (alpha 0): one read and two writes. A wave with no vehicle texel in it never reaches the rays.
-    if (own.a > 0.0 && own.a < 60000.0)
+#if !defined(CAR_RT_REFL_OPPONENTS) && !defined(CAR_RT_REFL_GLASS)
+    if (StencilTileCovered(id.xy, g_push.region.z))
+#endif
     {
-        result = TraceTexel(history, id.xy, own, aux);
+        Texture2D<float4> history = g_textures[g_push.slots.x];
+        const float4 own = history.Load(int3(id.xy, 0));
+        if (own.a > 0.0 && own.a < 60000.0)
+        {
+            result = TraceTexel(history, id.xy, own, aux);
+        }
     }
+    // Vacated trace regions still receive the empty value.
     g_output[id.xy] = result;
     g_aux[id.xy] = aux;
 }

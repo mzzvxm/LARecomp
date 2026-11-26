@@ -180,7 +180,7 @@ class CarSelfRefl {
   // Makes the shaders and lists the pipelines with the host precache (before the Renderer starts it) where the setting is on at
   // the start (host_plan.h); where it is off nothing is made until it is switched on. Never fails the renderer: without them
   // the variant draws as the game's paint (mode 0 constants).
-  void Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing);
+  void Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing, Device& device, FrameRing& frames, BindlessHeap& heap);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   // The debug car dump (car_dump.h): handed the history image of its frame when it is drawn, to check its triangles against. Null: none.
@@ -246,7 +246,7 @@ class CarSelfRefl {
 
   // The history pass's compilations (host_shaders.h CarHistoryPixelShader, hlsl/car_history_ps.hlsl CAR_HISTORY_MS): from plain planes, from multisampled planes, and from multisampled depth and
   // stencil planes with the colour taken from the shared colour_post.
-  enum Pass : uint32_t { kPassPlain, kPassMs, kPassMsShared, kPassCount };
+  enum Pass : uint32_t { kPassPlain, kPassMs, kPassMsShared, kRasterPassCount, kPassCount = kRasterPassCount * 2 };
   static const char* PassName(uint32_t pass);
 
   bool IsTrigger(const ResolveRecord& record, const ResolveCache::Summary& summary) const;
@@ -259,6 +259,9 @@ class CarSelfRefl {
   // RT-PARKED-PAINT: after the history pass, one draw of the same pass per mark (the parked cars the opponents' pass will trace), scissored to the car's rectangle, writing the texels the stencil gives no ID
   // that lie at the car's distance with the negated distance (hlsl/car_history_ps.hlsl, the mark mode; car_rt_parked_paint_rules.h).
   void RecordMarks(plume::RenderCommandList* list, plume::RenderPipeline* pipeline, const Push& base, const std::vector<car_rt_parked_paint::Mark>& marks);
+  void MakeTileLayout();
+  bool RecordTiles(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
+                   plume::RenderPipeline* raster, Push push, const HostImage* shared);
   plume::RenderPipeline* Pipeline(uint32_t pass);
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t pass);
   // The shaders, made where the setting is on at the start or when it is first switched on. False: they could not be made.
@@ -322,6 +325,16 @@ class CarSelfRefl {
   std::array<std::unique_ptr<plume::RenderPipeline>, kPassCount> pipelines_;
   std::array<bool, kPassCount> pipeline_failed_{};
   HostImage history_;  // R16G16B16A16_FLOAT, the picture's size
+  HostImage history_tiles_;  // R32_FLOAT, one value per stencil tile
+  Device* device_ = nullptr;
+  FrameRing* frames_ = nullptr;
+  BindlessHeap* heap_ = nullptr;
+  plume::RenderDescriptorSetBuilder tile_set_builder_;
+  std::unique_ptr<plume::RenderPipelineLayout> tile_layout_;
+  std::unique_ptr<plume::RenderDescriptorSet> tile_set_;
+  uint64_t tile_history_serial_ = 0;
+  uint64_t tile_map_serial_ = 0;
+  std::vector<plume::RenderRect> parked_rects_;
 
   // What the log has said once, and the totals.
   uint32_t last_mode_logged_ = ~0u;

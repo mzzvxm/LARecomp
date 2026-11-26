@@ -272,7 +272,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);  // and the screen-space reflections (ssr.h): the layout and the shaders, the pipelines only when the setting is on
     rr_guides_.Initialize(device_, frames_, heap_, passes_, pass_timing_);  // and DLSS Ray Reconstruction's guide pass (rr_guides.h): the layouts and shaders; the pipelines only when it is first wanted
     rr_guides_.SetGBuffer(&gbuffer_);
-    car_refl_.Initialize(passes_, edram_, pass_timing_);  // and the car self-reflection's history pass (car_selfrefl.h)
+    car_refl_.Initialize(passes_, edram_, pass_timing_, device_, frames_, heap_);  // and the car self-reflection's history pass (car_selfrefl.h)
     car_dump_.Initialize(device_, frames_, guest_memory_);  // and the debug car dump (car_dump.h)
     car_refl_.SetCarDump(&car_dump_);
     car_frame_.Initialize(guest_memory_);  // and the player car's draws (car_frame.h), which the car effects ask for

@@ -353,8 +353,9 @@ inline std::vector<uint32_t> ChoosePlacedAll(const std::vector<crt::CarInfo>& ca
     order.insert(order.end(), traffic.begin(), traffic.end());
   }
   std::stable_sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return cars[a].distance < cars[b].distance; });
-  if (order.size() > crt::kMaxWalkedCars) {
-    order.resize(crt::kMaxWalkedCars);
+  const size_t cap = limits.camera_relative ? crt::kMaxWalkedCars : ci::kMaxCars;
+  if (order.size() > cap) {
+    order.resize(cap);
   }
   return order;
 }

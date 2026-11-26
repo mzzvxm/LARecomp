@@ -1482,6 +1482,48 @@ int main(int argc, char** argv) {
 
     mcla::gpu::car_rt_instances::ViewBox box;
     Check(rt::PaintTilesForBox(box, 1, 1, 1919, 1081, 1, full) == full, "unknown bounds take full coverage");
+
+    if (!src_dir.empty()) {
+      const std::string capture = Read(src_dir, "hlsl/car_history_ps.hlsl");
+      Check(capture.find("if (inside && (write_previous_tile || active_tile != 0u))") != std::string::npos &&
+            capture.find("if (lane == 0u) g_tiles[group.xy] = float(active_tile)") != std::string::npos &&
+            capture.find("vehicle ? HistoryValue(p) : 0.0f") != std::string::npos,
+            "the history shader writes occupied and vacated tiles and publishes current coverage");
+    }
+    // Twin of car_history_ps: tiles containing a stencil receiver are made
+    // visible to paint, and old tiles clear even if the new stencil is empty.
+    constexpr int width = 35, height = 19;
+    constexpr int columns = (width + rt::kPaintTile - 1) / rt::kPaintTile;
+    constexpr int rows = (height + rt::kPaintTile - 1) / rt::kPaintTile;
+    std::array<bool, columns * rows> previous{};
+    std::array<bool, width * height> history{};
+    history.fill(true);
+    for (int frame = 0; frame < 6; ++frame) {
+      std::array<bool, width * height> receivers{};
+      for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+          receivers[y * width + x] = frame < 5 && (x + 2 * y) % (11 + frame) == frame && x / rt::kPaintTile == frame % columns;
+        }
+      }
+      for (int tile_y = 0; tile_y < rows; ++tile_y) {
+        for (int tile_x = 0; tile_x < columns; ++tile_x) {
+          const int tile_index = tile_y * columns + tile_x;
+          const int x0 = tile_x * rt::kPaintTile, x1 = std::min(x0 + rt::kPaintTile, width);
+          const int y0 = tile_y * rt::kPaintTile, y1 = std::min(y0 + rt::kPaintTile, height);
+          bool active = false;
+          for (int y = y0; y < y1; ++y) {
+            for (int x = x0; x < x1; ++x) active |= receivers[y * width + x];
+          }
+          if (frame == 0 || previous[tile_index] || active) {
+            for (int y = y0; y < y1; ++y) {
+              for (int x = x0; x < x1; ++x) history[y * width + x] = receivers[y * width + x];
+            }
+          }
+          previous[tile_index] = active;
+        }
+      }
+      Check(history == receivers, "stencil tile write matches the full history, including vacated and odd-edge texels");
+    }
     const float lo[3] = {-1.1f, -0.7f, 8.0f};
     const float hi[3] = {0.8f, 1.2f, 10.0f};
     box.Add(lo);

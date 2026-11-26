@@ -320,6 +320,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_city_rt_build_budget, true, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_city_rt_car_coverage, true, "Trace city sun shadows on vehicles and include cars within 150 metres of the camera in the ray tracing scene. Live.", rex::kDebugOnly);
   REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: override the full-detail radius of the city RT structures in metres. Zero uses 300 metres at High and 600 at Ultra. The far radius reaches at least four times as far. Live.",
     rex::kDebugOnly, rex::Range{0.0, 1500.0});
 
@@ -484,6 +485,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_car_selfrefl_rt_denoise, 2, "Diagnostic: the passes of the filter that takes the grain out of the soft edge of a part of your car reflected in another (the ray traced car "
     "self-reflection) before the paint reads it: 2 (the default) two passes, 1 one pass, 0 none (the raw trace, to compare with). Each pass is "
     "applied only where the soft edge is wide enough to have grain, so a sharp edge stays sharp; there is none for a gloss of 0. Live.", rex::kDebugOnly, rex::Range{0, 2});
+  REX_SETTING(bool, mcla_gpu_car_history_tiles, true, "Capture car reflection history in stencil tiles and reuse their coverage in RT paint. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_car_rt_paint_one_ray, true, "Debug: trace one reflection ray per car paint texel, accumulate it over time, and skip background writes to car history. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_car_selfrefl_rt_resolve, false, "Debug: trace the full glossy cone and filter narrower reflections on player paint when the built-in filter runs. Live.", rex::kDebugOnly);
@@ -2173,6 +2175,7 @@ inline auto& mcla_gpu_city_rt_alpha = g_gpu.mcla_gpu_city_rt_alpha;
 inline auto& mcla_gpu_city_rt_alpha_ref = g_gpu.mcla_gpu_city_rt_alpha_ref;
 inline auto& mcla_gpu_city_rt_alpha_view = g_gpu.mcla_gpu_city_rt_alpha_view;
 inline auto& mcla_gpu_city_rt_build_budget = g_gpu.mcla_gpu_city_rt_build_budget;
+inline auto& mcla_gpu_city_rt_car_coverage = g_gpu.mcla_gpu_city_rt_car_coverage;
 inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
 inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
 inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;
@@ -2202,6 +2205,7 @@ inline auto& mcla_gpu_car_selfrefl_history = g_gpu.mcla_gpu_car_selfrefl_history
 inline auto& mcla_gpu_car_selfrefl_length = g_gpu.mcla_gpu_car_selfrefl_length;
 inline auto& mcla_gpu_car_selfrefl_rt = g_gpu.mcla_gpu_car_selfrefl_rt;
 inline auto& mcla_gpu_car_selfrefl_rt_denoise = g_gpu.mcla_gpu_car_selfrefl_rt_denoise;
+inline auto& mcla_gpu_car_history_tiles = g_gpu.mcla_gpu_car_history_tiles;
 inline auto& mcla_gpu_car_rt_paint_one_ray = g_gpu.mcla_gpu_car_rt_paint_one_ray;
 inline auto& mcla_gpu_car_selfrefl_rt_resolve = g_gpu.mcla_gpu_car_selfrefl_rt_resolve;
 inline auto& mcla_gpu_car_selfrefl_rt_gloss = g_gpu.mcla_gpu_car_selfrefl_rt_gloss;

@@ -236,6 +236,8 @@ const ItemDef kDebugRendererFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
     NativeOnly(Bool("PM_RxDbgRtDenoiseV2", "mcla_gpu_rt_denoise_v2", "RT DENOISE V2: ")),
     NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
+    NativeOnly(Bool("PM_RxDbgCityCarCover", "mcla_gpu_city_rt_car_coverage", "CITY RT CAR COVERAGE: ")),
+    NativeOnly(Bool("PM_RxDbgCarHistoryTiles", "mcla_gpu_car_history_tiles", "CAR HISTORY TILES: ")),
     NativeOnly(Bool("PM_RxDbgCarRtPaintOneRay", "mcla_gpu_car_rt_paint_one_ray", "RT PAINT ONE RAY: ")),
     NativeOnly(Bool("PM_RxDbgEnvHold", "mcla_gpu_env_hold", "ENVIRONMENT MAP HOLD: ")),
     NativeOnly(Bool("PM_RxDbgEnvFallback", "mcla_gpu_env_fallback", "REFLECTION ENVIRONMENT FALLBACK: ")),

@@ -3,6 +3,7 @@
 #include "car_model_walk.h"
 
 #include <algorithm>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -384,7 +385,27 @@ void Walker::NoteDraw(const DrawView& view, const XenosState& state, uint32_t id
   draws_.push_back(key);
 }
 
-void Walker::OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world) {
+// Read the same main viewport as the raster traffic shadow hooks.
+bool ReadMainViewEye(std::array<double, 3>& eye) {
+  GuestReader mem;
+  uint32_t renderer = 0, buffer = 0, viewport = 0;
+  if (!mem.Word(traffic_shadow::kRendererGlobal, &renderer) || !PlausibleObject(renderer) ||
+      !mem.Word(traffic_shadow::kAmbientBufferGlobal, &buffer) || !traffic_shadow::AmbientBufferValid(buffer) ||
+      !mem.Word(renderer + traffic_shadow::MainViewportSlot(buffer), &viewport) || !PlausibleObject(viewport)) {
+    return false;
+  }
+  float position[3] = {};
+  for (uint32_t axis = 0; axis < 3; ++axis) {
+    uint32_t bits = 0;
+    if (!mem.Word(viewport + traffic_shadow::kViewportEye + axis * 4, &bits)) return false;
+    position[axis] = std::bit_cast<float>(bits);
+  }
+  if (!traffic_shadow::PlausiblePosition(position)) return false;
+  eye = {position[0], position[1], position[2]};
+  return true;
+}
+
+void Walker::OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world, const double* selection_eye) {
   if (!active_ && !production_frame_) {
     return;
   }
@@ -392,7 +413,7 @@ void Walker::OnVehicleDraw(const DrawView& view, const XenosState& state, uint32
     RunWalk();  // the first vehicle draw of the frame: the guest is held back inside this call
   }
   if (production_frame_ && !production_walked_) {
-    RunProduction();
+    RunProduction(selection_eye);
   }
   NoteDraw(view, state, id, world);
 }
@@ -631,7 +652,7 @@ bool UsableMatrix(const tp::Mat4& m) {
 
 }  // namespace
 
-void Walker::RunProduction() {
+void Walker::RunProduction(const double* selection_eye) {
   production_walked_ = true;
   const auto started = std::chrono::steady_clock::now();
   GuestReader mem;
@@ -683,6 +704,7 @@ void Walker::RunProduction() {
     return;  // no player: nothing is ranked (the scene has no top level either)
   }
 
+  const double* origin = selection_eye ? selection_eye : player_position_;
   const crt::Pose pose = this->pose();
   const uint32_t per_car = std::max<uint32_t>(prod.limits.instances / std::max<uint32_t>(prod.limits.cars, 1u), 16u);
   const uint32_t min_indices = std::max<uint32_t>(prod.limits.min_indices, crt::kMinPartIndices);
@@ -707,7 +729,7 @@ void Walker::RunProduction() {
     for (int c = 0; c < 3; ++c) {
       car.position[c] = entity_matrix.m[3][c];
     }
-    car.distance = Distance(car.position, player_position_);
+    car.distance = Distance(car.position, origin);
     if (!car.is_player && car.distance > scan) {
       continue;
     }
@@ -831,7 +853,7 @@ void Walker::RunProduction() {
   // the traffic and the parked cars (RT-MODEL-PARTS)
   traffic_scan_ = TrafficScan{};
   if (prod.traffic_cars != 0) {
-    AddTraffic(mem, prod, scan, min_indices, per_car);
+    AddTraffic(mem, prod, origin, scan, min_indices, per_car);
   }
   // what each car's parts are by kind (the log's and the check's numbers)
   for (WalkedCar& car : walked_cars_) {
@@ -876,7 +898,7 @@ void Walker::RunProduction() {
 // calibrate; a car the main view does not show is placed by the traffic calibration's hypothesis once one fits the draws of the traffic cars the camera sees.
 // RT-PARKED-CARS: a car the main view shows that no draw claims (a parked car writes no vehicle stencil ID, so the draw path never takes it: car_model_rt_rules.h UnclaimedTracker) is
 // walked, posed and placed like a hidden one, and the pose and the parts are read for the NEAREST cars only (TrafficPartsCap: a street has dozens of parked cars).
-void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double scan, uint32_t min_indices, uint32_t per_car) {
+void Walker::AddTraffic(const GuestReader& mem, const Production& prod, const double origin[3], double scan, uint32_t min_indices, uint32_t per_car) {
   cw::AmbientScan list;
   const std::vector<uint32_t> items = cw::ListAmbientItems(mem, &list);
   traffic_scan_.renderer = list.renderer;
@@ -895,7 +917,7 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
       ++traffic_scan_.unreadable;
       continue;
     }
-    const double distance = Distance(at, player_position_);
+    const double distance = Distance(at, origin);
     if (!(distance <= scan)) {
       continue;
     }
@@ -903,6 +925,7 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
   }
   std::stable_sort(near_items.begin(), near_items.end(), [](const NearItem& a, const NearItem& b) { return a.distance < b.distance; });
   uint32_t parts_left = crt::TrafficPartsCap(prod.traffic_cars);
+  uint32_t eligible = 0;
   for (const NearItem& near_item : near_items) {
     const uint32_t item = near_item.item;
     ++traffic_scan_.in_range;
@@ -915,13 +938,15 @@ void Walker::AddTraffic(const GuestReader& mem, const Production& prod, double s
       ++traffic_scan_.rejected;
       continue;
     }
+    // Bound full model/pose reads after the cheap position scan.
+    if (prod.limits.camera_relative && eligible++ == 2 * car_rt_instances::kShadowCars) break;
     WalkedCar car;
     car.traffic = true;
     car.vehicle = item;
     for (int c = 0; c < 3; ++c) {
       car.position[c] = info.position[c];
     }
-    car.distance = Distance(car.position, player_position_);
+    car.distance = Distance(car.position, origin);
     car.visible = info.Visible();
     traffic_scan_.visible += car.visible ? 1u : 0u;
     // RT-PARKED-CARS: shown by the main view and no draw claimed it in the last frames (a parked car): the walk's, as a hidden car is

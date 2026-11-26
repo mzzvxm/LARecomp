@@ -26,9 +26,11 @@ constexpr uint64_t kWindowFrames = 300;
 
 }  // namespace
 
-ci::Limits CarRtInstances::CurrentLimits(bool uniform_paint) const {
+ci::Limits CarRtInstances::CurrentLimits(bool uniform_paint, bool shadow_coverage) const {
   const auto budget_class = uniform_paint ? gpu_class::GpuClass::kHigh : gpu_class::CurrentRtClass();
-  return ci::LimitsFor(budget_class, int(larecomp::settings::mcla_gpu_car_rt_cars.Get()), double(larecomp::settings::mcla_gpu_car_rt_cars_radius.Get()));
+  const int cars = int(larecomp::settings::mcla_gpu_car_rt_cars.Get());
+  const double radius = larecomp::settings::mcla_gpu_car_rt_cars_radius.Get();
+  return ci::ShadowLimits(ci::LimitsFor(budget_class, cars, radius), shadow_coverage, cars >= 0 || radius > 0.0);
 }
 
 bool CarRtInstances::RememberedOn() const {

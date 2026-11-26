@@ -17,8 +17,8 @@
 // shaders' own N.L has darkened it, and the contact march applies this only on the sun's share of the light. Pixels beyond the push's range are 1 too (the host's range:
 // where the structures are the hi detail the game drew, city_rt_rules.h SafeReceiverRange).
 //
-// THE CARS. A vehicle's pixel is not traced here (the car's own passes, car_rt_ao and the car's shadow map, own it): it keeps the car image's g where the host gives the
-// car image's slot (kFlagCarImage), else 1. A pixel of the world takes the DARKER of this pass's visibility and the car image's g there (the car's own sun ray, in its region).
+// THE CARS. The production trace covers vehicle receivers too. The contact pass combines the traced city and car visibility
+// with its existing car map and screen-space signal. The geometry census still measures the city against world pixels.
 // The rays hit the city and the cars' body, tyres and other cars (the push's mask), so the player's car shadows the road here too.
 //
 // ALPHA TESTED triangles (the pack's second geometry of a sector) come up as candidates: the push's AlphaMode says whether they block (city_rt_shadow_rules.h). In the EXACT mode (the
@@ -86,6 +86,7 @@ static const float kAlphaCoverage = 0.5;
 static const float kMinAbove = 0.08;          // a ray is kept at least this far (as a cosine) above the point's tangent plane
 static const float kCheckTMin = 0.01;
 static const uint kFlagCarImage = 1u << 8;
+static const uint kFlagVehicleReceivers = 1u << 9;
 static const uint kFlagAlphaRefShift = 12;
 static const uint kFlagAlphaStats = 1u << 28;
 static const uint kFlagView = 1u << 29;
@@ -412,8 +413,8 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
 
-    // The sun's rays: a surface of the world within the range.
-    if (!sky && !vehicle && t < g_push.lens.w)
+    // CHECK: Compare cockpit and chase against the raster car map for self-intersection at panel and glass edges.
+    if (!sky && (!vehicle || (flags & kFlagVehicleReceivers) != 0u) && t < g_push.lens.w)
     {
         const float3 p = ViewPos(float2(id.xy) + 0.5, float2(size), t);
         const float4 traced = TraceSun(id.xy, size, t, p);

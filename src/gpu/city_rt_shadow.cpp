@@ -312,6 +312,10 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   push.slots[1] = in.depth->width;
   push.slots[2] = in.depth->height;
   push.slots[3] = rules::PackFlags(rays, alpha, have_car, alpha_reference, alpha_view) | (check ? rules::kFlagCheck : 0u) | (check_view ? rules::kFlagView : 0u);
+  const bool vehicle_receivers = larecomp::settings::mcla_gpu_city_rt_car_coverage.Get();
+  if (vehicle_receivers) {
+    push.slots[3] |= rules::kFlagVehicleReceivers;
+  }
   push.noise[0] = in.sun_frame;
   push.noise[1] = city_rt::kMaskCity | car_rt_rules::kMaskBody | car_rt_rules::kMaskTyres | car_rt_rules::kMaskOthers;
   push.noise[2] = uint32_t(in.frame);
@@ -369,8 +373,9 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   if (!check || check_view) {
     result.recorded = true;
     result.slot = image_.slot;
+    if (!check && vehicle_receivers) result.receiver_range = range;
   }
-  const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u) | (alpha_view ? 1u << 18 : 0u) | (rules::PackAlphaReference(alpha_reference) << 20);
+  const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u) | (alpha_view ? 1u << 18 : 0u) | (rules::PackAlphaReference(alpha_reference) << 20) | (vehicle_receivers ? 1u << 28 : 0u);
   if (!check && !alpha_view && RtDenoise::V2Enabled()) {
     pass_timing_->Mark(list, "city sun denoise");
     if (const HostImage* filtered = denoise_.RecordVisibility(list, image_, *in.depth, in.denoise, in.frame, in.tan_x, in.tan_y, range, state)) {

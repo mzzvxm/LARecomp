@@ -16,12 +16,9 @@
 //   - each kept car's box in the frame's view space, from its meshes' model-space bounds and its draws' transforms, which the ray traced
 //     occlusion (car_rt_ao.h) takes as the region it traces in; the boxes' rows follow the cars' rows in the same table (BoundsOf, GrowBox).
 //
-// WHICH CARS (CarSelector): the distance that ranks a car is its distance from the PLAYER'S VEHICLE (the guest's own position of it, which the car
-// frame reads once a frame), not from the camera: every effect that traces against this scene starts its rays on the player's car (its reflection,
-// its ambient occlusion, its shadows), so a car matters by how near it is to that car, and a car that is near the camera but far from the player
-// (the traffic ahead of a chase camera's car) cannot be seen in it. The ray's own reach (the reflection's is 4 m from the panel for the
-// player's own parts, 18 m (High) or 12 m (Mid) to another car: car_rt_hit_rules.h) and the car's size (a car is 4.5 m long) give the radius: a car whose centre is more than
-// 14 to 20 m from the player's cannot touch a reflection ray.
+// CarSelector ranks draws by distance from the selected origin. Car-only effects
+// use the player position and keep the short reflection ring. City sun shadows
+// use the main viewport eye and the raster All caster radius and car count.
 //
 // Matrices are row vectors (v' = v M) as in temporal_math.h. This header includes nothing of the renderer.
 // ===========================================================================
@@ -42,6 +39,7 @@
 #include "car_rt_scene_rules.h"
 #include "gpu_class.h"
 #include "temporal_math.h"
+#include "traffic_shadow.h"
 
 namespace mcla::gpu::car_rt_instances {
 
@@ -59,15 +57,18 @@ inline constexpr float kCarRadius = 1.6f;
 inline constexpr double kCentreRise = 0.6;
 // The IDs a listed car may have: the game's stencil IDs (CarSelector::kSlots) and, above them, the cars placed from memory (car_rt_memory_rules.h
 // kRememberedIdBase = kSlots, at most kMaxCars of them at a time, with room to spare).
-inline constexpr uint32_t kRememberedIds = 16;
+inline constexpr uint32_t kRememberedIds = 24;
+inline constexpr uint32_t kShadowCars = traffic_shadow::kAllCars;
+inline constexpr double kShadowRadius = traffic_shadow::kAllRadius;
 
 struct Limits {
   uint32_t cars = 0;             // the most other cars in the scene (0: none, nothing of this is collected)
-  double radius = 0.0;           // metres from the player's vehicle: a car farther than this is not kept
+  double radius = 0.0;           // metres from the selected origin
   uint32_t instances = 0;        // the most instances of other cars in the top level (the player's are counted separately)
   uint32_t min_indices = 0;      // a draw with fewer indices (or vertices) than this is left out: the car's smallest parts show in no reflection
   uint32_t stage_triangles = 0;  // triangles of other cars' new meshes read from guest memory in one frame (the player's have a budget of their own)
   uint32_t content_bytes = 0;    // guest bytes fingerprinted for other cars' new mesh keys in one frame (the first mesh of a frame is always made)
+  bool camera_relative = false;
   bool operator==(const Limits&) const = default;
   bool On() const { return cars != 0 && radius > 0.0; }
 };
@@ -104,6 +105,17 @@ inline Limits LimitsFor(gpu_class::GpuClass cls, int cars_override, double radiu
     limits.radius = std::min(radius_override, kMaxRadius);
   }
   limits.instances = std::min<uint32_t>(limits.instances, rr::kMaxInstances);
+  return limits;
+}
+
+// Keep the per-frame staging budgets while increasing the resident instance budget.
+inline Limits ShadowLimits(Limits limits, bool coverage, bool overridden) {
+  if (coverage && !overridden && limits.On()) {
+    limits.cars = kShadowCars;
+    limits.radius = kShadowRadius;
+    limits.instances = kShadowCars * 160u;
+    limits.camera_relative = true;
+  }
   return limits;
 }
 
@@ -807,7 +819,8 @@ inline std::string Describe(const Limits& limits) {
   if (!limits.On()) {
     return "no other cars";
   }
-  return std::to_string(limits.cars) + " cars within " + std::to_string(int(limits.radius + 0.5)) + " m of the player, at most " +
+  const char* origin = limits.camera_relative ? "the camera" : "the player";
+  return std::to_string(limits.cars) + " cars within " + std::to_string(int(limits.radius + 0.5)) + " m of " + origin + ", at most " +
          std::to_string(limits.instances) + " instances, parts under " + std::to_string(limits.min_indices) + " indices left out, " +
          std::to_string(limits.stage_triangles) + " triangles and " + std::to_string(limits.content_bytes / 1024u) +
          " KiB of fingerprints a frame for a new car";

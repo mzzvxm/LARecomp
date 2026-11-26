@@ -85,7 +85,7 @@ static const uint kProbeCars = 4;
 static const uint kProbeWordsPerCar = 8;
 // The scope (car_rt_scene_rules.h): what the other cars' boxes are grown by, how many there may be, the flag of the player's box.
 static const float kScopeBoxMargin = 0.15f;
-static const uint kScopeMaxOtherBoxes = 8;
+static const uint kScopeMaxOtherBoxes = 16;
 static const uint kScopeFlagPlayerBox = 1u;
 static const uint kScopeOutside = 0u;
 static const uint kScopePlayer = 1u;

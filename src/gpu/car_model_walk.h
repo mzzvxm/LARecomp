@@ -53,6 +53,7 @@ class GuestReader;  // car_model_walk.cpp: the bounds-checked reader of guest me
 
 // mcla_gpu_car_model_walk: 0 = off, N = walk and log every N-th guest frame.
 uint32_t Interval();
+bool ReadMainViewEye(std::array<double, 3>& eye);
 
 // ---------------------------------------------------------------------------
 // PRODUCTION (RT-MODEL-CARS phase 2): the cars of the ray traced scene from the cars' own model data
@@ -151,7 +152,7 @@ class Walker {
   bool active() const { return active_ || production_frame_; }
   // A main-view draw that writes the vehicle stencil ID `id`, inside the draw's call.
   // `world`: the draw's own model-to-world where the caller made it (a rigid draw), for the placement check; null otherwise.
-  void OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world = nullptr);
+  void OnVehicleDraw(const DrawView& view, const XenosState& state, uint32_t id, const temporal::Mat4* world = nullptr, const double* selection_eye = nullptr);
   // The guest present: compare and log.
   void FinishFrame();
   // The renderer shuts down.
@@ -223,9 +224,9 @@ class Walker {
   };
 
   void RunWalk();
-  void RunProduction();
+  void RunProduction(const double* selection_eye);
   // The traffic part of the production walk: appends the traffic and parked cars near the player to walked_cars_ (guest memory read in the draw's call).
-  void AddTraffic(const GuestReader& mem, const Production& prod, double scan, uint32_t min_indices, uint32_t per_car);
+  void AddTraffic(const GuestReader& mem, const Production& prod, const double origin[3], double scan, uint32_t min_indices, uint32_t per_car);
   // The calibration and the proof of the wheels' and the traffic's placements against the draws of the frame (in the frames that calibrate).
   void ResolveParts(const std::vector<const CarWalk*>& usable, const std::vector<uint32_t>& index_of, const car_model_rt::Assignment& assigned, const temporal::Mat4& view,
                     bool flip_z, ProofReport* report);

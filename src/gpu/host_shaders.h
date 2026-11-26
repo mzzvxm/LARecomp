@@ -54,6 +54,9 @@
 #include "ao_temporal_ps.hlsl.dxil.h"
 #include "car_history_ms_ps.hlsl.dxil.h"
 #include "car_history_ms_shared_ps.hlsl.dxil.h"
+#include "car_history_tiles_cs.hlsl.dxil.h"
+#include "car_history_tiles_ms_cs.hlsl.dxil.h"
+#include "car_history_tiles_ms_shared_cs.hlsl.dxil.h"
 #include "car_history_ps.hlsl.dxil.h"
 #include "car_rt_ao_cs.hlsl.dxil.h"
 #include "city_rt_shadow_cs.hlsl.dxil.h"
@@ -255,6 +258,9 @@
 #include "ao_temporal_ps.hlsl.spirv.h"
 #include "car_history_ms_ps.hlsl.spirv.h"
 #include "car_history_ms_shared_ps.hlsl.spirv.h"
+#include "car_history_tiles_cs.hlsl.spirv.h"
+#include "car_history_tiles_ms_cs.hlsl.spirv.h"
+#include "car_history_tiles_ms_shared_cs.hlsl.spirv.h"
 #include "car_history_ps.hlsl.spirv.h"
 #include "car_rt_ao_cs.hlsl.spirv.h"
 #include "city_rt_shadow_cs.hlsl.spirv.h"
@@ -910,6 +916,14 @@ inline HostShaderBlob CarHistoryPixelShader(uint32_t pass) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ps);
     case 1: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_ps);
     default: return MCLA_GPU_HOST_SHADER_BLOB(car_history_ms_shared_ps);
+  }
+}
+
+inline HostShaderBlob CarHistoryTileShader(uint32_t pass) {
+  switch (pass) {
+    case 0: return MCLA_GPU_HOST_SHADER_BLOB(car_history_tiles_cs);
+    case 1: return MCLA_GPU_HOST_SHADER_BLOB(car_history_tiles_ms_cs);
+    default: return MCLA_GPU_HOST_SHADER_BLOB(car_history_tiles_ms_shared_cs);
   }
 }
 

@@ -105,9 +105,12 @@ float3 ReadColour(int2 p) {
 #endif
 }
 
-float4 main(float4 position : SV_Position) : SV_Target {
+int2 SourcePixel(float2 position) {
   const float divisor = max(g_push.sizes.z, 1.0f);
-  const int2 p = min(int2(position.xy * divisor), int2(g_push.sizes.xy) - 1);
+  return min(int2(position * divisor), int2(g_push.sizes.xy) - 1);
+}
+
+uint VehicleId(int2 p) {
   uint id = 0u;
   if (g_push.slots.z != kNoSlot) {
 #if CAR_HISTORY_MS
@@ -116,7 +119,55 @@ float4 main(float4 position : SV_Position) : SV_Target {
     id = StencilOf(g_utextures[g_push.slots.z].Load(int3(p, 0))) >> 2;
 #endif
   }
-  if (g_push.slots2.y != 0u) {
+  return id;
+}
+
+float4 HistoryValue(int2 p) {
+  return float4(HeldColour(ReadColour(p)), LinearDistance(ReadStored(p)));
+}
+
+#ifdef CAR_HISTORY_COMPUTE
+// One 16x16 workgroup owns one tile. The exact stencil sample covers hand and
+// interior pixels even if the RT mesh or its projected bounds are incomplete.
+#ifdef __spirv__
+[[vk::image_format("rgba16f")]]
+#endif
+RWTexture2D<float4> g_history : register(u0, space4);
+#ifdef __spirv__
+[[vk::image_format("r32f")]]
+#endif
+RWTexture2D<float> g_tiles : register(u1, space4);
+groupshared uint active_tile;
+groupshared bool write_previous_tile;
+
+[numthreads(16, 16, 1)]
+void main(uint3 id : SV_DispatchThreadID, uint3 group : SV_GroupID, uint lane : SV_GroupIndex) {
+  if (lane == 0u) {
+    active_tile = 0u;
+    write_previous_tile = true;
+    if (g_push.slots2.y == 0u) write_previous_tile = g_tiles[group.xy] != 0.0f;
+  }
+  GroupMemoryBarrierWithGroupSync();
+
+  const bool inside = all(id.xy < g_push.slots2.zw);
+  const int2 p = SourcePixel(float2(id.xy) + 0.5f);
+  const uint stencil = inside ? VehicleId(p) : 0u;
+  const bool vehicle = stencil >= kFirstVehicleId && stencil <= kLastVehicleId;
+  if (vehicle) InterlockedOr(active_tile, 1u);
+  GroupMemoryBarrierWithGroupSync();
+
+  if (lane == 0u) g_tiles[group.xy] = float(active_tile);
+  if (inside && (write_previous_tile || active_tile != 0u)) {
+    g_history[id.xy] = vehicle ? HistoryValue(p) : 0.0f;
+  }
+}
+#else
+float4 main(float4 position : SV_Position) : SV_Target {
+  if (g_push.slots2.y == 2u) return 0.0f;  // Clear the previous parked-car rectangles.
+
+  const int2 p = SourcePixel(position.xy);
+  const uint id = VehicleId(p);
+  if (g_push.slots2.y == 1u) {
     // the mark draw (RT-PARKED-PAINT): the world's texels of a parked car's rectangle that are at the car's distance; no stencil plane, no mark. The depth is read first and the colour only for a texel that is marked
     // (the multisampled colour is a loop over the samples).
     if (id != 0u || g_push.slots.z == kNoSlot) {
@@ -134,22 +185,6 @@ float4 main(float4 position : SV_Position) : SV_Target {
     }
     return float4(0.0f, 0.0f, 0.0f, 0.0f);  // not a vehicle: nothing the paint reads
   }
-#if CAR_HISTORY_MS == 2
-  // The depth and stencil planes are multisampled, the colour is the shared screen products' colour_post at the picture's size (screen_shared.h; hlsl/screen_colour_ps.hlsl made it with the
-  // loop below, in the same order): one load of the pixel.
-  const float stored = g_textures_ms[g_push.slots.x].Load(p, g_push.slots2.x).r;
-  const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;
-#elif CAR_HISTORY_MS
-  const uint samples = max(g_push.slots.w, 1u);
-  const float stored = g_textures_ms[g_push.slots.x].Load(p, g_push.slots2.x).r;
-  float3 sum = float3(0.0f, 0.0f, 0.0f);
-  [loop] for (uint s = 0u; s < samples; ++s) {
-    sum += g_textures_ms[g_push.slots.y].Load(p, s).rgb;
-  }
-  const float3 colour = sum / float(samples);
-#else
-  const float stored = g_textures[g_push.slots.x].Load(int3(p, 0)).r;
-  const float3 colour = g_textures[g_push.slots.y].Load(int3(p, 0)).rgb;
-#endif
-  return float4(HeldColour(colour), LinearDistance(stored));
+  return HistoryValue(p);
 }
+#endif

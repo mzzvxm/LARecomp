@@ -222,7 +222,7 @@ class CarRtScene final : public car_frame::Listener {
   // next, and asks CarFrame to collect the car's draws.
   void Request(bool uniform_paint = false);
   // The car frame's collection only (the scene service's: it keeps the wants by consumer itself).
-  void RequestCollect();
+  void RequestCollect(bool shadow_coverage = false);
 
   // The Scene's hooks, as car_selfrefl.h's: the game's motion blur draw and the composite come after the trigger, the present ends the frame.
   void OnAnchor() { anchor_seen_ = true; }
@@ -453,6 +453,7 @@ class CarRtScene final : public car_frame::Listener {
   uint64_t generation_ = 0;  // bumped when everything is given back: a deferred free of an older generation is dropped
   bool requested_ = false;
   bool uniform_paint_requested_ = false;
+  bool shadow_coverage_requested_ = false;
   bool requested_prev_ = false;
   uint32_t idle_frames_ = 0;
   bool anchor_seen_ = false;

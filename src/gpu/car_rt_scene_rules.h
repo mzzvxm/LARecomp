@@ -43,7 +43,7 @@ namespace mcla::gpu::car_rt_rules {
 // ---------------------------------------------------------------------------
 
 // Instances of the top level and rows of the table: the player's car is about 195 rigid draws (perf/CAR-RT-SPIKE.md section 10).
-inline constexpr uint32_t kMaxInstances = 1024;
+inline constexpr uint32_t kMaxInstances = 3072;
 // A mesh beyond these is not built (one draw of a car has a few thousand triangles).
 inline constexpr uint32_t kMaxMeshVertices = 1u << 20;
 inline constexpr uint32_t kMaxMeshTriangles = 400000;
@@ -525,7 +525,7 @@ inline constexpr double kNearFarTolerance = 0.02;
 // by kScopeBoxMargin. A pixel outside every box is of a car outside the selection. A box is an axis aligned box in view space, so a pixel of an
 // unkept car right beside a kept one can fall in the kept car's box (it is then counted, and may show as a miss: the check errs on the strict side).
 inline constexpr float kScopeBoxMargin = 0.15f;  // what every car's box is grown by (the player's on the host, the other cars' in the shader)
-inline constexpr uint32_t kScopeMaxOtherBoxes = 8;  // car_rt_instances_rules.h kMaxCars
+inline constexpr uint32_t kScopeMaxOtherBoxes = 16;  // car_rt_instances_rules.h kShadowCars
 inline constexpr uint32_t kScopeOutside = 0;
 inline constexpr uint32_t kScopePlayer = 1;
 inline constexpr uint32_t kScopeOther = 2;
