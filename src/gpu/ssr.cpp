@@ -87,6 +87,7 @@ void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasse
   frames_ring_ = frames;
   handoff_builder_.begin();
   handoff_builder_.addByteAddressBuffer(0);
+  handoff_builder_.addByteAddressBuffer(1);
   handoff_builder_.end();
   heap_ = &heap;
   passes_ = &passes;
@@ -96,6 +97,7 @@ void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasse
   failed_.fill(false);
   ready_ = false;
   if (frames) {
+    classifier_.Initialize(device, *frames, heap, passes, handoff_builder_);
     regen_pass_.Initialize(device, *frames, heap, passes, pass_timing);   // RG-3: Direct3D 12 only (nothing is made on another backend)
   }
   // The host pass layout (host_passes.h) with a push block of 128 bytes instead of its 64, as the occlusion's: the four texture sets, the sampler set, the push range at (b0, space4), for both
@@ -154,6 +156,8 @@ void ScreenReflections::Shutdown() {
     slot.set.reset();
     slot.buffer.reset();
   }
+  classifier_.Shutdown();
+  classify_key_.valid = false;
   frames_ring_ = nullptr;
   resolves_ = nullptr;
   reuse_key_.valid = false;
@@ -301,7 +305,7 @@ void ScreenReflections::Bind(plume::RenderCommandList* list) const {
   }
 }
 
-plume::RenderDescriptorSet* ScreenReflections::UploadHandoff(const reflection_handoff::Frame& handoff) {
+plume::RenderDescriptorSet* ScreenReflections::UploadHandoff(const reflection_handoff::Frame& handoff, bool rt_tiles) {
   if (!frames_ring_ || !device_ || frames_ring_->slot() >= handoff_slots_.size()) {
     return nullptr;
   }
@@ -313,11 +317,16 @@ plume::RenderDescriptorSet* ScreenReflections::UploadHandoff(const reflection_ha
     return nullptr;
   }
   if (!slot.set) {
-    slot.set = device_->CreateDescriptorSet(handoff_builder_, 1, 0, "ssr handoff set");
+    slot.set = device_->CreateDescriptorSet(handoff_builder_, 2, 0, "ssr handoff set");
     if (!slot.set) {
       return nullptr;
     }
     slot.set->setBuffer(0, slot.buffer.get(), sizeof(handoff));
+  }
+  if (rt_tiles && classifier_.TileList()) {
+    slot.set->setBuffer(1, classifier_.TileList(), classifier_.TileListBytes());
+  } else {
+    slot.set->setBuffer(1, slot.buffer.get(), sizeof(handoff));
   }
   void* mapped = slot.buffer->map();
   if (!mapped) {
@@ -328,7 +337,8 @@ plume::RenderDescriptorSet* ScreenReflections::UploadHandoff(const reflection_ha
   return slot.set.get();
 }
 
-void ScreenReflections::DrawPass(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline, const ssr::Push& push) {
+void ScreenReflections::DrawPass(plume::RenderCommandList* list, HostImage& image, const plume::RenderPipeline* pipeline,
+                                 const ssr::Push& push, bool compute_read) {
   // The same sequence as HostPasses::DrawInto with this layout: the image to a colour target, cleared on its first use (a new render target is initialised before it is drawn into, D3D12 debug
   // layer id 1422), one triangle over all of it, back to a shader read.
   const bool first_use = image.layout == plume::RenderTextureLayout::UNKNOWN;
@@ -349,7 +359,9 @@ void ScreenReflections::DrawPass(plume::RenderCommandList* list, HostImage& imag
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
-  list->barriers(plume::RenderBarrierStage::GRAPHICS, plume::RenderTextureBarrier(image.texture.get(), plume::RenderTextureLayout::SHADER_READ));
+  namespace Stage = plume::RenderBarrierStage;
+  list->barriers(compute_read ? Stage::GRAPHICS_AND_COMPUTE : Stage::GRAPHICS,
+                 plume::RenderTextureBarrier(image.texture.get(), plume::RenderTextureLayout::SHADER_READ));
   image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
@@ -536,6 +548,8 @@ bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, b
 }
 
 void ScreenReflections::ReleaseImages() {
+  classifier_.Release();
+  classify_key_.valid = false;
   if (!passes_) {
     return;
   }
@@ -561,7 +575,7 @@ uint64_t ScreenReflections::HeldBytes() const {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
   }
-  return bytes + rt_.HeldBytes() + denoise_.HeldBytes();
+  return bytes + classifier_.HeldBytes() + rt_.HeldBytes() + denoise_.HeldBytes();
 }
 
 // ---------------------------------------------------------------------------
@@ -590,7 +604,12 @@ void ScreenReflections::BeginFrame() {
   // RR-INT: the DENOISER row's board (denoiser_setting.h): this effect is on this frame. It is a consumer of Ray Reconstruction (rr::kConsumers: its raw mode exists, RR-4a), and the plan reads the
   // board at the temporal system's frame boundary, which comes right after this call (frame_order.h kBeginSsr, kBeginTemporal: lag 0). Only a flag is set; with the plan not RR nothing else changes.
   denoiser::NoteConsumer(rr::Consumer::kSsr, level_ != ssr::Level::kOff);
-  rt_.BeginFrame(level_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
+  const bool classify = larecomp::settings::mcla_gpu_ssr_classify.Get();
+  if (classify_enabled_ != classify) {
+    classify_key_.valid = last_key_.valid = regen_key_.valid = false;
+    classify_enabled_ = classify;
+  }
+  rt_.BeginFrame(level_, classify_enabled_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
   // CITY-RT R6: the fallback is a consumer of the DENOISER row too (rr::kConsumers kCityRtReflections: its one ray a pixel is what Ray Reconstruction is for). `wanted` is the fallback's own answer: the effect is on, the
   // card traces and the setting does not say off; the plan reads the board at the temporal system's frame boundary, as for the effect itself.
   denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());
@@ -619,7 +638,7 @@ void ScreenReflections::BeginFrame() {
   if (screen_) {
     handoff_enabled_ = larecomp::settings::mcla_gpu_ssr_handoff.Get();
     uint32_t products = ssr::WantedProducts(level_);
-    if (products != 0 && handoff_enabled_) {
+    if (products != 0 && (handoff_enabled_ || classify_enabled_)) {
       products |= screen::ProductBit(screen::kHistory);
     }
     screen_->Want(screen::Consumer::kReflections, products);
@@ -977,9 +996,13 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   const HostImage* prev_depth = screen_->ReflectionHistoryDepth(0);
   const bool fits = prev_depth && prev_depth->width == width && prev_depth->height == height &&
       reuse_render_ == sf.render && reuse_samples_ == sf.host_samples;
+  // CHECK: validate tile history across camera cuts, exposure, resize and
+  // denoiser changes, and measure the REF-7 costs and image rows on a device.
   // CHECK: verify depth/colour alignment on pan, camera cut, dynamic resize,
   // MSAA changes and a change of upscaler or exposure on both APIs.
-  if (handoff::ReuseHistory(handoff_enabled_, reuse_key_.valid && reuse_key_.frame + 1 == now.frame,
+  const bool classify = classify_enabled_ && !debug_view && !decision.stub && classifier_.Prepare(width, height, rt);
+  if (!classify_enabled_) classifier_.Release();
+  if (handoff::ReuseHistory(handoff_enabled_ || classify, reuse_key_.valid && reuse_key_.frame + 1 == now.frame,
                             motion_known, fits && reuse_key_.size[0] == width && reuse_key_.size[1] == height,
                             same_lens, sf.Has(screen::kHistory))) {
     for (uint32_t level = 0; level < handoff::kHistoryLevels; ++level) {
@@ -998,15 +1021,54 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     handoff_frame.previous_projection = reuse_projection_;
     std::copy_n(cam.motion, handoff_frame.motion.size(), handoff_frame.motion.begin());
   }
-  handoff_set_ = UploadHandoff(handoff_frame);
+  if (classify) {
+    handoff_frame.classify_flags = handoff::kClassifyEnabled;
+    if (!rt && !raw && !regen && handoff_enabled_) handoff_frame.classify_flags |= handoff::kClassifySparse;
+    const bool history = classifier_.HistoryValid() && handoff_frame.previous_levels > 0 &&
+        ssr::HistoryUsable(classify_key_, now, motion_known) && classify_key_.generation == now.generation &&
+        classify_level_ == level_ &&
+        classify_handoff_ == handoff_enabled_ && classify_rt_ == rt && classify_raw_ == (raw || regen);
+    if (history) {
+      handoff_frame.classify_flags |= handoff::kClassifyHistory;
+      handoff_frame.classify_history = classifier_.HistorySlot();
+      handoff_frame.classify_plan = classifier_.PlanSlot();
+    }
+    handoff_frame.classify_inputs = ssr::PackSlots(trace_.slot, rt ? confidence_.slot : screen::kNoSlot);
+    handoff_frame.classify_group_mask = rt ? rt_.resolved().cell.group_mask : 0u;
+    handoff_frame.classify_stride = classifier_.Stride();
+  }
+  handoff_set_ = UploadHandoff(handoff_frame, classify && rt);
   if (!handoff_set_) {
     return false;
   }
 
+  if ((handoff_frame.classify_flags & handoff::kClassifyHistory) != 0u) {
+    pass_timing_->Mark(list, "ssr reuse");
+    classifier_.Reproject(*list, *handoff_set_, trace_push);
+  }
   pass_timing_->Mark(list, "ssr trace");
   bool rt_recorded = false;   // the fallback's compute passes were recorded in this frame
   if (rt) {
     DrawTraceMrt(list, capture_pipeline ? capture_pipeline : trace_rt_pipeline, trace_push, true, capture_pipeline != nullptr);
+  } else if (capture_pipeline) {
+    DrawTraceMrt(list, capture_pipeline, trace_push, false, true);
+  } else {
+    DrawPass(list, trace_, trace_pipeline, trace_push, classify);
+  }
+
+  if (classify) {
+    pass_timing_->Mark(list, "ssr classify");
+    classifier_.Record(*list, *handoff_set_, trace_push, rt);
+    classify_key_ = now;
+    classify_level_ = level_;
+    classify_handoff_ = handoff_enabled_;
+    classify_rt_ = rt;
+    classify_raw_ = raw || regen;
+  } else {
+    classify_key_.valid = false;
+  }
+
+  if (rt) {
     // the ray traced fallback: the pixels the picture could not speak for, traced into the city and added to the trace image (its two compute passes' time is the label 'ssr rt': it runs to the next mark)
     pass_timing_->Mark(list, "ssr rt");
     ScreenReflectionsRt::Frame rt_frame;
@@ -1015,6 +1077,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     rt_frame.confidence = &confidence_;
     rt_frame.handoff = handoff_set_;
     rt_frame.capture_hit = capture_pipeline ? &capture_hit_ : nullptr;
+    rt_frame.indirect = classify ? classifier_.Dispatch() : nullptr;
     rt_frame.push = trace_push;
     rt_frame.width = width;
     rt_frame.height = height;
@@ -1023,10 +1086,6 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     rt_frame.screen = sf.lin_depth_slot[0] != screen::kNoSlot;
     rt_frame.frame = frames_run_;
     rt_recorded = rt_.Record(rt_frame);   // false where the frame has no top level: the trace already contains the raster fallback
-  } else if (capture_pipeline) {
-    DrawTraceMrt(list, capture_pipeline, trace_push, false, true);
-  } else {
-    DrawPass(list, trace_, trace_pipeline, trace_push);
   }
 
   // RG-3: the signal and its guides, the runtime's dispatch. Refused (no camera rows, an image, the plan of the dispatch, the runtime): the effect's own accumulation runs below, this frame.
@@ -1207,7 +1266,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   }
   last_handoff_enabled_ = handoff_enabled_;
   reuse_key_ = now;
-  reuse_key_.valid = handoff_enabled_;
+  reuse_key_.valid = handoff_enabled_ || classify;
   reuse_tan_ = {sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1]};
   reuse_projection_ = {sf.camera.lin[0], sf.camera.lin[1], sf.camera.lin[2], sf.camera.lin[3]};
   reuse_render_ = sf.render;
@@ -1371,6 +1430,7 @@ void ScreenReflections::OnPresent() {
     idle_frames_ = 0;
   } else {
     last_key_.valid = false;  // a frame without the effect breaks the history
+    classify_key_.valid = false;
     if ((trace_.texture || accum_[0].texture || accum_[1].texture) && ++idle_frames_ >= kReleaseAfterFrames) {
       ReleaseImages();
       idle_frames_ = 0;

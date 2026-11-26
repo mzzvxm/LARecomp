@@ -293,6 +293,10 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(NativeDeviceOf(device));
 }
 
+std::unique_ptr<IndirectCompute> CreateIndirectCompute(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(CreateIndirectCompute(device));
+}
+
 void* NativeListHandle(plume::RenderCommandList* list) {
   return MCLA_GPU_ACTIVE(NativeListHandle(list));
 }

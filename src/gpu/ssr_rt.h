@@ -40,6 +40,10 @@
 
 namespace mcla::gpu {
 
+namespace backend {
+class IndirectCompute;
+}
+
 class BindlessHeap;
 class CarRtScene;
 class Device;
@@ -64,7 +68,7 @@ class ScreenReflectionsRt {
   bool available() const { return ready_; }
 
   // The effect's frame start (ScreenReflections::BeginFrame): `ssr_level` the effect's level now. Reads the debug word, asks the scene service in a frame the fallback is on.
-  void BeginFrame(ssr::Level ssr_level);
+  void BeginFrame(ssr::Level ssr_level, bool classified);
   bool wanted() const { return ready_ && resolved_.level != ssr_rt::Level::kOff; }
   const ssr_rt::Resolved& resolved() const { return resolved_; }
 
@@ -76,6 +80,7 @@ class ScreenReflectionsRt {
     HostImage* trace = nullptr;       // RGBA16F storage image at the SSR size, left in a shader-read layout by the trace pass
     const HostImage* confidence = nullptr;  // R8G8_UNORM, the trace pass's second target, shader-read
     plume::RenderDescriptorSet* handoff = nullptr;
+    const backend::IndirectCompute* indirect = nullptr;
     HostImage* capture_hit = nullptr;  // optional R32_UINT trace MRT for VISMET
     ssr::Push push;                   // the trace pass's push block (the road view's word and share set): the fallback adds its words to a copy
     uint32_t width = 0;               // the SSR images' size
@@ -152,6 +157,7 @@ class ScreenReflectionsRt {
   // the frame
   ssr_rt::Resolved resolved_;
   bool shade_cars_ = false;
+  bool classified_ = false;
   ssr_rt::Level logged_level_ = ssr_rt::Level::kOff;
   bool logged_level_once_ = false;
   uint32_t rt_frame_ = 0;                              // frames the passes were recorded (the counters' rotation, the tile order, the thinning)

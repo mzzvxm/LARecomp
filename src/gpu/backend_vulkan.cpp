@@ -563,6 +563,57 @@ NativeDevice NativeDeviceOf(plume::RenderDevice* device) {
   return out;
 }
 
+namespace {
+
+class VulkanIndirectCompute final : public IndirectCompute {
+ public:
+  plume::RenderBuffer* arguments() const override { return buffer.get(); }
+
+  void Dispatch(plume::RenderCommandList& list) const override {
+    const VkCommandBuffer native = static_cast<plume::VulkanCommandList&>(list).vk;
+    if (native == VK_NULL_HANDLE || !buffer || buffer->vk == VK_NULL_HANDLE) return;
+    VkBufferMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+    barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+    barrier.dstAccessMask = VK_ACCESS_INDIRECT_COMMAND_READ_BIT;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.buffer = buffer->vk;
+    barrier.size = VK_WHOLE_SIZE;
+    vkCmdPipelineBarrier(native, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+                         0, 0, nullptr, 1, &barrier, 0, nullptr);
+    vkCmdDispatchIndirect(native, buffer->vk, 0);
+    std::swap(barrier.srcAccessMask, barrier.dstAccessMask);
+    vkCmdPipelineBarrier(native, VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                         0, 0, nullptr, 1, &barrier, 0, nullptr);
+  }
+
+  std::unique_ptr<plume::VulkanBuffer> buffer;
+};
+
+}  // namespace
+
+std::unique_ptr<IndirectCompute> CreateIndirectCompute(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || dev->allocator == VK_NULL_HANDLE) return nullptr;
+  auto buffer = std::make_unique<plume::VulkanBuffer>();
+  buffer->device = dev;
+  buffer->desc = plume::RenderBufferDesc::DefaultBuffer(sizeof(VkDispatchIndirectCommand),
+      plume::RenderBufferFlag::STORAGE | plume::RenderBufferFlag::UNORDERED_ACCESS);
+  VkBufferCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  info.size = sizeof(VkDispatchIndirectCommand);
+  info.usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT;
+  VmaAllocationCreateInfo allocation{};
+  allocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  if (vmaCreateBuffer(dev->allocator, &info, &allocation, &buffer->vk, &buffer->allocation,
+                      &buffer->allocationInfo) != VK_SUCCESS) return nullptr;
+  buffer->setName("ssr tile dispatch arguments");
+  auto result = std::make_unique<VulkanIndirectCompute>();
+  result->buffer = std::move(buffer);
+  return result;
+}
+
 void* NativeListHandle(plume::RenderCommandList* list) {
   const auto* l = static_cast<const plume::VulkanCommandList*>(list);
   return l ? reinterpret_cast<void*>(l->vk) : nullptr;

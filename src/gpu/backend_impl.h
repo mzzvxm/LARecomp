@@ -59,6 +59,7 @@ std::string DefaultAdapterName();
 RenderingAdapter DescribeRenderingAdapter(const std::string& preferred_adapter);
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 void* NativeListHandle(plume::RenderCommandList* list);
+std::unique_ptr<IndirectCompute> CreateIndirectCompute(plume::RenderDevice* device);
 void* NativeTextureHandle(const plume::RenderTexture* texture);
 NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);
@@ -111,6 +112,7 @@ bool NeedsSwapChainResize(const plume::RenderSwapChain& swap_chain, bool needs_r
 std::string DefaultAdapterName();
 NativeDevice NativeDeviceOf(plume::RenderDevice* device);
 void* NativeListHandle(plume::RenderCommandList* list);
+std::unique_ptr<IndirectCompute> CreateIndirectCompute(plume::RenderDevice* device);
 void* NativeTextureHandle(const plume::RenderTexture* texture);
 NativeImage NativeImageOf(const plume::RenderTexture* texture, ImageUse use);
 void InvalidateAfterExternalWork(plume::RenderCommandList* list);

@@ -39,8 +39,18 @@ struct Frame {
   float previous_exposure_scale = 1.0f;
   std::array<float, 4> previous_projection{};
   std::array<float, 12> motion{};
+  uint32_t classify_flags = 0;
+  uint32_t classify_history = 0;
+  uint32_t classify_inputs = 0;
+  uint32_t classify_group_mask = 0;
+  uint32_t classify_stride = 0;
+  uint32_t classify_plan = 0;
 };
-static_assert(sizeof(Frame) == 128);
+static_assert(sizeof(Frame) == 152);
+static_assert(offsetof(Frame, classify_flags) == 128 && offsetof(Frame, classify_stride) == 144);
+inline constexpr uint32_t kClassifyEnabled = 1u;
+inline constexpr uint32_t kClassifyHistory = 2u;
+inline constexpr uint32_t kClassifySparse = 4u;
 static_assert(offsetof(Frame, previous_hiz) == 24 && offsetof(Frame, previous_tan) == 48 &&
               offsetof(Frame, previous_projection) == 64 && offsetof(Frame, motion) == 80);
 

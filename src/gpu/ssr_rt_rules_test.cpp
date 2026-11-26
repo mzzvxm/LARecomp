@@ -914,8 +914,8 @@ void TestShaderSources(const std::string& dir) {
             DefineOf(common, "SSR_W_RT_THRESHOLD") == rt::push::kThreshold && DefineOf(common, "SSR_W_RT_FRAME") == rt::push::kFrame && DefineOf(common, "SSR_RT_STAT_WORDS") == rt::buf::kStatWords,
         "the text of ssr_rt_common.hlsli holds the header's words");
   // one ray: the trace and the fallback take it from the same function
-  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") &&
-            Has(trace, "pattern_rays = (stable || single_ray || handoff) ? SsrRays() : rays") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays)") &&
+  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, pattern_rays)") &&
+            Has(trace, "pattern_rays = (stable || single_ray || handoff || classified) ? SsrRays() : rays") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays)") &&
             Has(trace, "weight *= SsrRtHistoryEdge(confidence, SsrF(SSR_W_RT_THRESHOLD))"),
         "native fallback regenerates SSR rays even when it budgets fewer, and fades at the candidate cutoff");
   Check(!Has(trace_ps, "SsrSampleReflection("), "the trace has no copy of the ray's formula left");
@@ -925,7 +925,7 @@ void TestShaderSources(const std::string& dir) {
             Count(trace_ps, "g_confidence") == 3 && Count(trace_ps, "conf_sum") == 4 && Count(trace_ps, "rt_group") == 2,
         "the confidence target's code is all under #if SSR_RT (the plain compilations hold none of it)");
   Check(Has(trace_ps, "SV_Target0") && Has(trace_ps, "SV_Target1") &&
-            Has(trace_ps, "SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / float(rays))"),
+            Has(trace_ps, "SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / divisor)"),
         "the confidence target holds the group and first ray's residual share in R, with mean confidence in G");
   // the select pass
   Check(Has(select, "SSR_RT_FLAG_RESET") && Has(select, "SsrRtTileOf(") && Has(select, "SsrRtKeep(capacity") && Has(select, "SsrRtThinHash(pix.x, pix.y, rt_frame, (SsrW(SSR_W_FRAME) & SSR_FRAME_LEGACY_NOISE) != 0u)") && Has(select, "InterlockedAdd(gs_total") && Has(select, "InterlockedAdd(gs_kept") &&
@@ -1003,8 +1003,14 @@ void TestHostSources(const std::string& dir) {
         "the trace image goes to a storage layout, the select pass runs, then the trace pass, then the image goes back to a shader read");
   Check(Count(rt_cpp, "list->barriers(Stage::COMPUTE, between, 2);") >= 2 && Has(rt_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read, 1);"),
         "the control words and the list are barriered between the passes and the trace image is readable by the graphics passes after");
-  Check(Has(rt_cpp, "reset_pending_") && Has(rt_cpp, "pk::kFlagReset") && Has(rt_cpp, "ssr_rt::GroupsFor(capacity)") && Has(rt_cpp, "ssr_rt::CapacityFor(cell, governor_.step(), rays)") && Has(rt_cpp, "ssr_rt::RaysUsed(cell,"),
-        "the first frame clears the control words; the dispatch is the capacity's, the capacity the governor's step's, the rays the trace's own");
+  Check(Has(rt_cpp, "reset_pending_") && Has(rt_cpp, "pk::kFlagReset") && Has(rt_cpp, "ssr_rt::GroupsFor(capacity)") &&
+            Has(rt_cpp, "classified_ ? 0u : governor_.step()") && Has(rt_cpp, "ssr_rt::CapacityFor(cell, step, rays)") &&
+            Has(rt_cpp, "ssr_rt::RaysUsed(cell,"),
+        "the first frame clears the control words and the cap uses a fixed step with classification");
+  const size_t indirect = At(rt_cpp, "in.indirect->Dispatch(*list);");
+  Check(select < indirect && indirect < trace_pipe && Has(rt_cpp, "reset_pending_ || in.indirect") &&
+            Has(rt_cpp, "reset.Set(pk::kCap, 0);"),
+        "the indirect list is selected before tracing and clears its counters even when empty");
   Check(Has(rt_cpp, "governor_.Update(now, double(cell.budget_ms))") && Has(rt_cpp, "governor_.Note(ms)") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 0);") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 1);") &&
             Has(rt_cpp, "frames_->RetireAction("),
         "the governor is fed by two timestamps round the passes, read once the list has completed");
@@ -1012,13 +1018,18 @@ void TestHostSources(const std::string& dir) {
   Check(Has(rt_cpp, "service_->Want(rt_scene::Consumer::kSsrFallback, ssr_rt::NeedsFor(resolved_.level, shade_cars_))") && Has(rt_cpp, "if (wanted() && service_) {") &&
             Has(rt_cpp, "ssr_rt::CarHitsEnabled(now.cell, larecomp::settings::mcla_gpu_ssr_rt_cars.Get())") && Has(rt_cpp, "if (shade_cars_) flags |= pk::kFlagCars;"),
         "the frame's resolved car setting is shared by the scene request and trace flags");
-  Check(Has(rt_cpp, "static LiveText text(\"mcla_gpu_ssr_rt\");") && Has(rt_cpp, "ssr_rt::Resolve({ssr_level, ssr_rt::ParseChoice(Setting().Get()), gpu_class::CurrentRtRung()})"), "the level is the setting's word, the effect's level and the card's rung through the rules");
+  Check(Has(rt_cpp, "static LiveText text(\"mcla_gpu_ssr_rt\");") && Has(rt_cpp, "ssr_rt::ParseChoice(Setting().Get())") &&
+            Has(rt_cpp, "ssr_rt::ResolveFixed(ssr_level, choice, ready_)") &&
+            Has(rt_cpp, "ssr_rt::Resolve({ssr_level, choice, gpu_class::CurrentRtRung()})"),
+        "the classified path resolves work from the chosen level and ray-query support");
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
   Check(Has(ssr_cpp, "if (rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
-            Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push);\n  }"),
+            Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push, classify);\n  }"),
         "without the fallback the images are the old ones (default flags, no confidence) and the pass is the plain one");
-  Check(Has(ssr_cpp, "rt_.BeginFrame(level_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") && Has(ssr_cpp, "return bytes + rt_.HeldBytes() + denoise_.HeldBytes();"), "the effect's frame start, present, shutdown and memory call the fallback");
+  Check(Has(ssr_cpp, "rt_.BeginFrame(level_, classify_enabled_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") &&
+            Has(ssr_cpp, "return bytes + classifier_.HeldBytes() + rt_.HeldBytes() + denoise_.HeldBytes();"),
+        "the effect's frame start, present, shutdown and memory call the fallback");
   const size_t m_trace = At(ssr_cpp, "Mark(list, \"ssr trace\")");
   const size_t m_rt = At(ssr_cpp, "Mark(list, \"ssr rt\")");
   const size_t m_temporal = At(ssr_cpp, "Mark(list, \"ssr temporal\")");

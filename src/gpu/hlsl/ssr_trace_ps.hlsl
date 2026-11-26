@@ -26,6 +26,7 @@
 
 #include "ssr_pass.hlsli"
 #include "ssr_handoff.hlsli"
+#include "ssr_classify.hlsli"
 #include "ssr_reuse.hlsli"
 #if SSR_REFLHIT
 #include "reflhit.hlsli"
@@ -50,6 +51,14 @@ uint SsrHitClass(int2 p, float z, bool vehicle) {
 #include "ssr_rt_common.hlsli"
 static float2 g_confidence = float2(0.0f, 0.0f);   // the second target: left at 0 by every early return (nothing traced here)
 #endif
+
+bool SsrTileSsrProbe(int2 tile) {
+  const uint frame = SsrW(SSR_W_FRAME) & ~SSR_FRAME_LEGACY_NOISE;
+  // Spread one probe per tile across each four-frame block. The phase
+  // moves between blocks using the same R2 sequence as the SSR rays.
+  const float phase = SsrNoise2(tile.x, tile.y, frame >> 2u, 0u, 1u);
+  return SsrTileProbe(frame, uint(phase * 4.0f));
+}
 
 float4 SsrTraceBody(float4 position) {
   const int2 pix = int2(position.xy);
@@ -127,7 +136,19 @@ float4 SsrTraceBody(float4 position) {
   const float colour_levels = float(max(SsrColourLevels(), 1u) - 1u);
   const float bias = kSsrNormalBias + kSsrNormalBiasShare * z_block;
   const float3 origin = pc + n * bias;
-  const uint rays = SsrRays();
+  const uint pattern_rays = SsrRays();
+  uint rays = pattern_rays;
+  const uint classify = SsrClassifyFlags();
+  if ((classify & kSsrClassifyEnabled) != 0u) {
+    tp.max_iter = SsrTileIterations(tp.max_iter, smoothness);
+    const bool sparse = (classify & kSsrClassifySparse) != 0u;
+    if (pattern_rays > 1u || sparse) {
+      const int2 tile = pix / int(kSsrTileSize);
+      const float4 previous = SsrTileHistory(tile);
+      rays = SsrTileRays(pattern_rays, SsrTileAge(uint(previous.w)), SsrTileMiss(previous.x, previous.y),
+                        previous.z, smoothness, sparse, sparse && SsrTileSsrProbe(tile));
+    }
+  }
   const uint frame = SsrW(SSR_W_FRAME);
   const bool stable = SsrStableTrace();
   const float cap = SsrF(SSR_W_CAP);
@@ -142,9 +163,10 @@ float4 SsrTraceBody(float4 position) {
   float3 sum = float3(0.0f, 0.0f, 0.0f);
   float travelled = kSsrMissLength;   // the nearest hit's distance of the rays (the virtual image's), a miss's where none hit
   bool vehicle_hit = false;
+  bool screen_sky = false;
   uint vehicle_id = 0u;
   SSR_LOOP for (uint ray = 0u; ray < rays; ++ray) {
-    const float3 dir = SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays);   // (a sample that points below the surface is the mirror direction)
+    const float3 dir = SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, pattern_rays);   // (a sample that points below the surface is the mirror direction)
     const float facing = SsrFacingFade(dir.z);
     if (!handoff && facing <= 0.0f) {
       continue;   // a ray that points back at the camera brings nothing (the screen does not show what is behind the surface it hits): not walked
@@ -189,6 +211,7 @@ float4 SsrTraceBody(float4 position) {
         const float fade = SsrEdgeFade(uv.x, uv.y) * SsrFacingFade(dir.z);
         radiance = SsrColour(uv, 0.0f);
         conf = fade;
+        screen_sky = screen_sky || fade > 0.1f;
 #if SSR_REFLHIT
         if (conf > best_fade) screen_id = kReflHitSsrSky;
 #endif
@@ -228,19 +251,28 @@ float4 SsrTraceBody(float4 position) {
       vehicle_id = hit_vehicle;
     }
   }
-  float3 rgb = NgFinite3(sum / float(rays));   // a NaN or an infinity must not reach the cap below (infinity times cap / infinity is NaN) nor the history
+  const float divisor = float(max(rays, 1u));
+  if (rays == 0u) {
+    sum = (fallback.has_planar ? fallback.planar : fallback.env) - fallback.stock;
+  }
+  float3 rgb = NgFinite3(sum / divisor);   // a NaN or an infinity must not reach the cap below (infinity times cap / infinity is NaN) nor the history
   const float peak = max(max(abs(rgb.x), abs(rgb.y)), abs(rgb.z));
   if (peak > cap) {
     rgb *= cap / peak;
   }
-  const float distance_out = clamp(travelled, 0.02f, 60000.0f);
+  float distance_out = clamp(travelled, 0.02f, 60000.0f);
+  if (rays == 0u) {
+    distance_out = kSsrSkippedDistance;
+  } else if (screen_sky && distance_out == kSsrMissLength && (classify & kSsrClassifySparse) != 0u) {
+    distance_out = kSsrScreenSkyDistance;
+  }
 #if SSR_REFLHIT
-  const uint visible = ReflHitHandoffDominant(screen_id, screen_weight / float(rays), reuse_weight / float(rays), kReflHitNone, 0.0f, native);
+  const uint visible = ReflHitHandoffDominant(screen_id, screen_weight / divisor, reuse_weight / divisor, kReflHitNone, 0.0f, native);
   const float screen_fraction = screen_weight / max(screen_weight + reuse_weight, 1.0e-5f);
   g_reflhit = ReflHitPackHandoff(visible, kReflHitNone, screen_id, native, screen_fraction);
 #endif
 #if SSR_RT
-  g_confidence = float2(SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / float(rays)));
+  g_confidence = float2(SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / divisor));
 #endif
   return float4(rgb, SsrPackHit(distance_out, vehicle_hit, vehicle_id));
 }

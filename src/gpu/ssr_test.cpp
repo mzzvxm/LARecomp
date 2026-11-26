@@ -2416,7 +2416,9 @@ void TestSources(const std::string& dir) {
           "mcla_gpu_ssr_blue_noise: a live debug setting, on by default, in the settings header, its alias, the manifest and the meta list");
     Check(Has(cpp, "push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));"),
           "ssr.cpp: the frame word carries the first version's flag when mcla_gpu_ssr_blue_noise is off");
-    Check(Has(common, "SsrNoise1(px, py, frame, ray, rays), SsrNoise2(px, py, frame, ray, rays)") && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)"), "the trace pass gives the noise the ray's number and the rays a pixel (through SsrSampleRay)");
+    Check(Has(common, "SsrNoise1(px, py, frame, ray, rays), SsrNoise2(px, py, frame, ray, rays)") &&
+              Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, pattern_rays)"),
+          "the noise's per-pixel sequence stays the same when classification omits an extra ray");
     Check(Has(common, "#include \"blue_noise.hlsli\"") && Has(common, "static const uint kSsrR2StepA = 3242174889u;") && Has(common, "static const uint kSsrR2StepB = 2447445413u;") &&
               uint32_t(0.7548776662466927 * 4294967296.0) == 3242174889u && uint32_t(0.5698402909980532 * 4294967296.0) == 2447445413u,
           "ssr_common.hlsli: the frame's steps are the R2 sequence's, as 32 bit fractions");
@@ -2462,7 +2464,9 @@ void TestSources(const std::string& dir) {
   Check(Has(scene, "ssr_->BeginFrame();") && scene.find("ssr_->BeginFrame()") < scene.find("gbuffer_->BeginFrame(frame_serial_)") && scene.find("ssr_->BeginFrame()") < scene.find("screen_->BeginFrame(frame_serial_)") &&
             scene.find("local_lights_->BeginFrame()") < scene.find("ssr_->BeginFrame()"),
         "GB-I3: Scene::BeginFrame declares the reflections' wants right after the light pass's and before the G-buffer and the screen owner read them (lag 0)");
-  Check(Has(begin, "products != 0 && handoff_enabled_") && Has(begin, "products |= screen::ProductBit(screen::kHistory)"), "the shared history is asked for only with active handoff");
+  Check(Has(begin, "products != 0 && (handoff_enabled_ || classify_enabled_)") &&
+            Has(begin, "products |= screen::ProductBit(screen::kHistory)"),
+        "active handoff and tile reprojection share the history product");
   const std::string trigger = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
   const size_t first_command = std::min({trigger.find("DrawPass("), trigger.find("list->"), trigger.find("edram_->Transition")});
   const size_t off_return = trigger.find("level_ == ssr::Level::kOff");
@@ -2586,7 +2590,7 @@ void TestSources(const std::string& dir) {
         "ssr_rules.h roadview:: is the road reflection side view's identity (tile, pitch, samples, declared size, format)");
   const size_t road_find = trigger.find("edram_->Find(road_key)");
   const size_t road_transition = trigger.find("edram_->Transition(list, *road_target, plume::RenderTextureLayout::SHADER_READ)");
-  const size_t trace_draw = trigger.find("DrawPass(list, trace_, trace_pipeline, trace_push);");
+  const size_t trace_draw = trigger.find("DrawPass(list, trace_, trace_pipeline, trace_push, classify);");
   const size_t road_share = trigger.find("if (road.share > 0.0f) {");
   Check(road_find != std::string::npos && road_share != std::string::npos && road_share < road_find && road_transition != std::string::npos && road_transition < trace_draw && trace_draw != std::string::npos,
         "ssr.cpp: the road view is looked for only while the share is above 0, and is a shader read before the trace");
