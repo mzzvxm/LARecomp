@@ -2,6 +2,8 @@
 
 #include "gi_integration.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -163,6 +165,7 @@ void GiIntegration::BeginFrame(uint64_t frame) {
 }
 
 bool GiIntegration::OnResolve(const ResolveCache::Summary& summary, plume::RenderCommandList* list, uint32_t frame_slot) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGiField);
   if (field_ == nullptr || list == nullptr || !summary.depth_copy || summary.source == nullptr) {
     return false;
   }

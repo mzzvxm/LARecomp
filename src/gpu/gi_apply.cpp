@@ -2,6 +2,8 @@
 
 #include "gi_apply.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -302,6 +304,7 @@ float GiApply::TakeSsgiShare() {
 float GiApply::LevelStrength() { return LevelNumbers().strength; }
 
 bool GiApply::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool gbuffer_published, uint32_t frame_slot, bool raw_requested, const float* regen_jitter) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGiApply);
   expect_add_ = false;
   const bool recorded = OnTriggerImpl(summary, list, gbuffer_published, frame_slot, raw_requested, regen_jitter);
   if (expect_add_) {

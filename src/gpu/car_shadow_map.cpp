@@ -2,6 +2,8 @@
 
 #include "car_shadow_map.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -535,6 +537,7 @@ void CarShadowMap::NoteSkipped(rules::Why why) {
 }
 
 bool CarShadowMap::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kCarShadow);
   if (!list || !ready_ || !wanted_ || !IsTrigger(record, summary)) {
     return false;
   }

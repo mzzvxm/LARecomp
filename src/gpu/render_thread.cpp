@@ -13,6 +13,7 @@
 
 #include <atomic>
 
+#include "cpu_timing.h"
 #include "cycles.h"
 #include "os/thread_name.h"
 #include "os/thread_qos.h"
@@ -87,6 +88,7 @@ void RenderThread::Main() {
   constexpr uint32_t kRecordsPerClockRead = 64;
   uint32_t records_since_clock = 0;
   ThreadLoad& load = CurrentThreadLoad();
+  cpu_timing::BeginSession();
   while (!stream_.stopped()) {
     // A held present goes out within a record's time of when it is due.
     const int64_t due = executor_->DeferredDue();
@@ -143,6 +145,7 @@ void RenderThread::Main() {
     }
   }
   {
+    cpu_timing::EndSession();
     std::lock_guard lock(exit_mutex_);
     exited_ = true;
   }

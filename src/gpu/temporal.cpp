@@ -2,6 +2,8 @@
 
 #include "temporal.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -2211,6 +2213,7 @@ TemporalSystem::AnchorStatus TemporalSystem::CheckAnchor(const DrawFacts& f, uin
 }
 
 bool TemporalSystem::OnAnchor(const DrawFacts& f, const SharedConstants& shared) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTemporal);
   FrameState& fr = frame_;
   fr.anchor_seen = true;  // the main view's draws are done: no more jitter
   if (fr.anchors++ != 0) {

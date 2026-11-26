@@ -2,6 +2,8 @@
 
 #include "car_frame.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <cmath>
@@ -302,6 +304,7 @@ std::string CarFrame::OthersText() const {
 // the main keys: the Frame would then list the car's draws more than once (the pause view) or twice with another camera (the mirror). Not
 // told apart here; the log line's draw count (about 210 for the parked R34 of the car dump, without the proxies) shows it.
 void CarFrame::OnMainDraw(const MainDraw& d) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kCarCollect);
   if (!collecting_ || !d.view || !d.banks || !d.state) {
     return;
   }

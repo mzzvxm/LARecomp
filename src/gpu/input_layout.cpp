@@ -2,6 +2,8 @@
 
 #include "input_layout.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cstring>
 
@@ -100,6 +102,7 @@ size_t InputLayouts::KeyHash::operator()(const Key& k) const {
 const InputLayout* InputLayouts::Get(const ShaderStore::Entry& vs, const uint8_t* decl,
                                      uint32_t decl_count, const uint8_t* stream_strides,
                                      bool two_way) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kInputLayout);
   if (!decl || !stream_strides) {
     return nullptr;
   }

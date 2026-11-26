@@ -1,4 +1,6 @@
 #pragma once
+
+#include "render_cpu.h"
 // ===========================================================================
 // MCLA GPU renderer -- the player's car (and the cars beside it) as ray tracing acceleration structures
 // ===========================================================================
@@ -342,9 +344,11 @@ class CarRtScene final : public car_frame::Listener {
     uint8_t* materials_cpu = nullptr;
     uint64_t materials_bytes = 0;
     std::unique_ptr<plume::RenderDescriptorSet> set;        // the car RT set
+    std::array<render_cpu::DescriptorBinding, 6> bindings;
     std::unique_ptr<plume::RenderDescriptorSet> check_set;  // the check pass's own (u0 the picture, u1 the counters)
   };
   struct Placed;
+  void BindSceneDescriptors(SlotResources& slot, uint64_t rows_bytes, uint64_t materials_bytes);
 
   // The check pass's push block (hlsl/car_rt_check_cs.hlsl CheckPush), 80 bytes.
   struct CheckPush {

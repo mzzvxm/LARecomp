@@ -42,6 +42,7 @@
 #include "mirror_overlay.h"
 #include "mirror_view.h"
 #include "cut_request.h"
+#include "cpu_timing.h"
 #include "cycles.h"
 #include "descriptors.h"
 #include "draw_decode.h"
@@ -778,6 +779,7 @@ void Scene::ResetListState() {
 }
 
 void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kFrameBegin);
   list_ = list;
   slot_ = slot;
   const bool target_sig = larecomp::settings::mcla_gpu_target_sig.Get();
@@ -786,6 +788,8 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     target_sig_ = target_sig;
   }
   layout_two_way_ = larecomp::settings::mcla_gpu_layout_two_way.Get();
+  const bool raw_fetch_keys = larecomp::settings::mcla_gpu_fetch_memo_raw.Get();
+  batch_constant_banks_ = larecomp::settings::mcla_gpu_batch_constant_banks.Get();
   if (pipelines_) {
     pipelines_->SetDrawMemo(layout_two_way_);
   }
@@ -803,8 +807,9 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   }
   textures_->BeginFrame(slot);
   resolve_->BeginFrame(slot);
-  if (samplers_->FrameSettingChanged()) {
-    // The memoized fetches hold sampler slots of the old anisotropy.
+  if (samplers_->FrameSettingChanged() || raw_fetch_keys != fetch_memo_raw_) {
+    // A cached binding used the old anisotropy or the old fetch-key encoding.
+    fetch_memo_raw_ = raw_fetch_keys;
     fetch_memo_.fill(FetchMemo{});
     last_fetch_.fill(nullptr);
   }
@@ -913,6 +918,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
 }
 
 void Scene::EndFrame(plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kFrameEnd);
   // The render pass closes before the geometry's copies and the present pass.
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
@@ -938,6 +944,7 @@ void Scene::EndFrame(plume::RenderCommandList* list) {
 }
 
 void Scene::BeforeFlush(plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kEndOfList);
   if (list && bound_.framebuffer) {
     list->setFramebuffer(nullptr);
   }
@@ -978,6 +985,7 @@ void Scene::UiLayersBeforeDraw(FrameLayers::DrawAction action, plume::RenderComm
 
 void Scene::PrepareHdrDraw(PreparedDraw& d, const PipelineInputs& inputs,
                            const ConstantBanks::Banks& banks, uint32_t host_samples) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kHdrDuplicate);
   HdrToneMap::DrawFacts facts;
   facts.vs = d.vs;
   facts.ps = d.ps;
@@ -1013,6 +1021,7 @@ void Scene::PrepareHdrDraw(PreparedDraw& d, const PipelineInputs& inputs,
 }
 
 void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kHdrDuplicate);
   HostImage* image = hdr_tone_->Image(d.hdr_action);
   if (!image) {
     return;  // the frame has no float scene (the tone map's image failure is logged by Image)
@@ -1092,6 +1101,7 @@ void Scene::RecordHdrDuplicate(const PreparedDraw& d, plume::RenderCommandList* 
 
 void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
                                 UpscalerMasks::Kind kind) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUpscalerMask);
   // Only in a frame an upscaler works on (nothing else reads the masks), before its anchor: the draws
   // are before the motion blur draw.
   const TemporalSystem::FrameState& fr = temporal_->frame();
@@ -1164,6 +1174,7 @@ void Scene::PrepareUpscalerMask(PreparedDraw& d, const PipelineInputs& inputs,
 // "upscaler mask draws"); consecutive second draws could be batched behind the last of a run of
 // draws of the families if it shows.
 void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUpscalerMask);
   UpscalerMasks& masks = temporal_->masks();
   const UpscalerMasks::Layer layer = UpscalerMasks::LayerOf(d.mask_kind);
   const uint32_t width = uint32_t(std::lround(d.viewport.viewport.width));
@@ -1253,6 +1264,7 @@ void Scene::RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* 
 // ---------------------------------------------------------------------------
 
 void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kDrawPrefetch);
   if (!textures_ || !shaders_.attached()) {
     return;
   }
@@ -1282,7 +1294,27 @@ void Scene::PrefetchTextures(uint64_t sequence, const uint8_t* payload) {
   }
 }
 
+// The EDRAM classification also identifies the guest's side-view draws.
+static cpu_timing::Section SideViewTiming(const XenosState& state, uint32_t size_bits) {
+  using cpu_timing::Section;
+  SideView side = SideView::kNone;
+  if (state.mode.edram_mode != xe::EDRAMMode::kDepthOnly && state.color[0].bound) {
+    side = side_views::Classify(ColorEdramKey(state, 0), size_bits);
+  }
+  if (side == SideView::kNone && state.depth_bound) {
+    side = side_views::Classify(DepthEdramKey(state), size_bits);
+  }
+  switch (side) {
+    case SideView::kEnv: return Section::kEnvironment;
+    case SideView::kReflection: return Section::kPlanar;
+    case SideView::kShadow: return Section::kShadowView;
+    case SideView::kUiMap: return Section::kUiView;
+    default: return Section::kCount;
+  }
+}
+
 void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kDraw);
   // The prepare statistic sums the time of every draw: one draw in seven is timed and counted seven times (render_cpu.h), not
   // every draw (two TSC reads, 7 ns each, on ~3800 draws a frame).
   const bool timed = draw_sampler_.Take();
@@ -1299,7 +1331,9 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
   }
 
   ConstantBanks::Check check;
+  cpu_timing::Scope bank_time(cpu_timing::Section::kBanks);
   const ConstantBanks::Banks& banks = banks_.Apply(view, &check);
+  bank_time.Stop();
   Lap(Stage::kBanks);
   if (check.done) {
     ++window_.bank_checks;
@@ -1443,6 +1477,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
 Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& banks,
                            PreparedDraw& d, bool* no_effect, NoEffect* no_effect_reason,
                            std::string* detail) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kPrepare);
   if (!edram_ || !pipelines_) {
     return Skip::kDeviceLost;
   }
@@ -1460,6 +1495,7 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
   }
 
   // The state: the last draw's when its window R and surfaces repeat (M6a.7).
+  cpu_timing::Scope decode_time(cpu_timing::Section::kDecode);
   StateMemo& memo = state_memo_;
   ++memo_tries_[size_t(Memo::kState)];
   const bool state_same = memo.valid && r.device == memo.device &&
@@ -1480,7 +1516,14 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     memo.draw_scale_valid = false;
     memo.constants_valid = false;
   }
+  decode_time.Stop();
   const XenosState& s = d.state;
+  cpu_timing::Section side_section = cpu_timing::Section::kCount;
+  if (cpu_timing::Enabled()) {
+    side_section = mirror_view_ && mirror_view_->redirecting() ?
+        cpu_timing::Section::kMirrorPrepare : SideViewTiming(s, r.target_size_bits);
+  }
+  const cpu_timing::Scope view_time(side_section);
 
   d.primitive = HostPrimitiveFor(r.primitive);
   if (d.primitive.conversion == PrimitiveConversion::kUnsupported) {
@@ -2355,16 +2398,21 @@ int32_t Scene::SceneBias() {
 
 void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale scale,
                               SharedConstants& sc, int32_t bias) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTextureTables);
   // Write notifications first: a memoized binding must not outlive a write.
   textures_->Sync();
   for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
     const uint32_t slot = uint32_t(std::countr_zero(mask));
     uint32_t dwords[6];
-    view.FetchGroup(slot, dwords);
+    const void* key = fetch_memo_raw_ ? view.FetchBytes(slot) : static_cast<const void*>(dwords);
+    // CHECK: compare live A/B through product resolves, invalidation, texture mods and reload.
+    if (!fetch_memo_raw_) {
+      view.FetchGroup(slot, dwords);
+    }
     const auto holds = [&](const FetchMemo& m) {
       return m.epoch == textures_->epoch() && (m.frame == 0 || m.frame == frame_serial_) &&
              m.generation == textures_->ProductGeneration(m.page) && m.scale == scale &&
-             m.bias == bias && std::memcmp(m.dwords, dwords, sizeof(dwords)) == 0;
+             m.bias == bias && m.key.Matches(key);
     };
     // The slot's last entry first (M6a.10), then the set.
     FetchMemo* hit = nullptr;
@@ -2372,6 +2420,9 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
     if (last_fetch_[slot] && holds(*last_fetch_[slot])) {
       hit = last_fetch_[slot];
     } else {
+      if (fetch_memo_raw_) {
+        view.FetchGroup(slot, dwords);
+      }
       uint64_t h = 0;
       for (uint32_t d : dwords) {
         h = (h ^ d) * 0x9E3779B97F4A7C15ull;
@@ -2391,6 +2442,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
     }
     if (hit) {
       if (watch::Active() && hit->is_texture) {
+        view.FetchGroup(slot, dwords);
         const TextureFetch fetch = ReadTextureFetch(dwords);
         if (watch::TouchesKey(fetch.key)) {
           watch::Log(std::format("fetch s{} ps {:016x} {} -> memoized texture slot {}", slot,
@@ -2411,7 +2463,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
     FetchMemo& m = *victim;
     const TextureFetch fetch = ReadTextureFetch(dwords);
     FetchMemo fresh;
-    std::memcpy(fresh.dwords, dwords, sizeof(dwords));
+    fresh.key.Set(key);
     fresh.is_texture = fetch.is_texture;
     if (!fetch.is_texture) {
       // The shader samples a slot the guest left without a texture: the null
@@ -2479,9 +2531,24 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
 
 bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                             const SharedConstants& shared, PreparedDraw& d) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kConstantsUpload);
+  if (!upload_) {
+    return false;
+  }
   DeviceUpload& u = last_device_upload_.Find(device_uploads_, device, device_cache_);
-  if (u.vs_version != banks.vs_version) {
-    UploadSpan span = upload_->Allocate(slot_, guest::kConstantBankBytes, kConstantAlignment);
+  const bool vs_dirty = u.vs_version != banks.vs_version;
+  const bool ps_dirty = u.ps_version != banks.ps_version;
+  constexpr uint64_t kBankBytes = guest::kConstantBankBytes;
+  static_assert(kBankBytes % kConstantAlignment == 0);
+  UploadSpan pair;
+  if (batch_constant_banks_ && vs_dirty && ps_dirty) {
+    // CHECK: validate the two constant-bank offsets with both API debug layers.
+    pair = upload_->TryAllocateCurrent(slot_, 2 * kBankBytes, kConstantAlignment);
+  }
+  if (vs_dirty) {
+    const UploadSpan span = pair ?
+        UploadSpan{pair.buffer, pair.offset, pair.cpu, kBankBytes, pair.device_address} :
+        upload_->Allocate(slot_, kBankBytes, kConstantAlignment);
     if (!span) {
       return false;
     }
@@ -2491,8 +2558,11 @@ bool Scene::UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
     ++window_.constant_uploads;
     window_.upload_bytes += guest::kConstantBankBytes;
   }
-  if (u.ps_version != banks.ps_version) {
-    UploadSpan span = upload_->Allocate(slot_, guest::kConstantBankBytes, kConstantAlignment);
+  if (ps_dirty) {
+    const UploadSpan span = pair ?
+        UploadSpan{pair.buffer, pair.offset + kBankBytes, pair.cpu + kBankBytes,
+                   kBankBytes, pair.device_address + kBankBytes} :
+        upload_->Allocate(slot_, kBankBytes, kConstantAlignment);
     if (!span) {
       return false;
     }
@@ -2623,6 +2693,7 @@ void Scene::FillVariantBlock(uint32_t feature, const ConstantBanks::Banks& banks
 }
 
 bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const SharedConstants& shared, PreparedDraw& d, uint32_t ps_word) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kVariantConstants);
   namespace chain = larecomp::shaderpack::chain;
   const uint32_t features = chain::FeaturesOf(ps_word);
   const chain::ConstantsLayout layout = chain::LayoutConstants(features);
@@ -2664,6 +2735,7 @@ bool Scene::UploadVariantConstants(const ConstantBanks::Banks& banks, const Shar
 }
 
 PipelineKey Scene::GBufferKey(const XenosState& state, const DrawRecord& r, PreparedDraw& d) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGBufferKey);
   PipelineKey key = d.key;
   d.gbuffer_attached = false;
   d.gbuffer_variant = 0;
@@ -2854,6 +2926,7 @@ ui_sharp::Context Scene::UiSharpContext(const DrawView& view, const XenosState& 
 }
 
 uint32_t Scene::UiSharpDraw(const DrawView& view, const XenosState& state, PreparedDraw& d, Scale scale) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kUiSharp);
   const double strength = ui_sharp::Strength();
   const bool census = ui_sharp::CensusOn();
   if (strength <= 0.0 && !census) {
@@ -3118,10 +3191,14 @@ void Scene::CountSkip(Skip skip, const DrawRecord& r, const std::string& detail)
 
 Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list,
                           bool* no_effect, std::string* detail) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRecord);
   const XenosState& s = d.state;
   if (mirror_view_ && mirror_view_->redirecting()) {
     return RecordMirrorDraw(d, r, list, no_effect, detail);  // the rear view mirror's phase: the view's framebuffer, not the main target (mirror_view.h)
   }
+  const cpu_timing::Scope view_time(cpu_timing::Enabled() ?
+      SideViewTiming(d.state, r.target_size_bits) : cpu_timing::Section::kCount);
+  cpu_timing::Scope target_time(cpu_timing::Section::kTargets);
   // D3D's effective window scissor bounds every pixel the draw can touch.
   const uint32_t scissor_br_x = s.scissor_br & 0x7FFFu;
   const uint32_t scissor_br_y = (s.scissor_br >> 16) & 0x7FFFu;
@@ -3330,6 +3407,8 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
   BindFramebuffer(list, framebuffer);
   Lap(Stage::kTargets);
 
+  target_time.Stop();
+  cpu_timing::Scope bindings_time(cpu_timing::Section::kDrawBindings);
   if (!bound_.layout_bound) {
     list->setGraphicsPipelineLayout(layout_->layout());
     list->setGraphicsDescriptorSet(heap_->texture_set(), 0);
@@ -3352,6 +3431,7 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
                         constants[i].offset != bound_.constants[i].offset;
   }
   if (constants_changed) {
+    const cpu_timing::Scope cpu_scope(cpu_timing::Section::kBindConstants);
     if (ActiveBackend() == Backend::kD3D12) {
       // Each root descriptor only when it moved.
       static constexpr uint32_t kRoots[3] = {GuestLayout::kVertexConstants,
@@ -3456,9 +3536,11 @@ Scene::Skip Scene::Record(PreparedDraw& d, const DrawRecord& r, plume::RenderCom
       bound_.index_bound = true;
     }
     Lap(Stage::kBindStreams);
+    bindings_time.Stop();
     list->drawIndexedInstanced(g.count, 1, g.first, g.base_vertex, 0);
   } else {
     Lap(Stage::kBindStreams);
+    bindings_time.Stop();
     list->drawInstanced(g.count, 1, g.first, 0);
   }
   if (occlusion_query != GuestOcclusion::kNoQuery) {
@@ -3506,6 +3588,7 @@ void Scene::OnMirrorMarker(uint32_t bucket, uint32_t tag, plume::RenderCommandLi
 }
 
 Scene::Skip Scene::RecordMirrorDraw(PreparedDraw& d, const DrawRecord& r, plume::RenderCommandList* list, bool* no_effect, std::string* detail) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kMirrorRecord);
   (void)r;
   const XenosState& s = d.state;
   // Where the draw goes: only a draw of one colour and a depth, at the formats and samples of the phase's first, fits the view's framebuffer (its pipeline was made for them). Any other is left out and
@@ -3695,6 +3778,7 @@ EdramTargets::Target* Scene::MirrorCopyColour(const ResolveRecord& record, plume
 }
 
 bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kMirrorStamp);
   bool other_copy = false;
   EdramTargets::Target* colour = MirrorCopyColour(record, list, &other_copy, nullptr);
   if (!colour) {
@@ -3708,6 +3792,7 @@ bool Scene::RecordMirrorStamp(const ResolveRecord& record, plume::RenderCommandL
 }
 
 bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kMirrorOverlay);
   bool other_copy = false;
   EdramKey colour_key;
   EdramTargets::Target* colour = MirrorCopyColour(record, list, &other_copy, &colour_key);
@@ -3743,6 +3828,7 @@ bool Scene::RecordMirrorGlass(const ResolveRecord& record, plume::RenderCommandL
 }
 
 void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kClear);
   ++window_.clears;
   if (mirror_view_ && mirror_view_->suppressing()) {
     return;
@@ -4044,6 +4130,7 @@ void Scene::OnClear(const ClearRecord& record, plume::RenderCommandList* list) {
 }
 
 void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kResolveDispatch);
   ++window_.resolves;
   if (composite_census_.after()) {
     composite_census_.OnResolveAfter();
@@ -4509,6 +4596,7 @@ void Scene::CollectVisualSources(VisualSources& sources) const {
 }
 
 void Scene::OnPresent() {
+  cpu_timing::Scope cpu_scope(cpu_timing::Section::kPresentBookkeeping);
   pipelines_->EndFrame();  // takes the background builds that finished, then autosaves
   const uint64_t now = cycles::Now();
   if (last_present_) {
@@ -4615,6 +4703,7 @@ void Scene::OnPresent() {
   // The next list the renderer opens is the frame that the next guest swap closes (scene_noise.h: the tag is found by the present records executed, not by the
   // lists opened: an idle present has no list and a flush opens a second one).
   scene_noise::OnPresent();
+  cpu_scope.Stop();
   if (window_.frames >= kReportInterval) {
     Report("interval");
   }

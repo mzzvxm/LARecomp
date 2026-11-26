@@ -2,6 +2,8 @@
 
 #include "car_mirror_rt.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <cstring>
 #include <format>
@@ -401,6 +403,7 @@ void CarMirrorRt::LogWindow() {
 }
 
 bool CarMirrorRt::OnResolve(const ResolveCache::Summary& summary, plume::RenderCommandList* list, int32_t exp_bias) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kMirrorRt);
   if (!ready_ || !list || !active_ || !scene_ || !summary.depth_copy || !summary.source) {
     return false;
   }

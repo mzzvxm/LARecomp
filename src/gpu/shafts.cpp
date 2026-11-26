@@ -2,6 +2,8 @@
 
 #include "shafts.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <cctype>
@@ -848,6 +850,7 @@ EdramTargets::Target* SunShafts::ColourTarget(const EdramKey& key,
 
 bool SunShafts::OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
                           plume::RenderCommandList* list, bool upscaler_running) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kShafts);
   if (!list || !ready_ || !IsFirstPoint(record, summary)) {
     return false;
   }
@@ -1044,6 +1047,7 @@ bool SunShafts::ColourSourceKey(const ResolveRecord& r, EdramKey* key) {
 }
 
 bool SunShafts::BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kShafts);
   // Only after the first point of a frame whose sky was taken, before the anchor draw, and until a copy
   // of the main colour has come (the first is the trigger: the second tile's finds the light in it).
   if (!sky_taken_ || copy_seen_ || !list || !ready_) {

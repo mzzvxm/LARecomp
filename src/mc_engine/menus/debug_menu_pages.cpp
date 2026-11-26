@@ -166,13 +166,14 @@ const ItemDef kDebugHubItems[] = {
 // and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
 // page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
 const ItemDef kDebugFixesItems[] = {
+    NativeOnly(Bool("PM_RxDbgRtDesc", "mcla_gpu_rt_descriptor_memo", "RT DESCRIPTOR CACHE: ")),
+    NativeOnly(Bool("PM_RxDbgResolveLayout", "mcla_gpu_resolve_layout_memo", "RESOLVE LAYOUT CACHE: ")),
+    NativeOnly(Bool("PM_RxDbgConstBatch", "mcla_gpu_batch_constant_banks", "BATCH CONSTANT BANKS: ")),
+    NativeOnly(Bool("PM_RxDbgFetchRaw", "mcla_gpu_fetch_memo_raw", "FETCH MEMO RAW: ")),
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
     Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",
         kRaceLineVals, kRaceLineNames, Len(kRaceLineVals)),
-    // The Plume renderer's frame pacing (frame_pacing.cpp); the cvar is 0 or 1.
-    NativeOnly(Str("PM_RxDbgFramePacing", "frame_pacing",   "FRAME PACING: ",
-                   kOffOnVals, kOffOnNames, Len(kOffOnVals))),
     Bool("PM_RxDbgChassis",    "smooth_chassis_depth",      "SUSPENSION FIX: "),
     Bool("PM_RxDbgChaseCam",   "smooth_chase_cam",          "SMOOTH CHASE CAM: "),
     Bool("PM_RxDbgVehPhysics", "smooth_vehicle_physics",    "SMOOTH VEHICLE PHYSICS: "),
@@ -271,6 +272,9 @@ const ItemDef kDebugPictureFixesItems[] = {
 // not rows. CHEAP CAR SHADOW (perf_fast_vehicle_shadows) is here since the game was found to read its
 // switch at every car shadow draw (render_phases.cpp).
 const ItemDef kDebugPerformanceItems[] = {
+    // The Plume renderer's frame pacing (frame_pacing.cpp); the cvar is 0 or 1.
+    NativeOnly(Str("PM_RxDbgFramePacing", "frame_pacing",   "FRAME PACING: ",
+                   kOffOnVals, kOffOnNames, Len(kOffOnVals))),
     Bool("PM_RxDbgPaceSwap",   "pace_at_swap",           "PACE AT PRESENTATION: "),
     // Patch_FenceSpinThrottle, live: the hook reads the cvar on every call, so the next fence poll
     // already sees a change made here. Whether it helps or hurts depends on the host CPU, not on the
@@ -475,6 +479,7 @@ const ItemDef kDebugLoggingItems[] = {
 #if defined(LARECOMP_HAS_GPU)
     // Every 600 frames, the textures the HUD and menus read (what UI SHARPEN is tuned from).
     NativeOnly(Bool("PM_RxDbgUiSharpCensus", "mcla_ui_sharp_census", "UI SHARPEN CENSUS: ")),
+    NativeOnly(Bool("PM_RxDbgCpuTiming", "mcla_gpu_cpu_timing", "CPU TIMING: ")),
     // The renderer's periodic logs (ghost frames, the process's memory, video memory): one block every N frames, OFF by default.
     NativeOnly(Dbl("PM_RxDbgGhostLog",   "mcla_gpu_ghost_log_interval", "GHOST LOG EVERY: ",
                    kGhostLogVals, Len(kGhostLogVals), "%g", "", "OFF")),

@@ -8,6 +8,8 @@
 
 #include "geometry.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -781,6 +783,7 @@ GeometryCache::Result GeometryCache::Prepare(const DrawView& view, const XenosSt
                                              bool computed_fetch, DrawGeometry& out,
                                              std::string* detail,
                                              plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGeometry);
   // The statistic sums the time of every draw: one draw in seven is timed and counted seven times (render_cpu.h).
   const bool timed = prepare_sampler_.Take();
   const uint64_t c0 = timed ? cycles::Now() : 0;
@@ -1248,6 +1251,7 @@ void GeometryCache::EvictSome() {
 }
 
 void GeometryCache::EndFrame(plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kGeometryUpload);
   if (!list) {
     for (const Promotion& p : promotions_) {
       if (p.generated) {

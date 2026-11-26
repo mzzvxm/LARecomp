@@ -7,6 +7,8 @@
 // Vanik, the Xenia authors, BSD-3-Clause).
 
 #include "pipelines.h"
+
+#include "cpu_timing.h"
 #include "settings/immortal.h"
 
 #include <algorithm>
@@ -1663,6 +1665,7 @@ KeyResult Pipelines::BuildKey(const XenosState& state, const PipelineInputs& inp
                               const plume::RenderFormat (&color_formats)[kColorTargetCount],
                               plume::RenderFormat depth_format, PipelineKey& key,
                               DepthBias& bias) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kPipelineKey);
   if (!draw_memo_enabled_) {
     return BuildKeyUncached(state, inputs, topology, polygonal, color_formats, depth_format,
                             key, bias, std::nullopt);
@@ -1984,6 +1987,7 @@ void Pipelines::LogFailure(const PipelineKey& key, ShaderStore::ShaderResult vs_
 
 plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInputs& inputs,
                                       const Deferral* deferral, bool* pending) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kPipelineLookup);
   if (pending) {
     *pending = false;
   } else {
@@ -2380,6 +2384,7 @@ void Pipelines::RaiseWorker(int32_t index) {
 
 bool Pipelines::WaitForBuild(const std::atomic<uint8_t>& state, const std::atomic<int32_t>& builder,
                              bool may_make_here, bool* raised) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kPipelineWait);
   const auto began = std::chrono::steady_clock::now();
   pipeline_wait::Facts facts;
   facts.may_make_here = may_make_here;

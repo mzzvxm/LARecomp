@@ -1467,6 +1467,21 @@ class GPUSettings final : public rex::SettingOwner {
     "fills in over its jitter); 0 or -0.5 sample blurrier levels, which shimmer less on fine "
     "texture detail (grass, road grain, fences) and soften it. For A/B. Live.", rex::kDebugOnly, rex::Range{-3.0, 1.0});
 
+  REX_SETTING(bool, mcla_gpu_fetch_memo_raw, true,
+    "Skip decoding texture fetch words on a repeated binding.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_resolve_layout_memo, true,
+    "Reuse texture level layouts for resolve bookkeeping.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_rt_descriptor_memo, true,
+    "Skip writing unchanged ray tracing scene descriptors.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_batch_constant_banks, true,
+    "Reserve space together for dirty vertex and pixel constant banks.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_cpu_timing, false,
+    "Log the mean and 95th percentile render-thread time per frame for each section.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_scene_profile, false, "Diagnostic (M6a): the render thread's time per stage of a draw (constant banks, "
     "state decode, shaders and layout, geometry, pipeline, constants, textures, upload, targets, "
     "draw), one line per window of 600 frames. Off: nothing is timed.", rex::kDebugOnly, rex::kRequiresRestart);
@@ -2399,6 +2414,11 @@ inline auto& mcla_gpu_resolve_memory_encode_delay = g_gpu.mcla_gpu_resolve_memor
 inline auto& mcla_gpu_road_reflection_cars_test = g_gpu.mcla_gpu_road_reflection_cars_test;
 inline auto& mcla_gpu_scale_depth_bias = g_gpu.mcla_gpu_scale_depth_bias;
 inline auto& mcla_gpu_scene_extra_bias = g_gpu.mcla_gpu_scene_extra_bias;
+inline auto& mcla_gpu_fetch_memo_raw = g_gpu.mcla_gpu_fetch_memo_raw;
+inline auto& mcla_gpu_resolve_layout_memo = g_gpu.mcla_gpu_resolve_layout_memo;
+inline auto& mcla_gpu_rt_descriptor_memo = g_gpu.mcla_gpu_rt_descriptor_memo;
+inline auto& mcla_gpu_batch_constant_banks = g_gpu.mcla_gpu_batch_constant_banks;
+inline auto& mcla_gpu_cpu_timing = g_gpu.mcla_gpu_cpu_timing;
 inline auto& mcla_gpu_scene_profile = g_gpu.mcla_gpu_scene_profile;
 inline auto& mcla_gpu_target_sig = g_gpu.mcla_gpu_target_sig;
 inline auto& mcla_gpu_layout_two_way = g_gpu.mcla_gpu_layout_two_way;

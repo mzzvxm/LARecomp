@@ -2,6 +2,8 @@
 
 #include "screen_shared.h"
 
+#include "cpu_timing.h"
+
 #include <algorithm>
 #include <bit>
 #include <cstring>
@@ -686,6 +688,7 @@ void ScreenShared::ReleaseColourPost() {
 }
 
 bool ScreenShared::CapturePost(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list) {
+  const cpu_timing::Scope cpu_scope(cpu_timing::Section::kScreenCapture);
   // CHECK (not run): (1) colour_post is made at the HEIGHT rule's size (screen_rules.h ColourPostSize: the picture's up to 1080 lines, half above), not at the depth's traced size
   // (ScreenFrame::traced): the AO's trace is half size at its high quality at any height (ao_size.h legacy_low), and the car history, which reads colour_post pixel for pixel, needs the picture's
   // size at 1080 lines and below. The size is Image(kColourPost)->width / height. GB-I1 decides whether reflections want another (a field would be appended to the frozen frame then).

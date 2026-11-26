@@ -46,6 +46,7 @@ add_library(larecomp_gpu OBJECT
     choice_box.cpp
     constants.cpp
     cut_request.cpp
+    cpu_timing.cpp
     cycles.cpp
     denoiser_setting.cpp
     descriptors.cpp
@@ -275,6 +276,7 @@ add_executable(larecomp_descriptor_count_test EXCLUDE_FROM_ALL descriptor_count_
 # The GPU class rule and the `auto` table (gpu_class.h) have a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_gpu_class_test, then run src/gpu/larecomp_gpu_class_test (exit 0 = passed).
 add_executable(larecomp_gpu_class_test EXCLUDE_FROM_ALL gpu_class_test.cpp)
+add_executable(larecomp_cpu_timing_test EXCLUDE_FROM_ALL cpu_timing_test.cpp)
 # The graphics presets' table and rules (gfx_preset.h: the cells of the six presets, VANILLA's values, the old `auto` tables that now read it, the recommendation, the first start and
 # the CUSTOM flip) have a check that needs no renderer; tools/check_gfx_presets.py is the half that reads the pause menu's pages:
 #   cmake --build <dir> --target larecomp_gfx_preset_test, then run src/gpu/larecomp_gfx_preset_test (exit 0 = passed).

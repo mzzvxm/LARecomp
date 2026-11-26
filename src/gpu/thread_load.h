@@ -51,6 +51,9 @@ class ThreadLoad {
     }
   }
   uint64_t gpu_wait_total() const { return totals_.gpu_wait_cycles; }
+  uint64_t busy_clock() const {
+    return cycles::Now() - totals_.gpu_wait_cycles - totals_.idle_cycles;
+  }
 
   Sample Take() {
     const uint64_t now = cycles::Now();
