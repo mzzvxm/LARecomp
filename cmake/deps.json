@@ -50,10 +50,14 @@
       "zip_size": 276016170,
       "groups": {
         "core": {
-          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'"
+          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'",
+          "gpu_vendor": "nvidia",
+          "gpu_name": "RTX"
         },
         "frame_generation": {
-          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'"
+          "when": "os.name == 'windows' && gpu.vendor == 'nvidia'",
+          "gpu_vendor": "nvidia",
+          "gpu_name": "BLACKWELL| ADA|RTX *[45]"
         },
         "ray_reconstruction": {
           "when": "os.name == 'windows' && gpu.vendor == 'nvidia'"

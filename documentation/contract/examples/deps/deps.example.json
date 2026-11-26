@@ -10,7 +10,7 @@
       "zip_size": 4096,
       "groups": {
         "core": {},
-        "frame_generation": { "when": "os.name == 'windows' && gpu.vendor == 'nvidia'" }
+        "frame_generation": { "when": "os.name == 'windows' && gpu.vendor == 'nvidia'", "gpu_vendor": "nvidia", "gpu_name": "BLACKWELL| ADA|RTX *[45]" }
       },
       "files": [
         { "path": "include/example.h", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "group": "core" },

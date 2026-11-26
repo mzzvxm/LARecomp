@@ -802,6 +802,10 @@ add_executable(larecomp_side_view_scales_test EXCLUDE_FROM_ALL side_view_scales_
 # DLSS Ray Reconstruction's pure rules (dlss_rr_rules.h: the tag plan, the options, the choice of denoiser, the frame gate) have a check that needs no renderer
 # and no Streamline: cmake --build <dir> --target larecomp_dlss_rr_rules_test, then run src/gpu/larecomp_dlss_rr_rules_test (exit 0 = passed).
 add_executable(larecomp_dlss_rr_rules_test EXCLUDE_FROM_ALL dlss_rr_rules_test.cpp)
+# The Streamline groups' `gpu_name` patterns of cmake/deps.json (which cards the launcher's first setup fetches DLSS files for) against the name tests of the code above (dlss_rr_rules.h NameLooksLikeRtx,
+# dlss_fg_card.h NameLooksLikeFrameGeneration) on documentation/contract/adapter-name-vectors.json: cmake --build <dir> --target larecomp_dlss_card_table_test, then run
+# src/gpu/larecomp_dlss_card_table_test [<repository root>] (exit 0 = passed).
+add_executable(larecomp_dlss_card_table_test EXCLUDE_FROM_ALL dlss_card_table_test.cpp)
 # DLSS Ray Reconstruction's guide images (rr_guides_rules.h: the images, the views, who runs the pass, the push blocks, and the C++ twin of hlsl/rr_guides_common.hlsli, which the test also
 # compiles as C++): cmake --build <dir> --target larecomp_rr_guides_test, then run src/gpu/larecomp_rr_guides_test [<src/gpu dir>] (exit 0 = passed).
 add_executable(larecomp_rr_guides_test EXCLUDE_FROM_ALL rr_guides_test.cpp)

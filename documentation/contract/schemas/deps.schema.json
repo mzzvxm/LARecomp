@@ -25,7 +25,18 @@
             "minProperties": 1,
             "additionalProperties": {
               "type": "object",
-              "properties": { "when": { "type": "string", "minLength": 1 } }
+              "properties": {
+                "when": { "type": "string", "minLength": 1 },
+                "gpu_vendor": {
+                  "enum": ["nvidia", "amd", "intel", "apple", "qualcomm", "microsoft", "other"],
+                  "description": "With `gpu_name`: the vendor word (machine.json gpu.vendor) an adapter must have. No `gpu_vendor`: any vendor."
+                },
+                "gpu_name": {
+                  "type": "string",
+                  "pattern": "^[A-Za-z0-9 |*+?\\[\\]-]{1,200}$",
+                  "description": "Which graphics adapters the group is for, by name, so that the launcher's first setup can leave a group out before the game has ever run (nothing of the game can run before its dependencies are fetched; `when` is about the PC, this is about each adapter in it). A pattern in a small subset of regular expression syntax that every reader supports the same way: letters, digits, spaces, | * + ? and [ ] - only (no groups, anchors, escapes or counted repeats). It is searched anywhere in the adapter's name, ignoring case, and the adapter must also have `gpu_vendor` where the group names one. A kit's `core` group says which adapters use the kit at all; `frame_generation` (read together with `core`, for the same adapter) says which can use frame generation. No `gpu_name`: the group is not narrowed by adapter. The pattern and the vendor must give the same answers as the name tests of the game's own code (src/gpu/dlss_rr_rules.h NameLooksLikeRtx, src/gpu/dlss_fg_card.h NameLooksLikeFrameGeneration) on documentation/contract/adapter-name-vectors.json: larecomp_dlss_card_table_test and cmake/tests/install_manifest_test.py check it."
+                }
+              }
             }
           },
           "files": {
