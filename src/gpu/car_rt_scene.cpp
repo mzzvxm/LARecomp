@@ -759,6 +759,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   stats_counts_.bad_matrix += cars.stats.bad_matrix;
   std::vector<plume::RenderTopLevelASInstance> instances;
   instances.reserve(cars.items.size());
+  rt_scene::Bounds scene_bounds;
   for (uint32_t index = 0; index < cars.items.size(); ++index) {
     const car_rt_instances::Item& item = cars.items[index];
     const Mesh& m = meshes_.at(item.mesh_key);
@@ -766,6 +767,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
                                              /*cullDisable=*/true, plume::RenderAffineTransform());
     std::memcpy(instance.transform.m, item.transform, sizeof(item.transform));
     instances.push_back(instance);
+    scene_bounds.IncludeTransformed(m.bounds_min, m.bounds_max, item.transform, m.has_bounds);
   }
   // The instances' rows, then the other cars' records: one table. A top level that holds only the city (no car has a built mesh yet) still has a table of one row (the buffer is made
   // for the set; no instance names it).
@@ -779,7 +781,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // city scene is off or has no pack.
   bool city_recorded = false;
   if (city_ != nullptr && city_->wanted()) {
-    city_->Prepare(frame.view, flip_z, list, slot, &instances);
+    city_->Prepare(frame.view, flip_z, list, slot, &instances, &scene_bounds);
     city_recorded = city_->recorded();
   }
   // === END OF THE CITY-RT BLOCK ===
@@ -874,6 +876,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     }
     view_.set = res.set.get();
     view_.instance_count = count;
+    view_.bounds = scene_bounds;
     view_.boxes = cars.boxes.empty() ? nullptr : cars.boxes.data();
     view_.box_count = uint32_t(cars.boxes.size());
     view_.box_row = cars.box_row;
@@ -933,7 +936,8 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
     return false;
   }
   std::vector<plume::RenderTopLevelASInstance> instances;
-  city_->Prepare(view, flip_z, list, slot, &instances);
+  rt_scene::Bounds scene_bounds;
+  city_->Prepare(view, flip_z, list, slot, &instances, &scene_bounds);
   bool recorded = city_->recorded();
   const uint32_t count = uint32_t(instances.size());
   if (count == 0) {
@@ -964,6 +968,7 @@ bool CarRtScene::OnResolveCityOnly(plume::RenderCommandList* list, uint32_t slot
   view_.scene_valid = true;
   view_.set = res.set.get();
   view_.instance_count = count;
+  view_.bounds = scene_bounds;
   {
     const double world_up[3] = {0.0, 1.0, 0.0};
     car_rt_instances::ViewVector(view, flip_z, world_up, view_.up);  // false: the default (0, 1, 0) stays

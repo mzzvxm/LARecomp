@@ -66,10 +66,10 @@ channel names and all IDs. The raster stores two bytes per pixel in `visible`,
 | IDs | Meaning |
 | --- | --- |
 | 0 | No attributed source or query |
-| 1–6 | SSR vehicle, tagged building interior, road, sky, emissive, other |
+| 1-6 | SSR vehicle, tagged building interior, road, sky, emissive, other |
 | 7, 8 | Native road reflection view, environment map |
-| 16–23 | RT city unclassified, world, road, wet road, sidewalk, terrain, LOD, foliage |
-| 24–31 | RT city paint, chrome, metal, glass, skin, emissive, interior, water |
+| 16-23 | RT city unclassified, world, road, wet road, sidewalk, terrain, LOD, foliage |
+| 24-31 | RT city paint, chrome, metal, glass, skin, emissive, interior, water |
 | 32-34 | RT query only: discarded car hit, miss, unresolved city hit |
 | 35 | Shaded RT car hit |
 | 36 | Validated previous-frame screen hit |
@@ -179,6 +179,6 @@ foreach ($HitBackend in 'd3d12', 'vulkan') {
 ```
 
 Check a parked street with cars in the visible reflections. Compare per-frame
-ID maps against the picture and `refl`, check that IDs 32–34 occur only in the
+ID maps against the picture and `refl`, check that IDs 32-34 occur only in the
 query lane, and verify the native stream and the SSR stream each use their
 declared grid. Then repeat with a crop, subsampling and API validation on.

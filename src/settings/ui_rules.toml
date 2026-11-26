@@ -318,6 +318,7 @@ decode = "resolved(s.mcla_gpu_rt_gi)"
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
   { when = "!build.rt_gi_update_built", enabled = false, suffix = " (NOT READY)" },
+  { when = "live.rt_gi_resource_pressure ?? false", suffix = " (VRAM)", reason = "The selected probe field needs more video memory." },
 ]
 
 [rows.PM_RxGpuSsgiLevel]

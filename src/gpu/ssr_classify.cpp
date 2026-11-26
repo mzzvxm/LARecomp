@@ -3,6 +3,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "host_shaders.h"
+#include "ssr_rt_rules.h"
 
 namespace mcla::gpu {
 
@@ -28,7 +29,9 @@ void ReflectionClassifier::Initialize(Device& device, FrameRing& frames, Bindles
   output_builder_.addReadWriteByteAddressBuffer(1);
   output_builder_.addReadWriteByteAddressBuffer(2);
   output_builder_.addReadWriteTexture(3);
+  output_builder_.addReadWriteByteAddressBuffer(4);
   output_builder_.end();
+  unused_ranks_ = device.CreateBuffer(plume::RenderBufferDesc::DefaultBuffer(4, kStorage), "ssr unused ranks");
   plume::RenderPipelineLayoutBuilder builder;
   builder.begin(false, false);
   for (uint32_t i = 0; i < 4; ++i) builder.addDescriptorSet(heap.texture_set_builder());
@@ -57,6 +60,9 @@ void ReflectionClassifier::Shutdown() {
   indirect_.reset();
   unused_args_.reset();
   tile_list_.reset();
+  ranks_.reset();
+  unused_ranks_.reset();
+  rank_bytes_ = 0;
   for (auto& pipeline : pipelines_) pipeline.reset();
   for (auto& shader : shaders_) shader.reset();
   listed_ = failed_ = false;
@@ -72,7 +78,8 @@ void ReflectionClassifier::Release() {
   for (auto& tile : tiles_) passes_->ReleaseImage(tile);
   passes_->ReleaseImage(plan_);
   frames_->Retire(std::move(tile_list_));
-  list_bytes_ = 0;
+  frames_->Retire(std::move(ranks_));
+  list_bytes_ = rank_bytes_ = 0;
   width_ = height_ = write_ = 0;
   valid_ = false;
 }
@@ -121,19 +128,26 @@ bool ReflectionClassifier::Prepare(uint32_t width, uint32_t height, bool rt) {
     tile_list_ = std::move(buffer);
     list_bytes_ = bytes;
   }
+  if (rt && !ranks_) {
+    const uint64_t bytes = ssr_rt::RankBytes(cols * rows);
+    ranks_ = device_->CreateBuffer(plume::RenderBufferDesc::DefaultBuffer(bytes, kStorage), "ssr tile ranks");
+    if (!ranks_) return false;
+    rank_bytes_ = bytes;
+  }
   if (!rt && !unused_args_) {
     unused_args_ = device_->CreateBuffer(plume::RenderBufferDesc::DefaultBuffer(kArgumentBytes, kStorage), "ssr unused dispatch");
     if (!unused_args_) return false;
   }
   auto& set = sets_[frames_->slot()];
-  if (!set) set = device_->CreateDescriptorSet(output_builder_, 4, 0, "ssr classifier output");
+  if (!set) set = device_->CreateDescriptorSet(output_builder_, 5, 0, "ssr classifier output");
   HostImage& image = tiles_[write_];
   auto* args = rt && indirect_ ? indirect_->arguments() : unused_args_.get();
-  if (!set || !image.texture || !plan_.texture || !tile_list_ || !args) return false;
+  if (!set || !image.texture || !plan_.texture || !tile_list_ || !args || !Ranks(rt)) return false;
   set->setTexture(0, image.texture.get(), plume::RenderTextureLayout::GENERAL, image.view.get());
   set->setBuffer(1, tile_list_.get(), list_bytes_);
   set->setBuffer(2, args, kArgumentBytes);
   set->setTexture(3, plan_.texture.get(), plume::RenderTextureLayout::GENERAL, plan_.view.get());
+  set->setBuffer(4, Ranks(rt), RankBytes(rt));
   return true;
 }
 
@@ -164,13 +178,13 @@ void ReflectionClassifier::Record(plume::RenderCommandList& list, plume::RenderD
   const auto& set = sets_[frames_->slot()];
   HostImage& image = tiles_[write_];
   auto* args = rt && indirect_ ? indirect_->arguments() : unused_args_.get();
-  if (!set || !image.texture || !tile_list_ || !args) return;
+  if (!set || !image.texture || !tile_list_ || !args || !Ranks(rt)) return;
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
   constexpr auto rw = plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE;
-  const plume::RenderBufferBarrier buffers[] = {{tile_list_.get(), rw}, {args, rw}};
+  const plume::RenderBufferBarrier buffers[] = {{tile_list_.get(), rw}, {args, rw}, {Ranks(rt), rw}};
   const plume::RenderTextureBarrier output(image.texture.get(), Layout::GENERAL);
-  list.barriers(Stage::COMPUTE, buffers, 2, &output, 1);
+  list.barriers(Stage::COMPUTE, buffers, rt ? 3u : 2u, &output, 1);
   Bind(list, handoff, kFeedback);
   if (rt) {
     ssr::Push reset{};
@@ -183,7 +197,8 @@ void ReflectionClassifier::Record(plume::RenderCommandList& list, plume::RenderD
   // CHECK: validate ping-pong and the UAV-to-indirect handoff on both APIs.
   const plume::RenderTextureBarrier read(image.texture.get(), Layout::SHADER_READ);
   const plume::RenderBufferBarrier active(tile_list_.get(), plume::RenderBufferAccess::READ);
-  list.barriers(Stage::GRAPHICS_AND_COMPUTE, rt ? &active : nullptr, rt ? 1u : 0u, &read, 1);
+  const plume::RenderBufferBarrier feedback[] = {active, {Ranks(rt), rw}};
+  list.barriers(Stage::GRAPHICS_AND_COMPUTE, rt ? feedback : nullptr, rt ? 2u : 0u, &read, 1);
   image.layout = Layout::SHADER_READ;
   write_ ^= 1u;
   valid_ = true;

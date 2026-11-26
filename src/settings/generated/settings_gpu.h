@@ -387,9 +387,11 @@ class GPUSettings final : public rex::SettingOwner {
     "shader: mcla_gpu_car_rt_cars says how many are in the scene) reflect the cars round them (yours, the other opponents and their own wings and mirrors) from their real shape, as "
     "yours does. Off: their paint takes the screen-space version, as before. Needs the ray traced car self-reflection (mcla_gpu_car_selfrefl_rt) and the other cars in the scene. Live.", rex::kDebugOnly);
 
-  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_rays, 0, "Debug: the rays a texel of an opponent's paint casts: 0 (the default) by the budget (mcla_gpu_car_rt_opp_refl_texels), 4 the whole cone, 2 the outer pair, 1 the mirror ray. Live.", rex::kDebugOnly, rex::Range{0, 4});
+  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_rays, 0, "Debug: samples per traced opponent paint texel. 0 or 4 uses the full cone, 2 the outer pair, and 1 the mirror ray. The city reflection level can cap this count. Live.", rex::kDebugOnly, rex::Range{0, 4});
 
-  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_texels, 0, "Debug: opponent reflection budget in thousands of screen texels. Zero uses 500. Larger rectangles can use fewer rays per texel. Live.", rex::kDebugOnly, rex::Range{0, 8000});
+  REX_SETTING(i32, mcla_gpu_car_rt_opp_refl_texels, 0, "Debug: the work the opponents' ray traced reflection may spend a frame, in thousands of image texels of the cars' screen rectangles at the full cone of rays (0, the default: "
+    "500 on every supported device). The budget limits admission by projected rectangle size. "
+    "Each admitted car uses the selected sample count. Live.", rex::kDebugOnly, rex::Range{0, 8000});
 
   REX_SETTING(bool, mcla_gpu_car_rt_hit_shading, true, "Debug (the fix's own switch): where the graphics card can ray trace and the car self-reflection runs, a reflection ray that hits ANOTHER car shows the part in its own material: its paint "
     "colour (the gradient of the paint's constants, the livery over it), its diffuse texture, the sun and the sky's light on it, the environment map's reflection, and the lamps lit at night. Where "
@@ -1002,7 +1004,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Ray traces surface reflections where the screen and its history have gaps, including wet roads and sidewalks. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Ray traces surface reflections where the screen and its history have gaps. High traces one ray per selected pixel, including wet roads and sidewalks. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(bool, mcla_gpu_ssr_rt_single_ray, true, "Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, true, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
@@ -1016,6 +1018,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_specular_occlusion, true, "Use ambient occlusion to darken planar and environment reflection fallbacks and car paint reflections. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_city_rt_shadow_selective, true, "Skip city sun rays that cannot change the shadow and shorten rays to the scene bounds. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_classify, true, "Classify surface reflection tiles to concentrate rays where they are useful. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_handoff, true, "Blend surface reflections through screen history, RT, planar and environment sources. Live.", rex::kDebugOnly);
 
@@ -2327,6 +2330,7 @@ inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;
 inline auto& mcla_gpu_rt_denoise_v2 = g_gpu.mcla_gpu_rt_denoise_v2;
 inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
 inline auto& mcla_gpu_specular_occlusion = g_gpu.mcla_gpu_specular_occlusion;
+inline auto& mcla_gpu_city_rt_shadow_selective = g_gpu.mcla_gpu_city_rt_shadow_selective;
 inline auto& mcla_gpu_ssr_classify = g_gpu.mcla_gpu_ssr_classify;
 inline auto& mcla_gpu_ssr_handoff = g_gpu.mcla_gpu_ssr_handoff;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;

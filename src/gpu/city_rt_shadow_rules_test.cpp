@@ -18,6 +18,8 @@
 #include <vector>
 
 #include "city_rt_shadow_rules.h"
+#include "rt_scene_bounds.h"
+#include "hlsl/rt_ray_bounds.hlsli"
 
 using namespace mcla::gpu::city_rt_shadow;
 
@@ -170,7 +172,7 @@ void TestExactAlpha() {
   CHECK(UnpackAlphaReference(plain) == float(PackAlphaReference(kDefaultAlphaReference)) * (1.0f / 255.0f) && (plain & kFlagAlphaStats) == 0 && (plain & kFlagCarImage) == 0);
   CHECK(PackAlphaReference(0.5f) == 128 && PackAlphaReference(-1.0f) == 0 && PackAlphaReference(7.0f) == 255);
   // the flag bits do not overlap each other
-  const uint32_t fields[] = {0xFu << kFlagRaysShift, 3u << kFlagAlphaShift, kFlagCarImage, 0xFFu << kFlagAlphaRefShift, kFlagAlphaStats, kFlagView, kFlagCheck};
+  const uint32_t fields[] = {0xFu << kFlagRaysShift, 3u << kFlagAlphaShift, kFlagCarImage, kFlagSelective, kFlagBounds, 0xFFu << kFlagAlphaRefShift, kFlagAlphaStats, kFlagView, kFlagCheck};
   for (size_t i = 0; i < 7; ++i)
     for (size_t j = i + 1; j < 7; ++j) CHECK((fields[i] & fields[j]) == 0);
   // the picture: which way a pixel's rays went
@@ -290,6 +292,48 @@ void MeasureWidth(double h, float scale, uint32_t rays, std::mt19937& rng, doubl
   *x10 = at(0.1);
   *x90 = at(0.9);
   *x50 = at(0.5);
+}
+
+void TestSelectiveRays() {
+  for (uint32_t rays = 1; rays <= kMaxRays; ++rays) {
+    for (uint32_t mask = 0; mask < (1u << rays); ++mask) {
+      for (uint32_t carrier : {0u, 1u, 64u, 127u, 128u, 192u, 254u, 255u}) {
+        const float car = float(carrier) / 255.0f;
+        uint32_t open = 0, full_open = 0;
+        for (uint32_t k = 0; k < rays; ++k) full_open += (mask >> k) & 1u;
+        for (uint32_t k = 0; k < rays && !CarrierWins(open, rays, car); ++k) open += (mask >> k) & 1u;
+        const float expected = std::min(car, float(full_open) / float(rays));
+        CHECK(std::abs(std::min(car, float(open) / float(rays)) - expected) <= 1e-6f);
+      }
+    }
+  }
+
+  mcla::gpu::rt_scene::Bounds bounds;
+  const float lo[] = {-2.0f, 1.0f, -4.0f};
+  const float hi[] = {3.0f, 4.0f, 8.0f};
+  const float transform[3][4] = {{0, -1, 0, 1}, {0, 0, 1, -2}, {-2, 0, 0, 3}};
+  bounds.IncludeTransformed(lo, hi, transform);
+  CHECK(bounds.Usable());
+  for (uint32_t corner = 0; corner < 8; ++corner) {
+    for (uint32_t row = 0; row < 3; ++row) {
+      float coordinate = transform[row][3];
+      for (uint32_t axis = 0; axis < 3; ++axis) {
+        coordinate += transform[row][axis] * (((corner >> axis) & 1u) != 0 ? hi[axis] : lo[axis]);
+      }
+      CHECK(bounds.lo[row] <= coordinate && coordinate <= bounds.hi[row]);
+    }
+  }
+  bounds.IncludeTransformed(lo, hi, transform, false);
+  CHECK(!bounds.Usable());
+
+  float first = 0.0f, last = 300.0f;
+  CHECK(RtClipAxis(-2.0f, 4.0f, 0.0f, 1.0f, first, last));
+  CHECK(std::abs(last - 4.05f) <= 1e-5f);
+  CHECK(!RtClipAxis(-2.0f, 4.0f, -9.0f, 1.0f, first, last));
+  first = 0.0f;
+  last = 300.0f;
+  CHECK(RtClipAxis(-2.0f, 4.0f, 999.0f, 1e-10f, first, last));
+  CHECK(last == 300.0f);
 }
 
 void TestPenumbra() {
@@ -482,6 +526,8 @@ void TestShaderNumbers(const std::string& dir) {
   same("kHistogramStep", kHistogramStep);
   same("kFlagCarImage", kFlagCarImage);
   same("kFlagVehicleReceivers", kFlagVehicleReceivers);
+  same("kFlagSelective", kFlagSelective);
+  same("kFlagBounds", kFlagBounds);
   same("kFlagView", kFlagView);
   same("kFlagCheck", kFlagCheck);
   same("kStatPixels", kStatPixels);
@@ -702,6 +748,7 @@ int main(int argc, char** argv) {
   TestExactAlpha();
   TestHash();
   TestDiscSamples();
+  TestSelectiveRays();
   TestPenumbra();
   TestAgainstTheDisc();
   TestNoAcne();

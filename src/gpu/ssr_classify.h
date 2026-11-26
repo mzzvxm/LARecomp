@@ -33,7 +33,9 @@ class ReflectionClassifier {
   plume::RenderBuffer* TileList() const { return tile_list_.get(); }
   uint64_t TileListBytes() const { return list_bytes_; }
   const backend::IndirectCompute* Dispatch() const { return indirect_.get(); }
-  uint64_t HeldBytes() const { return uint64_t(width_) * height_ * 24u + list_bytes_; }
+  plume::RenderBuffer* Ranks(bool rt) const { return rt ? ranks_.get() : unused_ranks_.get(); }
+  uint64_t RankBytes(bool rt) const { return rt ? rank_bytes_ : 4u; }
+  uint64_t HeldBytes() const { return uint64_t(width_) * height_ * 24u + list_bytes_ + rank_bytes_; }
 
  private:
   std::unique_ptr<plume::RenderPipeline> MakePipeline(uint32_t variant);
@@ -53,6 +55,9 @@ class ReflectionClassifier {
   std::array<HostImage, 2> tiles_;
   HostImage plan_;
   std::unique_ptr<plume::RenderBuffer> tile_list_;
+  std::unique_ptr<plume::RenderBuffer> ranks_;
+  std::unique_ptr<plume::RenderBuffer> unused_ranks_;
+  uint64_t rank_bytes_ = 0;
   std::unique_ptr<plume::RenderBuffer> unused_args_;
   std::unique_ptr<backend::IndirectCompute> indirect_;
   uint64_t list_bytes_ = 0;

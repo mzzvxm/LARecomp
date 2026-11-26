@@ -2440,7 +2440,7 @@
   "type": "std::string",
   "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Ray traces surface reflections where the screen and its history have gaps, including wet roads and sidewalks. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.\"",
+  "help": "\"Ray traces surface reflections where the screen and its history have gaps. High traces one ray per selected pixel, including wet roads and sidewalks. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.\"",
   "traits": [
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
@@ -2541,6 +2541,17 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Use ambient occlusion to darken planar and environment reflection fallbacks and car paint reflections. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_city_rt_shadow_selective": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Skip city sun rays that cannot change the shadow and shorten rays to the scene bounds. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],
@@ -12112,7 +12123,7 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Debug: opponent reflection budget in thousands of screen texels. Zero uses 500. Larger rectangles can use fewer rays per texel. Live.\"",
+  "help": "\"Debug: the work the opponents' ray traced reflection may spend a frame, in thousands of image texels of the cars' screen rectangles at the full cone of rays (0, the default: \"\n    \"500 on every supported device). The budget limits admission by projected rectangle size. \"\n    \"Each admitted car uses the selected sample count. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 8000}"
@@ -12124,7 +12135,7 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Debug: the rays a texel of an opponent's paint casts: 0 (the default) by the budget (mcla_gpu_car_rt_opp_refl_texels), 4 the whole cone, 2 the outer pair, 1 the mirror ray. Live.\"",
+  "help": "\"Debug: samples per traced opponent paint texel. 0 or 4 uses the full cone, 2 the outer pair, and 1 the mirror ray. The city reflection level can cap this count. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Range{0, 4}"

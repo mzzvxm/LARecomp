@@ -17,6 +17,7 @@ namespace {
 std::atomic<bool> g_update_built{false};
 // Set once a frame by the integration: the field stands and has taken the whole of the screen-space bounce light's share.
 std::atomic<bool> g_replaced{false};
+std::atomic<bool> g_resource_pressure{false};
 
 LiveText& Setting() {
   static LiveText text("mcla_gpu_rt_gi");
@@ -29,7 +30,11 @@ bool RtGiUpdateBuilt() { return g_update_built.load(std::memory_order_relaxed); 
 
 bool RtGiReplacesBounceLight() { return g_replaced.load(std::memory_order_relaxed); }
 
+bool RtGiResourcePressure() { return g_resource_pressure.load(std::memory_order_relaxed); }
+
 namespace gi_setting {
+
+void NoteResourcePressure(bool pressure) { g_resource_pressure.store(pressure, std::memory_order_relaxed); }
 
 void NoteUpdateBuilt(bool built) { g_update_built.store(built, std::memory_order_relaxed); }
 

@@ -28,6 +28,7 @@
 #define SSR_HANDOFF_RT 1
 #include "ssr_handoff.hlsli"
 #include "ssr_classify.hlsli"
+#include "rt_ray_bounds.hlsli"
 #include "ssr_rt_common.hlsli"
 #include "rt_world_frame.hlsli"
 
@@ -42,7 +43,7 @@ RWByteAddressBuffer g_list : register(u2, space5);
 #ifdef __spirv__
 [[vk::image_format("r32ui")]]
 #endif
-RWTexture2D<uint> g_reflhit : register(u3, space5);
+RWTexture2D<uint> g_reflhit : register(u4, space5);
 #define CITY_HIT_RESOLVE_MATERIAL_CLASS 1
 #endif
 
@@ -110,7 +111,7 @@ float3 SsrRtCarLamps(CityHitParams p, RtWorld w, float3 position, float3 normal)
 }
 
 // CHECK: compare the material, glass, lamp coverage and history in moving 4K wet-road captures on both APIs.
-// CHECK: measure the enabled Ultra fallback against its 1.8 ms governor budget.
+// CHECK: measure the enabled Ultra fallback and the complete reflection pass on both APIs.
 // Use the world frame's cascades and local lamp list so a car hit needs no secondary rays.
 bool SsrRtShadeCar(CityHitParams p, RtWorld w, RtHitFrame f, CityHitTraceResult hit, float3 position,
                    float3 direction, float footprint, float cone_tan, out float3 colour) {
@@ -324,11 +325,17 @@ void main(uint3 id : SV_DispatchThreadID) {
     // CHECK: compare residual grain and edge stability with two-ray RT, including Ray Reconstruction.
     const uint k = (single_ray || (handoff && rays == 1u && SsrRays() == 2u)) ? SsrRtPickRay(conf.x, BlueNoiseFrame(pix.x + 17, pix.y + 23, 1u, frame, 2654435769u)) : sample_index;
     const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays);
-    SsrRtCount(stats, SSR_RT_CENSUS_RAYS);
-    const CityHitTraceResult hit = CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask, pixel_angle * receiver_distance, cone_tan, 0.5f);
+    // CHECK: compare retained cars and off-screen hits with the untrimmed path on both APIs.
+    const float trace_reach = g_handoff.Load(184u) != 0u
+        ? RtClippedLength(asfloat(g_handoff.Load3(172u)), asfloat(g_handoff.Load3(188u)), origin, dir, reach) : reach;
+    CityHitTraceResult hit = CityHitTraceNone();
+    if (trace_reach >= 0.0f) {
+      SsrRtCount(stats, SSR_RT_CENSUS_RAYS);
+      hit = CityHitTrace(origin, dir, 0.0f, trace_reach, kSsrRtMask, pixel_angle * receiver_distance, cone_tan, 0.5f);
+    }
     const float up = dot(dir, f.axisY);
     if (hit.hit == 0u) {
-      SsrRtCount(stats, SSR_RT_CENSUS_MISS);
+      SsrRtCount(stats && trace_reach >= 0.0f, SSR_RT_CENSUS_MISS);
 #if SSR_REFLHIT
       if (rejected == kReflHitNone) rejected = kReflHitRtMiss;
 #endif

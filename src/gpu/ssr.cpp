@@ -91,6 +91,7 @@ void ScreenReflections::Initialize(Device& device, BindlessHeap& heap, HostPasse
   handoff_builder_.begin();
   handoff_builder_.addByteAddressBuffer(0);
   handoff_builder_.addByteAddressBuffer(1);
+  handoff_builder_.addReadWriteByteAddressBuffer(2);
   handoff_builder_.end();
   heap_ = &heap;
   passes_ = &passes;
@@ -329,7 +330,7 @@ plume::RenderDescriptorSet* ScreenReflections::UploadHandoff(const reflection_ha
     return nullptr;
   }
   if (!slot.set) {
-    slot.set = device_->CreateDescriptorSet(handoff_builder_, 2, 0, "ssr handoff set");
+    slot.set = device_->CreateDescriptorSet(handoff_builder_, 3, 0, "ssr handoff set");
     if (!slot.set) {
       return nullptr;
     }
@@ -339,6 +340,12 @@ plume::RenderDescriptorSet* ScreenReflections::UploadHandoff(const reflection_ha
     slot.set->setBuffer(1, classifier_.TileList(), classifier_.TileListBytes());
   } else {
     slot.set->setBuffer(1, slot.buffer.get(), sizeof(handoff));
+  }
+  if (auto* ranks = classifier_.Ranks(rt_tiles)) {
+    slot.set->setBuffer(2, ranks, classifier_.RankBytes(rt_tiles));
+  } else if (auto* fallback = rt_.RankFallback()) {
+    // Allocation failure uses the direct selector, which never accesses ranks.
+    slot.set->setBuffer(2, fallback, sizeof(uint32_t));
   }
   void* mapped = slot.buffer->map();
   if (!mapped) {
@@ -1072,7 +1079,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // denoiser changes, and measure the REF-7 costs and image rows on a device.
   // CHECK: verify depth/colour alignment on pan, camera cut, dynamic resize,
   // MSAA changes and a change of upscaler or exposure on both APIs.
-  const bool classify = classify_enabled_ && !debug_view && !decision.stub && classifier_.Prepare(width, height, rt);
+  const bool classify = classify_enabled_ && !debug_view && !decision.stub && (!rt || rt_.indirect_ready()) && classifier_.Prepare(width, height, rt);
   if (!classify_enabled_) classifier_.Release();
   if (handoff::ReuseHistory(handoff_enabled_ || classify, reuse_key_.valid && reuse_key_.frame + 1 == now.frame,
                             motion_known, fits && reuse_key_.size[0] == width && reuse_key_.size[1] == height,
@@ -1108,6 +1115,13 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     handoff_frame.classify_inputs = ssr::PackSlots(trace_.slot, rt ? confidence_.slot : screen::kNoSlot);
     handoff_frame.classify_group_mask = rt ? rt_.resolved().cell.group_mask : 0u;
     handoff_frame.classify_stride = classifier_.Stride();
+    if (rt) {
+      if (const auto* bounds = rt_.SceneBounds()) {
+        handoff_frame.rt_bounds_min = bounds->lo;
+        handoff_frame.rt_bounds_max = bounds->hi;
+        handoff_frame.rt_bounds_valid = 1;
+      }
+    }
   }
   handoff_set_ = UploadHandoff(handoff_frame, classify && rt);
   if (!handoff_set_) {
@@ -1150,6 +1164,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     rt_frame.handoff = handoff_set_;
     rt_frame.capture_hit = capture_pipeline ? &capture_hit_ : nullptr;
     rt_frame.indirect = classify ? classifier_.Dispatch() : nullptr;
+    rt_frame.ranks = classify ? classifier_.Ranks(true) : nullptr;
     rt_frame.push = trace_push;
     rt_frame.width = width;
     rt_frame.height = height;

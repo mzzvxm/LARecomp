@@ -109,9 +109,8 @@ int main(int argc, char** argv) {
       for (const char* text : kTexts) {
         ++combos;
         const cm::Level level = cr::LevelFor(cls, tier, text);
-        const RtTier rung = gc::RtRung(cls, tier);
         const std::string name = std::string("class ") + std::to_string(int(cls)) + ", tier " + std::to_string(int(tier)) + ", '" + text + "'";
-        if (rung == RtTier::kNone) {
+        if (tier == RtTier::kNone) {
           Check(level == cm::Level::kOff, name + ": no ray tracing rung, off whatever the text says");
           continue;
         }

@@ -451,6 +451,7 @@
 {"mcla_gpu_rt_denoise_v2", "MCLA/GPU"},
 {"mcla_gpu_ssr_blue_noise", "MCLA/GPU"},
 {"mcla_gpu_specular_occlusion", "MCLA/GPU"},
+{"mcla_gpu_city_rt_shadow_selective", "MCLA/GPU"},
 {"mcla_gpu_ssr_classify", "MCLA/GPU"},
 {"mcla_gpu_ssr_handoff", "MCLA/GPU"},
 {"mcla_gpu_ssr_resolve", "MCLA/GPU"},

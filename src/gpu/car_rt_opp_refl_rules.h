@@ -224,14 +224,13 @@ struct Plan {
   bool operator==(const Plan&) const = default;
 };
 
-// The rays for admitted rectangles of `texels` in all against a budget: the full cone up to the budget, the outer pair up to twice it, the mirror above.
-inline uint32_t RaysFor(uint64_t texels, uint64_t budget) {
-  if (texels <= budget) return kRaysFull;
-  if (double(texels) <= kAdmitFactor * double(budget)) return kRaysReduced;
-  return kRaysMirror;
+// Each admitted rectangle uses the same sample count. The city reflection
+// cell may cap it, and the debug switch can request a lower sample count.
+constexpr uint32_t RaysFor(uint32_t forced) {
+  return forced == kRaysMirror || forced == kRaysReduced ? forced : kRaysFull;
 }
 
-// `car_rects` the cars' rectangles (BoxRect of each box, any order); `budget` TexelBudget; `rays_override` 0: by the sum, else 1, 2 or 4.
+// Admit the largest visible paint rectangles within the shared texel budget.
 inline Plan PlanDispatches(const std::vector<TexelRect>& car_rects, uint64_t budget, uint32_t rays_override = 0, uint32_t max_dispatches = kMaxDispatches) {
   Plan plan;
   if (budget == 0) {
@@ -257,7 +256,7 @@ inline Plan PlanDispatches(const std::vector<TexelRect>& car_rects, uint64_t bud
       ++plan.skipped;
     }
   }
-  plan.rays = (rays_override == kRaysFull || rays_override == kRaysReduced || rays_override == kRaysMirror) ? rays_override : RaysFor(plan.texels, budget);
+  plan.rays = RaysFor(rays_override);
   plan.dispatches = MergeRects(std::move(admitted), max_dispatches);
   for (const TexelRect& r : plan.dispatches) {
     plan.covered += r.Area();

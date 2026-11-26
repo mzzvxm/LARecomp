@@ -131,7 +131,7 @@ constexpr Cell CellFor(Level level, gpu_class::GpuClass) {
 // The level a setting text comes to on this class and tier: `auto` is rt_tier.h's cell of kRtReflections (the rung gates it), a hand set high or ultra runs wherever the card can trace
 // (never on the rung none: no ray tracing units, or the Low class). Debug-only values the list does not know are `auto`.
 inline Level LevelFor(gpu_class::GpuClass cls, gpu_class::RtTier tier, std::string_view text) {
-  if (gpu_class::RtRung(cls, tier) == gpu_class::RtTier::kNone) {
+  if (tier == gpu_class::RtTier::kNone) {
     return Level::kOff;
   }
   const Choice choice = text == "on" ? Choice::kHigh : city_rt::ParseChoice(text);

@@ -275,7 +275,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
   w.traffic_texels += traffic_plan.traffic_texels;
   w.covered += plan.covered;
   w.most_covered = std::max<uint64_t>(w.most_covered, plan.covered);
-  ++w.frames_at_rays[plan.rays >= opp::kRaysFull ? 0 : plan.rays >= opp::kRaysReduced ? 1 : 2];
+  ++w.frames_at_rays[push.opp[3] >= opp::kRaysFull ? 0 : push.opp[3] >= opp::kRaysReduced ? 1 : 2];
   if (!first_logged_) {
     first_logged_ = true;
     REXLOG_INFO("{} opponents: the first pass, frame {}: {} ({} paint instances of other cars in the top level, {} of them the traffic paint's; the player's record at row {}); budget {} texels; "

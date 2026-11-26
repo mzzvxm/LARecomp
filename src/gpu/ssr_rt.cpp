@@ -49,15 +49,6 @@ uint64_t PipelineKey(uint32_t variant) { return HostPrecache::Key(HostPrecache::
 
 }  // namespace
 
-// Two timestamps round the two passes, a ring of pools so a frame never waits for the GPU: the results are read by a FrameRing action once the list that wrote them has completed.
-struct ScreenReflectionsRt::Timer {
-  static constexpr uint32_t kRing = 4;
-  std::array<std::unique_ptr<plume::RenderQueryPool>, kRing> pools;
-  std::array<bool, kRing> busy{};
-  uint32_t next = 0;
-  bool ok = false;
-};
-
 ScreenReflectionsRt::ScreenReflectionsRt() = default;
 ScreenReflectionsRt::~ScreenReflectionsRt() = default;
 
@@ -92,17 +83,7 @@ void ScreenReflectionsRt::Initialize(Device& device, FrameRing& frames, Bindless
     readback_.reset();
     return;
   }
-  timer_ = std::make_unique<Timer>();
-  if (backend::TimestampsSupported(device.device())) {
-    timer_->ok = true;
-    for (auto& pool : timer_->pools) {
-      pool = device.CreateQueryPool(2, "ssr rt timestamps");
-      timer_->ok = timer_->ok && pool != nullptr;
-    }
-  }
-  if (!timer_->ok) {
-    REXLOG_INFO("{} no timestamps on this device: per-pass timing is unavailable", kPrefix);
-  }
+  trace_dispatch_ = backend::CreateIndirectCompute(device.device());
   reset_pending_ = true;
   ready_ = true;
 }
@@ -111,7 +92,8 @@ bool ScreenReflectionsRt::MakeLayoutAndShaders(Device& device, HostPasses& passe
   output_builder_.begin();
   output_builder_.addReadWriteTexture(0);              // u0: the trace image
   output_builder_.addReadWriteByteAddressBuffer(1);    // u1: the control and statistics words
-  output_builder_.addReadWriteByteAddressBuffer(2);    // u2: the list
+  output_builder_.addReadWriteByteAddressBuffer(2);
+  output_builder_.addReadWriteByteAddressBuffer(3);    // u2: the list
   output_builder_.end();
   layout_ = MakeLayout(output_builder_, scene, "ssr rt layout");
   if (!layout_) {
@@ -168,7 +150,7 @@ void ScreenReflectionsRt::Shutdown() {
   list_.reset();
   readback_.reset();
   readback_busy_ = false;
-  timer_.reset();
+  trace_dispatch_.reset();
   layout_.reset();
   ready_ = false;
   resolved_ = ssr_rt::Resolved{};
@@ -246,13 +228,11 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level, bool classified) {
     return;
   }
   const auto choice = ssr_rt::ParseChoice(Setting().Get());
-  const auto now = ssr_rt::ResolveFixed(ssr_level, choice, ready_);
+  const ssr_rt::Resolved now = ssr_rt::ResolveFixed(ssr_level, choice, ready_);
   if (now.level != resolved_.level || classified != classified_) {
     classified_ = classified;
     reset_pending_ = true;
     logged_level_once_ = false;
-    ms_ = -1.0;
-    logged_step_ = 0;
   }
   resolved_ = now;
   shade_cars_ = ssr_rt::CarHitsEnabled(now.cell, larecomp::settings::mcla_gpu_ssr_rt_cars.Get());
@@ -262,7 +242,7 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level, bool classified) {
     if (now.level == ssr_rt::Level::kOff) {
       REXLOG_INFO("{} ray traced fallback off: {} (mcla_gpu_ssr_rt {}, live)", kPrefix, ssr_rt::WhyName(now.why), Setting().Get());
     } else {
-      REXLOG_INFO("{} ray traced fallback {} (mcla_gpu_ssr_rt {}, live): classes {}{}{}, at most {} rays a frame ({} a pixel), up to {:.0f} m", kPrefix,
+      REXLOG_INFO("{} ray traced fallback {} (mcla_gpu_ssr_rt {}, live): classes {}{}{}, at most {} rays a frame ({} a pixel), up to {:.0f} m, fixed work per level", kPrefix,
                   ssr::LevelName(now.level), Setting().Get(), (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupBright)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupBright) : "",
                   now.cell.group_mask == (ssr_rt::GroupBit(ssr_rt::kGroupBright) | ssr_rt::GroupBit(ssr_rt::kGroupGround)) ? ", " : "",
                   (now.cell.group_mask & ssr_rt::GroupBit(ssr_rt::kGroupGround)) != 0 ? ssr_rt::GroupName(ssr_rt::kGroupGround) : "", now.cell.ray_cap, now.cell.rays, double(now.cell.reach));
@@ -275,6 +255,12 @@ void ScreenReflectionsRt::BeginFrame(ssr::Level ssr_level, bool classified) {
   }
 }
 
+const rt_scene::Bounds* ScreenReflectionsRt::SceneBounds() const {
+  if (!car_scene_) return nullptr;
+  const auto& view = car_scene_->View();
+  return view.scene_valid && view.bounds.Usable() ? &view.bounds : nullptr;
+}
+
 bool ScreenReflectionsRt::EnsureSet(const HostImage& trace) {
   if (set_ && set_texture_ == trace.texture.get()) {
     return true;
@@ -282,13 +268,14 @@ bool ScreenReflectionsRt::EnsureSet(const HostImage& trace) {
   RetireSet();
   // Three views: u0 the trace image, u1 the control words and u2 the list (output_builder_). Device::CreateDescriptorSet compares this count with what the backend allocated, and D3D12 allocates one view
   // for each descriptor (the city shadow pass's set learned that on 2026-11-21); Vulkan does not count. ssr_rt_rules_test reads every CreateDescriptorSet call's literal count against its builder.
-  set_ = device_->CreateDescriptorSet(output_builder_, 3, 0, "ssr rt output set");
+  set_ = device_->CreateDescriptorSet(output_builder_, 4, 0, "ssr rt output set");
   if (!set_) {
     return false;
   }
   set_->setTexture(0, trace.texture.get(), plume::RenderTextureLayout::GENERAL, trace.view.get());
   set_->setBuffer(1, ctl_.get(), ssr_rt::buf::kBytes);
   set_->setBuffer(2, list_.get(), ssr_rt::kListBytes);
+  set_->setBuffer(3, trace_dispatch_ ? trace_dispatch_->arguments() : ctl_.get(), ssr_rt::kDispatchBytes);
   set_texture_ = trace.texture.get();
   return true;
 }
@@ -310,7 +297,8 @@ bool ScreenReflectionsRt::PrepareCaptureHit(const HostImage& trace, const HostIm
     capture_builder_.addReadWriteTexture(0);
     capture_builder_.addReadWriteByteAddressBuffer(1);
     capture_builder_.addReadWriteByteAddressBuffer(2);
-    capture_builder_.addReadWriteTexture(3);
+    capture_builder_.addReadWriteByteAddressBuffer(3);
+    capture_builder_.addReadWriteTexture(4);
     capture_builder_.end();
     capture_layout_ = MakeLayout(capture_builder_, *car_scene_, "ssr rt capture layout");
     if (!capture_layout_) return false;
@@ -331,12 +319,13 @@ bool ScreenReflectionsRt::PrepareCaptureHit(const HostImage& trace, const HostIm
   const std::array serials{trace.serial, hit.serial};
   if (capture_set_ && capture_serials_ == serials) return true;
   ReleaseCaptureSet();
-  capture_set_ = device_->CreateDescriptorSet(capture_builder_, 4, 0, "ssr rt capture output");
+  capture_set_ = device_->CreateDescriptorSet(capture_builder_, 5, 0, "ssr rt capture output");
   if (!capture_set_) return false;
   capture_set_->setTexture(0, trace.texture.get(), plume::RenderTextureLayout::GENERAL, trace.view.get());
   capture_set_->setBuffer(1, ctl_.get(), ssr_rt::buf::kBytes);
   capture_set_->setBuffer(2, list_.get(), ssr_rt::kListBytes);
-  capture_set_->setTexture(3, hit.texture.get(), plume::RenderTextureLayout::GENERAL, hit.view.get());
+  capture_set_->setBuffer(3, trace_dispatch_ ? trace_dispatch_->arguments() : ctl_.get(), ssr_rt::kDispatchBytes);
+  capture_set_->setTexture(4, hit.texture.get(), plume::RenderTextureLayout::GENERAL, hit.view.get());
   capture_serials_ = serials;
   return true;
 }
@@ -347,7 +336,7 @@ void ScreenReflectionsRt::ReleaseCaptureSet() {
 }
 
 bool ScreenReflectionsRt::Record(const Frame& in) {
-  if (!ready_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !in.handoff || !car_scene_ || !world_ || !wanted()) {
+  if (!ready_ || !heap_ || !frames_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !in.handoff || !car_scene_ || !world_ || !wanted()) {
     return false;
   }
   plume::RenderCommandList* list = in.list;
@@ -382,7 +371,7 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
 
   const bool single_ray = larecomp::settings::mcla_gpu_ssr_rt_single_ray.Get();
   const uint32_t rays = ssr_rt::RaysUsed(cell, std::max<uint32_t>(in.ssr_rays, 1), single_ray);
-  const uint32_t capacity = ssr_rt::CapacityFor(cell, 0, rays);
+  const uint32_t capacity = ssr_rt::CapacityFor(cell, rays);
   if (capacity == 0) {
     return false;
   }
@@ -404,13 +393,6 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
 
   using Layout = plume::RenderTextureLayout;
   namespace Stage = plume::RenderBarrierStage;
-  int timer_slot = -1;
-  if (timer_ && timer_->ok && !timer_->busy[timer_->next]) {
-    timer_slot = int(timer_->next);
-    list->resetQueryPool(timer_->pools[timer_slot].get(), 0, 2);
-    list->writeTimestamp(timer_->pools[timer_slot].get(), 0);
-    timer_->busy[timer_slot] = true;
-  }
   {
     // The trace image becomes a storage image for the two passes; the control words and the list are read and written by both.
     const plume::RenderTextureBarrier write(in.trace->texture.get(), Layout::GENERAL);
@@ -436,31 +418,56 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
 
   const uint32_t tiles_x = (in.width + ssr_rt::kTile - 1) / ssr_rt::kTile;
   const uint32_t tiles_y = (in.height + ssr_rt::kTile - 1) / ssr_rt::kTile;
-  const plume::RenderBufferBarrier between[2] = {{ctl_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}, {list_.get(), plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE}};
+  constexpr auto rw = plume::RenderBufferAccess::READ | plume::RenderBufferAccess::WRITE;
+  const bool indirect = in.indirect && in.ranks && trace_dispatch_;
+  const plume::RenderBufferBarrier control[] = {{ctl_.get(), rw}, {list_.get(), rw}};
   list->setPipeline(select_pipeline);
-  if (reset_pending_ || in.indirect) {
-    // A compact list may dispatch zero groups. Clear its rotating counters
-    // explicitly so an empty frame cannot leave a stale count behind.
+  if (reset_pending_ || indirect) {
+    // A compact list may dispatch zero groups. Clear the rotating counters even on an empty frame.
     ssr::Push reset = push;
-    if (reset_pending_) {
-      reset.Set(pk::kConf, ssr_rt::PackConf(in.confidence->slot, cell.group_mask, rays, flags | pk::kFlagReset));
-    }
+    if (reset_pending_) reset.Set(pk::kConf, ssr_rt::PackConf(in.confidence->slot, cell.group_mask, rays, flags | pk::kFlagReset));
     reset.Set(pk::kCap, 0);
     list->setComputePushConstants(0, &reset, 0, sizeof(reset));
     list->dispatch(1, 1, 1);
-    list->barriers(Stage::COMPUTE, between, 2);
+    list->barriers(Stage::COMPUTE, control, 2);
     reset_pending_ = false;
   }
-  list->setComputePushConstants(0, &push, 0, sizeof(push));
-  if (in.indirect) {
+  if (indirect) {
+    // Count each active tile, scan the counts in rotated screen order, and write
+    // the capped list at fixed offsets. Queue order cannot decide which pixels survive.
+    // CHECK: capture timestamp overhead, indirect barriers and moving cap pressure on both APIs.
+    const plume::RenderBufferBarrier ranks(in.ranks, rw);
+    const plume::RenderBufferBarrier args(trace_dispatch_->arguments(), rw);
+    list->barriers(Stage::COMPUTE, args);
+    ssr::Push select = push;
+    select.Set(pk::kCap, ssr_rt::PackSelect(capacity, ssr_rt::SelectPass::kCount));
+    list->setComputePushConstants(0, &select, 0, sizeof(select));
+    in.indirect->Dispatch(*list);
+    list->barriers(Stage::COMPUTE, ranks);
+    select.Set(pk::kCap, ssr_rt::PackSelect(capacity, ssr_rt::SelectPass::kScan));
+    list->setComputePushConstants(0, &select, 0, sizeof(select));
+    const uint32_t blocks = ssr_rt::GroupsFor(tiles_x * tiles_y);
+    list->dispatch(std::min(blocks, ssr_rt::kScanStride), (blocks + ssr_rt::kScanStride - 1) / ssr_rt::kScanStride, 1);
+    list->barriers(Stage::COMPUTE, ranks);
+    select.Set(pk::kCap, ssr_rt::PackSelect(capacity, ssr_rt::SelectPass::kBlocks));
+    list->setComputePushConstants(0, &select, 0, sizeof(select));
+    list->dispatch(1, 1, 1);
+    list->barriers(Stage::COMPUTE, ranks);
+    select.Set(pk::kCap, ssr_rt::PackSelect(capacity, ssr_rt::SelectPass::kEmit));
+    list->setComputePushConstants(0, &select, 0, sizeof(select));
     in.indirect->Dispatch(*list);
   } else {
+    list->setComputePushConstants(0, &push, 0, sizeof(push));
     list->dispatch(tiles_x, tiles_y, 1);
   }
-  list->barriers(Stage::COMPUTE, between, 2);
+  list->barriers(Stage::COMPUTE, control, 2);
   list->setPipeline(trace_pipeline);
   list->setComputePushConstants(0, &push, 0, sizeof(push));
-  list->dispatch(ssr_rt::GroupsFor(capacity), 1, 1);
+  if (indirect) {
+    trace_dispatch_->Dispatch(*list);
+  } else {
+    list->dispatch(ssr_rt::GroupsFor(capacity), 1, 1);
+  }
   {
     const plume::RenderTextureBarrier read(in.trace->texture.get(), Layout::SHADER_READ);
     list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read, 1);
@@ -471,40 +478,13 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
       hit->layout = Layout::SHADER_READ;
     }
   }
-  if (timer_slot >= 0) {
-    list->writeTimestamp(timer_->pools[timer_slot].get(), 1);
-    timer_->next = (timer_->next + 1) % Timer::kRing;
-    frames_->RetireAction([this, slot = uint32_t(timer_slot), generation = generation_] {
-      if (generation != generation_ || !timer_) {
-        return;
-      }
-      timer_->busy[slot] = false;
-      plume::RenderQueryPool* pool = timer_->pools[slot].get();
-      if (!pool) {
-        return;
-      }
-      pool->queryResults();
-      const uint64_t* t = pool->getResults();
-      if (t[1] >= t[0]) {
-        const double ms = double(t[1] - t[0]) * 1.0e-6;
-        if (ms < 1000.0) {
-          ms_ = ms;
-          totals_.ms = ms_;
-        }
-      }
-    });
-  }
-
   ssr_rt::FrameLine line;
   line.frame = in.frame;
   line.level = resolved_.level;
   line.group_mask = cell.group_mask;
   line.reach = cell.reach;
   line.capacity = capacity;
-  line.step = 0;
   line.rays_per_pixel = rays;
-  line.budget_ms = 0.0f;
-  line.ms = ms_;
   line.keep = 1.0f;
   if (stats) {
     // The census's counters of this stats frame (and the library's calibration counters): read back once the list has completed.
@@ -515,7 +495,6 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   }
   ++rt_frame_;
   ++totals_.frames_run;
-  totals_.step = 0;
   ran_ = true;
   idle_frames_ = 0;
   return true;
@@ -561,7 +540,6 @@ void ScreenReflectionsRt::ProcessReadback(uint64_t generation, uint32_t rt_frame
   line.screen = census[ssr_rt::buf::kScreen];
   line.shaded = census[ssr_rt::buf::kShaded];
   line.filled = census[ssr_rt::buf::kFilled];
-  line.ms = ms_;
   ++totals_.stats_frames;
   totals_.candidates += line.candidates;
   totals_.listed += line.listed;
@@ -602,9 +580,6 @@ uint64_t ScreenReflectionsRt::HeldBytes() const {
 
 std::string ScreenReflectionsRt::CensusText() const {
   ssr_rt::Totals totals = totals_;
-  totals.step = 0;
-  totals.step_changes = 0;
-  totals.ms = ms_;
   totals.last_why = last_why_;
   return ssr_rt::FormatTotals(totals);
 }

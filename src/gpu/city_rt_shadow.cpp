@@ -304,9 +304,14 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   // The exact alpha's picture and counters (the check has its own): the contact shadows' view 7 shows which way the pixel's rays went through the cut-outs.
   const bool alpha_view = !check && alpha == rules::AlphaMode::kExact && larecomp::settings::mcla_gpu_city_rt_alpha_view.Get();
   const float sun_scale = rules::ClampSunScale(larecomp::settings::mcla_gpu_city_rt_sun.Get());
-  const float ray_length = rules::RayLength(sun_sin, city_scene_->FarRadius());
+  // The selected shadow level fixes the maximum ray length. The bounds
+  // clip to actual casters when possible, regardless of the streaming budget.
+  const auto shadow_budget = city_rt::WithRadius(city_rt::BudgetFor(gpu_class::GpuClass::kHigh, level_),
+                                                float(larecomp::settings::mcla_gpu_city_rt_radius.Get()));
+  const float ray_length = rules::RayLength(sun_sin, shadow_budget.far_radius);
   const bool have_car = in.car_slot != kNoSlot;
 
+  const bool selective = larecomp::settings::mcla_gpu_city_rt_shadow_selective.Get();
   Push push = {};
   push.slots[0] = in.depth->slot;
   push.slots[1] = in.depth->width;
@@ -315,6 +320,15 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
   const bool vehicle_receivers = larecomp::settings::mcla_gpu_city_rt_car_coverage.Get();
   if (vehicle_receivers) {
     push.slots[3] |= rules::kFlagVehicleReceivers;
+  }
+  // CHECK: compare thin-caster and tunnel masks with the full ray path on both APIs.
+  if (selective && !check && !alpha_view) {
+    push.slots[3] |= rules::kFlagSelective;
+    if (view.bounds.Usable()) {
+      std::copy(view.bounds.lo.begin(), view.bounds.lo.end(), push.bounds_min);
+      std::copy(view.bounds.hi.begin(), view.bounds.hi.end(), push.bounds_max);
+      push.slots[3] |= rules::kFlagBounds;
+    }
   }
   push.noise[0] = in.sun_frame;
   push.noise[1] = city_rt::kMaskCity | car_rt_rules::kMaskBody | car_rt_rules::kMaskTyres | car_rt_rules::kMaskOthers;
@@ -375,7 +389,7 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
     result.slot = image_.slot;
     if (!check && vehicle_receivers) result.receiver_range = range;
   }
-  const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u) | (alpha_view ? 1u << 18 : 0u) | (rules::PackAlphaReference(alpha_reference) << 20) | (vehicle_receivers ? 1u << 28 : 0u);
+  const uint32_t state = (rays << 0) | (uint32_t(alpha) << 8) | (uint32_t(level_) << 12) | (check ? 1u << 16 : 0u) | (have_car ? 1u << 17 : 0u) | (alpha_view ? 1u << 18 : 0u) | (selective ? 1u << 19 : 0u) | (rules::PackAlphaReference(alpha_reference) << 20) | (vehicle_receivers ? 1u << 28 : 0u);
   if (!check && !alpha_view && RtDenoise::V2Enabled()) {
     pass_timing_->Mark(list, "city sun denoise");
     if (const HostImage* filtered = denoise_.RecordVisibility(list, image_, *in.depth, in.denoise, in.frame, in.tan_x, in.tan_y, range, state)) {
@@ -387,14 +401,15 @@ CityRtShadow::Result CityRtShadow::Record(plume::RenderCommandList* list, const 
     last_state_ = state;
     REXLOG_INFO("{} frame {}: image {}x{} (the occlusion's traced size), level {}, {} rays a pixel, sun x{:.1f}, alpha tested triangles {}, applied within {:.0f} m of the camera, rays up to "
                 "{:.0f} m, {} instances in the top level ({} hi detail and {} lod sectors), the car's ray traced image {}{} (pass timing label \"city rt shadow\"; mcla_gpu_rt_shadows off compares; "
-                "mcla_gpu_contact_shadows_view 7 shows the term)",
+                "mcla_gpu_contact_shadows_view 7 shows the term, selective rays {})",
                 kPrefix, in.frame, in.depth->width, in.depth->height, city_rt::LevelName(level_), rays, sun_scale,
                 alpha == rules::AlphaMode::kExclude ? "left out" : alpha == rules::AlphaMode::kOpaque ? "opaque" : alpha == rules::AlphaMode::kExact
                     ? std::format("exact (the texture's alpha against {:.2f}; stochastic where the texture is not resident)", alpha_reference)
                     : std::string("stochastic (half)"),
                 range, ray_length, city.instances, city.hi_resident, city.lod_resident, have_car ? "is combined" : "is not there",
                 check ? "; THE CHECK IS ON: primary rays against the depth, the sun's rays are not traced"
-                      : (alpha_view ? "; THE ALPHA VIEW IS ON: the contact shadows' view 7 shows the cut-outs' path (white none, 0.7 exact, 0.35 stochastic) and the log has the counters" : ""));
+                      : (alpha_view ? "; THE ALPHA VIEW IS ON: the contact shadows' view 7 shows the cut-outs' path (white none, 0.7 exact, 0.35 stochastic) and the log has the counters" : ""),
+                selective && !check && !alpha_view ? "on" : "off");
   }
   return result;
 }

@@ -212,15 +212,15 @@ int main(int argc, char** argv) {
     p = op::PlanDispatches({small, medium}, budget);
     Check(p.admitted == 2 && p.rays == 4 && p.texels == 370000 && p.dispatches.size() == 2, "two cars within the budget: both, the full cone, two dispatches");
     p = op::PlanDispatches({small, medium, large}, budget);
-    Check(p.admitted == 3 && p.texels == 850000 && p.rays == 2 && p.skipped == 0, "over the budget but within twice it: all admitted, the outer pair of rays");
+    Check(p.admitted == 3 && p.texels == 850000 && p.rays == 4 && p.skipped == 0, "over the budget but within twice it: all admitted with the full cone");
     p = op::PlanDispatches({large, large, medium}, budget);
-    Check(p.admitted == 2 && p.skipped == 1 && p.texels == 960000 && p.rays == 2, "two large cars fill twice the budget: the third is left out, the pair casts the outer rays");
+    Check(p.admitted == 2 && p.skipped == 1 && p.texels == 960000 && p.rays == 4, "two large cars fill twice the budget: the third is left out, the pair keeps the full cone");
     p = op::PlanDispatches({large, R{1100, 600, 1900, 1080}, medium, small}, budget);
-    Check(p.admitted == 3 && p.skipped == 1 && p.texels <= 1000000 && p.rays == 2, "the cars come by area, largest first, while the sum is within twice the budget: the smallest is left out");
+    Check(p.admitted == 3 && p.skipped == 1 && p.texels <= 1000000 && p.rays == 4, "the cars come by area, largest first, while the sum is within twice the budget: the smallest is left out");
     p = op::PlanDispatches({small, giant}, budget);
-    Check(p.admitted == 1 && p.skipped == 1 && p.rays == 1 && p.dispatches.size() == 1 && p.dispatches[0] == giant, "a car filling the picture is admitted (the first always is), at the mirror ray, and the small one is left out");
+    Check(p.admitted == 1 && p.skipped == 1 && p.rays == 4 && p.dispatches.size() == 1 && p.dispatches[0] == giant, "a car filling the picture is admitted (the first always is), with the full cone, and the small one is left out");
     p = op::PlanDispatches({giant}, budget);
-    Check(p.admitted == 1 && p.rays == op::kRaysMirror, "a lone giant: admitted at the mirror");
+    Check(p.admitted == 1 && p.rays == op::kRaysFull, "a lone giant: admitted with the full cone");
     p = op::PlanDispatches({small}, budget, 1);
     Check(p.rays == 1 && op::PlanDispatches({giant}, budget, 4).rays == 4 && op::PlanDispatches({small}, budget, 3).rays == 4, "the rays override takes 1, 2 or 4; another number is no override");
     Check(op::PlanDispatches({small}, 0).dispatches.empty() && op::PlanDispatches({small}, 0).admitted == 0, "no budget: no pass");
@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     p = op::PlanDispatches(many, budget);
     Check(p.dispatches.size() <= op::kMaxDispatches && p.admitted == 8, "eight cars: at most four dispatches");
     // The decision is by the sum of the admitted rectangles.
-    Check(op::RaysFor(500000, 500000) == 4 && op::RaysFor(500001, 500000) == 2 && op::RaysFor(1000000, 500000) == 2 && op::RaysFor(1000001, 500000) == 1, "the rays by the sum against the budget: 4, 2 over it, 1 over twice");
+    Check(op::RaysFor(0) == 4 && op::RaysFor(1) == 1 && op::RaysFor(2) == 2 && op::RaysFor(3) == 4, "the sample count follows the setting");
     Check(op::Describe(op::PlanDispatches({small, medium}, budget)).find("2 of 2 cars") != std::string::npos, "the log's words");
   }
 

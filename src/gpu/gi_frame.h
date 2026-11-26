@@ -171,8 +171,6 @@ inline constexpr uint32_t kCutWarmupFrames = 12;          // frames of the 4x bu
 inline constexpr float kCutWarmupBudgetScale = 4.0f;
 inline constexpr float kFadeInSeconds = 0.4f;             // the field's weight rises from 0 over this long after a cut
 inline constexpr float kFadeOutSeconds = 0.5f;            // ... and the screen-space bounce light crossfades in over this long where the field goes invalid
-inline constexpr float kGovernorMin = 0.5f;               // the probe budget a frame scales between these by the pass timings
-inline constexpr float kGovernorMax = 1.5f;
 inline constexpr float kBounceWeightDefault = 0.5f;       // the probes' own feedback (about two bounces); 0 = strictly one bounce
 
 // ---------------------------------------------------------------------------
@@ -1018,12 +1016,12 @@ static_assert(BudgetOf(Layout::kStandard).cascade[1].spacing_m == 2.0f * BudgetO
 static_assert(LayoutFor(Rung::kNone, Level::kUltra) == Layout::kNone && LayoutFor(Rung::kNone, Level::kHigh) == Layout::kNone && LayoutFor(Rung::kNone, Level::kOff) == Layout::kNone,
               "none: no field, the screen-space bounce light");
 static_assert(LayoutFor(Rung::kWeak, Level::kOff) == Layout::kNone && LayoutFor(Rung::kWeak, Level::kHigh) == Layout::kStandard && LayoutFor(Rung::kWeak, Level::kUltra) == Layout::kExtended,
-              "weak: probes only: lean at HIGH, standard by hand at ULTRA");
+              "weak and strong use the same layouts");
 static_assert(LayoutFor(Rung::kStrong, Level::kOff) == Layout::kNone && LayoutFor(Rung::kStrong, Level::kHigh) == Layout::kStandard && LayoutFor(Rung::kStrong, Level::kUltra) == Layout::kExtended,
               "strong: standard at HIGH, extended (with the per-pixel pass) at ULTRA");
 static_assert(!PixelPassAllowed(Rung::kWeak, Layout::kStandard) && PixelPassAllowed(Rung::kWeak, Layout::kExtended) && !PixelPassAllowed(Rung::kStrong, Layout::kStandard) &&
                   PixelPassAllowed(Rung::kStrong, Layout::kExtended) && !PixelPassAllowed(Rung::kNone, Layout::kExtended),
-              "the per-pixel pass is the strong card's ULTRA layer only");
+              "the per-pixel pass is the ULTRA layer on RT-capable cards");
 static_assert(AutoLevel(Rung::kNone) == Level::kOff && AutoLevel(Rung::kWeak) == Level::kOff && AutoLevel(Rung::kStrong) == Level::kOff, "Legacy Auto leaves RT bounce light off on every rung");
 static_assert(!ReplacesSsgi(Layout::kNone) && ReplacesSsgi(Layout::kLean) && ReplacesSsgi(Layout::kStandard) && ReplacesSsgi(Layout::kExtended), "the field replaces the screen-space bounce light wherever it runs");
 static_assert(static_cast<uint8_t>(Rung::kNone) == 0 && static_cast<uint8_t>(Rung::kWeak) == 1 && static_cast<uint8_t>(Rung::kStrong) == 2, "the order of gpu_class::RtTier");

@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the probe field's owner. See gi_field.h.
 
 #include "gi_field.h"
+#include "gi_setting.h"
 
 #include <algorithm>
 #include <bit>
@@ -38,7 +39,7 @@ static_assert(gi::kGpuFrameBytes <= kUploadBytes && rules::kResetListBytes <= kU
 // A field that has nothing to show (the setting is off) is given back after this many frames (2 s at 60); one that idles for a long time (the pause menu, the garage) after this many (a minute).
 constexpr uint32_t kReleaseAfterOffFrames = 120;
 constexpr uint32_t kReleaseAfterIdleFrames = 3600;
-// A smaller field than the cell asks for is asked for again after this many frames at the earliest (each refused step also waits: vram_room.h RefusalBook).
+// Retry the selected layout at this interval after an allocation failure.
 constexpr uint64_t kRefitFrames = 30;
 // Under this the structures stand too near for the field to mean anything (the same line city_rt_shadow.cpp draws).
 constexpr float kMinSafeRangeM = 8.0f;
@@ -141,6 +142,7 @@ bool GiField::MakeLayoutsAndShaders() {
 }
 
 void GiField::Shutdown() {
+  gi_setting::NoteResourcePressure(false);
   if (passes_) {
     passes_->precache().Stop();  // the host builder's functions name this object's layout and shaders: stop it first
   }
@@ -368,6 +370,8 @@ void GiField::BeginFrame(const Inputs& in) {
 
   const gi::Layout wanted = gi::LayoutFor(in.rung, in.level);
   if (wanted == gi::Layout::kNone) {
+    gi_setting::NoteResourcePressure(false);
+    memory_warned_ = false;
     // The setting is off (or the card has no ray tracing): a field that was on fades out (the screen-space bounce light crossfades in), then goes back after a while.
     if (!resources_made_) {
       fit_ = rules::FitAt(gi::Layout::kNone, rules::Step::kNone);
@@ -386,21 +390,28 @@ void GiField::BeginFrame(const Inputs& in) {
       return;  // the pipelines are made in the background: the field starts from the frame they are done
     }
     const bool layout_changed = resources_made_ && fit_.wanted != wanted;
+    if (resources_made_ && !layout_changed && memory_warned_ && frame_count_ >= next_refit_frame_ && device_) {
+      next_refit_frame_ = frame_count_ + kRefitFrames;
+      const auto memory = device_->QueryVideoMemory();
+      memory_warned_ = rules::FixedFitPressure(fit_, HeldBytes(), memory.used, memory.budget);
+      gi_setting::NoteResourcePressure(memory_warned_);
+    }
     if (layout_changed || (!resources_made_ && frame_count_ >= next_refit_frame_)) {
       next_refit_frame_ = frame_count_ + kRefitFrames;
-      const rules::Fit fit = rules::FitAt(wanted, rules::Step::kFull);
+      const rules::Fit fit = rules::RequestedFit(wanted);
       if (!device_) return;
       const auto memory = device_->QueryVideoMemory();
-      const auto held = HeldBytes();
-      const auto need = fit.memory.Total() > held ? fit.memory.Total() - held : 0;
-      if (!vram_room::HasRoom(memory.used, memory.budget, need) && !memory_warned_) {
+      const bool pressure = rules::FixedFitPressure(fit, HeldBytes(), memory.used, memory.budget);
+      if (pressure && !memory_warned_) {
         memory_warned_ = true;
         REXLOG_WARN("{} video memory is nearly full ({} of {} MiB in use); the {} probe field needs about {:.1f} MiB",
                     kPrefix, memory.used >> 20, memory.budget >> 20, gi::LayoutName(wanted), Mib(fit.memory.Total()));
       }
-      if (MakeResources(fit, in.camera)) {
+      const bool made = MakeResources(fit, in.camera);
+      gi_setting::NoteResourcePressure(pressure || !made);
+      if (made) {
         ++refits_;
-        memory_warned_ = false;
+        memory_warned_ = pressure;
       } else if (layout_changed || last_none_log_ == 0 || frame_count_ - last_none_log_ >= 1800) {
         last_none_log_ = frame_count_;
         REXLOG_WARN("{} the {} probe field could not be allocated ({:.1f} MiB); retrying the same layout",

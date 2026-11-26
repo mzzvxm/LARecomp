@@ -203,6 +203,12 @@ void TestLadder() {
   // a step that waits out a refusal is passed over
   const gf::Fit skipped = gf::ChooseFit(gi::Layout::kExtended, fits_up_to(~0ull), [](Step s) { return s == Step::kFull || s == Step::kNoPixelImages; });
   Check(skipped.step == Step::kNoFourthCascade, "steps that wait out a refusal are skipped");
+  const auto requested = gf::RequestedFit(gi::Layout::kExtended);
+  for (const uint64_t budget : {0ull, 650ull, 2048ull, 16384ull}) {
+    const bool pressure = gf::FixedFitPressure(requested, 0, budget * gf::kMiB, budget * gf::kMiB);
+    Check(pressure == (budget != 0) && requested.pixel_images && requested.budget.cascade_count == 4,
+          "video memory changes the warning and leaves the selected full layout intact");
+  }
   // the room test of the renderer: the use plus the extra stays under 90% of the budget (vram_room.h)
   const auto card = [](uint64_t budget_mib, uint64_t used_mib, gi::Layout layout) {
     return gf::ChooseFit(layout, [&](uint64_t bytes) { return mcla::gpu::vram_room::HasRoom(used_mib * gf::kMiB, budget_mib * gf::kMiB, bytes); });

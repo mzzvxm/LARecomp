@@ -285,6 +285,15 @@ constexpr Fit FitAt(gi::Layout wanted, Step step) {
   return f;
 }
 
+constexpr Fit RequestedFit(gi::Layout layout) {
+  return FitAt(layout, layout == gi::Layout::kNone ? Step::kNone : Step::kFull);
+}
+
+constexpr bool FixedFitPressure(const Fit& fit, uint64_t held, uint64_t used, uint64_t budget) {
+  const uint64_t total = fit.memory.Total();
+  return !vram_room::HasRoom(used, budget, total > held ? total - held : 0u);
+}
+
 // The first step whose total `fits(bytes)` (the room test the caller supplies: vram_room.h HasRoom against the budget, with what the field already holds taken off), from the full
 // layout down; none when nothing fits. `skip(step)` (optional: a step that is waiting out a refusal) is passed over.
 template <class FitsFn, class SkipFn>

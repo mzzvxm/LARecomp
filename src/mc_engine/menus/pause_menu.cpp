@@ -2265,6 +2265,7 @@ class PauseRuleEnv final : public expr::Env {
         if (path == "features.hdr.auto_peak_nits")
             return Value::Number(std::nearbyint(gpu::HdrAutoPeakNits()));
         if (path == "live.ultrawide_active") return Value::Bool(mc::ultrawide::Active());
+        if (path == "live.rt_gi_resource_pressure") return Value::Bool(gpu::RtGiResourcePressure());
         if (path == "live.rt_gi_replaces_bounce") return Value::Bool(gpu::RtGiReplacesBounceLight());
         if (path == "live.rtao_pass_built") return Value::Bool(gpu::rtao_setting::PassBuilt());
         if (path == "live.msaa_switching") return Value::Bool(gpu::MsaaSwitching());

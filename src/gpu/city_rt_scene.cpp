@@ -13,6 +13,7 @@
 
 #include <rex/logging/log_category.h>
 
+#include "car_rt_instances_rules.h"
 #include "car_rt_scene_rules.h"
 #include "citypack/pack_format.h"
 #include "city_hit_scene.h"
@@ -611,6 +612,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     target.triangles = s.mesh.triangle_count();
     batch_triangles += target.triangles;
     hitch::Note(hitch::Event::kCityBuild, 0.0, j.size);
+    target.bounds_known = car_rt_instances::BoundsOf(s.mesh.positions, target.lo.data(), target.hi.data());
     structure_bytes_ += j.size;
     counts_.triangles += target.triangles;
     ++counts_.builds;
@@ -653,7 +655,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
   return true;
 }
 
-uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances) {
+uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances, rt_scene::Bounds* bounds) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kRtCity);
   recorded_ = false;
   instances_this_frame_ = 0;
@@ -703,6 +705,7 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
     return 0;
   }
   uint32_t added = 0;
+  rt_scene::Bounds world_bounds;
   for (uint32_t i = 0; i < built_.size(); ++i) {
     city_rt::Detail detail = city_rt::Detail::kHi;
     if (!city_rt::PickInstance(states_[i], &detail)) {
@@ -716,7 +719,11 @@ uint32_t CityRtScene::Prepare(const temporal::Mat4& view, bool flip_z, plume::Re
                                              plume::RenderAffineTransform());
     std::memcpy(instance.transform.m, transform, sizeof(transform));
     instances->push_back(instance);
+    world_bounds.Include(s.lo.data(), s.hi.data(), s.bounds_known);
     ++added;
+  }
+  if (bounds && added != 0) {
+    bounds->IncludeTransformed(world_bounds.lo.data(), world_bounds.hi.data(), transform, world_bounds.Usable());
   }
   instances_this_frame_ = added;
   LogState("");

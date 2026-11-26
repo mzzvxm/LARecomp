@@ -46,7 +46,7 @@ struct Decision {
 inline Decision Decide(gc::GpuClass cls, bool, gc::RtTier tier, Choice choice,
                        bool pass_built) {
   Decision d;
-  d.rung = gc::RtRung(cls, tier);
+  d.rung = tier;
   d.gate = GateFor(cls, tier, pass_built);
   if (choice == Choice::kAuto) choice = Choice::kOn;
   d.chosen = choice;

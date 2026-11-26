@@ -141,6 +141,7 @@ void CheckReaders(const fs::path& src) {
             contains("mc_engine/menus/pause_menu.cpp", "\"live.rtao_pass_built\") return Value::Bool(gpu::rtao_setting::PassBuilt())"),
         "legacy choices decode to On and the pass publishes its readiness");
   Check(contains("settings/ui_rules.toml", "s.mcla_gpu_ao in ['auto','on','high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
+            !contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") &&
             contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "{ id = \"rt\", label = \"RT\" }"),
         "the rules name the ray traced choice's fallback reasons and AO INTENSITY's dependency counts it");
   Check(contains("gpu/effect_compare_rules.h", "rtao_setting::ParseChoice(saved.occlusion)") &&

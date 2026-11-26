@@ -67,8 +67,8 @@ Rung RungOf(gc::GpuClass, gc::RtTier t) {
 }
 
 // What a word comes to: off is off, high and ultra are the player's own wherever the card can trace at all, anything else is `auto`, which is HIGH on a strong card and OFF on every other.
-cm::Level ExpectedLevel(Rung rung, const std::string& word) {
-  if (rung == Rung::kNone) return cm::Level::kOff;
+cm::Level ExpectedLevel(Rung rung, gc::RtTier tier, const std::string& word) {
+  if (tier == gc::RtTier::kNone) return cm::Level::kOff;
   if (word == "off") return cm::Level::kOff;
   if (word == "high") return cm::Level::kHigh;
   if (word == "ultra") return cm::Level::kUltra;
@@ -90,7 +90,7 @@ void CellChecks() {
       for (const char* w : kWords) {
         const std::string word = w;
         const Rung rung = RungOf(c, t);
-        const cm::Level expect_wanted = ExpectedLevel(rung, word);
+        const cm::Level expect_wanted = ExpectedLevel(rung, t, word);
         for (const bool car : {false, true}) {
           for (const crs::Data data : kData) {
             ++combos;
@@ -135,7 +135,7 @@ void CellChecks() {
   for (const gc::GpuClass c : kClasses) {
     for (const gc::RtTier t : kTiers) {
       const crs::Decision d = crs::Decide(c, t, "ultra", false, crs::Data::kReady);
-      Check(d.wanted == (RungOf(c, t) == Rung::kNone ? cm::Level::kOff : cm::Level::kUltra), Name(c, t, "ultra") + ": the player's word is still what it comes to while the car's ray tracing is off");
+      Check(d.wanted == (t == gc::RtTier::kNone ? cm::Level::kOff : cm::Level::kUltra), Name(c, t, "ultra") + ": the player's word is still what it comes to while the car's ray tracing is off");
     }
   }
 }
@@ -177,7 +177,7 @@ void RowChecks() {
     for (const gc::RtTier t : kTiers) {
       for (const bool car : {false, true}) {
         const crs::Decision d = crs::Decide(c, t, "auto", car, crs::Data::kReady);
-        const bool can_run = RungOf(c, t) != Rung::kNone && car;
+        const bool can_run = t != gc::RtTier::kNone && car;
         Check(crs::RowEnabled(d.gate) == can_run, Name(c, t, "auto") + (car ? ", car RT on" : ", car RT off") + ": the row is on exactly where the card can trace and the car's pass runs");
       }
     }
@@ -186,7 +186,7 @@ void RowChecks() {
   // AUTO's label says what it comes to on the card; the launcher's line
   for (const gc::GpuClass c : kClasses) {
     for (const gc::RtTier t : kTiers) {
-      const std::string expect = ExpectedLevel(RungOf(c, t), "auto") == cm::Level::kHigh ? "AUTO (HIGH)" : "AUTO (OFF)";
+      const std::string expect = ExpectedLevel(RungOf(c, t), t, "auto") == cm::Level::kHigh ? "AUTO (HIGH)" : "AUTO (OFF)";
       Check(crs::AutoLabel(c, t) == expect, Name(c, t, "auto") + ": AUTO's label is " + expect);
     }
   }

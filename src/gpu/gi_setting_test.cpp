@@ -130,7 +130,7 @@ void CellChecks() {
             Check(gs::RowEnabled(d.gate), "an open gate leaves the row on: " + name);
           }
           // the rung is the class's gating of the tier (rt_tier.h), as gi_frame.h's Rung
-          Check(uint8_t(d.rung) == uint8_t(gc::RtRung(cls, tier)), "the rung is RtRung: " + name);
+          Check(uint8_t(d.rung) == uint8_t(tier), "the field uses the supported RT tier: " + name);
         }
       }
     }
@@ -381,7 +381,7 @@ void MenuChecks(const std::string& dir) {
   const size_t begin = At(rules, "[rows.PM_RxGpuRtGi]");
   const size_t next = At(rules, "[rows.PM_RxGpuSsgiLevel]", begin);
   const std::string row = begin == std::string::npos ? "" : rules.substr(begin, next - begin);
-  Check(Has(row, "gpu.rt_tier") && !Has(row, "d.rt_field_class") && Has(row, "build.rt_gi_update_built") &&
+  Check(Has(row, "gpu.rt_tier") && Has(row, "live.rt_gi_resource_pressure") && !Has(row, "d.rt_field_class") && Has(row, "build.rt_gi_update_built") &&
             Has(row, "decode = \"resolved(s.mcla_gpu_rt_gi)\""),
         "the RT BOUNCE LIGHT row uses the GPU, build and Auto rules");
   Check(Has(rules, "live.rt_gi_replaces_bounce") && Has(rules, " (REPLACED)") &&

@@ -233,7 +233,7 @@ int main(int argc, char** argv) {
     }
     {
       const tr::TrafficPlan p = tr::PlanDispatches({Car(1200000, true, 4.0f)}, budget, high);
-      Check(p.traffic_admitted == 1 && p.plan.rays == op::kRaysMirror, "a traffic car filling the picture (1.2M, over its share and the budget's twice) is still the first and always traced, with the mirror ray alone");
+      Check(p.traffic_admitted == 1 && p.plan.rays == op::kRaysFull, "a traffic car filling the picture (1.2M, over its share and the budget's twice) is still the first and always traced, with the full cone");
     }
     {
       // four traffic cars: the nearest is the first; the second does not fit the 200k share; the third and fourth do
@@ -256,7 +256,7 @@ int main(int argc, char** argv) {
       const tr::TrafficPlan p = tr::PlanDispatches(scene, budget, high);
       Check(p.plan.admitted == 3 && p.traffic_admitted == 1 && p.traffic_over == 1 && p.plan.texels == 950000,
             "two opponents (850k) and two traffic cars: the first traffic car fits the pass's limit (950k <= 1M), the second does not (1.05M)");
-      Check(p.plan.rays == op::kRaysReduced, "the rays follow the total (950k is over the budget, under twice it): the outer pair");
+      Check(p.plan.rays == op::kRaysFull, "the cone keeps its samples as coverage grows");
       const tr::TrafficPlan opponents_only = tr::PlanDispatches({scene[0], scene[1]}, budget, high);
       Check(opponents_only.plan.admitted == 2 && opponents_only.plan.skipped == 0, "the opponents are admitted the same without the traffic");
     }
@@ -325,7 +325,7 @@ int main(int argc, char** argv) {
       limit_held = limit_held && (double(p.plan.texels) <= limit || p.plan.admitted == 1);
       counters_add = counters_add && p.traffic_admitted + p.traffic_far + p.traffic_over == p.traffic_cars && p.plan.admitted + p.plan.skipped + p.traffic_far == p.plan.cars &&
                      p.traffic_texels <= p.plan.texels;
-      rays_follow = rays_follow && (p.plan.admitted == 0 || p.plan.rays == op::RaysFor(p.plan.texels, budget));
+      rays_follow = rays_follow && (p.plan.admitted == 0 || p.plan.rays == op::RaysFor(0));
       // every traffic car admitted passes the near and small rules: recount by re-planning with the car alone
       for (const tr::CarRect& c : scene) {
         if (!c.traffic) continue;

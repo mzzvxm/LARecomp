@@ -45,11 +45,12 @@ struct Frame {
   uint32_t classify_group_mask = 0;
   uint32_t classify_stride = 0;
   uint32_t classify_plan = 0;
-  std::array<float, 3> env_camera_delta{};
-  uint32_t env_has_origin = 0;
-  uint32_t specular_ao = 0xFFFFu;  // low 16 bits: visibility slot; high 16: half-size texel shift
+  std::array<float, 3> env_camera_delta{  std::array<float, 3> rt_bounds_min{};
+  uint32_t rt_bounds_valid = 0;
+  std::array<float, 3> rt_bounds_max{};
 };
-static_assert(sizeof(Frame) == 172 && offsetof(Frame, specular_ao) == 168);
+static_assert(sizeof(Frame) == 200 && offsetof(Frame, specular_ao) == 168);
+static_assert(offsetof(Frame, rt_bounds_min) == 172 && offsetof(Frame, rt_bounds_valid) == 184 && offsetof(Frame, rt_bounds_max) == 188);
 static_assert(offsetof(Frame, classify_flags) == 128 && offsetof(Frame, classify_stride) == 144);
 static_assert(offsetof(Frame, env_camera_delta) == 152 && offsetof(Frame, env_has_origin) == 164);
 inline constexpr uint32_t kClassifyEnabled = 1u;
