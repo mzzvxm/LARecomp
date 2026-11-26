@@ -314,7 +314,7 @@ class GPUSettings final : public rex::SettingOwner {
     "stochastic rule (no hit data, or the texture not loaded yet); the log says every 120 frames how many candidates were decided each way, how many blocked, and the "
     "levels read. Live.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_city_rt_build_budget, false, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_city_rt_build_budget, true, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 "
     "(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.",
@@ -981,7 +981,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_rt_gi_bounces, 0.5, "Diagnostic (ray traced bounce light): how much of the field's own light the probes take back in when they are updated, which is the second bounce and the ones after it for free: "
     "0 is strictly one bounce, 0.5 (the default) is about two, with brighter canyons; 0.95 at most, so that the loop cannot grow. Live.", rex::kDebugOnly, rex::Range{0.0, 0.95});
 
-  REX_SETTING(bool, mcla_gpu_rt_gi_reuse_coarse_probes, false, "Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_gi_reuse_coarse_probes, true, "Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_rt_gi_dry_run, false, "Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. "
     "With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, "
@@ -1011,11 +1011,11 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Fills missing surface reflections with ray traced hits. High covers glass, metal and water. Ultra also covers wet roads and sidewalks. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
-  REX_SETTING(bool, mcla_gpu_ssr_rt_single_ray, false, "Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, false, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_rt_screen_proxy, false, "Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_single_ray, true, "Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, true, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_screen_proxy, true, "Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_rt_probe_misses, false, "Sample RT reflection misses at twice the reach on statistics frames. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_rt_cars, false, "Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_cars, true, "Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_rt_denoise, -1, "Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.", rex::kDebugOnly, rex::Range{-1, 3});
 
@@ -1218,7 +1218,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_rtao_reach, 0.0, "Debug: Ray reach in metres. 0 takes the AO intensity radius share. Live.", rex::kDebugOnly, rex::Range{0.0, 2.5});
   REX_SETTING(f64, mcla_gpu_rtao_range, 0.0, "Debug: Maximum distance to a traced AO receiver in metres. 0 uses the scene's safe range up to 90 m. Live.", rex::kDebugOnly, rex::Range{0.0, 90.0});
   REX_SETTING(i32, mcla_gpu_rtao_scale, 0, "Debug: Traced AO size divisor. 1 renders full size, 2 half size, 4 quarter size, and 0 uses the governor. Live.", rex::kDebugOnly, rex::Range{0, 4});
-  REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, false, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, true, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_rtao_alpha, "auto", "Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.", rex::kDebugOnly, rex::Allowed("auto", "exact", "stochastic", "opaque", "exclude"));
   REX_SETTING(std::string, mcla_gpu_rtao_screen, "auto", "Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, and on takes the darker term. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
@@ -1276,7 +1276,7 @@ class GPUSettings final : public rex::SettingOwner {
     "there takes the camera's motion like the world (a car in the garage is still while the camera orbits it, and "
     "the game's slots for the vehicles are not trusted in those frames). Live.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_pause_world_fx, false, "Use the enabled lighting, volumetric and surface reflection effects in the city behind the pause menu and in photo mode. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_pause_world_fx, true, "Use the enabled lighting, volumetric and surface reflection effects in the city behind the pause menu and in photo mode. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_perf_markers, false, "Name the frame's phases in the command lists for GPU profilers: PIX events on D3D12, "
     "debug utils labels on Vulkan; how deep, mcla_gpu_perf_markers_level. Nsight GPU "
@@ -1374,7 +1374,7 @@ class GPUSettings final : public rex::SettingOwner {
     "made: the old one is kept, the pause menu's RENDER SCALE row says LIMITED and the log says so. "
     "The guest keeps seeing its own sizes.");
 
-  REX_SETTING(bool, mcla_gpu_resolve_texture_copy, false,
+  REX_SETTING(bool, mcla_gpu_resolve_texture_copy, true,
     "Use a GPU texture copy for matching single-sample RGBA8 resolves that need no conversion. Live.",
     rex::kDebugOnly);
 
@@ -1532,7 +1532,7 @@ class GPUSettings final : public rex::SettingOwner {
     "quarter of the memory. 1080 lines and below are as they were. False: the sizes and the chain as before "
     "(mcla_gpu_ssgi_low says the old half size choice). Live; the first frame after the change makes the images again.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_ssgi_residual_short_filter, false, "Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssgi_residual_short_filter, true, "Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_ssgi_lights, true, "Diagnostic: the bounce light also takes the light the deferred light pass added in the last frame (neon, headlights, street lamps) as part of the "
     "radiance it gathers, reprojected into this frame with the camera's motion and the depth history, so a wall beside a neon car picks up its colour and a "
@@ -1798,9 +1798,9 @@ class GPUSettings final : public rex::SettingOwner {
     "4 the cap of the neon contact term's reads (a pixel of a tube of three or four lights marches the depth for the two strongest lights only, the others take the nearest one's answer: up to 10 depth reads a vehicle pixel where each light marching for itself made up to 20). "
     "0, the default: all on. The picture is the same either way up to the rounding of the half float colour target for the first two (they leave out only what adds nothing). The third moves a few percent of the light of a vehicle pixel the contact term shuts partly. Only the graphics card time differs otherwise. Live.", rex::kDebugOnly, rex::Range{0, 7});
 
-  REX_SETTING(bool, mcla_gpu_local_lights_depth_bound, false, "Debug: reject pixels beyond the reach of every light in a deferred draw before reconstructing their world positions. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_local_lights_depth_bound, true, "Debug: reject pixels beyond the reach of every light in a deferred draw before reconstructing their world positions. Live.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_local_lights_sphere_scissor, false, "Debug: use tighter screen bounds for deferred local lights. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_local_lights_sphere_scissor, true, "Debug: use tighter screen bounds for deferred local lights. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_neon_contact, true, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. "
     "Off: the law's N.L alone (the neon shows through the other car's panels). Live.", rex::kDebugOnly);

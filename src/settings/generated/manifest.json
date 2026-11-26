@@ -478,7 +478,7 @@
  },
  "mcla_gpu_rtao_quarter_at_4k": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.\"",
   "traits": [
@@ -780,7 +780,7 @@
  },
  "mcla_gpu_ssgi_residual_short_filter": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Debug: omit one size-dependent spatial filter pass when screen-space bounce carries only residual local lights at 2160 render lines and above. Live.\"",
   "traits": [
@@ -1470,7 +1470,7 @@
  },
  "mcla_gpu_city_rt_build_budget": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.\"",
   "traits": [
@@ -2236,7 +2236,7 @@
  },
  "mcla_gpu_rt_gi_reuse_coarse_probes": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.\"",
   "traits": [
@@ -2375,7 +2375,7 @@
  },
  "mcla_gpu_ssr_rt_single_ray": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.\"",
   "traits": [
@@ -2386,7 +2386,7 @@
  },
  "mcla_gpu_ssr_rt_sky_miss": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.\"",
   "traits": [
@@ -2397,7 +2397,7 @@
  },
  "mcla_gpu_ssr_rt_screen_proxy": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.\"",
   "traits": [
@@ -2419,7 +2419,7 @@
  },
  "mcla_gpu_ssr_rt_cars": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.\"",
   "traits": [
@@ -3202,7 +3202,7 @@
  },
  "mcla_gpu_resolve_texture_copy": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Use a GPU texture copy for matching single-sample RGBA8 resolves that need no conversion. Live.\"",
   "traits": [
@@ -4116,7 +4116,7 @@
  },
  "mcla_gpu_local_lights_depth_bound": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Debug: reject pixels beyond the reach of every light in a deferred draw before reconstructing their world positions. Live.\"",
   "traits": [
@@ -4127,7 +4127,7 @@
  },
  "mcla_gpu_local_lights_sphere_scissor": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Debug: use tighter screen bounds for deferred local lights. Live.\"",
   "traits": [
@@ -4273,7 +4273,7 @@
  },
  "mcla_gpu_pause_world_fx": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Use the enabled lighting, volumetric and surface reflection effects in the city behind the pause menu and in photo mode. Live.\"",
   "traits": [
