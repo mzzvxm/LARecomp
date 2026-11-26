@@ -290,6 +290,11 @@ sr::FrameFacts GoodFacts() {
 }
 
 void TestDecision() {
+  using Level = sr::Level;
+  Check(sr::GarageLevel(Level::kOff, true) == Level::kHigh &&
+        sr::GarageLevel(Level::kOff, false) == Level::kOff &&
+        sr::GarageLevel(Level::kUltra, false) == Level::kUltra,
+        "garage Auto is High and explicit levels still apply");
   sr::FrameFacts f = GoodFacts();
   sr::Decision d = sr::Decide(f);
   Check(d.why == sr::Why::kUsed && !d.stub && d.size.valid && d.size.size[0] == 960, "a good frame runs");
@@ -305,13 +310,15 @@ void TestDecision() {
   f = GoodFacts();
   f.pause_view = true;
   Check(sr::Decide(f).why == sr::Why::kPause, "the pause world has no sidecar and no history");
-  for (auto view : {mcla::gpu::gbuffer::PauseFxView::kPause, mcla::gpu::gbuffer::PauseFxView::kPhoto}) {
+  for (auto view : {gb::PauseFxView::kPause, gb::PauseFxView::kPhoto, gb::PauseFxView::kGarage}) {
     f.pause_fx = view;
     Check(sr::Decide(f).why == sr::Why::kUsed, "an admitted pause or photo frame can run SSR");
     f.has_rt1 = false;
     Check(sr::Decide(f).why == sr::Why::kNoNormals, "an admitted frame still needs its normal plane");
     f.has_rt1 = true;
   }
+  f.has_rt3 = false;
+  Check(sr::Decide(f).why == sr::Why::kNoGarageMaterials, "the garage requires a real material plane");
   f = GoodFacts();
   f.has_rt1 = false;
   Check(sr::Decide(f).why == sr::Why::kNoNormals, "no normal plane");
@@ -375,6 +382,11 @@ void TestHistory() {
   using mcla::gpu::gbuffer::PauseFxView;
   last.pause_fx = now.pause_fx = PauseFxView::kPhoto;
   Check(sr::HistoryUsable(last, now, true), "a stationary or reprojectable photo camera keeps history");
+  now.pause_fx = PauseFxView::kGarage;
+  Check(!sr::HistoryUsable(last, now, true), "the garage discards photo history");
+  last.pause_fx = PauseFxView::kGarage;
+  Check(sr::HistoryUsable(last, now, true) && !sr::HistoryUsable(last, now, false), "garage SSR follows valid camera reprojection");
+  last.pause_fx = PauseFxView::kPhoto;
   now.pause_fx = PauseFxView::kPause;
   Check(!sr::HistoryUsable(last, now, true), "the pause menu cannot use the photo camera's history");
   now.pause_fx = PauseFxView::kNone;
@@ -572,6 +584,19 @@ void TestGate() {
   Check(all, "every class: the gain with the SSR flag, none without it, none on a vehicle");
   // paint and chrome keep their own reflections whatever the flags say
   Check(hs::SsrClassGain(GB_CLASS_PAINT, ssr) == 0.0f && hs::SsrClassGain(GB_CLASS_CHROME, ssr) == 0.0f && hs::SsrClassGain(GB_CLASS_PAINT, ssr | 2) == 0.0f, "paint and chrome never take the effect, even flagged");
+  const uint32_t garage = sr::push::PackFrame(17, true, true);
+  Check(garage == (17u | SSR_FRAME_GARAGE) &&
+        sr::push::PackFrame(0xC0000011u, false, false) == (17u | SSR_FRAME_LEGACY_NOISE), "the frame's two flags are independent of its phase");
+  Check(hs::SsrReceiverGain(GB_CLASS_GARAGE_FLOOR, ssr, garage) == 1.0f &&
+        hs::SsrReceiverGain(GB_CLASS_GARAGE_FLOOR, 0, garage) == 0.0f &&
+        hs::SsrReceiverGain(GB_CLASS_GARAGE_FLOOR, ssr, 17) == 0.0f, "only the garage floor takes polished-floor SSR");
+  Check(hs::SsrReceiverGain(GB_CLASS_PAINT, veh, garage) == 0.35f &&
+        hs::SsrReceiverGain(GB_CLASS_CHROME, veh, garage) == 0.35f &&
+        hs::SsrReceiverGain(GB_CLASS_PAINT, veh, 17) == 0.0f &&
+        hs::SsrReceiverGain(GB_CLASS_PAINT, 0, garage) == 0.0f &&
+        hs::SsrReceiverGain(GB_CLASS_EMISSIVE, veh, garage) == 0.0f,
+        "garage paint and chrome take a small SSR term, without admitting lamps or outdoor cars");
+  Check(hs::SsrNoise1(7, 12, garage, 0, 1) == hs::SsrNoise1(7, 12, 17, 0, 1), "the garage bit does not change the blue-noise phase");
   // the numbers are the G-buffer's
   Check(GB_CLASS_ROAD == int(gb::SurfaceClass::kRoad) && GB_CLASS_METAL == int(gb::SurfaceClass::kMetal) && GB_CLASS_PAINT == int(gb::SurfaceClass::kPaint) && GB_FLAG_SSR == int(gb::kMaterialFlagSsr) &&
             GB_FLAG_VEHICLE == int(gb::kMaterialFlagVehicle),
@@ -2302,7 +2327,7 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
             
             Count(cpp, "Pipeline(kVHit)") == 1,
         "RR-4a: the raw pipelines are asked for in one place, inside the rules' RawPossible: a frame that is not asked never lists them with the host precache");
-  Check(Has(trigger, "raw_facts.asked = raw_requested;") && Has(trigger, "raw_facts.debug_view = debug_view;") && Has(trigger, "raw_facts.stub = decision.stub;") && Has(trigger, "raw_facts.host_samples = depth.host_samples;") &&
+  Check(Has(trigger, "raw_facts.asked = raw_requested && !garage;") && Has(trigger, "raw_facts.debug_view = debug_view;") && Has(trigger, "raw_facts.stub = decision.stub;") && Has(trigger, "raw_facts.host_samples = depth.host_samples;") &&
             Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false, const RegenAsk& regen = RegenAsk{});"),
         "RR-4a: the frame is raw by the rules' decision on what the caller asked (the default is plain), a hit image that cannot be made keeps the frame plain");
   Check(Has(trigger, "if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {") && Has(trigger, "if (raw_requested) {\n    raw_ever_asked_ = true;\n  }"), "RR-4a: nothing is logged until the mode was asked for once: the log of a run with the plan not RR is what it was");
@@ -2319,7 +2344,7 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
         "RR-4a: in a raw frame the hit pass follows the resolve's draw and comes before the closing mark, reading the trace; the image is announced only then");
   Check(Has(trigger, "  if (!raw && !regen_ok) {\n    last_key_ = now;") && Has(trigger, "  } else {\n    last_key_.valid = false;\n  }") && Has(trigger, "plain_streak_") && Has(trigger, "raw_streak_ >= ssr::kRawReleaseAfter"),
         "RR-4a: a raw frame leaves no history (the frame after it starts again), and the images of the mode not in use go back after a spell");
-  Check(Has(FunctionText(cpp, "void ScreenReflections::BeginFrame()"), "hit_ready_ = false;") && Has(header, "const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }") &&
+  Check(Has(FunctionText(cpp, "void ScreenReflections::BeginFrame(gbuffer::PauseFxView pause_fx)"), "hit_ready_ = false;") && Has(header, "const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }") &&
             Has(FunctionText(cpp, "void ScreenReflections::ReleaseImages()"), "&hit_") && Has(FunctionText(cpp, "uint64_t ScreenReflections::HeldBytes() const"), "&hit_"),
         "RR-4a: the hit image is announced for the frame that wrote it only, released with the others and counted in the memory line");
   // the wiring: the caller asks the temporal system, which says false with the plan not RR; the image goes to the guide pass
@@ -2442,7 +2467,7 @@ void TestSources(const std::string& dir) {
     Check(at != std::string::npos && end != std::string::npos && settings.substr(at, end - at).find("rex::kDebugOnly") != std::string::npos && Has(settings, "inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;") &&
               Has(manifest, "\"mcla_gpu_ssr_blue_noise\": {") && Has(meta, "{\"mcla_gpu_ssr_blue_noise\", \"MCLA/GPU\"},"),
           "mcla_gpu_ssr_blue_noise: a live debug setting, on by default, in the settings header, its alias, the manifest and the meta list");
-    Check(Has(cpp, "push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));"),
+    Check(Has(cpp, "push.Set(pk::kFrame, pk::PackFrame(uint32_t(frames_), larecomp::settings::mcla_gpu_ssr_blue_noise.Get(), garage));"),
           "ssr.cpp: the frame word carries the first version's flag when mcla_gpu_ssr_blue_noise is off");
     Check(Has(common, "SsrNoise1(px, py, frame, ray, rays), SsrNoise2(px, py, frame, ray, rays)") &&
               Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, pattern_rays)"),
@@ -2460,7 +2485,7 @@ void TestSources(const std::string& dir) {
     Check(Has(gpu_class_h, "kSsr,                   // mcla_gpu_ssr") && Has(gpu_class_h, "inline constexpr int kEffectCount = 17;") && Has(gpu_class_h, "{\"mcla_gpu_ssr\", \"off\", \"off\", \"off\"},"),
           "GB-J: the class table has the effect, with a cell of off on every class until the owner has seen the pictures");
     Check(Has(gpu_class_test, "{Effect::kSsr, \"mcla_gpu_ssr\", \"off\", \"off\", \"off\", \"AUTO (OFF)\", \"AUTO (OFF)\", \"AUTO (OFF)\"},"), "GB-J: the class test pins the cells");
-    Check(Has(cpp, "static LiveText text(\"mcla_gpu_ssr\");") && Has(cpp, "ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, Setting().Get()))") && !Has(cpp, "mcla_gpu_ssr.Get()"),
+    Check(Has(cpp, "static LiveText text(\"mcla_gpu_ssr\");") && Has(cpp, "ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, setting))") && !Has(cpp, "mcla_gpu_ssr.Get()"),
           "GB-J: the level is the setting through LiveText with auto resolved by the class (the cvar's own string is never read by the render thread)");
     // an `auto` that was not resolved would be off, never a level
     Check(sr::LevelFromText("auto") == sr::Level::kOff && sr::LevelFromText("HIGH") == sr::Level::kHigh && sr::LevelFromText("Ultra") == sr::Level::kUltra && sr::LevelFromText("") == sr::Level::kOff,
@@ -2482,24 +2507,24 @@ void TestSources(const std::string& dir) {
   }
 
   // what the effect asks of the owners, and that it asks for nothing while it is off
-  const std::string begin = FunctionText(cpp, "void ScreenReflections::BeginFrame()");
-  Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, products)") && Has(begin, "products = ssr::WantedProducts(level_)") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(level_))") &&
-            Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_))") && !Has(begin, "on ? ") && !Has(begin, "const bool on"),
+  const std::string begin = FunctionText(cpp, "void ScreenReflections::BeginFrame(gbuffer::PauseFxView pause_fx)");
+  Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, products)") && Has(begin, "products = ssr::WantedProducts(std::max(level_, garage_level_))") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(std::max(level_, garage_level_)))") &&
+            Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(std::max(level_, garage_level_)))") && !Has(begin, "on ? ") && !Has(begin, "const bool on"),
         "BeginFrame asks for the Hi-Z, colour_post, the camera and the G-buffer's planes through the rules (ssr_rules.h WantedProducts / WantsCamera / WantedPlanes: only while on, 0 withdraws) and by the RESOLVED level (GB-I3)");
   Check(Has(rules, "constexpr uint32_t WantedPlanes(Level level) { return level == Level::kOff ? 0u : gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections); }") &&
             Has(rules, "inline constexpr uint32_t kWantedProducts = screen::ProductBit(screen::kHizMin) | screen::ProductBit(screen::kColourPost);"),
         "the rules' wants are the planes of the auto policy's table and the Hi-Z with colour_post");
-  Check(Has(scene, "ssr_->BeginFrame();") && scene.find("ssr_->BeginFrame()") < scene.find("gbuffer_->BeginFrame(frame_serial_)") && scene.find("ssr_->BeginFrame()") < scene.find("screen_->BeginFrame(frame_serial_)") &&
-            scene.find("local_lights_->BeginFrame()") < scene.find("ssr_->BeginFrame()"),
+  Check(Has(scene, "ssr_->BeginFrame(pause_fx_candidate);") && scene.find("ssr_->BeginFrame(pause_fx_candidate)") < scene.find("gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate)") && scene.find("ssr_->BeginFrame(pause_fx_candidate)") < scene.find("screen_->BeginFrame(frame_serial_)") &&
+            scene.find("local_lights_->BeginFrame(pause_fx_candidate)") < scene.find("ssr_->BeginFrame(pause_fx_candidate)"),
         "GB-I3: Scene::BeginFrame declares the reflections' wants right after the light pass's and before the G-buffer and the screen owner read them (lag 0)");
   Check(Has(begin, "products != 0 && (handoff_enabled_ || classify_enabled_)") &&
             Has(begin, "products |= screen::ProductBit(screen::kHistory)"),
         "active handoff and tile reprojection share the history product");
   const std::string trigger = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
   const size_t first_command = std::min({trigger.find("DrawPass("), trigger.find("list->"), trigger.find("edram_->Transition")});
-  const size_t off_return = trigger.find("level_ == ssr::Level::kOff");
+  const size_t off_return = trigger.find("std::max(level_, garage_level_) == ssr::Level::kOff");
   Check(off_return != std::string::npos && off_return < first_command, "OnTrigger returns before recording anything while the effect is off");
-  Check(Has(FunctionText(cpp, "void ScreenReflections::OnMainDraw("), "level_ == ssr::Level::kOff") && Has(cpp, "bool wants_draws() const") == false && Has(header, "bool wants_draws() const { return level_ != ssr::Level::kOff; }"),
+  Check(Has(FunctionText(cpp, "void ScreenReflections::OnMainDraw("), "std::max(level_, garage_level_) == ssr::Level::kOff") && Has(cpp, "bool wants_draws() const") == false && Has(header, "bool wants_draws() const { return level_ != ssr::Level::kOff || garage_level_ != ssr::Level::kOff; }"),
         "the wetness hook does nothing while off");
   Check(Has(trigger, "trigger_done_ = true;") && Has(trigger, "ssr::Decide(facts)") && Has(trigger, "ssr::HistoryUsable(") && Has(trigger, "ao_->FrameCameraNow(&cam)"), "once a frame, by the rules' decision, with the history's rule and the AO's camera");
   Check(Has(trigger, "facts.has_rt3 = gbuffer_current && gf.Has(gbuffer::kPlaneMaterial) && !force_stub_"), "RT3 is used where the frame has it; the stub where not (or by the debug setting)");
@@ -2509,7 +2534,7 @@ void TestSources(const std::string& dir) {
   const size_t ssr_at = scene.find("ssr_->OnTrigger(summary, list, raw_ssr, UpscalerRunning(), regen_ask);");
   const size_t car_at = scene.find("car_refl_->OnResolve(record, summary, list);");
   Check(capture_at != std::string::npos && ssr_at != std::string::npos && car_at != std::string::npos && capture_at < ssr_at && ssr_at < car_at, "scene.cpp: the colour capture, then the reflections, then the car self-reflection's history");
-  Check(Has(scene, "if (colour_captured && ssr_) {") && Has(scene, "if (ssr_ && ssr_->wants_draws()) {\n    ssr_->OnMainDraw(draw.match, banks);") && Has(scene, "ssr_->BeginFrame();") && Has(scene, "ssr_->OnPresent();"),
+  Check(Has(scene, "if (colour_captured && ssr_) {") && Has(scene, "if (ssr_ && ssr_->wants_draws()) {\n    ssr_->OnMainDraw(draw.match, banks);") && Has(scene, "ssr_->BeginFrame(pause_fx_candidate);") && Has(scene, "ssr_->OnPresent();"),
         "scene.cpp: the reflections run only in a frame that made the capture, hear the draws only while on, begin and end the frame");
   Check(Has(scene_h, "void SetScreenReflections(ScreenReflections* ssr)") && Has(scene_h, "ScreenReflections* ssr_ = nullptr;"), "scene.h holds the pointer");
   const size_t init_at = renderer.find("ssr_.Initialize(device_, heap_, passes_, edram_, pass_timing_, &frames_);");
@@ -2577,7 +2602,7 @@ void TestSources(const std::string& dir) {
   Check(Has(pass, "float SsrHizAt(uint level, int cx, int cy) {\n  if (level == 0u) {\n    return g_textures[SsrLo(SsrW(SSR_W_HIZ01))]"), "the Hi-Z is read through a chain of branches on the level, one push-block slot each");
   Check(Has(trace_ps, "#include \"ssr_reuse.hlsli\"") && Has(Read(dir, "hlsl/ssr_reuse.hlsli"), "#include \"ssr_trace.hlsli\"") && Has(pass, "#define SSR_LOOP [loop]") && Has(trace_h, "SSR_LOOP for (; i < p.max_iter; ++i)"), "the march's loop is [loop] in the shader and plain C++ in the test");
   // the pass's inputs: the trace reads the class gate before any walk
-  const size_t gate_at = trace_ps.find("SsrClassGain(surface.cls, surface.flags)");
+  const size_t gate_at = trace_ps.find("SsrReceiverGain(surface.cls, surface.flags, SsrW(SSR_W_FRAME))");
   const size_t walk_at = trace_ps.find("SsrTrace(tp,");
   Check(gate_at != std::string::npos && walk_at != std::string::npos && gate_at < walk_at && Has(trace_ps, "if (!(gain > 0.0f) || smoothness < SsrF(SSR_W_MIN_SMOOTH)) {\n    return float4(0.0f, 0.0f, 0.0f, 0.0f);"),
         "the trace gates by class and smoothness before it walks (a pixel that reflects nothing costs the gate's reads)");
@@ -2634,7 +2659,7 @@ void TestSources(const std::string& dir) {
   Check(!Has(trace_ps, "SSR_W_SRC") && !Has(trace_ps, "SSR_W_STRENGTH") && Has(Read(dir, "hlsl/ssr_handoff.hlsli"), "SsrF(SSR_W_FALLBACK)") && Has(Read(dir, "hlsl/ssr_handoff.hlsli"), "SsrW(SSR_W_ROAD_VIEW)"), "the trace reads the road view and the share where the other passes read the source images and the strength");
   Check(!Has(temporal_ps, "SSR_W_RT2_RT3") && !Has(temporal_ps, "SsrRt3At(") && !Has(temporal_ps, "SsrRt1At(") && Has(temporal_ps, "SsrW(SSR_W_VEH_TABLE)"), "the temporal pass reads the vehicle table where the others read the planes' word");
   Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z (outside the RR-4a raw compilation, which a debug view never is), so its first word carries the road view for the debug view");
-  Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, vehicle_hit, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
+  Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, needs_vehicle_motion, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "fallback.planar * weights.planar + fallback.env * weights.env - fallback.stock;") && Has(trace_ps, "SsrSurfaceFallback(surface.cls") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
@@ -2665,10 +2690,10 @@ void TestSources(const std::string& dir) {
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;") &&
         Has(trigger, "facts.pause_view ? gbuffer_->published_pause_fx()"), "four-sample views need an explicitly published pause/photo sidecar");
-  const size_t rt_gate = trigger.find("if (rt_.wanted() && !decision.stub)");
+  const size_t rt_gate = trigger.find("if (!garage && rt_.wanted() && !decision.stub)");
   Check(rt_gate != std::string::npos && trigger.find("const ssr::Decision decision = ssr::Decide(facts);") < rt_gate &&
         Has(trigger, "now.ray_traced = rt_recorded;"),
-        "the RT fallback follows any admitted material view and supplies the accumulation key");
+        "the city RT fallback follows admitted outdoor material views and supplies the accumulation key");
   // the effect does not touch the colour capture or the history of the owner
   Check(!Has(cpp, "screen_->CapturePost(") && Has(cpp, "screen_->ReflectionHistoryDepth(") && !Has(cpp, "screen_->Image("), "the effect only reads what the owner made (frame slots), it makes none of it");
 }

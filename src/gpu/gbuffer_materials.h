@@ -84,7 +84,7 @@ inline constexpr const char* kShaderNamesFileName = "mcla_gbuffer_shader_names.v
 // ---------------------------------------------------------------------------
 
 inline constexpr std::string_view kSurfaceClassNames[] = {"none",  "world", "road", "wetroad", "sidewalk", "terrain",  "lod",   "foliage",
-                                                          "paint", "chrome", "metal", "glass",  "skin",     "emissive", "interior", "water"};
+                                                          "paint", "chrome", "metal", "glass",  "skin",     "emissive", "interior", "water", "garagefloor"};
 static_assert(std::size(kSurfaceClassNames) == size_t(SurfaceClass::kCount), "a name for every class");
 
 constexpr std::string_view SurfaceClassName(SurfaceClass cls) {

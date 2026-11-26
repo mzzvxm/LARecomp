@@ -284,7 +284,7 @@ void SceneChecks(const std::string& dir) {
   const std::string scene = ReadFile(dir + "/scene.cpp");
   // THE FRAME'S START: the field's frame first (GiField::BeginFrame inside the integration), then the apply (which reads GiField::running() to make its wants), then the G-buffer and the products
   Check(Before(scene, "gi_integration_->BeginFrame(frame_serial_);", "gi_apply_->BeginFrame();"), "ORDER: the field's frame starts before the apply's (scene.cpp BeginFrame)");
-  Check(Before(scene, "gi_apply_->BeginFrame();", "gbuffer_->BeginFrame(frame_serial_);"), "ORDER: ... and the apply's before the G-buffer reads the wants it makes");
+  Check(Before(scene, "gi_apply_->BeginFrame();", "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);"), "ORDER: ... and the apply's before the G-buffer reads the wants it makes");
   // THE TRIGGER: the field's maintenance, update and weights before the occlusion plans (it asks for the screen-space bounce light's share), the apply after the occlusion's apply
   const std::string ao = "ao_->OnResolve(record, summary, list, UpscalerRunning());";
   Check(Before(scene, "gi_integration_->OnResolve(summary, list, slot_);", ao), "ORDER: the field is published before the occlusion plans its frame (scene.cpp OnResolve)");

@@ -61,10 +61,35 @@
 #include <cstdint>
 #include <string_view>
 
+#include "temporal_camera.h"
+
 #include "blue_noise.h"
 #include "car_selfrefl_rules.h"
 
 namespace mcla::gpu::car_rt_refl {
+
+struct ConePose {
+  temporal::Mat4 camera{};
+  temporal::Mat4 car{};
+  uint64_t mesh_key = 0;
+};
+
+inline bool SameConeMatrix(const temporal::Mat4& a, const temporal::Mat4& b) {
+  for (int row = 0; row < 4; ++row) {
+    for (int col = 0; col < 4; ++col) {
+      const double difference = std::fabs(a.m[row][col] - b.m[row][col]);
+      const double tolerance = row == 3 ? 0.001 : 0.00001;
+      if (!(difference <= tolerance)) return false;
+    }
+  }
+  return true;
+}
+
+inline bool ConeHistoryMatches(bool last_garage, bool garage, const ConePose& last, const ConePose& now) {
+  if (last_garage != garage) return false;
+  // The temporal cone image is in screen pixels and has no reprojection.
+  return !garage || (last.mesh_key != 0 && last.mesh_key == now.mesh_key && SameConeMatrix(last.camera, now.camera) && SameConeMatrix(last.car, now.car));
+}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The setting

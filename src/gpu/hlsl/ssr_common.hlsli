@@ -89,6 +89,7 @@ float SsrHitThickness(float depth, float relative, float support) {
 }
 
 #define SSR_PUSH_WORDS 32
+#define SSR_FRAME_GARAGE 0x40000000u // bit 30 of SSR_W_FRAME: indoor receiver rules
 #define SSR_FRAME_LEGACY_NOISE 0x80000000u   // bit 31 of SSR_W_FRAME: the first version's noise (interleaved gradient noise sliding across the picture), for mcla_gpu_ssr_blue_noise false
 // the temporal pass's own names for words it reuses (ssr_rules.h push::kPrevTanX ...)
 #define SSR_W_PREV_TAN_X SSR_W_NEAR
@@ -176,6 +177,20 @@ float SsrClassGain(uint cls, uint flags) {
   return 0.0f;
 }
 
+// Garage paint and bright trim take a restrained screen term over their own
+// environment and self-reflections. Other vehicle materials retain their own shading.
+float SsrReceiverGain(uint cls, uint flags, uint frame) {
+  if ((frame & SSR_FRAME_GARAGE) != 0u) {
+    if (cls == uint(GB_CLASS_GARAGE_FLOOR)) {
+      return (flags & uint(GB_FLAG_SSR)) != 0u ? 1.0f : 0.0f;
+    }
+    if ((flags & uint(GB_FLAG_VEHICLE)) != 0u && (cls == uint(GB_CLASS_PAINT) || cls == uint(GB_CLASS_CHROME))) {
+      return 0.35f;
+    }
+  }
+  return SsrClassGain(cls, flags);
+}
+
 // The class a stub pixel is: a road where the world normal points up, nothing elsewhere (CLASS_NONE).
 uint SsrStubClass(float world_up) {
   return world_up >= kSsrStubUp ? uint(GB_CLASS_ROAD) : uint(GB_CLASS_NONE);
@@ -237,7 +252,7 @@ float SsrLegacyNoise2(int px, int py, uint frame, uint ray) {
 static const uint kSsrR2StepA = 3242174889u;   // 0.7548776662466927 * 2^32
 static const uint kSsrR2StepB = 2447445413u;   // 0.5698402909980532 * 2^32
 float SsrNoiseOf(int px, int py, uint frame, uint ray, uint rays, uint channel, uint step) {
-  const uint sample_index = (frame & 0x7FFFFFFFu) * rays + ray;
+  const uint sample_index = (frame & ~(SSR_FRAME_GARAGE | SSR_FRAME_LEGACY_NOISE)) * rays + ray;
   return frac(BlueNoiseTileAt(px, py, channel) + float(sample_index * step) * (1.0f / 4294967296.0f));
 }
 // The ray's two uniform numbers (u1 for the lobe's radius, u2 for its angle) for the pixel (px, py) in the frame word `frame` (the number, and bit 31 for the first version's noise), the ray's number `ray`

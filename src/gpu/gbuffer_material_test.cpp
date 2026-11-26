@@ -80,7 +80,7 @@ void TableShapeChecks() {
   Check(unique, "every group is in the class table once");
   Check(valid, "every row has a class that exists, only the table's flags, and a group name the split can take");
   Check(none_plain, "a class 0 row has no flags");
-  size_t per_class[16] = {};
+  size_t per_class[size_t(gb::SurfaceClass::kCount)] = {};
   for (const gb::GroupRow& row : gb::kGroupRows) ++per_class[uint32_t(row.cls)];
   // every class the writers can put in a pixel but the wetness (kWetRoad: a state, not a shader) has a group
   for (uint32_t c = 0; c < uint32_t(gb::SurfaceClass::kCount); ++c) {
@@ -183,6 +183,9 @@ void NameChecks() {
   const auto entry_underscore = gb::SplitShaderName("xBumpSpec__PS_BumpSpec_true_true");
   Check(entry_underscore.group == "xBumpSpec" && entry_underscore.entry == "PS_BumpSpec_true_true", "an entry with underscores keeps them");
 
+  const auto floor = gb::MaterialOfShaderName("xCityGarageFloor__PSMultiLight");
+  Check(floor.cls == gb::SurfaceClass::kGarageFloor && floor.smoothness > 0.6f &&
+        (floor.flags & gb::kMaterialFlagSsr) != 0, "the garage floor has its own reflective material");
   const auto bump = gb::MaterialOfShaderName("xCityBumpSpec__PSMultiLight");
   Check(bump.known && bump.cls == SurfaceClass::kWorld && bump.lit == 1.0f && Near(bump.smoothness, gb::DefaultSmoothness(SurfaceClass::kWorld), 0.0f), "a night shader of a world group");
   const auto interior = gb::MaterialOfShaderName("xCityBumpSpec__PSMultiLightInterior");
@@ -569,6 +572,16 @@ void WordForChecks() {
   Check(gb::MaterialClassOf(word) == SurfaceClass::kRoad && (gb::MaterialFlagsOf(word) & gb::kMaterialFlagSsr) != 0 &&
             gb::MaterialRt3Smoothness(word) == gb::ToByte(gb::DefaultSmoothness(SurfaceClass::kRoad)),
         "a road: its class, its SSR flag, its default smoothness");
+  constexpr uint64_t kGaragePs = 0x1007;
+  auto garage_table = TableOf({{kGaragePs, true, "xCityGarageFloor__PSMultiLight"}});
+  ps_bank.SetX(102, 1.0f);
+  word = garage_table.WordFor(kGaragePs, 0, ps, vs, false);
+  Check(gb::MaterialRt3Smoothness(word) == gb::ToByte(gb::DefaultSmoothness(SurfaceClass::kGarageFloor)),
+        "low guest gloss does not remove the indoor floor's dry sheen");
+  ps_bank.SetX(102, 1000.0f);
+  word = garage_table.WordFor(kGaragePs, 0, ps, vs, false);
+  Check(gb::MaterialRt3Smoothness(word) > gb::ToByte(gb::DefaultSmoothness(SurfaceClass::kGarageFloor)),
+        "a high guest gloss can sharpen the garage floor's reflection");
   // neon: lit weight 0
   word = table.WordFor(kNeonPs, 0, ps, vs, false);
   Check(gb::MaterialClassOf(word) == SurfaceClass::kEmissive && gb::MaterialLitByte(word) == 0, "neon: emissive, lit weight 0");

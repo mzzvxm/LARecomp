@@ -55,7 +55,7 @@ namespace mcla::gpu::gbuffer {
 // reader refuses a file with another number).
 // 2: the shader pack build also writes the shader names file (gbuffer_materials.h kShaderNamesFileName) beside the table, for GB-F2's census tool, and the table's records have the diffuse
 // slot (kMaterialTableVersion 2): a pack built with version 1 has neither.
-inline constexpr uint32_t kMaterialRulesVersion = 2;
+inline constexpr uint32_t kMaterialRulesVersion = 3;
 
 // ---------------------------------------------------------------------------
 // The defaults of a class
@@ -80,6 +80,7 @@ constexpr float DefaultSmoothness(SurfaceClass cls) {
     case SurfaceClass::kEmissive: return 0.0f;
     case SurfaceClass::kInterior: return 0.20f;
     case SurfaceClass::kWater: return 0.95f;
+    case SurfaceClass::kGarageFloor: return 0.72f;  // polished concrete
     case SurfaceClass::kCount: break;
   }
   return 0.0f;
@@ -126,7 +127,7 @@ inline constexpr GroupRow kGroupRows[] = {
     {"xCityLOD", SurfaceClass::kLod, 0},
     {"xCityWindowLOD", SurfaceClass::kLod, 0},
     // asphalt: the puddle mask and the planar reflection are the game's; SSR eligible (wetness gates it)
-    {"xCityGarageFloor", SurfaceClass::kRoad, kMaterialFlagSsr},
+    {"xCityGarageFloor", SurfaceClass::kGarageFloor, kMaterialFlagSsr},
     {"xCityRiverRoad", SurfaceClass::kRoad, kMaterialFlagSsr},
     {"xCityRoad", SurfaceClass::kRoad, kMaterialFlagSsr},
     {"xCityRoadStud", SurfaceClass::kRoad, kMaterialFlagSsr},
@@ -851,7 +852,8 @@ class MaterialTable {
       ++stats_.unknown;
       return MaterialWordWithFlags(DefaultMaterialWord(), alpha_flag);
     }
-    float smoothness = float(ps->smoothness) / 255.0f;
+    const float default_smoothness = float(ps->smoothness) / 255.0f;
+    float smoothness = default_smoothness;
     bool from_gloss = false;
     if (ps->gloss_bank == GlossBank::kPixel) {
       const float exponent = BankX(ps_bank, ps->gloss_reg);
@@ -868,6 +870,9 @@ class MaterialTable {
         ++stats_.gloss_vertex;
       }
     }
+    // The garage floor's sheen is a material property. Its SSR must not
+    // depend on the road wetness ramp or a dim draw's low specular power.
+    if (ps->cls == SurfaceClass::kGarageFloor) smoothness = std::max(smoothness, default_smoothness);
     if (!from_gloss) ++stats_.class_default;
     return MaterialWord(smoothness, uint32_t(ps->cls), uint32_t(ps->flags) | alpha_flag, float(ps->lit) / 255.0f);
   }

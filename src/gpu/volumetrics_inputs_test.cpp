@@ -167,13 +167,14 @@ void CheckTable() {
   vl::GameLamp a;
   a.intensity = 55.0f;
   std::vector<vl::GameLamp> three(3, a);
-  table.Publish(three.data(), 3, t0);
-  Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(100)) && !stale && out.size() == 3 && seen == 1,
+  table.Publish(three.data(), 3, t0, true);
+  bool garage = false;
+  Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(100), &garage) && !stale && out.size() == 3 && seen == 1 && garage,
         "a fresh list is taken once");
   Check(!table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(120)) && !stale, "the same list is not taken twice and is not stale");
   Check(!table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(900)) && stale, "a list older than the limit is stale");
   table.Publish(nullptr, 0, t0 + std::chrono::milliseconds(1000));  // an empty list is a list (a day, a menu)
-  Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1010)) && !stale && out.empty() && seen == 2,
+  Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1010), &garage) && !stale && out.empty() && seen == 2 && !garage,
         "an empty list is taken and is not stale");
   std::vector<vl::GameLamp> many(400, a);
   table.Publish(many.data(), 400, t0 + std::chrono::milliseconds(1100));

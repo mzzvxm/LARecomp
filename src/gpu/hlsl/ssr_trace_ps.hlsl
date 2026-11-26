@@ -3,7 +3,7 @@
 // A full-screen triangle into an RGBA16F image of the SSR size (half the picture's). One pixel stands for a 2x2 block of the picture's pixels:
 //
 //   the surface   the Hi-Z (at this size) gives the block's depth; the pixel of the block whose depth is nearest to it is the receiver (its RT3 gives the class, flags and smoothness, its RT1 the
-//                 normal). The class gate (ssr_common.hlsli SsrClassGain: roads, sidewalks, metal, glass, water and the tiles the table flags; never a vehicle, never paint or chrome, which keep
+//                 normal). The class gate (ssr_common.hlsli SsrReceiverGain): roads, sidewalks, metal, glass, water and the tiles the table flags. Garage paint and chrome also keep
 //                 their own reflections) and the smoothness decide whether anything is traced: a pixel that reflects nothing writes (0, 0, 0, 0) and costs the gate's reads.
 //   the ray       one GGX visible-normal sample of the surface's lobe (two at ultra), the road's smoothness raised by the wetness, the origin moved off the surface; walked through the Hi-Z
 //                 (ssr_trace.hlsli). A hit is rejected where the surface faces away from the ray (a back face the screen does not show).
@@ -94,7 +94,7 @@ float4 SsrTraceBody(float4 position) {
   float best_fade = 0.0f;
   uint screen_id = kReflHitNone;
 #endif
-  const float gain = SsrClassGain(surface.cls, surface.flags);
+  const float gain = SsrReceiverGain(surface.cls, surface.flags, SsrW(SSR_W_FRAME));
   const float smoothness = SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET));
   if (!(gain > 0.0f) || smoothness < SsrF(SSR_W_MIN_SMOOTH)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
@@ -275,7 +275,9 @@ float4 SsrTraceBody(float4 position) {
 #if SSR_RT
   g_confidence = float2(SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / divisor));
 #endif
-  return float4(rgb, SsrPackHit(distance_out, vehicle_hit, vehicle_id));
+  // The garage car is stationary in world space during a camera orbit.
+  const bool needs_vehicle_motion = vehicle_hit && (frame & SSR_FRAME_GARAGE) == 0u;
+  return float4(rgb, SsrPackHit(distance_out, needs_vehicle_motion, vehicle_id));
 }
 
 #if SSR_RT || SSR_REFLHIT

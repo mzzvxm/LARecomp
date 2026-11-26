@@ -31,6 +31,11 @@ namespace mcla::gpu::ssr {
 // ---------------------------------------------------------------------------
 
 enum class Level : uint8_t { kOff, kHigh, kUltra };
+
+// Only Auto can pick a garage-specific level. Explicit levels apply to every view.
+constexpr Level GarageLevel(Level configured, bool automatic) {
+  return automatic && configured == Level::kOff ? Level::kHigh : configured;
+}
 inline constexpr uint32_t kLevelCount = 3;
 
 constexpr std::string_view LevelName(Level level) {
@@ -223,6 +228,7 @@ enum class Why : uint8_t {
   kNoHiz,         // the frame has no Hi-Z (the depth chain did not run, its pipeline is still being made)
   kNoColour,      // the frame has no colour_post with its mips
   kNoNormals,     // the G-buffer's normal plane is not in the frame (a cutscene, the first frame, the sidecar over the memory cap)
+  kNoGarageMaterials,  // the garage requires the floor and vehicle material classes
   kNoLens,        // the frame has no camera lens (the shared frame's camera is empty: the first frames, a cut)
   kSizes,         // the traced size is neither the picture's nor half of it, or the planes' size is not the picture's
   kSamples,       // the planes' host samples differ from the depth's (a frame that mixes two targets)
@@ -238,6 +244,7 @@ constexpr const char* WhyName(Why why) {
     case Why::kNoHiz: return "the frame has no Hi-Z";
     case Why::kNoColour: return "the frame has no colour_post with its mip levels";
     case Why::kNoNormals: return "the G-buffer's normal plane is not in the frame";
+    case Why::kNoGarageMaterials: return "the garage frame has no material plane";
     case Why::kNoLens: return "the frame has no camera lens";
     case Why::kSizes: return "the sizes do not fit (traced size, planes' size)";
     case Why::kSamples: return "the planes' host samples differ from the depth's";
@@ -290,6 +297,10 @@ inline Decision Decide(const FrameFacts& f) {
   }
   if (!f.has_rt1) {
     d.why = Why::kNoNormals;
+    return d;
+  }
+  if (f.pause_fx == gbuffer::PauseFxView::kGarage && !f.has_rt3) {
+    d.why = Why::kNoGarageMaterials;
     return d;
   }
   if (!f.has_lens) {
@@ -357,6 +368,10 @@ inline constexpr uint32_t kFlags = 9;
 inline constexpr uint32_t kFrame = 10;
 // The trace frame word's high bit selects legacy noise.
 inline constexpr uint32_t kFrameLegacyNoise = 0x80000000u;
+inline constexpr uint32_t kFrameGarage = 0x40000000u;
+constexpr uint32_t PackFrame(uint32_t frame, bool blue_noise, bool garage) {
+  return (frame & ~(kFrameLegacyNoise | kFrameGarage)) | (blue_noise ? 0u : kFrameLegacyNoise) | (garage ? kFrameGarage : 0u);
+}
 inline constexpr uint32_t kLin0 = 11;
 inline constexpr uint32_t kTanX = 12;
 inline constexpr uint32_t kTanY = 13;

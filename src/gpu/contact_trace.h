@@ -1598,6 +1598,11 @@ inline uint32_t ChromaByte(float channel, float luma) {
 }
 
 // The code: bits 0-6 the ambient's red chroma, 7-13 its blue, 14-20 the sun's red, 21-27 its blue; bits 28-31 are the marker (kChromaMarker).
+// An indoor authored key light is independent of outdoor rain and horizon.
+constexpr float LightStrength(float setting, float elevation_gate, float wetness_gate, bool garage) {
+  return garage ? setting : setting * elevation_gate * wetness_gate;
+}
+
 inline uint32_t PackChroma(const float ambient[3], const float sun[3]) {
   const float la = LumaOf(ambient), ls = LumaOf(sun);
   return kChromaMarker | ChromaByte(ambient[0], la) | (ChromaByte(ambient[2], la) << 7) | (ChromaByte(sun[0], ls) << 14) | (ChromaByte(sun[2], ls) << 21);

@@ -204,6 +204,9 @@ const ItemDef kDebugFixesItems[] = {
     NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
     NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
     NativeOnly(Bool("PM_RxDbgRtDenoiseV2", "mcla_gpu_rt_denoise_v2", "RT DENOISE V2: ")),
+#if defined(LARECOMP_HAS_GPU)
+    NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
+#endif
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

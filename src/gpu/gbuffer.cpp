@@ -17,7 +17,6 @@
 
 #include "backend.h"
 #include "host_shaders.h"
-#include "mc_engine/keyboard_native.h"
 #include "menu_world.h"
 #include "pass_timing.h"
 #include "records.h"
@@ -181,20 +180,13 @@ void GBuffer::EndOfFrameView() {
   tally_ = gbuffer::ViewTally{};
 }
 
-void GBuffer::BeginFrame(uint64_t frame_serial) {
+void GBuffer::BeginFrame(uint64_t frame_serial, gbuffer::PauseFxView pause_fx) {
   EndOfFrameView();
   camera_.BeginFrame(frame_serial);
   frame_serial_ = frame_serial;
   last_published_pause_fx_ = published_pause_fx_;
   published_pause_fx_ = gbuffer::PauseFxView::kNone;
-  pause_fx_candidate_ = gbuffer::PauseFxView::kNone;
-  if (larecomp::settings::mcla_gpu_pause_world_fx.Get()) {
-    // CHECK: the input poll and queued draw records agree at pause/photo/map
-    // transitions, including when the photo UI is hidden for a capture.
-    char movie[32];
-    larecomp::keyboard::CurrentMovieName(movie, sizeof(movie));
-    pause_fx_candidate_ = gbuffer::PauseFxViewOf(true, movie, menu_world::GarageLighting());
-  }
+  pause_fx_candidate_ = pause_fx;
   pause_fx_ready_ = gbuffer::IsPauseFx(pause_fx_candidate_) && camera_.Previous(pause_fx_candidate_);
   window_samples_ = 0;
   anchor_seen_ = false;
@@ -541,7 +533,9 @@ bool GBuffer::OnResolve(const ResolveRecord& record, const ResolveCache::Summary
     published_pause_fx_ = pause_fx_candidate_;
     if (published_pause_fx_ != last_published_pause_fx_) {
       REXLOG_INFO("{} published the {} sidecar ({} host samples)", kPrefix,
-                  published_pause_fx_ == gbuffer::PauseFxView::kPhoto ? "photo mode" : "pause menu", frame_.host_samples);
+                  published_pause_fx_ == gbuffer::PauseFxView::kGarage ? "garage"
+                      : published_pause_fx_ == gbuffer::PauseFxView::kPhoto ? "photo mode" : "pause menu",
+                  frame_.host_samples);
     }
   }
   ++published_frames_;

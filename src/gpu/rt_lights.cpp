@@ -348,7 +348,7 @@ bool RtLights::SampleEnabled() {
   return ready_ && service_ != nullptr && gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone && rt::Wanted(mode_);
 }
 
-void RtLights::BeginFrame(bool pass_runs, bool ultra) {
+void RtLights::BeginFrame(bool pass_runs, bool ultra, bool garage) {
   namespace st = larecomp::settings;
   ultra_ = ultra;
   k_setting_ = int(st::mcla_gpu_rt_lights_k.Get());
@@ -370,8 +370,10 @@ void RtLights::BeginFrame(bool pass_runs, bool ultra) {
     }
     rt_scene::Needs needs;
     needs.cars = true;
-    needs.city = level;
-    needs.city_radius = float(st::mcla_gpu_city_rt_radius.Get());
+    if (!garage) {
+      needs.city = level;
+      needs.city_radius = float(st::mcla_gpu_city_rt_radius.Get());
+    }
     service_->Want(rt_scene::Consumer::kRtLights, needs);
     wanted_ = true;
   }

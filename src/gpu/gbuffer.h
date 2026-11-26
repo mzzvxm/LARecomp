@@ -94,7 +94,7 @@ class GBuffer {
   static void NoteCutsceneCamera();
 
   // The Scene opened a frame's first list: reads the settings and the consumers' wants, makes the frame's plan and starts the frame's window.
-  void BeginFrame(uint64_t frame_serial);
+  void BeginFrame(uint64_t frame_serial, gbuffer::PauseFxView pause_fx);
   // True while the main view's draws are asked about the sidecar this frame: a plane is wanted, the frame is no cutscene's and the sidecar fits the memory cap.
   bool active() const { return plan_.attached != 0 && !suppressed_ && !blocked_; }
   // The same without the memory cap's verdict, which the guest's clear of the main colour renews at each frame (a change of the render scale or the MSAA level can lift it).

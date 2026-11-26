@@ -4457,6 +4457,10 @@ void ChromaShaderText(const std::string& dir) {
 }
 
 int main(int argc, char** argv) {
+  Check(mcla::gpu::contact_trace::LightStrength(0.8f, 0.0f, 0.0f, true) == 0.8f &&
+        mcla::gpu::contact_trace::LightStrength(0.0f, 1.0f, 1.0f, true) == 0.0f, "garage contact uses the requested strength independently of outdoor gates");
+  Check(mcla::gpu::contact_trace::LightStrength(0.5f, 0.5f, 0.25f, false) == 0.0625f &&
+        mcla::gpu::contact_trace::LightStrength(1.0f, 1.0f, 0.0f, false) == 0.0f, "outdoor contact still respects elevation and rain");
   if (argc > 2 && std::string(argv[2]) == "chroma") {  // only the per channel contact factor and the shaders' text
     ContactFactorPerChannel();
     ChromaShaderText(argv[1]);

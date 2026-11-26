@@ -602,7 +602,7 @@ uint64_t ScreenReflections::HeldBytes() const {
 // the frame
 // ---------------------------------------------------------------------------
 
-void ScreenReflections::BeginFrame() {
+void ScreenReflections::BeginFrame(gbuffer::PauseFxView pause_fx) {
   // Once for every list the Scene opens: a second list of a guest frame whose trigger already ran must not forget that it did (`ran_` is what OnPresent keeps the history for), nor count the frame twice
   // (guest_frame.h, review F2). A list that opens before the trigger (the empty list of an idle present) starts the frame afresh as it always did.
   if (guest_.Begin()) {
@@ -616,8 +616,13 @@ void ScreenReflections::BeginFrame() {
     REXLOG_INFO("{} BeginFrame ran twice in one guest frame ({} times so far: a second list was opened after the trigger had run; the frame's state is kept)", kPrefix, guest_.repeats());
   }
   // `auto` is the GPU class's cell (gpu_class.h kSsr: off on every class until the owner has seen the effect); a word that is no level (a hand-edited file) is off.
-  ssr::Level level = ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, Setting().Get()));
+  const std::string setting = Setting().Get();
+  ssr::Level level = ssr::LevelFromText(gpu_class::Resolve(gpu_class::Effect::kSsr, setting));
+  const bool garage = pause_fx == gbuffer::PauseFxView::kGarage;
+  garage_level_ = garage ? ssr::GarageLevel(level, setting == "auto")
+                         : ssr::Level::kOff;
   if (!ready_ || !screen_ || !gbuffer_) {
+    garage_level_ = ssr::Level::kOff;
     level = ssr::Level::kOff;  // the layout or a shader could not be made, or the owners are not there
   }
   level_ = level;
@@ -629,10 +634,11 @@ void ScreenReflections::BeginFrame() {
     classify_key_.valid = last_key_.valid = regen_key_.valid = false;
     classify_enabled_ = classify;
   }
-  rt_.BeginFrame(level_, classify_enabled_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
+  rt_.BeginFrame(garage ? ssr::Level::kOff : level_, classify_enabled_);   // CITY-RT R4: the ray traced fallback's level (off with the effect, on a card that does not trace, or by the debug word) and its want of the city's structures
   // CITY-RT R6: the fallback is a consumer of the DENOISER row too (rr::kConsumers kCityRtReflections: its one ray a pixel is what Ray Reconstruction is for). `wanted` is the fallback's own answer: the effect is on, the
   // card traces and the setting does not say off; the plan reads the board at the temporal system's frame boundary, as for the effect itself.
   denoiser::NoteConsumer(rr::Consumer::kCityRtReflections, rt_.wanted());
+  level = garage ? garage_level_ : level_;
   if (!logged_level_once_ || level != logged_level_) {
     logged_level_once_ = true;
     logged_level_ = level;
@@ -657,20 +663,20 @@ void ScreenReflections::BeginFrame() {
   // frame with it off (the owners stop at once) show no stall, no flash and no log line other than the level's.
   if (screen_) {
     handoff_enabled_ = larecomp::settings::mcla_gpu_ssr_handoff.Get();
-    uint32_t products = ssr::WantedProducts(level_);
+    uint32_t products = ssr::WantedProducts(std::max(level_, garage_level_));
     if (products != 0 && (handoff_enabled_ || classify_enabled_)) {
       products |= screen::ProductBit(screen::kHistory);
     }
     screen_->Want(screen::Consumer::kReflections, products);
-    screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(level_));
+    screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(std::max(level_, garage_level_)));
   }
   if (gbuffer_) {
-    gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_));
+    gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(std::max(level_, garage_level_)));
   }
 }
 
 void ScreenReflections::OnMainDraw(const temporal::MainMatch& match, const ConstantBanks::Banks& banks) {
-  if (level_ == ssr::Level::kOff || trigger_done_ || !match || !match.color) {
+  if (std::max(level_, garage_level_) == ssr::Level::kOff || trigger_done_ || !match || !match.color) {
     return;
   }
   wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1));
@@ -682,7 +688,7 @@ bool ScreenReflections::RoadViewDrawn(const EdramTargets& edram, uint32_t frame)
 }
 
 bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested, bool upscaler_running, const RegenAsk& ask) {
-  if (level_ == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_ || !edram_) {
+  if (std::max(level_, garage_level_) == ssr::Level::kOff || trigger_done_ || !list || !summary.source || !screen_ || !gbuffer_ || !passes_ || !edram_) {
     return false;
   }
   trigger_done_ = true;  // once a frame, whatever comes of it
@@ -690,14 +696,18 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   const screen::ScreenFrame& sf = screen_->Frame();
   const gbuffer::GBufferFrame& gf = gbuffer_->frame();
   EdramTargets::Target& depth = *summary.source;
-  const ssr::LevelNumbers numbers = ssr::NumbersOf(level_);
   const bool ms = depth.host_samples > 1;
   const bool debug_view = view_ != ssr::View::kOff;
 
   ssr::FrameFacts facts;
-  facts.level = level_;
   facts.pause_view = (sf.flags & screen::kFramePause) != 0;
   facts.pause_fx = facts.pause_view ? gbuffer_->published_pause_fx() : gbuffer::PauseFxView::kNone;
+  // CHECK: confirm floor and paint coverage in the tiled garage on both
+  // backends and inspect the resolve while the camera orbits the car.
+  const bool garage = facts.pause_fx == gbuffer::PauseFxView::kGarage;
+  facts.level = garage ? garage_level_ : level_;
+  if (facts.level == ssr::Level::kOff) return false;
+  const ssr::LevelNumbers numbers = ssr::NumbersOf(facts.level);
   facts.has_lens = (sf.camera.flags & screen::kCameraValid) != 0 && sf.camera.tan_half_fov[0] > 0.0f && sf.camera.tan_half_fov[1] > 0.0f && sf.camera.lin[0] != 0.0f;
   facts.has_hiz = sf.Has(screen::kHizMin);
   facts.hiz_levels = sf.hiz_levels;
@@ -742,7 +752,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // RR-4a, the raw mode (ssr.h): asked for by the caller while DLSS Ray Reconstruction takes the frame; the frame decides whether it can (a debug view, the stub, a multisampled colour and the pipelines
   // still being made keep it plain). The raw pipelines are listed with the host precache only for a frame that is asked and could take them: with the plan not RR none is ever made.
   ssr::RawFacts raw_facts;
-  raw_facts.asked = raw_requested;
+  raw_facts.asked = raw_requested && !garage;
   raw_facts.debug_view = debug_view;
   raw_facts.stub = decision.stub;
   raw_facts.host_samples = depth.host_samples;
@@ -762,7 +772,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   bool rt = false;
   // CHECK: on RT hardware in both APIs, the four-sample world builds a
   // matching TLAS and the fallback uses it while the photo camera pans.
-  if (rt_.wanted() && !decision.stub) {
+  if (!garage && rt_.wanted() && !decision.stub) {
     trace_rt_pipeline = Pipeline(ms ? kVTraceRtMs : kVTraceRt);
     rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);
   }
@@ -787,7 +797,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // RG-3, AMD FSR Ray Regeneration (ssr.h): asked for by the caller while the DENOISER row's AMD value takes the frame; one vendor, so never together with the raw mode. The context's size is the trace's.
   rayregen::NoteTraced(rayregen::Site::kReflections, width, height);
   rgd::RegenFacts regen_facts;
-  regen_facts.asked = rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt) && !raw;
+  regen_facts.asked = rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt) && !raw && !garage;
   regen_facts.debug_view = debug_view;
   regen_facts.stub = decision.stub;
   regen_facts.host_samples = depth.host_samples;
@@ -875,23 +885,30 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
 
   // The wetness: the commonest value the frame's draws carried (VS c43.x, the game's own scalar: 0.095 dry, 1.17 in rain), smoothed over about a second of TIME (GB-I2: not of frames), a forced value
   // replacing it; and, with it, the strength the game shows its road view with (c43.y), which says how much of that view the fallback may take out.
-  const auto clock_now = std::chrono::steady_clock::now();
-  const float dt = wet_clock_valid_ ? float(std::chrono::duration<double>(clock_now - wet_clock_).count()) : 0.0f;
-  wet_clock_ = clock_now;
-  wet_clock_valid_ = true;
-  if (wet_override_ >= 0.0f) {
-    wet_ = wet_override_;
-    wet_strength_ = 1.0f;   // a forced wetness shows the road as the rain does
-    wet_known_ = true;
+  if (garage) {
+    wet_known_ = false;
+    wet_clock_valid_ = false;
+    wet_ = 0.0f;
+    wet_strength_ = ssr::WetVotes::kDefaultGameStrength;
   } else {
-    float c43 = 0.0f;
-    float c43y = ssr::WetVotes::kDefaultGameStrength;
-    if (wet_votes_.Pick(&c43, &c43y)) {
-      const float target = ssr::Wet01(c43);
-      wet_ = wet_known_ ? ssr::SmoothWetDt(wet_, target, dt) : target;
-      wet_strength_ = wet_known_ ? ssr::SmoothWetDt(wet_strength_, c43y, dt) : c43y;
+    const auto clock_now = std::chrono::steady_clock::now();
+    const float dt = wet_clock_valid_ ? float(std::chrono::duration<double>(clock_now - wet_clock_).count()) : 0.0f;
+    wet_clock_ = clock_now;
+    wet_clock_valid_ = true;
+    if (wet_override_ >= 0.0f) {
+      wet_ = wet_override_;
+      wet_strength_ = 1.0f;   // a forced wetness shows the road as the rain does
       wet_known_ = true;
-      wet_raw_ = c43;
+    } else {
+      float c43 = 0.0f;
+      float c43y = ssr::WetVotes::kDefaultGameStrength;
+      if (wet_votes_.Pick(&c43, &c43y)) {
+        const float target = ssr::Wet01(c43);
+        wet_ = wet_known_ ? ssr::SmoothWetDt(wet_, target, dt) : target;
+        wet_strength_ = wet_known_ ? ssr::SmoothWetDt(wet_strength_, c43y, dt) : c43y;
+        wet_known_ = true;
+        wet_raw_ = c43;
+      }
     }
   }
 
@@ -901,8 +918,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // CHECK: isolate the photo-mode green/magenta blocks with SSR and the
   // upscaler off, comparing the guest 256x256 and scaled 768x768 products.
   ssr::RoadViewFacts road;
-  road.share = ssr::FallbackShare(fallback_setting_, wet_strength_);
-  const float capture_strength = ssr::FallbackShare(1.0f, wet_strength_);
+  road.share = garage ? 0.0f : ssr::FallbackShare(fallback_setting_, wet_strength_);
+  const float capture_strength = garage ? 0.0f : ssr::FallbackShare(1.0f, wet_strength_);
   const EdramKey road_key = RoadViewKey();
   EdramTargets::Target* road_target = nullptr;
   uint32_t road_slot = screen::kNoSlot;
@@ -983,8 +1000,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   flags.max_iterations = numbers.max_iterations;
   flags.view = uint32_t(view_);
   push.Set(pk::kFlags, ssr::PackFlags(flags));
-  // The noise's frame number, and bit 31 for the first version's noise (the A/B: mcla_gpu_ssr_blue_noise false; hlsl/ssr_common.hlsli THE NOISE).
-  push.Set(pk::kFrame, (uint32_t(frames_) & ~pk::kFrameLegacyNoise) | (larecomp::settings::mcla_gpu_ssr_blue_noise.Get() ? 0u : pk::kFrameLegacyNoise));
+  push.Set(pk::kFrame, pk::PackFrame(uint32_t(frames_), larecomp::settings::mcla_gpu_ssr_blue_noise.Get(), garage));
   push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));   // the low half the depth chain's level 0, the high half (pk::kStencil) the depth target's stencil plane, for the vehicle a hit is on (GB-I2)
   push.SetFloat(pk::kTanX, sf.camera.tan_half_fov[0]);
   push.SetFloat(pk::kTanY, sf.camera.tan_half_fov[1]);
@@ -1001,7 +1017,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   push.SetFloat(pk::kStrength, strength_);
   push.SetFloat(pk::kMinSmooth, min_smooth_);
   push.SetFloat(pk::kStubSmooth, ssr::kDefaultStubSmooth);
-  push.SetFloat(pk::kWet, wet_);
+  push.SetFloat(pk::kWet, garage ? 0.0f : wet_);
   push.SetFloat(pk::kThick, ssr::kDefaultThickness);
   push.SetFloat(pk::kCap, ssr::CapFor(sf.camera.exposure_bias));
 
@@ -1199,7 +1215,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // fed back would stack). A raw frame (Ray Reconstruction takes it) skips it: RR is the denoiser of the raw ray.
   const HostImage* resolve_source = filtered_v2 ? filtered_v2 : &accum_[write_];
   ssr_denoise::Facts denoise_facts;
-  denoise_facts.level = level_;
+  denoise_facts.level = facts.level;
   denoise_facts.setting = denoise_setting;
   denoise_facts.raw = raw;
   if (regen_ok) {

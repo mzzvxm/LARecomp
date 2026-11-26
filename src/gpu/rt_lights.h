@@ -109,7 +109,7 @@ class RtLights {
   // The frame's start (LocalLights::BeginFrame, which the Scene calls before everything that reads the structures' wants): reads the settings, asks the ray tracing scene service for the structures and
   // the game's lamp list for its copy while the pass is wanted. `pass_runs`: the light pass runs this frame (nothing else makes a use of this class).
   // `ultra`: the largest LIGHT SHADOWS level (K 6 where the setting says the level's).
-  void BeginFrame(bool pass_runs, bool ultra);
+  void BeginFrame(bool pass_runs, bool ultra, bool garage);
   bool wanted() const { return wanted_; }
   // RT-LIGHTS-D1 part 2: Ray Reconstruction takes this frame and the effect's switch is on (TemporalSystem::RawModes().RtLights()), asked once a frame before Plan: the filter is skipped, the light pass reads the
   // 1 spp signal. False (the default, and every frame RR does not take) is the pass as it was.

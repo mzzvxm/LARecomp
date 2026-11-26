@@ -16,6 +16,7 @@
 #endif
 
 #include "settings/larecomp_settings.h"
+#include "mc_engine/keyboard_native.h"
 #include <rex/xenos/texture.h>
 #include <rex/logging/log_category.h>
 
@@ -817,17 +818,26 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
   if (rt_world_) {
     rt_world_->BeginFrame(frame_serial_);  // CITY-RT FRAME: the world frame's inputs of the last frame are forgotten (rt_world_frame.h)
   }
-  // CHECK: exercise the live switch on both APIs with the stock forward headlight route.
-  headlight_rig::SampleRoute(local_lights_ != nullptr && local_lights_->SampleRtLights());
+  // CHECK: confirm the lighting hook and queued draws agree on entry, exit
+  // and full-map transitions, including when a garage dialog changes the UI movie.
+  const bool garage_lighting = menu_world::GarageLighting();
+  const bool pause_world_fx = larecomp::settings::mcla_gpu_pause_world_fx.Get();
+  const bool garage_fx = larecomp::settings::mcla_gpu_garage_fx.Get();
+  char movie[32]{};
+  if (pause_world_fx || (garage_fx && garage_lighting)) {
+    larecomp::keyboard::CurrentMovieName(movie, sizeof(movie));
+  }
+  const auto pause_fx_candidate = gbuffer::PauseFxViewOf(pause_world_fx, movie, garage_lighting, garage_fx);
+  headlight_rig::SampleRoute(local_lights_ != nullptr && local_lights_->SampleRtLights());  // the headlight route's setting, read once for this frame (LiveText): the light pass just below and the rig further down both take it from headlight_rig::CurrentRoute() (review F3)
   if (local_lights_) {
-    local_lights_->BeginFrame();  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
+    local_lights_->BeginFrame(pause_fx_candidate);  // reads its settings and makes its wants of the G-buffer, the shared products and the light manager, which read them at their own BeginFrame
   }
   if (ssr_) {
     // The screen-space reflections' setting and their wants of the shared products and the G-buffer (ssr.h, ssr_rules.h WantedPlanes / WantedProducts: only while the row is on), BEFORE the G-buffer and the
     // screen owner read their wants just below: the effect's planes, Hi-Z and capture are there in this very frame (frame_order.h kBeginSsr, lag 0; GB-I3: it stood after the owners and lagged a frame).
     ssr_->SetCaptureHitWanted(capture_reflhit || capture_roadrefl);
     ssr_->SetCaptureRoadWanted(capture_roadrefl);
-    ssr_->BeginFrame();
+    ssr_->BeginFrame(pause_fx_candidate);
   }
   if (gi_integration_) {
     gi_integration_->BeginFrame(frame_serial_);  // the probe field's frame starts (its setting, its Inputs): BEFORE the apply below, which reads whether the field runs to make its wants (gi_integration.h)
@@ -840,7 +850,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     gbuffer_->Want(consumer, capture_class || capture_reflhit ? gbuffer::ConsumerPlanes(consumer) : 0);
     if (!capture_class) gbuffer_->ReleaseCaptureClass();
     if (!capture_reflhit) gbuffer_->ReleaseCaptureReflectionFallback();
-    gbuffer_->BeginFrame(frame_serial_);  // reads its settings, starts the frame's window
+    gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate);  // reads its settings, starts the frame's window
   }
   watch::BeginFrame(frame_serial_);
   scene_noise::SetCountHeld(larecomp::settings::mcla_gpu_noise_held.Get());  // a held scene's noise keeps counting (scene_noise.h NoiseIndex)
@@ -875,7 +885,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     vol_->BeginFrame(pause_fx);
   }
   if (car_refl_) {
-    car_refl_->BeginFrame();
+    car_refl_->BeginFrame(pause_fx_candidate);
   }
   if (car_mirror_) {
     car_mirror_->BeginFrame();  // the side mirrors' setting; asks for the car's structures where the pass is wanted (car_mirror_rt.h)
@@ -1347,7 +1357,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list) {
       vol_->OnAnchor(banks);  // ... and the next frame's volumetric light has its lens and its pose by it
     }
     if (car_refl_ && car_refl_->wants_draws()) {
-      car_refl_->OnAnchor(banks);  // ... and the next frame's car paint reprojects into this frame's history by it
+      car_refl_->OnAnchor(banks, anchor_cut_);  // ... and the next frame's car paint reprojects into this frame's history by it
     }
     if (car_dump_ && car_dump_->frame_open()) {
       const bool lens_agrees = !anchor_cut_ && screen_ && screen_->Cameras().LensAgrees(screen_->frame_count());

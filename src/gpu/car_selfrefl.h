@@ -198,7 +198,7 @@ class CarSelfRefl {
   int32_t exp_bias() const { return exp_bias_; }
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame();
+  void BeginFrame(gbuffer::PauseFxView pause_fx);
   // RR-4b: DLSS Ray Reconstruction takes this frame and the ray traced reflection's switch is on (TemporalSystem::RawModes().CarRefl()): the ray traced pass (car_rt_refl.h) then runs RAW (no filter,
   // its hit distance written). Set by the Scene before the trigger's history pass, every frame; forgotten at the frame's start (false with the plan not RR).
   void SetRawMode(bool raw) { raw_ = raw; }
@@ -212,7 +212,7 @@ class CarSelfRefl {
   // stencil (vehicle_motion.h StencilIdsWritten), for the vehicles' motion.
   void OnMainDraw(const temporal::MainMatch& match, uint32_t stencil_ids);
   // The game's motion blur draw: this frame's camera and the vehicles' motion; the history made this frame is theirs.
-  void OnAnchor(const ConstantBanks::Banks& banks);
+  void OnAnchor(const ConstantBanks::Banks& banks, bool requested_cut);
   // A resolve, after ResolveCache::Execute (and after the ambient occlusion's apply): the mid-scene depth copy is where the
   // history is made. True when passes were recorded (the caller's list state is gone).
   bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary, plume::RenderCommandList* list);
@@ -299,6 +299,7 @@ class CarSelfRefl {
   bool history_valid_ = false;
   uint64_t history_frame_ = 0;
   bool history_pause_ = false;
+  bool garage_fx_ = false;
   temporal::Camera history_camera_;
   // The vehicles' own motion of the history frame's anchor, repeated for the next frame (the play view's only).
   temporal::VehicleMotion motion_;

@@ -747,7 +747,7 @@ void CheckSources(const std::string& gpu) {
       Check(Has(temporal, "rr::RuntimePhaseCount(from_runtime, frame_.ratio, rr_may_run)"), "RR-3: the jitter sequence is 32 positions or more while Ray Reconstruction may run");
     }
     // the frame boundary stands between the G-buffer's read and the screen owner's in scene.cpp, as the table's rows say
-    const size_t gbuffer_begin = At(scene, "gbuffer_->BeginFrame(frame_serial_)");
+    const size_t gbuffer_begin = At(scene, "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate)");
     const size_t temporal_begin = At(scene, "temporal_->BeginFrame(slot, list)");
     const size_t screen_begin = At(scene, "screen_->BeginFrame(frame_serial_)");
     Check(gbuffer_begin < temporal_begin && temporal_begin < screen_begin, "RR-2: scene.cpp's temporal frame boundary stands between the G-buffer's BeginFrame and the screen owner's");
@@ -862,7 +862,7 @@ void CheckSources(const std::string& gpu) {
     Check(ProductsNamedIn(StatementAt(ll, At(ll, "screen_->Want(screen::Consumer::kLocalLights"))) == fo::RowOf(Step::kLocalLights).wants_screen, "the light pass asks the screen owner for the products the table lists");
     const std::string& ssr_rules = text_of("ssr_rules.h");
     Check(ProductsNamedIn(StatementAt(ssr_rules, At(ssr_rules, "inline constexpr uint32_t kWantedProducts"))) == fo::RowOf(Step::kSsr).wants_screen &&
-              Has(ssr, "screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(level_))"),
+              Has(ssr, "screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(std::max(level_, garage_level_)))"),
           "the reflections ask the screen owner, through ssr_rules.h WantedProducts, for the products the table lists");
     Check(ProductsNamedIn(StatementAt(car, At(car, "screen_->Want(screen::Consumer::kCarHistory"))) == fo::RowOf(Step::kCarHistory).wants_screen, "the car self-reflection asks for the product the table lists");
     const size_t from = At(ao, "const uint32_t normal = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get()");
@@ -871,16 +871,16 @@ void CheckSources(const std::string& gpu) {
               ProductsNamedIn(ao.substr(from, bounce - from) + StatementAt(ao, bounce)) == fo::RowOf(Step::kAo).wants_screen,
           "the AO's three wants are lin_depth, normal and colour_pre, as the table's AO row lists");
     Check(Has(ll, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kLocalLights)") && Has(ssr_rules, "gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections)") &&
-              Has(ssr, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_))"),
+              Has(ssr, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(std::max(level_, garage_level_)))"),
           "the light pass and the reflections ask the G-buffer for ConsumerPlanes (which the table's wants equal; the reflections through ssr_rules.h WantedPlanes, 0 while off)");
   }
   // the order the lag rests on: the owners read the wants at their BeginFrame, the consumers declare at theirs (frame start, above)
-  Check(At(scene, "ssr_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_)") && At(scene, "ssr_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
-            At(scene, "local_lights_->BeginFrame()") < At(scene, "ssr_->BeginFrame()") && At(scene, "ssr_->BeginFrame()") < At(scene, "ao_->BeginFrame("),
+  Check(At(scene, "ssr_->BeginFrame(pause_fx_candidate)") < At(scene, "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate)") && At(scene, "ssr_->BeginFrame(pause_fx_candidate)") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
+            At(scene, "local_lights_->BeginFrame(pause_fx_candidate)") < At(scene, "ssr_->BeginFrame(pause_fx_candidate)") && At(scene, "ssr_->BeginFrame(pause_fx_candidate)") < At(scene, "ao_->BeginFrame("),
         "SSR declares after the light pass and before the G-buffer and the screen owner read (lag 0)");
-  Check(Count(scene, "ssr_->BeginFrame()") == 1, "the reflections' frame start is called once");
-  Check(At(scene, "ssr_->BeginFrame()") < At(scene, "gi_integration_->BeginFrame(frame_serial_)") && At(scene, "gi_integration_->BeginFrame(frame_serial_)") < At(scene, "gi_apply_->BeginFrame()") &&
-            At(scene, "gi_apply_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_)") && At(scene, "gi_apply_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
+  Check(Count(scene, "ssr_->BeginFrame(pause_fx_candidate)") == 1, "the reflections' frame start is called once");
+  Check(At(scene, "ssr_->BeginFrame(pause_fx_candidate)") < At(scene, "gi_integration_->BeginFrame(frame_serial_)") && At(scene, "gi_integration_->BeginFrame(frame_serial_)") < At(scene, "gi_apply_->BeginFrame()") &&
+            At(scene, "gi_apply_->BeginFrame()") < At(scene, "gbuffer_->BeginFrame(frame_serial_, pause_fx_candidate)") && At(scene, "gi_apply_->BeginFrame()") < At(scene, "screen_->BeginFrame(frame_serial_)") &&
             At(scene, "gi_apply_->BeginFrame()") < At(scene, "ao_->BeginFrame("),
         "the probe field starts its frame before its apply declares, and the apply declares before the G-buffer and the screen owner read (lag 0)");
   Check(At(scene, "gi_integration_->OnResolve(summary, list, slot_)") < At(scene, "ao_->OnResolve(record, summary, list, UpscalerRunning())") &&

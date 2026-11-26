@@ -88,7 +88,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const bool stub = SsrFlag(SSR_FLAG_STUB);
   const bool vehicle = stub && SsrVehicleAt(SsrFlag(SSR_FLAG_HZ) ? p.x : p.x / 2, SsrFlag(SSR_FLAG_HZ) ? p.y : p.y / 2);
   const SsrSurface surface = SsrSurfaceAt(p, vehicle);
-  const float gain = SsrClassGain(surface.cls, surface.flags);
+  const float gain = SsrReceiverGain(surface.cls, surface.flags, SsrW(SSR_W_FRAME));
   const float smoothness = SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET));
   const bool reflects = gain > 0.0f && smoothness >= SsrF(SSR_W_MIN_SMOOTH);
   const float ramp = SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH));

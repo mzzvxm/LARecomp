@@ -821,6 +821,7 @@ class AmbientOcclusion {
     float fade_end = 80.0f;
     float mask_gain = 2.0f;        // the mask's stored value times this is the sun's visibility
     float under_vehicle = 0.0f;    // how strongly the ground under a car is shadowed (contact_trace.h), 0 = off
+    bool indoor = false;           // the garage key light has no outdoor mask
     bool fast = true;              // mcla_gpu_contact_shadows_fast: the adaptive step count and the filter in the apply pass
     bool car_map_view = false;     // mcla_gpu_contact_shadows_view 5: the contact image holds the car's shadow map's term alone (the apply shows it as view 9)
     bool rt_view = false;          // mcla_gpu_contact_shadows_view 7: ... the ray traced sun term alone (car_rt_ao.h)

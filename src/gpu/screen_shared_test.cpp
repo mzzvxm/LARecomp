@@ -1056,7 +1056,7 @@ void SourceChecksSs1(const std::string& gpu) {
   Check(Has(view_ps, "view == 6u || view == 7u") && Has(view_ps, "g_textures[g_push.slots.y].Load(int3(clamp(int2(uv * float2(size)), int2(0, 0), size - 1), 0)).rgb"), "the view shader shows colour_post and the history");
 
   // THE OWNER: the order of the Scene's calls
-  Check(Before(scene_cpp, "screen_->OnAnchor(banks);", "ao_->OnAnchor(banks, anchor_cut_);") && Before(scene_cpp, "screen_->OnAnchor(banks);", "car_refl_->OnAnchor(banks);"),
+  Check(Before(scene_cpp, "screen_->OnAnchor(banks);", "ao_->OnAnchor(banks, anchor_cut_);") && Before(scene_cpp, "screen_->OnAnchor(banks);", "car_refl_->OnAnchor(banks, anchor_cut_);"),
         "the owner reads the anchor's camera before the AO and the car self-reflection ask for it");
   Check(Has(scene_cpp, "if (screen_ && screen_->tracking()) {\n    // The kind of view of the frame") && Has(scene_cpp, "screen_->OnMainDraw(draw.match, d.state.color[0].exp_bias);") && Has(scene_cpp, "if (screen_ && screen_->tracking()) {\n      screen_->OnAnchor(banks);"),
         "the main view's draws and the anchor reach the owner only while it tracks");
@@ -1080,8 +1080,8 @@ void SourceChecksSs1(const std::string& gpu) {
   // the frame's numbers are the owner's count (every consumer counts the same presents)
   const std::string on_anchor = body(car_cpp, "void CarSelfRefl::OnAnchor(", "// ---------------------------------------------------------------------------\n// the history: the game's mid-scene depth copy");
   Check(!on_anchor.empty() && Has(on_anchor, "if (play_view_ == pause_view_) {\n    history_valid_ = false;\n    return;") && Has(on_anchor, "if (!camera) {\n    history_valid_ = false;\n    return;") &&
-            Has(on_anchor, "history_valid_ = lens_agrees;") && Has(on_anchor, "history_camera_ = *camera;") && Has(on_anchor, "history_valid_ = false;  // none made this frame"),
-        "the anchor's rules are the old ones: no kind or no camera: no history; the history is valid when this frame's lens agrees; none made this frame: not valid");
+            Has(on_anchor, "history_valid_ = lens_agrees && !garage_cut;") && Has(on_anchor, "history_camera_ = *camera;") && Has(on_anchor, "history_valid_ = false;  // none made this frame"),
+        "the paint history needs an agreeing lens and resets on a garage camera cut, missing camera or missing capture");
 
   // THE SOURCE: the colour is the capture's only at the picture's size and only with the setting's allowance; else the pass is the old one
   Check(Has(car_cpp, "const HostImage* shared = SharedColour(render_w, render_h);") && Has(car_cpp, "Pipeline(ms ? (shared ? kPassMsShared : kPassMs) : kPassPlain)") && Has(car_cpp, "push.slots[1] = shared ? shared->slot : colour_slot;"),

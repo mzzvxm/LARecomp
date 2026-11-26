@@ -1015,10 +1015,10 @@ void TestHostSources(const std::string& dir) {
         "the classified path resolves work from the chosen level and ray-query support");
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
-  Check(Has(ssr_cpp, "if (rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
+  Check(Has(ssr_cpp, "if (!garage && rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
             Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push, classify);\n  }"),
         "without the fallback the images are the old ones (default flags, no confidence) and the pass is the plain one");
-  Check(Has(ssr_cpp, "rt_.BeginFrame(level_, classify_enabled_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") &&
+  Check(Has(ssr_cpp, "rt_.BeginFrame(garage ? ssr::Level::kOff : level_, classify_enabled_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") &&
             Has(ssr_cpp, "return bytes + classifier_.HeldBytes() + rt_.HeldBytes() + denoise_.HeldBytes();"),
         "the effect's frame start, present, shutdown and memory call the fallback");
   const size_t m_trace = At(ssr_cpp, "Mark(list, \"ssr trace\")");

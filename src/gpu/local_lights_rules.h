@@ -111,6 +111,12 @@ inline constexpr uint32_t kSourceAll = kSourceMask | kSourceNeon;
 // The sources that need the cars' light points (the manager's car lights source).
 inline constexpr uint32_t kSourceCars = kSourcePolice | kSourceHeadLamps | kSourceRearLamps;
 // What SelectLights (below) reads: the frame's own lights and the test lamp.
+constexpr uint32_t GarageSources(uint32_t sources, bool garage) {
+  // Nearby mods and tool lamps belong to the outdoor scene. Keep the current
+  // car sources, the selected headlight route and the independent underglow.
+  return garage ? (sources | kSourceCars) & ~(kSourceMod | kSourceTest) : sources;
+}
+
 inline constexpr uint32_t kSourceFrameAndTest = kSourceFrame | kSourceTest;
 
 // Where a light of the pass came from, for the budgets and the log lines (GB-H3). kFrame: the frame's surface lights (the rig's headlights today); kHandedOver: the lamp A/B's mod lamps and the

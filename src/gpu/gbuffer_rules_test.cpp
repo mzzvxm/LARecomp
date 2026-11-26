@@ -212,7 +212,7 @@ void AlbedoAndMaterialChecks() {
       }
     }
   }
-  Check(words == 16 * 8 * 4 * 2, "every class, flag set, smoothness and lit weight was checked");
+  Check(words == uint32_t(gb::SurfaceClass::kCount) * 8 * 4 * 2, "every class, flag set, smoothness and lit weight was checked");
   Check(gb::MaterialRt3ClassAndFlags(gb::MaterialWord(0.5f, gb::SurfaceClass::kPaint, gb::kMaterialFlagVehicle | gb::kMaterialFlagSsr, 1.0f)) ==
             (uint32_t(gb::SurfaceClass::kPaint) | ((gb::kMaterialFlagVehicle | gb::kMaterialFlagSsr) << 5)),
         "RT3.g is the class in the low 5 bits and the flags above them");
@@ -822,7 +822,15 @@ void PauseAndCameraChecks() {
   Check(gb::PauseFxViewOf(true, "GARAGEMOVIE", false) == PauseFxView::kNone &&
         gb::PauseFxViewOf(true, "NAVSYSMOVIE", false) == PauseFxView::kNone &&
         gb::PauseFxViewOf(true, "", false) == PauseFxView::kNone, "garage, map and unknown movies are excluded");
-  for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto}) {
+  Check(gb::PauseFxViewOf(false, "GARAGEMOVIE", true, true) == PauseFxView::kGarage, "the garage has an independent switch");
+  Check(gb::PauseFxViewOf(true, "GARAGEMOVIE", true, false) == PauseFxView::kNone, "the garage off-ramp does not fall through to pause FX");
+  Check(gb::PauseFxViewOf(true, "PAUSEMOVIE", true, true) == PauseFxView::kGarage &&
+        gb::PauseFxViewOf(false, "POPUPMOVIE", true, true) == PauseFxView::kGarage,
+        "the lighting state identifies the garage through menu changes");
+  Check(gb::PauseFxViewOf(true, "NAVSYSMOVIE", true, true) == PauseFxView::kNone &&
+        gb::PauseFxViewOf(true, "GARAGEMOVIE", false, true) == PauseFxView::kNone,
+        "the map and a stale garage movie cannot open a garage sidecar");
+  for (const auto view : {PauseFxView::kPause, PauseFxView::kPhoto, PauseFxView::kGarage}) {
     Check(gb::MatchesPauseFxView(true, view) && !gb::MatchesPauseFxView(false, view),
           "a published pause/photo sidecar belongs to the four-sample view");
     Check(gb::PauseFxCameraChanged(true, PauseFxView::kNone, view) &&
@@ -1107,6 +1115,7 @@ void HlslDefinesChecks(const std::string& text) {
       {"GB_CLASS_METAL", long(gb::SurfaceClass::kMetal)},       {"GB_CLASS_GLASS", long(gb::SurfaceClass::kGlass)},
       {"GB_CLASS_SKIN", long(gb::SurfaceClass::kSkin)},         {"GB_CLASS_EMISSIVE", long(gb::SurfaceClass::kEmissive)},
       {"GB_CLASS_INTERIOR", long(gb::SurfaceClass::kInterior)}, {"GB_CLASS_WATER", long(gb::SurfaceClass::kWater)},
+      {"GB_CLASS_GARAGE_FLOOR", long(gb::SurfaceClass::kGarageFloor)},
       {"GB_CLASS_MASK", long(gb::kClassMask)},                  {"GB_FLAG_SSR", long(gb::kMaterialFlagSsr)},
       {"GB_FLAG_ALPHA_COVERED", long(gb::kMaterialFlagAlphaCovered)}, {"GB_FLAG_VEHICLE", long(gb::kMaterialFlagVehicle)},
       {"GB_MATERIAL_CLASS_SHIFT", long(gb::kMaterialClassShift)}, {"GB_MATERIAL_FLAGS_SHIFT", long(gb::kMaterialFlagsShift)},

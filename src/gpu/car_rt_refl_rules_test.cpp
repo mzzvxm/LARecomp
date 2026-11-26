@@ -425,7 +425,7 @@ void RawChecks(const std::string& dir) {
             Has(cpp, "transition(Stage::COMPUTE, {{&aux_, Layout::SHADER_READ}, {&hit_, Layout::GENERAL}});") && Has(cpp, "transition(Stage::GRAPHICS_AND_COMPUTE, {{&hit_, Layout::SHADER_READ}});") &&
             Has(cpp, "list->setPipeline(hit_pipeline_.get());") && Has(cpp, "hit_ready_ = true;"),
         "RR-4b: in a raw frame the hit pass follows the trace and the opponents' trace (the aux image holds both) and comes before the closing mark; the aux is read, the hit image written, then readable");
-  Check(Has(FunctionOf(cpp, "void CarRtRefl::BeginFrame(bool reflection_on) {"), "hit_ready_ = false;") && Has(FunctionOf(cpp, "void CarRtRefl::ReleaseImage() {"), "passes_->ReleaseImage(hit_);") &&
+  Check(Has(FunctionOf(cpp, "void CarRtRefl::BeginFrame(bool reflection_on, bool garage) {"), "hit_ready_ = false;") && Has(FunctionOf(cpp, "void CarRtRefl::ReleaseImage() {"), "passes_->ReleaseImage(hit_);") &&
             Has(FunctionOf(cpp, "uint64_t CarRtRefl::HeldBytes() const {"), "&hit_"),
         "RR-4b: the hit image is announced for the frame that wrote it only, released with the others and counted in the memory line");
   Check(Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 8)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 0)") && Has(cpp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 1)") && Has(opp, "HostPrecache::Key(HostPrecache::kCarRtRefl, 2)"),
@@ -455,7 +455,7 @@ void RawChecks(const std::string& dir) {
   Check(Has(cpp, "device_->CreateComputePipeline(plume::RenderComputePipelineDesc(denoise_layout_.get(), hit_shader_.get(), kGroup, kGroup, 1), kHitName)"), "RR-4b: the hit pass is a pipeline on the denoise's layout");
   // the wiring
   Check(Has(self_h, "void SetRawMode(bool raw) { raw_ = raw; }") && Has(self_h, "const HostImage* RawHitImage() const;") && Has(self_cpp, "info.raw = raw_;") &&
-            Has(FunctionOf(self_cpp, "void CarSelfRefl::BeginFrame() {"), "raw_ = false;") && Has(self_cpp, "const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }"),
+            Has(FunctionOf(self_cpp, "void CarSelfRefl::BeginFrame(gbuffer::PauseFxView pause_fx) {"), "raw_ = false;") && Has(self_cpp, "const HostImage* CarSelfRefl::RawHitImage() const { return rt_ ? rt_->RawHitImage() : nullptr; }"),
         "RR-4b: CarSelfRefl hands the raw flag to the ray traced pass (false at the frame's start) and the hit image back");
   const size_t set_at = scene.find("car_refl_->SetRawMode(temporal_ && temporal_->RawModes().CarRefl());");
   const size_t resolve_at = scene.find("car_refl_->OnResolve(record, summary, list);");
@@ -473,6 +473,23 @@ void RawChecks(const std::string& dir) {
 int main(int argc, char** argv) {
   const std::string src_dir = argc > 1 && argv[1][0] != '-' ? argv[1] : std::string();
   RawChecks(src_dir);
+  rt::ConePose last;
+  last.mesh_key = 11;
+  rt::ConePose now = last;
+  Check(rt::ConeHistoryMatches(true, true, last, now), "a held garage camera can accumulate");
+  Check(!rt::ConeHistoryMatches(false, true, last, now) && !rt::ConeHistoryMatches(true, false, last, now),
+        "garage and outdoor cone histories cannot cross");
+  now.camera.m[0][1] = 0.002;
+  Check(!rt::ConeHistoryMatches(true, true, last, now) && rt::ConeHistoryMatches(false, false, last, now),
+        "a garage orbit uses the spatial filter and the play rule is unchanged");
+  now = last;
+  now.car.m[3][0] = 0.05;
+  Check(!rt::ConeHistoryMatches(true, true, last, now), "moving the car restarts the cone history");
+  now = last;
+  now.mesh_key++;
+  Check(!rt::ConeHistoryMatches(true, true, last, now), "changing the selected car restarts the cone history");
+  now = rt::ConePose{};
+  Check(!rt::ConeHistoryMatches(true, true, now, now), "unknown geometry cannot accumulate garage history");
   // the setting
   Check(rt::SettingOf("auto") == rt::Setting::kOff && rt::SettingOf("off") == rt::Setting::kOff && rt::SettingOf("garbage") == rt::Setting::kOff &&
             rt::SettingOf("") == rt::Setting::kOff,

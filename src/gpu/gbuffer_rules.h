@@ -491,7 +491,7 @@ inline View ViewOf(int value) { return (value > 0 && value < int(View::kCount)) 
 // View exclusions
 // ---------------------------------------------------------------------------
 
-// The pause menu, photo mode, garage and map share the main view's 4-guest-sample identity. Only an admitted pause/photo window can carry the sidecar.
+// The pause menu, photo mode, garage and map share the main view's 4-guest-sample identity. Only an admitted four-sample window can carry the sidecar.
 // The side views (the sun's cascades, the environment map, the road
 // reflection, the headlight shadow atlas, the car passes) are other EDRAM identities: kNotMainView. Two kinds of draw land in the main identity and are not the play
 // view, and are told apart by what they have:

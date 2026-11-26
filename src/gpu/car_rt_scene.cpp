@@ -878,12 +878,12 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.car_count = uint32_t(cars.records.size());
     view_.records = cars.records;
     view_.player_box = cars.player_box;
-    if (service_ && service_->Wants(rt_scene::Consumer::kRtAo)) {
-      for (uint32_t i = 0; i < cars.stats.player_instances; ++i) {
-        const auto& item = cars.items[i];
-        const uint64_t part = item.mesh_key ^ (uint64_t(item.mask) << 56);
-        view_.player_mesh_key += (part ^ (part >> 29)) * 0x9E3779B185EBCA87ull;
-      }
+    view_.camera_view = frame.view;
+    view_.player_world = frame.player_world;
+    for (uint32_t i = 0; i < cars.stats.player_instances; ++i) {
+      const auto& item = cars.items[i];
+      const uint64_t part = item.mesh_key ^ (uint64_t(item.mask) << 56);
+      view_.player_mesh_key += (part ^ (part >> 29)) * 0x9E3779B185EBCA87ull;
     }
     view_.other_paint_instances = cars.other_paint_instances;
     view_.traffic_paint_instances = cars.traffic_paint_instances;
