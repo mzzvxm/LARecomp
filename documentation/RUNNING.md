@@ -203,3 +203,9 @@ cmake --build out/build/win-amd64-relwithdebinfo
 Pass the manifest, not the config: the manifest includes `larecomp_config.toml` and sets up the module dependency graph.
 
 **Nothing under `generated/` is hand-edited.** Codegen rewrites the whole directory. Engine patches live as `[[midasm_hook]]` entries in the config with implementations in `src/mc_engine/hooks/`, so they survive regeneration.
+
+---
+
+## Optional developer checks
+
+`tools/static_analysis/` runs LLVM 23's lifetime, memory and thread-safety analysis over the game's own C++ sources. It is optional: the normal build does not need LLVM 23. What it checks, how to run it and how to review its findings: [STATIC-ANALYSIS.md](STATIC-ANALYSIS.md).

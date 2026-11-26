@@ -42,6 +42,8 @@ tools/tours/*
 !tools/check_settings_ui_lints.py
 !tools/check_lfg_xcheck.py
 !tools/lfg_drift.py
+# the optional static analysis check (LLVM 23) and its reviewed baseline
+!tools/static_analysis/
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle
