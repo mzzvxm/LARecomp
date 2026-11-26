@@ -461,6 +461,13 @@ void Denoiser(Fixture& f) {
     f.settings["mcla_gpu_vendor_denoiser"] = Value::Bool(true);
     f.State(id, true, " (RESTART)", "DLSS RR", true);
 
+    // CHECK: Run this fixture in the Linux menu parity binary.
+    f.F("os.name", "linux");
+    f.F("api.name", "vulkan");
+    f.F("features.upscalers.dlss", "no");
+    Check(f.Row(id).IsListed(), "DENOISER", "RTX listed on Linux");
+    f.State(id, false, " (N/A)", "DLSS RR");
+
     f.F("gpu.vendor", "amd");
     f.F("os.name", "windows");
     Check(!f.Row(id).IsListed(), "DENOISER", "unknown Radeon generation");
