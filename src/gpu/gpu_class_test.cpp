@@ -343,11 +343,6 @@ void CheckScales() {
 
 }
 
-void CheckSunShaftSteps() {
-  for (const auto cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
-    CheckNum(SunShaftSteps(cls), 64, "sun shafts use the same ray count");
-  }
-}
 
 // --- the speed table (kSpeedTable): GPU names that cap the class --------------------------------------
 
@@ -792,7 +787,6 @@ void CheckHandheldDetect() {
 
 int main() {
   CheckTable();
-  CheckSunShaftSteps();
   CheckLabels();
   CheckWords();
   CheckNames();

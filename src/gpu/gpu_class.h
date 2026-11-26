@@ -113,9 +113,6 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
 // card is kHigh, a 4 GB one kMid. A first guess for the owner to tune.
 inline constexpr uint64_t kMidBelowBytes = 5632ull << 20;
 
-// Sun shafts use the same ray steps at every strength. The debug override is in shafts_level.h.
-inline constexpr uint32_t kSunShaftSteps = 64;
-
 // --- the pure rules ----------------------------------------------------------------------------
 
 constexpr std::string_view ClassName(GpuClass c) {
@@ -181,8 +178,6 @@ inline std::string Upper(std::string_view text) {
 inline std::string AutoLabelOf(std::string_view shown) {
   return "AUTO (" + Upper(shown) + ")";
 }
-
-constexpr uint32_t SunShaftSteps(GpuClass) { return kSunShaftSteps; }
 
 // "AUTO (ULTRA)": the pause row's label for `auto`, with the cell's value in capitals. The stored word is the word the player sees
 // (no graphics setting has a level called low: the ambient occlusion, the contact shadows and the bounce light are off / high / ultra,

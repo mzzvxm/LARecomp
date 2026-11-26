@@ -111,6 +111,11 @@ void ShaftsNeedSkyOutsideTheGameView() {
     Check(!PauseFxRuns(World::kGarage, view) && !ShaftsRun(World::kGarage, false, view),
           "the garage keeps its sky rule even if the movie lags");
   }
+  const auto garage = mcla::gpu::gbuffer::PauseFxViewOf(false, "GARAGE", true, true);
+  Check(GarageFxRuns(World::kGarage, garage) && !ShaftsRun(World::kGarage, false, garage), "garage accepts indoor volume, shafts still need a sky");
+  Check(mcla::gpu::gbuffer::PauseFxViewOf(true, "NAVSYSMOVIE", true, true) == mcla::gpu::gbuffer::PauseFxView::kNone, "garage map is excluded");
+  Check(mcla::gpu::gbuffer::PauseFxViewOf(false, "PHOTOALBUMMOVIE", false, false) == mcla::gpu::gbuffer::PauseFxView::kNone, "debug off-ramp leaves the old policy");
+  Check(mcla::gpu::gbuffer::PauseFxCameraChanged(true, mcla::gpu::gbuffer::PauseFxView::kPause, mcla::gpu::gbuffer::PauseFxView::kPhoto), "pause to photo resets camera history");
 }
 
 void LensRule() {

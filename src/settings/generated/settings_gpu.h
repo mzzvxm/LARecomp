@@ -1650,11 +1650,7 @@ class GPUSettings final : public rex::SettingOwner {
     "handheld, or the iGPU of a desktop CPU). The ray quality follows the card by itself. low and high "
     "are values of an older version and mean default. Costs graphics card time only while they show. Live.", rex::Allowed("auto", "off", "light", "default", "strong", "stronger", "strongest", "low", "high"));
 
-  REX_SETTING(bool, mcla_gpu_sun_shafts_cap, true, "Diagnostic: caps the sun shafts' two working images at 960x540 (the size they are at 1080p, a quarter "
-    "of their old size at 4K, the same shape as the picture; a picture whose half size is under that is "
-    "untouched). The shafts are a smooth, blurred light, so the picture is the same to within the ray "
-    "noise being coarser; it saves a good part of the passes' time at 1440p and 4K while the shafts "
-    "show. False: the images are half the picture's size, as they were. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_sun_shafts_cap, true, "Diagnostic: cap the sun shafts at their 1080p working resolution, keeping the picture shape. Off scales the working images with the picture. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_sun_shafts_census, 0, "Diagnostic: every Nth guest frame (and the first three frames with the main view), one log "
     "line of what the sun shafts did: the sun's height and where it is in the picture, the "
@@ -1674,7 +1670,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(f64, mcla_gpu_sun_shafts_sky_depth, 1e-5, "Diagnostic: the stored depth (1 near, 0 far) at or under which a pixel is sky for the sun "
     "shafts. The sky is drawn at the far end, 0; raise it if the shafts find no sky. Live.", rex::kDebugOnly, rex::Range{0.0, 0.01});
 
-  REX_SETTING(i32, mcla_gpu_sun_shafts_steps, 0, "Debug: sun shaft ray steps, 8 to 128. Zero uses 64. Live.", rex::kDebugOnly, rex::Range{0, 128});
+  REX_SETTING(i32, mcla_gpu_sun_shafts_steps, 0, "Diagnostic: a positive count uses the legacy sun shafts march (8 to 128 taps) for comparison. Zero uses the fixed iterated blur. Live.", rex::kDebugOnly, rex::Range{0, 128});
 
   REX_SETTING(f64, mcla_gpu_sun_shafts_threshold, 0.5, "Diagnostic: the brightness (the scene's linear light, 1 is white) the sky must pass to light "
     "the sun shafts; what is under it does not shine. Lower lets more of the sky shine. Live.", rex::kDebugOnly, rex::Range{0.0, 4.0});
@@ -1729,6 +1725,14 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(f64, mcla_gpu_vol_far, 0.0, "Diagnostic: how far in metres the volumetric light reaches (30 to the level's own, 120 on medium and 160 on "
     "high and ultra). 0: the level's. Live.", rex::kDebugOnly, rex::Range{0.0, 1000.0});
+
+  REX_SETTING(bool, mcla_gpu_atmosphere_merge, true, "Use one blend when volumetric light and sun shafts share a scene target. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_atmosphere_menu_views, true, "Apply volumetric light in pause, photo mode and the garage. Allow the world light to place sun shafts in pause and photo mode. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_vol_history_medium, false, "Enable froxel history on Medium for comparison with Ultra. Live.", rex::kDebugOnly);
+
+  REX_SETTING(f64, mcla_gpu_vol_near, 0.5, "Start of the volumetric grid in metres. A higher start uses fewer depth slices. Live.", rex::kDebugOnly, rex::Range{0.5, 2.0});
 
   REX_SETTING(bool, mcla_gpu_vol_temporal, true, "Diagnostic: blends each frame's volume with the last frame's, moved to where the camera is now (high and "
     "ultra; medium has none). Off: the volume shows its noise. Live.", rex::kDebugOnly);
@@ -2461,6 +2465,10 @@ inline auto& mcla_gpu_vol_rain_scatter = g_gpu.mcla_gpu_vol_rain_scatter;
 inline auto& mcla_gpu_vol_sun_strength = g_gpu.mcla_gpu_vol_sun_strength;
 inline auto& mcla_gpu_vol_extinction = g_gpu.mcla_gpu_vol_extinction;
 inline auto& mcla_gpu_vol_far = g_gpu.mcla_gpu_vol_far;
+inline auto& mcla_gpu_atmosphere_merge = g_gpu.mcla_gpu_atmosphere_merge;
+inline auto& mcla_gpu_atmosphere_menu_views = g_gpu.mcla_gpu_atmosphere_menu_views;
+inline auto& mcla_gpu_vol_history_medium = g_gpu.mcla_gpu_vol_history_medium;
+inline auto& mcla_gpu_vol_near = g_gpu.mcla_gpu_vol_near;
 inline auto& mcla_gpu_vol_temporal = g_gpu.mcla_gpu_vol_temporal;
 inline auto& mcla_gpu_vol_early = g_gpu.mcla_gpu_vol_early;
 inline auto& mcla_gpu_vol_test = g_gpu.mcla_gpu_vol_test;

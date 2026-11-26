@@ -225,6 +225,7 @@ enum class Step : uint8_t {
   kLightsAfter,
   kShafts,
   kVolume,
+  kAtmosphereMid,
   kCarRtCheck,
   kColourPost,
   kSsr,
@@ -232,8 +233,7 @@ enum class Step : uint8_t {
   kGBufferView,
   kScreenView,
   // the end-of-scene copy (the same function, an earlier text: BeforeResolve)
-  kVolumeComposite,
-  kShaftsComposite,
+  kAtmosphereComposite,
   kMirrorStamp,
   kMirrorGlass,
   // the anchor (TemporalSystem::RecordUpscale, called from Scene::NoteTemporal at the game's motion blur draw)
@@ -452,14 +452,18 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
      .note = "(GI-BOUNCE-SS, screen_lights.cpp) the same capture as the one before the pass, into the second image; the pair is made valid for the next frame only when both were recorded in this frame (ssgi_lights.h Key). "
              "The difference of the two is what the light pass added; it is taken where the next frame's colour chain reads them (hlsl/ao_color_ps.hlsl LightsHistory). Nothing here is read by this frame"},
     {.step = Step::kShafts, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "sun shafts' pass", .call = "shafts_->OnResolve(record, summary, list, UpscalerRunning())",
-     .label_file = "shafts.cpp", .label = "shafts sky", .makes = data::kShafts,
+     .label_file = "shafts.cpp", .label = "shafts sky", .closing_label = "after shafts sky", .makes = data::kShafts,
      .note = "sky pass into an image of its own, no data dependency on the steps around it: in the play view its composite is at the end-of-scene copy (after SSR). The design (LIGHT-UNIFY 5.3) lists it after "
-             "SSR; the code runs it before the capture, as it did, and GB-I3 keeps that: the pause and map worlds (and the debug switch, or a build with no copy at the end of the scene) composite the shafts "
+             "SSR; the code runs it before the capture, as it did, and GB-I3 keeps that: the admitted menu worlds (and the debug switch, or a build with no copy at the end of the scene) composite the shafts "
              "right here, at the trigger, so the capture, the car history and, where it runs, SSR see them as the picture they are in. Moving the pass after SSR would drop them from the pause worlds' car history"},
     {.step = Step::kVolume, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "volumetric light: inject and integrate", .call = "vol_->OnResolve(record, summary, list, slot_, UpscalerRunning())",
-     .label_file = "volumetrics.cpp", .label = "vol inject", .soft_reads = data::kShadowAtlas | data::kLights, .makes = data::kVolume,
+     .label_file = "volumetrics.cpp", .label = "vol inject", .more_labels = {{"vol integrate"}}, .closing_label = "after vol integrate", .soft_reads = data::kShadowAtlas | data::kLights, .makes = data::kVolume,
      .note = "compute passes into the froxels, nothing written to the main colour (its composite is at the end-of-scene copy): they read this frame's maps (the replay's last barrier names the compute stage). "
              "The depth is the main depth plane read directly: it does not use lin_depth and does not Want it (screen::Consumer::kVolumetrics is never declared; the design said it would read lin_depth)"},
+    {.step = Step::kAtmosphereMid, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "mid-scene atmosphere",
+     .call = "CompositeAtmosphere(list, vol_ran && vol_ && vol_->AtMidScene(),",
+     .soft_reads = data::kVolume | data::kShafts,
+     .note = "pause, photo, garage and the early fallback use the mid-scene depth copy; their blend is in the colour before colour_post"},
     {.step = Step::kCarRtCheck, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car ray tracing check (debug)", .call = "car_rt_->OnAfterOcclusion(summary, list, slot_, ao_)",
      .label_file = "car_rt_scene.cpp", .label = "car rt check", .reads = data::kAoDepth | data::kCarStructures,
      .note = "reads the AO's linear depth image, so after the AO's frame"},
@@ -493,21 +497,21 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kScreenView, .phase = Phase::kTrigger, .kind = Kind::kScanned, .name = "screen products' debug view", .call = "screen_->DrawView(summary, list)",
      .label_file = "screen_shared.cpp", .label = "screen view", .soft_reads = kScreenData, .deps = {{{Step::kGBufferView, "after the other views"}}}},
     // ======================================================== the end-of-scene copy (Scene::OnResolve, the BeforeResolve calls) =========================
-    {.step = Step::kVolumeComposite, .phase = Phase::kEndOfScene, .kind = Kind::kNoted, .name = "volumetric composite into the colour", .call = "vol_->BeforeResolve(record, list)",
-     .label_file = "volumetrics.cpp", .label = "vol apply", .soft_reads = data::kVolume,
-     .note = "at the end-of-scene copy of the main colour, before that copy reads it; in the text of OnResolve it stands above the trigger's calls (the same function, a different resolve)"},
-    {.step = Step::kShaftsComposite, .phase = Phase::kEndOfScene, .kind = Kind::kNoted, .name = "sun shafts' composite into the colour", .call = "shafts_->BeforeResolve(record, list)",
-     .label_file = "shafts.cpp", .label = "shafts add", .soft_reads = data::kShafts, .deps = {{{Step::kVolumeComposite, "the shafts' light is added on top of the haze"}}}},
+    {.step = Step::kAtmosphereComposite, .phase = Phase::kEndOfScene, .kind = Kind::kNoted, .name = "end-of-scene atmosphere",
+     .call = "CompositeAtmosphere(list, vol_at_copy, shafts_at_copy)",
+     .label_file = "volumetrics.cpp", .label = "atmosphere apply", .more_labels = {{"vol apply"}}, .closing_label = "after vol apply",
+     .soft_reads = data::kVolume | data::kShafts,
+     .note = "the first main colour copy sees S + L + dst * T; standalone and diagnostic arms keep their own blend"},
     {.step = Step::kMirrorStamp, .phase = Phase::kEndOfScene, .kind = Kind::kScanned, .name = "the rear view mirror's picture stamped into the HUD's rectangle", .call = "mirror_view_->StampArmed() && list && RecordMirrorStamp(record, list)",
      .label_file = "mirror_view.cpp", .label = "mirror stamp", .closing_label = "after mirror stamp", .reads = data::kMirrorView,
-     .deps = {{{Step::kShaftsComposite, "the haze and the shafts' light are composited first: they do not lie over the stamp (it is the picture of another camera)"}}},
+     .deps = {{{Step::kAtmosphereComposite, "the haze and the shafts' light are composited first: they do not lie over the stamp (it is the picture of another camera)"}}},
      .note = "MIRROR-VIEW MV1: one quad into the rectangle of the main colour at the first copy of the main colour after the phase's end marker (Scene::RecordMirrorStamp), before that copy reads the colour; a held frame "
              "(the guest's every-Nth-frame cadence sends the two markers with no draws between) stamps the held picture. Scanned, not noted: it runs only while the view is on and a picture is whole. "
              "CHECK (run): that the first copy of the main colour after the end marker is the end-of-scene copy (the effects of the trigger have run by then), CHECK 4 of the design"},
     {.step = Step::kMirrorGlass, .phase = Phase::kEndOfScene, .kind = Kind::kScanned, .name = "the car's side mirror glass drawn again with a lookup into the rear view's picture", .call = "RecordMirrorGlass(record, list)",
      .label_file = "mirror_overlay.cpp", .label = "mirror glass", .closing_label = "after mirror glass", .reads = data::kMirrorView,
      .deps = {{{Step::kMirrorStamp, "the glass is drawn after the HUD stamp: the two readers of the view's picture, the stamp first, then the side mirrors' glass over the main colour"},
-               {Step::kShaftsComposite, "the haze and the shafts' light are composited first: they do not lie over the mirror's picture"}}},
+               {Step::kAtmosphereComposite, "the haze and the shafts' light are composited first: they do not lie over the mirror's picture"}}},
      .note = "MIRROR-VIEW MV4 (mirror_overlay.h, perf/MIRROR-VIEW.md): at the same copy, the glass patches of the player's car (MirrorGlass::Current: the pair found by shape, a glass on the picture and wide enough) are drawn again "
              "from their own host geometry into the main colour with the main depth bound (the glass draw's own depth test with the equal case allowed, nothing written, a few millimetres towards the eye along the view "
              "ray), the pixel shader reflecting the eye's ray off the glass plane and reading the shared view's picture where the reflected ray goes (the planar lookup, the assumed distance beyond the glass), blended with "
@@ -517,7 +521,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
     {.step = Step::kRrGuides, .phase = Phase::kAnchor, .kind = Kind::kScanned, .name = "Ray Reconstruction's guide pass (diffuse and specular albedo, normals + roughness, hit distance, responsivity)",
      .file = "temporal.cpp", .call = "RecordRrGuides(list, kept, width, height)", .label_file = "rr_guides.cpp", .label = "rr guides", .closing_label = "after rr guides",
      .reads = data::kPlanes, .soft_reads = data::kRrHitSsr | data::kRrHitCar | data::kRrHitGi, .makes = data::kRrGuides, .wants_planes = detail::kAllPlaneBits,
-     .deps = {{{Step::kGBufferPublish, "the planes it reads are published at the trigger"}, {Step::kShaftsComposite, "the anchor is the game's post chain: after the end-of-scene copy"}}},
+     .deps = {{{Step::kGBufferPublish, "the planes it reads are published at the trigger"}, {Step::kAtmosphereComposite, "the anchor is the game's post chain: after the end-of-scene copy"}}},
      .note = "RR-2: ONE compute pass, only while the plan wants the guides (the debug switch mcla_gpu_dlss_rr = on with DLSS, or a guide view): the planes (RT1 world normal, RT2 albedo, RT3 material, at the host "
              "sample that is the guest's sample 0), the kept depth and the upscaler's masks to the five guides (hlsl/rr_guides_common.hlsli). It runs right before the backend gets the frame, the guides in the "
              "upscaler's read state when it ends. Its wants are the G-buffer's planes (declared by kBeginTemporal); the noisy colour it does not read: the upscaler takes it itself. RR-3: "

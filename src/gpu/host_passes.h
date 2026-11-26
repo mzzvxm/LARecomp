@@ -160,7 +160,8 @@ class HostPasses {
   const plume::RenderPipelineLayout& layout() const { return *layout_; }
 
   // Binds the layout, the four texture sets and the sampler set on `list`.
-  void Bind(plume::RenderCommandList* list) const;
+  void Bind(plume::RenderCommandList* list, const plume::RenderPipelineLayout* layout = nullptr) const;
+  std::unique_ptr<plume::RenderPipelineLayout> CreateLayout(uint32_t push_bytes, const char* name) const;
 
   // A shader from a host blob (host_shaders.h). Null on failure (logged).
   std::unique_ptr<plume::RenderShader> CreateShader(const void* data, uint64_t size,

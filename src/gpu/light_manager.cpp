@@ -289,7 +289,7 @@ void LightManager::OnResolve(bool shadow_recorded) {
 // own sequence number.
 bool LightManager::RefreshList() {
   bool stale = false;
-  bool changed = vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kMaxListAge);
+  bool changed = vol_lamps::Global().Latest(&list_, &list_seq_, &stale, kMaxListAge, vol_lamps::Table::Clock::now(), &list_garage_);
   if (stale) {
     changed = changed || !list_.empty();
     list_.clear();
@@ -307,10 +307,15 @@ void LightManager::FillVolumeInputs(const volumetrics::VolFrameContext& context,
   volume_seen_ = true;
   volume_from_frame_ = true;
   ++volume_fills_;
+  if (volume_garage_ != context.garage) {
+    volume_garage_ = context.garage;
+    vol_pick_.Reset();
+  }
   if (lamps_on) {
+    const std::vector<vol_lamps::GameLamp> empty;
     if (list == nullptr) {
       RefreshList();
-      list = &list_;
+      list = list_garage_ == context.garage ? &list_ : &empty;
     }
     const volumetrics::PickResult& pick = vol_pick_.Update(*list, context, out->lamp_count, limit);
     collector_.SetPickedLamps(pick.records.data(), pick.weights.data(), pick.count, pick.listed);

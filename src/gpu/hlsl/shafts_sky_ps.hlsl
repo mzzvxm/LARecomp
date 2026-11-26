@@ -1,11 +1,9 @@
 // MCLA GPU renderer -- sun shafts, pass 1: the sky's brightness (shafts.h).
 //
 // Run at the game's mid-scene depth copy, when the scene's opaque draws are all in the colour
-// target and the fog, the particles and the post chain are not. One texel of the image (R16_FLOAT,
-// half the picture's size, or less when the cap is on: shafts_image.h) is the mean of four pixels
-// of the picture, a 2x2 block when the image is half the picture, else the same four taps spread over
-// the texel's footprint (g_push.tint.xy: the pixels one texel spans, 2 for the half size; a sparse
-// sample of a smooth image), and for each of those the mean over the host samples of the target (a
+// target and the fog, the particles and the post chain are not. One texel of the image (R16_FLOAT)
+// averages four pixels spread over its footprint (shafts_image.h), and for each the mean over the
+// host samples of the target (a
 // multisampled scene: Texture2DMS, every sample its own depth and colour, so an edge between the sky
 // and a roof is as smooth as the picture's):
 //

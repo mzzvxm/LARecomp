@@ -129,9 +129,9 @@ void CheckTableItself() {
     // RR-2: the anchor's steps are the temporal system's, in temporal.cpp, and held by the source checks alone
     if (r.phase == Phase::kAnchor) Check(std::strcmp(r.file, "temporal.cpp") == 0 && r.kind == Kind::kScanned, std::string(r.name) + ": an anchor step stands in temporal.cpp and is a scanned one");
   }
-  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 3 && phase_count[size_t(Phase::kTrigger)] == 32 && phase_count[size_t(Phase::kEndOfScene)] == 4 &&
+  Check(phase_count[size_t(Phase::kBegin)] == 10 && phase_count[size_t(Phase::kDraws)] == 3 && phase_count[size_t(Phase::kTrigger)] == 33 && phase_count[size_t(Phase::kEndOfScene)] == 3 &&
             phase_count[size_t(Phase::kAnchor)] == 3 && phase_count[size_t(Phase::kPresent)] == 4,
-        "10 at the frame's start, 3 in the draws (MIRROR-VIEW MV1 added the mirror phase's), 32 at the trigger (includes moving-light bounce; RT-LIGHTS-D1 added the ray traced visibility inside the light pass, GI-BOUNCE-SS the two captures at the light pass's sides, RTAO the three steps inside the AO's frame), 4 at the end of the scene (MV1 added the mirror stamp, MV4 the side mirror glass after it), 3 at the anchor (RR-3: the upscale joined the guide pass and its view), 4 at the present");
+        "33 steps at the depth copy and three at the colour copy, including their atmosphere composites");
   Check(noted == 20 && inner == 12 && scanned == 24, "20 noted calls, 11 steps inside the AO's frame and 1 inside the light pass, 24 held by the source checks alone (MIRROR-VIEW MV1 added two, MV4 one)");
   Check(fo::data::kRtAoSignal == (1u << 31) && std::string(fo::data::NameOf(fo::data::kRtAoSignal)) == "RTAO signal",
         "the RTAO signal owns the last data bit");
@@ -154,7 +154,7 @@ void CheckTableItself() {
 void CheckPinnedOrder() {
   // the trigger
   const Step trigger[] = {Step::kGBufferPublish, Step::kCarSunMap, Step::kCarStructures, Step::kShadowReplay, Step::kLightMaps, Step::kGiField, Step::kAo, Step::kGiApply, Step::kLightsBefore, Step::kLocalLights, Step::kLightsAfter, Step::kShafts,
-                          Step::kVolume, Step::kCarRtCheck, Step::kColourPost, Step::kSsr, Step::kCarHistory, Step::kGBufferView, Step::kScreenView};
+                          Step::kVolume, Step::kAtmosphereMid, Step::kCarRtCheck, Step::kColourPost, Step::kSsr, Step::kCarHistory, Step::kGBufferView, Step::kScreenView};
   for (size_t i = 1; i < std::size(trigger); ++i) Check(Before(trigger[i - 1], trigger[i]), std::string("at the trigger '") + fo::RowOf(trigger[i - 1]).name + "' comes before '" + fo::RowOf(trigger[i]).name + "'");
   // inside the AO's frame
   const Step ao[] = {Step::kAo, Step::kAoDepth, Step::kAoNormals, Step::kColourPre, Step::kCarRtAo, Step::kRtAoTrace, Step::kRtAoFilter, Step::kAoVisibility, Step::kRtAoCompose, Step::kContact, Step::kAoApply, Step::kScreenPublish};
@@ -192,9 +192,12 @@ void CheckPinnedOrder() {
   Check(Before(Step::kGBufferPublish, Step::kAoNormals) && Before(Step::kGBufferPublish, Step::kLocalLights) && Before(Step::kGBufferPublish, Step::kSsr), "the G-buffer's planes are published before every reader");
   Check(Before(Step::kAo, Step::kCarRtCheck), "the car ray tracing check follows the AO (it reads the AO's linear depth)");
   Check(Before(Step::kCarHistory, Step::kGBufferView) && Before(Step::kGBufferView, Step::kScreenView), "the debug views come last, the screen's after the G-buffer's");
-  Check(Before(Step::kVolume, Step::kVolumeComposite) && Before(Step::kShafts, Step::kShaftsComposite) && Before(Step::kVolumeComposite, Step::kShaftsComposite),
-        "the composites are at the end-of-scene copy, the shafts' on top of the haze");
-  Check(fo::RowOf(Step::kVolumeComposite).phase == Phase::kEndOfScene && fo::RowOf(Step::kShaftsComposite).phase == Phase::kEndOfScene, "the composites are end-of-scene steps");
+  for (Step composite : {Step::kAtmosphereMid, Step::kAtmosphereComposite}) {
+    Check(Before(Step::kVolume, composite) && Before(Step::kShafts, composite), "atmosphere follows the sky and volume");
+  }
+  Check(fo::RowOf(Step::kAtmosphereComposite).phase == Phase::kEndOfScene &&
+            fo::RowOf(Step::kAtmosphereMid).phase == Phase::kTrigger && Before(Step::kAtmosphereMid, Step::kColourPost),
+        "play composites at the colour copy, menu views and the early fallback composite at the depth copy");
   // the draws and the present
   Check(fo::RowOf(Step::kDrawHeadlight).reads_previous == fo::data::kShadowAtlas && (fo::RowOf(Step::kDrawHeadlight).reads & fo::data::kShadowAtlas) == 0, "the forward headlight reads the LAST frame's maps, not this frame's");
   Check(fo::RowOf(Step::kDrawHeadlight).phase == Phase::kDraws && Before(Step::kDrawHeadlight, Step::kGBufferPublish), "the lit draws are before the trigger (so the AO darkens the forward headlight and the colour chain sees it)");
@@ -216,7 +219,7 @@ void CheckPinnedOrder() {
     // everything that adds to the main colour at the trigger comes before the capture except the reflections: the AO's apply and the light pass (kinds of the table that write the colour)
     for (Step added : {Step::kAoApply, Step::kGiApply, Step::kLocalLights}) Check(Before(added, Step::kColourPost), std::string("'") + fo::RowOf(added).name + "' adds to the colour before the capture");
     // the shafts and the volume record before the capture and write no colour at the trigger in the play view (composites at the end-of-scene copy)
-    Check(Before(Step::kShafts, Step::kColourPost) && Before(Step::kVolume, Step::kColourPost) && fo::RowOf(Step::kShaftsComposite).phase == Phase::kEndOfScene && fo::RowOf(Step::kVolumeComposite).phase == Phase::kEndOfScene,
+    Check(Before(Step::kShafts, Step::kColourPost) && Before(Step::kVolume, Step::kColourPost) && fo::RowOf(Step::kAtmosphereComposite).phase == Phase::kEndOfScene,
           "the sun shafts' and the volume's passes are before the capture, their composites at the end of the scene (after the reflections)");
     Check(fo::RowOf(Step::kShafts).note[0] != '\0' && std::string(fo::RowOf(Step::kShafts).note).find("GB-I3 keeps that") != std::string::npos, "the shafts' row says why they stay before the capture");
     // the car history's dependency on SSR carries the reason
@@ -227,7 +230,7 @@ void CheckPinnedOrder() {
   Check(Before(Step::kBeginLights, Step::kDrawSidecar), "the frame's lights are made before the draws");
   // RR-2: the guide pass uses the planes declared before the G-buffer's frame boundary.
   Check(Before(Step::kBeginTemporal, Step::kBeginScreen) && Before(Step::kBeginAo, Step::kBeginGBuffer), "RR-2: the G-buffer samples AO and the temporal system after they publish their wants");
-  Check(Before(Step::kShaftsComposite, Step::kRrGuides) && Before(Step::kGBufferPublish, Step::kRrGuides) && Before(Step::kRrGuides, Step::kPresentWorld) &&
+  Check(Before(Step::kAtmosphereComposite, Step::kRrGuides) && Before(Step::kGBufferPublish, Step::kRrGuides) && Before(Step::kRrGuides, Step::kPresentWorld) &&
             fo::RowOf(Step::kRrGuides).phase == Phase::kAnchor && PosOf(Step::kUpscale) == PosOf(Step::kRrGuides) + 1 && PosOf(Step::kRrGuidesView) == PosOf(Step::kUpscale) + 1 &&
             PosOf(Step::kPresentWorld) == PosOf(Step::kRrGuidesView) + 1,
         "RR-2/RR-3: the guide pass is at the anchor, after the end of the scene and the planes' publish, the upscale right after it, the debug view after that, the present next");
@@ -454,7 +457,7 @@ void CheckRecorder() {
     const fo::Recorder::Report report = rec.End(10);
     Check(!report.census.empty() && report.problems.empty() && !report.any_findings, "the census names the full frame; no problems");
     Check(report.census.find("frame 10: G-buffer publish > car sun shadow map > car ray tracing structures > headlight shadow replay") == 0, "the census names the passes in order: " + report.census.substr(0, 120));
-    Check(report.census.find("volumetric composite into the colour > sun shafts' composite into the colour") != std::string::npos, "... and ends with the composites");
+    Check(report.census.find("end-of-scene atmosphere") != std::string::npos, "... and ends with the composites");
     for (Step s : all) rec.Note(s);
     const fo::Recorder::Report again = rec.End(11);
     Check(again.census.empty() && again.problems.empty(), "the same set again is not reported again");
@@ -504,10 +507,13 @@ void CheckRecorder() {
     Check(rec.finding_count() == 0, "a frame with only the AO and the car history is whole (the history's reads are soft)");
     rec.End(2);
     rec.Note(Step::kVolume);
-    rec.Note(Step::kVolumeComposite);
-    rec.Note(Step::kShaftsComposite);  // the shafts' composite with no pass of the shafts this frame: its read is soft
-    Check(rec.finding_count() == 0, "the volume's pass and composites, with the shafts' pass missing, are whole");
+    rec.Note(Step::kAtmosphereMid);  // a volume-only frame
+    Check(rec.finding_count() == 0, "the volume alone can composite at the depth copy");
     rec.End(3);
+    rec.Note(Step::kShafts);
+    rec.Note(Step::kAtmosphereComposite);  // a shafts-only frame
+    Check(rec.finding_count() == 0, "the shafts alone can composite at the colour copy");
+    rec.End(4);
   }
   // GB-I3: the arms of the cost run in the census: the off arm's frame has no capture and no reflections, the high arm's has both after the light pass
   {
@@ -556,7 +562,7 @@ void CheckRecorder() {
   }
   {
     fo::Recorder rec(false);
-    rec.Note(Step::kVolumeComposite);
+    rec.Note(Step::kAtmosphereComposite);
     rec.Note(Step::kGBufferPublish);
     bool seen = false;
     for (size_t i = 0; i < rec.finding_count(); ++i) seen = seen || (rec.finding(i).problem == fo::Recorder::Problem::kOutOfOrder && rec.finding(i).step == Step::kGBufferPublish);
@@ -627,8 +633,8 @@ std::string StepEnumName(Step step) {
   // the enumerator as scene.cpp writes it: frame_order::Step::kX, found by the table's own name list
   static const char* const kNames[] = {"kBeginLocalLights", "kBeginSsr", "kBeginGiField", "kBeginGiApply", "kBeginTemporal", "kBeginCarRefl", "kBeginScreen", "kBeginAo", "kBeginGBuffer", "kBeginLights", "kDrawSidecar", "kDrawHeadlight", "kDrawMirrorView",
                                        "kGBufferPublish", "kCarSunMap", "kCarStructures", "kShadowReplay", "kLightMaps", "kGiField", "kAo", "kAoDepth", "kAoNormals", "kColourPre", "kCarRtAo",
-                                       "kRtAoTrace", "kRtAoFilter", "kAoVisibility", "kRtAoCompose", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kVirtualBounce", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory",
-                                       "kGBufferView", "kScreenView", "kVolumeComposite", "kShaftsComposite", "kMirrorStamp", "kMirrorGlass", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
+                                       "kRtAoTrace", "kRtAoFilter", "kAoVisibility", "kRtAoCompose", "kContact", "kAoApply", "kScreenPublish", "kGiApply", "kVirtualBounce", "kLightsBefore", "kLocalLights", "kRtLights", "kLightsAfter", "kShafts", "kVolume", "kAtmosphereMid", "kCarRtCheck", "kColourPost", "kSsr", "kCarHistory", "kCarMirror",
+                                       "kGBufferView", "kScreenView", "kAtmosphereComposite", "kMirrorStamp", "kMirrorGlass", "kRrGuides", "kUpscale", "kRrGuidesView", "kPresentWorld", "kPresentScreen", "kPresentLights", "kPresentRig"};
   static_assert(std::size(kNames) == N, "one name for each step");
   return kNames[size_t(step)];
 }
@@ -761,7 +767,7 @@ void CheckSources(const std::string& gpu) {
   // the end-of-scene composites stand above the trigger's calls: the same function, an earlier text, a later resolve
   {
     const size_t execute = At(scene, "resolve_->Execute(record, list, float_scene");
-    const size_t composite = pos[PosOf(Step::kShaftsComposite)];
+    const size_t composite = pos[PosOf(Step::kAtmosphereComposite)];
     const size_t first_trigger = pos[PosOf(Step::kGBufferPublish)];
     Check(execute != std::string::npos && composite < execute && execute < first_trigger, "the composites are called before the resolve's copy runs, the trigger's passes after it");
   }

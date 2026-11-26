@@ -146,22 +146,12 @@ void CheckUnknown() {
 }
 
 void CheckSteps() {
-  // The class chooses the ray quality: Mid 32, High 64 (Low 32: only where the player turned a strength on by hand).
-  CheckNum(Steps(GpuClass::kLow, 0), 64, "steps on Low");
-  CheckNum(Steps(GpuClass::kMid, 0), 64, "steps on Mid");
-  CheckNum(Steps(GpuClass::kHigh, 0), 64, "steps on High");
-  CheckNum(mcla::gpu::gpu_class::SunShaftSteps(GpuClass::kMid), 64, "gpu_class SunShaftSteps(Mid)");
-  CheckNum(mcla::gpu::gpu_class::SunShaftSteps(GpuClass::kHigh), 64, "gpu_class SunShaftSteps(High)");
-  // The debug cvar's override: any count between 8 and 128, a negative one is "by the class".
-  for (int k = 0; k < 3; ++k) {
-    const std::string at = std::string("forced steps on ") + kClassNames[k];
-    CheckNum(Steps(kClasses[k], 48), 48, at + ": 48");
-    CheckNum(Steps(kClasses[k], 8), 8, at + ": 8");
-    CheckNum(Steps(kClasses[k], 128), 128, at + ": 128");
-    CheckNum(Steps(kClasses[k], 1), kMinSteps, at + ": 1 is held to the least");
-    CheckNum(Steps(kClasses[k], 4000), kMaxSteps, at + ": 4000 is held to the most");
-    CheckNum(Steps(kClasses[k], -5), mcla::gpu::gpu_class::SunShaftSteps(kClasses[k]), at + ": a negative count is by the class");
-  }
+  CheckNum(LegacySteps(0), 0, "zero uses the iterated blur");
+  CheckNum(LegacySteps(-5), 0, "negative uses the iterated blur");
+  CheckNum(LegacySteps(32), 32, "old 32-tap arm");
+  CheckNum(LegacySteps(64), 64, "old 64-tap arm");
+  CheckNum(LegacySteps(1), kMinSteps, "clamp to smallest legacy budget");
+  CheckNum(LegacySteps(4000), kMaxSteps, "clamp to largest legacy budget");
 }
 
 }  // namespace

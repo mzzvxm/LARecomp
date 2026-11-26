@@ -11,8 +11,8 @@
 // WHERE (the frame, see AO-DESIGN.md 2.1 and GFX-UPGRADES-DESIGN.md 6B.1): two points of the main view.
 //   1. the game's mid-scene depth copy (phase 0x02000000, into 078B0000: the ambient occlusion's
 //      point, ao.h): every opaque draw is in the colour target, the fog, particles and the post chain
-//      are not. Here the sky's brightness is taken from the colour and the depth (one image of half the
-//      picture's size, capped at a 960x540 box: shafts_image.h; hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here. This
+//      are not. Here the sky's brightness is taken from the colour and the depth (one image at a quarter of the
+//      picture's size, capped at a 480x270 box at 16:9: shafts_image.h; hlsl/shafts_sky_ps.hlsl). The depth of the main view is complete here and is read here. This
 //      point is in every frame of the play view whatever the hour, the weather, the render scale or
 //      the upscaler (the main view's depth is copied there in all of them), and whether the sun gives
 //      shafts is decided by the sun alone (below): a noon, a night or a rain takes no sky and says
@@ -34,14 +34,11 @@
 // when it comes back. mcla_gpu_sun_shafts_early forces the first point (to compare the two).
 //
 // WHAT: per frame, when it is on and the sun is where shafts show (below):
-//   sky     the image (half the picture, at most the 960x540 box: shafts_image.h) of max(luma(colour) -
-//           threshold, 0) where the depth is the far plane
-//   blur    each texel marches (32 steps on the Mid class, 64 on High: gpu_class.h SunShaftSteps) toward the
-//           sun's image position, adding up the sky image with a decay; rays blocked by anything that is
-//           not sky stay dark
-//   add     the blurred image times the sun's colour times the strength (the level's multiplier, below),
-//           added to the scene colour
-//           (ONE, ONE on every sample of the multisampled target, the alpha untouched)
+//   sky     the quarter-resolution image of max(luma(colour) - threshold, 0)
+//           where the depth is the far plane
+//   blur    two eight-tap radial passes combining the exponentially weighted sky along the ray
+//   add     the blurred image times the sun's colour and the selected strength, combined with the
+//           volume composite whenever they share a target and anchor
 // Nothing is recorded, and nothing costs, in a frame where the sun gives no shafts.
 //
 // THE SUN: the game has two (shafts_sun.h). The light's direction and colour are the game's own constants
@@ -78,8 +75,8 @@
 // x1 to x5 of the built-in strength, off being the game's own picture; the old low and high are read as
 // default; live; the pause menu's SUN SHAFTS row; `auto` is gpu_class.h's: DEFAULT on Mid and High, OFF on
 // Low; shafts_level.h has the rule) and the tuning cvars _intensity (a fine multiplier on top of the level),
-// _steps (the ray steps, which the class chooses), _density, _threshold, _sky_depth, _view (debug views),
-// _early, _cap (false: the images are half the picture's size at any size, as before the cap; true by default)
+// _steps (positive values select the legacy march for comparison), _density, _threshold, _sky_depth, _view,
+// _early, _cap (false: work at the full fraction of the picture at any size; true by default)
 // and _census, all debug-only.
 //
 // Threading: render thread only; Initialize and Shutdown on the lifecycle thread. The pipelines are
@@ -96,6 +93,7 @@
 
 #include <plume_render_interface.h>
 
+#include "atmosphere.h"
 #include "constants.h"
 #include "edram.h"
 #include "host_passes.h"
@@ -137,7 +135,7 @@ class SunShafts {
   void Shutdown();
 
   // The Scene opened a frame's first list: reads the settings.
-  void BeginFrame(gbuffer::PauseFxView pause_fx);
+  void BeginFrame(gbuffer::PauseFxView menu_view);
   // True while the draw hooks have anything to do.
   bool wants_draws() const { return level_ != Level::kOff; }
 
@@ -149,8 +147,12 @@ class SunShafts {
   void OnAnchor(const ConstantBanks::Banks& banks);
   // A resolve, BEFORE ResolveCache::Execute makes its copy, with `list` the frame's open list
   // outside any render pass: the first copy of the main colour after the first point is the second
-  // point (shafts_anchor.h). True when passes were recorded (the caller's list state is gone).
+  // point (shafts_anchor.h). True when the pending shafts should composite at this copy.
   bool BeforeResolve(const ResolveRecord& record, plume::RenderCommandList* list);
+  bool AtMidScene() const { return pending_.valid && anchor_ == shafts_anchor::Anchor::kMidScene; }
+  const HostImage* PrepareComposite(plume::RenderCommandList* list);
+  bool MergeInput(const HostImage& shine, AtmosphereShafts& out) const;
+  bool Composite(plume::RenderCommandList* list, const HostImage& shine, bool merged);
   // A resolve, after Execute: the mid-scene depth copy is the first point. `upscaler_running`: a
   // temporal upscaler works on this frame (the noise then shifts every frame, which it averages).
   bool OnResolve(const ResolveRecord& record, const ResolveCache::Summary& summary,
@@ -186,6 +188,8 @@ class SunShafts {
     kPassBlur,
     kPassAdd,
     kPassTemporal,  // NOISE-RESOLVE: the blurred image averaged over frames while no temporal upscaler runs
+    kPassLegacyBlur,
+    kPassBlurAccumulate,
     kPassCount,
   };
   // The pipelines: the sky pass per kind of planes (plain or multisampled), the blur, and the add
@@ -195,7 +199,9 @@ class SunShafts {
     kVSkyMs = 1,
     kVBlur = 2,
     kVTemporal = 3,
-    kVAddBase = 4,  // + 4 * debug + log2(samples)
+    kVLegacyBlur = 4,
+    kVBlurAccumulate = 5,
+    kVAddBase = 6,  // + 4 * debug + log2(samples)
     kVariantCount = kVAddBase + 8,
   };
   static uint32_t AddVariant(bool debug, uint32_t host_samples);
@@ -221,10 +227,9 @@ class SunShafts {
     float sun_uv[2] = {};
     bool sun_from_sky = false;     // the sun's place came from the sky's constant (else the light's)
     float tint[3] = {};            // the light's colour times its strength
-    uint32_t steps = 0;
+    uint32_t legacy_steps = 0;
     Level level = Level::kOff;     // the strength it was planned at
     float density = 0.9f;
-    float decay = 0.96f;
     float noise_shift = 0.0f;
     bool history = false;          // NOISE-RESOLVE: no temporal upscaler averages the frames, so the noise moves every frame and the blurred image is averaged over frames (RecordTemporal)
     bool history_gap = false;      // NOISE-FOLLOW: it would be, but a temporal upscaler runs this frame: the history's images that are held stay (noise_resolve.h HistoryLifetime)
@@ -296,7 +301,6 @@ class SunShafts {
   // --- the passes (shafts.cpp) ---
   bool RecordSky(const ResolveCache::Summary& summary, plume::RenderCommandList* list,
                  const Pending& plan);
-  bool RecordShafts(plume::RenderCommandList* list, const Pending& plan);
   // `shine` is the image the add pass reads: the blurred one, or its average over frames (RecordTemporal).
   bool RecordAdd(plume::RenderCommandList* list, EdramTargets::Target& colour,
                  const Pending& plan, const HostImage& shine);
@@ -364,7 +368,7 @@ class SunShafts {
   // The camera: the previous frame's (the lens and the view of the sun's position), and whether the
   // vertex constants have been shown to hold a frame's own view (ao.h).
   temporal::Camera previous_;
-  gbuffer::PauseFxView pause_fx_ = gbuffer::PauseFxView::kNone;
+  gbuffer::PauseFxView menu_view_ = gbuffer::PauseFxView::kNone;
   bool have_previous_ = false;
   bool previous_pause_ = false;  // ... and it came from a pause/map view's frame (4x samples)
   uint64_t previous_frame_ = 0;
@@ -410,7 +414,8 @@ class SunShafts {
   bool listed_ = false;  // the pipelines are with the host precache (at the start, or since the switch)
   bool built_ = false;   // and all of them are made (HoldUntilBuilt asks no more)
   HostImage sky_;    // R16_FLOAT, half the picture (capped, shafts_image.h): the sky's brightness
-  HostImage shaft_;  // R16_FLOAT, the same size: the blurred image
+  HostImage shaft_;  // R16_FLOAT, the blurred image
+  HostImage blur_segment_;
   // NOISE-RESOLVE (noise_resolve.h): the blurred image's history while no temporal upscaler runs, two R16_FLOAT images of the same size that take turns (the add pass reads the one written last), and what
   // the next frame needs to know of it: that it exists, which frame wrote it, where the sun was, how long a history it holds.
   HostImage hist_[2];

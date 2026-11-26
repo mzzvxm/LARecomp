@@ -181,6 +181,13 @@ void CheckTable() {
   table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1110));
   Check(out.size() == vl::kMaxRecords, "the list is cut at the table's capacity");
   Check(table.published() == 3, "three lists were published");
+  bool garage = false;
+  table.Publish(three.data(), 3, t0 + std::chrono::milliseconds(1200), true);
+  Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1210), &garage) &&
+            garage && !stale && out.size() == 3, "the list and garage tag arrive in the same snapshot");
+  table.Publish(nullptr, 0, t0 + std::chrono::milliseconds(1300));
+  Check(table.Latest(&out, &seen, &stale, std::chrono::milliseconds(500), t0 + std::chrono::milliseconds(1310), &garage) &&
+            !garage && !stale && out.empty(), "the next city snapshot replaces the garage tag even with no lamps");
   // the hook's switch
   vl::SetWanted(false);
   Check(!vl::Wanted(), "the hook is off until somebody wants it");

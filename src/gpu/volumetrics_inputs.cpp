@@ -46,6 +46,7 @@ constexpr uint64_t kHookWarnFills = 600;
 }  // namespace
 
 void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* out) {
+  if (!out) return;
   ++fills_;
   const int inputs = larecomp::settings::mcla_gpu_vol_inputs.Get();
   const int test = larecomp::settings::mcla_gpu_vol_test.Get();
@@ -59,7 +60,8 @@ void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* 
   const uint32_t limit = limit_setting > 0 ? uint32_t(limit_setting) : vol::kMaxLamps;
   // LU-4b: from the light manager's frame (mcla_gpu_light_frame bit 2) or from this producer's own code. The manager answers false when it is off or its frame is not open.
   const bool from_frame = light_manager_ != nullptr && light_manager_->Serving(light_project::kFlipVolume);
-  if (from_frame != from_frame_) {
+  if (from_frame != from_frame_ || garage_ != frame.garage) {
+    garage_ = frame.garage;
     // A live switch: the producer that was not running has stale picks (or none): it starts afresh, its lamps at full weight.
     from_frame_ = from_frame;
     picker_.Reset();
@@ -73,7 +75,9 @@ void VolumetricsInputs::Fill(const vol::VolFrameContext& frame, vol::VolInputs* 
       legacy = *out;
       FillLegacy(frame, &legacy, lamps_on, heads_on, limit);
     }
-    light_manager_->FillVolumeInputs(frame, limit, lamps_on, heads_on, out, proof ? &list_ : nullptr);
+    const std::vector<vl::GameLamp> empty;
+    const auto* proof_list = list_garage_ == frame.garage ? &list_ : &empty;
+    light_manager_->FillVolumeInputs(frame, limit, lamps_on, heads_on, out, proof ? proof_list : nullptr);
     if (proof) {
       light_manager_->CheckVolumeBytes(*out, legacy);
     }
@@ -111,7 +115,7 @@ void VolumetricsInputs::FillLegacy(const vol::VolFrameContext& frame, vol::VolIn
 void VolumetricsInputs::FillLamps(const vol::VolFrameContext& frame, vol::VolInputs* out, uint32_t limit) {
   // The newest list: a new copy replaces ours, none that is recent drops what we hold (the hook stopped: the lamps are gone, not frozen).
   bool stale = false;
-  vl::Global().Latest(&list_, &list_seq_, &stale, kMaxListAge);
+  vl::Global().Latest(&list_, &list_seq_, &stale, kMaxListAge, vl::Table::Clock::now(), &list_garage_);
   if (stale) {
     list_.clear();
     list_seq_ = 0;
@@ -153,7 +157,8 @@ void VolumetricsInputs::FillLamps(const vol::VolFrameContext& frame, vol::VolInp
   params.near_m = frame.grid.near_m;
   params.far_m = frame.grid.far_m;
   params.reset = reset;
-  picker_.Update(list_, frame.camera, params, &picked_);
+  const std::vector<vl::GameLamp> empty;
+  picker_.Update(list_garage_ == frame.garage ? list_ : empty, frame.camera, params, &picked_);
   uint32_t n = have;
   for (uint32_t i = 0; i < picked_.count && n < vol::kMaxLamps; ++i) {
     out->lamps[n++] = picked_.lamps[i];

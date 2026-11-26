@@ -69,6 +69,12 @@ constexpr Size ImageSize(uint32_t render_width, uint32_t render_height, bool cap
   return {uint32_t((uint64_t(half.width) * kCapHeight + half.height - 1) / half.height), kCapHeight};
 }
 
+// The iterated blur and its sky mask are half the old working resolution per axis.
+constexpr Size IteratedSize(uint32_t render_width, uint32_t render_height, bool cap) {
+  const Size half = ImageSize(render_width, render_height, cap);
+  return HalfSize(half.width, half.height);
+}
+
 // How many picture pixels one texel of the sky image spans along an axis: exactly 2 for today's images (the
 // old pass), render / image when the cap made them smaller.
 constexpr float Footprint(uint32_t render, uint32_t image) {

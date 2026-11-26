@@ -237,6 +237,7 @@ class Scene {
   void PrefetchTextures(uint64_t sequence, const uint8_t* payload);
   void OnClear(const ClearRecord& record, plume::RenderCommandList* list);
   void OnResolve(const ResolveRecord& record, plume::RenderCommandList* list);
+  bool CompositeAtmosphere(plume::RenderCommandList* list, bool volume, bool shafts);
   void OnTilingBegin(const TilingBeginRecord& record, plume::RenderCommandList* list);
   void OnTilingEnd(const TilingEndRecord& record, plume::RenderCommandList* list);
   // The scene's image is composed: what the frame draws from here

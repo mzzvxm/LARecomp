@@ -233,6 +233,8 @@ class LightManager {
 
   // the game's lamp list, as the hook table gave the newest copy (the volume has its own copy and its own sequence number)
   std::vector<vol_lamps::GameLamp> list_;
+  bool list_garage_ = false;
+  bool volume_garage_ = false;
   uint64_t list_seq_ = 0;
 
   // the cars' lights (LU-7): the source polls the hook's table once a frame; `car_frames_` is the renderer's cars (none yet); `point_lights_` the scratch of the police point lights the lamps make

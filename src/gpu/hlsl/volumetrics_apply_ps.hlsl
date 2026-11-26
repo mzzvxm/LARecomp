@@ -24,6 +24,13 @@
 #define APPLY_MS 0
 #endif
 
+#ifndef ATM_SHAFTS
+#define ATM_SHAFTS 0
+#endif
+#if ATM_SHAFTS
+#include "shafts_apply.hlsli"
+#endif
+
 struct VolApplyPush {
   // x the main depth plane's bindless slot, y the accumulated volume's slot, z the grid packed as nx | ny << 8 | nz << 16 | tiles_x << 24,
   // w bits 0 to 7 the depth's guest sample (the host sample that is the guest's sample 0), bit 8 every sample's depth is used, bits 9 and 10 the debug view
@@ -35,6 +42,10 @@ struct VolApplyPush {
   float4 depth;
   // the projection's depth rows P22, P23, P32, P33 (ao.cpp: lin)
   float4 lin;
+#if ATM_SHAFTS
+  float3 shafts_tint;
+  uint shafts_slot;
+#endif
 };
 
 // The soft limit (volumetrics_rules.h SoftLimit / SoftLimitColour is the twin): the largest channel is kept up to the knee (half the cap), then rolls off
@@ -80,6 +91,8 @@ float ViewDepthOf(float stored) {
 
 // The volume at the view depth `t` and the picture position `uv`: (the light, soft limited; the transmittance the picture is to keep).
 float4 LookUp(float t, float2 uv, uint nx, uint ny, uint nz, uint tiles_x) {
+  const bool shortened = g_push.depth.x > 0.5f;
+  if (shortened && t <= g_push.depth.x) return float4(0.0, 0.0, 0.0, 1.0);
   const uint tiles_y = nz / tiles_x;
   const float s = float(nz) * log(max(t, g_push.depth.x) / g_push.depth.x) * g_push.depth.z - 0.5;
   const float s_floor = floor(s);
@@ -93,7 +106,9 @@ float4 LookUp(float t, float2 uv, uint nx, uint ny, uint nz, uint tiles_x) {
   const Texture2D<float4> volume = g_textures[g_push.slots.y];
   const float4 a = volume.SampleLevel(g_samplers[kSamplerLinearClamp], uv0, 0);
   const float4 b = volume.SampleLevel(g_samplers[kSamplerLinearClamp], uv1, 0);
-  const float4 v = lerp(a, b, saturate(blend));
+  const float4 v = shortened && s < 0.0f
+      ? lerp(float4(0.0, 0.0, 0.0, 1.0), a, saturate(1.0f + 2.0f * s))
+      : lerp(a, b, saturate(blend));
   const float3 light = SoftLimit(max(v.rgb, 0.0), g_push.sizes.w);
   const float transmittance = lerp(1.0, saturate(v.a), g_push.sizes.z);
   return float4(light, transmittance);
@@ -143,5 +158,8 @@ float4 main(float4 position : SV_Position) : SV_Target {
   if (view != 0u) {
     return float4(result.rgb * (view == 2u ? kApplyViewGain : (view == 3u ? kApplyViewGainHigh : 1.0)), 0.0);
   }
+#if ATM_SHAFTS
+  result.rgb += SampleShaftLight(uv, g_push.shafts_slot, g_push.shafts_tint);
+#endif
   return result;
 }
