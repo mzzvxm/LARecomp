@@ -93,9 +93,12 @@ std::string StampText(Parts& parts, const Pipelines::SetupList& list,
   const plume::RenderDeviceDescription& d = parts.device.description();
   std::string text;
   const auto line = [&text](const std::string& s) { text += s + "\n"; };
+  // Each setting-dependent line names the saved settings that feed its resolved value.
+  // InstallManifest.cmake exports these names for the launcher's rebuild check.
+#define LARECOMP_PIPELINE_KEY_LINE(field, settings, value) line(#field "=" + std::string(value))
   line(kStampMagic);
-  line(std::format("backend={}", BackendName()));
-  line("adapter=" + OneLine(d.name));
+  LARECOMP_PIPELINE_KEY_LINE(backend, (graphics_backend), BackendName());
+  LARECOMP_PIPELINE_KEY_LINE(adapter, (mcla_gpu_adapter), OneLine(d.name));
   line(std::format("vendor={}", static_cast<int>(d.vendor)));
   line(std::format("driver={:#x}", d.driverVersion));
   line("exe=" + FileIdentity(rex::platform::GetExecutablePath()));
@@ -103,8 +106,9 @@ std::string StampText(Parts& parts, const Pipelines::SetupList& list,
   line("variant_pack=" + (parts.shaders.has_variants() ? FileIdentity(parts.shaders.variants_path())
                                                        : std::string("none")));
   line(std::format("key_size={}", sizeof(PipelineKey)));
-  line("samples=" + JoinCounts(samples));
+  LARECOMP_PIPELINE_KEY_LINE(samples, (mcla_gpu_msaa, mcla_gpu_upscaler), JoinCounts(samples));
   line(std::format("list={}+{}:{:016x}", list.records, list.copies, list.hash));
+#undef LARECOMP_PIPELINE_KEY_LINE
   return text;
 }
 

@@ -94,6 +94,32 @@ function(larecomp_manifest_pack_outputs out source folder)
     set(${out} "${outputs}" PARENT_SCOPE)
 endfunction()
 
+function(larecomp_manifest_pipeline_key_settings out)
+    set(source "${CMAKE_CURRENT_SOURCE_DIR}/src/gpu/pipeline_prebuild.cpp")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${source}")
+    file(STRINGS "${source}" key_lines REGEX "^[ \t]+LARECOMP_PIPELINE_KEY_LINE\\(")
+    if(NOT key_lines)
+        message(FATAL_ERROR "Cannot read pipeline key settings from ${source}")
+    endif()
+    set(settings "")
+    foreach(line IN LISTS key_lines)
+        if(NOT line MATCHES "^[ \t]+LARECOMP_PIPELINE_KEY_LINE\\([a-z_]+, \\(([a-z0-9_, ]+)\\), ")
+            message(FATAL_ERROR "Cannot read pipeline key settings from: ${line}")
+        endif()
+        string(REPLACE "," ";" names "${CMAKE_MATCH_1}")
+        foreach(name IN LISTS names)
+            string(STRIP "${name}" name)
+            if(NOT name MATCHES "^[a-z][a-z0-9_]*$")
+                message(FATAL_ERROR "Invalid pipeline key setting: ${name}")
+            endif()
+            list(APPEND settings "${name}")
+        endforeach()
+    endforeach()
+    list(REMOVE_DUPLICATES settings)
+    larecomp_json_strings(json ${settings})
+    set(${out} "${json}" PARENT_SCOPE)
+endfunction()
+
 function(larecomp_manifest_commit out)
     find_package(Git QUIET)
     if(Git_FOUND)
@@ -119,14 +145,14 @@ function(larecomp_manifest_commit out)
     set(${out} "${commit}" PARENT_SCOPE)
 endfunction()
 
-function(larecomp_add_manifest_action id prefix timeout when)
-    cmake_parse_arguments(PARSE_ARGV 4 action "" "FORCE_FLAG" "AFTER;ARGS;OUTPUTS;PRODUCES")
+function(larecomp_add_manifest_action id prefix timeout disk_mib when)
+    cmake_parse_arguments(PARSE_ARGV 5 action "" "FORCE_FLAG" "AFTER;ARGS;OUTPUTS;PRODUCES")
     larecomp_json_strings(after ${action_AFTER})
     larecomp_json_strings(args ${action_ARGS})
     larecomp_json_strings(outputs ${action_OUTPUTS})
     larecomp_json_string(condition "${when}")
     set(entry "{ \"id\": \"${id}\", \"flag\": \"--${id}\", \"args\": ${args}, \"after\": ${after}, \"when\": ${condition}, \"outputs\": ${outputs}")
-    string(APPEND entry ", \"stdout\": { \"prefix\": \"@${prefix}|\", \"grammar\": 1 }, \"exit\": { \"ok\": [0], \"fail\": [1] }, \"never_fails_setup\": true, \"timeout_min\": ${timeout}")
+    string(APPEND entry ", \"stdout\": { \"prefix\": \"@${prefix}|\", \"grammar\": 1 }, \"exit\": { \"ok\": [0], \"fail\": [1] }, \"never_fails_setup\": true, \"timeout_min\": ${timeout}, \"estimated_disk_mib\": ${disk_mib}")
     if(action_FORCE_FLAG)
         string(APPEND entry ", \"force_flag\": \"${action_FORCE_FLAG}\"")
     endif()
@@ -213,14 +239,14 @@ function(larecomp_generate_install_manifest target)
     get_target_property(settings_ui ${target} LARECOMP_EXPORTS_SETTINGS_UI)
     if(settings_ui)
         string(JSON contracts SET "${contracts}" settings_ui 1)
-        larecomp_add_manifest_action(dump_settings_ui settingsui 1 true
+        larecomp_add_manifest_action(dump_settings_ui settingsui 1 1 true
             OUTPUTS "{game_folder}/settings-ui.json" PRODUCES settings-ui)
     endif()
     set(city_after build_shader_packs)
     get_target_property(machine ${target} LARECOMP_PROBES_MACHINE)
     if(machine)
         string(JSON contracts SET "${contracts}" machine 1)
-        larecomp_add_manifest_action(probe_machine machine 1 true
+        larecomp_add_manifest_action(probe_machine machine 1 1 true
             OUTPUTS "{game_folder}/machine.json" PRODUCES machine)
         list(APPEND city_after probe_machine)
     endif()
@@ -238,16 +264,24 @@ function(larecomp_generate_install_manifest target)
     larecomp_manifest_literal(pipeline_file src/gpu/pipelines.cpp [=[^  cache_path_ = .*std::format\("([^"]+)", backend\)]=])
     string(REPLACE "{}" "{api}" pipeline_file "${pipeline_file}")
     cmake_path(REPLACE_EXTENSION pipeline_file LAST_ONLY ".stamp" OUTPUT_VARIABLE pipeline_stamp)
-    larecomp_add_manifest_action(build_shader_packs shaderpack 25 "${gpu_when}"
+    larecomp_manifest_pipeline_key_settings(pipeline_key_settings)
+
+    # Keep the action timeouts generous for slower machines. Recorded shader packs took up to
+    # 249 s and occupied 135 MiB with variants (pack-integ2.log). Allow for temporary output.
+    larecomp_add_manifest_action(build_shader_packs shaderpack 25 260 "${gpu_when}"
         ARGS "${game_root}" FORCE_FLAG --build_shader_packs_force OUTPUTS ${shader_outputs})
-    larecomp_add_manifest_action(precache_pipelines pipelines 20 "${gpu_when}"
+    # The recorded D3D12 prebuild took 3 s (lb8-stuck1-build6-install.log). Budget for the 128 MiB
+    # Vulkan cache limit plus the game-owned pipeline list and stamp. Drivers manage their own caches.
+    larecomp_add_manifest_action(precache_pipelines pipelines 20 130 "${gpu_when}"
         ARGS "${game_root}" FORCE_FLAG --precache_pipelines_force AFTER build_shader_packs
         OUTPUTS "{pipeline_cache_dir}/${pipeline_file}" "{pipeline_cache_dir}/${pipeline_stamp}")
-    larecomp_add_manifest_action(build_city_pack citypack 25 "${rt_when}"
+    # The city pack took 133 s and used 238 MiB (integ2-rtl-night). The hit and texture packs
+    # took 76 s and used 105 + 132 MiB (asan-race-vk-rog). The deep check only reads the packs.
+    larecomp_add_manifest_action(build_city_pack citypack 25 300 "${rt_when}"
         ARGS "${game_root}" FORCE_FLAG --build_city_pack_force AFTER ${city_after} OUTPUTS ${city_outputs})
-    larecomp_add_manifest_action(build_city_hit citypack 25 "${rt_when}"
+    larecomp_add_manifest_action(build_city_hit citypack 25 260 "${rt_when}"
         ARGS "${game_root}" FORCE_FLAG --build_city_hit_force AFTER build_city_pack OUTPUTS ${hit_outputs})
-    larecomp_add_manifest_action(check_city_hit citypack 5 "${rt_when}"
+    larecomp_add_manifest_action(check_city_hit citypack 5 0 "${rt_when}"
         ARGS "${game_root}" --check_city_hit_deep=true AFTER build_city_hit)
 
     larecomp_json_strings(describe_actions ${describe_actions})
@@ -287,6 +321,7 @@ function(larecomp_generate_install_manifest target)
   "actions": [
     @actions@
   ],
+  "pipeline_key_settings": @pipeline_key_settings@,
   "launch": { "game_root": "@game_root@", "debug_menu": "--@debug_menu@=true" },
   "game": {
     "title_id": "@title_id@",
