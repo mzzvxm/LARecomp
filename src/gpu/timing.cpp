@@ -38,14 +38,20 @@ void GpuTiming::Initialize(Device& device) {
     pending_[i] = false;
   }
   available_ = true;
+  device_ = &device;
 }
 
 void GpuTiming::Shutdown() {
   for (uint32_t i = 0; i < kFramesInFlight; ++i) {
     pools_[i].reset();
     pending_[i] = false;
+    city_pools_[i].reset();
+    city_pool_tried_[i] = false;
+    city_pending_[i] = false;
+    city_triangles_[i] = 0;
   }
   available_ = false;
+  device_ = nullptr;
 }
 
 void GpuTiming::Harvest(uint32_t slot) {
@@ -71,6 +77,7 @@ void GpuTiming::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     return;
   }
   Harvest(slot);
+  city_triangles_[slot] = 0;
   list->resetQueryPool(pools_[slot].get(), 0, kTimestamps);
   list->writeTimestamp(pools_[slot].get(), kFrameBegin);
   written_[slot] = 1u << kFrameBegin;
@@ -98,7 +105,38 @@ void GpuTiming::CompleteFrame(plume::RenderCommandList* list, uint32_t slot) {
 void GpuTiming::OnSubmitted(uint32_t slot) {
   if (available_) {
     pending_[slot] = true;
+    city_pending_[slot] = city_triangles_[slot] != 0;
   }
+}
+
+void GpuTiming::BeginCityBuild(plume::RenderCommandList* list, uint32_t slot) {
+  if (!device_ || !list || city_triangles_[slot] != 0) return;
+  if (!city_pool_tried_[slot]) {
+    city_pool_tried_[slot] = true;
+    city_pools_[slot] = device_->CreateQueryPool(2, "city BLAS timestamps");
+  }
+  if (auto* pool = city_pools_[slot].get()) {
+    // CHECK: query reset and both timestamps are outside render passes on D3D12 and Vulkan.
+    list->resetQueryPool(pool, 0, 2);
+    list->writeTimestamp(pool, 0);
+  }
+}
+
+void GpuTiming::EndCityBuild(plume::RenderCommandList* list, uint32_t slot, uint64_t triangles) {
+  if (!list || city_triangles_[slot] != 0 || !city_pools_[slot]) return;
+  list->writeTimestamp(city_pools_[slot].get(), 1);
+  city_triangles_[slot] = triangles;
+}
+
+GpuTiming::CityBuild GpuTiming::ReadCityBuild(uint32_t slot, bool device_lost) {
+  if (!city_pending_[slot]) return {};
+  city_pending_[slot] = false;
+  auto* pool = city_pools_[slot].get();
+  if (device_lost || !pool) return {};
+  pool->queryResults();
+  const uint64_t* timestamps = pool->getResults();
+  if (!timestamps || timestamps[1] <= timestamps[0]) return {};
+  return {timestamps[1] - timestamps[0], city_triangles_[slot]};
 }
 
 std::string GpuTiming::TakeSummary() {

@@ -63,6 +63,7 @@ namespace citypack = larecomp::citypack;
 
 class CityHitScene;
 class Device;
+class GpuTiming;
 class PassTiming;
 class UploadRing;
 
@@ -83,7 +84,7 @@ class CityRtScene {
 
   // `pack_file` is where the pack should be (the shader pack folder's `city` folder, citypack::kPackFileName); it is opened at the first request, so a start without the
   // pack costs nothing. `cls` is the device's class (gpu_class.h): its budgets. False: nothing can be traced (the caller has checked CarRtSupported).
-  bool Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, const std::filesystem::path& pack_file, gpu_class::GpuClass cls);
+  bool Initialize(Device& device, FrameRing& frames, UploadRing& upload, PassTiming& pass_timing, GpuTiming& timing, const std::filesystem::path& pack_file, gpu_class::GpuClass cls);
   // GPU idle and the FrameRing drained.
   void Shutdown();
   bool initialized() const { return device_ != nullptr; }
@@ -149,6 +150,7 @@ class CityRtScene {
   uint64_t HeldBytes() const;
   // The text of the renderer's city census line (Renderer::ReportCityCensus: the structures, then the hit data's pool); empty where there is nothing.
   std::string CensusText() const;
+  void ObserveBuildGpu(uint64_t ns, uint64_t triangles) { build_cost_.Observe(ns, triangles); }
 
  private:
   // One structure.
@@ -213,6 +215,7 @@ class CityRtScene {
   FrameRing* frames_ = nullptr;
   UploadRing* upload_ = nullptr;
   PassTiming* pass_timing_ = nullptr;
+  GpuTiming* timing_ = nullptr;
   CityHitScene* hit_ = nullptr;  // the hit data's pool (SetHitScene), not owned
   uint64_t hit_epoch_ = 0;       // the pool epoch the built structures were made under
   bool hit_bad_data_logged_ = false;
@@ -222,6 +225,7 @@ class CityRtScene {
   // The setting and the frame.
   city_rt::Level level_ = city_rt::Level::kOff;
   city_rt::Budget budget_;
+  city_rt::BuildCost build_cost_;
   uint64_t frame_ = 0;
   uint64_t last_wanted_frame_ = 0;
   uint64_t pack_probe_frame_ = 0;

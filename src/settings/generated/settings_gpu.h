@@ -337,6 +337,8 @@ class GPUSettings final : public rex::SettingOwner {
     "stochastic rule (no hit data, or the texture not loaded yet); the log says every 120 frames how many candidates were decided each way, how many blocked, and the "
     "levels read. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_city_rt_build_budget, false, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
+
   REX_SETTING(f64, mcla_gpu_city_rt_radius, 0.0, "Debug: how far from the camera the city's sectors are kept at full detail in ray tracing structures, in metres, 25 to 1500; 0 "
     "(the default) is the level's and the class's (150 m on a smaller card, 300 m, 600 m at ultra). The far level of detail reaches at least four times as far. Live.",
     rex::kDebugOnly, rex::Range{0.0, 1500.0});
@@ -1334,6 +1336,8 @@ class GPUSettings final : public rex::SettingOwner {
     "inside Scene; their count changes from frame to frame, so multi-pass metrics drop them. "
     "Read when a frame starts.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_pipeline_warm, true, "Move costly pipelines that a draw had to wait for earlier in the next start's pipeline cache. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_pipeline_cache, true, "Keep the pipelines the game asked for across sessions ("
     "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
     "executable on exit, and are read back at start -- the other backend's file too, so what one "
@@ -2173,6 +2177,7 @@ inline auto& mcla_gpu_city_rt_rays = g_gpu.mcla_gpu_city_rt_rays;
 inline auto& mcla_gpu_city_rt_alpha = g_gpu.mcla_gpu_city_rt_alpha;
 inline auto& mcla_gpu_city_rt_alpha_ref = g_gpu.mcla_gpu_city_rt_alpha_ref;
 inline auto& mcla_gpu_city_rt_alpha_view = g_gpu.mcla_gpu_city_rt_alpha_view;
+inline auto& mcla_gpu_city_rt_build_budget = g_gpu.mcla_gpu_city_rt_build_budget;
 inline auto& mcla_gpu_city_rt_radius = g_gpu.mcla_gpu_city_rt_radius;
 inline auto& mcla_gpu_city_rt_range = g_gpu.mcla_gpu_city_rt_range;
 inline auto& mcla_gpu_city_rt_check = g_gpu.mcla_gpu_city_rt_check;
@@ -2377,6 +2382,7 @@ inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
 inline auto& mcla_gpu_perf_markers = g_gpu.mcla_gpu_perf_markers;
 inline auto& mcla_gpu_perf_markers_level = g_gpu.mcla_gpu_perf_markers_level;
+inline auto& mcla_gpu_pipeline_warm = g_gpu.mcla_gpu_pipeline_warm;
 inline auto& mcla_gpu_pipeline_cache = g_gpu.mcla_gpu_pipeline_cache;
 inline auto& mcla_gpu_vulkan_pipeline_cache = g_gpu.mcla_gpu_vulkan_pipeline_cache;
 inline auto& mcla_gpu_present_dither = g_gpu.mcla_gpu_present_dither;

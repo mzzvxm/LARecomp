@@ -71,6 +71,16 @@ class GpuTiming {
   // After FrameRing::Submit executed the list (not after an abandoned one).
   void OnSubmitted(uint32_t slot);
 
+  struct CityBuild {
+    uint64_t ns = 0;
+    uint64_t triangles = 0;
+  };
+  // The separate two-query pool is touched only on frames that build city BLASes.
+  void BeginCityBuild(plume::RenderCommandList* list, uint32_t slot);
+  void EndCityBuild(plume::RenderCommandList* list, uint32_t slot, uint64_t triangles);
+  bool CityBuildPending(uint32_t slot) const { return city_pending_[slot]; }
+  CityBuild ReadCityBuild(uint32_t slot, bool device_lost);
+
   // "GPU 1.23 ms/frame (overlay 0.05 ms) over 3600 frames", then starts a new
   // averaging window.
   std::string TakeSummary();
@@ -82,6 +92,11 @@ class GpuTiming {
   std::unique_ptr<plume::RenderQueryPool> pools_[kFramesInFlight];
   bool pending_[kFramesInFlight] = {};
   uint32_t written_[kFramesInFlight] = {};  // bit per Timestamp of the frame being recorded
+  std::unique_ptr<plume::RenderQueryPool> city_pools_[kFramesInFlight];
+  bool city_pool_tried_[kFramesInFlight] = {};
+  bool city_pending_[kFramesInFlight] = {};
+  uint64_t city_triangles_[kFramesInFlight] = {};
+  Device* device_ = nullptr;
   uint64_t frame_ns_ = 0;
   uint64_t overlay_ns_ = 0;
   uint64_t frames_ = 0;

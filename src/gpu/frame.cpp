@@ -7,6 +7,7 @@
 #include <rex/logging/log_category.h>
 
 #include "device.h"
+#include "hitch.h"
 #include "thread_load.h"
 
 namespace mcla::gpu {
@@ -276,15 +277,26 @@ void FrameRing::WaitIdle() {
 void FrameRing::ReleaseCompleted() {
   // Retirements are appended with a non-decreasing serial, so the completed
   // ones are a prefix.
+  if (retired_.empty() || retired_.front().serial > completed_serial_) {
+    return;
+  }
+  const uint64_t start = cycles::Now();
+  uint64_t count = 0;
   while (!retired_.empty() && retired_.front().serial <= completed_serial_) {
     retired_.pop_front();
+    ++count;
   }
+  hitch::Note(hitch::Event::kRetire, cycles::ToNs(cycles::Now() - start) / 1e6, 0, count);
 }
 
 void FrameRing::ReleaseAll() {
+  if (retired_.empty()) return;
+  const uint64_t start = cycles::Now();
+  const size_t count = retired_.size();
   while (!retired_.empty()) {
     retired_.pop_front();
   }
+  hitch::Note(hitch::Event::kRetire, cycles::ToNs(cycles::Now() - start) / 1e6, 0, count);
 }
 
 }  // namespace mcla::gpu

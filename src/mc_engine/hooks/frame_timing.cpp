@@ -43,6 +43,7 @@
 #include "os/thread_yield.h"
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
+#include "gpu/hitch.h"
 #include "gpu/latency.h"
 #include "gpu/scene_noise.h"
 #endif
@@ -527,6 +528,9 @@ void MCLAFrameStart() {
 }
 
 void MCLAFrameDelta(PPCRegister& r8) {
+#if defined(LARECOMP_HAS_GPU)
+    const uint64_t raw_step = r8.u64;
+#endif
     // frame_pacing: the game clock steps by the interval its frame will be on
     // screen for (frame_pacing.cpp), not by the time since the last read.
     uint64_t planned = 0;
@@ -562,6 +566,14 @@ void MCLAFrameDelta(PPCRegister& r8) {
         cap = g_step_cap_ticks.load(std::memory_order_relaxed);
         if (cap == 0) cap = static_cast<uint64_t>(kStepCapCeilingMs * GuestTicksPerMs());
     }
+#if defined(LARECOMP_HAS_GPU)
+    // CHECK: the game-loop timer and guest Swap should publish this on the same thread.
+    if (game_thread) {
+        const double ticks_per_ms = GuestTicksPerMs();
+        mcla::gpu::hitch::NoteGameStep(double(raw_step) / ticks_per_ms,
+                                     fixed_step == 0 && r8.u64 > cap ? double(cap) / ticks_per_ms : 0.0);
+    }
+#endif
     if (fixed_step != 0) {
         // The step cap and frame pacing's plan are out of the way: this update is exactly this long.
         r8.u64 = fixed_step;

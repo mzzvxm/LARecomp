@@ -26,6 +26,7 @@
 #include "constants.h"
 #include "device.h"
 #include "frame.h"
+#include "hitch.h"
 #include "mc_engine/core/texture_dump.h"
 #include "resolve.h"
 #include "resolve_memory.h"
@@ -1149,6 +1150,7 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
     return true;
   }
   const auto t0 = Clock::now();
+  const uint64_t prior_bytes = stats_.upload_bytes;
   const TextureKey& key = e.key;
   const uint32_t host_block_bytes = plume::RenderFormatSize(e.host_format);
   const uint32_t host_block_width = plume::RenderFormatBlockWidth(e.host_format);
@@ -1272,7 +1274,9 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
                  plume::RenderTextureBarrier(e.texture.get(), plume::RenderTextureLayout::SHADER_READ));
   e.layout = plume::RenderTextureLayout::SHADER_READ;
   ++stats_.uploads;
-  stats_.decode_ns += NsSince(t0);
+  const uint64_t decode_ns = NsSince(t0);
+  stats_.decode_ns += decode_ns;
+  hitch::Note(hitch::Event::kTexture, double(decode_ns) / 1e6, stats_.upload_bytes - prior_bytes);
   return ok;
 }
 
@@ -1318,7 +1322,11 @@ TextureCache::Replacement* TextureCache::ReplacementFor(uint64_t hash,
   };
   ReplacementImage image;
   std::string why;
-  if (!TextureMods::LoadDds(*path, &image, &why)) {
+  const auto read_dds = [&] {
+    const hitch::Scope file(hitch::Event::kIo);
+    return TextureMods::LoadDds(*path, &image, &why);
+  };
+  if (!read_dds()) {
     return refuse(why);
   }
   auto r = std::make_unique<Replacement>();

@@ -108,6 +108,15 @@ struct GuestFrameStats {
   uint32_t fences = 0;              // kFence records
 };
 
+struct GuestHitchTiming {
+  uint64_t swap_cycles = 0;
+  uint64_t previous_present_wait_cycles = 0;
+  uint64_t fence_wait_ns = 0;
+  uint64_t stream_wait_cycles = 0;
+  double step_ms = 0.0;
+  double capped_ms = 0.0;
+};
+
 struct PresentRecord {
   uint32_t device = 0;
   uint32_t front_buffer = 0;  // D3DDevice_Swap r4: the D3DTexture EndFrame resolved RT0 into
@@ -117,6 +126,7 @@ struct PresentRecord {
   int64_t target_qpc = 0;
   // Capture mode: gpu.h SetNextPresentTag's tag for this frame (mc_engine/cinematic/capture_core.h), 0 = none.
   uint64_t tag = 0;
+  GuestHitchTiming hitch;
   GuestFrameStats stats;
   uint8_t front_buffer_header[guest::kTextureHeaderBytes] = {};
   uint8_t gamma_ramp[guest::kGammaRampBytes] = {};  // dev+15004, raw big-endian
