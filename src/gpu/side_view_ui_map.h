@@ -27,9 +27,6 @@ struct Identity {
   uint32_t height;
 };
 inline constexpr Identity kIdentities[] = {
-    {false, 224, 160, 4, 128, 128},  // colour, with the depth below
-    {false, 288, 160, 4, 128, 128},  // the same pass's second colour at night
-    {true, 0, 160, 4, 128, 128},
     {false, 224, 280, 4, 256, 256},
     {true, 0, 280, 4, 256, 256},
     {false, 168, 240, 4, 220, 220},  // minimap: colour only

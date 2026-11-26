@@ -13,9 +13,10 @@
 //   - the road reflection: a 256x256 image of the whole screen drawn with mirrored geometry, which
 //     every reflective city material reads with its screen position (roads, windows, water);
 //
-// and the HUD's and the menus' own render-to-texture views (the minimap's 220x220 picture and the 128x128 and 256x256 ones beside it, and the 960x640 page the pause
+// and the HUD's and the menus' own render-to-texture views (the minimap's 220x220 picture and the 256x256 surface it shares EDRAM with, and the 960x640 page the pause
 // menu, the garage and the GPS map are drawn into, side_view_ui_map.cpp), the class that follows the render scale instead of a setting's level
-// (SideViewRule::follows_output), from 1.25x of the console's picture.
+// (SideViewRule::follows_output), from 1.25x of the console's picture. The 128x128 foliage
+// impostor bakes have their own class so they can stay at the guest's size.
 //
 // None of them is "an image of the screen" (their sizes are not the screen's halvings), so at the
 // render scale they stay at the guest's size, and a product made at another scale than its reader
@@ -82,6 +83,7 @@ enum class SideView : uint8_t {
   kEnv,         // the environment map (mips included) side_view_env.cpp
   kReflection,  // the road reflection                 side_view_reflection.cpp
   kUiMap,       // the HUD's small views: minimap...   side_view_ui_map.cpp (follows the render scale)
+  kFoliageImpostor,
   kCount,
 };
 inline constexpr size_t kSideViewCount = size_t(SideView::kCount) - 1;
@@ -89,7 +91,8 @@ inline constexpr size_t SideIndex(SideView view) {
   return size_t(view) - 1;
 }
 // Every class, in the order the loops of the registry and of EdramTargets visit them.
-inline constexpr std::array<SideView, kSideViewCount> kAllSideViews = {SideView::kShadow, SideView::kEnv, SideView::kReflection, SideView::kUiMap};
+inline constexpr std::array<SideView, kSideViewCount> kAllSideViews = {
+    SideView::kShadow, SideView::kEnv, SideView::kReflection, SideView::kUiMap, SideView::kFoliageImpostor};
 
 // The scale each class is made at. 1x each (the guest's size) until a setting says otherwise.
 struct SideScales {
@@ -170,6 +173,7 @@ extern const SideViewRule kShadowRule;
 extern const SideViewRule kEnvRule;
 extern const SideViewRule kReflectionRule;
 extern const SideViewRule kUiMapRule;
+extern const SideViewRule kFoliageImpostorRule;
 
 namespace side_views {
 

@@ -26,6 +26,7 @@
 #include <tuple>
 
 #include "setting_source.h"
+#include "side_view_foliage_impostor.h"
 #include "side_view_ui_map.h"
 #include "side_views.h"
 
@@ -233,15 +234,17 @@ void FollowsTheScreenFromOnePointTwoFive() {
   Check(side_views::kFollowMinScale == 25, "the threshold is 1.25x in twentieths");
 }
 
+struct RenderKey {
+  uint16_t base_tiles;
+  uint16_t pitch;
+  uint8_t depth;
+  uint8_t format;
+  uint8_t samples;
+  uint8_t reserved;
+};
+
 void QuickMap() {
-  struct Key {
-    uint16_t base_tiles;
-    uint16_t pitch;
-    uint8_t depth;
-    uint8_t format;
-    uint8_t samples;
-    uint8_t reserved;
-  };
+  using Key = RenderKey;
   using ui_map_views::Matches;
   constexpr Key colour{0, 760, 0, kFormat8888, 4, 0};
   constexpr uint32_t size = Size(749, 430);
@@ -260,6 +263,40 @@ void QuickMap() {
   Check(side_views::OutputScale(Scale{24}, true).unit(), "quick map on below 1.25x is made at 1x");
   Check(side_views::OutputScale(Scale{25}, true) == Scale{25}, "quick map on at 1.25x follows the render scale");
   Check(side_views::OutputScale(Scale{60}, true) == Scale{60}, "quick map on at 3x follows the render scale");
+}
+
+void FoliageImpostors() {
+  using foliage_impostor_view::FollowsOutput;
+  using foliage_impostor_view::Matches;
+  constexpr uint32_t size = Size(128, 128);
+  for (const RenderKey key : {RenderKey{224, 160, 0, kFormat8888, 4, 0},
+                              RenderKey{288, 160, 0, kFormat8888, 4, 0},
+                              RenderKey{0, 160, 1, kFormatD24FS8, 4, 0}}) {
+    Check(Matches(key, size) && Matches(key, 0), "both foliage colours and depth share the bake rule");
+    Check(!ui_map_views::Matches(key, size) && !ui_map_views::Matches(key, 0), "foliage is outside the UI map rule");
+    Check(!Matches(key, Size(256, 128)) && !Matches(key, Size(128, 256)), "keep a foreign use outside the foliage rule");
+  }
+  for (const RenderKey key : {RenderKey{0, 160, 0, kFormat8888, 4, 0},
+                              RenderKey{224, 160, 1, kFormatD24FS8, 4, 0},
+                              RenderKey{0, 160, 1, 0, 4, 0},
+                              RenderKey{224, 160, 0, kFormatFloat7e3, 4, 0},
+                              RenderKey{224, 160, 0, kFormat8888, 1, 0},
+                              RenderKey{224, 160, 0, kFormat8888, 4, side_views::kForeignUseLayer},
+                              RenderKey{1601, 160, 0, 1, 1, 0}}) {
+    Check(!Matches(key, size), "same-size unrelated target remains outside the foliage rule");
+  }
+  for (const RenderKey key : {RenderKey{224, 280, 0, kFormat8888, 4, 0},
+                              RenderKey{0, 280, 1, kFormatD24FS8, 4, 0},
+                              RenderKey{168, 240, 0, kFormat8888, 4, 0}}) {
+    Check(!Matches(key, 0) && ui_map_views::Matches(key, 0), "256x256 products and the radar keep their scaling rule");
+  }
+  for (const Scale output : {Scale{20}, Scale{24}, Scale{25}, Scale{30}, Scale{60}}) {
+    Check(side_views::OutputScale(output, FollowsOutput(true, true)).unit(), "native bake stays at console size with Sharp Minimap on");
+    Check(side_views::OutputScale(output, FollowsOutput(true, false)).unit(), "native bake stays at console size with Sharp Minimap off");
+    Check(side_views::OutputScale(output, FollowsOutput(false, false)).unit(), "the old rule with Sharp Minimap off keeps console size");
+    const Scale original = output.n >= 25 ? output : Scale{};
+    Check(side_views::OutputScale(output, FollowsOutput(false, true)) == original, "the old rule with Sharp Minimap on follows the output from 1.25x");
+  }
 }
 
 void UnknownSizeAndOtherIdentities() {
@@ -290,7 +327,7 @@ void UnknownSizeAndOtherIdentities() {
         "the layer a caller already set does not hide the identity");
 }
 
-// ---- the HUD's 128x128 pass at night: its second colour (rthit4, 2026-11-21) ----------------------------------------
+// ---- the foliage bake at night: its second colour (rthit4, 2026-11-21) ---------------------------------------------
 // The night run's log: "colour k_8_8_8_8@224 pitch 160 4x made at 3x (the UI map views side view ...)", "colour k_8_8_8_8@288 pitch 160 4x made at 3x (an image of the screen; declared 128x128 ...)", "depth
 // kD24FS8@0 pitch 160 4x made at 3x (the UI map views side view ...)": one pass with two colours and a depth. A target that is no class's is made at the draw's scale the first time (the class's 3x, as
 // the draw's first target is a member) and moved by the next live change of a scale to what its declared size classifies at (EdramTargets::ScaleAfter: a 128x128 surface is no image of the screen: 1x). At 8 s
@@ -398,18 +435,13 @@ void CheckSource(const std::string& dir) {
           "the scale disagreement's log line names every colour of the draw and the depth, each with its scale (the logged line named colour 0 and the depth, both at 3x)");
   }
 
-  // The HUD's and the menus' views (side_view_ui_map.h): the five identities of the 3x logs (colour k_8_8_8_8 at tile 224 pitch 160 and 280, tile 168 pitch 240;
-  // depth kD24FS8 at tile 0 pitch 160 and 280; 4 samples; declared 128, 256 and 220) and, since round 3, the menus' page (colour at tile 960 pitch 960 and depth at tile 0
-  // pitch 960, 2 samples, declared 960x640), the guest's samples at any scale, layer 0 only, and a class that follows the screen's scale: EdramTargets asks for the
-  // output's scale (Wanted(resolution_scale_)) and every loop over the classes is the one list.
+  // The remaining UI targets follow the output and keep the guest sample count.
   const std::string ui_map = ReadFile(dir + "/side_view_ui_map.cpp");
   const std::string identities = ReadFile(dir + "/side_view_ui_map.h");
   Check(!ui_map.empty(), "side_view_ui_map.cpp is readable");
-  Check(Has(identities, "{false, 224, 160, 4, 128, 128}") && Has(identities, "{true, 0, 160, 4, 128, 128}") && Has(identities, "{false, 224, 280, 4, 256, 256}") &&
+  Check(Has(identities, "{false, 224, 280, 4, 256, 256}") &&
             Has(identities, "{true, 0, 280, 4, 256, 256}") && Has(identities, "{false, 168, 240, 4, 220, 220}"),
-        "side_view_ui_map.h has the five identities of the census, with their 4 samples");
-  Check(Has(identities, "{false, 288, 160, 4, 128, 128}"),
-        "side_view_ui_map.h has the 128x128 pass's second colour (k_8_8_8_8 at tile 288, pitch 160, 4 samples): every identity a pass binds is the class's (the rthit4 night log)");
+        "side_view_ui_map.h keeps the 256x256 and radar identities with their 4 samples");
   Check(Has(identities, "{false, 960, 960, 2, 960, 640}") && Has(identities, "{true, 0, 960, 2, 960, 640}"),
         "side_view_ui_map.h has the menus' page: colour at tile 960 and depth at tile 0, pitch 960, 2 samples, declared 960x640");
   Check(Has(ui_map, ".matches = ui_map_views::Matches<EdramKey>") && Has(ui_map, "return guest_samples;") && Has(ui_map, ".follows_output = true"),
@@ -419,6 +451,19 @@ void CheckSource(const std::string& dir) {
   // The setting is a REX_SETTING row of src/settings/generated (or, before the conversion, the REXCVAR_DEFINE call of side_view_ui_map.cpp): setting_source.h reads either form.
   const setting_source::Info minimap = setting_source::Find(dir, ui_map, "mcla_ui_minimap_scale");
   Check(setting_source::DefaultIsTrue(minimap) && minimap.debug_only, "the setting is on by default and a debug setting (the SHARP MINIMAP row is on the debug menu's FIXES page)");
+  const std::string foliage = ReadFile(dir + "/side_view_foliage_impostor.cpp");
+  const std::string registry = ReadFile(dir + "/side_views.cpp");
+  Check(Has(foliage, ".matches = foliage_impostor_view::Matches<EdramKey>") && Has(foliage, ".follows_output = true") &&
+            Has(foliage, ".enabled = Enabled") && !Has(foliage, ".host_samples"),
+        "the foliage rule uses the tested matcher, conditional scaling and the guest sample count");
+  Check(Has(foliage, "FollowsOutput(larecomp::settings::mcla_gpu_impostor_native_size.Get(),") &&
+            Has(foliage, "larecomp::settings::mcla_ui_minimap_scale.Get()"),
+        "the foliage rule reads the two live settings");
+  Check(Has(registry, "case SideView::kFoliageImpostor: return kFoliageImpostorRule;") &&
+            Has(registry, "SideView::kUiMap, SideView::kFoliageImpostor})"),
+        "the renderer classifies the foliage rule independently");
+  const setting_source::Info native_size = setting_source::Find(dir, foliage, "mcla_gpu_impostor_native_size");
+  Check(setting_source::DefaultIsTrue(native_size) && native_size.debug_only, "the native bake defaults on and its switch is debug only");
   Check(Has(edram, "side_views::Wanted(resolution_scale_)") && Has(edram, "side_views::FollowOutput(side_scales_, output)"),
         "EdramTargets asks for the classes at the screen's scale, and a change of the render scale moves the followers with it");
   Check(!Has(edram, "{SideView::kShadow, SideView::kEnv, SideView::kReflection}"), "no loop over the classes names three of them any more");
@@ -432,6 +477,7 @@ int main(int argc, char** argv) {
   EitherOrder();
   FollowsTheScreenFromOnePointTwoFive();
   QuickMap();
+  FoliageImpostors();
   UnknownSizeAndOtherIdentities();
   SecondColourOfTheNightPass();
   if (argc > 1) {

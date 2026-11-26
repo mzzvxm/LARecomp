@@ -2032,6 +2032,9 @@ class GPUSettings final : public rex::SettingOwner {
     "(mcla_gpu_resolve_memory_encode_delay) and the encode batch counters. Off: as before "
     "that day. Hot reload.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_impostor_native_size, true, "Draw 128x128 foliage impostors at the game's original size. "
+    "Off lets Sharp Minimap scale these textures as before. Applies live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_ui_minimap_scale, true, "Draw the minimap, the D-pad quick map, the phone screen and menu pages at the render scale from 1.25x. "
     "This sharpens map roads and icons and menu text at 1080p and 4K. Turning it off keeps the game's original sizes. "
     "Higher render scales use more video memory. Applies live.", rex::kDebugOnly);
@@ -2547,6 +2550,7 @@ inline auto& mcla_gpu_watch_base = g_gpu.mcla_gpu_watch_base;
 inline auto& mcla_gpu_watch_capture = g_gpu.mcla_gpu_watch_capture;
 inline auto& mcla_gpu_watch_size = g_gpu.mcla_gpu_watch_size;
 inline auto& mcla_gpu_work_17oct = g_gpu.mcla_gpu_work_17oct;
+inline auto& mcla_gpu_impostor_native_size = g_gpu.mcla_gpu_impostor_native_size;
 inline auto& mcla_ui_minimap_scale = g_gpu.mcla_ui_minimap_scale;
 inline auto& mcla_ui_sharp = g_gpu.mcla_ui_sharp;
 inline auto& mcla_ui_sharp_census = g_gpu.mcla_ui_sharp_census;

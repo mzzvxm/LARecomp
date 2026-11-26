@@ -11654,6 +11654,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_impostor_native_size": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Draw 128x128 foliage impostors at the game's original size. \"\n    \"Off lets Sharp Minimap scale these textures as before. Applies live.\"",
+  "traits": [
+   "debug_only"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_ui_minimap_scale": {
   "type": "bool",
   "default": "true",

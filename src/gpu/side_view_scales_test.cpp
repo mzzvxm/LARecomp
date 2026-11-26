@@ -163,9 +163,10 @@ void TheDeclaredSizes() {
 }
 
 void TheRegistry() {
-  CheckN(kSideViewCount, 4, "four classes");
+  CheckN(kSideViewCount, 5, "five classes");
   CheckN(SideIndex(SideView::kShadow), 0, "the shadow is first");
-  CheckN(SideIndex(SideView::kUiMap), 3, "the UI map is last");
+  CheckN(SideIndex(SideView::kUiMap), 3, "the UI map is fourth");
+  CheckN(SideIndex(SideView::kFoliageImpostor), 4, "foliage impostors follow the UI map");
   for (size_t i = 0; i < kAllSideViews.size(); ++i) {
     CheckN(SideIndex(kAllSideViews[i]), i, "the order of kAllSideViews is the index order");
   }

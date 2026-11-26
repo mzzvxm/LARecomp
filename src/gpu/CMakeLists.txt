@@ -129,6 +129,7 @@ add_library(larecomp_gpu OBJECT
     shadow_filter.cpp
     shafts.cpp
     side_view_env.cpp
+    side_view_foliage_impostor.cpp
     side_view_reflection.cpp
     side_view_shadow.cpp
     side_view_ui_map.cpp
