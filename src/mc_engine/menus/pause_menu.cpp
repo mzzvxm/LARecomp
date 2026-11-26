@@ -2053,6 +2053,8 @@ const ItemDef kReflectionItems[] = {
                                 "RT SIDE MIRRORS: ", kNativeMirrorRtVals, kNativeMirrorRtNames, 3)),
     NativeOnly(Str("PM_RxGpuSsr", "mcla_gpu_ssr", "REFLECTIONS ON SURFACES: ",
                                 kNativeSsrVals, kNativeSsrNames, 4)),
+    NativeOnly(Str("PM_RxGpuSsrRt", "mcla_gpu_ssr_rt", "SURFACE REFLECTIONS RT: ",
+                                kNativeSsrVals, kNativeSsrNames, 4)),
 };
 #endif
 

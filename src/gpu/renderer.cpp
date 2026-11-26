@@ -436,6 +436,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetScreenShared(&screen_);
     ssr_.SetScreenShared(&screen_);  // the reflections read the Hi-Z, colour_post and the camera of the shared products, the G-buffer's planes and the AO's camera (ssr.h)
     ssr_.SetGBuffer(&gbuffer_);
+    ssr_.SetResolveCache(&resolve_);
     ssr_.SetAmbientOcclusion(&ao_);
     scene_.SetScreenReflections(&ssr_);
     scene_.SetCarSelfRefl(&car_refl_);

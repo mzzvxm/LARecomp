@@ -94,6 +94,7 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_side_mirrors", "off|high|ultra"},
     {"mcla_gpu_car_mirror_rt", "off|on"},
     {"mcla_gpu_ssr", "off|high|ultra"},
+    {"mcla_gpu_ssr_rt", "off|high|ultra"},
     {"traffic_unspawn_dist", "100|150|200|250|300|400|500|600"},
     {"ped_density_scale", "0|0.25|0.5|0.75|1|1.5|2"},
     {"parked_car_scale", "0|0.25|0.5|0.75|1|1.5|2"},
@@ -155,7 +156,7 @@ void CheckTable() {
       ++covered;
     }
   }
-  Check(covered == 37 && support == 1, "37 covered rows and one support row (mcla_gpu_ao_rt)");
+  Check(covered == 38 && support == 1, "38 covered rows and one support row (mcla_gpu_ao_rt)");
   Check(gp::kExemptCount == 3, "three rows of the four pages are exempt");
   for (const gp::Note& e : gp::kExempt) {
     Check(gp::FindRow(e.cvar) < 0, std::string(e.cvar) + ": an exempt row is not in the table");
@@ -202,6 +203,7 @@ const Want kVanilla[] = {
     {"mcla_gpu_side_mirrors", "off"},
     {"mcla_gpu_car_mirror_rt", "off"},
     {"mcla_gpu_ssr", "off"},
+    {"mcla_gpu_ssr_rt", "off"},
     {"traffic_unspawn_dist", "400"},            // the game's own range
     {"ped_density_scale", "1"},                 // the game's own density
     {"parked_car_scale", "1"},
@@ -322,9 +324,9 @@ void CheckAutoUnchanged() {
     if (old.effect == Effect::kSsr) {                // the other literal: `auto` is off on every class, the ULTRA presets are the explicit maximum
       CheckEq(gp::CellOf(old.cvar, Preset::kVanilla), "off", "SSR in VANILLA");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhanced), "off", "SSR in ENHANCED (auto stays off on the Mid class)");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "off", "SSR in ENHANCED RT");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRt), "high", "SSR in ENHANCED RT");
       CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedUltra), "off", "SSR in ENHANCED ULTRA (held: unstable in motion, 2026-11-24)");
-      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "off", "SSR in ENHANCED RT ULTRA (held: unstable in motion, 2026-11-24)");
+      CheckEq(gp::CellOf(old.cvar, Preset::kEnhancedRtUltra), "ultra", "SSR in ENHANCED RT ULTRA");
       continue;
     }
     // ENHANCED is the Mid class's `auto`, ENHANCED ULTRA the High class's, VANILLA the Low class's: the table and the `auto` cells are one thing.
@@ -675,7 +677,7 @@ void CheckScope() {
   for (const gp::Row& row : gp::kRows) ++per_page[static_cast<int>(row.page)];
   Check(per_page[0] == 5, "IMAGE QUALITY: 5 covered rows (MSAA, POST AA, ANISOTROPIC, DEPTH OF FIELD, MOTION BLUR)");
   Check(per_page[1] == 18, "LIGHTING AND SHADOWS: its 18 rows");
-  Check(per_page[2] == 8, "REFLECTIONS: its 7 rows and the ray traced half of CAR SELF-REFLECTIONS");
+  Check(per_page[2] == 9, "REFLECTIONS: its 8 rows and the ray traced half of CAR SELF-REFLECTIONS");
   Check(per_page[3] == 6, "WORLD DETAIL: its 6 rows");
   Check(per_page[4] == 1, "one support row");
 }
@@ -685,6 +687,10 @@ void CheckScope() {
 int main() {
   CheckTable();
   CheckVanilla();
+  for (const Preset preset : kNamed) {
+    const bool rt = preset == Preset::kEnhancedRt || preset == Preset::kEnhancedRtUltra;
+    CheckEq(gp::CellOf("mcla_gpu_ssr_rt", preset), rt ? "high" : "off", "surface RT follows the RT preset");
+  }
   CheckAutoUnchanged();
   CheckUltra();
   CheckNumber();

@@ -1,4 +1,6 @@
 #pragma once
+
+#include "reflection_handoff_rules.h"
 // ===========================================================================
 // MCLA GPU renderer -- screen-space reflections: the host's pure rules (no GPU), packages GB-I1 and GB-I2 of perf/LIGHT-UNIFY.md 11.2
 // ===========================================================================

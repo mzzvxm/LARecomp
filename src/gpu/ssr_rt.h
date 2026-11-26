@@ -57,7 +57,8 @@ class ScreenReflectionsRt {
 
   // After the car scene's own Initialize (its descriptor set is in the layout) and before the host precache starts. Never fails the renderer: without the device's ray queries, the scene or a
   // shader, nothing is traced and the effect is what it was.
-  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world);
+  void Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service, RtWorldFrame* world,
+                  const plume::RenderDescriptorSetBuilder& handoff);
   // GPU idle and the FrameRing drained, before HostPasses shuts down.
   void Shutdown();
   bool available() const { return ready_; }
@@ -74,6 +75,7 @@ class ScreenReflectionsRt {
     plume::RenderCommandList* list = nullptr;
     HostImage* trace = nullptr;       // RGBA16F storage image at the SSR size, left in a shader-read layout by the trace pass
     const HostImage* confidence = nullptr;  // R8G8_UNORM, the trace pass's second target, shader-read
+    plume::RenderDescriptorSet* handoff = nullptr;
     HostImage* capture_hit = nullptr;  // optional R32_UINT trace MRT for VISMET
     ssr::Push push;                   // the trace pass's push block (the road view's word and share set): the fallback adds its words to a copy
     uint32_t width = 0;               // the SSR images' size
@@ -123,7 +125,8 @@ class ScreenReflectionsRt {
   RtWorldFrame* world_ = nullptr;
 
   bool ready_ = false;
-  plume::RenderDescriptorSetBuilder output_builder_;   // u0 the trace image, u1 the control and statistics words, u2 the list
+  plume::RenderDescriptorSetBuilder output_builder_;
+  const plume::RenderDescriptorSetBuilder* handoff_builder_ = nullptr;   // u0 the trace image, u1 the control and statistics words, u2 the list
   std::unique_ptr<plume::RenderPipelineLayout> layout_;
   std::array<std::unique_ptr<plume::RenderShader>, kVariantCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;

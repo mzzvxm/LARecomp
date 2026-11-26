@@ -15,6 +15,8 @@ static const uint kReflHitRtCity = 16u;  // add the city material class (0..15)
 static const uint kReflHitRtCar = 32u;
 static const uint kReflHitRtMiss = 33u;
 static const uint kReflHitRtUnresolved = 34u;
+static const uint kReflHitRtCarShaded = 35u;
+static const uint kReflHitReuse = 36u;
 
 uint ReflHitScreen(uint cls, uint flags, bool vehicle) {
   if (vehicle || (flags & GB_FLAG_VEHICLE) != 0u || cls == GB_CLASS_PAINT) return kReflHitSsrVehicle;
@@ -45,6 +47,20 @@ uint ReflHitPack(uint visible, uint query, uint screen, uint fallback) {
   return visible | (query << 8u) | (screen << 16u) | (fallback << 24u);
 }
 uint ReflHitScreenId(uint packed) { return (packed >> 16u) & 255u; }
-uint ReflHitFallbackId(uint packed) { return packed >> 24u; }
+uint ReflHitFallbackId(uint packed) { return (packed >> 24u) & 15u; }
+float ReflHitScreenFraction(uint packed) { return float(packed >> 28u) / 15.0f; }
+uint ReflHitPackHandoff(uint visible, uint query, uint screen, uint fallback, float screen_fraction) {
+  return ReflHitPack(visible, query, screen, fallback) | (uint(round(saturate(screen_fraction) * 15.0f)) << 28u);
+}
+
+uint ReflHitHandoffDominant(uint screen, float screen_weight, float reuse_weight, uint rt, float rt_weight, uint fallback) {
+  const float fallback_weight = fallback == kReflHitNone ? 0.0f : 1.0f - screen_weight - reuse_weight - rt_weight;
+  const float best_screen_weight = max(screen_weight, reuse_weight);
+  if (rt_weight > best_screen_weight && rt_weight >= fallback_weight) return rt;
+  if (best_screen_weight > 0.0f && best_screen_weight >= fallback_weight) {
+    return reuse_weight > screen_weight ? kReflHitReuse : screen;
+  }
+  return fallback;
+}
 
 #endif

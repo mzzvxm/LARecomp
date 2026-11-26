@@ -1694,7 +1694,7 @@ struct Lens {
   double a() const { return f / (f - n); }
 };
 hs::SsrTraceParams MakeParams(const Lens& lens, int w, int h, int levels, uint max_iter) {
-  hs::SsrTraceParams p;
+  hs::SsrTraceParams p{};
   p.width = float(w);
   p.height = float(h);
   p.width_i = uint(w);
@@ -2053,7 +2053,7 @@ void TestMarchEdges() {
   Check(Near(sky.px, epx, 0.5) && Near(sky.py, epy, 0.5), Num("the end is the projection of the ray's far end (%.2f, ", sky.px) + Num("%.2f) against ", sky.py) + Num("(%.2f, ", epx) + Num("%.2f)", epy));
   // a ray that leaves the picture sideways is a miss and does not end inside
   const hs::SsrHit side = hs::SsrTrace(params, float(P[0]), float(P[1] + 0.07), float(P[2]), 0.9f, 0.2f, 0.3f);
-  Check(!side.hit && !side.inside_end, "a ray that leaves the picture ends outside it");
+  Check(!side.hit && !side.inside_end && side.left_screen && side.ray_distance > 0.0f, "a ray leaving the picture names its exit distance");
   // a ray pointing back at the camera ends before the near plane and has no hit on a bare road
   const hs::SsrHit back = hs::SsrTrace(params, float(P[0]), float(P[1] + 0.07), float(P[2]), 0.1f, 0.3f, -0.9f);
   Check(!back.hit, "a ray back at the camera finds nothing on a bare road");
@@ -2077,6 +2077,12 @@ void TestMarchEdges() {
   pw.Build(dw, W, H);
   pw.Install();
   const hs::SsrTraceParams pr = MakeParams(lens, W, H, pw.levels, 64);
+  hs::SsrTraceParams prior = pr;
+  prior.previous = true;
+  prior.adaptive_thickness = true;
+  const hs::SsrHit enters = hs::SsrTrace(prior, 16.0f, 0.0f, 10.0f, -0.6f, 0.0f, 0.8f);
+  Check(enters.hit && Near(enters.ray_distance, 25.0f, 0.03f),
+        "a continuation starting off-screen enters the previous frame and hits the wall at the ray's geometric distance");
   const hs::SsrHit wh = hs::SsrTrace(pr, float(P[0]), float(P[1] + 0.07), float(P[2]), float(R[0]), float(R[1]), float(R[2]));
   Check(wh.hit && Near(wh.surface_z, 30.0, 0.3), Num("a wall ahead is hit at its depth (%.2f)", wh.surface_z));
   if (wh.hit) {
@@ -2315,6 +2321,59 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
   (void)trace_ps;
 }
 
+void TestHandoff() {
+  namespace handoff = mcla::gpu::reflection_handoff;
+  const auto channels = [](const auto& w) { return std::array{w.screen, w.reuse, w.rt, w.planar, w.env}; };
+  for (int s = -1; s <= 11; ++s) {
+    for (int h = -1; h <= 11; ++h) {
+      for (int r = -1; r <= 11; ++r) {
+        for (int p = -1; p <= 11; ++p) {
+          const auto cpp = channels(handoff::Resolve(s * 0.1f, h * 0.1f, r * 0.1f, p * 0.1f));
+          const auto shader = channels(hs::ReflectionHandoff(s * 0.1f, h * 0.1f, r * 0.1f, p * 0.1f));
+          float sum = 0.0f;
+          bool matches = true;
+          for (size_t i = 0; i < cpp.size(); ++i) {
+            sum += shader[i];
+            matches &= cpp[i] == shader[i] && shader[i] >= 0.0f && shader[i] <= 1.0f;
+          }
+          Check(matches && std::abs(sum - 1.0f) < 1e-6f, "both implementations partition a unit lobe");
+        }
+      }
+    }
+  }
+  const auto w = hs::ReflectionHandoff(.5f, .5f, .5f, .5f);
+  Check(w.screen == .5f && w.reuse == .25f && w.rt == .125f && w.planar == .0625f && w.env == .0625f, "fallback weighings follow source priority");
+  for (size_t axis = 0; axis < 4; ++axis) {
+    for (const float boundary : {0.0f, .15f, .70f, 1.0f}) {
+      std::array confidence{.45f, .60f, .55f, .35f};
+      confidence[axis] = boundary - 1e-5f;
+      const auto low = channels(hs::ReflectionHandoff(confidence[0], confidence[1], confidence[2], confidence[3]));
+      confidence[axis] = boundary + 1e-5f;
+      const auto high = channels(hs::ReflectionHandoff(confidence[0], confidence[1], confidence[2], confidence[3]));
+      for (size_t n = 0; n < low.size(); ++n) {
+        Check(std::abs(low[n] - high[n]) <= 2.1e-5f, "continuous at edges and confidence thresholds");
+      }
+    }
+  }
+  for (unsigned mask = 0; mask < 64; ++mask) {
+    Check(handoff::ReuseHistory(mask & 1, mask & 2, mask & 4, mask & 8, mask & 16, mask & 32) == (mask == 63),
+          "history rejects a cut, gap, resize, lens change, missing products or disabled handoff");
+  }
+  for (const float x : {-.1f, 0.0f, .15f, .3f, .5f, .8f, .9f, 1.0f, 1.1f}) {
+    for (const float y : {0.0f, .15f, .25f, .5f, 1.0f}) {
+      Check(handoff::ReuseTrust(x, y, .25f) == hs::SsrReuseTrust(x, y, .25f), "previous hit trust matches shader");
+      Check(handoff::ReuseAgreement(x, y) == hs::SsrReuseAgreement(x, y), "previous hit agreement matches shader");
+      Check(handoff::Thickness(100.0f, .02f, x) == hs::SsrHitThickness(100.0f, .02f, x), "adaptive thickness matches shader");
+    }
+  }
+  Check(hs::SsrReuseTrust(1, .5f, 0) == .55f && hs::SsrReuseTrust(0, 1, 0) == 0 &&
+        hs::SsrReuseTrust(1, .15f, 0) == 0 && hs::SsrReuseTrust(1, 1, 1) == 0,
+        "previous-frame colour has a ceiling and rejects the edge, backside and depth mismatch");
+  Check(hs::SsrReuseAgreement(.8f, 0) == 0 && hs::SsrReuseAgreement(1, -1) == 0 &&
+        hs::SsrReuseAgreement(1, 0) > .99f, "matching silhouettes need the same plane at the same distance");
+  Check(hs::SsrHitThickness(100, .02f, 0) < hs::SsrHitThickness(100, .02f, 1), "thin geometry tolerates less penetration");
+}
+
 void TestSources(const std::string& dir) {
   if (dir.empty()) return;
   const std::string rules = Read(dir, "ssr_rules.h"), header = Read(dir, "ssr.h"), cpp = Read(dir, "ssr.cpp"), scene = Read(dir, "scene.cpp"), scene_h = Read(dir, "scene.h"), renderer = Read(dir, "renderer.cpp"),
@@ -2394,7 +2453,7 @@ void TestSources(const std::string& dir) {
 
   // what the effect asks of the owners, and that it asks for nothing while it is off
   const std::string begin = FunctionText(cpp, "void ScreenReflections::BeginFrame()");
-  Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, ssr::WantedProducts(level_))") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(level_))") &&
+  Check(Has(begin, "screen_->Want(screen::Consumer::kReflections, products)") && Has(begin, "products = ssr::WantedProducts(level_)") && Has(begin, "screen_->WantCamera(screen::Consumer::kReflections, ssr::WantsCamera(level_))") &&
             Has(begin, "gbuffer_->Want(gbuffer::Consumer::kReflections, ssr::WantedPlanes(level_))") && !Has(begin, "on ? ") && !Has(begin, "const bool on"),
         "BeginFrame asks for the Hi-Z, colour_post, the camera and the G-buffer's planes through the rules (ssr_rules.h WantedProducts / WantsCamera / WantedPlanes: only while on, 0 withdraws) and by the RESOLVED level (GB-I3)");
   Check(Has(rules, "constexpr uint32_t WantedPlanes(Level level) { return level == Level::kOff ? 0u : gbuffer::ConsumerPlanes(gbuffer::Consumer::kReflections); }") &&
@@ -2403,7 +2462,7 @@ void TestSources(const std::string& dir) {
   Check(Has(scene, "ssr_->BeginFrame();") && scene.find("ssr_->BeginFrame()") < scene.find("gbuffer_->BeginFrame(frame_serial_)") && scene.find("ssr_->BeginFrame()") < scene.find("screen_->BeginFrame(frame_serial_)") &&
             scene.find("local_lights_->BeginFrame()") < scene.find("ssr_->BeginFrame()"),
         "GB-I3: Scene::BeginFrame declares the reflections' wants right after the light pass's and before the G-buffer and the screen owner read them (lag 0)");
-  Check(!Has(begin, "kHistory"), "the owner's history product is not asked for (the accumulation keeps its own images)");
+  Check(Has(begin, "products != 0 && handoff_enabled_") && Has(begin, "products |= screen::ProductBit(screen::kHistory)"), "the shared history is asked for only with active handoff");
   const std::string trigger = FunctionText(cpp, "bool ScreenReflections::OnTrigger(");
   const size_t first_command = std::min({trigger.find("DrawPass("), trigger.find("list->"), trigger.find("edram_->Transition")});
   const size_t off_return = trigger.find("level_ == ssr::Level::kOff");
@@ -2483,7 +2542,7 @@ void TestSources(const std::string& dir) {
   Check(!Has(pass, "NonUniformResourceIndex(") && !Has(trace_ps, "NonUniformResourceIndex(") && !Has(temporal_ps, "NonUniformResourceIndex(") && !Has(apply_ps, "NonUniformResourceIndex("),
         "no shader needs the device's non uniform descriptor indexing: every slot read is a value of the push block");
   Check(Has(pass, "float SsrHizAt(uint level, int cx, int cy) {\n  if (level == 0u) {\n    return g_textures[SsrLo(SsrW(SSR_W_HIZ01))]"), "the Hi-Z is read through a chain of branches on the level, one push-block slot each");
-  Check(Has(trace_ps, "#include \"ssr_trace.hlsli\"") && Has(pass, "#define SSR_LOOP [loop]") && Has(trace_h, "SSR_LOOP for (; i < p.max_iter; ++i)"), "the march's loop is [loop] in the shader and plain C++ in the test");
+  Check(Has(trace_ps, "#include \"ssr_reuse.hlsli\"") && Has(Read(dir, "hlsl/ssr_reuse.hlsli"), "#include \"ssr_trace.hlsli\"") && Has(pass, "#define SSR_LOOP [loop]") && Has(trace_h, "SSR_LOOP for (; i < p.max_iter; ++i)"), "the march's loop is [loop] in the shader and plain C++ in the test");
   // the pass's inputs: the trace reads the class gate before any walk
   const size_t gate_at = trace_ps.find("SsrClassGain(surface.cls, surface.flags)");
   const size_t walk_at = trace_ps.find("SsrTrace(tp,");
@@ -2539,12 +2598,12 @@ void TestSources(const std::string& dir) {
         "ssr.cpp: the wetness is smoothed in seconds and the share is the setting times the game's strength");
   Check(Has(FunctionText(cpp, "void ScreenReflections::OnMainDraw("), "wet_votes_.Add(BankFloat(banks.vs.data(), kVsReflectionParams, 0), BankFloat(banks.vs.data(), kVsReflectionParams, 1))"), "the votes carry VS c43.x and c43.y");
   // the aliased words: a pass never reads a word for its first meaning that another use of it has taken
-  Check(!Has(trace_ps, "SSR_W_SRC") && !Has(trace_ps, "SSR_W_STRENGTH") && Has(trace_ps, "SsrF(SSR_W_FALLBACK)") && Has(trace_ps, "SsrW(SSR_W_ROAD_VIEW)"), "the trace reads the road view and the share where the other passes read the source images and the strength");
+  Check(!Has(trace_ps, "SSR_W_SRC") && !Has(trace_ps, "SSR_W_STRENGTH") && Has(Read(dir, "hlsl/ssr_handoff.hlsli"), "SsrF(SSR_W_FALLBACK)") && Has(Read(dir, "hlsl/ssr_handoff.hlsli"), "SsrW(SSR_W_ROAD_VIEW)"), "the trace reads the road view and the share where the other passes read the source images and the strength");
   Check(!Has(temporal_ps, "SSR_W_RT2_RT3") && !Has(temporal_ps, "SsrRt3At(") && !Has(temporal_ps, "SsrRt1At(") && Has(temporal_ps, "SsrW(SSR_W_VEH_TABLE)"), "the temporal pass reads the vehicle table where the others read the planes' word");
   Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && !Has(apply_ps, "SSR_W_HIZ") && Has(apply_ps, "SsrW(SSR_W_ROAD_VIEW_APPLY)"), "the apply reads no Hi-Z (outside the RR-4a raw compilation, which a debug view never is), so its first word carries the road view for the debug view");
   Check(Has(pass, "SsrHi(SsrW(SSR_W_STENCIL))") && Has(pass, "SsrLo(SsrW(SSR_W_LIN0))") && Has(trace_ps, "SsrVehicleIdAt(hx, hy)") && Has(trace_ps, "SsrPackHit(distance_out, vehicle_hit, vehicle_id)") && Has(temporal_ps, "SsrVehicleImage(m0, m1, m2, v0, v1, v2,"),
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
-  Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
+  Check(Has(trace_ps, "fallback.planar * weights.planar + fallback.env * weights.env - fallback.stock;") && Has(trace_ps, "SsrSurfaceFallback(surface.cls") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
   const std::string guided = FunctionText(temporal_ps, "SsrHistoryOutput SsrAccumulate(");
   Check(Has(guided, "SsrClipToBox(history,") && Has(guided, "SsrHistoryInside(image.u, image.v") &&
@@ -2573,7 +2632,7 @@ void TestSources(const std::string& dir) {
   // the pause world and the effect's own gate are in the rules
   Check(Has(rules, "d.why = Why::kPause;") && Has(trigger, "facts.pause_view = (sf.flags & screen::kFramePause) != 0;"), "the pause menu's, the garage's and the map's world are not reflected");
   // the effect does not touch the colour capture or the history of the owner
-  Check(!Has(cpp, "screen_->CapturePost(") && !Has(cpp, "screen::kHistory") && !Has(cpp, "screen_->Image("), "the effect only reads what the owner made (frame slots), it makes none of it");
+  Check(!Has(cpp, "screen_->CapturePost(") && Has(cpp, "screen_->ReflectionHistoryDepth(") && !Has(cpp, "screen_->Image("), "the effect only reads what the owner made (frame slots), it makes none of it");
 }
 
 }  // namespace
@@ -2615,6 +2674,7 @@ int main(int argc, char** argv) {
   TestMarchBrute();
   TestMarchEdges();
   TestLensFunctions();
+  TestHandoff();
   TestSources(src_dir);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   (void)Count;

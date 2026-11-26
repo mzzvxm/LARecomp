@@ -58,6 +58,35 @@
 #define SSR_W_WET 29           // float: the road's wetness 0..1
 #define SSR_W_THICK 30         // float: the surface's thickness as a share of its depth
 #define SSR_W_CAP 31           // float: the brightest colour a reflection brings (the target's units)
+struct ReflectionWeights {
+  float screen, reuse, rt, planar, env;
+};
+
+ReflectionWeights ReflectionHandoff(float screen, float reuse, float rt, float planar) {
+  ReflectionWeights w;
+  w.screen = saturate(screen);
+  const float after_screen = 1.0f - w.screen;
+  w.reuse = after_screen * saturate(reuse);
+  const float after_reuse = after_screen - w.reuse;
+  w.rt = after_reuse * saturate(rt);
+  const float after_rt = after_reuse - w.rt;
+  w.planar = after_rt * saturate(planar);
+  w.env = after_rt - w.planar;
+  return w;
+}
+
+float SsrReuseTrust(float edge, float facing, float depth_error) {
+  return 0.55f * saturate(edge) * saturate((facing - 0.15f) / 0.35f) * (1.0f - saturate(depth_error));
+}
+
+float SsrReuseAgreement(float normal_dot, float depth_error) {
+  return saturate((normal_dot - 0.80f) / 0.20f) * (1.0f - saturate(abs(depth_error)));
+}
+
+float SsrHitThickness(float depth, float relative, float support) {
+  return max(0.3f, relative * depth) * (0.25f + 0.75f * saturate(support));
+}
+
 #define SSR_PUSH_WORDS 32
 #define SSR_FRAME_LEGACY_NOISE 0x80000000u   // bit 31 of SSR_W_FRAME: the first version's noise (interleaved gradient noise sliding across the picture), for mcla_gpu_ssr_blue_noise false
 // the temporal pass's own names for words it reuses (ssr_rules.h push::kPrevTanX ...)

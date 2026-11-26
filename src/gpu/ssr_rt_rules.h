@@ -112,9 +112,9 @@ struct Cell {
   float reach = 0.0f;        // metres: the longest ray
   float budget_ms = 0.0f;    // the GPU time the governor holds the two passes to
 };
-inline constexpr Cell kHighCell = {GroupBit(kGroupBright), 250000, 1, 150.0f, 0.8f};
-inline constexpr Cell kUltraCell = {GroupBit(kGroupBright) | GroupBit(kGroupGround), 1000000, 2, 300.0f, 1.8f};
-inline constexpr Cell kMidCell = {GroupBit(kGroupBright), 100000, 1, 60.0f, 1.0f};
+inline constexpr Cell kHighCell = {GroupBit(kGroupBright) | GroupBit(kGroupGround), 250000, 1, 150.0f, 0.40f};
+inline constexpr Cell kUltraCell = {GroupBit(kGroupBright) | GroupBit(kGroupGround), 1000000, 2, 300.0f, 0.50f};
+inline constexpr Cell kMidCell = {GroupBit(kGroupBright), 100000, 1, 60.0f, 0.30f};
 
 // The cell of a level on a card of this rung (the ray tracing tier gated by the class: rt_tier.h RtRung): a strong card has the level's own, a weak one the Mid cell whatever level it was given by hand.
 constexpr Cell CellFor(Level level, gc::RtTier rung) {

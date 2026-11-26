@@ -2321,11 +2321,10 @@
  },
  "mcla_gpu_ssr_rt": {
   "type": "std::string",
-  "default": "\"auto\"",
+  "default": "\"off\"",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at \"\n    \"the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. \"\n    \"auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, \"\n    \"two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card \"\n    \"takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than \"\n    \"their share of the frame. Live.\"",
+  "help": "\"Ray traces surface reflections where the screen and its history have gaps. High traces one ray per selected pixel, including wet roads and sidewalks on a fast RT GPU. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.\"",
   "traits": [
-   "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\")"
   ],
   "comments": [],
@@ -2333,7 +2332,7 @@
  },
  "mcla_gpu_ssr_rt_single_ray": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.\"",
   "traits": [
@@ -2344,7 +2343,7 @@
  },
  "mcla_gpu_ssr_rt_sky_miss": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.\"",
   "traits": [
@@ -2355,7 +2354,7 @@
  },
  "mcla_gpu_ssr_rt_screen_proxy": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.\"",
   "traits": [
@@ -2377,7 +2376,7 @@
  },
  "mcla_gpu_ssr_rt_cars": {
   "type": "bool",
-  "default": "false",
+  "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.\"",
   "traits": [
@@ -2403,6 +2402,17 @@
   "default": "true",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ssr_handoff": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Blend surface reflections through screen history, RT, planar and environment sources. Live.\"",
   "traits": [
    "rex::kDebugOnly"
   ],

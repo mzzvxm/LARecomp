@@ -256,7 +256,10 @@ help = "The two side mirrors show the real view behind, found by rays in the car
 
 [rows.PM_RxGpuSsr]
 native = "kSsrDynamics"
-help = "Adds reflections to wet roads and glossy surfaces using detail from the current picture."
+help = "Adds wet-road and glossy reflections using the current and previous view, the planar road view, and the environment map."
+
+[rows.PM_RxGpuSsrRt]
+help = "Uses ray tracing for gaps in surface reflections. A fast RT GPU also traces wet roads and sidewalks. Ultra increases reach and budget."
 
 [rows.PM_RxGpuHdr]
 help = "HDR output for an HDR10 display."

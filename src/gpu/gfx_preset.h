@@ -191,9 +191,10 @@ inline constexpr Row kRows[] = {
     {"mcla_gpu_rt_reflections", Page::kReflections, {"off", "off", "off", "off", "high"}},
     {"mcla_gpu_side_mirrors", Page::kReflections, {"off", "high", "ultra", "high", "ultra"}},
     {"mcla_gpu_car_mirror_rt", Page::kReflections, {"off", "off", "off", "off", "on"}},
-    // REFLECTIONS ON SURFACES: `auto` is off on every class (gpu_class.h kEffects: the owner held it, 2026-11-24, the reflections flicker in motion), so VANILLA, ENHANCED and ENHANCED RT are
-    // off; the two ULTRA presets are the explicit maximum presets and hold the top level.
-    {"mcla_gpu_ssr", Page::kReflections, {"off", "off", "off", "off", "off"}},
+    // Both RT presets enable the High fallback. RT Ultra raises the
+    // screen-space sampling rate while keeping the same RT budget.
+    {"mcla_gpu_ssr", Page::kReflections, {"off", "off", "off", "high", "ultra"}},
+    {"mcla_gpu_ssr_rt", Page::kReflections, {"off", "off", "off", "high", "high"}},
 
     // --- WORLD DETAIL --- (VANILLA is the stock game: 400 m, one times the pedestrians and the parked cars, the original LOD distances and prop draw distance.)
     {"traffic_unspawn_dist", Page::kWorldDetail, {"400", "300", "400", "300", "400"}},

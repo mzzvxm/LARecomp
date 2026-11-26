@@ -319,6 +319,12 @@ auto_label = true
 [rows.PM_RxGpuSsr.value."auto"]
 auto_label = true
 
+[rows.PM_RxGpuSsrRt]
+states = [
+  { when = "!api.car_rt", enabled = false, reason = "A GPU with ray queries is required." },
+  { when = "resolved(s.mcla_gpu_ssr) == 'off'", enabled = false, reason = "Surface reflections are off." },
+]
+
 [rows.PM_RxGpuCarRefl]
 
 [rows.PM_RxGpuCarRefl.value."auto"]

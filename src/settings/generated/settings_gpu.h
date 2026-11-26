@@ -1055,22 +1055,19 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_ssr_rt, "auto", "Diagnostic (screen-space reflections): the ray traced fallback, for the pixels the picture could not speak for (a reflected thing that is off the picture, behind something in front of it, or a ray that points back at "
-    "the camera): the same ray is traced into the city's buildings and what it hits is shaded with the city's own materials and lights, so a wet street shows the street instead of the game's blurred reflection. "
-    "auto (the default): follows REFLECTIONS ON SURFACES on a graphics card that traces rays quickly (high: glass, metal and water, up to 0.25 million rays a frame; ultra: also roads and sidewalks, up to 1 million, "
-    "two rays a pixel), off on a weak one and on a card that does not trace rays at all. off: the screen-space reflections alone (the comparison); high or ultra: that level on any card that traces rays (a weak card "
-    "takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than "
-    "their share of the frame. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Ray traces surface reflections where the screen and its history have gaps. High traces one ray per selected pixel, including wet roads and sidewalks on a fast RT GPU. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
-  REX_SETTING(bool, mcla_gpu_ssr_rt_single_ray, false, "Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, false, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_rt_screen_proxy, false, "Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_single_ray, true, "Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, true, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_screen_proxy, true, "Recover RT reflection hits on city proxies when their geometry agrees with the rasterized picture. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_rt_probe_misses, false, "Sample RT reflection misses at twice the reach on statistics frames. Live.", rex::kDebugOnly);
-  REX_SETTING(bool, mcla_gpu_ssr_rt_cars, false, "Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_rt_cars, true, "Shade cars hit by the RT fallback in road reflections when the fallback covers roads. Live.", rex::kDebugOnly);
 
   REX_SETTING(i32, mcla_gpu_rt_denoise, -1, "Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.", rex::kDebugOnly, rex::Range{-1, 3});
 
   REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_ssr_handoff, true, "Blend surface reflections through screen history, RT, planar and environment sources. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_ssr_resolve, true, "Diagnostic (screen-space reflections): filters wet-road normals, fades uncertain hits into the fallback, and accumulates reflections using their own motion and the receiving surface. Off uses the original centre-sample resolve. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_sparkle_resolve, false, "A/B for screen-space reflections with temporal upscaling. Preserve more of a slow reflection across sparse ray hits. Live.", rex::kDebugOnly);
@@ -2322,6 +2319,7 @@ inline auto& mcla_gpu_ssr_rt_probe_misses = g_gpu.mcla_gpu_ssr_rt_probe_misses;
 inline auto& mcla_gpu_ssr_rt_cars = g_gpu.mcla_gpu_ssr_rt_cars;
 inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;
 inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
+inline auto& mcla_gpu_ssr_handoff = g_gpu.mcla_gpu_ssr_handoff;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;
 inline auto& mcla_gpu_ssr_sparkle_resolve = g_gpu.mcla_gpu_ssr_sparkle_resolve;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
