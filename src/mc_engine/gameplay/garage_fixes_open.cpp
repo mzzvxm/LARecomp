@@ -34,6 +34,7 @@
 #include "larecomp_guest.h"
 #include <rex/kernel/title_runtime.h>
 #include <rex/kernel/function_dispatcher.h>
+#include "settings/immortal.h"
 
 REX_EXTERN(__imp__rex_sub_821CA6A8);  // asset manager open
 
@@ -51,7 +52,7 @@ struct Served {
 };
 
 std::mutex g_mutex;
-std::map<std::string, Served> g_served;     // by archive path
+std::map<std::string, Served>& g_served = larecomp::Leak<std::map<std::string, Served>>();     // by archive path
 uint32_t g_scratch = 0;                     // read buffer, kChunk bytes
 
 std::string Lower(std::string s) {
@@ -83,7 +84,7 @@ std::string WantedFix(const uint8_t* base, uint32_t name, uint32_t ext) {
         leaf.erase(0, slash + 1);
     if (leaf.size() < 5 || leaf.compare(leaf.size() - 5, 5, ".gtun") != 0)
         leaf += ".gtun";
-    static const std::vector<std::string> paths = mc::garage_fixes::Paths();
+    static const std::vector<std::string>& paths = larecomp::Leak<std::vector<std::string>>(mc::garage_fixes::Paths());
     for (const std::string& path : paths)
         if (Lower(path.substr(path.rfind('/') + 1)) == leaf) return path;
     return {};

@@ -36,6 +36,7 @@
 #include <rex/kernel/title_runtime.h>
 
 #include "larecomp_log.h"
+#include "settings/immortal.h"
 
 REX_EXTERN(__imp__rex_sub_823252B8);  // draw a drawable's LOD
 REX_EXTERN(__imp__rex_sub_82324258);  // draw a drawable's LOD, skinned path
@@ -156,7 +157,7 @@ void FixIfBroken(uint32_t drawable) {
     const uint32_t lod = Load32(drawable + 8);
     if (!Plausible(lod)) return;
     static std::mutex mutex;
-    static std::map<uint32_t, std::pair<uint32_t, uint32_t>> settled;
+    static std::map<uint32_t, std::pair<uint32_t, uint32_t>>& settled = larecomp::Leak<std::map<uint32_t, std::pair<uint32_t, uint32_t>>>();
     std::lock_guard<std::mutex> lock(mutex);
 
     const auto stamp = [](uint32_t data) {

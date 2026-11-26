@@ -89,6 +89,7 @@
 //
 
 #include "car_guard.h"
+#include "settings/immortal.h"
 #include "online_common.h"
 #include "mc_engine/hooks/owned_cars.h"
 #include "mc_engine/keyboard_native.h"  // MenuScreenUp
@@ -219,10 +220,10 @@ struct Pending {
 };
 
 std::mutex g_mutex;
-std::vector<Pending> g_garage;      // under g_mutex
+std::vector<Pending>& g_garage = larecomp::Leak<std::vector<Pending>>();      // under g_mutex
 bool g_theirs_pending = false;      // under g_mutex
 uint32_t g_theirs_cfg = 0;          // under g_mutex: the imported CarConfig
-Report g_theirs;                    // under g_mutex
+Report& g_theirs = larecomp::Leak<Report>();                    // under g_mutex
 using GuestMemory = rex::kernel::GuestAddressSpace;
 
 int g_theirs_more = 0;              // under g_mutex: rigged cars after the first

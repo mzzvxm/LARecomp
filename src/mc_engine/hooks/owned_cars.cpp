@@ -51,6 +51,7 @@
 
 #ifndef REXGLUE_HAS_XEO3_TARGET
 #include "settings/larecomp_settings.h"
+#include "settings/immortal.h"
 #include <rex/ppc/recompiled_code.h>
 #include <rex/ppc/context.h>
 #include "larecomp_guest.h"
@@ -127,7 +128,7 @@ std::atomic<uint32_t> g_plates_owners{0}; // how many different ones so far
 // constructor itself runs with no car owned (slot 0). The CarConfig constructor
 // writes data and its own vtable pointers into the image, nothing that points
 // into the slot.
-std::vector<uint8_t> g_blank_car;
+std::vector<uint8_t>& g_blank_car = larecomp::Leak<std::vector<uint8_t>>();
 std::array<uint8_t, kDamageSize> g_blank_damage{};
 
 // The mirror is written only by the copy before a save, the load and the
@@ -306,9 +307,9 @@ struct SaveLine {
     uint64_t id = 0;      // 0: no line yet, the next save starts one
     uint64_t serial = 0;  // highest serialize number of the line seen
 };
-SaveLine g_line;
-std::vector<uint8_t> g_over_cars;    // cars past Cap() from the file the save matched
-std::vector<uint8_t> g_over_damage;
+SaveLine& g_line = larecomp::Leak<SaveLine>();
+std::vector<uint8_t>& g_over_cars = larecomp::Leak<std::vector<uint8_t>>();    // cars past Cap() from the file the save matched
+std::vector<uint8_t>& g_over_damage = larecomp::Leak<std::vector<uint8_t>>();
 bool g_recovered = false;            // owned_cars_recover_unmatched used this start
 
 uint32_t OverCount() { return uint32_t(g_over_cars.size() / kCarSize); }

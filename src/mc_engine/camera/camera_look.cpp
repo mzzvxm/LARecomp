@@ -2,6 +2,7 @@
 // checked against have to be visible to both.
 #include "camera_look.h"
 #include "settings/immortal.h"
+#include "exit_fast.h"
 #include "mc_engine/menus/menu_items.h"
 #include "mc_engine/input/map_mouse.h"
 #include "mc_engine/input/mouse_look.h"
@@ -1262,7 +1263,7 @@ constexpr uint32_t kBoomMounted = 668;
 constexpr uint32_t kCarPivotObj = 368;
 constexpr uint32_t kCarPivotVec = 32;
 
-std::ofstream g_orbit_csv;
+std::ofstream& g_orbit_csv = larecomp::Leak<std::ofstream>();  // never destroyed (exit audit); the exit flush hook writes its tail
 uint32_t g_orbit_rows = 0;
 constexpr uint32_t kOrbitMaxRows = 36000;
 
@@ -1279,6 +1280,7 @@ void RecordOrbitFrame(float yaw, float pitch, const larecomp::camorbit::In& in) 
         }
         g_orbit_csv << "t,yaw,pitch,flag668,px,py,pz,lx,ly,lz,cx,cy,cz\n";
         MC_INFO("[cam-look] recording the gameplay camera to cam_orbit.csv");
+        larecomp::exitfast::AddFlush("camera orbit recording", [] { g_orbit_csv.flush(); });
     }
     const double t = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
     char row[256];

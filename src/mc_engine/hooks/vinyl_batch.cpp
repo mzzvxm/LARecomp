@@ -62,6 +62,7 @@
 #include <vector>
 
 #include "hooks_internal.h"
+#include "settings/immortal.h"
 
 REX_EXTERN(__imp__rex_sub_8236F910);  // the recompiled regen step
 REX_EXTERN(__imp__rex_sub_8236D0A0);  // shape library: zero every reference count
@@ -175,7 +176,7 @@ struct Prefetch {
     bool alloc_failed_at_start = false;
     bool given_up = false;
 };
-Prefetch g_pf;
+Prefetch& g_pf = larecomp::Leak<Prefetch>();  // never destroyed (exit audit)
 
 constexpr auto kStallLimit = std::chrono::seconds(3);
 
