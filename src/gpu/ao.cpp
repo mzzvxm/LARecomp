@@ -50,7 +50,6 @@
 #include "split.h"
 #include "ssgi_level.h"
 #include "ssgi_light.h"
-#include "gi_bounce_settings.h"
 #include "ssgi_lights.h"
 #include "ssgi_stable.h"
 #include "texture_bytes.h"
@@ -2799,9 +2798,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     ReleaseGiImages();
   }
   if (screen_) {
-    // GI-BOUNCE-SS: the owner captures the colour before and after the deferred light pass in the frames that run the bounce light with the lights' share (screen_shared.h CaptureLightsBefore / After).
-    // GI-BOUNCE-JOIN: where the field stands the pair is the RESIDUAL one (the lights nobody else carries), made with or without a colour chain in this frame.
-    screen_->WantLights(plan.lights_residual || (plan.gi.on && plan.gi.lights), plan.lights_residual ? ssgi_lights::Partition::kResidual : ssgi_lights::Partition::kAll);
+    // Only world lights use the screen-space capture pair.
+    screen_->WantLights(plan.gi.on && plan.gi.lights);
   }
   // The G-buffer's normal plane (GB-E): whether this frame's passes read the normal image, and the images it needs. Without it every push below carries no slot and every pass
   // takes the depth's normal as it did.
@@ -4526,7 +4524,6 @@ void AmbientOcclusion::ProcessContactStat(uint64_t frame, uint64_t generation, u
 
 void AmbientOcclusion::PlanGi(Plan* plan) {
   plan->gi = GiPlan{};
-  plan->lights_residual = false;
   // The game view, the pause menu's world and the garage have it; the map (the 4x view seen from 9 km: the
   // bounce's few metres are under a pixel) runs the plain occlusion (menu_world.h RulesFor).
   if (!gi_active_ || !plan->occlusion || !plan->apply || !menu_world::RulesFor(trigger_world_).bounce) {
@@ -4563,8 +4560,7 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   g.half = !gi_test_ && g.mode == Mode::kHigh && low_how >= 1;
   g.half_above = larecomp::settings::mcla_gpu_ssgi_half.Get();  // above 1080 lines, every quality (ao_size.h)
   // GI-BOUNCE-SS: the lights' share of the radiance (ssgi_lights.h): on wherever the bounce light runs, from the owner's extraction; the debug switch is the chain as it was (live).
-  // GI-BOUNCE-JOIN: the four group switches (the RT half's too) govern it: all four off is no lights' share (the colour chain is the old one); a single group off is out of the light pass's pair (local_lights.cpp).
-  g.lights = ssgi_lights::Wanted(true, larecomp::settings::mcla_gpu_ssgi_lights.Get() && gi_bounce::AnyGroup(gi_bounce::GroupsNow()), Extracting());
+  g.lights = ssgi_lights::Wanted(true, larecomp::settings::mcla_gpu_ssgi_lights.Get(), Extracting());
   g.lights_gain = ssgi_lights::GainOf(larecomp::settings::mcla_gpu_ssgi_lights_gain.Get());
   g.lights_floor = ssgi_lights::FloorOf(larecomp::settings::mcla_gpu_ssgi_lights_floor.Get());  // GI-BOUNCE-SS-2: the lights' own cap floor
   // The numbers of the strength level (mcla_gpu_ssgi_intensity), each one replaced by its debug cvar when that
@@ -4585,27 +4581,11 @@ void AmbientOcclusion::PlanGi(Plan* plan) {
   // The debug override (mcla_gpu_ssgi_test) is the test's own and is left alone. With no field in the frame the share is 1 and nothing here changes.
   if (gi_apply_ && !gi_test_) {
     const float share = gi_apply_->TakeSsgiShare();
-    // GI-BOUNCE-JOIN (gi_bounce_carrier.h): where the field STANDS (share 0) it carries the world's lamps and the static emitters, the per-pixel pass the moving ones at ULTRA. What nobody carries is a MOVING car's
-    // lights at HIGH (and any light the field has no list for): this frame's light pass makes the pair of captures of exactly those lights (the residual partition), and where the last frame left one the colour
-    // chain runs LIGHTS-ONLY on it (its radiance is the lights' share alone: the field has all the rest) at the bounce level's own strength, kept for kHoldFrames so that the occlusion is not switched back and
-    // forth. No lights, no pair in the last frame, no hold: the plain occlusion as it has always been (the colour chain is not built).
-    const gi_bounce::JoinPlan join = gi_bounce::PlanFor(g.lights, gi_apply::SsgiSkipped(share), screen_ != nullptr && screen_->LightsResidualReady(), &lights_only_hold_);
     if (gi_apply::SsgiSkipped(share)) {
-      plan->lights_residual = join.residual;
-      if (!join.only) {
-        plan->gi = GiPlan{};
-        return;
-      }
-      g.lights_only = true;
-      if (!lights_only_logged_) {
-        lights_only_logged_ = true;
-        REXLOG_INFO("[gpu] ssgi: the first lights-only frame (the probe field stands: it carries the world's lamps and the static lights, the per-pixel pass the moving ones at ULTRA; the screen-space bounce carries the "
-                    "moving lights' bounce alone, from the light pass's residual pair; kept {} frames after the last pair; reported once)",
-                    ssgi_lights::OnlyHold::kHoldFrames);
-      }
-    } else {
-      g.strength *= share;
+      plan->gi = GiPlan{};
+      return;
     }
+    g.strength *= share;
   }
   g.limit = numbers.limit;
   g.cap = numbers.cap;
@@ -4812,12 +4792,9 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
   }
   // GI-BOUNCE-SS (ssgi_lights.h): with a usable history (the AO's own: the same camera motion, the same depth history) and the last frame's two light captures, the level 0 pass also takes the last frame's light.
   // The history is chosen here as the accumulation pass chooses it below (ChooseHistory is a pure function of the frame's state, so the two agree).
-  // GI-BOUNCE-JOIN: where the probe field stands (plan.gi.lights_only) the chain's radiance is the lights' share alone, from the RESIDUAL pair; with no usable history it is black.
-  recipe.lights.only = plan.gi.lights_only;
   if (plan.gi.on && plan.gi.lights && screen_ && Extracting() && DepthPrev().texture) {
     const HistoryUse use = ChooseHistory(plan);
-    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on,
-                                                                     plan.gi.lights_only ? ssgi_lights::Partition::kResidual : ssgi_lights::Partition::kAll);
+    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on);
     if (last.usable) {
       screen::extract::ColourRecipe::Lights& lights = recipe.lights;
       lights.on = true;
@@ -4840,7 +4817,7 @@ screen::extract::ColourRecipe AmbientOcclusion::ColourRecipeFor(const Plan& plan
       lights.cap_floor = plan.gi.lights_floor;
       if (!lights_logged_) {
         lights_logged_ = true;
-        REXLOG_INFO("[gpu] ssgi: the first colour chain that took the last frame's light (the deferred light pass: neon, headlights, street lamps) as part of the bounce light's radiance, reprojected with "
+        REXLOG_INFO("[gpu] ssgi: the first colour chain that took the last frame's world lights, reprojected with "
                     "the camera's motion from {} (mcla_gpu_ssgi_lights, gain {:.3g}, cap floor {:.3g}; reported once)",
                     PoseName(use.pose), double(plan.gi.lights_gain), double(plan.gi.lights_floor));
       }

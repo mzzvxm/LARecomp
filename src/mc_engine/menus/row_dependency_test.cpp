@@ -171,7 +171,7 @@ void Page(const std::string& dir) {
       "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuContact", "PM_RxGpuRtShadows",
       "PM_RxGpuAo", "PM_RxGpuCarAoRt", "PM_RxGpuAoLevel", "PM_RxGpuSsgi", "PM_RxGpuRtGi",
       "PM_RxGpuSsgiLevel", "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuRtLights",
-      "PM_RxGpuNeonLight", "PM_RxGpuSunShafts", "PM_RxGpuVolumetrics"};
+      "PM_RxGpuNeonLight", "PM_RxGpuLightBounce", "PM_RxGpuSunShafts", "PM_RxGpuVolumetrics"};
   const std::vector<std::string> reflections_expected = {
       "PM_RxGpuRoadRefl", "PM_RxGpuSsr", "PM_RxGpuSsrRt", "PM_RxGpuCarRefl", "PM_RxGpuCarSelfRefl",
       "PM_RxGpuCarSelfReflRt", "PM_RxGpuRtCityRefl", "PM_RxGpuSideMirrors"};

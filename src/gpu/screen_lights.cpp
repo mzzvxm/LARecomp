@@ -32,12 +32,12 @@ constexpr uint32_t kLightsMinRenderSize = 64;
 
 }  // namespace
 
-ScreenShared::LightHistory ScreenShared::LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history, ssgi_lights::Partition partition) const {
+ScreenShared::LightHistory ScreenShared::LightHistoryFor(bool pause, uint32_t width, uint32_t height, bool ao_history) const {
   LightHistory out;
   if (!lights_pre_.texture || !lights_post_.texture) {
     return out;
   }
-  out.usable = ssgi_lights::Usable(lights_key_, frame_count_, pause, width, height, ao_history, partition);
+  out.usable = ssgi_lights::Usable(lights_key_, frame_count_, pause, width, height, ao_history);
   if (out.usable) {
     out.post_slot = lights_post_.slot;
     out.pre_slot = lights_pre_.slot;
@@ -160,7 +160,6 @@ bool ScreenShared::CaptureLightsAfter(const ResolveRecord& record, const Resolve
   lights_key_.valid = true;
   lights_key_.frame = frame_count_;
   lights_key_.pause = pause;
-  lights_key_.partition = lights_partition_;
   lights_key_.size[0] = lights_pre_.width;
   lights_key_.size[1] = lights_pre_.height;
   if (!lights_first_logged_) {

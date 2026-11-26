@@ -708,7 +708,7 @@ void SourceChecks() {
         "SHADER: the registers are the layout's (the bindless set, its multisampled twin, the samplers, the pass set 3, the ray tracing set 4, the push block at space 5)");
   Check(Has(trace, "[numthreads(8, 8, 1)]") && Has(trace, "0x80u | CAR_RT_MASK_ALL") && Has(trace, "#define CITY_HIT_LAMP_GRID") && Has(trace, "CityHitShadeHit(params, f, ray, hit.inst, decoded)") &&
             Has(trace, "CITY_HIT_MODE_GI") && Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_LAMPS | CITY_HIT_P_LAMP_SHADOW") && Has(trace, "#define CITY_HIT_FEEDBACK(P, N) GipFeedback((P), (N))") &&
-            Has(trace, "#define CITY_HIT_EMITTER_COUNT (g_world.emitterCount)") && Has(trace, "#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)"),
+            Has(trace, "#define CITY_HIT_EMITTER_COUNT (g_world.emitterStatic)") && Has(trace, "#define CITY_HIT_GLOW_FACTOR(kind) RtWorldGlowFactor(kind)"),
         "SHADER: one cosine ray into the city and the cars, shaded by the library's GI mode (the sun, one lamp of the world frame's grid with its shadow ray, the glow, the world frame's emitters, the field's second bounce), as the probes' rays are");
   Check(Has(trace, "#include \"light_laws.hlsli\"") && Has(trace, "#include \"rt_emitters.hlsli\"") && Has(trace, "params.flags = params.flags | CITY_HIT_P_EMITTERS | CITY_HIT_P_EMITTER_SHADOW;") && !Has(trace, "GipLights(") &&
             !Has(trace, "GIP_ROW(3u + 4u * i)") && !Has(trace, "g_lightCount"),

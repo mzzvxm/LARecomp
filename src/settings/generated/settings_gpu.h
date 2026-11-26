@@ -1096,6 +1096,8 @@ class GPUSettings final : public rex::SettingOwner {
     "or the iGPU of a desktop CPU). It costs the graphics card a little, only while a car with its neon lit is in view, and only on the pixels the neon reaches (a few metres round the car). "
     "Live; the first time it shows, the graphics card builds its pipeline (a short stutter).", rex::Allowed("auto", "off", "on"));
 
+  REX_SETTING(std::string, mcla_gpu_light_bounce, "on", "Surface-coloured light reflected from car headlights, tail lights and neon. Applies live.", rex::Allowed("off", "on"));
+
   REX_SETTING(f64, mcla_gpu_headlight_strength, 1.0, "Diagnostic: how strong the headlights are, a number their light is multiplied by (1: the built-in look; 0: none). "
     "Live.", rex::kDebugOnly, rex::Range{0.0, 8.0});
 
@@ -2333,6 +2335,7 @@ inline auto& mcla_gpu_headlight_range = g_gpu.mcla_gpu_headlight_range;
 inline auto& mcla_gpu_headlight_strength = g_gpu.mcla_gpu_headlight_strength;
 inline auto& mcla_gpu_headlights = g_gpu.mcla_gpu_headlights;
 inline auto& mcla_gpu_neon_light = g_gpu.mcla_gpu_neon_light;
+inline auto& mcla_gpu_light_bounce = g_gpu.mcla_gpu_light_bounce;
 inline auto& mcla_gpu_lock_ahead_verify = g_gpu.mcla_gpu_lock_ahead_verify;
 inline auto& mcla_gpu_lock_dump = g_gpu.mcla_gpu_lock_dump;
 inline auto& mcla_gpu_low_latency = g_gpu.mcla_gpu_low_latency;

@@ -137,6 +137,7 @@ inline constexpr Row kRows[] = {
     {"mcla_gpu_light_shadows", Page::kLighting, {"off", "medium", "ultra", "medium", "ultra"}},
     {"mcla_gpu_rt_lights", Page::kLighting, {"off", "off", "off", "off", "on"}},
     {"mcla_gpu_neon_light", Page::kLighting, {"off", "on", "on", "on", "on"}},
+    {"mcla_gpu_light_bounce", Page::kLighting, {"off", "on", "on", "on", "on"}},
     {"mcla_gpu_sun_shafts", Page::kLighting, {"off", "default", "default", "default", "default"}},
     {"mcla_gpu_volumetrics", Page::kLighting, {"off", "medium", "high", "medium", "high"}},
 

@@ -56,6 +56,7 @@ enum class Consumer : uint8_t {
   kCheck,            // the debug checks (mcla_gpu_car_rt_check, mcla_gpu_city_rt_check, mcla_gpu_city_hit_data)
   kRtLights,         // the ray traced visibility of the top K lights (rt_lights.h, mcla_gpu_rt_lights)
   kRtAo,
+  kVirtualBounce,
   kCount,
 };
 inline constexpr size_t kConsumerCount = size_t(Consumer::kCount);
@@ -70,6 +71,7 @@ constexpr std::string_view ConsumerName(Consumer who) {
     case Consumer::kCheck: return "debug checks";
     case Consumer::kRtLights: return "rt lights";
     case Consumer::kRtAo: return "rtao";
+    case Consumer::kVirtualBounce: return "light bounce";
     default: return "?";
   }
 }

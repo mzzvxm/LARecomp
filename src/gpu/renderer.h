@@ -89,6 +89,7 @@
 #include "hdr_tonemap.h"
 #include "host_passes.h"
 #include "gi_apply.h"
+#include "vpl.h"
 #include "gi_field.h"
 #include "gi_integration.h"
 #include "gi_pixel.h"
@@ -336,6 +337,7 @@ class Renderer final : public RenderThread::Executor {
   VolumetricsInputs vol_inputs_;  // render thread; the volumetric light's street lamps and headlights (volumetrics_inputs.h); before it: it outlives it
   Volumetrics volumetrics_;   // render thread; volumetric light: lamp and headlight beams, haze, sun through the cascades (volumetrics.h)
   GBuffer gbuffer_;           // render thread; the G-buffer's sidecar and debug view (gbuffer.h; debug-only settings in this branch)
+  VirtualBounce vpl_;
   GiApply gi_apply_;          // render thread; the probe field's apply (gi_apply.h, CITY-RT M3 G3): the field's bounce light, and the screen-space bounce light's share; it holds pointers to the AO, the shared products and the G-buffer: Shutdown stops it first
   GiField gi_field_;          // render thread; the probe field's owner (gi_field.h, CITY-RT M3 G1): textures, windows, weights; the apply reads it (SetGiField); Shutdown stops the apply first
   GiUpdate gi_update_;        // render thread; the probe field's update (gi_update.h, CITY-RT M3 G2): the rays of the probes and their blend; it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: Shutdown stops it with the integration

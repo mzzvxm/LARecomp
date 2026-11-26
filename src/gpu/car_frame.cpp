@@ -177,6 +177,7 @@ void CarFrame::StartFrame() {
   vehicles_read_ = false;
   vehicle_scan_ = car_mesh::VehicleScan{};
   // The other cars asked for in the frame before are collected in this one (a request is for the next frame, as the player's draws are).
+  stencil_centres_on_ = std::exchange(stencil_centres_requested_, false) && collecting_;
   others_on_ = collecting_ && others_requested_ && other_limits_next_.On();
   other_limits_ = others_on_ ? other_limits_next_ : car_rt_instances::Limits{};
   others_requested_ = false;
@@ -406,10 +407,10 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
   const bool assumed = verdict.standing != car_frame_rules::IdentityTracker::Standing::kOther;
   const bool confirmed = tracker_.confirmed() != 0;
   if (!assumed) {
+    if ((others_on_ || stencil_centres_on_) && finite) {
+      car_rt_memory::NoteSeen(&frame_.seen_cars, id, translation);
+    }
     if (others_on_) {
-      if (finite) {
-        car_rt_memory::NoteSeen(&frame_.seen_cars, id, translation);  // every other car's draw, kept or not: it covers its vehicle
-      }
       // Another car's draw (the previous frame's ID is the player's until a draw near the vehicle says otherwise, and a draw of another ID that is not
       // that near the vehicle takes no match: IdentityTracker::kStrictMatchMetres): to the selection of the cars of the ray traced scene.
       HandleOtherDraw(d, order, id, verdict.distance, bank);

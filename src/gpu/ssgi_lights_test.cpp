@@ -453,70 +453,7 @@ void CheckValidity() {
   Check(sl::Wanted(true, true, true) && !sl::Wanted(false, true, true) && !sl::Wanted(true, false, true) && !sl::Wanted(true, true, false), "wanted where the bounce light runs, the switch is on and the owner extracts");
   Check((sl::kFlag & 0xFFFFu) == 0u && sl::kFlag == (1u << 23) && sl::kNormalShift == 16 && sl::kHostSamplesMask == 0xFFu, "the flag is bit 23, the normal's slot rides in the high half of slots.y");
   // GI-BOUNCE-JOIN: the pair is of a partition of the lights; a chain uses a pair of its own kind only.
-  Check(sl::kFlagOnly == (1u << 24) && (sl::kFlagOnly & sl::kFlag) == 0u && (sl::kFlagOnly & 0xFFFFFFu) == 0u, "the lights-only flag is bit 24, apart from the lights' flag and everything FillPush sets");
-  key.partition = sl::Partition::kResidual;
-  Check(!sl::Usable(key, 42, false, 960, 540, true) && sl::Usable(key, 42, false, 960, 540, true, sl::Partition::kResidual), "a residual pair is not a whole-pass pair's history, and the other way round");
-  key.partition = sl::Partition::kAll;
-  Check(sl::Usable(key, 42, false, 960, 540, true) && !sl::Usable(key, 42, false, 960, 540, true, sl::Partition::kResidual), "the default is the whole-pass pair (the rule as it was)");
-  Check(!sl::ResidualReady(key, 42), "a whole-pass pair is not a residual one (the lights-only chain is not planned on it)");
-  key.partition = sl::Partition::kResidual;
-  Check(sl::ResidualReady(key, 42) && !sl::ResidualReady(key, 43) && !sl::ResidualReady(key, 41) && !sl::ResidualReady(none, 1), "a residual pair from the frame before is ready, no other");
-  key.partition = sl::Partition::kAll;
 }
-
-// ---------------------------------------------------------------------------
-// GI-BOUNCE-JOIN: the lights-only chain (ChainColour) and its hold (OnlyHold)
-// ---------------------------------------------------------------------------
-
-void CheckLightsOnly() {
-  const Rgb pre{0.3f, 0.2f, 0.1f};
-  const Rgb delta{0.5f, 0.4f, 0.1f};
-  const float cap = 1.3f;
-  // The old chain: pre plus the light under the cap; no lights: pre to the bit.
-  const Rgb old_chain = sl::ChainColour(pre, delta, 1.0f, cap, 0.0f, true, false);
-  const Rgb carried = sl::CarryLights(pre, delta, 1.0f, cap, 0.0f);
-  Check(old_chain.r == carried.r && old_chain.g == carried.g && old_chain.b == carried.b, "not lights-only: the chain is CarryLights as it was");
-  const Rgb plain = sl::ChainColour(pre, delta, 1.0f, cap, 0.0f, false, false);
-  Check(plain.r == pre.r && plain.g == pre.g && plain.b == pre.b, "no lights, not lights-only: the colour as it was, to the bit");
-  // Lights-only: the texel's own colour is gone, the light alone is left (on black, under the cap).
-  const Rgb only = sl::ChainColour(pre, delta, 1.0f, cap, 0.0f, true, true);
-  const Rgb alone = sl::CarryLights(Rgb{}, delta, 1.0f, cap, 0.0f);
-  Check(only.r == alone.r && only.g == alone.g && only.b == alone.b && only.r > 0.0f, "lights-only: the light alone, on black");
-  Check(only.r < carried.r && only.g < carried.g && only.b < carried.b, "lights-only holds less than the whole chain: the texel's own colour (the field's to carry) is dropped");
-  const Rgb none = sl::ChainColour(pre, delta, 1.0f, cap, 0.0f, false, true);
-  Check(none.r == 0.0f && none.g == 0.0f && none.b == 0.0f, "lights-only with no usable history: black (the field has the bounce; the chain must not add the picture's own colour a second time)");
-  const Rgb lamp = sl::ChainColour(pre, delta, 1.0f, cap, 1.0f, true, true);
-  Check(lamp.r == 0.0f && lamp.g == 0.0f && lamp.b == 0.0f, "lights-only: a texel that is a source takes none of the lights' share (it is the lamp, not the wall)");
-  const Rgb zero_gain = sl::ChainColour(pre, delta, 0.0f, cap, 0.0f, true, true);
-  Check(zero_gain.r == 0.0f && zero_gain.g == 0.0f && zero_gain.b == 0.0f, "lights-only: a gain of 0 is no light");
-  // Energy: never over the cap, whatever the light.
-  bool held = true;
-  std::mt19937 rng(11);
-  for (int i = 0; i < 20000; ++i) {
-    const float scale = std::pow(10.0f, -2.0f + 5.0f * float(rng() & 1023) / 1023.0f);
-    const Rgb d{scale * float(rng() & 255) / 255.0f, scale * float(rng() & 255) / 255.0f, scale * float(rng() & 255) / 255.0f};
-    const float c = 0.4f + 3.0f * float(rng() & 255) / 255.0f;
-    const Rgb o = sl::ChainColour(pre, d, 1.0f + float(rng() & 7), c, 0.0f, true, true);
-    held = held && ssgi_light::Luma(o) <= c + 1e-4f && o.r >= 0.0f && o.g >= 0.0f && o.b >= 0.0f;
-  }
-  Check(held, "lights-only: 20000 random lights, the carried colour is never over the cap and never negative");
-  // The hold: starts only with a pair, is kept for kHoldFrames, is off while the lights' share is.
-  sl::OnlyHold hold;
-  Check(!hold.Step(true, false) && !hold.Step(true, false), "no pair, no lights-only chain: the plain occlusion as it has always been");
-  Check(hold.Step(true, true) && hold.left() == sl::OnlyHold::kHoldFrames, "a pair: the chain runs lights-only and the hold is set");
-  uint32_t kept = 0;
-  while (hold.Step(true, false)) {
-    ++kept;
-    if (kept > 10 * sl::OnlyHold::kHoldFrames) break;
-  }
-  Check(kept == sl::OnlyHold::kHoldFrames, "the chain is kept kHoldFrames frames after the last pair, then goes back to the plain occlusion");
-  Check(hold.Step(true, true) && !hold.Step(false, true) && !hold.Step(true, false), "not wanted (the field does not stand, or the lights' share is off): off at once, and the hold is gone");
-  Check(sl::OnlyHold::kHoldFrames >= 30 && sl::OnlyHold::kHoldFrames <= 300, "the hold is between half a second and five seconds at 60 fps");
-}
-
-// ---------------------------------------------------------------------------
-// the push block
-// ---------------------------------------------------------------------------
 
 void CheckPush() {
   AoPush base{};
@@ -559,16 +496,6 @@ void CheckPush() {
     rows = rows && on.lin[k] == float(k) + 0.5f && on.light[k] == float(4 + k) + 0.5f && on.extra[k] == float(8 + k) + 0.5f;
   }
   Check(rows, "... the 3x4 in lin, light and extra, row by row");
-  Check((on.slots2[2] & sl::kFlagOnly) == 0u, "... and not the lights-only flag: that is the plan's own word");
-  recipe.lights.only = true;
-  const AoPush lights_only = screen::extract::ColourLevel0Push(base, frame, recipe);
-  Check((lights_only.slots2[2] & sl::kFlagOnly) != 0u && (lights_only.slots2[2] & sl::kFlag) != 0u && lights_only.slots[2] == 301u, "lights-only: its flag beside the lights' flag, the fields as they were");
-  recipe.lights.on = false;
-  const AoPush black = screen::extract::ColourLevel0Push(base, frame, recipe);
-  Check((black.slots2[2] & sl::kFlagOnly) != 0u && (black.slots2[2] & sl::kFlag) == 0u && black.slots[1] == 4u && black.shape[2] == base.shape[2] && black.slots[2] == base.slots[2],
-        "lights-only with no usable history: the flag alone (the pass is black), no light field of the block is touched");
-  recipe.lights.on = true;
-  recipe.lights.only = false;
   recipe.one_sample = true;
   recipe.sample = 2;
   const AoPush one = screen::extract::ColourLevel0Push(base, frame, recipe);
@@ -633,29 +560,26 @@ void CheckSources(const std::string& gpu) {
   Check(Has(color, "sum += max(post - pre, 0.0f) * w;") && Has(color, "const float confidence = smoothstep(kSsgiLightsConfidenceLow, kSsgiLightsConfidenceHigh, weight);") &&
             Has(color, "return sum * (confidence / max(weight, 1e-4f));"),
         "ao_color_ps.hlsl: the light is the difference of the two captures (never negative), by the confidence of the weights");
-  Check(Has(color, "result.rgb = SsgiCarryLights(result.rgb, LightsHistory(int2(position.xy)), g_push.shape.z, SsgiLightsCap(max(g_push.shape.x, 1e-3f), g_push.shape.w), result.a);") && Count(color, "SsgiCarryLights(") == 2,
+  Check(Has(color, "result.rgb = SsgiCarryLights(result.rgb, LightsHistory(int2(position.xy)), g_push.shape.z, SsgiLightsCap(max(g_push.shape.x, 1e-3f), g_push.shape.w), result.a);") && Count(color, "SsgiCarryLights(") == 1,
         "ao_color_ps.hlsl: level 0 carries the light under the cap it was held to (or the lights' own floor where that is higher), by the texel's source share, with the gain in shape.z and the floor in shape.w");
-  Check(Has(color, "bool AoLightsOnly() { return (g_push.slots2.z & (1u << 24)) != 0u; }") && Has(color, "if (AoLightsOnly()) {") &&
-            Has(color, "result.rgb = AoLights() ? SsgiCarryLights(float3(0.0f, 0.0f, 0.0f), LightsHistory(int2(position.xy)), g_push.shape.z, SsgiLightsCap(max(g_push.shape.x, 1e-3f), g_push.shape.w), result.a)\n                            : float3(0.0f, 0.0f, 0.0f);") &&
-            Has(color, "} else if (AoLights()) {"),
-        "ao_color_ps.hlsl: GI-BOUNCE-JOIN's lights-only flag is bit 24 and the chain is the light alone on black (black with no history), the old chain otherwise");
+  Check(!Has(color, "AoLightsOnly"), "the world-light chain always includes the base radiance");
   Check(Has(common, "float SsgiLightsCap(float cap, float floor_luma) {\n  return max(cap, floor_luma);\n}") && Count(common, "SsgiLightsCap(") == 1,
         "ssgi_common.hlsli: SsgiLightsCap is the header's LightsCap (the larger of the cap and the floor: the cap itself, to the bit, wherever it is the larger)");
   Check(Has(color, "max(g_push.slots.y & 0xFFu, 1u)"), "ao_color_ps.hlsl: the host samples are the low byte of slots.y (the high half is the normal's slot)");
   Check(Has(color, "AoNormalAt(g_push.slots.y >> 16, depth_slot, pixel, isize, tc, pc)") && Has(color, "const float2 tan_half = g_push.lens.zw;"), "ao_color_ps.hlsl: the normal image's slot and the last frame's lens are where the host puts them");
   // ao.cpp: the plan, the want, the recipe from the history the accumulation uses
-  Check(Has(ao, "g.lights = ssgi_lights::Wanted(true, larecomp::settings::mcla_gpu_ssgi_lights.Get() && gi_bounce::AnyGroup(gi_bounce::GroupsNow()), Extracting());") && Has(ao, "g.lights_gain = ssgi_lights::GainOf(larecomp::settings::mcla_gpu_ssgi_lights_gain.Get());"),
+  Check(Has(ao, "g.lights = ssgi_lights::Wanted(true, larecomp::settings::mcla_gpu_ssgi_lights.Get(), Extracting());") && Has(ao, "g.lights_gain = ssgi_lights::GainOf(larecomp::settings::mcla_gpu_ssgi_lights_gain.Get());"),
         "ao.cpp: the plan reads the settings through the headers; all four group switches off is no lights' share");
   Check(Has(ao, "g.lights_floor = ssgi_lights::FloorOf(larecomp::settings::mcla_gpu_ssgi_lights_floor.Get());") && Has(ao, "lights.cap_floor = plan.gi.lights_floor;"),
         "ao.cpp: the lights' own floor is read through the header and goes into the recipe");
-  Check(Has(ao, "screen_->WantLights(plan.lights_residual || (plan.gi.on && plan.gi.lights), plan.lights_residual ? ssgi_lights::Partition::kResidual : ssgi_lights::Partition::kAll);"), "ao.cpp: the owner is told once a frame whether the lights are wanted, and of which partition");
-  Check(Has(ao, "const HistoryUse use = ChooseHistory(plan);\n    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on,\n                                                                     plan.gi.lights_only ? ssgi_lights::Partition::kResidual : ssgi_lights::Partition::kAll);"), "ao.cpp: the history is the accumulation pass's own choice, of the partition the chain wants");
+  Check(Has(ao, "screen_->WantLights(plan.gi.on && plan.gi.lights);"), "ao.cpp: the owner is told once a frame whether the lights are wanted, and of which partition");
+  Check(Has(ao, "const HistoryUse use = ChooseHistory(plan);\n    const ScreenShared::LightHistory last = screen_->LightHistoryFor(trigger_pause_, plan.ao[0], plan.ao[1], use.on);"), "ao.cpp: the history is the accumulation pass's own choice, of the partition the chain wants");
   Check(Has(ao, "lights.motion[j * 4 + k] = float(sign * use.motion.m[k][j]);") && Has(ao, "const double sign = ((k == 2) != (j == 2)) ? -1.0 : 1.0;"), "ao.cpp: the 3x4 is the accumulation pass's (S G S, row by row)");
   Check(Has(ao, "lights.depth_slot = Depth(0).slot;") && Has(ao, "lights.depth_prev_slot = DepthPrev().slot;") && Has(ao, "lights.tan_prev[0] = history_tan_[0];"), "ao.cpp: this frame's depth, the depth history and the last frame's lens");
   Check(Has(temporal, "push.lin[k] = motion(k, 0);") || Has(ao, "push.lin[k] = motion(k, 0);"), "(the accumulation pass is given lin = motion(k, 0), shape = motion(k, 1), light = motion(k, 2))");
   Check(Has(ao, "push.shape[k] = motion(k, 1);") && Has(ao, "push.light[k] = motion(k, 2);"), "ao.cpp: the accumulation pass's rows are the ones the lights' 3x4 repeats");
   // the owner
-  Check(Has(lights_cpp, "ssgi_lights::Usable(lights_key_, frame_count_, pause, width, height, ao_history, partition)") && Has(lights_cpp, "lights_key_.frame = frame_count_;"), "screen_lights.cpp: the history is usable by the header's rule and the pair is stamped with the frame");
+  Check(Has(lights_cpp, "ssgi_lights::Usable(lights_key_, frame_count_, pause, width, height, ao_history)") && Has(lights_cpp, "lights_key_.frame = frame_count_;"), "screen_lights.cpp: the history is usable by the header's rule and the pair is stamped with the frame");
   Check(Has(lights_cpp, "if (!CaptureLightsInto(lights_post_, \"ssgi lights after\", record, summary, list, &pause) || pause != lights_pause_) {\n    return false;"), "screen_lights.cpp: the second capture makes the pair valid only when it was recorded and of the same view");
   Check(Has(lights_cpp, "ColourPipeline(ms ? kColourMs : kColourPlain)") && Has(lights_cpp, "push.slots[2] = (frame_.flags & screen::kFrameHalfTraced) != 0 ? 2u : 1u;"), "screen_lights.cpp: the colour_post capture's pipelines, at the traced size (half where the frame is half traced)");
   Check(Has(shared_cpp, "LightsBeginFrame();"), "screen_shared.cpp: the frame's start clears the frame's captures and counts the idle frames");
@@ -695,7 +619,6 @@ int main(int argc, char** argv) {
   CheckCarry();
   CheckFloor();
   CheckValidity();
-  CheckLightsOnly();
   CheckPush();
   if (!gpu_dir.empty()) {
     CheckSources(gpu_dir);

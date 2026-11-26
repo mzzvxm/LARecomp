@@ -83,6 +83,7 @@ const Allowed kAllowed[] = {
     {"mcla_gpu_headlights", "off|on"},
     {"mcla_gpu_light_shadows", "off|medium|high|ultra"},
     {"mcla_gpu_neon_light", "off|on"},
+    {"mcla_gpu_light_bounce", "off|on"},
     {"mcla_gpu_volumetrics", "off|medium|high|ultra"},
     {"mcla_gpu_reflection_resolution", "game|high|ultra"},
     {"mcla_gpu_env_resolution", "off|on"},
@@ -149,7 +150,7 @@ void CheckTable() {
     Check(gp::FindRow(name) < 0, std::string(name) + ": a DISPLAY or UPSCALING setting has no row");
   }
 
-  Check(gp::kRowCount == 37, "all 37 native effects have preset cells");
+  Check(gp::kRowCount == 38, "all 38 native effects have preset cells");
   Check(gp::kExemptCount == 1, "the Xenia anisotropy row is outside native preset coverage");
   for (const gp::Note& e : gp::kExempt) {
     Check(gp::FindRow(e.cvar) < 0, std::string(e.cvar) + ": an exempt row is not in the table");
@@ -185,6 +186,7 @@ const Want kVanilla[] = {
     {"mcla_gpu_headlights", "off"},
     {"mcla_gpu_light_shadows", "off"},
     {"mcla_gpu_neon_light", "off"},
+    {"mcla_gpu_light_bounce", "off"},
     {"mcla_gpu_volumetrics", "off"},
     {"mcla_gpu_reflection_resolution", "game"},
     {"mcla_gpu_env_resolution", "off"},
@@ -402,6 +404,7 @@ const Top kTops[] = {
     {"mcla_gpu_headlights", "on"},
     {"mcla_gpu_light_shadows", "ultra"},
     {"mcla_gpu_neon_light", "on"},
+    {"mcla_gpu_light_bounce", "on"},
     {"mcla_gpu_volumetrics", "ultra"},
     {"mcla_gpu_reflection_resolution", "ultra"},
     {"mcla_gpu_env_resolution", "on"},
@@ -659,7 +662,7 @@ void CheckScope() {
   int per_page[4] = {};
   for (const gp::Row& row : gp::kRows) ++per_page[static_cast<int>(row.page)];
   Check(per_page[0] == 3, "Image Quality has three preset rows");
-  Check(per_page[1] == 20, "Lighting and Shadows has twenty preset rows");
+  Check(per_page[1] == 21, "Lighting and Shadows has twenty-one preset rows");
   Check(per_page[2] == 8, "Reflections has eight preset rows");
   Check(per_page[3] == 6, "World Detail has six preset rows");
 }

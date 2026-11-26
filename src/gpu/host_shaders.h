@@ -86,6 +86,14 @@
 #include "gi_apply_lookup_ps.hlsl.dxil.h"
 #include "gi_apply_ms_ps.hlsl.dxil.h"
 #include "gi_apply_ps.hlsl.dxil.h"
+#include "vpl_hit_0_cs.hlsl.dxil.h"
+#include "vpl_hit_1_cs.hlsl.dxil.h"
+#include "vpl_hit_rt_0_cs.hlsl.dxil.h"
+#include "vpl_hit_rt_1_cs.hlsl.dxil.h"
+#include "vpl_irradiance_0_ps.hlsl.dxil.h"
+#include "vpl_irradiance_1_ps.hlsl.dxil.h"
+#include "vpl_composite_0_ps.hlsl.dxil.h"
+#include "vpl_composite_1_ps.hlsl.dxil.h"
 #include "gi_apply_up_ms_ps.hlsl.dxil.h"
 #include "gi_apply_up_ps.hlsl.dxil.h"
 #include "gi_field_reset_cs.hlsl.dxil.h"
@@ -263,6 +271,14 @@
 #include "gi_apply_lookup_ps.hlsl.spirv.h"
 #include "gi_apply_ms_ps.hlsl.spirv.h"
 #include "gi_apply_ps.hlsl.spirv.h"
+#include "vpl_hit_0_cs.hlsl.spirv.h"
+#include "vpl_hit_1_cs.hlsl.spirv.h"
+#include "vpl_hit_rt_0_cs.hlsl.spirv.h"
+#include "vpl_hit_rt_1_cs.hlsl.spirv.h"
+#include "vpl_irradiance_0_ps.hlsl.spirv.h"
+#include "vpl_irradiance_1_ps.hlsl.spirv.h"
+#include "vpl_composite_0_ps.hlsl.spirv.h"
+#include "vpl_composite_1_ps.hlsl.spirv.h"
 #include "gi_apply_up_ms_ps.hlsl.spirv.h"
 #include "gi_apply_up_ps.hlsl.spirv.h"
 #include "gi_field_reset_cs.hlsl.spirv.h"
@@ -481,6 +497,15 @@ inline HostShaderBlob GiPixelTraceShader(bool multisampled) {
 
 // The probe field's apply (gi_apply.h, CITY-RT M3 package G3): 0 the lookup at the traced size, 1 the same over multisampled planes, 2 the apply, 3 the apply over multisampled planes, 4 the apply that takes
 // the net irradiance from the lookup's image, 5 the same over multisampled planes. All pixel shaders of one source (hlsl/gi_apply_ps.hlsl).
+inline HostShaderBlob VirtualBounceShader(uint32_t stage, bool ms) {
+  switch (stage) {
+    case 0: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_1_cs) : MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_0_cs);
+    case 1: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_rt_1_cs) : MCLA_GPU_HOST_SHADER_BLOB(vpl_hit_rt_0_cs);
+    case 2: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_irradiance_1_ps) : MCLA_GPU_HOST_SHADER_BLOB(vpl_irradiance_0_ps);
+    default: return ms ? MCLA_GPU_HOST_SHADER_BLOB(vpl_composite_1_ps) : MCLA_GPU_HOST_SHADER_BLOB(vpl_composite_0_ps);
+  }
+}
+
 inline HostShaderBlob GiApplyShader(uint32_t which) {
   switch (which) {
     case 0: return MCLA_GPU_HOST_SHADER_BLOB(gi_apply_lookup_ps);

@@ -286,9 +286,9 @@ void GiApply::BeginFrame() {
     gbuffer_->Want(gbuffer::Consumer::kRtBounce, planes);
   }
   ssgi_ran_share_ = 0.0f;
-  pixel_ran_frame_ = false;
   trigger_seen_ = false;
   ran_this_frame_ = false;
+  field_share_in_frame_ = 0.0f;
   capture_lookup_ = false;
 }
 
@@ -532,7 +532,6 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
       pixel_ran = pixel_->Publish(&shown);
     }
   }
-  pixel_ran_frame_ = pixel_ran;
   // The frame's rows: the field's own as published, or (with the pixel pass's image in it) as the apply's copy says.
   const ga::Buffer buffer = pixel_ran ? ga::MakeBuffer(gi::MakeGpuFrame(shown), fr) : base_rows;
   void* mapped = slot.buffer->map();
@@ -604,6 +603,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   Count(ga::Skip::kRecorded);
   ++frames_run_;
   ran_this_frame_ = true;
+  field_share_in_frame_ = view_run ? 0.0f : field_share;
   capture_lookup_ = up && !view_run;
   frames_upsampled_ += up ? 1u : 0u;
   frames_with_visibility_ += has_visibility ? 1u : 0u;

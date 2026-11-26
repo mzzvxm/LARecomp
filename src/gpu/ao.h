@@ -857,9 +857,6 @@ class AmbientOcclusion {
     bool lights = false;
     float lights_gain = 1.0f;      // mcla_gpu_ssgi_lights_gain
     float lights_floor = 1.3f;     // mcla_gpu_ssgi_lights_floor: the lights' own cap floor (ssgi_lights.h kFloorDefault)
-    // GI-BOUNCE-JOIN (gi_bounce_carrier.h): the probe field stands (it replaces the screen-space bounce: share 0) and carries everything but the lights it has no list for: the colour chain runs LIGHTS-ONLY (its
-    // radiance is the lights' share alone, ssgi_lights.h kFlagOnly) at the bounce level's own strength, on the residual pair the last frame left. False: the chain as it was.
-    bool lights_only = false;
     // The numbers of the strength level (mcla_gpu_ssgi_intensity; ssgi_level.h) with the debug cvars' overrides:
     float strength = 1.25f;        // the bounce's gain; 0 runs the passes and adds nothing
     float limit = 2.5f;            // the most it may add to a pixel, as a multiple of the pixel's own colour (a soft guard)
@@ -902,9 +899,6 @@ class AmbientOcclusion {
     uint32_t view = 0;             // the debug view: 0 none, 1-6 the occlusion's, 8-11 the contact's
     ContactPlan contact;
     GiPlan gi;
-    // GI-BOUNCE-JOIN: the field stands and the lights' share is wanted: this frame's light pass makes the RESIDUAL pair (the lights the field and the per-pixel pass do not carry), with or without a colour chain
-    // in this frame (gi.lights_only says whether it runs).
-    bool lights_residual = false;
     // The contact filter is done by the apply pass (mcla_gpu_contact_shadows_fast): the march's image goes to it as
     // it is and the denoise pass does not run for the contact shadows. Only at the picture's size: at half size the
     // apply upsamples a filtered image (hlsl/ao_apply_ps.hlsl VisibilityAt), and that pass is a quarter of the pixels.
@@ -1469,8 +1463,6 @@ class AmbientOcclusion {
   // The SSGI test. What the log says once: why a frame had none; and the frames it ran.
   bool gi_failed_logged_ = false;
   mutable bool lights_logged_ = false;  // GI-BOUNCE-SS: the first colour chain that took the last frame's lights was logged
-  ssgi_lights::OnlyHold lights_only_hold_;  // GI-BOUNCE-JOIN: how long the lights-only chain is kept after the last frame that needed it (PlanGi)
-  bool lights_only_logged_ = false;         // GI-BOUNCE-JOIN: the first lights-only frame was logged
   uint32_t last_gi_logged_ = ~0u;
   uint32_t gi_level_logged_ = ~0u;  // the strength level (and whether a debug cvar changed it) the log last said
   bool gi_light_logged_[5] = {};   // per menu_world::World: the light constants the bounce light first ran with there were logged

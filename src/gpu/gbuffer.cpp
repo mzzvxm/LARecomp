@@ -307,7 +307,8 @@ void GBuffer::Transition(plume::RenderCommandList* list, plume::RenderTextureLay
     image.layout = layout;
   }
   if (count != 0) {
-    list->barriers(plume::RenderBarrierStage::GRAPHICS, barriers, count);
+    const auto stages = layout == plume::RenderTextureLayout::SHADER_READ ? plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE : plume::RenderBarrierStage::GRAPHICS;
+    list->barriers(stages, barriers, count);
   }
 }
 

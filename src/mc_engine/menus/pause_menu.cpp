@@ -1725,6 +1725,8 @@ const ItemDef kLightItems[] = {
                    kOnOffVals, kOnOffNames, 2)),
     NativeOnly(Str("PM_RxGpuNeonLight", "mcla_gpu_neon_light", "NEON UNDERGLOW: ",
                    kOnOffVals, kOnOffNames, 2)),
+    NativeOnly(Str("PM_RxGpuLightBounce", "mcla_gpu_light_bounce", "LIGHT BOUNCE: ",
+                   kOnOffVals, kOnOffNames, 2)),
     NativeOnly(Str("PM_RxGpuSunShafts", "mcla_gpu_sun_shafts", "SUNBEAMS: ",
                    kNativeShaftsVals, kNativeShaftsNames, 6)),
     NativeOnly(Str("PM_RxGpuVolumetrics", "mcla_gpu_volumetrics", "LIGHT BEAMS: ",
@@ -3128,7 +3130,7 @@ void ClickItem(const ItemDef& it) { ApplyItem(it, +1); }
 // of the game's own value class, handed to the list through its widget array.
 
 // Sizes the tables below, nothing else: the form's own row list is made with the page's row count
-// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 18 rows
+// (ui_forms.cpp CreateListForm), and a long page scrolls. LIGHTING AND SHADOWS is the longest page at 19 rows
 // (kLightItems); a page over the cap is refused whole (BuildNativeRows), so there is room. The cap is the size of these tables, not
 // the screen's: nothing past about 14 rows has been looked at in the game ("CHECK: every page up to 14 rows scrolls" above), and a page that long is no
 // way to find a row, so a page that outgrows it is split into two pages, never given a higher cap. tools/check_menu_rows.py counts every page of kMenus

@@ -228,6 +228,9 @@ help = "Adds shadows from headlights and nearby lights."
 native = "kNeonLightDynamics"
 help = "Lights the ground and objects near cars with neon."
 
+[rows.PM_RxGpuLightBounce]
+help = "Surface-coloured light reflected from car headlights, tail lights and neon. Applies live."
+
 [rows.PM_RxGpuVolumetrics]
 native = "kVolumetricsDynamics"
 help = "Makes headlight and street-lamp beams visible in the air."

@@ -453,6 +453,9 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     scene_.SetLocalShadow(&local_shadow_);
     scene_.SetLightManager(&light_manager_);
     scene_.SetLocalLights(&local_lights_);
+    vpl_.Initialize(device_, frames_, heap_, passes_, edram_, pass_timing_, light_manager_,
+                    car_rt_, car_frame_, screen_, ao_, gbuffer_, rt_world_, rt_scene_);
+    scene_.SetVirtualBounce(&vpl_);
     scene_.SetGiApply(&gi_apply_);
     scene_.SetGiIntegration(&gi_integration_);
     scene_.SetRtWorldFrame(&rt_world_);
@@ -552,6 +555,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     rt_world_.Shutdown();  // it holds pointers to the AO, the car frame, the shared products and the city scene (and asked the AO's draw hook for the light): before them (CITY-RT FRAME)
     gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
     gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
+    vpl_.Shutdown();
     gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
     gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
     local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
@@ -765,6 +769,7 @@ void Renderer::Shutdown(bool fast_exit) {
   rt_world_.Shutdown();  // the same, CITY-RT FRAME (rt_world_frame.h)
   gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first
   gi_update_.Shutdown();  // it holds pointers to the field, the car scene, the city scene, the scene service and the world frame: before the field (and before HostPasses)
+  vpl_.Shutdown();
   gi_apply_.Shutdown();  // the same: before the AO, the shared products and the G-buffer it reads (the AO holds a pointer to it: after the AO's last frame, which is over)
   gi_field_.Shutdown();  // after the apply that reads it, GPU idle and the FrameRing drained, before HostPasses shuts down
   local_lights_.Shutdown();  // before the owners it reads (the AO, the shared products, the G-buffer, the manager)
@@ -2185,6 +2190,7 @@ void Renderer::ReportFrameStats() {
                            (gbuffer_.HeldBytes() != 0 ? ", G-buffer " + mib(gbuffer_.HeldBytes()) : std::string()) +
                            (screen_.HeldBytes() != 0 ? ", screen products " + mib(screen_.HeldBytes()) : std::string()) +
                            (ssr_.HeldBytes() != 0 ? ", screen-space reflections " + mib(ssr_.HeldBytes()) : std::string()) +
+                           (vpl_.HeldBytes() != 0 ? ", light bounce " + mib(vpl_.HeldBytes()) : std::string()) +
                            (gi_apply_.HeldBytes() != 0 ? ", ray traced bounce light's apply " + mib(gi_apply_.HeldBytes()) : std::string()) +
                            (gi_field_.HeldBytes() != 0 ? ", probe field " + mib(gi_field_.HeldBytes()) : std::string()) +
                            (rayregen::Current().context_bytes != 0 ? ", AMD FSR Ray Regeneration's context " + mib(rayregen::Current().context_bytes) : std::string()) +

@@ -615,8 +615,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     std::array<bool, ll::kMaxPassLights> in_pair{};
     for (uint32_t i = 0; i < selection.count; ++i) {
       const larecomp::gpu::Light& l = selection.lights[i];
-      const gi_bounce::Listed listed = pair->frame.field_stands && pair->listed && !gi_bounce::IsWorldLamp(l) ? pair->listed(l.id) : gi_bounce::Listed::kNo;
-      in_pair[i] = rects[i].Empty() ? false : gi_bounce::InPair(pair->frame, l, listed, in.units.night, in.units.gain);
+      in_pair[i] = !rects[i].Empty() && gi_bounce::InPair(pair->frame, l, gi_bounce::Listed::kNo, in.units.night, in.units.gain);
     }
     std::array<uint32_t, ll::kMaxPassLights> order{};
     outside = gi_bounce::PartitionOrder(in_pair, selection.count, &order);
