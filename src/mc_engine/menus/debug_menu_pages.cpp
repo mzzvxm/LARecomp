@@ -200,6 +200,8 @@ const ItemDef kDebugFixesItems[] = {
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
     NativeOnly(Bool("PM_RxDbgShadowSchedule", "mcla_gpu_shadow_schedule", "SUN CASCADE SCHEDULE: ")),
+    NativeOnly(Bool("PM_RxDbgCarShadowReuse", "mcla_gpu_car_shadow_reuse", "CAR SHADOW REUSE: ")),
+    NativeOnly(Bool("PM_RxDbgLightShadowBands", "mcla_gpu_light_shadow_bands", "LIGHT SHADOW DISTANCE BANDS: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

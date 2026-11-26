@@ -1320,6 +1320,8 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_shadow_ledger, false, "Measure sun cascade submission and camera motion during daylight.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_shadow_schedule, true, "Reuse far sun cascades while the camera and casters stay within their update limits.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_car_shadow_reuse, true, "Reuse the car shadow map while the caster and sun stay within their update limits.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_light_shadow_bands, true, "Size local shadow tiles by distance and reuse stable distant views.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_pause_vehicle_vectors, false, "Diagnostic: in the pause menu's world, the garage and the map, take the game's own per-vehicle motion for a "
     "vehicle's pixels in the temporal upscalers' motion vectors, as in the game view. Off (the default): a vehicle "
@@ -2379,6 +2381,8 @@ inline auto& mcla_gpu_object_names = g_gpu.mcla_gpu_object_names;
 inline auto& mcla_gpu_pass_timing = g_gpu.mcla_gpu_pass_timing;
 inline auto& mcla_gpu_shadow_ledger = g_gpu.mcla_gpu_shadow_ledger;
 inline auto& mcla_gpu_shadow_schedule = g_gpu.mcla_gpu_shadow_schedule;
+inline auto& mcla_gpu_car_shadow_reuse = g_gpu.mcla_gpu_car_shadow_reuse;
+inline auto& mcla_gpu_light_shadow_bands = g_gpu.mcla_gpu_light_shadow_bands;
 inline auto& mcla_gpu_pause_vehicle_vectors = g_gpu.mcla_gpu_pause_vehicle_vectors;
 inline auto& mcla_gpu_perf_markers = g_gpu.mcla_gpu_perf_markers;
 inline auto& mcla_gpu_perf_markers_level = g_gpu.mcla_gpu_perf_markers_level;

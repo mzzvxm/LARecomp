@@ -2281,9 +2281,48 @@ void CheckSharedWork() {
   Check(per_draw_second > per_draw_pass, "... the second view costs more as an interleaved draw than as a pass: " + std::to_string(per_draw_second) + " against " + std::to_string(per_draw_pass));
 }
 
+void CheckViewSchedule() {
+  namespace lb = mcla::gpu::light_budget;
+  for (const auto& [metres, tile] : std::array<std::pair<double, uint32_t>, 7>{{{0, 1024}, {15, 1024}, {16, 768}, {30, 768},
+                                                                             {31, 512}, {60, 512}, {61, 384}}}) {
+    Check(lb::BandedShadowTile(1280, metres) == tile, "distance chooses the specified tile band");
+  }
+  Check(lb::BandedShadowTile(768, 5) == 768 && lb::BandedShadowTile(1024, 5) == 1024, "setting caps the near band");
+  Check(lb::BandedShadowTile(1280, 16, 1024) == 1024 && lb::BandedShadowTile(1280, 14, 768) == 768, "hysteresis in both directions");
+  Check(lb::ShadowDrawCap(1280) == 1024 && lb::ShadowDrawCap(768) == 768 && lb::ShadowDrawCap(384) == 512, "fixed draw caps follow the bands");
+  Check(lb::BandedHeadlampCars(3, 0, true) == 1 && lb::BandedHeadlampCars(3, 0, false) == 0 &&
+        lb::BandedHeadlampCars(0, 0, true) == 0 && lb::BandedHeadlampCars(3, 2, true) == 3, "only the player gets default per-lamp views at settings that enable them");
+  Check(lb::HoldShadowView(26, 11, 10, false, false, false, 0), "stable distant view holds once");
+  Check(!lb::HoldShadowView(26, 11, 10, false, false, false, 1) && lb::HoldShadowView(26, 12, 11, false, false, false, 1), "adjacent slots phase their refreshes apart");
+  Check(!lb::HoldShadowView(25, 11, 10, false, false, false, 0) && !lb::HoldShadowView(26, 12, 10, false, false, false, 1), "near and two-frame-old views redraw");
+  Check(!lb::HoldShadowView(26, 11, 10, true, false, false, 0) && !lb::HoldShadowView(26, 11, 10, false, true, false, 0), "an actor entering or leaving redraws");
+  Check(!lb::HoldShadowView(26, 11, 10, false, false, true, 0) && !lb::HoldShadowView(26, 1, 0, false, false, false, 0), "a cut and an uninitialized tile redraw");
+  ls::ViewSpec saved, now;
+  now.eye[0] = 0.004;
+  now.dir[0] = std::sin(ls::Rad(0.01));
+  now.dir[2] = std::cos(ls::Rad(0.01));
+  Check(ls::SameLightView(saved, now), "subtexel lamp motion allows reuse");
+  now.dir[0] = std::sin(ls::Rad(1.0));
+  now.dir[2] = std::cos(ls::Rad(1.0));
+  Check(!ls::SameLightView(saved, now), "a turning car's lights redraw on the same frame");
+  now = saved;
+  now.eye[2] = 0.25;
+  Check(!ls::SameLightView(saved, now), "a moving car's lights redraw on the same frame");
+  now = saved;
+  now.fov += ls::Rad(1.0);
+  Check(!ls::SameLightView(saved, now), "a changed cone redraws");
+  now = saved;
+  now.far_m += 1.0;
+  Check(!ls::SameLightView(saved, now), "changed light reach redraws");
+  now = saved;
+  now.near_m += 1.0;
+  Check(!ls::SameLightView(saved, now), "changed near plane redraws");
+}
+
 }  // namespace
 
 int main() {
+  CheckViewSchedule();
   // LU-3: the whole suite runs twice, once with the unified picker (light_pick.h, the default) and once with the legacy code of ViewPicker (mcla_gpu_light_pick = legacy).
   for (const mcla::gpu::light_pick::PickMode mode : {mcla::gpu::light_pick::PickMode::kUnified, mcla::gpu::light_pick::PickMode::kLegacy}) {
     mcla::gpu::light_pick::DefaultMode() = mode;

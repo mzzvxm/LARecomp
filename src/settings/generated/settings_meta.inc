@@ -487,6 +487,8 @@
 {"mcla_gpu_pass_timing", "MCLA/GPU"},
 {"mcla_gpu_shadow_ledger", "MCLA/GPU"},
 {"mcla_gpu_shadow_schedule", "MCLA/GPU"},
+{"mcla_gpu_car_shadow_reuse", "MCLA/GPU"},
+{"mcla_gpu_light_shadow_bands", "MCLA/GPU"},
 {"mcla_gpu_pause_vehicle_vectors", "MCLA/GPU"},
 {"mcla_gpu_perf_markers", "MCLA/GPU"},
 {"mcla_gpu_perf_markers_level", "MCLA/GPU"},

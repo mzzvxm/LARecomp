@@ -2952,6 +2952,24 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_car_shadow_reuse": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Reuse the car shadow map while the caster and sun stay within their update limits.\"",
+  "traits": ["rex::kDebugOnly"],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_light_shadow_bands": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Size local shadow tiles by distance and reuse stable distant views.\"",
+  "traits": ["rex::kDebugOnly"],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_present_wait": {
   "type": "bool",
   "default": "false",

@@ -1274,7 +1274,35 @@ void TestGpuShadowBuffer() {
 
 }  // namespace
 
+void TestCompactAtlas() {
+  sa::AtlasSpec spec;
+  spec.compact = true;
+  for (uint32_t i = 0; i < 4; ++i) {
+    spec.Add({sa::ProviderId::kReplay, sa::PoolRole::kSingle, i < 2 ? 1280u : 384u, 1, false, i, true});
+  }
+  const sa::Layout replay = sa::MakeLayout(spec);
+  Check(replay.valid() && replay.slot_count == 4 && sa::ValidateLayout(replay).empty(), "compact headlight atlas is in bounds without overlap");
+  Check(sa::Bytes(replay) <= 33ull * 1024 * 1024, "two 1280 player views and two distant 384 traffic views fit in 33 MiB");
+  Check(sa::MakeLayout(spec) == replay, "same band assignment packs deterministically");
+  for (uint32_t i = 0; i < 10; ++i) {
+    const uint32_t tile = i < 2 ? 512 : 384;
+    spec.Add({sa::ProviderId::kLamps, sa::PoolRole::kLive, tile, 1, true, i, true});
+    spec.Add({sa::ProviderId::kLamps, sa::PoolRole::kStatic, tile, 1, true, i, true});
+  }
+  const sa::Layout mixed = sa::MakeLayout(spec);
+  Check(mixed.valid() && mixed.slot_count == 24 && sa::ValidateLayout(mixed).empty(), "headlights and ten lamp pairs share one compact texture");
+  const int live = mixed.FindPool(sa::ProviderId::kLamps, sa::PoolRole::kLive, 9);
+  const int stat = mixed.FindPool(sa::ProviderId::kLamps, sa::PoolRole::kStatic, 9);
+  Check(live >= 0 && stat >= 0 && live != stat && mixed.SlotRect(uint32_t(live), 0).size == 384, "each lamp layer binds its own logical tile");
+  const sa::ClearPlan clear = sa::MakeClearPlan(mixed, ~0u);
+  Check(!clear.whole_target && clear.rect_count == 0, "scheduled tiles survive automatic atlas clears, even at initial allocation");
+  spec.pools[0].manual_clear = false;
+  const sa::ClearPlan combined = sa::MakeClearPlan(sa::MakeLayout(spec));
+  Check(!combined.whole_target && combined.rect_count == 1 && combined.rects[0].w == 1280, "automatic clears touch only the requested tile");
+}
+
 int main(int argc, char** argv) {
+  TestCompactAtlas();
   std::string hlsli = argc > 1 ? argv[1] : "";
   if (hlsli.empty()) {
     std::string self = __FILE__;

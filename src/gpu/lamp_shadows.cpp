@@ -44,6 +44,9 @@ void LampShadows::Reset() {
   pick_ = la::PickResult{};
   early_.clear();
   pending_.clear();
+  held_ = {};
+  band_tiles_ = {};
+  band_ids_ = {};
   published_.clear();
   ClearFrame();
   for (la::StaticLayer& layer : layers_) {
@@ -153,8 +156,14 @@ bool LampShadows::Poll(bool wanted, uint64_t frame) {
   return true;
 }
 
-void LampShadows::Pick(lb::Level level, const ls::Camera& last_camera, bool camera_valid, uint64_t frame) {
+void LampShadows::Pick(lb::Level level, const ls::Camera& last_camera, bool camera_valid, uint64_t frame, bool banded) {
   level_ = level;
+  if (banded_ != banded) {
+    held_ = {};
+    band_tiles_ = {};
+    band_ids_ = {};
+    banded_ = banded;
+  }
   budget_ = la::BudgetFor(level, lamps_override_, cache_);
   early_.clear();
   pick_ = la::PickResult{};
@@ -194,11 +203,19 @@ void LampShadows::Pick(lb::Level level, const ls::Camera& last_camera, bool came
   params.dt = dt;
   params.reset = reset;
   picker_.Update(lamps_, view, params, &pick_);
+  const auto previous_tiles = band_tiles_;
+  band_tiles_.fill(0);
   for (uint32_t e = 0; e < pick_.count && early_.size() < la::kMaxSlots; ++e) {
+    const la::Entry& entry = pick_.entries[e];
     ls::Light light;
     ls::ViewSpec spec;
-    if (la::MakeReplayLight(pick_.entries[e].lamp, e, &light) && la::FitLampView(light, &spec)) {
+    if (la::MakeReplayLight(entry.lamp, e, &light) && la::FitLampView(light, &spec)) {
       early_.push_back(spec);
+      if (banded_ && entry.tile < band_tiles_.size()) {
+        const uint32_t previous = !reset && band_ids_[entry.tile] == entry.id ? previous_tiles[entry.tile] : 0u;
+        band_tiles_[entry.tile] = la::BandedLampTile(budget_.tile, ls::detail::Distance(spec.eye, last_camera.eye), previous);
+        band_ids_[entry.tile] = entry.id;
+      }
     }
   }
   if (pick_.count != 0) {
@@ -224,10 +241,20 @@ void LampShadows::Pick(lb::Level level, const ls::Camera& last_camera, bool came
 // ---------------------------------------------------------------------------
 
 void LampShadows::RequestPools(shadow_atlas::AtlasSpec* spec) const {
-  if (!active_) {
+  if (spec == nullptr || !active_) {
     return;
   }
-  la::RequestPools(budget_, spec);
+  if (!banded_) {
+    la::RequestPools(budget_, spec);
+    return;
+  }
+  spec->compact = true;
+  for (uint32_t slot = 0; slot < band_tiles_.size(); ++slot) {
+    spec->Add({shadow_atlas::ProviderId::kLamps, shadow_atlas::PoolRole::kLive, band_tiles_[slot], 1, true, slot, true});
+    if (budget_.cache) {
+      spec->Add({shadow_atlas::ProviderId::kLamps, shadow_atlas::PoolRole::kStatic, band_tiles_[slot], 1, true, slot, true});
+    }
+  }
 }
 
 void LampShadows::OnLayout(const shadow_atlas::Layout& layout) {
@@ -252,7 +279,9 @@ void LampShadows::Commit(const Plan& plan, bool recorded, bool partial, double s
     // The passes were not recorded: whatever the layers were planned to hold is not in the atlas, and the lit draws see no lamp shadow.
     for (const Pending& p : pending_) {
       if (p.valid) {
-        layers_[pick_.entries[p.entry].tile].Invalidate();
+        const uint32_t tile = pick_.entries[p.entry].tile;
+        layers_[tile].Invalidate();
+        held_[tile] = {};
       }
     }
     pending_.clear();
@@ -262,8 +291,13 @@ void LampShadows::Commit(const Plan& plan, bool recorded, bool partial, double s
   published_.reserve(pending_.size());
   for (const Pending& p : pending_) {
     const la::Entry& entry = pick_.entries[p.entry];
-    if (p.valid) {
+    if (p.valid && p.held) {
+      ++held_views_;
+    } else if (p.valid) {
       la::CommitStatic(&layers_[entry.tile], p.pass, entry.id, serial_, world_epoch_, partial);
+      if (banded_) {
+        held_[entry.tile] = {entry.id, partial || !p.can_hold ? 0u : serial_, p.spec, p.clip, sx, sy, p.has_actors, p.right_handed};
+      }
       passes_static_ += p.pass.static_draws.empty() ? 0u : 1u;
       passes_live_ += p.pass.live_draws.empty() ? 0u : 1u;
       (p.pass.rebuild() ? rebuilds_ : adds_) += p.pass.cache ? 1u : 0u;
@@ -276,7 +310,7 @@ void LampShadows::Commit(const Plan& plan, bool recorded, bool partial, double s
     pub.id = entry.id;
     pub.tile = entry.tile;
     pub.weight = entry.weight;
-    pub.valid = p.valid;
+    pub.valid = p.valid && (!banded_ || p.held || !partial);
     pub.has_live = p.has_live;
     pub.reach = p.reach;
     pub.clip = p.clip;
@@ -287,7 +321,8 @@ void LampShadows::Commit(const Plan& plan, bool recorded, bool partial, double s
   in.layout = &layout_;
   in.live_pool = live_pool_;
   in.static_pool = static_pool_;
-  in.cache = budget_.cache && static_pool_ >= 0;
+  in.cache = budget_.cache && (banded_ || static_pool_ >= 0);
+  in.banded = banded_;
   in.sx = sx;
   in.sy = sy;
   in.depth_bias = ls::kDepthBias * bias_scale;
@@ -319,10 +354,11 @@ void LampShadows::Log() {
   next_log_ = serial_ + kLogFrames;
   const uint64_t passes = rebuilds_ + adds_;
   REXLOG_INFO("{} frame {}: {} lamps with views ({} entries), {} frames with lamps so far; static layers: {} rebuilt, {} added to ({} static draws drawn, {} already held, {} left out for the draw cap), "
-              "live passes {} ({} live draws); {}",
+              "live passes {} ({} live draws); {} views reused; {}",
               kPrefix, serial_, lights_.size(), frame_.count, frames_with_lamps_, rebuilds_, adds_, static_draws_, known_draws_, over_budget_, passes_live_, live_draws_,
-              passes == 0 ? std::string("the cache is off or nothing was drawn yet") : std::format("{:.0f} per cent of the lamp passes only added", 100.0 * double(adds_) / double(passes)));
+              held_views_, passes == 0 ? std::string("the cache is off or nothing was drawn yet") : std::format("{:.0f} per cent of the lamp passes only added", 100.0 * double(adds_) / double(passes)));
   rebuilds_ = adds_ = passes_static_ = passes_live_ = 0;
+  held_views_ = 0;
   static_draws_ = live_draws_ = known_draws_ = over_budget_ = 0;
 }
 

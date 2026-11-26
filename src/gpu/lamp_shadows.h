@@ -84,14 +84,15 @@ class LampShadows final : public ShadowProvider {
   void SetPassRuns(bool runs) { pass_runs_ = runs; }
   bool setting_on() const { return on_; }
   // 2. The pick for this frame, from the last frame's camera (valid: it was derived from the banks), at the level the atlas could fit.
-  void Pick(light_budget::Level level, const local_shadow::Camera& last_camera, bool camera_valid, uint64_t frame);
+  void Pick(light_budget::Level level, const local_shadow::Camera& last_camera, bool camera_valid, uint64_t frame, bool banded);
   bool HasViews() const { return active_ && budget_.on() && pick_.count != 0; }
   // The picked lamps' frusta (the cone cull of the collection drops a draw no view can see).
   const std::vector<local_shadow::ViewSpec>& EarlySpecs() const { return early_; }
   // 3. The passes of the trigger. `facts` are the collected casters that can be drawn (a usable place, a made pipeline), `id_of(i)` the static identity of facts[i] (made lazily). False: no lamp has a
   // pass (no layout, no valid view): nothing is recorded for the lamps.
   template <class IdOf>
-  bool PlanPasses(const local_shadow::Camera& camera, double sx, double sy, bool cone_cull, const lamp_shadows::CasterFact* facts, uint32_t count, IdOf&& id_of, Plan* out);
+  bool PlanPasses(const local_shadow::Camera& camera, double sx, double sy, bool cone_cull, bool camera_cut, const lamp_shadows::CasterFact* facts,
+                  uint32_t count, IdOf&& id_of, Plan* out);
   // 4. After the passes were recorded (`recorded`: the pass ran; `partial`: it ran out of upload room), the static layers and the published frame. `bias_scale` = mcla_gpu_headlight_shadow_bias.
   void Commit(const Plan& plan, bool recorded, bool partial, double sx, double sy, float bias_scale, uint32_t sampler);
   // The trigger found no map (a menu, no casters): the lit draws see no lamp shadow until one is recorded.
@@ -124,8 +125,22 @@ class LampShadows final : public ShadowProvider {
     lamp_shadows::PassPlan pass;
     bool valid = false;
     bool has_live = false;
+    bool held = false;
+    bool has_actors = false;
+    bool right_handed = false;
+    bool can_hold = false;
     float reach = 0.0f;
+    local_shadow::ViewSpec spec;
     temporal::Mat4 clip;
+  };
+  struct HeldLamp {
+    uint64_t id = 0;
+    uint64_t raster = 0;
+    local_shadow::ViewSpec spec;
+    temporal::Mat4 clip;
+    double sx = 0.0, sy = 0.0;
+    bool had_actors = false;
+    bool right_handed = false;
   };
   void Join();
   void Leave();
@@ -142,6 +157,11 @@ class LampShadows final : public ShadowProvider {
   uint32_t debug_view_ = 0;
   int lamps_override_ = 0;
   bool cache_ = true;
+  bool banded_ = false;
+  std::array<uint32_t, lamp_shadows::kMaxSlots> band_tiles_{};
+  std::array<uint64_t, lamp_shadows::kMaxSlots> band_ids_{};
+  std::array<HeldLamp, lamp_shadows::kMaxSlots> held_{};
+  uint64_t held_views_ = 0;
   lamp_shadows::Budget budget_;
   light_budget::Level level_ = light_budget::Level::kOff;
 
@@ -189,23 +209,26 @@ class LampShadows final : public ShadowProvider {
 // ---------------------------------------------------------------------------
 
 template <class IdOf>
-bool LampShadows::PlanPasses(const local_shadow::Camera& camera, double sx, double sy, bool cone_cull, const lamp_shadows::CasterFact* facts, uint32_t count, IdOf&& id_of, Plan* out) {
+bool LampShadows::PlanPasses(const local_shadow::Camera& camera, double sx, double sy, bool cone_cull, bool camera_cut, const lamp_shadows::CasterFact* facts,
+                            uint32_t count, IdOf&& id_of, Plan* out) {
   namespace la = lamp_shadows;
   namespace ls = local_shadow;
-  (void)sx;
-  (void)sy;
-  *out = Plan{};
-  pending_.clear();
-  if (!HasViews() || !layout_.valid() || live_pool_ < 0 || !camera.valid) {
+  if (out == nullptr || (count != 0 && facts == nullptr)) {
     return false;
   }
-  const bool cache = budget_.cache && static_pool_ >= 0;
+  *out = Plan{};
+  pending_.clear();
+  if (!HasViews() || !layout_.valid() || (!banded_ && live_pool_ < 0) || !camera.valid) {
+    return false;
+  }
+  const bool cache = budget_.cache && (banded_ || static_pool_ >= 0);
   // A texture made again (or given back, or its pools moved) holds none of what the static layers believe they hold.
   const bool atlas_fresh = AtlasGeneration() != seen_generation_;
   if (atlas_fresh) {
     for (la::StaticLayer& layer : layers_) {
       layer.Invalidate();
     }
+    held_ = {};
   }
   pending_.reserve(pick_.count);
   bool any = false;
@@ -221,6 +244,38 @@ bool LampShadows::PlanPasses(const local_shadow::Camera& camera, double sx, doub
       pending_.push_back(std::move(p));  // not valid: no view, not published
       continue;
     }
+    const int live_pool = banded_ ? layout_.FindPool(shadow_atlas::ProviderId::kLamps, shadow_atlas::PoolRole::kLive, entry.tile) : live_pool_;
+    const int static_pool = banded_ ? layout_.FindPool(shadow_atlas::ProviderId::kLamps, shadow_atlas::PoolRole::kStatic, entry.tile) : static_pool_;
+    const uint32_t slot = banded_ ? 0u : entry.tile;
+    const shadow_atlas::Rect live_tile = layout_.SlotRect(uint32_t(live_pool), slot);
+    const shadow_atlas::Rect static_tile = layout_.SlotRect(uint32_t(static_pool), slot);
+    if (!live_tile.valid() || (cache && !static_tile.valid())) {
+      pending_.push_back(std::move(p));
+      continue;
+    }
+    p.valid = true;
+    p.spec = spec;
+    p.right_handed = camera.right_handed;
+    p.can_hold = !camera_cut;
+    p.reach = float(la::ShadowReach(entry.lamp.intensity));
+    const HeldLamp& previous = held_[entry.tile];
+    const bool same_view = previous.id == entry.id && previous.sx == sx && previous.sy == sy &&
+                           previous.right_handed == camera.right_handed && ls::SameLightView(previous.spec, spec);
+    const la::StaticLayer& layer = layers_[entry.tile];
+    if (banded_) {
+      for (uint32_t i = 0; i < count && !p.has_actors; ++i) {
+        p.has_actors = facts[i].mover && (!cone_cull || ls::SphereInView(spec, facts[i].origin, la::kDynamicReach));
+      }
+      const double distance = ls::detail::Distance(spec.eye, camera.eye);
+      if (same_view && light_budget::HoldShadowView(distance, serial_, previous.raster, p.has_actors, previous.had_actors, camera_cut, entry.tile) &&
+          (!cache || la::DecideStatic(layer, entry.id, serial_, entry.tile, atlas_fresh, world_epoch_) == la::Build::kAdd)) {
+        p.held = true;
+        p.clip = previous.clip;
+        any = true;
+        pending_.push_back(std::move(p));
+        continue;
+      }
+    }
     la::PassInput in;
     in.spec = spec;
     in.cone_cull = cone_cull;
@@ -229,10 +284,9 @@ bool LampShadows::PlanPasses(const local_shadow::Camera& camera, double sx, doub
     in.id = entry.id;
     in.frame = serial_;
     in.world_epoch = world_epoch_;
-    in.atlas_fresh = atlas_fresh;
-    la::PlanLampPass(layers_[entry.tile], in, facts, count, id_of, &p.pass);
-    p.valid = true;
-    p.reach = float(la::ShadowReach(entry.lamp.intensity));
+    in.atlas_fresh = atlas_fresh || (banded_ && !same_view);
+    in.max_draws = banded_ && live_tile.size == 384 ? light_budget::ShadowDrawCap(live_tile.size) : la::kMaxDrawsPerLampView;
+    la::PlanLampPass(layer, in, facts, count, id_of, &p.pass);
     p.has_live = !p.pass.live_draws.empty();
     const auto add_view = [&](const shadow_atlas::Rect& tile, const std::vector<uint32_t>& keep, bool is_static) {
       ReplayView v;
@@ -245,9 +299,7 @@ bool LampShadows::PlanPasses(const local_shadow::Camera& camera, double sx, doub
       v.is_static = is_static;
       out->views.push_back(std::move(v));
     };
-    const shadow_atlas::Rect live_tile = layout_.SlotRect(uint32_t(live_pool_), entry.tile);
     if (cache) {
-      const shadow_atlas::Rect static_tile = layout_.SlotRect(uint32_t(static_pool_), entry.tile);
       if (p.pass.rebuild()) {
         out->clears.push_back(static_tile);
         ++out->rebuilds;
@@ -256,6 +308,9 @@ bool LampShadows::PlanPasses(const local_shadow::Camera& camera, double sx, doub
         add_view(static_tile, p.pass.static_draws, true);
         out->static_draws += uint32_t(p.pass.static_draws.size());
       }
+    }
+    if (banded_ && (!cache || p.has_live)) {
+      out->clears.push_back(live_tile);
     }
     if (!p.pass.live_draws.empty()) {
       add_view(live_tile, p.pass.live_draws, false);

@@ -1032,6 +1032,39 @@ std::array<hlsl_shim::LslView, 28> views{};
 lg::GpuLampTable table;
 }  // namespace shim_state
 
+void TestBandedFrame() {
+  Check(la::BandedLampTile(512, 29, 0) == 512 && la::BandedLampTile(512, 31, 0) == 384, "lamps use 512 nearby and 384 far away");
+  Check(la::BandedLampTile(512, 31, 512) == 512 && la::BandedLampTile(512, 29, 384) == 384, "lamp band hysteresis keeps a tile through small camera moves");
+  sa::AtlasSpec spec;
+  spec.compact = true;
+  spec.Add({sa::ProviderId::kLamps, sa::PoolRole::kLive, 512, 1, true, 1, true});
+  spec.Add({sa::ProviderId::kLamps, sa::PoolRole::kStatic, 512, 1, true, 1, true});
+  spec.Add({sa::ProviderId::kLamps, sa::PoolRole::kLive, 384, 1, true, 5, true});
+  spec.Add({sa::ProviderId::kLamps, sa::PoolRole::kStatic, 384, 1, true, 5, true});
+  const sa::Layout layout = sa::MakeLayout(spec);
+  la::PublishInput in;
+  in.banded = true;
+  in.layout = &layout;
+  in.atlas_valid = true;
+  la::Published near, far, missing;
+  near.id = 1;
+  near.tile = 1;
+  near.valid = near.has_live = true;
+  far = near;
+  far.id = 2;
+  far.tile = 5;
+  far.has_live = false;
+  missing = near;
+  missing.id = 3;
+  missing.tile = 2;
+  lg::LampShadowFrame frame;
+  std::vector<la::LampRef> refs;
+  la::BuildFrame({near, far, missing}, in, &frame, &refs);
+  Check(frame.count == 3 && refs[0].view_count == 2 && refs[1].view_count == 1 && refs[2].view_count == 0, "only tiles that exist are published, with live and static layers paired");
+  Check(frame.views[0].texel_size == 1.0f / 512 && frame.views[1].texel_size == 1.0f / 512 && frame.views[2].texel_size == 1.0f / 384,
+        "every lamp layer publishes its actual tile size");
+}
+
 }  // namespace
 
 namespace {
@@ -1732,6 +1765,7 @@ int main(int argc, char** argv) {
   TestPlanLampPass();
   TestView();
   TestFrame();
+  TestBandedFrame();
   TestPassLight();
   TestLookup();
   TestHlslTwin(gpu_dir);
