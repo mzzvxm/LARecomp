@@ -220,8 +220,9 @@ float4 SsrTraceBody(float4 position) {
   }
   const float distance_out = clamp(travelled, 0.02f, 60000.0f);
 #if SSR_REFLHIT
-  const uint visible = ReflHitDominant(screen_id, screen_weight / float(rays), kReflHitNone, 0.0f, native);
-  g_reflhit = ReflHitPack(visible, kReflHitNone, screen_id, native);
+  const float screen_confidence = saturate(screen_weight / float(rays));
+  const uint visible = ReflHitDominant(screen_id, screen_confidence, kReflHitNone, 0.0f, native);
+  g_reflhit = ReflHitPack(visible, kReflHitNone, screen_id, native) | ReflHitPackConfidence(uint(screen_confidence * 63.0f + 0.5f));
 #endif
 #if SSR_RT
   g_confidence = float2(SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays)));

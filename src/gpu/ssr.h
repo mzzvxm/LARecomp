@@ -174,8 +174,10 @@ class ScreenReflections {
   const HostImage* RawHitImage() const { return hit_ready_ ? &hit_ : nullptr; }
   const HostImage* CaptureSignal() const { return capture_signal_; }
   const HostImage* CaptureHit() const { return capture_hit_ready_ ? &capture_hit_ : nullptr; }
+  const HostImage* CaptureRoadReflection() const { return capture_road_ready_ ? &capture_road_ : nullptr; }
   static bool RoadViewDrawn(const EdramTargets& edram, uint32_t frame);
   void SetCaptureHitWanted(bool wanted);
+  void SetCaptureRoadWanted(bool wanted);
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
 
@@ -233,6 +235,11 @@ class ScreenReflections {
   bool ready_ = false;                // the layout and the shaders exist
   const HostImage* capture_signal_ = nullptr;
   HostImage capture_hit_;
+  HostImage capture_road_;
+  std::unique_ptr<plume::RenderPipeline> capture_road_pipeline_;
+  bool capture_road_wanted_ = false;
+  bool capture_road_ready_ = false;
+  bool capture_road_failed_ = false;
   bool capture_hit_wanted_ = false;
   bool capture_hit_ready_ = false;
   std::array<std::unique_ptr<plume::RenderPipeline>, 4> capture_hit_pipelines_;

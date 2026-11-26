@@ -228,11 +228,14 @@ void CaptureReadback::Record(plume::RenderCommandList* list, PresentPass& presen
       scratch += uint64_t(max_width) * max_height * vis::kStreams[vis::kReflHit].max_source_bytes;
     }
     if (final && !config.legacy) scratch += uint64_t(width) * height * 4;
+    const auto& road = visual_sources_.images[vis::kRoadRefl];
     capacity = 0;
     for (uint32_t i = 0; i < vis::kCount; ++i) {
       if (config.mask & (1u << i)) {
-        vis::Place(vis::ScaleCrop(config.crop, width, height, max_width, max_height),
-                   max_width, max_height, vis::kStreams[i].max_source_bytes, 0, false, capacity);
+        const uint32_t stream_width = i == vis::kRoadRefl ? std::max(road.width, (max_width + 1) / 2) : max_width;
+        const uint32_t stream_height = i == vis::kRoadRefl ? std::max(road.height, (max_height + 1) / 2) : max_height;
+        vis::Place(vis::ScaleCrop(config.crop, width, height, stream_width, stream_height),
+                   stream_width, stream_height, vis::kStreams[i].max_source_bytes, 0, false, capacity);
       }
     }
   } else if (!config.mask) {

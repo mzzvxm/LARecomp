@@ -56,7 +56,7 @@ class CinematicSettings final : public rex::SettingOwner {
 
   REX_SETTING(std::string, mcla_capture_luma, "", "RT noise capture: replace the PNG sequence with lossless luma for full or x,y,width,height and three color previews. Empty keeps the PNG sink.", rex::kDebugOnly);
 
-  REX_SETTING(std::string, mcla_capture_buffers, "", "Visual comparison buffers to write during a take: all or comma-separated final,hdr,ao,refl,gi,class,motion,reflhit. Empty or off disables buffer capture.", rex::kDebugOnly);
+  REX_SETTING(std::string, mcla_capture_buffers, "", "Visual comparison buffers to write during a take: all or comma-separated final,hdr,ao,refl,gi,class,motion,reflhit,roadrefl. Empty or off disables buffer capture.", rex::kDebugOnly);
   REX_SETTING(i32, mcla_capture_buffer_every, 1, "Visual comparison buffers: record the first take frame and every Nth frame after it.", rex::Range{1, 10000}, rex::kDebugOnly);
   REX_SETTING(std::string, mcla_capture_buffer_region, "full", "Visual comparison buffers: full or rects (the bounding rectangle of the scene capture key's rects option).", rex::kDebugOnly);
 

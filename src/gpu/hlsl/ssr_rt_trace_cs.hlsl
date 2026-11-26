@@ -264,7 +264,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   const uint native = ReflHitFallbackId(packed);
   const float rt_weight = (1.0f - confidence) * weight * rt_fades / float(rays);
   const uint visible = ReflHitDominant(screen_id, confidence, rt_id, rt_weight, native);
-  g_reflhit[pix] = ReflHitPack(visible, any_hit ? rt_id : rejected, screen_id, native);
+  g_reflhit[pix] = ReflHitPack(visible, any_hit ? rt_id : rejected, screen_id, native) | ReflHitConfidenceBits(packed);
 #endif
   if (!any_hit) {
     return;

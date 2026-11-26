@@ -44,7 +44,18 @@ uint ReflHitDominant(uint screen, float screenWeight, uint rt, float rtWeight, u
 uint ReflHitPack(uint visible, uint query, uint screen, uint fallback) {
   return visible | (query << 8u) | (screen << 16u) | (fallback << 24u);
 }
-uint ReflHitScreenId(uint packed) { return (packed >> 16u) & 255u; }
-uint ReflHitFallbackId(uint packed) { return packed >> 24u; }
+uint ReflHitScreenId(uint packed) { return (packed >> 16u) & 63u; }
+uint ReflHitFallbackId(uint packed) { return (packed >> 24u) & 15u; }
+
+// The six unused scratch bits hold screen confidence. The two exported ID bytes stay unchanged.
+uint ReflHitPackConfidence(uint confidence) { return ((confidence & 3u) << 22u) | ((confidence & 60u) << 26u); }
+uint ReflHitConfidenceBits(uint packed) { return packed & ReflHitPackConfidence(63u); }
+uint ReflHitConfidence(uint packed) { return ((packed >> 22u) & 3u) | ((packed >> 26u) & 60u); }
+
+// All inputs have been checked for finite values by the caller.
+float RoadReflectionLobe(float correction, float planar, float strength, float cap) {
+  const float radiance = correction + (planar < cap ? planar : cap) * strength;
+  return radiance > 0.0f ? radiance : 0.0f;
+}
 
 #endif

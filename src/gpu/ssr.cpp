@@ -42,6 +42,7 @@ constexpr plume::RenderFormat kFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
 constexpr plume::RenderFormat kConfidenceFormat = plume::RenderFormat::R8G8_UNORM;
 constexpr plume::RenderTextureFlags kTraceRtFlags = plume::RenderTextureFlag::RENDER_TARGET | plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
 constexpr plume::RenderFormat kCaptureHitFormat = plume::RenderFormat::R32_UINT;
+constexpr plume::RenderFormat kCaptureRoadFormat = plume::RenderFormat::R16G16_FLOAT;
 constexpr uint32_t kCapturePlanarBit = 0x20000000u;  // SSR_REFLHIT_PLANAR_BIT; outside PackRoadView's fields
 static_assert((ssr::PackRoadView(0xFFFFu, ssr::roadview::kMaxSamples, ssr::roadview::kMaxSide) & kCapturePlanarBit) == 0);
 
@@ -152,6 +153,9 @@ void ScreenReflections::Shutdown() {
   capture_hit_ready_ = false;
   capture_hit_pipeline_failed_.fill(false);
   for (auto& pipeline : capture_hit_pipelines_) pipeline.reset();
+  capture_road_pipeline_.reset();
+  capture_road_ = {};
+  capture_road_wanted_ = capture_road_ready_ = capture_road_failed_ = false;
   layout_.reset();
   trace_ = HostImage{};
   confidence_ = HostImage{};
@@ -372,6 +376,14 @@ void ScreenReflections::SetCaptureHitWanted(bool wanted) {
   capture_hit_wanted_ = wanted;
 }
 
+void ScreenReflections::SetCaptureRoadWanted(bool wanted) {
+  if (!wanted && capture_road_wanted_ && passes_ && capture_road_.texture) {
+    passes_->ReleaseImage(capture_road_);
+  }
+  capture_road_ready_ = false;
+  capture_road_wanted_ = wanted;
+}
+
 bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw, uint32_t render_width, uint32_t render_height) {
   const auto trace_flags = rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET;
   if (capture_hit_.texture && (trace_.width != width || trace_.height != height || trace_.flags != trace_flags)) {
@@ -419,6 +431,8 @@ void ScreenReflections::ReleaseImages() {
   }
   hit_ready_ = false;
   ReleaseCaptureHit();
+  capture_road_ready_ = false;
+  passes_->ReleaseImage(capture_road_);
   for (HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
     if (image->texture) {
       passes_->ReleaseImage(*image);
@@ -433,7 +447,7 @@ void ScreenReflections::ReleaseImages() {
 
 uint64_t ScreenReflections::HeldBytes() const {
   uint64_t bytes = regen_pass_.HeldBytes();   // RG-3: the signal, the guides and the denoised image while a regen frame ran lately
-  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_, &capture_hit_}) {
+  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_, &capture_hit_, &capture_road_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -722,10 +736,11 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // game drew and resolved it before the roads that read it. Found by the identity (ssr_rules.h roadview::), accepted only when the side view classification made it and this frame drew into it.
   ssr::RoadViewFacts road;
   road.share = ssr::FallbackShare(fallback_setting_, wet_strength_);
+  const float capture_strength = ssr::FallbackShare(1.0f, wet_strength_);
   const EdramKey road_key = RoadViewKey();
   EdramTargets::Target* road_target = nullptr;
   uint32_t road_slot = screen::kNoSlot;
-  if (road.share > 0.0f) {
+  if (road.share > 0.0f || (capture_road_wanted_ && capture_strength > 0.0f)) {
     const EdramTargets::Target* road_found = edram_->Find(road_key);
     if (road_found && road_found->texture) {
       road.has_target = true;
@@ -750,9 +765,14 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
                                                         : std::string());
   }
   uint32_t road_word = ssr::kNoRoadView;
-  if (road_why == ssr::RoadViewWhy::kUsed) {
+  ssr::RoadViewFacts capture_road = road;
+  capture_road.share = capture_strength;
+  const auto capture_road_why = ssr::DecideRoadView(capture_road);
+  uint32_t capture_road_word = ssr::kNoRoadView;
+  if (road_target && (road_why == ssr::RoadViewWhy::kUsed || (capture_road_wanted_ && capture_road_why == ssr::RoadViewWhy::kUsed))) {
     edram_->Transition(list, *road_target, plume::RenderTextureLayout::SHADER_READ);   // the view was a colour target when the game drew it; the next frame's draws move it back themselves
-    road_word = ssr::PackRoadView(road_slot, road.host_samples, road.side);
+    capture_road_word = ssr::PackRoadView(road_slot, road.host_samples, road.side);
+    if (road_why == ssr::RoadViewWhy::kUsed) road_word = capture_road_word;
   }
 
   // GB-I2, the vehicles: the AO's motion rows of this frame (its history pass drew them for its own use), for the temporal pass's reflected vehicles. None: they are taken as the world's.
@@ -1004,6 +1024,29 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     DrawPass(list, hit_, hit_pipeline, hit_push);
     hit_ready_ = true;
   }
+  if (capture_road_wanted_ && capture_hit_ready_ && capture_signal_ && capture_signal_->texture &&
+      capture_signal_->width == width && capture_signal_->height == height && passes_ && layout_ &&
+      capture_road_why != ssr::RoadViewWhy::kNoSlot && capture_road_why != ssr::RoadViewWhy::kBadSize) {
+    if (!capture_road_pipeline_ && !capture_road_failed_) {
+      const auto blob = CaptureRoadReflectionShader();
+      const auto shader = passes_->CreateShader(blob.data, blob.size, blob.name);
+      if (shader) {
+        capture_road_pipeline_ = passes_->CreatePipeline(*layout_, *shader, kCaptureRoadFormat,
+                                                         plume::RenderBlendDesc::Copy(), 1, blob.name);
+      }
+      capture_road_failed_ = !capture_road_pipeline_;
+    }
+    // CHECK: Both APIs must agree on scalar R32_UINT reads and the two-lane half-size capture.
+    if (capture_road_pipeline_ && passes_->EnsureImage(capture_road_, width, height, kCaptureRoadFormat, "road reflection capture")) {
+      ssr::Push capture = push;
+      capture.Set(pk::kSrc, ssr::PackSlots(capture_signal_->slot, capture_hit_.slot));
+      capture.Set(pk::kRoadViewApply, capture_road_word);
+      capture.SetFloat(pk::kFallback, capture_strength);
+      pass_timing_->Mark(list, "capture road reflection");
+      DrawPass(list, capture_road_, capture_road_pipeline_.get(), capture);
+      capture_road_ready_ = true;
+    }
+  }
   // The closing mark (PassTiming: a mark's time runs to the next mark): what is recorded next (the car history, the debug views, the game's draws) is not the apply's. No label of the chains' own
   // reflection sum (`ssr ...`): the span after this mark is whatever follows.
   pass_timing_->Mark(list, "after ssr");
@@ -1177,6 +1220,7 @@ bool ScreenReflections::RecordRegen(plume::RenderCommandList* list, const ssr::P
 void ScreenReflections::OnPresent() {
   capture_signal_ = nullptr;
   capture_hit_ready_ = false;
+  capture_road_ready_ = false;
   rt_.OnPresent();
   denoise_.OnPresent();
   regen_pass_.OnFrame(regen_frame_);
