@@ -12,9 +12,10 @@ The game says things about itself in JSON files, and the launcher reads them ins
 | `settings-ui.json` (`--dump_settings_ui`) | the exe | `schemas/settings-ui.schema.json` |
 | `machine.json` (`--probe_machine`, and every start) | the exe | `schemas/machine.schema.json` |
 
-Check files (exit 0 means no errors; `--strict` also fails on warnings):
+Check the checked-in recipe and dependency pins with `--strict` to fail on errors or warnings. The selftest also checks every
+contract example, including the dependency example and the machine fleet.
 
-    python -I documentation/contract/validate_contract.py --strict launcher-recipe.json documentation/contract/examples/*.json
+    python -I documentation/contract/validate_contract.py --strict launcher-recipe.json cmake/deps.json
     python -I documentation/contract/validate_contract.py --selftest
 
 ## Compatibility rules for launchers that are older than the game
@@ -56,5 +57,32 @@ The rules:
 6. **A launcher reads `launcher-recipe.json` of a target commit before it checks that commit out** (`git show <commit>:launcher-recipe.json`),
    to apply the two gates above. So the recipe stays small, valid JSON, and `min_launcher` and `min_reader` stay top-level keys near
    the top of the file.
+7. **Any entry in the recipe's `steps` array or any stdout grammar of 2 or later requires `min_launcher` above `1.0.0`.** Set it to
+   the first launcher version that supports the steps or grammar in use. An absent or empty `steps` array is valid at `1.0.0`.
 
 Which place the newer launcher comes from is not part of the contract; the launcher shows its own.
+
+## SDK pin and prebuilt kit
+
+`launcher-recipe.json` can name the exact LAR-RXSDK revision in `sdk.commit`. Use 40 lowercase hexadecimal digits and match
+`tools/release/lar-rxsdk.pin`. The release tooling reads that file, and the contract validator checks the recipe against it.
+`sdk.prebuilt.options` lists the prebuilt kit's CMake options as `NAME=VALUE` strings. The current kit uses
+`REXGLUE_ENABLE_TRACY=OFF`.
+
+Before pushing a game commit that moves the SDK pin, publish the LAR-RXSDK release `sdk-<12>` and its
+`sdk-prebuilt-<12>.json` asset, where `<12>` is the first 12 characters of the new commit. Verify that its prebuilt kits match the
+recipe's options. Update the pin file, recipe and recipe example together.
+
+## Code generation and setup actions
+
+- `launcher-recipe.json` can supply `codegen.place`, a map from a name in `codegen.inputs` to a path relative to the source checkout.
+  Place each mapped input at its destination before invoking codegen. The current `default.xex` destination is the entrypoint
+  `file_path` in `larecomp_manifest.toml` on both platforms.
+- An install-manifest action's `stdout` describes its progress and result records. `prefix` identifies lines belonging to that
+  action. Grammar 1 ends with `<prefix>result|<status>|<detail>`. When supplied, `ok_results` lists the successful status tokens
+  in that record. The process exit codes are declared separately in `exit`.
+- The optional `install-manifest.json` field `launch.program` is the game executable relative to the staged game folder. The
+  optional `files.join_status`, `files.machine` and `files.settings_ui` paths are relative to that same folder. The latter two
+  give the default output locations for `probe_machine` and `dump_settings_ui` when the target exports those contracts.
+  `machine.json`'s optional `paths` object reports the locations resolved by the running game or probe, such as
+  `paths.game_data_root`, `paths.config_file`, `paths.saves_root`, `paths.cache_root` and `paths.logs`.

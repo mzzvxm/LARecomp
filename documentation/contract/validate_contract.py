@@ -43,6 +43,8 @@ SCHEMA_FILES = {
 # min_launcher: 1 to 4 dot-separated non-negative integers (the launcher program's own version scheme). Read with fullmatch: a schema `$` also
 # accepts a trailing newline.
 MIN_LAUNCHER = re.compile(r'[0-9]+(\.[0-9]+){0,3}')
+SDK_COMMIT = re.compile(r'[0-9a-f]{40}')
+SDK_PIN_FILE = 'tools/release/lar-rxsdk.pin'
 FACT_NAMESPACES = ('gpu', 'api', 'features', 'os', 'display', 'cpu', 'build', 'install', 'live')
 FUNCTIONS = {'resolved': 1, 'auto_of': 1, 'known': 1, 'contains': 2, 'min': 2, 'max': 2}
 KNOWN_KINDS = ('choice', 'bool', 'number', 'text', 'color', 'action', 'link', 'carbon')
@@ -1202,6 +1204,10 @@ def lint_machine(doc, rep, facts, strict=False):
 _PLACEHOLDER = re.compile(r'\{([^{}]*)\}')
 
 
+def is_relative_file(path):
+    return not re.search(r'[:\\\x00-\x1f]', path) and all(part not in ('', '.', '..') for part in path.split('/'))
+
+
 def lint_manifest(doc, rep, facts, strict=False):
     if 'launch' in doc:
         launch = doc['launch']
@@ -1209,6 +1215,12 @@ def lint_manifest(doc, rep, facts, strict=False):
             rep.error('launch.game_root', 'expected one flag with the {game_root} placeholder as its value')
         if not re.fullmatch(r'--[a-z][a-z0-9_]*=true', launch['debug_menu']):
             rep.error('launch.debug_menu', 'expected one flag with true as its value')
+        if 'program' in launch and not is_relative_file(launch['program']):
+            rep.error('launch.program', 'expected a relative file path in the game folder')
+    files = doc.get('files', {})
+    for name in ('join_status', 'machine', 'settings_ui'):
+        if name in files and not is_relative_file(files[name]):
+            rep.error(f'files.{name}', 'expected a relative file path in the game folder')
     ids = [a['id'] for a in doc.get('actions', [])]
     for i, a in enumerate(doc.get('actions', [])):
         w = f'actions[{a["id"]}]'
@@ -1275,6 +1287,19 @@ def lint_manifest(doc, rep, facts, strict=False):
 # ---- launcher-recipe.json ---------------------------------------------------------------------------------------------------------------
 
 def lint_recipe(doc, rep, facts, strict=False):
+    if 'sdk' in doc:
+        commit = doc['sdk']['commit']
+        if not SDK_COMMIT.fullmatch(commit):
+            rep.error('sdk.commit', 'expected exactly 40 lowercase hexadecimal digits')
+        else:
+            try:
+                with open(os.path.join(HERE, '..', '..', SDK_PIN_FILE), encoding='ascii') as stream:
+                    pin = stream.read().rstrip('\n')
+            except (OSError, UnicodeError) as error:
+                rep.error('sdk.commit', f'cannot read the repository SDK pin {SDK_PIN_FILE}: {error}')
+            else:
+                if commit != pin:
+                    rep.error('sdk.commit', f'must match the repository SDK pin in {SDK_PIN_FILE} ({pin!r})')
     names = [o['name'] for o in doc.get('options', [])]
     for i, o in enumerate(doc.get('options', [])):
         w = f'options[{o["name"]}]'
@@ -1291,8 +1316,17 @@ def lint_recipe(doc, rep, facts, strict=False):
     for i in ids:
         if ids.count(i) > 1:
             rep.error('steps', f'step id {i!r} is used twice')
-    if 'codegen' in doc and not doc['codegen'].get('inputs'):
-        rep.warn('codegen', 'inputs lists the files the code generation reads (the launcher checks they exist before it runs the tool)')
+    if 'codegen' in doc:
+        codegen = doc['codegen']
+        inputs = codegen.get('inputs', [])
+        if not inputs:
+            rep.warn('codegen', 'inputs lists the files the code generation reads (the launcher checks they exist before it runs the tool)')
+        for name, path in codegen.get('place', {}).items():
+            where = f'codegen.place[{name!r}]'
+            if name not in inputs or not is_relative_file(name):
+                rep.error(where, 'expected a relative file name listed in codegen.inputs')
+            if not is_relative_file(path):
+                rep.error(where, 'expected a relative file path in the source checkout')
 
 
 def lint_describe(doc, rep, facts, strict=False):
@@ -1320,6 +1354,23 @@ def lint_min_launcher(doc, rep):
     value = doc.get('min_launcher')
     if isinstance(value, str) and not MIN_LAUNCHER.fullmatch(value) and '$.min_launcher' not in shown:
         rep.error('$.min_launcher', f'{value!r} is not 1 to 4 numbers separated by dots, like "1.0.0"')
+
+
+def lint_setup_launcher_floor(doc, rep, kind):
+    """The first launcher understands the default build steps and stdout grammar 1."""
+    if kind == 'launcher-recipe':
+        if not doc.get('steps'):
+            return
+        feature = 'recipe steps'
+    elif kind == 'install-manifest':
+        if not any(action.get('stdout', {}).get('grammar', 1) >= 2 for action in doc.get('actions', [])):
+            return
+        feature = 'stdout grammar 2 or later'
+    else:
+        return
+    major, *rest = (part.lstrip('0') for part in doc.get('min_launcher', '0').split('.'))
+    if not major or (major == '1' and not any(rest)):
+        rep.error('min_launcher', f'{feature} requires a value above 1.0.0')
 
 
 def min_launcher_findings(named_docs):
@@ -1353,6 +1404,7 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False):
     lint_min_launcher(doc, rep)
     if rep.errors:
         return rep   # the rules assume the shape
+    lint_setup_launcher_floor(doc, rep, kind)
     facts = FactTypes(dictionary_doc or dictionary())
     used = LINTS[kind](doc, rep, facts, strict)
     rep.used = used
@@ -1524,6 +1576,7 @@ def selftest():
         ('machine: a contradictory API fact', lambda d: d['api']['by_api']['d3d12'].update(car_rt=False), 'corresponding active API fact'),
         ('machine: an invalid API tier', lambda d: d['api']['by_api']['vulkan'].update(rt_tier='high'), 'api.by_api.vulkan.rt_tier'),
         ('machine: an impossible Vulkan provider', lambda d: d['api']['by_api']['vulkan'].update(ray_regen='ready'), 'api.by_api.vulkan.ray_regen'),
+        ('machine: a resolved configuration path is not text', lambda d: d['paths'].update(config_file=[]), 'paths.config_file'),
     ]:
         d = copy.deepcopy(mdoc)
         fn(d)
@@ -1538,6 +1591,13 @@ def selftest():
         ('manifest: a fact not install.*', lambda d: d['facts'].update(**{'gpu.foo': {'any_of': ['a']}}), 'install.* fact'),
         ('manifest: launch without a game root placeholder', lambda d: d['launch'].update(game_root='--game_data_root=.'), 'expected one flag'),
         ('manifest: debug launch with an extra flag', lambda d: d['launch'].update(debug_menu='--debug_menu=true --other=true'), 'expected one flag'),
+        ('manifest: an absolute launch program', lambda d: d['launch'].update(program='C:/larecomp.exe'), 'launch.program'),
+        ('manifest: a join status outside the game folder', lambda d: d['files'].update(join_status='../join_server.txt'), 'files.join_status'),
+        ('manifest: an empty machine path', lambda d: d['files'].update(machine=''), '$.files.machine'),
+        ('manifest: settings UI outside the game folder', lambda d: d['files'].update(settings_ui='logs/../../settings-ui.json'), 'files.settings_ui'),
+        ('manifest: empty successful results', lambda d: d['actions'][0]['stdout'].update(ok_results=[]), '.stdout.ok_results'),
+        ('manifest: duplicate success results', lambda d: d['actions'][0]['stdout'].update(ok_results=['ok', 'ok']), 'listed twice'),
+        ('manifest: delimiter in a success result', lambda d: d['actions'][0]['stdout'].update(ok_results=['ok|other']), '.stdout.ok_results[0]'),
         ('manifest: negative XEX bytes', lambda d: d['game'].update(size=-1), 'game.size'),
     ]:
         d = copy.deepcopy(idoc)
@@ -1549,11 +1609,44 @@ def selftest():
         ('recipe: a when needing a probed fact', lambda d: d['options'][2].update(when="gpu.class == 'high'"), 'before the first probe'),
         ('recipe: an option with both value and from', lambda d: d['options'][1].update(value='x'), 'either a value or a from'),
         ('recipe: no targets', lambda d: d.update(targets=[]), 'needs 1'),
+        ('recipe: an uppercase SDK commit', lambda d: d['sdk'].update(commit='A' * 40), '$.sdk.commit'),
+        ('recipe: a short SDK commit', lambda d: d['sdk'].update(commit=d['sdk']['commit'][:12]), '$.sdk.commit'),
+        ('recipe: a newline in the SDK commit', lambda d: d['sdk'].update(commit=d['sdk']['commit'] + '\n'), 'exactly 40'),
+        ('recipe: an SDK commit different from the pin', lambda d: d['sdk'].update(commit='0' * 40), 'must match the repository SDK pin'),
+        ('recipe: a prebuilt option with the CLI flag prefix', lambda d: d['sdk']['prebuilt'].update(options=['-DREXGLUE_ENABLE_TRACY=OFF']), '$.sdk.prebuilt.options[0]'),
+        ('recipe: placement for an undeclared input', lambda d: d['codegen']['place'].update(other='out/other'), 'listed in codegen.inputs'),
+        ('recipe: placement outside the checkout', lambda d: d['codegen']['place'].update({'default.xex': 'out/../../default.xex'}), 'relative file path in the source checkout'),
+        ('recipe: absolute placement path', lambda d: d['codegen']['place'].update({'default.xex': '/out/default.xex'}), 'relative file path in the source checkout'),
+        ('recipe: placement with a drive letter', lambda d: d['codegen']['place'].update({'default.xex': 'C:default.xex'}), 'relative file path in the source checkout'),
     ]:
         d = copy.deepcopy(rdoc)
         fn(d)
         rep = validate(d)
         check(any(fragment in m for m in rep.errors), f'mutation "{name}" not reported: {rep.errors[:2]}')
+    recipe_with_steps = {**rdoc, 'steps': [{'id': 'configure', 'tool': 'cmake'}]}
+    manifest_with_grammar_2 = copy.deepcopy(idoc)
+    manifest_with_grammar_2['actions'][0]['stdout']['grammar'] = 2
+    for d in (recipe_with_steps, manifest_with_grammar_2):
+        for floor in (None, '0.9', '1', '1.0.0', '01.00.000.0', '1.0.0.1', '1.0.1', '2'):
+            candidate = dict(d)
+            if floor is None:
+                candidate.pop('min_launcher')
+            else:
+                candidate['min_launcher'] = floor
+            rep = validate(candidate)
+            want_error = floor not in ('1.0.0.1', '1.0.1', '2')
+            check(bool(rep.errors) == want_error and not rep.warnings,
+                  f'{d["schema"]} with a new setup feature and min_launcher {floor!r}: {rep.errors + rep.warnings}')
+    check(not validate({**rdoc, 'steps': []}).errors, 'recipe: empty steps needs no launcher bump')
+    legacy_recipe = copy.deepcopy(rdoc)
+    del legacy_recipe['sdk'], legacy_recipe['codegen']['place']
+    legacy_manifest = copy.deepcopy(idoc)
+    del legacy_manifest['launch']['program'], legacy_manifest['files']
+    for action in legacy_manifest['actions']:
+        del action['stdout']['ok_results']
+    for d in (legacy_recipe, legacy_manifest):
+        rep = validate(d)
+        check(not rep.errors and not rep.warnings, f'older {d["schema"]} without optional fields: {rep.errors + rep.warnings}')
     rep = mutate(lambda d: row(d, 'PM_RxFpsCap')['states'][0].update(when="live.city_data == 'ready'", live_only=True))
     check(not any('needs a ?? fallback' in m for m in rep.errors), 'live_only on a rule must silence lint 3')
     if failures:

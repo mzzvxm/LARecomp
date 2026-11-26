@@ -20,7 +20,8 @@ CONSTANT_SOURCES = (
     'larecomp_manifest.toml', 'src/cpu_level.cpp', 'src/larecomp_version.h',
     'src/settings/larecomp_app_settings.h',
     'src/isoinstaller/larecomp_iso_installer.cpp', 'src/saveporter/larecomp_save_porter.cpp',
-    'src/mc_engine/online/online_tables_core.h', 'src/shaderpack/pack_format.h',
+    'src/mc_engine/online/online_tables_core.h', 'src/mc_engine/online/server_browser/join_server.cpp',
+    'src/shaderpack/pack_format.h',
     'src/citypack/pack_format.h', 'src/citypack/city_hit_format.h', 'src/gpu/pipelines.cpp',
     'launcher-recipe.json', 'src/settings_ui/ui_data.h.in',
 )
@@ -236,12 +237,34 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
     assert ('settings_ui' in manifest['contracts']) == exports
     assert ('machine' in manifest['contracts']) == exports
     assert manifest['exit_codes']['cpu_level_refused'] == 0x4C43
-    assert manifest['launch'] == {'game_root': '--game_data_root={game_root}', 'debug_menu': '--debug_menu=true'}
+    program = 'larecomp.exe' if windows else 'larecomp'
+    assert manifest['launch'] == {'program': program, 'game_root': '--game_data_root={game_root}', 'debug_menu': '--debug_menu=true'}
+    assert stage[program]['kind'] == 'program'
     assert manifest['game']['size'] == 9252864
     assert manifest['game']['required_files'] == [
         'default.xex', 'xarchive_audio.rpf', 'xarchive_audlo.rpf', 'xarchive_cache.rpf',
     ]
     assert manifest['markers'] == {'algo': 'fnv1a64-lower-path', 'version': 1}
+    assert manifest['files']['join_status'] == 'logs/join_server.txt'
+    assert manifest['files']['online_tool'] == ('larecomp_online_tool.exe' if windows else 'larecomp_online_tool')
+    assert manifest['files']['online_tables'] == 'logs/online_tables.json'
+    stdout = {
+        'build_shader_packs': ('shaderpack', ['ok', 'up to date', 'not needed']),
+        'precache_pipelines': ('pipelines', ['ok', 'up to date', 'not needed', 'no list']),
+        'build_city_pack': ('citypack', ['ok', 'up to date', 'not needed']),
+        'build_city_hit': ('citypack', ['ok', 'up to date', 'not needed']),
+        'check_city_hit': ('citypack', ['up to date', 'not needed']),
+    }
+    if exports:
+        stdout.update(dump_settings_ui=('settingsui', ['ok']), probe_machine=('machine', ['ok']))
+        for key, filename, step in (('machine', 'machine.json', 'probe_machine'),
+                                    ('settings_ui', 'settings-ui.json', 'dump_settings_ui')):
+            assert manifest['files'][key] == filename
+            assert action[step]['outputs'] == [f'{{game_folder}}/{filename}']
+    else:
+        assert 'machine' not in manifest['files'] and 'settings_ui' not in manifest['files']
+    for step, (prefix, statuses) in stdout.items():
+        assert action[step]['stdout'] == {'prefix': f'@{prefix}|', 'grammar': 1, 'ok_results': statuses}
     extension = '.dll' if windows else '.so'
     assert stage['sdk_module' + extension]['kind'] == 'module'
     assert stage['larecomp_mspack_license.txt']['licence_for'] == 'larecomp_mspack' + extension
@@ -407,6 +430,11 @@ MUTATIONS = (
     ('cmake/InstallManifest.cmake', '"game_root": "@game_root@"', '"game_root": "--other_root={game_root}"'),
     ('cmake/InstallManifest.cmake', '--@debug_menu@=true', '--other_debug=true'),
     ('cmake/InstallManifest.cmake', '"size": 9252864', '"size": 9252865'),
+    ('cmake/InstallManifest.cmake', 'logs/${join_status}', 'logs/other_status.txt'),
+    ('cmake/InstallManifest.cmake', '"program": "$<TARGET_FILE_NAME:@target@>"', '"program": "larecomp"'),
+    ('cmake/InstallManifest.cmake', ' "no list"', ''),
+    ('cmake/InstallManifest.cmake', 'set(machine_file "machine.json")', 'set(machine_file "other.json")'),
+    ('cmake/InstallManifest.cmake', 'set(settings_ui_file "settings-ui.json")', 'set(settings_ui_file "other.json")'),
     # min_launcher: the manifest and the --describe text drop it, carry a wrong value, a malformed or non-text value is accepted, a missing
     # one gets a default, a "0" is lost, settings-ui.json (settings_ui_data.h) and machine.json (the compile definition) stop following the recipe.
     ('cmake/InstallManifest.cmake', '"min_reader": 1,\n  @launcher_gate@@identity@,', '"min_reader": 1,\n  @identity@,'),
@@ -433,6 +461,10 @@ def main():
     args = parser.parse_args()
     deps = check_deps()
     run([sys.executable, '-I', str(VALIDATOR), '--strict', str(ROOT / 'launcher-recipe.json')])
+    recipe = read(ROOT / 'launcher-recipe.json')
+    codegen_manifest = (ROOT / 'larecomp_manifest.toml').read_text(encoding='utf-8')
+    codegen_xex, = re.findall(r'(?m)^file_path = "([^"]+)"$', codegen_manifest)
+    assert recipe['codegen']['place']['default.xex'] == codegen_xex, 'codegen placement must match the entrypoint file_path'
     cases = (
         dict(windows=True, full=True, exports=True),
         dict(windows=True),

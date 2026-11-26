@@ -25,28 +25,41 @@
   "actions": [
     {
       "id": "build_shader_packs", "flag": "--build_shader_packs", "force_flag": "--build_shader_packs_force", "args": ["--game_data_root={game_root}"],
-      "after": [], "when": "true", "stdout": { "prefix": "@shaderpack|", "grammar": 1 }, "exit": { "ok": [0], "fail": [1] },
+      "after": [], "when": "true", "stdout": { "prefix": "@shaderpack|", "grammar": 1, "ok_results": ["ok", "up to date", "not needed"] },
+      "exit": { "ok": [0], "fail": [1] },
       "outputs": ["{shader_pack_dir}/mcla_shaders.v8.pack", "{shader_pack_dir}/mcla_shaders.stamp"], "never_fails_setup": true, "timeout_min": 25
     },
     {
       "id": "precache_pipelines", "flag": "--precache_pipelines", "force_flag": "--precache_pipelines_force", "args": ["--game_data_root={game_root}"],
-      "after": ["build_shader_packs"], "when": "true", "stdout": { "prefix": "@pipelines|", "grammar": 1 }, "exit": { "ok": [0], "fail": [1] },
+      "after": ["build_shader_packs"], "when": "true", "stdout": { "prefix": "@pipelines|", "grammar": 1, "ok_results": ["ok", "up to date", "not needed", "no list"] },
+      "exit": { "ok": [0], "fail": [1] },
       "outputs": ["{pipeline_cache_dir}/mcla_pipelines.bin"], "never_fails_setup": true, "timeout_min": 20
     },
     {
       "id": "build_city_pack", "flag": "--build_city_pack", "args": ["--game_data_root={game_root}"], "after": ["build_shader_packs"],
-      "when": "gpu.rt_tier != 'none'", "stdout": { "prefix": "@citypack|", "grammar": 1 }, "exit": { "ok": [0], "fail": [1] }, "never_fails_setup": true
+      "when": "gpu.rt_tier != 'none'", "stdout": { "prefix": "@citypack|", "grammar": 1, "ok_results": ["ok", "up to date", "not needed"] },
+      "exit": { "ok": [0], "fail": [1] }, "never_fails_setup": true
     },
     {
-      "id": "dump_settings_ui", "flag": "--dump_settings_ui", "args": [], "after": [], "when": "true", "stdout": { "prefix": "@settingsui|", "grammar": 1 },
+      "id": "build_city_hit", "flag": "--build_city_hit", "args": ["--game_data_root={game_root}"], "after": ["build_city_pack"],
+      "when": "gpu.rt_tier != 'none'", "stdout": { "prefix": "@citypack|", "grammar": 1, "ok_results": ["ok", "up to date", "not needed"] },
+      "exit": { "ok": [0], "fail": [1] }, "never_fails_setup": true
+    },
+    {
+      "id": "check_city_hit", "flag": "--check_city_hit", "args": ["--game_data_root={game_root}", "--check_city_hit_deep=true"],
+      "after": ["build_city_hit"], "when": "gpu.rt_tier != 'none'", "stdout": { "prefix": "@citypack|", "grammar": 1, "ok_results": ["up to date", "not needed"] },
+      "exit": { "ok": [0], "fail": [1] }, "never_fails_setup": true
+    },
+    {
+      "id": "dump_settings_ui", "flag": "--dump_settings_ui", "args": [], "after": [], "when": "true", "stdout": { "prefix": "@settingsui|", "grammar": 1, "ok_results": ["ok"] },
       "exit": { "ok": [0], "fail": [1] }, "outputs": ["{game_folder}/settings-ui.json"], "never_fails_setup": true, "timeout_min": 1
     },
     {
-      "id": "probe_machine", "flag": "--probe_machine", "args": [], "after": [], "when": "true", "stdout": { "prefix": "@machine|", "grammar": 1 },
+      "id": "probe_machine", "flag": "--probe_machine", "args": [], "after": [], "when": "true", "stdout": { "prefix": "@machine|", "grammar": 1, "ok_results": ["ok"] },
       "exit": { "ok": [0], "fail": [1] }, "outputs": ["{game_folder}/machine.json"], "never_fails_setup": true, "timeout_min": 1
     }
   ],
-  "launch": { "game_root": "--game_data_root={game_root}", "debug_menu": "--debug_menu=true" },
+  "launch": { "program": "larecomp.exe", "game_root": "--game_data_root={game_root}", "debug_menu": "--debug_menu=true" },
   "game": {
     "title_id": "545407F8",
     "xex_sha256": ["c386f4001fa569e6ad4b982f441f67412f00b3f47c166134555cd4b59854a432"],
@@ -54,7 +67,10 @@
     "required_files": ["default.xex"]
   },
   "layout": { "game_files_folder": "MCLA_Game_Files", "mod_roots": ["modloader", "mods", "models"], "textures": "textures_replace", "disabled": ".disabled", "saved_game": "mc4.sav" },
-  "files": { "online_tool": "larecomp_online_tool", "join_status": "logs/join_server.txt", "online_tables": "logs/online_tables.json" },
+  "files": {
+    "online_tool": "larecomp_online_tool.exe", "join_status": "logs/join_server.txt", "online_tables": "logs/online_tables.json",
+    "machine": "machine.json", "settings_ui": "settings-ui.json"
+  },
   "exit_codes": { "cpu_level_refused": 19523 },
   "markers": { "algo": "fnv1a64-lower-path", "version": 1 }
 }

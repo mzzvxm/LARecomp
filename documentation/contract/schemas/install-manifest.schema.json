@@ -61,7 +61,17 @@
           "when": { "type": "string", "description": "an expression over the machine facts the launcher has at that point" },
           "stdout": {
             "type": "object",
-            "properties": { "prefix": { "type": "string", "pattern": "^@[a-z]+\\|$" }, "grammar": { "type": "integer", "minimum": 1 } }
+            "properties": {
+              "prefix": { "type": "string", "pattern": "^@[a-z]+\\|$" },
+              "grammar": { "type": "integer", "minimum": 1 },
+              "ok_results": {
+                "type": "array",
+                "description": "result status tokens that the tool reports on success, in addition to its exit code",
+                "items": { "type": "string", "minLength": 1, "not": { "pattern": "[|\\r\\n]" } },
+                "minItems": 1,
+                "uniqueItems": true
+              }
+            }
           },
           "exit": {
             "type": "object",
@@ -78,6 +88,7 @@
       "type": "object",
       "required": ["game_root", "debug_menu"],
       "properties": {
+        "program": { "type": "string", "minLength": 1, "description": "The game executable path relative to the staged game folder" },
         "game_root": { "type": "string", "minLength": 1, "description": "One argument with the {game_root} placeholder for the game data directory" },
         "debug_menu": { "type": "string", "minLength": 1, "description": "One argument to enable the debug menu when requested" }
       }
@@ -101,7 +112,16 @@
         "saved_game": { "type": "string" }
       }
     },
-    "files": { "type": "object", "additionalProperties": { "type": "string" } },
+    "files": {
+      "type": "object",
+      "description": "Runtime files relative to the staged game folder",
+      "properties": {
+        "join_status": { "type": "string", "minLength": 1, "description": "Default status file written by --join_server" },
+        "machine": { "type": "string", "minLength": 1, "description": "Default machine facts document" },
+        "settings_ui": { "type": "string", "minLength": 1, "description": "Default settings UI document" }
+      },
+      "additionalProperties": { "type": "string" }
+    },
     "exit_codes": { "type": "object", "additionalProperties": { "type": "integer" } },
     "markers": {
       "type": "object",

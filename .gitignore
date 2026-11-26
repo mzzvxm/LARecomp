@@ -38,6 +38,10 @@ tools/*
 !tools/check_settings_ui_lints.py
 !tools/check_lfg_xcheck.py
 !tools/lfg_drift.py
+# The release tooling reads the tracked LAR-RXSDK commit from this file.
+!tools/release/
+tools/release/*
+!tools/release/lar-rxsdk.pin
 
 # Backup bundles belong next to the repository, never inside it.
 *.bundle
