@@ -530,10 +530,12 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
     Count(Skip::kNoLights);
     return false;
   }
+  // CHECK: compare lit coverage at the edges of moving headlight and lamp volumes.
+  const auto scissor_of_light = larecomp::settings::mcla_gpu_local_lights_sphere_scissor.Get() ? ll::SphereScissorOfLight : ll::ScissorOfLight;
   std::array<ll::PixelRect, ll::kMaxPassLights> rects;
   uint32_t visible = 0;
   for (uint32_t i = 0; i < selection.count; ++i) {
-    rects[i] = ll::ScissorOfLight(selection.lights[i], rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height);
+    rects[i] = scissor_of_light(selection.lights[i], rows, sf.camera.tan_half_fov[0], sf.camera.tan_half_fov[1], gb.width, gb.height);
     visible += rects[i].Empty() ? 0u : 1u;
   }
   if (visible == 0) {
@@ -674,7 +676,11 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   // GB-NEON-COST: the draws (local_lights_rules.h PlanDraws): one for each light, but a car's neon tube (its lights share the car, the surface and nearly the rectangle) is one draw the pixel
   // shader sums; the flags tell the shader whether to test the reach before it reads the planes.
   // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
-  push.info[3] = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) | ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact);
+  const uint32_t draw_flags = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) |
+                              ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact) |
+                              (larecomp::settings::mcla_gpu_local_lights_reach_mask.Get() ? ll::kPushReachMask : 0u);
+  // CHECK: compare coverage and pass time for full-screen neon tubes in chase view.
+  const bool use_far_depth = (draw_flags & ll::kPushLateReach) == 0 && larecomp::settings::mcla_gpu_local_lights_depth_bound.Get();
   uint32_t drawn = 0;
   const auto run = [&](uint32_t from, uint32_t to) {
     for (uint32_t d = from; d < to; ++d) {
@@ -683,6 +689,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
       list->setScissors(&scissor, 1);
       push.info[0] = draw.first;
       push.info[1] = draw.count;
+      push.info[3] = draw_flags | (use_far_depth ? ll::FarDepthBits(selection, draw, rows) : 0u);
       list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
       list->drawInstanced(3, 1, 0, 0);
       for (uint32_t k = draw.first; k < draw.first + draw.count; ++k) {

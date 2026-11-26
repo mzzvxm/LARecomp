@@ -224,6 +224,11 @@ rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bo
   facts.look_radius = in.look_radius;
   facts.reach_override = reach_override_;
   facts.scale = scale_ == 1 || scale_ == 2 || scale_ == 4 ? scale_ : governor_.reduced() ? 4u : 2u;
+  // CHECK: sweep tyre contacts, thin poles and silhouettes during a live scale change on both APIs.
+  if (rtao::UseQuarterAt4k(settings::mcla_gpu_rtao_quarter_at_4k.Get(), in.render[1], govern_, raw_, in.interior)) {
+    facts.scale = 4;
+    govern_ = false;  // Forced quarter-size timings must stay out of the automatic governor.
+  }
   if (facts.wanted && facts.play_view && available()) {
     const bool trace_ready = PipelineReady(in.stencil_ms);
     const bool compose_ready = compose_->available();

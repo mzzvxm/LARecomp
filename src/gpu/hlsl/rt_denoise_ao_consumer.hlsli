@@ -38,8 +38,19 @@ float3 RtAoPosition(float2 pixel, float depth, float2 lens) {
 }
 
 float4 RtDnColourAt(int2 p) {
-  const float open = RtDnSignal(p).x;
-  return float4(open, open, open, RtAoIdShare(p).y >= kRtDnMinShare ? 1.0f : 0.0f);
+  const float4 signal = RtDnSignal(p);
+#if defined(RT_DN_PASS_TEMPORAL)
+  // Trace publishes the same binary judged flag in raw.g and id_share.y.
+  // CHECK: compare temporal history across cockpit and trace extent changes.
+  const bool temporal = true;
+#else
+  // The temporal output carries normals. Spatial iteration 0 restores raw.gb.
+  const bool temporal = false;
+#endif
+  if (RtAoReadSignalValidity(RtDnW(28) != 0u, temporal, RtDnIteration())) {
+    return float4(signal.xxx, signal.g);
+  }
+  return float4(signal.xxx, RtAoIdShare(p).y >= kRtDnMinShare ? 1.0f : 0.0f);
 }
 
 RtDnPixel RtDnLoad(int2 p) {

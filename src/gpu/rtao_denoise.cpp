@@ -21,6 +21,7 @@ constexpr uint32_t kVehicleSlotHigh = 24;
 constexpr uint32_t kHistoryCap = 25;
 constexpr uint32_t kRawSignal = 26;
 constexpr uint32_t kSpatialResolve = 27;
+constexpr uint32_t kTraceValidity = 28;
 constexpr uint32_t kInvalidHalfSlot = 0xFFFFu;
 
 bool Matches(const HostImage* image, const uint32_t (&size)[2]) {
@@ -109,6 +110,7 @@ const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
   push[kHistoryCap] = frame_cap;
   push[kRawSignal] = in.signal->slot;
   push[kSpatialResolve] = spatial_resolve ? 1u : 0u;
+  push[kTraceValidity] = larecomp::settings::mcla_gpu_rtao_reuse_trace_validity.Get() ? 1u : 0u;
 
   // CHECK: validate the shared vehicle table's graphics-to-compute handoff (ao.cpp makes it
   // compute-readable before the trace) in a play frame on both backends. The "rtao denoise"

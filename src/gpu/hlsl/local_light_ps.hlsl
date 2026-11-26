@@ -207,18 +207,22 @@ uint LslKernelWord() {
 
 // The stored depth of the main view's depth plane at the guest's sample 0, and from it the pixel's world position. False for the sky (stored depth 0, or a distance the linearisation cannot
 // place), and for a pixel outside the plane: such a pixel takes nothing.
-bool LpWorldAt(LpGlobals g, int2 p, out float3 world) {
+bool LpWorldAtDepth(LpGlobals g, int2 p, float far_depth, out float3 world) {
   world = float3(0.0f, 0.0f, 0.0f);
   const float stored = LpStoredDepth(p.x, p.y);
   if (!(stored > 0.0f)) {
     return false;  // the sky
   }
   const float t = LpLinearDepth(stored, g.lin);
-  if (!(t < LP_SKY)) {
+  if (!(t < LP_SKY) || (far_depth > 0.0f && t > far_depth)) {
     return false;
   }
   world = LpWorldPosition(g, float(p.x) + 0.5f, float(p.y) + 0.5f, t);
   return true;
+}
+
+bool LpWorldAt(LpGlobals g, int2 p, out float3 world) {
+  return LpWorldAtDepth(g, p, 0.0f, world);
 }
 
 // The surface's GEOMETRIC unit normal at pixel p, turned to the camera: the lit shaders' rule (headlight.cpp HeadlightLight: cross(ddy(world), ddx(world)) of the pixel's 2 x 2 quad) taken
@@ -253,6 +257,15 @@ bool LpAnyReaches(uint first, uint count, float3 world) {
     }
   }
   return false;
+}
+
+uint LpReachMask(uint first, uint count, float3 world) {
+  uint mask = 0u;
+  for (uint i = 0u; i < count; ++i) {
+    const float4 row0 = asfloat(g_lights.Load4(LP_LIGHTS_OFFSET + (first + i) * LL_LIGHT_BYTES));
+    mask |= LpReachBit(i, row0.xyz, row0.w, world);
+  }
+  return mask;
 }
 
 // A light's shadows at a pixel, and what is left of its term: for a light with views of the atlas, `add` times the one lookup's visibility (HL-SHADOW-QUALITY: at the surface's geometric normal, taken from the
@@ -377,15 +390,16 @@ float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, flo
 // the lights marching for themselves made up to 20). Then, light by light as LpOneLight does: the term times the visibility (a light that is shut out is not in the sum), the shadow. The tube's lights
 // are neon lights, which have no views of the atlas; the shadow step is kept so that the function is right for any light of a draw. Never called with a draw of one or two lights (those march for
 // themselves, as before the cap) or with LP_PUSH_FULL_CONTACT.
-float4 LpCappedLights(uint first, uint count, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 albedo, float lit) {
+float4 LpCappedLights(uint first, uint count, uint reach_mask, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 albedo, float lit) {
   LlLight l[4];
   float3 add[4];
   float strength[4];
   for (uint i = 0u; i < 4u; ++i) {
     add[i] = float3(0.0f, 0.0f, 0.0f);
     strength[i] = 0.0f;
-    l[i] = LlUnpack(LpLoadLight(first + min(i, count - 1u)));
-    if (i < count) {
+    l[i] = (LlLight)0;
+    if ((reach_mask & (1u << i)) != 0u) {
+      l[i] = LlUnpack(LpLoadLight(first + i));
       add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));   // (nan_guard.hlsli, as LpOneLight)
       if (any(add[i] > 0.0f) && LpTakesContact(l[i], true)) {
         strength[i] = add[i].x + add[i].y + add[i].z;
@@ -430,12 +444,21 @@ float4 main(float4 position : SV_Position) : SV_Target {
   // The position and the reach first (GB-NEON-COST): the depth is one read, and a pixel no light of the draw reaches takes nothing whatever the planes hold (the laws are 0 at and beyond the
   // range), so the three planes are left unread for it. LP_PUSH_LATE_REACH is the old order: planes, then the position, the reach only inside the laws.
   const bool reach_first = (g_push.info.w & uint(LP_PUSH_LATE_REACH)) == 0u;
+  uint reach_mask = (1u << count) - 1u;
   float3 world = float3(0.0f, 0.0f, 0.0f);
   if (reach_first) {
-    if (!LpWorldAt(g, p, world)) {
+    const float far_depth = float((g_push.info.w & ~LP_PUSH_REACH_MASK) >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f);
+    if (!LpWorldAtDepth(g, p, far_depth, world)) {
       discard;
     }
-    if (!LpAnyReaches(first, count, world)) {
+    // CHECK: compare neon draw timing in chase view when only part of a tube
+    // reaches the receiver. Each surviving light keeps its original order.
+    if (count > 1u && (g_push.info.w & LP_PUSH_REACH_MASK) != 0u) {
+      reach_mask = LpReachMask(first, count, world);
+    } else if (!LpAnyReaches(first, count, world)) {
+      discard;
+    }
+    if (reach_mask == 0u) {
       discard;
     }
   }
@@ -476,11 +499,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 total = float3(0.0f, 0.0f, 0.0f);
   bool any_light = false;
   if (capped) {
-    const float4 tube = LpCappedLights(first, count, g, flags, p, world, normal, albedo, rt2.w);
+    const float4 tube = LpCappedLights(first, count, reach_mask, g, flags, p, world, normal, albedo, rt2.w);
     total = tube.xyz;
     any_light = tube.w > 0.0f;
   } else {
     for (uint i = 0u; i < count; ++i) {
+      if ((reach_mask & (1u << i)) == 0u) {
+        continue;
+      }
       const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w);
       if (one.w > 0.0f) {
         total += one.xyz;

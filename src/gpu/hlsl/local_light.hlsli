@@ -63,6 +63,8 @@
 #define LP_PUSH_LATE_REACH 1
 #define LP_PUSH_FULL_CONTACT 2
 #define LP_PUSH_NO_CONTACT 4
+#define LP_PUSH_FAR_DEPTH_SHIFT 3
+#define LP_PUSH_REACH_MASK (1u << 31)
 
 // ---- the street lamps' table (local_lights_rules.h kLampOffset; lamp_shadow_frame.h GpuLampTable) --------------------------------------------------
 // After the headlights' table: a 32 byte header (uint count, atlas bindless slot, atlas width, atlas height, layers of entries 0..15, layers of entries 16..31, two reserved), then twenty 96 byte views
@@ -152,6 +154,10 @@ float LpOcclusion(float4 occ, float world_y) {
 bool LpReaches(float3 pos, float range, float3 world) {
   float3 d = pos - world;
   return !(dot(d, d) >= range * range);
+}
+
+uint LpReachBit(uint index, float3 pos, float range, float3 world) {
+  return LpReaches(pos, range, world) ? (1u << index) : 0u;
 }
 
 // The light one light adds to one pixel (local_lights_rules.h PixelLight): albedo x lit weight x the law's term x the night light intensity (the game lamps' laws only: a headlight's colour has

@@ -14,9 +14,10 @@ namespace fs = std::filesystem;
 namespace {
 constexpr std::array Settings{
     "mcla_gpu_rtao_rays", "mcla_gpu_rtao_reach", "mcla_gpu_rtao_range",
-    "mcla_gpu_rtao_scale", "mcla_gpu_rtao_alpha", "mcla_gpu_rtao_screen",
+    "mcla_gpu_rtao_scale", "mcla_gpu_rtao_quarter_at_4k", "mcla_gpu_rtao_alpha", "mcla_gpu_rtao_screen",
     "mcla_gpu_rtao_interior", "mcla_gpu_rtao_check", "mcla_gpu_rtao_view",
-    "mcla_gpu_rtao_history", "mcla_gpu_rtao_denoise", "mcla_gpu_rtao_spatial_resolve", "mcla_gpu_rtao_cabin_guide", "mcla_gpu_rtao_raw_scale",
+    "mcla_gpu_rtao_history", "mcla_gpu_rtao_denoise", "mcla_gpu_rtao_spatial_resolve", "mcla_gpu_rtao_reuse_trace_validity",
+    "mcla_gpu_rtao_cabin_guide", "mcla_gpu_rtao_raw_scale",
     "mcla_gpu_dlss_rr_rt_ao", "mcla_gpu_rtao_blend_car",
 };
 
@@ -107,6 +108,7 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   const auto trace = Read(gpu / "rtao.cpp");
   const auto denoise = Read(gpu / "rtao_denoise.cpp");
   const auto consumer = Read(gpu / "hlsl/rt_denoise_ao_consumer.hlsli");
+  const auto trace_shader = Read(gpu / "hlsl/rtao_trace_cs.hlsl");
   const auto engine = Read(gpu / "hlsl/rt_denoise_engine.hlsli");
   const auto has = [&](const std::string& code, const char* pattern, std::string_view what) {
     checks.Expect(std::regex_search(code, std::regex(pattern)), what);
@@ -123,6 +125,13 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
                     engine.contains("!RtAoAcceptTap(tap.z, c.z, tap.vehicle == 0u, dot(c.n, tap.n))") &&
                     engine.contains("if (resolve) current = RtAoResolveCurrent(current, sum, count);"),
                 "single-ray world pixels gather compatible neighbours even when there is no history");
+  checks.Expect(denoise.contains("kTraceValidity = 28;") &&
+                    consumer.contains("RtAoReadSignalValidity(RtDnW(28) != 0u, temporal, RtDnIteration())") &&
+                    trace_shader.contains("judged ? 1.0 : 0.0") &&
+                    trace_shader.contains("g_signal[pixel] = float4(1.0, 0.0, 0.0, 1.0);") &&
+                    trace_shader.contains("g_signal[pixel] = float4(open, 1.0, float(rays) / 4.0, 1.0);") &&
+                    engine.contains("float4(lerp(own.x, filtered.x, amount), own.yzw)"),
+                "trace validity matches the guide and survives the spatial passes");
   checks.Expect(engine.contains("!(step == 2u && resolve)") &&
                     engine.contains("RtDnAmbientStep(radius, step, c.length, resolve, c.vehicle != 0u)"),
                 "the spatial shader runs the extra bilateral step only on eligible world pixels");

@@ -76,6 +76,12 @@ void PlanChecks() {
 }
 
 void RuleChecks() {
+  for (uint32_t bits = 0; bits < 16; ++bits) {
+    Check(rtao::UseQuarterAt4k(bits & 1, 2160, bits & 2, bits & 4, bits & 8) == (bits == 3),
+          "quarter-size experiment needs the switch and automatic scale in an exterior non-raw frame");
+  }
+  Check(!rtao::UseQuarterAt4k(true, 2159, true, false, false) && rtao::UseQuarterAt4k(true, 2161, true, false, false),
+        "quarter-size experiment starts at 2160 render lines");
   for (uint32_t n = 0; n < 8193; ++n) {
     Check(rtao::TracedExtent(n) == (n + 1) / 2, "traced size rounds up");
   }
