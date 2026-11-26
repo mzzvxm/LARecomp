@@ -73,6 +73,24 @@ using ffx_common::ReturnName;
 using ffx_common::Utf8;
 using ffx_common::Version;
 
+const wchar_t* UpscalerDllSuffix() {
+  return ActiveBackend() == Backend::kD3D12 ? L"dx12" : L"vk";
+}
+
+struct UpscalerFiles {
+  std::wstring loader;
+  std::wstring upscaler;
+  bool Found() const { return !loader.empty() && FileExists(loader) && FileExists(upscaler); }
+};
+
+UpscalerFiles FindUpscalerFiles() {
+  const std::wstring dir = ExeDirectory();
+  if (dir.empty()) return {};
+  const wchar_t* suffix = UpscalerDllSuffix();
+  return {dir + L"amd_fidelityfx_loader_" + suffix + L".dll",
+          dir + L"amd_fidelityfx_upscaler_" + suffix + L".dll"};
+}
+
 // The flags a context is made with, and a size query for it is asked with (the runtime's figure
 // depends on them).
 uint32_t ContextFlags(const BackendRequest& request) {
@@ -243,6 +261,10 @@ void FfxBackend::Impl::SetStatus(BackendState state, bool fsr31, bool fsr4, std:
                               fsr31, fsr4);
 }
 
+bool FfxUpscalerCanStart(plume::RenderDevice* device) {
+  return backend::QueryUpscalerSupport(device).ok && FindUpscalerFiles().Found();
+}
+
 void FfxBackend::Probe(Device& device, FrameRing& frames) {
   Impl& i = *impl_;
   if (i.probe_started) {
@@ -261,11 +283,9 @@ void FfxBackend::Probe(Device& device, FrameRing& frames) {
     i.SetStatus(BackendState::kUnavailable, false, false, support.reason);
     return;
   }
-  const std::wstring dir = ExeDirectory();
-  const wchar_t* suffix = i.api == Backend::kD3D12 ? L"dx12" : L"vk";
-  i.loader_path = dir + L"amd_fidelityfx_loader_" + suffix + L".dll";
-  i.upscaler_path = dir + L"amd_fidelityfx_upscaler_" + suffix + L".dll";
-  if (dir.empty() || !FileExists(i.loader_path) || !FileExists(i.upscaler_path)) {
+  UpscalerFiles files = FindUpscalerFiles();
+  const wchar_t* suffix = UpscalerDllSuffix();
+  if (!files.Found()) {
     const std::string reason = std::format(
         "AMD's FidelityFX files for {} (amd_fidelityfx_loader_{}.dll and "
         "amd_fidelityfx_upscaler_{}.dll) are not next to the game's exe",
@@ -275,6 +295,8 @@ void FfxBackend::Probe(Device& device, FrameRing& frames) {
     i.SetStatus(BackendState::kUnavailable, false, false, reason);
     return;
   }
+  i.loader_path = std::move(files.loader);
+  i.upscaler_path = std::move(files.upscaler);
   // When the runtime is opened (upscaler_load_policy.h): at the start where the start decision or FSR
   // 4's listing needs its answer, else when an FSR is first asked for.
   const Upscaler saved = ReadUpscalerSettings().upscaler;
