@@ -163,14 +163,18 @@ bool RtAo::PipelineReady(bool ms) {
 
 void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool play_view) {
   plan_ = {};
+  shared_ = false;
   raw_ = false;
   selected_ = decision.rt;
   play_view_ = play_view;
   wanted_ = selected_ && play_view;
   if (selected_) {
-    budget_ = rtao::BudgetFor(decision.rung);
+    const auto legacy_rung = decision.rung == gpu_class::RtTier::kNone ? gpu_class::RtTier::kWeak : decision.rung;
+    budget_ = rtao::BudgetFor(legacy_rung);
     const auto alpha_text = settings::mcla_gpu_rtao_alpha.Get();
-    alpha_ = alpha_text == "auto" && budget_.exact_alpha ? Alpha::kExact : city_rt_shadow::ParseAlphaMode(alpha_text);
+    alpha_auto_ = alpha_text == "auto";
+    want_shared_ = rtao_denoise::ReadMode() == rtao_denoise::Mode::kShared;
+    alpha_ = alpha_auto_ && budget_.exact_alpha ? Alpha::kExact : city_rt_shadow::ParseAlphaMode(alpha_text);
     const auto screen_text = settings::mcla_gpu_rtao_screen.Get();
     screen_ = screen_text == "off" ? rtao::Screen::kOff : screen_text == "on" ? rtao::Screen::kOn : rtao::Screen::kAuto;
     const auto interior_text = settings::mcla_gpu_rtao_interior.Get();
@@ -189,11 +193,13 @@ void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool play_view) {
     rt_scene::Needs needs;
     needs.cars = true;
     needs.city = city_rt::Level::kHigh;
-    if (alpha_ == Alpha::kExact) {
+    if (alpha_ == Alpha::kExact || (alpha_auto_ && want_shared_)) {
       needs.hit = needs.city;
       needs.textures = TextureScope::kAlpha;
     }
-    service_->Want(rt_scene::Consumer::kRtAo, needs);
+    if (service_) {
+      service_->Want(rt_scene::Consumer::kRtAo, needs);
+    }
   }
   denoiser::NoteConsumer(rr::Consumer::kRtAo, wanted_);
 }
@@ -217,19 +223,24 @@ rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bo
   facts.bounce_light = bounce_light_on;
   facts.screen = screen_;
   facts.raw = raw_;
-  facts.budget = budget_;
+  // Raw vendor denoisers and the legacy A/B arm keep their input contracts.
+  shared_ = !raw_ && want_shared_;
+  facts.budget = shared_ ? rtao::kSharedBudget : budget_;
+  if (shared_ && alpha_auto_) {
+    alpha_ = Alpha::kExact;
+  }
   facts.rays = rays_;
   facts.render[0] = in.render[0];
   facts.render[1] = in.render[1];
   facts.look_radius = in.look_radius;
   facts.reach_override = reach_override_;
-  facts.scale = scale_ == 1 || scale_ == 2 || scale_ == 4 ? scale_ : governor_.reduced() ? 4u : 2u;
+  facts.scale = scale_ == 1 || scale_ == 2 || scale_ == 4 ? scale_ : (!shared_ && governor_.reduced() ? 4u : 2u);
   if (facts.wanted && facts.play_view && available()) {
     const bool trace_ready = PipelineReady(in.stencil_ms);
     const bool compose_ready = compose_->available();
     if (raw_)
       facts.scale = rtao_denoise::RawScale();
-    const bool filter_ready = raw_ || !rtao_denoise::Enabled() || denoise_->available();
+    const bool filter_ready = raw_ || shared_ || rtao_denoise::ReadMode() == rtao_denoise::Mode::kOff || denoise_->available();
     facts.pipelines = trace_ready && compose_ready && filter_ready;
     facts.top_level = top_level.scene_valid && top_level.set;
     if (facts.pipelines && facts.top_level && city_ && city_->pack_ready()) {
@@ -304,14 +315,43 @@ void RtAo::ReleaseImages() {
   for (auto& depth : depth_) passes_->ReleaseImage(depth);
   passes_->ReleaseImage(normal_);
   passes_->ReleaseImage(id_share_);
+  ReleaseSharedHistory();
   previous_ours_ = false;
+}
+
+bool RtAo::EnsureSharedHistory() {
+  if (!passes_ || !signal_.texture) {
+    return false;
+  }
+  constexpr auto format = plume::RenderFormat::R16G16B16A16_FLOAT;
+  return passes_->EnsureImage(shared_history_[0], signal_.width, signal_.height, format, "rtao AO history 0") &&
+         passes_->EnsureImage(shared_history_[1], signal_.width, signal_.height, format, "rtao AO history 1");
+}
+
+void RtAo::ReleaseSharedHistory() {
+  if (passes_) {
+    for (auto& image : shared_history_) {
+      if (image.texture) {
+        passes_->ReleaseImage(image);
+      }
+    }
+  }
+  shared_history_valid_ = false;
+}
+
+bool RtAo::MatchCabinGuide(const Inputs& in) const {
+  return in.depth && in.cockpit && settings::mcla_gpu_rtao_cabin_guide.Get() &&
+         (in.depth->width > plan_.traced[0] || in.depth->height > plan_.traced[1]);
+}
+
+std::array<uint32_t, 5> RtAo::SharedConfiguration(const Inputs& in) const {
+  return {plan_.rays, std::bit_cast<uint32_t>(plan_.reach), uint32_t(alpha_), check_, uint32_t(MatchCabinGuide(in))};
 }
 
 bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
   if (!plan_.on || !list || !top_level_ || !in.depth || !in.depth->texture)
     return false;
-  match_cabin_guide_ = in.cockpit && settings::mcla_gpu_rtao_cabin_guide.Get() &&
-                       (in.depth->width > plan_.traced[0] || in.depth->height > plan_.traced[1]);
+  match_cabin_guide_ = MatchCabinGuide(in);
   frame_ = in.frame;
   tan_[0] = in.tan_x;
   tan_[1] = in.tan_y;
@@ -345,6 +385,7 @@ bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
       .look = {in.look_power, in.look_floor, rtao::CarReach(plan_.reach, in.car_reach), rtao::kCabinPad},
       .box_min = {1.0f, 1.0f, 1.0f, std::bit_cast<float>(uint32_t(in.noise_index))},
       .box_max = {0.0f, 0.0f, 0.0f, cabin_screen_ ? 1.0f : 0.0f},
+      .rate = {in.history_slot, in.motion_slot, std::bit_cast<uint32_t>(previous_tan_[0]), std::bit_cast<uint32_t>(previous_tan_[1])},
   };
   if (box.valid) {
     std::copy_n(box.min, 3, push.box_min);
@@ -357,9 +398,10 @@ bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
                    (interior_ ? rtao::kFlagInterior : 0u) | ((in.noise_code & ao_stable::kBlueNoiseFlag) ? rtao::kFlagBlue : 0u) |
                    (in.depth->width != in.render[0] || in.depth->height != in.render[1] ? rtao::kFlagDepthHalf : 0u) |
                    (match_cabin_guide_ ? interior_camera::kRtAoMatchGuide : 0u) |
+                   (in.history_slot != kNoSlot ? rtao::kFlagRate : 0u) |
                    (probe ? rtao::kFlagProbe : 0u) | (sample ? rtao::kFlagStats : 0u);
   timing_->Mark(list, "rtao trace");
-  if (govern_ && !plan_.raw && backend::TimestampsSupported(device_->device())) {
+  if (govern_ && !shared_ && !plan_.raw && backend::TimestampsSupported(device_->device())) {
     auto& stamp = stamps_[frames_->slot()];
     if (!stamp)
       stamp = device_->CreateQueryPool(2, "rtao timestamps");
@@ -473,6 +515,7 @@ uint32_t RtAo::RecordCompose(plume::RenderCommandList* list, const ComposeInputs
       .normal_slot = normal_slot_, .screen_term_slot = check_ == 1 ? kNoSlot : in.screen_term_slot,
       .bounce_slot = in.bounce_slot, .traced = {signal_.width, signal_.height}, .plan_ao = {in.plan_ao[0], in.plan_ao[1]},
       .power = in.power, .floor_ = in.floor, .blend_screen = screen_ == rtao::Screen::kOn && check_ != 1, .view = in.view,
+      .shared_history = filtered_ == &shared_history_[shared_history_index_],
   };
   // The compose's optional inputs: the trace's own raw signal (coverage, the debug views), the vehicle IDs of the traced pixels, the depth target's stencil plane (the full size picture's
   // vehicle IDs, so a car's edge takes only the car's taps) and the car pass's occlusion image of the A/B arm.
@@ -543,12 +586,16 @@ void RtAo::OnPresent() {
     compose_->ReleaseImage();
     governor_.Reset();
   }
+  if (!shared_ || plan_.raw) {
+    ReleaseSharedHistory();
+  }
   recorded_ = false;
   filtered_ = depth_full_ = nullptr;
 }
 
 uint64_t RtAo::HeldBytes() const {
   return uint64_t(signal_.width) * signal_.height * (rtao::kBytesPerTracedPixel - 32) +
+         uint64_t(shared_history_[0].width) * shared_history_[0].height * 16u +
          (denoise_ ? denoise_->HeldBytes() : 0) + (compose_ ? compose_->HeldBytes() : 0);
 }
 

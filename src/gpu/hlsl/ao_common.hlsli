@@ -92,6 +92,17 @@ uint AoView() { return g_push.slots2.z & 0xFFu; }
 uint AoSlices() { return (g_push.slots2.z >> 8) & 0xFu; }
 uint AoSteps() { return (g_push.slots2.z >> 12) & 0xFu; }
 bool AoLow() { return (g_push.slots2.z & (1u << 16)) != 0u; }
+bool AoRotatingGrid() { return (g_push.slots2.z & (1u << 26)) != 0u; }
+uint AoGridPhase() { return (g_push.slots2.z >> 27) & 3u; }
+float2 AoGridOffset(uint phase) { return float2(phase & 1u, phase >> 1u) * 0.5f - 0.25f; }
+float2 AoCurrentGridOffset() {
+#if AO_ROTATING_GRID && !AO_GI
+  if (AoRotatingGrid() && AoLow()) {
+    return AoGridOffset(AoGridPhase());
+  }
+#endif
+  return float2(0.0f, 0.0f);
+}
 int AoDenoiseRadius() { return int((g_push.slots2.z >> 17) & 0x7u); }
 // The blur's spatial sigma in pixels and the wide blur's radius (the pixels that have no history): ao_stable.h. The radius follows
 // the occlusion image's height (1 up to 1.5 times 720 lines, 2 up to 2.5 times, 3 above: ao.cpp FillPush), so that the blur reaches
@@ -131,7 +142,7 @@ float AoLinearDepth(float stored) {
 // The view-space position of the pixel centre `centre` (in pixels of an image `size` wide and
 // high) at distance `t`.
 float3 AoViewPos(float2 centre, float2 size, float t) {
-  const float2 uv = centre / size;
+  const float2 uv = (centre + AoCurrentGridOffset()) / size;
   return float3((uv.x * 2.0f - 1.0f) * g_push.lens.x * t, (1.0f - uv.y * 2.0f) * g_push.lens.y * t,
                 t);
 }
@@ -146,6 +157,7 @@ static const float kAoNegHalfLog2e = -0.72134752044f;
 // with the 2 of the clip space back into a 2 / size inside the tap), so the factor is made here as the one value the tap
 // multiplies by.
 float3 AoViewPosInv(float2 centre, float2 clip_scale, float t) {
+  centre += AoCurrentGridOffset();
   return float3((centre.x * clip_scale.x - 1.0f) * g_push.lens.x * t,
                 (1.0f - centre.y * clip_scale.y) * g_push.lens.y * t, t);
 }

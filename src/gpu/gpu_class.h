@@ -140,10 +140,7 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // +0.095 ms for the occlusion and the reflection of the car's own colour: the same), so the setting has one level, `on`, and
     // every discrete card gets it; an integrated GPU does without.
     Derived("mcla_gpu_car_selfrefl"),
-    // Ambient occlusion, from the costs in AO-DESIGN.md section 5 (measured 0.09 ms for ultra at 720p on
-    // the RTX 5080, estimated 1.0 ms at 4K there): ultra is about 3 ms at 1080p on a GTX 1050-class
-    // card (Mid), high about 1 ms, so Mid gets high and keeps a frame at 60 FPS; the Low class (shared
-    // memory, 2-CU iGPU: the scene alone is 100+ ms at 2x) gets nothing, as every other effect does.
+    // Auto takes the preset's Off or On value; On runs the same screen-space effect on each adapter.
     Derived("mcla_gpu_ao"),
     // The cars' headlights as real lights at night (headlight_rig.h): one extra term in the lit shaders of the pixels the beams reach (about 40 ALU there,
     // the early-out box keeps every other pixel to a few), so the setting has one level, `on`: every card but the integrated one (Low: the scene alone is

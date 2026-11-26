@@ -1717,16 +1717,8 @@ const ItemDef kWorldDetailItems[] = {
 // ON)", 20 characters).
 const char* const kPostAaVals[]  = {"off", "fxaa", "smaa"};
 const char* const kPostAaNames[] = {"OFF", "FXAA", "SMAA"};
-// Ambient occlusion (gpu/ao.h, gpu/rtao_setting.h, live): AUTO (the default), off, half resolution, full resolution, RAY TRACED. AUTO
-// says what it comes to on this GPU (the LowLatencyLabel pattern): OFF on an integrated GPU, HIGH on a
-// discrete one with under 5.5 GiB, ULTRA on the rest (gpu/gpu_class.h), RT on a High class card that traces rays quickly (rt_tier.h kRtAo). Nothing in the graphics settings is called
-// low (owner, 2026-11-14): the stored values are the shown words, off / high / ultra / rt (a larecomp.toml that still says
-// low is ignored and the row is AUTO). RAY TRACED keeps its saved value on every GPU; the rules (ui_rules.toml) give the fallback reason when the gate is shut ("RT (NO RT GPU)", 14 characters).
-// The row is "AMBIENT OCCLUSION" (17 characters) with a value of at most 14 ("RT (NO RT GPU)"), 31 together, under the page's 41.
-// CHECK: confirm the 14-character "RT (NO RT GPU)" fits LIGHTING AND SHADOWS in the pause movie.
-// (The two lists are written out as the other rows' are: the settings UI exporter reads this table's source. gpu/rtao_setting_test.cpp holds them equal to rtao_setting::kValues / kNames.)
-const char* const kNativeAoVals[]  = {"auto", "off", "high", "ultra", "rt"};
-const char* const kNativeAoNames[] = {"AUTO", "OFF", "HIGH", "ULTRA", "RAY TRACED"};
+// Ambient occlusion values and the saved high/ultra aliases are defined in settings/ui_rules.toml.
+// CHECK: confirm the fallback label "RT (NO RT GPU)" fits LIGHTING AND SHADOWS.
 // How strong it looks (mcla_gpu_ao_intensity, live), the row under it: grey while the occlusion is
 // off (what AUTO comes to counts). At most 21 characters with its longest value.
 const char* const kNativeAoLevelVals[]  = {"light", "default", "strong", "max"};
@@ -2009,7 +2001,7 @@ const ItemDef kLightItems[] = {
     NativeOnly(Str("PM_RxGpuCarShadowMap", "mcla_gpu_car_shadow_map", "CAR SHADOWS: ",
                                 kNativeCarShadowVals, kNativeCarShadowNames, 4)),
     NativeOnly(Str("PM_RxGpuAo", "mcla_gpu_ao", "AMBIENT OCCLUSION: ",
-                                kNativeAoVals, kNativeAoNames, 5)),
+                                nullptr, nullptr, 0)),
     NativeOnly(Str("PM_RxGpuAoLevel", "mcla_gpu_ao_intensity", "AO INTENSITY: ",
                                 kNativeAoLevelVals, kNativeAoLevelNames, 4)),
     NativeOnly(Str("PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT: ",

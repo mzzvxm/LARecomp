@@ -21,6 +21,7 @@
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
+#include "gfx_preset.h"
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "live_text.h"
@@ -50,10 +51,16 @@ LiveText& Setting() {
   return text;
 }
 
-// The setting as the ray tracing tier resolves it (rt_tier.h kRtEffects): `auto` is both terms on a strong card, the sun ray alone on a weak one, none with
-// no ray tracing; an own choice (off, ao, contact) stays.
 rules::Setting SettingNow() {
-  return rules::SettingOf(gpu_class::ResolveRt(gpu_class::RtEffect::kCarRtAo, Setting().Get()));
+  const std::string value = Setting().Get();
+  if (value != "auto") {
+    return rules::SettingOf(value);
+  }
+  gfx_preset::Preset preset = gfx_preset::Preset::kCustom;
+  // CHECK: the live preset flip removes the car pass on RT-capable adapters.
+  gfx_preset::Parse(larecomp::settings::mcla_gpu_preset.Get(), &preset);
+  static LiveText world_ao("mcla_gpu_ao");
+  return rules::SettingOf(gfx_preset::CarAoAuto(preset, world_ao.Get() == "rt"));
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kAmbientOcclusion, kPipelineVariant); }

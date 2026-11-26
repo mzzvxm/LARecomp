@@ -29,20 +29,20 @@ void Check(bool ok, std::string_view message) {
 
 constexpr GpuClass kClasses[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
 constexpr RtTier kTiers[] = {RtTier::kNone, RtTier::kWeak, RtTier::kStrong};
-constexpr Choice kChoices[] = {Choice::kAuto, Choice::kOff, Choice::kHigh, Choice::kUltra, Choice::kRt};
+constexpr Choice kChoices[] = {Choice::kAuto, Choice::kOff, Choice::kHigh, Choice::kUltra, Choice::kRt, Choice::kOn};
 
 void CheckDecisions() {
   constexpr Choice auto_choices[3][3] = {
       {Choice::kOff, Choice::kOff, Choice::kOff},
-      {Choice::kHigh, Choice::kHigh, Choice::kHigh},
-      {Choice::kUltra, Choice::kUltra, Choice::kRt},
+      {Choice::kOn, Choice::kOn, Choice::kOn},
+      {Choice::kOn, Choice::kOn, Choice::kRt},
   };
   constexpr RtTier rungs[3][3] = {
       {RtTier::kNone, RtTier::kNone, RtTier::kNone},
       {RtTier::kNone, RtTier::kWeak, RtTier::kWeak},
       {RtTier::kNone, RtTier::kWeak, RtTier::kStrong},
   };
-  constexpr Level screen[] = {Level::kOff, Level::kOff, Level::kHigh, Level::kUltra, Level::kUltra};
+  constexpr Level screen[] = {Level::kOff, Level::kOff, Level::kHigh, Level::kUltra, Level::kUltra, Level::kUltra};
   for (int c = 0; c < 3; ++c) {
     for (int t = 0; t < 3; ++t) {
       const auto cls = kClasses[c];
@@ -50,8 +50,7 @@ void CheckDecisions() {
       const auto cell = ao::gc::RtCell(ao::gc::RtEffect::kRtAo, rungs[c][t]);
       Check(cell == (auto_choices[c][t] == Choice::kRt ? "rt" : ""), "RT Auto cell");
       for (const bool built : {false, true}) {
-        const Gate gate = t == 0 ? Gate::kNoRt : c == 0 ? Gate::kTooSlow
-                                                       : built ? Gate::kRuns : Gate::kNotBuilt;
+        const Gate gate = t == 0 ? Gate::kNoRt : built ? Gate::kRuns : Gate::kNotBuilt;
         Check(ao::GateFor(cls, tier, built) == gate, "capability gate and precedence");
         for (const Choice saved : kChoices) {
           const Choice chosen = saved == Choice::kAuto ? auto_choices[c][t] : saved;
@@ -75,25 +74,25 @@ void CheckDecisions() {
 }
 
 void CheckLabels() {
-  constexpr std::string_view words[] = {"auto", "off", "high", "ultra", "rt"};
-  constexpr std::string_view names[] = {"AUTO", "OFF", "HIGH", "ULTRA", "RAY TRACED"};
-  constexpr Gate gates[] = {Gate::kRuns, Gate::kNoRt, Gate::kTooSlow, Gate::kNotBuilt};
-  constexpr std::string_view traced[] = {"RAY TRACED", "RT (NO RT GPU)", "RT (TOO SLOW)", "RT (NOT READY)"};
+  constexpr std::string_view words[] = {"auto", "off", "high", "ultra", "rt", "on"};
+  constexpr std::string_view names[] = {"AUTO", "OFF", "ON", "ON", "RAY TRACED", "ON"};
+  constexpr Gate gates[] = {Gate::kRuns, Gate::kNoRt, Gate::kNotBuilt};
+  constexpr std::string_view traced[] = {"RAY TRACED", "RT (NO RT GPU)", "RT (NOT READY)"};
   constexpr std::size_t page_label_width = 27;
-  for (int i = 0; i < 5; ++i) {
+  for (int i = 0; i < 6; ++i) {
     Check(ao::kValues[i] == words[i] && ao::kNames[i] == names[i], "menu and launcher value and name order");
     Check(ao::ParseChoice(words[i]) == kChoices[i], "saved words");
     Check(ao::ParseChoice(ao::gc::Upper(words[i])) == kChoices[i], "case-insensitive saved words");
-    for (int g = 0; g < 4; ++g) {
+    for (int g = 0; g < 3; ++g) {
       const auto label = ao::ValueLabel(kChoices[i], gates[g]);
       Check(label == (i == 4 ? traced[g] : names[i]), "visible label and gate reason");
       Check(label.size() <= 14 && label.size() + page_label_width <= 41, "label fits graphics page");
     }
   }
-  for (const std::string_view unknown : {"low", "LOW", "", "rt ", "typo", "on"}) {
+  for (const std::string_view unknown : {"low", "LOW", "", "rt ", "typo"}) {
     Check(ao::ParseChoice(unknown) == Choice::kAuto, "unknown and legacy choices are Auto");
   }
-  constexpr std::string_view auto_labels[] = {"AUTO (OFF)", "AUTO (HIGH)", "AUTO (ULTRA)"};
+  constexpr std::string_view auto_labels[] = {"AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"};
   for (int c = 0; c < 3; ++c) {
     for (const auto tier : kTiers) {
       for (const bool built : {false, true}) {
@@ -104,7 +103,7 @@ void CheckLabels() {
     }
   }
   Check(ao::AutoDescription() ==
-            "Auto is Off on integrated graphics, High on a mid-range card, Ultra on a high-end card "
+            "Auto is Off on integrated graphics, On on discrete cards "
             "and Ray traced on a high-end card that traces rays quickly.",
         "launcher Auto sentence follows the class and RT cells");
 }
@@ -118,7 +117,7 @@ void CheckReaders(const fs::path& src) {
   // Literal uses outside the setting and metadata must be one of these entry points. The presets' table (gfx_preset.h, a row of cells, no reader) is one, and the RT tier's cell for
   // the ray traced preset (rt_tier.h kRtEffects) names the row twice: its own name and the preset table's lookup of it.
   std::map<std::string, int> uses = {
-      {"gpu/ao.cpp", 1}, {"gpu/effect_compare.h", 1}, {"gpu/rt_tier.h", 2}, {"gpu/gpu_class.h", 1}, {"gpu/gfx_preset.h", 1},
+      {"gpu/ao.cpp", 1}, {"gpu/car_rt_ao.cpp", 1}, {"gpu/effect_compare.h", 1}, {"gpu/rt_tier.h", 2}, {"gpu/gpu_class.h", 1}, {"gpu/gfx_preset.h", 1},
       {"mc_engine/display/effect_compare.cpp", 1}, {"mc_engine/menus/pause_menu.cpp", 2},
   };
   for (const auto& entry : fs::recursive_directory_iterator(src)) {
@@ -148,18 +147,18 @@ void CheckReaders(const fs::path& src) {
         "host plan delegates to the AO resolver");
   // The row's labels and AO INTENSITY's dependency are data now (settings/ui_rules.toml, the shared rules; settings/ui_parity_test.cpp holds them against this resolver
   // for every class, tier, choice and readiness); the menu hands the rules the readiness (the fact live.rtao_pass_built) and the setting's own words.
-  Check(contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoVals[]  = {\"auto\", \"off\", \"high\", \"ultra\", \"rt\"};") &&
-            contains("mc_engine/menus/pause_menu.cpp", "const char* const kNativeAoNames[] = {\"AUTO\", \"OFF\", \"HIGH\", \"ULTRA\", \"RAY TRACED\"};") &&
+  Check(contains("settings/ui_rules.toml", "when = \"s.mcla_gpu_ao in ['high','ultra']\", value = \"on\"") &&
+            contains("settings/ui_rules.toml", "{ id = \"on\", label = \"ON\" }") &&
             contains("mc_engine/menus/pause_menu.cpp", "\"live.rtao_pass_built\") return Value::Bool(gpu::rtao_setting::PassBuilt())"),
-        "the menu's words and the pass's readiness come from the resolver's header");
-  Check(contains("settings/ui_rules.toml", "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
-            contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") && contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "label = \"AUTO (RT)\""),
+        "legacy choices decode to On and the pass publishes its readiness");
+  Check(contains("settings/ui_rules.toml", "resolved(s.mcla_gpu_ao) in ['on','high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
+            contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "label = \"AUTO (RT)\""),
         "the rules name the ray traced choice's fallback reasons and AO INTENSITY's dependency counts it");
   Check(contains("gpu/effect_compare_rules.h", "rtao_setting::ParseChoice(saved.occlusion)") &&
             contains("gpu/effect_compare_rules.h", "rtao_setting::Decide(saved.cls,"),
         "comparison resolves the saved setting");
-  Check(contains("settings/generated/settings_gpu.h", "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\", \"rt\")") &&
-            contains("settings/generated/manifest.json", "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"high\\\", \\\"ultra\\\", \\\"rt\\\")"),
+  Check(contains("settings/generated/settings_gpu.h", "rex::Allowed(\"auto\", \"off\", \"on\", \"rt\", \"high\", \"ultra\")") &&
+            contains("settings/generated/manifest.json", "rex::Allowed(\\\"auto\\\", \\\"off\\\", \\\"on\\\", \\\"rt\\\", \\\"high\\\", \\\"ultra\\\")"),
         "settings declaration and manifest accept the fifth value");
 }
 

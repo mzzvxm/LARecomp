@@ -99,18 +99,11 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(std::string, mcla_gpu_anisotropy, "game", "Anisotropic texture filtering: game (the game's own fetch constants), off, 2, 4, 8 or 16. "
     "Applies to mipmapped textures whose min, mag and mip filters are all linear. Live.");
 
-  REX_SETTING(std::string, mcla_gpu_ao, "auto", "Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, "
-    "where nearby objects block sky light. off, high (half resolution, 2 slices), "
-    "ultra (full resolution, 3 slices), or rt: ray traced occlusion, from the real geometry of the "
-    "city and the cars, so what is off the screen or behind an edge still darkens. Needs a graphics "
-    "card that traces rays; on any other it runs as ultra. Auto (the default) is off on integrated "
-    "graphics, high on a mid-range card, ultra on a high-end card and ray traced on a high-end card "
-    "that traces rays quickly. The pause menu "
-    "and the launcher show the same words. A value that is none of these (the low of an older "
-    "larecomp.toml) is ignored and the setting runs as auto. "
-    "Costs graphics card time, ultra more than high. "
-    "Also drawn behind the pause menu and on the map, so a change made there shows at once. "
-    "Live.", rex::Allowed("auto", "off", "high", "ultra", "rt"));
+  REX_SETTING(std::string, mcla_gpu_ao, "auto", "Ambient occlusion: darkens creases, kerbs and where objects meet. On uses screen-space occlusion. "
+    "Ray Traced uses geometry and falls back to screen space where rays are unavailable. "
+    "Existing high and ultra settings select On. Also drawn behind the pause menu and on the map. Live.", rex::Allowed("auto", "off", "on", "rt", "high", "ultra"));
+
+  REX_SETTING(bool, mcla_gpu_ao_cheap, true, "Diagnostic: use the combined screen-space AO filter and rotating half-size samples. Off uses the original passes. Live.", rex::kDebugOnly);
 
   REX_SETTING(f64, mcla_gpu_ao_car_reach, 0.4, "Diagnostic: how far what a car blocks of the sky light reaches on the road and the other things "
     "round it, as a share of the occlusion's radius (0.4 of the default 3 m is 1.2 m: the dark line "
@@ -1299,7 +1292,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_rtao_history, 32, "Debug: ray traced ambient occlusion history cap in frames. 1 disables temporal accumulation. Live.", rex::kDebugOnly, rex::Range{1, 64});
 
-  REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
+  REX_SETTING(std::string, mcla_gpu_rtao_denoise, "auto", "Debug: Auto uses the shared AO temporal filter. Ours uses the previous RT denoiser. Off sends raw visibility to compose. Live.", rex::kDebugOnly, rex::Allowed("auto", "ours", "off"));
   REX_SETTING(bool, mcla_gpu_rtao_spatial_resolve, false, "Debug: prefilter one-ray ambient occlusion samples and apply a wider bilateral resolve to mature world surfaces. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rtao_cabin_guide, false, "Debug: match reduced-resolution RT AO traces to their guide surface in the cockpit. Live.", rex::kDebugOnly);
 
@@ -2120,6 +2113,7 @@ inline auto& mcla_gpu_ab_interleave = g_gpu.mcla_gpu_ab_interleave;
 inline auto& mcla_gpu_adapter = g_gpu.mcla_gpu_adapter;
 inline auto& mcla_gpu_anisotropy = g_gpu.mcla_gpu_anisotropy;
 inline auto& mcla_gpu_ao = g_gpu.mcla_gpu_ao;
+inline auto& mcla_gpu_ao_cheap = g_gpu.mcla_gpu_ao_cheap;
 inline auto& mcla_gpu_ao_blue_noise = g_gpu.mcla_gpu_ao_blue_noise;
 inline auto& mcla_gpu_ao_car_reach = g_gpu.mcla_gpu_ao_car_reach;
 inline auto& mcla_gpu_ao_census = g_gpu.mcla_gpu_ao_census;

@@ -296,9 +296,20 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Ambient occlusion: darkens creases, kerbs, the ground under cars and where objects meet, \"\n    \"where nearby objects block sky light. off, high (half resolution, 2 slices), \"\n    \"ultra (full resolution, 3 slices), or rt: ray traced occlusion, from the real geometry of the \"\n    \"city and the cars, so what is off the screen or behind an edge still darkens. Needs a graphics \"\n    \"card that traces rays; on any other it runs as ultra. Auto (the default) is off on integrated \"\n    \"graphics, high on a mid-range card, ultra on a high-end card and ray traced on a high-end card \"\n    \"that traces rays quickly. The pause menu \"\n    \"and the launcher show the same words. A value that is none of these (the low of an older \"\n    \"larecomp.toml) is ignored and the setting runs as auto. \"\n    \"Costs graphics card time, ultra more than high. \"\n    \"Also drawn behind the pause menu and on the map, so a change made there shows at once. \"\n    \"Live.\"",
+  "help": "\"Ambient occlusion: darkens creases, kerbs and where objects meet. On uses screen-space occlusion. \"\n    \"Ray Traced uses geometry and falls back to screen space where rays are unavailable. \"\n    \"Existing high and ultra settings select On. Also drawn behind the pause menu and on the map. Live.\"",
   "traits": [
-   "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\", \"rt\")"
+   "rex::Allowed(\"auto\", \"off\", \"on\", \"rt\", \"high\", \"ultra\")"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_ao_cheap": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic: use the combined screen-space AO filter and rotating half-size samples. Off uses the original passes. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
   ],
   "comments": [],
   "pp_depth": 0
@@ -660,7 +671,7 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Debug: auto and ours use the built-in denoiser. Off sends the raw ray traced ambient occlusion signal to compose. Live.\"",
+  "help": "\"Debug: Auto uses the shared AO temporal filter. Ours uses the previous RT denoiser. Off sends raw visibility to compose. Live.\"",
   "traits": [
    "rex::kDebugOnly",
    "rex::Allowed(\"auto\", \"ours\", \"off\")"

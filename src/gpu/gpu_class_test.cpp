@@ -85,8 +85,7 @@ const Row kTable[] = {
      "AUTO (ON)"},
     // Ambient occlusion (AO-DESIGN.md section 5: ultra is about 3 ms at 1080p on a GTX 1050-class card,
     // high about 1 ms; nothing on shared memory).
-    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "high", "ultra", "AUTO (OFF)", "AUTO (HIGH)",
-     "AUTO (ULTRA)"},
+    {Effect::kAmbientOcclusion, "mcla_gpu_ao", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
     // The headlights have one level, `on`: the integrated class (Low) has none.
     {Effect::kHeadlights, "mcla_gpu_headlights", "off", "on", "on", "AUTO (OFF)", "AUTO (ON)", "AUTO (ON)"},
     // Light shadows (local_shadow.h; the headlights now, the street lamps later), the three level shape (owner 2026-11-20): medium on Mid (two maps of 512: one view for the player's car and one for the
@@ -145,8 +144,8 @@ void CheckTable() {
 // the rest; explicit values pass through for the AO resolver.
 void CheckAmbientOcclusion() {
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
-  const char* const want[] = {"off", "high", "ultra"};
-  const char* const own[] = {"off", "high", "ultra", "rt"};
+  const char* const want[] = {"off", "on", "on"};
+  const char* const own[] = {"off", "on", "high", "ultra", "rt"};
   const auto rank = [](std::string_view v) { return v == "off" ? 0 : v == "high" ? 1 : 2; };
   int last = -1;
   for (int k = 0; k < 3; ++k) {
@@ -252,7 +251,7 @@ void CheckWords() {
     const std::string name(CvarName(effect));
     for (const GpuClass c : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
       const std::string cell(Cell(effect, c));
-      Check(cell == "off" || cell == "high" || cell == "ultra", name + " on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, high or ultra");
+      Check(cell == "off" || cell == "high" || cell == "ultra" || (effect == Effect::kAmbientOcclusion && cell == "on"), name + " on " + std::string(ClassName(c)) + ": the cell '" + cell + "' is off, high or ultra");
     }
   }
   // The light shadows have three levels (the three level shape): their cells are words of off / medium / high / ultra.

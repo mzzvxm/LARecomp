@@ -231,6 +231,7 @@ add_executable(larecomp_noise_resolve_test EXCLUDE_FROM_ALL noise_resolve_test.c
 # shaders' and ao.cpp's flags and cvars are the header's) likewise:
 #   cmake --build <dir> --target larecomp_ao_size_test, then run src/gpu/larecomp_ao_size_test <src/gpu dir> [--print].
 add_executable(larecomp_ao_size_test EXCLUDE_FROM_ALL ao_size_test.cpp)
+add_executable(larecomp_ao_rate_test EXCLUDE_FROM_ALL ao_rate_test.cpp)
 # The occlusion's use of the G-buffer's normal plane (ao_gbuffer.h; GB-E: the normal image the passes read, the rules, the camera's rows, the facing of the bounce light's samples; it also
 # compiles hlsl/ao_gbuffer_normal.hlsli as C++ and compares it with the header, and reads the sources it is given) has a check that needs no renderer:
 #   cmake --build <dir> --target larecomp_ao_gbuffer_test, then run src/gpu/larecomp_ao_gbuffer_test <src/gpu dir> [--print] (exit 0 = passed).

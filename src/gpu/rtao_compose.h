@@ -23,6 +23,7 @@ class RtAoCompose {
     float power, floor_;
     bool blend_screen;
     int view;
+    bool shared_history = false;
   };
   uint32_t Record(const Frame&);
 

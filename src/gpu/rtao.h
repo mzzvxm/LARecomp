@@ -49,6 +49,8 @@ class RtAo {
     uint64_t noise_index = 0;
     uint32_t noise_code = 0;
     uint64_t frame = 0;
+    uint32_t history_slot = kNoSlot;
+    uint32_t motion_slot = kNoSlot;
     bool interior = false;
     bool cockpit = false;
   };
@@ -82,6 +84,10 @@ class RtAo {
   bool PipelineReady(bool ms);
   bool EnsureImages(uint32_t width, uint32_t height);
   void ReleaseImages();
+  bool EnsureSharedHistory();
+  void ReleaseSharedHistory();
+  bool MatchCabinGuide(const Inputs&) const;
+  std::array<uint32_t, 5> SharedConfiguration(const Inputs&) const;
   void FinishTraceTiming(plume::RenderCommandList*);
   void CloseSpan(plume::RenderCommandList*);
   void ReadStats(uint64_t frame, uint64_t mesh_epoch, bool probe);
@@ -115,7 +121,16 @@ class RtAo {
   bool stencil_ms_ = false;
   uint32_t previous_size_[2] = {};
   float tan_[2] = {}, previous_tan_[2] = {};
-  uint64_t frame_ = 0, previous_frame_ = 0;
+  HostImage shared_history_[2];
+  uint32_t shared_history_index_ = 0;
+  bool shared_ = false, shared_history_valid_ = false;
+  bool alpha_auto_ = false, want_shared_ = false;
+  uint64_t frame_ = 0, previous_frame_ = 0, shared_history_frame_ = 0;
+  uint64_t shared_mesh_epoch_ = 0;
+  float shared_range_ = 0.0f;
+  uint32_t shared_cap_ = 0;
+  bool shared_cabin_screen_ = false;
+  std::array<uint32_t, 5> shared_configuration_{};
   bool previous_ours_ = false, recorded_ = false;
   bool match_cabin_guide_ = false, previous_match_cabin_guide_ = false;
   bool listed_ = false, failed_[2] = {};

@@ -561,10 +561,7 @@ constexpr RtEffectInfo RtDerived(std::string_view cvar) {
 inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     // The car's own reflection traced: about 0.1 to 0.2 ms at 4K on an RTX 5080 (a small region of the picture); every card that traces gets it.
     RtDerived("mcla_gpu_car_selfrefl_rt"),
-    // The car's occlusion rays (2 or 4 a pixel by the occlusion's level) and its sun ray (one) in the box round the cars: 0.2 to 0.5 ms on an RTX 5080
-    // (RT-AO-DESIGN.md), several times that on a weak card, so a weak card keeps only the sun ray, which is the cheaper term and the one the screen-space
-    // passes cannot do (the car's own sun shadow); the strong card has both. "both" is the setting's auto behaviour (car_rt_ao_rules.h SettingOf).
-    RtDerived("mcla_gpu_ao_rt"),
+    {"mcla_gpu_ao_rt", "off", "off", "off"},  // CarRtAo resolves Auto from the active preset.
     // The city's sun shadows (CITY-RT-M1): high where the card traces; a weak card runs it with the Mid budget (the sectors within 150 m, not 300), which is
     // the package's own table (city_rt_rules.h BudgetFor with RtClass). First guess; the cost run of perf/CITY-RT-M1-RUNPLAN.md decides.
     RtDerived("mcla_gpu_rt_shadows"),

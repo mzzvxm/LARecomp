@@ -31,8 +31,13 @@ uint32_t Pack(uint32_t lo, uint32_t hi) { return lo | (hi << 16u); }
 }  // namespace
 
 namespace rtao_denoise {
-bool Enabled() {
-  return std::string_view(larecomp::settings::mcla_gpu_rtao_denoise.Get()) != "off";
+Mode ReadMode() {
+  const auto mode = larecomp::settings::mcla_gpu_rtao_denoise.Get();
+  return mode == "off" ? Mode::kOff : mode == "ours" ? Mode::kLegacy : Mode::kShared;
+}
+
+uint32_t ReadHistoryCap() {
+  return HistoryCap(larecomp::settings::mcla_gpu_rtao_history.Get());
 }
 
 uint32_t RawScale() {
@@ -69,14 +74,14 @@ const HostImage* RtAoDenoise::Record(const Frame& in) {
 }
 
 const HostImage* RtAoDenoise::Record(const Frame& in, uint32_t history_limit) {
-  if (!rtao_denoise::Enabled() || !in.list || in.traced[0] == 0 || in.traced[1] == 0 || in.traced[0] > 0xFFFFu || in.traced[1] > 0xFFFFu ||
+  if (rtao_denoise::ReadMode() == rtao_denoise::Mode::kOff || !in.list || in.traced[0] == 0 || in.traced[1] == 0 || in.traced[0] > 0xFFFFu || in.traced[1] > 0xFFFFu ||
       !(in.tan_x > 0.0f) || !std::isfinite(in.tan_x) || !(in.tan_y > 0.0f) || !std::isfinite(in.tan_y) ||
       !Matches(in.signal, in.traced) || !Matches(in.depth, in.traced) ||
       !Matches(in.normal, in.traced) || !Matches(in.id_share, in.traced) || !available()) {
     ResetHistory();
     return nullptr;
   }
-  const uint32_t cap = rtao_denoise::HistoryCap(larecomp::settings::mcla_gpu_rtao_history.Get());
+  const uint32_t cap = rtao_denoise::ReadHistoryCap();
   const uint32_t frame_cap = std::clamp(history_limit, 1u, cap);
   const bool spatial_resolve = larecomp::settings::mcla_gpu_rtao_spatial_resolve.Get();
   const bool lenses_valid = std::isfinite(in.prev_tan_x) && std::isfinite(in.prev_tan_y) && in.prev_tan_x > 0.0f && in.prev_tan_y > 0.0f;

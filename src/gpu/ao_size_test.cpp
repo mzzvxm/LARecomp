@@ -460,7 +460,7 @@ void CheckSources(const std::string& gpu) {
   Check(Has(cpp, "AtrousIterations(int(plan.gi.atrous), plan.ao[1])"), "ao.cpp: the a-trous passes follow the traced image's height");
   Check(Has(cpp, "history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]"), "ao.cpp: a change of the traced size throws the history away (kSize)");
   // The apply uses the depth-aware upsample for the occlusion's and the bounce's images, and not for the contact image beside them.
-  Check(Has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle)") && Has(apply, "GiAt(g_push.slots.z, ColourSlot()"), "the apply upsamples the occlusion's and the bounce's images with the depth-aware weights");
+  Check(Has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle, thin,") && Has(apply, "GiAt(g_push.slots.z, ColourSlot()"), "the apply upsamples the occlusion's and the bounce's images with the depth-aware weights");
   Check(Has(apply, "AoContactFull() ? g_textures[g_push.slots2.x].Load(int3(pixel, 0)).x : VisibilityAt(g_push.slots2.x, pixel, tc)"),
         "the apply reads a full size contact image as it is");
   Check(Has(apply, "AoBilateralEdgeFolded(g_push.slots2.x, ContactDepthSlot(), pixel, ContactImageSize()"), "the folded contact filter takes the contact image's own depth and size");

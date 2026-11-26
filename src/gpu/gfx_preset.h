@@ -168,7 +168,7 @@ inline constexpr Row kRows[] = {
     // CAR SHADOWS: `auto` is the 2048 map on a discrete card (car_shadow_map_rules.h AutoLevel, which still reads the class: its Low cell is the 1024 map, the one `auto` that is not VANILLA's).
     {"mcla_gpu_car_shadow_map", Page::kLighting, {"off", "ultra", "ultra", "ultra", "ultra"}},
     // AMBIENT OCCLUSION: ray traced (`rt`) in the one preset that is everything at the top of a strong card.
-    {"mcla_gpu_ao", Page::kLighting, {"off", "high", "ultra", "high", "rt"}},
+    {"mcla_gpu_ao", Page::kLighting, {"off", "on", "on", "rt", "rt"}},
     {"mcla_gpu_ao_intensity", Page::kLighting, {"default", "default", "default", "default", "default"}},
     {"mcla_gpu_ssgi", Page::kLighting, {"off", "off", "high", "off", "high"}},
     // RT BOUNCE LIGHT: the rung's cells (off, off, high); a weak card keeps the screen-space bounce light.
@@ -205,7 +205,7 @@ inline constexpr Row kRows[] = {
 
     // --- not on a page: a cell an `auto` table reads ---
     // The car's ray traced occlusion and sun ray (rt_tier.h kRtEffects): none off, weak the sun ray alone, strong both. A diagnostic cvar: the presets do not apply it.
-    {"mcla_gpu_ao_rt", Page::kSupport, {"off", "off", "off", "contact", "both"}},
+    {"mcla_gpu_ao_rt", Page::kSupport, {"off", "off", "off", "both", "both"}},
 };
 inline constexpr int kRowCount = static_cast<int>(sizeof(kRows) / sizeof(kRows[0]));
 
@@ -266,7 +266,12 @@ constexpr std::string_view CellOf(std::string_view cvar, Preset p) {
 }
 constexpr std::string_view CellAt(int row, Preset p) { return kRows[row].cell[Col(p)]; }
 
-// What a cell stands for in an `auto` table (rt_tier.h kRtEffects): the text the preset writes, or, for the one row whose setting takes `auto` where the effect is on, what that `auto` comes to.
+// Custom opts into the car support pass when world ray traced AO is selected explicitly.
+constexpr std::string_view CarAoAuto(Preset preset, bool custom_world_rt) {
+  return IsNamed(preset) ? CellOf("mcla_gpu_ao_rt", preset) : (custom_world_rt ? "both" : "off");
+}
+
+// What a cell stands for in an auto table (rt_tier.h kRtEffects).
 constexpr std::string_view Resolved(std::string_view cvar, std::string_view cell) {
   return (cvar == "mcla_gpu_car_selfrefl_rt" && cell == "auto") ? std::string_view("on") : cell;
 }

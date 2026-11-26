@@ -123,7 +123,7 @@ uint32_t RtAoCompose::Record(const Frame& in, const Guides& guides) {
   if (!pipeline || !EnsureImage(in.plan_ao[0], in.plan_ao[1], bounce)) return kNoSlot;
 
   const bool scalar_signal = in.filtered->format == plume::RenderFormat::R16_FLOAT;
-  const bool needs_raw = scalar_signal || in.view == 1 || in.view == 5;
+  const bool needs_raw = in.shared_history || scalar_signal || in.view == 1 || in.view == 5;
   const uint32_t raw = needs_raw && guides.raw != in.filtered && Valid(guides.raw, in.traced) ? guides.raw->slot : kNoSlot;
   const bool history = !scalar_signal && guides.raw != in.filtered;
   const uint32_t id_share = Valid(guides.id_share, in.traced) ? guides.id_share->slot : kNoSlot;
@@ -133,7 +133,7 @@ uint32_t RtAoCompose::Record(const Frame& in, const Guides& guides) {
       in.bounce_slot, raw, id_share, stencil,
       {in.traced[0], in.traced[1]}, {in.plan_ao[0], in.plan_ao[1]},
       {guides.render[0], guides.render[1]}, (guides.stencil_sample & 0xFFu) | (guides.stencil_ms ? 0x100u : 0u), guides.car_term_slot,
-      in.power, in.floor_, uint32_t(in.blend_screen) | (history ? 2u : 0u), uint32_t(in.view),
+      in.power, in.floor_, uint32_t(in.blend_screen) | (history ? 2u : 0u) | (in.shared_history ? 4u : 0u), uint32_t(in.view),
   };
   // CHECK: validate the term's typed stores and the screen/bounce texture
   // handoff at the AO trigger on D3D12 and Vulkan, plus the thin pole and

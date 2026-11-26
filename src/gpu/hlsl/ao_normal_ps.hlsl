@@ -30,6 +30,7 @@
 //              direction (dot(d, right), dot(d, up), dot(d, forward)))
 //   flags      bit 16 AoLow (the image is half the plane's size and the depth's source bits say which texel)
 
+#define AO_ROTATING_GRID 1
 #include "ao_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
 

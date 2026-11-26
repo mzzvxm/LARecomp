@@ -166,7 +166,7 @@ void Lighting(Fixture& f) {
                 f.S("mcla_gpu_rt_gi", rt);
                 f.State("PM_RxGpuAoLevel", ao_on);
                 f.Label("PM_RxGpuAo", "auto", "mcla_gpu_ao", rtao::AutoLabel(rtao::Decide(cls, true, tier, rtao::Choice::kAuto, built)));
-                for (const auto fixed : {rtao::Choice::kOff, rtao::Choice::kHigh, rtao::Choice::kUltra, rtao::Choice::kRt})
+                for (const auto fixed : {rtao::Choice::kOff, rtao::Choice::kOn, rtao::Choice::kRt})
                     f.Label("PM_RxGpuAo", rtao::kValues[uint8_t(fixed)], "mcla_gpu_ao", rtao::ValueLabel(fixed, rtao::GateFor(cls, tier, built)),
                             {}, "%g", rtao::kNames[uint8_t(fixed)]);
                 f.State("PM_RxGpuSsgi", ao_on, replaced ? gi::kReplacedSuffix : "");

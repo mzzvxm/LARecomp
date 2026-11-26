@@ -20,6 +20,7 @@
 #include "ao_fast.h"
 #include "ao_halo.h"
 #include "ao_paint.h"
+#include "ao_rate_rules.h"
 #include "car_frame.h"
 #include "hlsl/cabin_shadow_rules.hlsli"
 #include "mc_engine/camera/menu_camera.h"
@@ -28,6 +29,7 @@
 #include "car_rt_ao.h"
 #include "car_rt_scene.h"
 #include "rtao.h"
+#include "rtao_denoise.h"
 #include "noise_resolve.h"
 #include "scene_noise.h"
 #include "screen_shared.h"
@@ -487,6 +489,8 @@ std::string AmbientOcclusion::VariantName(uint32_t variant) {
     case kVDenoise: return "ao denoise";
     case kVTemporal: return "ao temporal";
     case kVTemporalMs: return "ao temporal (multisampled)";
+    case kVTemporalCheap: return "ao temporal filter";
+    case kVTemporalCheapMs: return "ao temporal filter (multisampled)";
     case kVVehicleTable: return "ao vehicle table";
     case kVContact: return "ao contact shadows";
     case kVMain3: return "ao visibility 3x3";
@@ -752,6 +756,8 @@ std::vector<uint32_t> AmbientOcclusion::VariantsFor(const host_plan::AmbientNeed
     // (the contact shadows' history runs the same pass when no temporal upscaler averages their noise: NOISE-RESOLVE)
     variants.push_back(kVTemporal);
     variants.push_back(kVTemporalMs);
+    variants.push_back(kVTemporalCheap);
+    variants.push_back(kVTemporalCheapMs);
   }
   if (needs.apply) {
     // The apply pass for the play view's colour target (1x, 2x) and the pause/map view's (4x), so
@@ -867,6 +873,8 @@ std::unique_ptr<plume::RenderPipeline> AmbientOcclusion::MakePipeline(uint32_t v
     case kVDenoise: return make(kPassDenoise, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVTemporal: return make(kPassTemporal, plume::RenderFormat::R16G16_FLOAT, copy, 1);
     case kVTemporalMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16_FLOAT, copy, 1);
+    case kVTemporalCheap: return make(kPassTemporal, plume::RenderFormat::R16G16B16A16_FLOAT, copy, 1);
+    case kVTemporalCheapMs: return make(kPassTemporalMs, plume::RenderFormat::R16G16B16A16_FLOAT, copy, 1);
     case kVContact: return make(kPassContact, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVMain3: return make(kPassMain3, plume::RenderFormat::R16_FLOAT, copy, 1);
     case kVMain2: return make(kPassMain2, plume::RenderFormat::R16_FLOAT, copy, 1);
@@ -1070,7 +1078,7 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
                  "configuration",
                  VariantName(variant),
                  (variant == kVNormal || variant == kVNormalMs) ? "G-buffer normal image (the passes take the depth's)"
-                 : variant >= kVMainGi                          ? "bounce light"
+                 : variant >= kVMainGi && variant < kVNormal    ? "bounce light"
                                                                 : "ambient occlusion");
   }
   return pipelines_[variant].get();
@@ -1498,6 +1506,9 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks, bool requeste
     if (cut.fires || requested_cut) {
       history_valid_ = false;
       history_cut_ = true;
+      if (rtao_) {
+        rtao_->shared_history_valid_ = false;
+      }
       have_last_step_ = false;
       last_motion_valid_ = false;
     } else {
@@ -1764,7 +1775,19 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
                       : kContactViewBase + uint32_t(plan.contact.car_map_view || plan.contact.rt_view ? 2 : contact_view);
     }
   }
+  const bool legacy_rt = rtao_ && rtao_->selected_ && trigger_world_ == menu_world::World::kPlay &&
+                         (rtao_->raw_ || !rtao_->want_shared_);
+  const bool cheap_ao = plan.occlusion && !legacy_rt && larecomp::settings::mcla_gpu_ao_cheap.Get();
+  if (cheap_ao) {
+    plan.mode = Mode::kUltra;
+  }
   PlanGi(&plan);
+  plan.cheap = cheap_ao && !plan.gi.on;
+  plan.phase = ao_rate::AoSamplePhase(uint32_t(frame_ - grid_epoch_));
+  if (history_cut_ || (history_valid_ && history_frame_ + 1 != frame_)) {
+    grid_epoch_ = frame_;
+    plan.phase = 0;
+  }
   // (The size of the passes is decided once the picture's size is known, below: ao_size.h.)
   // The lens is the previous frame's (the camera exists at the anchor, after this), of the same
   // kind of view: none, no occlusion this frame (a cut's first frame, the first frame after
@@ -1839,7 +1862,11 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
     in.bounce_half = plan.gi.on && plan.gi.half;
     in.half_above_ao = larecomp::settings::mcla_gpu_ao_half_above_1080.Get();
     in.half_above_bounce = plan.gi.half_above;
-    const ao_size::Choice choice = ao_size::Decide(in);
+    const bool rt_guide = rtao_ && rtao_->selected_ && trigger_world_ == menu_world::World::kPlay;
+    const bool full_contact = contact && (in.contact_ultra || in.render_height > ao_size::kHalfAboveLines);
+    const ao_size::Choice choice = plan.cheap && !rt_guide
+        ? ao_size::Choice{false, true, false, full_contact}
+        : ao_size::Decide(in);
     plan.low = choice.low;
     plan.by_height = choice.by_height;
     plan.contact_full = choice.contact_full;
@@ -1884,7 +1911,7 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   const bool screen_ao = plan.occlusion && plan.rtao.screen_pass;
   const bool ao_scratch = plan.apply && screen_ao && !plan.gi.on;
   const bool raw_needed = ao_scratch || contact_scratch;
-  const bool denoised_needed = ao_scratch || (contact_scratch && !in_apply);
+  const bool denoised_needed = (ao_scratch && !plan.cheap) || (contact_scratch && !in_apply);
   // The depth chain's images (level 0, the coarser levels while the occlusion or the probe runs, the contact shadows' full size depth beside a half size trace) are the shared screen products'
   // since SS-2: the owner sizes them by the frame (screen_extract.h Frame, the same numbers), keeps them and gives the ones this frame does not need back.
   bool ok = screen_ && screen_->EnsureDepth(ExtractFrame(plan));
@@ -1937,10 +1964,9 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   // The bounce light test keeps its own history (RGBA16F, EnsureGiImages) and the occlusion's is not made
   // while it runs: a frame that turns out not to have the test asks again with the test off (Run).
   if (ok && screen_ao && !plan.gi.on) {
-    ok = passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1],
-                              plume::RenderFormat::R16G16_FLOAT, "ao history 0") &&
-         passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1],
-                              plume::RenderFormat::R16G16_FLOAT, "ao history 1");
+    const auto format = plan.cheap ? plume::RenderFormat::R16G16B16A16_FLOAT : plume::RenderFormat::R16G16_FLOAT;
+    ok = passes_->EnsureImage(history_[0], plan.ao[0], plan.ao[1], format, "ao history 0") &&
+         passes_->EnsureImage(history_[1], plan.ao[0], plan.ao[1], format, "ao history 1");
   } else if (!plan.occlusion) {
     // The history is the occlusion's alone (66 MB at 3840x2160): with the occlusion off and the contact
     // shadows on it would stay until both were off. Its content is gone with it, so the next occlusion
@@ -1955,7 +1981,8 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   }
   // The picture of debug view 6, made only while that view is shown.
   if (ok && screen_ao && !plan.gi.on && plan.view == 6u) {
-    ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16G16_FLOAT,
+    const auto format = plan.cheap ? plume::RenderFormat::R16G16B16A16_FLOAT : plume::RenderFormat::R16G16_FLOAT;
+    ok = passes_->EnsureImage(weight_, plan.ao[0], plan.ao[1], format,
                               "ao history weight");
   } else if (plan.rtao.screen_pass && weight_.texture) {
     passes_->ReleaseImage(weight_);
@@ -2291,7 +2318,7 @@ AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) c
     use.why = HistoryWhy::kView;
   } else if (history_size_[0] != plan.ao[0] || history_size_[1] != plan.ao[1]) {
     use.why = HistoryWhy::kSize;
-  } else if (history_gi_ != plan.gi.on) {
+  } else if (history_gi_ != plan.gi.on || history_cheap_ != plan.cheap || history_rotated_ != plan.rotating) {
     use.why = HistoryWhy::kKind;
   } else if (history_gi_cabin_id_ != plan.gi.cabin_id) {
     use.why = HistoryWhy::kView;
@@ -2349,12 +2376,15 @@ void AmbientOcclusion::NoteVehicles(const uint8_t* ps_bank) {
 }
 
 uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, const HistoryUse& use,
-                                              uint32_t* slot) {
+                                              uint32_t* slot, bool include_camera) {
+  if (!slot) {
+    return 0;
+  }
   *slot = kNoSlot;
   // The pause/map view's vehicles take the camera's motion (no table); a motion that is not the last
   // frame's anchor's (a frame with no camera in between) is not used.
-  if (!use.on || trigger_pause_ || vehicle_motion_.valid == 0 ||
-      vehicle_motion_frame_ + 1 != frame_) {
+  const bool have_vehicles = !trigger_pause_ && vehicle_motion_.valid != 0 && vehicle_motion_frame_ + 1 == frame_;
+  if (!use.on || (!include_camera && !have_vehicles)) {
     return 0;
   }
   plume::RenderPipeline* pipeline = Pipeline(kVVehicleTable);
@@ -2382,11 +2412,11 @@ uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, co
   Row rows[temporal::kVehicleIds];
   uint32_t count = 0;
   uint32_t mask = 0;
-  for (uint32_t k = 1; k < temporal::kVehicleIds; ++k) {
-    if (!(vehicle_motion_.valid & (1u << k))) {
+  for (uint32_t k = include_camera ? 0u : 1u; k < temporal::kVehicleIds; ++k) {
+    if (k != 0u && (!have_vehicles || !(vehicle_motion_.valid & (1u << k)))) {
       continue;
     }
-    const temporal::Mat4 m =
+    const temporal::Mat4 m = k == 0u ? use.motion :
         temporal::Mul(temporal::Mul(to_world, vehicle_motion_.world[k]), previous_.view);
     if (!temporal::Finite(m)) {
       continue;
@@ -2399,7 +2429,7 @@ uint32_t AmbientOcclusion::RecordVehicleTable(plume::RenderCommandList* list, co
         row.columns[c * 4 + r] = float(sign * m.m[r][c]);
       }
     }
-    mask |= 1u << k;
+    mask |= k != 0u ? 1u << k : 0u;
   }
   if (count == 0) {
     return 0;
@@ -2672,7 +2702,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   EdramTargets::Target& depth_target = *summary.source;
   const bool ms = depth_target.host_samples > 1;
   RtAo::Inputs rtao_in;
-  const bool plan_rtao = rtao_ && plan.occlusion && rtao_->selected_;
+  const bool plan_rtao = rtao_ && rtao_scene_ && plan.occlusion && rtao_->selected_;
   if (plan_rtao) {
     UpdateLook();
     const CarRtView& top_level = rtao_scene_->View();
@@ -2697,6 +2727,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   if (!screen_) {
     return false;  // the depth chain, the normals and the colour chain are the shared screen products' (no owner: no occlusion)
   }
+  // Depth consumers outside the AO family use centred sample coordinates.
+  plan.rotating = plan.cheap && plan.low && !plan.rtao.on && !screen_->NeedsDepthChain() &&
+                  (!contact || plan.contact_full);
   // The depth chain is recorded by the shared screen products (SS-2: ScreenShared::RecordDepth, with their own pipelines) unless mcla_gpu_screen_extract is off: then by this class with its own.
   const bool extract = Extracting();
   plume::RenderPipeline* depth_pipeline = extract ? nullptr : Pipeline(ms ? kVDepthMs : kVDepth);
@@ -2705,12 +2738,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   plume::RenderPipeline* denoise_pipeline = nullptr;
   plume::RenderPipeline* temporal_pipeline = nullptr;
   plume::RenderPipeline* contact_pipeline = nullptr;
+  const uint32_t temporal_variant = plan.cheap ? (ms ? kVTemporalCheapMs : kVTemporalCheap)
+                                                : (ms ? kVTemporalMs : kVTemporal);
   if (screen_ao) {
     // The plain pass with the occlusion's own counts compiled in (also the frame whose bounce light cannot run, below).
-    main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kHigh));
-    temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
+    main_pipeline = Pipeline(MainVariant(!plan.cheap && plan.mode == Mode::kHigh));
+    temporal_pipeline = Pipeline(temporal_variant);
   }
-  if (plan.apply && (screen_ao || contact)) {
+  if (plan.apply && ((screen_ao && !plan.cheap) || contact)) {
     denoise_pipeline = Pipeline(kVDenoise);
   }
   if (contact) {
@@ -2721,7 +2756,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   plan.contact_history = noise_resolve::ContactHistoryRuns(plan.contact_history, Pipeline(ms ? kVTemporalMs : kVTemporal) != nullptr);
   if ((extract ? !screen_->ChainReady(screen::extract::KindsFor(true, levels, false, false, ms, false)) : (!depth_pipeline || (levels && !mip_pipeline))) ||
       (screen_ao && (!main_pipeline || !temporal_pipeline)) ||
-      (plan.apply && (screen_ao || contact) && !denoise_pipeline) || (contact && !contact_pipeline)) {
+      (plan.apply && ((screen_ao && !plan.cheap) || contact) && !denoise_pipeline) || (contact && !contact_pipeline)) {
     return false;
   }
   plan.contact_history_keep = ContactHistoryKeep(plan);
@@ -2828,7 +2863,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     const ao_gbuffer::Which apply_reads = ao_gbuffer::ApplyReads(split, plan.low);
     normals_.apply_slot = apply_reads == ao_gbuffer::Which::kFull ? NormalFullImage().slot : (apply_reads == ao_gbuffer::Which::kAo ? NormalImage().slot : 0u);
   }
-  normals_.depth_source_bits = plan.low && (normals_.on || plan.rtao.on || plan.gi.cabin_id != 0u);
+  normals_.depth_source_bits = plan.low && (plan.cheap || normals_.on || plan.rtao.on || plan.gi.cabin_id != 0u);
   // The bounce's a-trous passes: the setting's number at 720 lines, one more for each doubling of the image's height
   // (ssgi_stable.h), so that the filter reaches as much of the picture at 4K as at 720 lines.
   if (plan.gi.on && larecomp::settings::mcla_gpu_ao_stable.Get()) {
@@ -2843,13 +2878,18 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   stencil_ms_ = ms;
   Push push = base;
   const screen::extract::Frame chain = ExtractFrame(plan);
+  // RT composition, vendor inputs and the bounce light keep their existing depth grid.
+  const uint32_t grid = plan.rotating ? ao_rate::GridFlags(plan.phase) : 0u;
+  Push depth_base = base;
+  depth_base.slots2[2] |= grid;
   if (extract) {
     // Step 2 of the frame's order (frame_order.h): the depth chain, recorded by the shared screen products (screen_extract.h): level 0 from the depth target and its stencil plane, the coarser levels, the
     // contact shadows' full size depth. At half size with the G-buffer's normals the pass also records which sample of each 2x2 block it took (normals_.depth_source_bits).
-    screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);
+    screen_->RecordDepth(list, chain, depth_base, summary.stencil_slot, normals_.depth_source_bits, ms);
   } else {
     // The old path (mcla_gpu_screen_extract false): this class records the same passes into the same images, with its own pipelines.
     pass_timing_->Mark(list, "ao depth");
+    push = depth_base;
     push.sizes[0] = float(plan.ao[0]);
     push.sizes[1] = float(plan.ao[1]);
     push.sizes[2] = float(plan.render[0]);
@@ -2889,9 +2929,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   base.slots[3] = 0u;
   if (normals_.on) {
     if (extract) {
-      screen_->RecordNormals(list, chain, base, NormalRecipeFor(normals_));
+      screen_->RecordNormals(list, chain, depth_base, NormalRecipeFor(normals_));
     } else {
-      RecordNormals(list, plan, base, normals_);
+      RecordNormals(list, plan, depth_base, normals_);
     }
   }
   if (plan.gi.on) {
@@ -2975,8 +3015,39 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     rtao_in.noise_index = scene_noise::NoiseIndex(frame_);
     rtao_in.noise_code = ao_stable::NoiseCode(rtao_in.noise_index, larecomp::settings::mcla_gpu_ao_stable.Get(),
                                                larecomp::settings::mcla_gpu_ao_blue_noise.Get());
+    auto* shared_pipeline = rtao_->shared_ ? Pipeline(kVTemporalCheap) : nullptr;
+    const bool shared = shared_pipeline && rtao_->EnsureSharedHistory();
+    HistoryUse rt_history;
+    rt_history.motion = temporal::Identity();
+    bool rt_cut = false;
+    const uint32_t rt_cap = shared ? std::min(rtao_denoise::ReadHistoryCap(), ao_rate::kMaxAge) : 1u;
+    if (shared) {
+      const bool camera = FrameMotion(&rt_history.motion, &rt_history.pose, &rt_cut);
+      rt_history.on = rtao::KeepHistory(rtao_->shared_history_valid_,
+          rtao_->shared_history_frame_ + 1 == frame_,
+          rtao_->shared_configuration_ == rtao_->SharedConfiguration(rtao_in), camera,
+          rt_cut || rt_cap < 2 || rt_cap != rtao_->shared_cap_ || rtao_->shared_cabin_screen_ != rtao_->cabin_screen_ ||
+          rtao_->shared_mesh_epoch_ != rtao_->mesh_epoch_ ||
+          std::abs(rtao_->shared_range_ - plan.rtao.range) > plan.rtao.reach);
+      if (rt_history.on) {
+        RecordVehicleTable(list, rt_history, &rtao_in.motion_slot, true);
+        if (rtao_in.motion_slot != kNoSlot && vehicle_table_.texture) {
+          list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                         plume::RenderTextureBarrier(vehicle_table_.texture.get(), plume::RenderTextureLayout::SHADER_READ));
+        }
+        if (rtao_in.motion_slot != kNoSlot && rt_history.pose != Pose::kStill && rtao_->view_ == 0 &&
+            rtao_->check_ == 0 && rtao_->rays_ == 0) {
+          auto& history = rtao_->shared_history_[rtao_->shared_history_index_];
+          if (history.texture) {
+            list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                           plume::RenderTextureBarrier(history.texture.get(), plume::RenderTextureLayout::SHADER_READ));
+            rtao_in.history_slot = history.slot;
+          }
+        }
+      }
+    }
     RtAo::FilterInputs rtao_filter_in;
-    rtao_filter_in.ours = !rtao_->raw_frame();
+    rtao_filter_in.ours = !rtao_->raw_frame() && !shared;
     if (rtao_filter_in.ours) {
       FrameCameraNow(&rtao_filter_in.camera);
       HistoryUse motion;
@@ -2997,7 +3068,56 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     };
     list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, nullptr, 0, trace_reads, normals_.on ? 2u : 1u);
     if (rtao_->RecordTrace(list, rtao_in)) {
-      rtao_->RecordFilter(list, rtao_filter_in);
+      if (shared) {
+        rtao_->CloseSpan(list);
+        pass_timing_->Mark(list, "ao temporal (rtao)");
+        auto& input = rtao_->shared_history_[rtao_->shared_history_index_];
+        auto& output = rtao_->shared_history_[1u - rtao_->shared_history_index_];
+        Push filter = base;
+        filter.slots[0] = rtao_in.motion_slot;
+        filter.slots[1] = rtao_->normal_.slot;
+        filter.slots[2] = rtao_->signal_.slot;
+        filter.slots[3] = rtao_->depth_[rtao_->parity_].slot;
+        filter.slots2[0] = rt_history.on ? input.slot : filter.slots[3];
+        filter.slots2[1] = rtao_->id_share_.slot;
+        filter.slots2[2] = ao_rate::kFilter | ao_rate::kTraceGuide | (rt_history.on ? kHistoryFlag : 0u);
+        filter.sizes[0] = filter.sizes[2] = float(output.width);
+        filter.sizes[1] = filter.sizes[3] = float(output.height);
+        filter.lens[2] = float(rt_cap);
+        for (int k = 0; k < 4; ++k) {
+          const double sign = k == 2 ? -1.0 : 1.0;
+          filter.lin[k] = float(sign * rt_history.motion.m[k][0]);
+          filter.shape[k] = float(sign * rt_history.motion.m[k][1]);
+          filter.light[k] = float(-sign * rt_history.motion.m[k][2]);
+        }
+        filter.extra[0] = rtao_->previous_tan_[0];
+        filter.extra[2] = rtao_->previous_tan_[1];
+        const plume::RenderTextureBarrier guides[] = {
+            {rtao_->signal_.texture.get(), plume::RenderTextureLayout::SHADER_READ},
+            {rtao_->depth_[rtao_->parity_].texture.get(), plume::RenderTextureLayout::SHADER_READ},
+            {rtao_->normal_.texture.get(), plume::RenderTextureLayout::SHADER_READ},
+            {rtao_->id_share_.texture.get(), plume::RenderTextureLayout::SHADER_READ},
+        };
+        list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, guides, 4);
+        // CHECK: typed UAV-to-pixel handoff and motion noise on both backends.
+        DrawPass(list, output, shared_pipeline, filter);
+        rtao_->filtered_ = &output;
+        rtao_->shared_history_index_ ^= 1u;
+        rtao_->shared_history_valid_ = true;
+        rtao_->shared_history_frame_ = frame_;
+        rtao_->shared_mesh_epoch_ = rtao_->mesh_epoch_;
+        rtao_->shared_cabin_screen_ = rtao_->cabin_screen_;
+        rtao_->shared_range_ = plan.rtao.range;
+        rtao_->shared_cap_ = rt_cap;
+        rtao_->shared_configuration_ = rtao_->SharedConfiguration(rtao_in);
+        std::copy_n(rtao_->tan_, 2, rtao_->previous_tan_);
+        rtao_->previous_ours_ = false;
+        list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                       plume::RenderTextureBarrier(output.texture.get(), plume::RenderTextureLayout::SHADER_READ));
+      } else {
+        rtao_->shared_history_valid_ = false;
+        rtao_->RecordFilter(list, rtao_filter_in);
+      }
     }
     if (!plan.rtao.screen_pass) {
       NoteHistory(ChooseHistory(plan));
@@ -3014,6 +3134,12 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   HostImage* gi_bounce = nullptr;
   const HostImage* screen_term = nullptr;
   const auto record_visibility = [&] {
+    const HistoryUse use = ChooseHistory(plan);
+    NoteHistory(use);
+    const uint32_t out_index = 1 - history_index_;
+    HostImage* history_pair = plan.gi.on ? gi_hist_ : history_;
+    HostImage& history_in = history_pair[history_index_];
+    HostImage& history_out = history_pair[out_index];
     // The visibility from the chain.
     pass_timing_->Mark(list, plan.gi.on ? "ssgi visibility" : "ao visibility");
     push = base;
@@ -3029,6 +3155,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // How far a car's samples reach on the road, as a share of the radius (extra.x, the sun's luma that the apply
     // reads and this pass does not; extra.w is the bounce light's far reach, set below).
     push.extra[0] = look_.car_reach;
+    if (plan.cheap) {
+      push.slots2[2] |= ao_rate::kFilter | grid;
+      push.slots[0] = use.on && use.pose != Pose::kStill && temporal::MaxAbsDiff(use.motion, temporal::Identity()) <= 1e-6 ? history_in.slot : kNoSlot;
+      push.slots[1] = uint32_t(scene_noise::NoiseIndex(frame_));
+    }
     // The frame's shift of the noise: the phase of a lattice of 13 frames (ao_stable.h NoiseCode: its own slot, the
     // contact shadows' pass keeps the frame number base carries), or the first version's frame number.
     const bool use_blue_noise = larecomp::settings::mcla_gpu_ao_blue_noise.Get();
@@ -3064,18 +3195,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
     push.lin[0] = base.lin[0];  // the denoise passes below take the push as it was
     push.slots2[2] &= ~car_rt_ao::kMainFlag;
-    // The history this frame can lean on, and the camera's motion into it.
-    const HistoryUse use = ChooseHistory(plan);
-    NoteHistory(use);
-    // The history's two images take turns as the one this frame reads and the one it writes: the
-    // test's (RGBA16F) or the occlusion's (RG16F).
-    const uint32_t out_index = 1 - history_index_;
-    HostImage* history_pair = plan.gi.on ? gi_hist_ : history_;
-    HostImage& history_in = history_pair[history_index_];
-    HostImage& history_out = history_pair[out_index];
     // The denoise: once with a history to average into, twice (the second pass back into the first
     // one's input image) without. It is never left out, whatever the quality or the upscaler.
-    pass_timing_->Mark(list, plan.gi.on ? "ssgi denoise" : "ao denoise");
+    if (!plan.cheap) {
+      pass_timing_->Mark(list, plan.gi.on ? "ssgi denoise" : "ao denoise");
+    }
     push.slots[2] = main_out->slot;
     push.slots[3] = Depth(0).slot;
     HostImage* visibility = nullptr;
@@ -3090,6 +3214,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         DrawPass(list, history_in, denoise_gi, push);
         visibility = &history_in;
       }
+    } else if (plan.cheap) {
+      visibility = main_out;
     } else {
       DrawPass(list, denoised_, denoise_pipeline, push);
       visibility = &denoised_;
@@ -3125,6 +3251,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
                         ssgi_stable::kClipHistoryMask;
     }
     push.slots2[2] |= use.on ? kHistoryFlag : 0u;
+    if (plan.cheap) {
+      push.slots2[2] |= ao_rate::kFilter | grid | ((history_grid_ >> ao_rate::kPhaseShift) << ao_rate::kPreviousPhaseShift);
+      push.lens[2] = float(std::min(use.cap, ao_rate::kMaxAge));
+    }
     push.slots2[3] = summary.stencil_slot;
     // The vehicles' rows: the vehicle table is drawn first (the list is outside any pass here), and the
     // pause/map view's vehicle pixels take the camera's motion instead.
@@ -3167,8 +3297,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         }
       }
     }
-    push.sizes[0] = push.sizes[2] = float(plan.ao[0]);
-    push.sizes[1] = push.sizes[3] = float(plan.ao[1]);
+    push.sizes[0] = float(plan.render[0]);
+    push.sizes[1] = float(plan.render[1]);
+    push.sizes[2] = float(plan.ao[0]);
+    push.sizes[3] = float(plan.ao[1]);
     // The motion in this renderer's view space (x right, y up, z forward): the game's looks along
     // -z, so the matrix is S G S with S = diag(1, 1, -1, 1). The shader takes the columns as rows.
     const auto motion = [&use](int i, int j) {
@@ -3238,6 +3370,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         use.on ? std::min(use.age + 1, plan.gi.on ? std::max(use.cap, plan.gi.history) : use.cap)
                : 0u;
     history_gi_ = plan.gi.on;
+    history_cheap_ = plan.cheap;
+    history_grid_ = grid;
+    history_rotated_ = grid != 0u;
     history_gi_cabin_id_ = plan.gi.cabin_id;
     screen_term = &(plan.view == 6u ? weight_image : history_out);
     ao_slot = screen_term->slot;
@@ -3266,10 +3401,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // succeeded. The Ultra passes were listed for the setting's fallback.
       plan.rtao.on = false;
       plan.rtao.screen_pass = true;
-      main_pipeline = Pipeline(MainVariant(plan.mode == Mode::kHigh));
-      temporal_pipeline = Pipeline(ms ? kVTemporalMs : kVTemporal);
-      denoise_pipeline = Pipeline(kVDenoise);
-      if (main_pipeline && temporal_pipeline && denoise_pipeline && EnsureImages(plan)) {
+      main_pipeline = Pipeline(MainVariant(!plan.cheap && plan.mode == Mode::kHigh));
+      temporal_pipeline = Pipeline(temporal_variant);
+      denoise_pipeline = plan.cheap ? nullptr : Pipeline(kVDenoise);
+      if (main_pipeline && temporal_pipeline && (plan.cheap || denoise_pipeline) && EnsureImages(plan)) {
         const uint32_t city_sun = rt_contact_slot_;
         record_car(false);
         if (city_sun != kNoSlot)
@@ -3357,6 +3492,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     push.shape[3] = std::bit_cast<float>((contact_applied && plan.contact.light_chroma != 0u) ? plan.contact.light_chroma : contact_trace::kNeutralChroma);
     push.shape[0] = plan.contact.mask_gain;
     push.extra[3] = plan.contact.strength;
+    if (plan.cheap && rtao_slot == kNoSlot) {
+      // CHECK: AO stream FLIP on moving poles, kerbs, tyres and cockpit trim.
+      push.slots2[2] |= ao_rate::kThinApply | grid;
+    }
     if (plan.gi.apply && gi_bounce) {
       // The bounce light's apply (hlsl/ao_apply_ps.hlsl, AO_GI): the filtered image holds the visibility
       // (x, as the history kept it) and the bounce, the colour chain's level 0 the pixel's own colour (and
