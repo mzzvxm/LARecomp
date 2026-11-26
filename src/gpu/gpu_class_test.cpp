@@ -16,6 +16,9 @@
 #include <string_view>
 
 #include "gpu_class.h"
+#include "render_scale.h"
+#include "upscale_defaults.h"
+#include "upscale_modes.h"
 
 using namespace mcla::gpu::gpu_class;
 
@@ -692,7 +695,8 @@ void CheckSpeedTable() {
   // Mid by memory already: the name changes nothing and the log says "by memory".
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1060 3GB", 3072), kM, kByMem, "by memory: ");
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 970", 4096), kM, kByMem);
-  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1650", 4096), kM, kByMem);
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1650", 4096), kL, kByName, "GTX 1650 -> low");
+  CheckAdapter(Named(nv, "NVIDIA GeForce GTX1650 with Max-Q Design", 4096), kL, kByName);
   CheckAdapter(Named(nv, "NVIDIA GeForce GTX 1050 Ti", 4096), kM, kByMem);
   CheckAdapter(Named(nv, "NVIDIA GeForce RTX 3050 Ti Laptop GPU", 4096), kM, kByMem);
   CheckAdapter(Named(nv, "NVIDIA GeForce MX450", 2048), kM, kByMem);
@@ -715,7 +719,8 @@ void CheckSpeedTable() {
   CheckAdapter(Named(amd, "AMD Radeon RX 5500 XT", 8192), kM, kByName);
   CheckAdapter(Named(amd, "AMD Radeon RX 5500 XT", 4096), kM, kByMem);
   CheckAdapter(Named(amd, "AMD Radeon RX 6500 XT", 8192), kM, kByName);
-  CheckAdapter(Named(amd, "AMD Radeon RX 6400", 4096), kM, kByMem);
+  CheckAdapter(Named(amd, "AMD Radeon RX 6400", 4096), kL, kByName, "RX 6400 -> low");
+  CheckAdapter(Named(amd, "AMD Radeon RX 6400 (RADV NAVI24)", 4096), kL, kByName);
   CheckAdapter(Named(amd, "AMD Radeon RX Vega 56", 8176), kM, kByName);
   CheckAdapter(Named(amd, "Radeon RX Vega 64", 8176), kM, kByName);
   CheckAdapter(Named(amd, "AMD Radeon RX Vega (RADV VEGA10)", 8176), kM, kByName);  // no number in the name
@@ -1038,6 +1043,63 @@ void CheckHandheldDetect() {
   }
 }
 
+void CheckUpscaleDefaults() {
+  using namespace mcla::gpu;
+  using upscale_defaults::Path;
+  for (const GpuClass cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    Check(upscale_defaults::Select(cls, {}, true) ==
+              (cls == GpuClass::kLow ? Path::kFsr31 : Path::kUnchanged),
+          "only Low defaults to FSR 3.1");
+    Check(upscale_defaults::Select(cls, {}, false) ==
+              (cls == GpuClass::kLow ? Path::kFsr1 : Path::kUnchanged),
+          "only Low defaults to FSR 1 when FSR 3.1 is unavailable at startup");
+  }
+  const upscale_defaults::DisplayChoices explicit_paths[] = {
+      {.upscaler = true}, {.render_scale = true}, {.fsr1 = true}, {.fsr1_preset = true},
+  };
+  for (const auto& choice : explicit_paths) {
+    for (const bool fsr31 : {false, true}) {
+      Check(upscale_defaults::Select(GpuClass::kLow, choice, fsr31) == Path::kUnchanged,
+            "an explicit display path takes precedence on Low");
+    }
+  }
+  Upscaler upscaler;
+  UpscaleMode mode;
+  FsrPreset fsr1 = FsrPreset::kCustom;
+  const bool parsed_upscaler = upscale_modes::ParseUpscaler(upscale_defaults::kFsr31, &upscaler);
+  const bool parsed_mode = upscale_modes::ParseMode(upscale_defaults::kQuality, &mode);
+  Check(parsed_upscaler && upscaler == Upscaler::kFsr31, "the default selector requests FSR 3.1");
+  Check(parsed_mode && mode == UpscaleMode::kQuality, "the default mode requests Quality");
+  Check(ParseFsrPreset(upscale_defaults::kQuality, &fsr1) && fsr1 == FsrPreset::kQuality,
+        "the fallback uses FSR 1 Quality");
+  Check(upscale_defaults::kFsr31Sharpness == "0.4", "FSR 3.1 uses the 0.4 RCAS step");
+  Check(upscale_defaults::kFsr1Sharpness == "0.8", "FSR 1 uses 0.8 stops of RCAS reduction");
+
+  struct Size {
+    uint32_t output_width, output_height, scene_width, scene_height;
+  };
+  const Size sizes[] = {
+      {1280, 720, 832, 468}, {1920, 1080, 1280, 720},
+      {2560, 1440, 1728, 972}, {3840, 2160, 2560, 1440},
+  };
+  for (const auto& size : sizes) {
+    const auto output = ChooseUpscalerOutputScale(0.0, false, FsrPreset::kCustom,
+                                                 size.output_width, size.output_height);
+    const auto scene = ChooseSceneScale(output.scale, upscale_modes::InfoOf(upscaler, mode).ratio);
+    Check(scene.scale.Edge(kAssumedScreenWidth) == size.scene_width &&
+              scene.scale.Edge(kAssumedScreenHeight) == size.scene_height,
+          "FSR Quality scene dimensions at output height " + std::to_string(size.output_height));
+    const auto fallback = ChooseRenderScale(0.0, true, fsr1, size.output_width, size.output_height);
+    Check(fallback.scale == scene.scale, "FSR 1 Quality matches the scene size at output height " +
+                                            std::to_string(size.output_height));
+    const auto native = ChooseRenderScale(0.0, false, FsrPreset::kCustom, size.output_width,
+                                          size.output_height);
+    Check(native.scale.Edge(kAssumedScreenWidth) == size.output_width &&
+              native.scale.Edge(kAssumedScreenHeight) == size.output_height,
+          "the stock scale matches the output at height " + std::to_string(size.output_height));
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1055,6 +1117,7 @@ int main() {
   CheckSpeedRows();
   CheckSeriesNumber();
   CheckSpeedTable();
+  CheckUpscaleDefaults();
   CheckHandheldCells();
   CheckHandheldDetect();
   CheckCityLod();

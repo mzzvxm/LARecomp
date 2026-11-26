@@ -57,6 +57,9 @@
 
 namespace mcla::gpu {
 
+// Device requirements and DLL presence, before the asynchronous provider probe.
+bool FfxUpscalerCanStart(plume::RenderDevice* device);
+
 class FfxBackend final : public TemporalBackend {
  public:
   FfxBackend();

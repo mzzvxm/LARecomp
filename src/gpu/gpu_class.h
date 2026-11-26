@@ -17,7 +17,7 @@
 //          (the 1080 and 1080 Ti too) and 16xx, RX 4xx/5xx, Vega, Arc A3xx and the like, whatever
 //          their memory.
 //   kHigh  everything else.
-// The table can also put a very slow discrete card (GT 1030, RX 550) in kLow; it never raises a class.
+// The table can also put a discrete card (GT 1030, RX 550, GTX 1650 or RX 6400) in kLow; it never raises a class.
 // The log line says which rule chose: "by adapter type", "by memory" or "by name: GTX 1060 -> mid".
 // mcla_gpu_class (auto | low | mid | high, debug only, live) forces a class for tests; it wins over all
 // of the above.
@@ -34,7 +34,7 @@
 //
 // The `auto` table: for each effect, the value `auto` stands for in each class (kEffects below, the
 // table of GFX-UPGRADES-DESIGN.md section 9). THE CELLS ARE NOT WRITTEN HERE ANY MORE (GFX-PRESETS, owner 2026-11-23): a class's `auto` is the
-// value of the preset the class maps to, and the presets are one table, gfx_preset.h kRows: Low is VANILLA's column, Mid ENHANCED's, High ENHANCED
+// value of the preset the class maps to, and the presets are one table, gfx_preset.h kRows: Low is VANILLA's column, Mid normally ENHANCED's, High ENHANCED
 // ULTRA's (kEffects and kScales read them; rt_tier.h's kRtEffects reads the RT presets'). The comments below say why each effect's cells are what
 // they are; to change one, change its row in gfx_preset.h (gfx_preset_test.cpp pins today's values and lists the few that are not the table's). An effect's package keeps its own cvar and its own
 // values; at the place it reads the cvar it calls
@@ -112,9 +112,9 @@ struct EffectInfo {
   std::string_view low, mid, high;
 };
 // One effect's cells from the preset table: Low is VANILLA's value, Mid ENHANCED's, High ENHANCED ULTRA's (gfx_preset.h).
-constexpr EffectInfo Derived(std::string_view cvar) {
+constexpr EffectInfo Derived(std::string_view cvar, gfx_preset::Preset mid = gfx_preset::Preset::kEnhanced) {
   const int row = gfx_preset::MustFindRow(cvar);
-  return {cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kVanilla), gfx_preset::CellAt(row, gfx_preset::Preset::kEnhanced),
+  return {cvar, gfx_preset::CellAt(row, gfx_preset::Preset::kVanilla), gfx_preset::CellAt(row, mid),
           gfx_preset::CellAt(row, gfx_preset::Preset::kEnhancedUltra)};
 }
 
@@ -125,7 +125,8 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     Derived("mcla_gpu_shadow_resolution"),
     Derived("mcla_gpu_env_resolution"),
     Derived("mcla_gpu_reflection_resolution"),
-    Derived("mcla_gpu_contact_shadows"),
+    // Legacy Auto keeps the Mid look in these rows; ENHANCED has a leaner budget.
+    Derived("mcla_gpu_contact_shadows", gfx_preset::Preset::kEnhancedRt),
     Derived("mcla_gpu_sun_shafts"),  // a strength, not a quality: DEFAULT where the GPU is not integrated
     // Bounce light: high on the High class only. Measured at half size above 1080 lines (perf/ao-half-size):
     // high (the one that was called low) costs about 0.75 ms and ultra about 1.1 ms at 4K on an RTX 5080. It was off on every
@@ -157,12 +158,12 @@ inline constexpr EffectInfo kEffects[kEffectCount] = {
     // (the size barely counts) and 0.05 to 0.1 ms of render thread time (a pass over the frame's draws), measured on the RTX 5080 (the headlights runs of 2026-11-20); a view for each lamp
     // instead of one for the car adds 0.05 to 0.15 ms of graphics card time and 0.04 to 0.16 ms of render thread time there, and a weaker PC pays several times that, so the lamps' views
     // are for the levels above Mid's cell.
-    Derived("mcla_gpu_light_shadows"),
+    Derived("mcla_gpu_light_shadows", gfx_preset::Preset::kEnhancedRt),
     // Volumetric light (light beams under the lamps and headlights, fog and sun shafts: volumetrics.h; VOLUMETRICS-SURVEY.md section 4,
     // estimated 0.13 / 0.19 / 0.30 ms at 4K and 0.06 / 0.12 / 0.23 ms at 1080p on an RTX 5080 for medium / high / ultra, about 0.5 ms
     // for medium and 1.0 ms for high at 1080p on a GTX 1050-class card): medium on Mid, high on High, nothing on shared memory. Ultra is
     // a deliberate pick: its cost is not "no visible loss" for the weakest cards of the High class (6 GB GTX 1060-class).
-    Derived("mcla_gpu_volumetrics"),
+    Derived("mcla_gpu_volumetrics", gfx_preset::Preset::kEnhancedRt),
     // Compatibility values used by old files. Named presets apply their own cells.
     {"mcla_gpu_rt_shadows", "off", "off", "off"},
     {"mcla_gpu_ssr", "off", "off", "off"},
@@ -512,8 +513,9 @@ inline constexpr SpeedRow kSpeedTable[] = {
     // speed on this renderer's compute-heavy effects, so they are Mid too (the owner's call, 2026-11-14): the
     // cut-off is 1099, which is the end of the GTX 10 series (both cards read as 1080 after "gtx").
     {kVendorNvidia, "", "gtx", 0, 1099, GpuClass::kMid, "GTX 4xx to 1080 Ti (Maxwell, Pascal)"},
-    // GTX 1650 to 1660 Ti (Turing without RT cores): a 1660 Ti is about 90, a 1650 about 55: under the
-    // RTX 2060 and without the RT/tensor units, so Mid.
+    // The GTX 1650 is the LOW test target (36.21 GPU ms at 1080p in the tester's Custom run).
+    {kVendorNvidia, "", "gtx", 1650, 1650, GpuClass::kLow, "GTX 1650 (LOW performance target)"},
+    // Other GTX 16xx (Turing without RT cores): a 1660 Ti is about 90 against the RTX 2060.
     {kVendorNvidia, "", "gtx", 1600, 1699, GpuClass::kMid, "GTX 16xx (Turing without RT)"},
     // RTX 2050 and RTX 3050 (desktop 6 and 8 GB, laptop): about 60 to 85, the speed of a GTX 1660 Super,
     // which is capped above. The rest of RTX 20 and up (2060 and over, RX 5700 and over) is not listed.
@@ -533,6 +535,8 @@ inline constexpr SpeedRow kSpeedTable[] = {
     // RX 5300 and RX 5500 (RDNA 1, 4 or 8 GB): an RX 5500 XT is about 70, the speed of an RX 580. The RX 5600
     // (about 105) and RX 5700 (about 120 to 135) are the RDNA 1 cards that stay on the memory rule.
     {kVendorAmd, "", "rx", 5300, 5599, GpuClass::kMid, "RX 5300 and RX 5500 (RDNA 1)"},
+    // The RX 6400 is the AMD adapter named in the same LOW test target.
+    {kVendorAmd, "", "rx", 6400, 6400, GpuClass::kLow, "RX 6400 (LOW performance target)"},
     // RX 6300 to RX 6500 XT (Navi 24, 4 GB, an 8 GB variant exists): an RX 6500 XT is about 60 and only a
     // 64-bit bus. The RX 6600 (about 120) and up stay on the memory rule.
     {kVendorAmd, "", "rx", 6300, 6599, GpuClass::kMid, "RX 6300 to RX 6500 XT (Navi 24)"},
