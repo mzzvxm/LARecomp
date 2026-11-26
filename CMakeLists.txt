@@ -185,6 +185,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/hooks/traffic_probe.cpp
     src/mc_engine/hooks/headlight_points.cpp
     src/mc_engine/hooks/road_reflection_cars_test.cpp
+    src/mc_engine/hooks/title_road_plane.cpp
     src/mc_engine/hooks/script_input.cpp
     src/mc_engine/hooks/checkpoint_sweep.cpp
     src/mc_engine/hooks/checkpoint_effect_fade.cpp
@@ -209,6 +210,7 @@ set(LARECOMP_SOURCES
     src/mc_engine/menus/string_table.cpp
     src/mc_engine/core/string_dumper.cpp
     src/mc_engine/camera/menu_camera.cpp
+    src/mc_engine/camera/final_camera.cpp
     src/mc_engine/input/map_mouse.cpp
     src/mc_engine/input/menu_mouse.cpp
     src/mc_engine/input/cursor_hide.cpp
@@ -539,6 +541,11 @@ target_include_directories(larecomp_effect_fade_test PRIVATE src/mc_engine/hooks
 add_executable(larecomp_neon_pulse_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/neon_pulse_test.cpp)
 target_include_directories(larecomp_neon_pulse_test PRIVATE src/mc_engine/hooks)
+# The title screen's road reflection plane (src/mc_engine/hooks/title_road_plane.h: the probe rays, the ground hits, the plane they give, its follow time and its cut) has a check that needs no game:
+#   cmake --build <build dir> --target larecomp_title_road_plane_test, then run <build dir>/larecomp_title_road_plane_test (exit 0 = passed).
+add_executable(larecomp_title_road_plane_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/title_road_plane_test.cpp)
+target_include_directories(larecomp_title_road_plane_test PRIVATE src/mc_engine/hooks)
 # The rules of the rear view mirror's cheap options (src/mc_engine/hooks/rear_view_cheap.h: the far plane, the field of view, the city radius, the racers, the camera cut and the every-Nth-frame cadence) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_rear_view_cheap_test, then run <build dir>/larecomp_rear_view_cheap_test (exit 0 = passed).
 add_executable(larecomp_rear_view_cheap_test EXCLUDE_FROM_ALL
