@@ -11,12 +11,10 @@
 //
 // There is no setting of its own for a player: it belongs to the occlusion (mcla_gpu_ao) and the contact shadows (mcla_gpu_contact_shadows), runs
 // where the device can trace the car (the same decision the ray traced car self-reflection makes: CarRtSupported; D3D12 with DXR 1.1, or Vulkan with
-// ray queries) and where one of the two is on, and
-// follows their levels (the occlusion's high traces 2 rays a pixel, ultra 4) and their class defaults (an integrated GPU has neither on). The debug
-// cvars (ao.h's list):
+// ray queries) and where one of the two is on. The occlusion's high level traces 2 rays a pixel, ultra 4. The debug cvars (ao.h's list):
 //
-//   mcla_gpu_ao_rt           auto | off | ao | contact. auto (the default) both terms; off none (the screen-space passes alone: the A/B);
-//                            ao the occlusion term only; contact the sun ray only. Live.
+//   mcla_gpu_ao_rt           auto | off | ao | contact | both. Auto follows the graphics preset, including a Custom preset's base.
+//                            Off selects the screen-space passes, ao the occlusion rays only, contact the sun ray only. Live.
 //   mcla_gpu_ao_rt_length    the occlusion rays' reach in metres (0.6 by default). Live.
 //   mcla_gpu_ao_rt_rays      the occlusion rays a pixel, 0 (the level's: 2 or 4) to 4. Live.
 //   mcla_gpu_contact_shadows_view 7   the sun term alone as the contact visibility picture (white lit, black in the car's shadow).
@@ -177,7 +175,7 @@ class CarRtAo {
 
   // The frame.
   bool wanted_ = false;
-  car_rt_ao::Setting setting_ = car_rt_ao::Setting::kAuto;
+  car_rt_ao::Setting setting_ = car_rt_ao::Setting::kOff;
   uint32_t idle_frames_ = 0;
 
   // The log and the totals.

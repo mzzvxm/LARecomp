@@ -399,8 +399,6 @@ void CheckOwnerExample() {
   // Both are the High class by memory (12 GiB, 16 GiB); the Auto cells for the effects that differ do differ.
   Check(ResolveRtFor(GpuClass::kHigh, r3060.tier, RtEffect::kRtGi, "auto") != ResolveRtFor(GpuClass::kHigh, r5080.tier, RtEffect::kRtGi, "auto"),
         "owner's example: auto of the city bounce light differs between the two");
-  Check(ResolveRtFor(GpuClass::kHigh, r3060.tier, RtEffect::kCarRtAo, "auto") != ResolveRtFor(GpuClass::kHigh, r5080.tier, RtEffect::kCarRtAo, "auto"),
-        "owner's example: auto of the car's ray traced occlusion differs between the two");
   Check(RtClass(GpuClass::kHigh, r3060.tier) == GpuClass::kMid && RtClass(GpuClass::kHigh, r5080.tier) == GpuClass::kHigh,
         "owner's example: the budget class differs between the two (Mid budgets for the 3060)");
 }
@@ -629,8 +627,6 @@ struct CellRow {
 const CellRow kCells[] = {
     // The car's own reflection traced: every card that traces.
     {RtEffect::kCarSelfReflRt, "mcla_gpu_car_selfrefl_rt", "off", "on", "on"},
-    // The car's occlusion rays and sun ray: a weak card keeps the sun ray alone, the strong has both.
-    {RtEffect::kCarRtAo, "mcla_gpu_ao_rt", "off", "contact", "both"},
     // The city's sun shadows: high where the card traces (a weak card with the Mid budget).
     {RtEffect::kRtShadows, "mcla_gpu_rt_shadows", "off", "high", "high"},
     // The city in the reflections: strong cards only (CITY-RT M2 R1: the look is a strong card's; a weak card runs it by hand).
@@ -646,7 +642,7 @@ const char* const kOwnChoices[] = {"off", "on", "high", "ultra", "rt", "ao", "co
 
 void CheckCells() {
   Check(sizeof(kCells) / sizeof(kCells[0]) == static_cast<std::size_t>(kRtEffectCount), "the test lists every ray traced effect");
-  Check(kRtEffects[5].cvar == "mcla_gpu_car_mirror_rt" && static_cast<int>(RtEffect::kCarMirrorRt) == 5 && static_cast<int>(RtEffect::kRtAo) == 6, "the side mirrors are the sixth effect (index 5), the occlusion the seventh (index 6)");
+  Check(kRtEffects[4].cvar == "mcla_gpu_car_mirror_rt" && static_cast<int>(RtEffect::kCarMirrorRt) == 4 && static_cast<int>(RtEffect::kRtAo) == 5, "side mirrors and world occlusion follow the city effects");
   Check(sizeof(kRtEffects) / sizeof(kRtEffects[0]) == static_cast<std::size_t>(kRtEffectCount), "kRtEffects has an entry for every effect");
   const GpuClass classes[] = {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh};
   const RtTier tiers[] = {RtTier::kNone, RtTier::kWeak, RtTier::kStrong};
@@ -683,14 +679,10 @@ void CheckCells() {
   // The labels as the pause rows show them.
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kStrong, RtEffect::kRtGi), "AUTO (HIGH)", "label: RT bounce light strong");
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kWeak, RtEffect::kRtGi), "AUTO (OFF)", "label: RT bounce light weak");
-  CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kStrong, RtEffect::kCarRtAo), "AUTO (BOTH)", "label: car occlusion strong");
-  CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kWeak, RtEffect::kCarRtAo), "AUTO (CONTACT)", "label: car occlusion weak");
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kStrong, RtEffect::kCarMirrorRt), "AUTO (ON)", "label: side mirrors strong");
   CheckEq(AutoLabelRtFor(GpuClass::kHigh, RtTier::kWeak, RtEffect::kCarMirrorRt), "AUTO (OFF)", "label: side mirrors weak");
   CheckEq(AutoLabelRtFor(GpuClass::kMid, RtTier::kStrong, RtEffect::kCarMirrorRt), "AUTO (OFF)", "label: side mirrors, a Mid class card with a strong tier");
-  // A cell is never a word the setting would refuse as a player's own choice, but the ones that are not in the cvar's list are the table's words for the
-  // effect's own reading: "both" (car_rt_ao_rules.h reads any word that is not off, ao or contact as the default, which is both terms).
-  // The rungs are the same everywhere the tier is read: the car effects' cells at the strong rung equal the old (pre-tier) behaviour, which was `on` / `both`.
+  // The strong rung keeps the old car self-reflection default, on.
   CheckEq(std::string(RtCell(RtEffect::kCarSelfReflRt, RtTier::kStrong)), "on", "strong keeps the car self-reflection on, as before the tier");
 }
 
@@ -723,8 +715,6 @@ void CheckLauncher() {
   Check(sentences.size() == 3, "the three launcher sentences differ");
   CheckEq(RtAutoDescription(RtEffect::kRtGi), "Auto is Off without ray tracing, Off on a weak ray tracing card and High on a strong one.",
           "launcher line: RT bounce light");
-  CheckEq(RtAutoDescription(RtEffect::kCarRtAo), "Auto is Off without ray tracing, Contact on a weak ray tracing card and Both on a strong one.",
-          "launcher line: car occlusion");
   CheckEq(RtAutoDescription(RtEffect::kRtShadows), "Auto is Off without ray tracing, High on a weak ray tracing card and High on a strong one.",
           "launcher line: RT shadows");
   // The marker line: the word right after it is the tier, so the launcher reads it like the car ray tracing line.

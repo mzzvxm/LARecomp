@@ -179,9 +179,9 @@ class GPUSettings final : public rex::SettingOwner {
     "tracing 1.1, or Vulkan with ray queries): a few short rays from the pixels near your car and the cars beside it, against their real shape, "
     "darken what the camera does not see (the far side of a wheel well, the body over a tyre, the road at the foot of a car and between two cars) "
     "and shadow the cars' own parts and the road from the sun exactly. "
-    "auto (the default): both, where the ambient occlusion or the contact shadows are on; off: the screen-space passes alone, to compare with; "
-    "ao: the occlusion's rays only; contact: the sun's ray only. A graphics card that cannot ray trace uses the screen-space passes whatever this "
-    "says. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "ao", "contact"));
+    "auto (the default) follows the graphics preset: the sun ray on Enhanced RT, both terms on Enhanced RT Ultra, off elsewhere. Custom uses its base preset "
+    "or off if it has no base. off: the screen-space passes alone; ao: the occlusion's rays only; contact: the sun ray only; both: both terms. "
+    "A graphics card that cannot ray trace uses the screen-space passes. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "ao", "contact", "both"));
 
   REX_SETTING(f64, mcla_gpu_ao_rt_length, 0.6, "Diagnostic: how far the ray traced occlusion's rays reach, in the game's world units (about metres): what your car blocks within it darkens "
     "the pixel, less the farther it is, nothing at the reach. A longer reach darkens more of the road round the car. Live.", rex::kDebugOnly, rex::Range{0.2, 2.0});

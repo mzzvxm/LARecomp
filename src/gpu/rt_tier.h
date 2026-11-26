@@ -535,14 +535,13 @@ constexpr RtTier TierForForcedClass(GpuClass forced, bool api_rt) {
 // One entry per ray traced effect that has an `auto` value. Add an entry here, in kRtEffects (same order) and in rt_tier_test.cpp.
 enum class RtEffect : uint8_t {
   kCarSelfReflRt,  // mcla_gpu_car_selfrefl_rt   auto, off            (car_rt_refl.h: the car's reflection of itself, traced)
-  kCarRtAo,        // mcla_gpu_ao_rt             auto, off, ao, contact (car_rt_ao.h: the car's occlusion rays and its sun ray)
   kRtShadows,      // mcla_gpu_rt_shadows        auto, off, high, ultra (city_rt_rules.h, feat/city-rt-m1: the sun's shadows from the city's triangles)
   kRtReflections,  // mcla_gpu_rt_reflections    auto, off, high, ultra (CITY-RT-M2 R1 and R8: the city in the car's reflections; the pause row RT CITY REFLECTIONS, city_refl_setting.h)
   kRtGi,           // mcla_gpu_rt_gi             auto, off, high, ultra (CITY-RT-M3, not built yet: the probe field's bounce light)
   kCarMirrorRt,    // mcla_gpu_car_mirror_rt     auto, off, on          (car_mirror_rt.h, car_mirror_setting.h: the side mirrors' real view; the pause row RT SIDE MIRRORS)
-  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion; the seventh effect, after the side mirrors)
+  kRtAo,           // mcla_gpu_ao                auto, off, high, ultra, rt (RTAO: the world's ambient occlusion)
 };
-inline constexpr int kRtEffectCount = 7;
+inline constexpr int kRtEffectCount = 6;
 
 struct RtEffectInfo {
   std::string_view cvar;
@@ -561,10 +560,6 @@ constexpr RtEffectInfo RtDerived(std::string_view cvar) {
 inline constexpr RtEffectInfo kRtEffects[kRtEffectCount] = {
     // The car's own reflection traced: about 0.1 to 0.2 ms at 4K on an RTX 5080 (a small region of the picture); every card that traces gets it.
     RtDerived("mcla_gpu_car_selfrefl_rt"),
-    // The car's occlusion rays (2 or 4 a pixel by the occlusion's level) and its sun ray (one) in the box round the cars: 0.2 to 0.5 ms on an RTX 5080
-    // (RT-AO-DESIGN.md), several times that on a weak card, so a weak card keeps only the sun ray, which is the cheaper term and the one the screen-space
-    // passes cannot do (the car's own sun shadow); the strong card has both. "both" is the setting's auto behaviour (car_rt_ao_rules.h SettingOf).
-    RtDerived("mcla_gpu_ao_rt"),
     // The city's sun shadows (CITY-RT-M1): high where the card traces; a weak card runs it with the Mid budget (the sectors within 150 m, not 300), which is
     // the package's own table (city_rt_rules.h BudgetFor with RtClass). First guess; the cost run of perf/CITY-RT-M1-RUNPLAN.md decides.
     RtDerived("mcla_gpu_rt_shadows"),

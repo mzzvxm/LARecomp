@@ -50,6 +50,7 @@
 #include "ao_stable.h"
 #include "car_rt_instances_rules.h"
 #include "car_rt_scene_rules.h"
+#include "gfx_preset.h"
 #include "temporal_math.h"
 
 namespace mcla::gpu::car_rt_ao {
@@ -61,14 +62,21 @@ constexpr bool OcclusionOn(bool occlusion_on, bool rtao_runs, bool blend_car) {
 // ---------------------------------------------------------------------------------------------------------------------
 // The setting
 // ---------------------------------------------------------------------------------------------------------------------
-// mcla_gpu_ao_rt (debug only): auto (the default: both terms, where the device can trace the car and the effect they belong to is on) | off |
-// ao (the occlusion term only) | contact (the sun ray only). A word that is none of these counts as auto, as the graphics settings' do.
-enum class Setting : uint8_t { kAuto, kOff, kOcclusion, kContact };
-inline Setting SettingOf(std::string_view text) {
+// mcla_gpu_ao_rt (debug only): auto follows the preset, including the preset a Custom configuration came from.
+enum class Setting : uint8_t { kOff, kOcclusion, kContact, kBoth };
+inline Setting ResolveSetting(std::string_view text, gfx_preset::Preset preset, std::string_view custom_base) {
   if (text == "off") return Setting::kOff;
   if (text == "ao") return Setting::kOcclusion;
   if (text == "contact") return Setting::kContact;
-  return Setting::kAuto;
+  if (text == "both") return Setting::kBoth;
+
+  if (preset == gfx_preset::Preset::kCustom) {
+    gfx_preset::Parse(custom_base, &preset);
+  }
+  const std::string_view cell = gfx_preset::CellOf("mcla_gpu_ao_rt", preset);
+  if (cell == "contact") return Setting::kContact;
+  if (cell == "both") return Setting::kBoth;
+  return Setting::kOff;
 }
 
 struct Terms {

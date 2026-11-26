@@ -86,9 +86,8 @@ void AddAuto(Table& settings) {
     // The RT table supersedes the legacy class cell for RT SHADOWS.
     for (const auto& effect : gc::kRtEffects) {
         if (auto* setting = settings[effect.cvar].as_table()) {
-            // CHECK: v1 validates resolved cells as writable words. Internal results such as
-            // "both" for RT AO and "on" for car RT need a validator change before export.
-            if (effect.cvar == "mcla_gpu_ao_rt" || effect.cvar == "mcla_gpu_car_selfrefl_rt") continue;
+            // CHECK: v1 validates resolved cells as writable words. The internal "on" result for car RT needs a validator change before export.
+            if (effect.cvar == "mcla_gpu_car_selfrefl_rt") continue;
             // An empty cell at the none rung defers to the class table (mcla_gpu_ao: RTAO adds `rt` at the strong rung only, which the row's AUTO label rule names): the class descriptor stays.
             if (effect.none.empty() && setting->contains("auto")) continue;
             setting->insert_or_assign("auto", Table{

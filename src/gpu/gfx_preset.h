@@ -124,7 +124,7 @@ inline constexpr Preset kFirstStart = Preset::kVanilla;
 
 // --- the table ---------------------------------------------------------------------------------------------------------------------
 
-// Where a row is. kSupport rows are not on a page: they hold a cell that an `auto` table reads (the diagnostic cvar mcla_gpu_ao_rt), no preset applies them and changing them
+// Where a row is. kSupport rows are not on a page: the diagnostic cvar mcla_gpu_ao_rt reads its preset's cell in auto. No preset writes them and changing them
 // does not turn a preset into CUSTOM.
 enum class Page : uint8_t { kImageQuality, kLighting, kReflections, kWorldDetail, kSupport };
 

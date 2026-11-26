@@ -265,7 +265,6 @@ struct OldRtEffect {
 // rt_tier.h kRtEffects as it was before the table.
 const OldRtEffect kOldRt[] = {
     {RtEffect::kCarSelfReflRt, "mcla_gpu_car_selfrefl_rt", "off", "on", "on"},
-    {RtEffect::kCarRtAo, "mcla_gpu_ao_rt", "off", "contact", "both"},
     {RtEffect::kRtShadows, "mcla_gpu_rt_shadows", "off", "high", "high"},
     {RtEffect::kRtReflections, "mcla_gpu_rt_reflections", "off", "off", "high"},
     {RtEffect::kRtGi, "mcla_gpu_rt_gi", "off", "off", "high"},

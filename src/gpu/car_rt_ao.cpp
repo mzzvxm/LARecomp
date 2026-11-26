@@ -21,11 +21,11 @@
 #include "descriptors.h"
 #include "device.h"
 #include "frame.h"
+#include "gfx_preset_apply.h"
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
-#include "rt_tier.h"
 #include "texture_bytes.h"
 
 
@@ -50,10 +50,13 @@ LiveText& Setting() {
   return text;
 }
 
-// The setting as the ray tracing tier resolves it (rt_tier.h kRtEffects): `auto` is both terms on a strong card, the sun ray alone on a weak one, none with
-// no ray tracing; an own choice (off, ao, contact) stays.
 rules::Setting SettingNow() {
-  return rules::SettingOf(gpu_class::ResolveRt(gpu_class::RtEffect::kCarRtAo, Setting().Get()));
+  const gfx_preset::Preset preset = gfx_preset::Current();
+  // CHECK: The 5080 drive should have no "ao rt" pass on Enhanced with auto, and recover both terms with the debug override.
+  if (preset == gfx_preset::Preset::kCustom) {
+    return rules::ResolveSetting(Setting().Get(), preset, larecomp::settings::mcla_gpu_preset_from.Get());
+  }
+  return rules::ResolveSetting(Setting().Get(), preset, {});
 }
 
 uint64_t PipelineKey() { return HostPrecache::Key(HostPrecache::kAmbientOcclusion, kPipelineVariant); }
