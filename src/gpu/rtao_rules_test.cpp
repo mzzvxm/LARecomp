@@ -66,9 +66,22 @@ void PlanChecks() {
   f.rays = 4;
   Check(rtao::Decide(f).screen_pass && rtao::Decide(f).traced[0] == 481 && rtao::Decide(f).rays == 4,
         "blend, quarter size and four-ray debug arms");
+  f.screen = rtao::Screen::kWorld;
+  Check(rtao::Decide(f).on && rtao::Decide(f).screen_pass, "world blending produces a screen term even without bounce light");
   f.raw = true;
   f.scale = 1;
   Check(rtao::Decide(f).rays == 2 && rtao::Decide(f).raw && rtao::Decide(f).traced[0] == 1921, "raw uses two rays at its requested extent");
+  using S = rtao::Screen;
+  Check(rtao::ParseScreen("world") == S::kWorld, "world is a live screen mode");
+  Check(rtao::ParseScreen("auto") == S::kAuto && rtao::ParseScreen("") == S::kAuto &&
+            rtao::ParseScreen("off") == S::kOff && rtao::ParseScreen("on") == S::kOn,
+        "existing screen modes and the unknown-value fallback");
+  Check(rtao::ScreenBlendFlags(S::kAuto, false) == 0u && rtao::ScreenBlendFlags(S::kOff, false) == 0u &&
+            rtao::ScreenBlendFlags(S::kOn, false) == rtao::kBlendScreenAll &&
+            rtao::ScreenBlendFlags(S::kWorld, false) == rtao::kBlendScreenWorld,
+        "only the two blend modes set compose flags");
+  Check(rtao::ScreenBlendFlags(S::kWorld, true) == 0u && rtao::ScreenBlendFlags(S::kOn, true) == 0u,
+        "the force-open identity test bypasses blending");
   for (unsigned bits = 0; bits < 32; ++bits) {
     Check(rtao::KeepHistory(bits & 1, bits & 2, bits & 4, bits & 8, bits & 16) == (bits == 15),
           "history needs a consecutive ours-frame of the same size and a usable reprojection");

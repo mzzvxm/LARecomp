@@ -47,6 +47,10 @@ float RtAoVisibility(float open, float power, float floor_) {
   return max(pow(saturate(open), power), floor_);
 }
 
+bool RtAoBlendScreen(uint flags, bool vehicle) {
+  return (flags & (1u << 0)) != 0u || (!vehicle && (flags & (1u << 2)) != 0u);
+}
+
 float RtAoCoverage(float rt, float coverage, float screen, bool blend_screen) {
   return lerp(screen, blend_screen ? min(rt, screen) : rt, coverage);
 }

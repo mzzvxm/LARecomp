@@ -1221,7 +1221,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_rtao_quarter_at_4k, true, "Debug: trace and denoise RT ambient occlusion at quarter size in exterior views at 2160 render lines and above. Applies to automatic scale on strong RT hardware. Live.", rex::kDebugOnly);
 
   REX_SETTING(std::string, mcla_gpu_rtao_alpha, "auto", "Debug: How traced AO handles cut-outs. Auto uses exact alpha on strong RT GPUs and stochastic alpha otherwise. Live.", rex::kDebugOnly, rex::Allowed("auto", "exact", "stochastic", "opaque", "exclude"));
-  REX_SETTING(std::string, mcla_gpu_rtao_screen, "auto", "Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, and on takes the darker term. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on"));
+  REX_SETTING(std::string, mcla_gpu_rtao_screen, "auto", "Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, world takes the darker term on world surfaces, and on takes it everywhere. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "on", "world"));
   REX_SETTING(std::string, mcla_gpu_rtao_interior, "auto", "Debug: Cockpit AO policy. Auto probes the cabin, screen keeps screen-space AO inside it, and rt always traces it. Live.", rex::kDebugOnly, rex::Allowed("auto", "screen", "rt"));
   REX_SETTING(i32, mcla_gpu_rtao_check, 0, "Debug: Traced AO identity check. 0 draws the result, 1 writes open visibility, and 2 writes fully occluded visibility. Live.", rex::kDebugOnly, rex::Range{0, 2});
   REX_SETTING(i32, mcla_gpu_rtao_view, 0, "Debug: Traced AO debug image. 0 is the result, 1 raw, 2 filtered, 3 coverage, 4 history length, 5 rays, and 6 vehicle IDs. Live.", rex::kDebugOnly, rex::Range{0, 6});

@@ -12,7 +12,7 @@ struct RtAoComposePush {
   uint4 stencil;     // render.xy, host sample and MS flag, car AO term
   float power;
   float floor_;
-  uint flags;        // bit 0: blend with screen space, bit 1: signal has a history length
+  uint flags;        // bit 0: blend all, bit 1: history length present, bit 2: blend world only
   uint view;
 };
 
@@ -111,7 +111,10 @@ void main(uint3 id : SV_DispatchThreadID) {
     const float car_open = g_textures[g_push.stencil.w].Load(px).x;
     rt = min(rt, RtAoVisibility(car_open, g_push.power, g_push.floor_));
   }
-  float term = RtAoCoverage(rt, coverage, screen, (g_push.flags & 1u) != 0u);
+  // A safe, judged receiver can still miss a blocker absent from the packed city
+  // or beyond the short ray. In world mode keep raster contact on world receivers.
+  // CHECK: compare the tunnel's deck and support, and open-road silhouettes on both APIs.
+  float term = RtAoCoverage(rt, coverage, screen, RtAoBlendScreen(g_push.flags, vehicle));
   if (g_push.view == 2u) {
     term = open;
   } else if (g_push.view == 3u) {

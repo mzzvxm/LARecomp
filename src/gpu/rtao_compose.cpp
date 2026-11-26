@@ -133,7 +133,7 @@ uint32_t RtAoCompose::Record(const Frame& in, const Guides& guides) {
       in.bounce_slot, raw, id_share, stencil,
       {in.traced[0], in.traced[1]}, {in.plan_ao[0], in.plan_ao[1]},
       {guides.render[0], guides.render[1]}, (guides.stencil_sample & 0xFFu) | (guides.stencil_ms ? 0x100u : 0u), guides.car_term_slot,
-      in.power, in.floor_, uint32_t(in.blend_screen) | (history ? 2u : 0u), uint32_t(in.view),
+      in.power, in.floor_, in.screen_blend_flags | (history ? 2u : 0u), uint32_t(in.view),
   };
   // CHECK: validate the term's typed stores and the screen/bounce texture
   // handoff at the AO trigger on D3D12 and Vulkan, plus the thin pole and

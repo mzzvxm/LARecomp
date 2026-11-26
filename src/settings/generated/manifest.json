@@ -503,10 +503,10 @@
   "type": "std::string",
   "default": "\"auto\"",
   "category": "MCLA/GPU",
-  "help": "\"Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, and on takes the darker term. Live.\"",
+  "help": "\"Debug: Screen-space contribution to traced AO. Auto uses it for fallback, off disables it, world takes the darker term on world surfaces, and on takes it everywhere. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Allowed(\"auto\", \"off\", \"on\")"
+   "rex::Allowed(\"auto\", \"off\", \"on\", \"world\")"
   ],
   "comments": [],
   "pp_depth": 0

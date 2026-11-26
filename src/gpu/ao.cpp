@@ -2768,8 +2768,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
       // This frame is the plain occlusion: its history is what EnsureImages left out for the test.
       plan.gi = GiPlan{};
       if (plan_rtao && rtao_->play_view_) {
-        plan.rtao.screen_pass = rtao_->screen_ != rtao::Screen::kOff &&
-                               (!plan.rtao.on || rtao_->cabin_screen_ || rtao_->screen_ == rtao::Screen::kOn);
+        plan.rtao.screen_pass = rtao::ScreenPassInPlay(rtao_->screen_, plan.rtao.on, rtao_->cabin_screen_);
       }
       if (gi_apply_) {
         gi_apply_->NoteSsgiRan(0.0f);  // the colour chain did not run after all: the probe field takes the frame's whole share
