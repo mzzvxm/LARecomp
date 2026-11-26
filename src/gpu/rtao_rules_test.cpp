@@ -84,7 +84,7 @@ void RuleChecks() {
   const auto strong = rtao::BudgetFor(RtTier::kStrong);
   const auto weak = rtao::BudgetFor(RtTier::kWeak);
   Check(strong.rays == 1 && strong.boost && Near(strong.reach_share, 0.50) && strong.history_cap == 32 && strong.exact_alpha, "strong budget");
-  Check(weak.rays == 1 && !weak.boost && Near(weak.reach_share, 0.40) && weak.history_cap == 32 && !weak.exact_alpha, "weak budget");
+  Check(weak.rays == 1 && weak.boost && Near(weak.reach_share, 0.50) && weak.history_cap == 32 && weak.exact_alpha, "the weak and strong tiers use the same budget");
   Check(rtao::BudgetFor(RtTier::kNone).rays == 0, "no hardware rays");
   Check(rtao::kRayMask == 0x9D && rtao::kCabinMask == 3 && rtao::kBoostBelow == 4, "trace, cabin and history constants");
   Check(Near(rtao::Reach(3, 0.5, 0), 1.5) && Near(rtao::Reach(3, 0.4, 10), 2.5) && Near(rtao::Reach(10, 0.5, 0.1), 0.75),

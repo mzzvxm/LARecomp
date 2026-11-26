@@ -106,14 +106,16 @@ class CityRtShadow {
   std::string CensusText() const;
 
  private:
-  // The push block (hlsl/city_rt_shadow_cs.hlsl CityRtShadowPush), 64 bytes.
+  // The push block (hlsl/city_rt_shadow_cs.hlsl CityRtShadowPush), 96 bytes.
   struct Push {
     uint32_t slots[4];  // the depth image's slot, its width and height, the flags (city_rt_shadow_rules.h kFlag*)
     uint32_t noise[4];  // the noise's shift, the ray mask, the frame serial, the car image's slot
     float lens[4];      // tan half field of view x and y, the rays' length, the range
+    float bounds_min[4];
+    float bounds_max[4];
     float light[4];     // the direction to the sun in view space, the tangent of the sun disc's radius
   };
-  static_assert(sizeof(Push) == 64);
+  static_assert(sizeof(Push) == 96);
   static constexpr uint32_t kTextureSet = 0;
   static constexpr uint32_t kOutputSet = 1;
   static constexpr uint32_t kSceneSet = 2;

@@ -109,9 +109,8 @@ int main(int argc, char** argv) {
       for (const char* text : kTexts) {
         ++combos;
         const cm::Level level = cr::LevelFor(cls, tier, text);
-        const RtTier rung = gc::RtRung(cls, tier);
         const std::string name = std::string("class ") + std::to_string(int(cls)) + ", tier " + std::to_string(int(tier)) + ", '" + text + "'";
-        if (rung == RtTier::kNone) {
+        if (tier == RtTier::kNone) {
           Check(level == cm::Level::kOff, name + ": no ray tracing rung, off whatever the text says");
           continue;
         }
@@ -135,7 +134,7 @@ int main(int argc, char** argv) {
   Check(cr::LevelFor(GpuClass::kHigh, RtTier::kStrong, "auto") == cm::Level::kHigh, "auto on a strong High card is HIGH");
   Check(cr::LevelFor(GpuClass::kHigh, RtTier::kWeak, "auto") == cm::Level::kOff && cr::LevelFor(GpuClass::kHigh, RtTier::kNone, "auto") == cm::Level::kOff, "auto on a weak card or none is off");
   Check(cr::LevelFor(GpuClass::kMid, RtTier::kStrong, "auto") == cm::Level::kOff, "auto on a Mid class is off (its rung is at most weak)");
-  Check(cr::LevelFor(GpuClass::kLow, RtTier::kStrong, "ultra") == cm::Level::kOff, "the Low class never runs it");
+  Check(cr::LevelFor(GpuClass::kLow, RtTier::kStrong, "ultra") == cm::Level::kUltra, "explicit Ultra runs on every supported device");
   Check(std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kNone)) == "off" && std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kWeak)) == "off" &&
             std::string(gc::RtCell(gc::RtEffect::kRtReflections, RtTier::kStrong)) == "high",
         "rt_tier.h's cells of mcla_gpu_rt_reflections: off, off, high");
@@ -144,15 +143,15 @@ int main(int argc, char** argv) {
   {
     const cr::Cell off = cr::CellFor(cm::Level::kOff, GpuClass::kHigh);
     Check(off.level == cm::Level::kOff && off.reach == 0.0f && off.opp_texels == 0 && off.textures == TextureScope::kNone && !off.coat_layer, "off is an empty cell");
-    Check(cr::CellFor(cm::Level::kHigh, GpuClass::kLow) == cr::Cell{} && cr::CellFor(cm::Level::kUltra, GpuClass::kLow) == cr::Cell{}, "the Low class has no cell");
+    Check(cr::CellFor(cm::Level::kHigh, GpuClass::kLow) == cr::CellFor(cm::Level::kHigh, GpuClass::kHigh) && cr::CellFor(cm::Level::kUltra, GpuClass::kLow) == cr::CellFor(cm::Level::kUltra, GpuClass::kHigh), "the Low class uses the same cells");
     const cr::Cell hh = cr::CellFor(cm::Level::kHigh, GpuClass::kHigh);
     const cr::Cell uh = cr::CellFor(cm::Level::kUltra, GpuClass::kHigh);
     const cr::Cell hm = cr::CellFor(cm::Level::kHigh, GpuClass::kMid);
     const cr::Cell um = cr::CellFor(cm::Level::kUltra, GpuClass::kMid);
     Check(hh.reach == 150.0f && hh.fade_from == 0.6f && hh.cone_rays == 4 && hh.opp_texels == 250000 && hh.opp_rays == 2, "HIGH on the High class: 150 m, the cone's four rays, the opponents' 250 k texels at 2 rays");
     Check(uh.reach == 1000.0f && uh.fade_from == 0.3f && uh.cone_rays == 4 && uh.opp_texels == 500000 && uh.opp_rays == 4, "ULTRA on the High class: 1,000 m with the weight full to 300 m, 500 k texels at 4 rays");
-    Check(hm.reach == 60.0f && hm.cone_rays == 2 && um.reach == 150.0f && um.cone_rays == 2, "a Mid class by hand: 60 m at high, 150 m at ultra, the cone's outer pair");
-    Check(uh.reach > hh.reach && hh.reach > hm.reach && um.reach > hm.reach && uh.opp_texels > hh.opp_texels && hh.opp_texels > hm.opp_texels, "reach and budget rise with the level and the class");
+    Check(hm == hh && um == uh, "Mid uses identical budgets at each level");
+    Check(uh.reach > hh.reach && um.reach > hm.reach && uh.opp_texels > hh.opp_texels, "reach and budget rise with the level");
     for (const cr::Cell& c : {hh, uh, hm, um}) {
       Check(c.textures == TextureScope::kAll && c.coat_layer && c.level != cm::Level::kOff && c.fade_from > 0.0f && c.fade_from < 1.0f && c.opp_rays >= 1 && c.opp_rays <= 4 && c.cone_rays >= 1 && c.cone_rays <= 4,
             "an on cell reads every texture, takes the coat layer and has sane numbers");
@@ -174,7 +173,7 @@ int main(int argc, char** argv) {
     // the opponents' budget
     Check(cr::OppBudget(500000, hh) == 250000 && cr::OppBudget(200000, hh) == 200000 && cr::OppBudget(500000, uh) == 500000 && cr::OppBudget(500000, off) == 500000 && cr::OppBudget(0, uh) == 0,
           "the opponents' texel budget is the smaller of the class's and the cell's, the class's with the city off");
-    Check(cr::OppRays(4, hh) == 2 && cr::OppRays(1, hh) == 1 && cr::OppRays(2, uh) == 2 && cr::OppRays(4, uh) == 4 && cr::OppRays(4, off) == 4 && cr::OppRays(4, hm) == 1, "the opponents' rays a texel are capped by the cell");
+    Check(cr::OppRays(4, hh) == 2 && cr::OppRays(1, hh) == 1 && cr::OppRays(2, uh) == 2 && cr::OppRays(4, uh) == 4 && cr::OppRays(4, off) == 4 && cr::OppRays(4, hm) == 2, "the opponents' rays a texel are capped by the cell");
   }
 
   // ---- the fade, the footprint ----------------------------------------------------------------------------------------------------------------------

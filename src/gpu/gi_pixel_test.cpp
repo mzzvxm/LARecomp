@@ -103,17 +103,17 @@ void CellChecks() {
   for (gi::Rung rung : rungs) {
     for (gi::Level level : levels) {
       const gp::Cell c = gp::CellFor(rung, level);
-      const bool expect = rung == gi::Rung::kStrong && level == gi::Level::kUltra;
+      const bool expect = rung != gi::Rung::kNone && level == gi::Level::kUltra;
       Check(c.runs == expect, std::string("CELL: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)) + (expect ? " runs the pass" : " is the identity"));
       if (!c.runs) {
-        Check(c.rays_per_pixel == 0 && c.reach_m == 0.0f && c.denoise_iterations == 0 && c.cap_ms == 0.0f, std::string("CELL: a cell without the pass holds no numbers: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)));
+        Check(c.rays_per_pixel == 0 && c.reach_m == 0.0f && c.denoise_iterations == 0, std::string("CELL: a cell without the pass holds no numbers: ") + std::string(gi::RungName(rung)) + " " + std::string(gi::LevelName(level)));
       }
       running += c.runs ? 1 : 0;
     }
   }
-  Check(running == 1, "CELL: exactly one of the nine cells runs the pass (strong, ULTRA)");
+  Check(running == 2, "CELL: both RT tiers run the pass at Ultra");
   const gp::Cell u = gp::CellFor(gi::Rung::kStrong, gi::Level::kUltra);
-  Check(u.rays_per_pixel == 1 && u.reach_m == 12.0f && u.denoise_iterations == 3 && u.cap_ms > u.est_ms_hi && u.est_ms_lo < u.est_ms_hi, "CELL: 1 ray a pixel, 12 m, 3 iterations, a cap over the estimate");
+  Check(u.rays_per_pixel == 1 && u.reach_m == 12.0f && u.denoise_iterations == 3 && u.est_ms_lo < u.est_ms_hi, "CELL: 1 ray a pixel, 12 m, 3 iterations");
   Check(gi::BudgetOf(gi::Layout::kExtended).pixel_rays_per_pixel == u.rays_per_pixel && gi::BudgetOf(gi::Layout::kStandard).pixel_rays_per_pixel == 0 && gi::BudgetOf(gi::Layout::kLean).pixel_rays_per_pixel == 0,
         "CELL: the cell's rays are the field's budget's (gi_frame.h): only the extended layout has the pass");
   // the memory: the doc's 190 MiB at ULTRA holds the pass's images at a traced 1080 lines (2.07 M pixels) beside the field's 79
@@ -174,40 +174,6 @@ void PlanChecks() {
 // ---------------------------------------------------------------------------
 // the governor, the sizes
 // ---------------------------------------------------------------------------
-
-void GovernorChecks() {
-  const float cap = 2.2f;
-  gp::Governor g;
-  for (int i = 0; i < 1000; ++i) g.AddSample(1.5f, cap);
-  Check(!g.reduced() && g.divisor() == 1, "GOVERNOR: a pass under its cap stays at the traced size");
-  for (int i = 0; i < 29; ++i) g.AddSample(4.0f, cap);
-  Check(!g.reduced(), "GOVERNOR: a short spell over the cap changes nothing");
-  g.Reset();
-  int frames = 0;
-  for (; frames < 200 && !g.reduced(); ++frames) g.AddSample(4.0f, cap);
-  Check(g.reduced() && g.divisor() == 2 && frames >= gp::Governor::kDownFrames && frames < 80, Num("GOVERNOR: a pass at %.1f ms against a cap of 2.2 goes to half the traced size after %.0f frames", 4.0, double(frames)));
-  // at the reduced size the cost is about a quarter: 1 ms is 4 ms at full size, over the cap: stays
-  for (int i = 0; i < 1000; ++i) g.AddSample(1.0f, cap);
-  Check(g.reduced(), "GOVERNOR: at the reduced size a pass whose full size would still be over the cap stays reduced (hysteresis)");
-  for (int i = 0; i < 300; ++i) g.AddSample(0.3f, cap);
-  Check(!g.reduced(), "GOVERNOR: far under the cap (4 x the reduced cost under 0.9 of it) it goes back");
-  // near the cap: no flicker
-  gp::Governor h;
-  uint32_t flips = 0;
-  bool was = false;
-  Lcg rng;
-  for (int i = 0; i < 20000; ++i) {
-    h.AddSample(cap * rng.Range(0.8f, 1.1f) * (h.reduced() ? 0.25f : 1.0f), cap);
-    flips += h.reduced() != was ? 1u : 0u;
-    was = h.reduced();
-  }
-  Check(flips <= 4, Num("GOVERNOR: a pass that hovers round its cap does not flicker between the sizes (%.0f changes in 20000 frames)", double(flips)));
-  gp::Governor bad;
-  bad.AddSample(-1.0f, cap);
-  bad.AddSample(std::nanf(""), cap);
-  bad.AddSample(1.0f, 0.0f);
-  Check(!bad.reduced() && bad.ewma() == 0.0f, "GOVERNOR: a negative, a NaN or a missing cap is not a sample");
-}
 
 void SizeChecks() {
   Check(gp::PixelExtent(1920, 1) == 1920 && gp::PixelExtent(1920, 2) == 960 && gp::PixelExtent(1081, 2) == 541 && gp::PixelExtent(1, 2) == 1, "SIZE: the pass's extent is the traced one or half of it rounded up");
@@ -576,7 +542,7 @@ void RawChecks() {
         wanted += gp::ConsumerWanted(layout) ? 1 : 0;
       }
     }
-    Check(one_word && wanted == 1, "RAW: the consumer is wanted exactly where the pass's cell runs (the strong rung at ULTRA: one of the nine cells), whatever the rest of the frame is");
+    Check(one_word && wanted == 2, "RAW: the consumer is wanted exactly where the pass's cell runs (both RT tiers at Ultra), whatever the rest of the frame is");
     Check(!gp::ConsumerWanted(gi::Layout::kNone) && !gp::ConsumerWanted(gi::Layout::kLean) && !gp::ConsumerWanted(gi::Layout::kStandard) && gp::ConsumerWanted(gi::Layout::kExtended),
           "RAW: only the extended layout makes the bounce light a consumer of the DENOISER row (HIGH and OFF never are)");
   }
@@ -874,7 +840,6 @@ int main(int argc, char** argv) {
   }
   CellChecks();
   PlanChecks();
-  GovernorChecks();
   SizeChecks();
   RayChecks();
   EstimatorChecks();

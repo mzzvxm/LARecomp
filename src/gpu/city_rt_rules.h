@@ -84,7 +84,7 @@ constexpr Level AutoLevelFor(gpu_class::GpuClass cls, bool available) { return a
 // class gets the Mid budget).
 constexpr Level LevelForRung(gpu_class::GpuClass cls, gpu_class::RtTier tier, Choice choice) {
   const gpu_class::RtTier rung = gpu_class::RtRung(cls, tier);
-  if (rung == gpu_class::RtTier::kNone) return Level::kOff;
+  if (tier == gpu_class::RtTier::kNone) return Level::kOff;
   if (choice == Choice::kAuto) return LevelOfCell(gpu_class::RtCell(gpu_class::RtEffect::kRtShadows, rung));
   return LevelFor(cls, choice);
 }

@@ -22,7 +22,7 @@
 
 // ---- the compute passes' push block (the SSR push block's 32 words, ssr_common.hlsli SSR_W_*; the words the compute passes do not read for their first meaning) ------------------------------------
 #define SSR_W_RT_CONF 4          // the confidence image's bindless slot (low 16 bits) | the class groups the level traces << 16 (4 bits) | rays - 1 << 20 (2 bits) | SSR_RT_FLAG_* << 24
-#define SSR_W_RT_CAP 5           // the list's capacity in pixels (the level's ray cap over its rays a pixel, the governor's step in it)
+#define SSR_W_RT_CAP 5           // the list's capacity in pixels (the level's ray cap over its rays a pixel; high bits select the classification step)
 #define SSR_W_RT_REACH 18        // float: the longest ray traced, metres
 #define SSR_W_RT_THRESHOLD 19    // float: a pixel whose confidence is under this is a candidate
 #define SSR_W_RT_FRAME 30        // the fallback's own frame count (the rotation of the counters, the tile order, the thinning)
@@ -160,6 +160,14 @@ float SsrRtWeight(float keep) { return 1.0f / max(keep, kSsrRtMinKeep); }
 uint SsrRtTileOf(uint group_x, uint group_y, uint tiles_x, uint tile_count, uint rt_frame) {
   const uint count = max(tile_count, 1u);
   return (group_y * tiles_x + group_x + (rt_frame % count) * kSsrRtTileStride) % count;
+}
+
+uint SsrRtRankedTile(uint tile, uint rotation, uint count) {
+  return (tile + count - rotation) % count;
+}
+
+uint SsrRtListed(uint kept, uint capacity) {
+  return kept < capacity ? kept : capacity;
 }
 
 // ---- the ray -----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------

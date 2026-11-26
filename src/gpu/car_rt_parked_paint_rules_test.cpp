@@ -204,9 +204,10 @@ void PlanTests() {
   const tr::TrafficPlan mid = tr::PlanDispatches(street_rects, op::kBudgetMid, tr::LevelFor(GpuClass::kMid));
   const std::vector<pp::Mark> mid_marks = pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, mid);
   Check(!mid_marks.empty() && mid_marks.size() <= mid.admitted_cars.size() && mid_marks.size() <= pp::kMaxMarks, "a plan on the Mid class marks no car the plan did not admit");
-  // the Low class traces no traffic: nothing marked
-  const tr::TrafficPlan low = tr::PlanDispatches(street_rects, op::kBudgetMid, tr::LevelFor(GpuClass::kLow));
-  Check(pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, low).empty(), "no traffic level, no marks");
+  // An explicit traffic override of zero leaves no marks.
+  const auto disabled = tr::LevelWith(tr::LevelFor(GpuClass::kHigh), 0);
+  const tr::TrafficPlan off = tr::PlanDispatches(street_rects, op::kBudgetMid, disabled);
+  Check(pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, off).empty(), "no traffic level, no marks");
 }
 
 // ---- the paint draw: the constants and their flag, and the variant's reading of the distance ---------------------------------------------

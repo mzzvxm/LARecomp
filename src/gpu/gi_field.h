@@ -201,11 +201,8 @@ class GiField {
   void RetireSets();
 
   // The fit and the textures.
-  gi_field::Fit ChooseFitNow(gi::Layout wanted, bool* refused_something);
   bool MakeResources(const gi_field::Fit& fit, const double camera[3]);
   void ReleaseResources(const char* why);
-  bool HasRoomFor(uint64_t total_bytes) const;
-  uint64_t NowMs() const;
 
   void Log(const char* what);
   void LogInterval();
@@ -257,12 +254,6 @@ class GiField {
   bool update_ready_ = false;
   bool published_ = false;
   // what was refused for want of room, and until when (vram_room.h): the steps above the fit that is made are asked again after their wait
-  struct StepKey {
-    gi::Layout layout = gi::Layout::kNone;
-    gi_field::Step step = gi_field::Step::kNone;
-    bool operator==(const StepKey& o) const { return layout == o.layout && step == o.step; }
-  };
-  vram_room::RefusalBook<StepKey> refusals_;
 
   // --- time and counts ---
   uint64_t frame_count_ = 0;
@@ -273,6 +264,7 @@ class GiField {
   uint64_t last_none_log_ = 0;
   float safe_range_kept_ = 0.0f;           // the safe range of the last frame that was usable: the fade out of an idle field keeps it
   gi::Level shown_level_ = gi::Level::kOff;  // ... and its level
+  bool memory_warned_ = false;
   uint64_t next_refit_frame_ = 0;
   uint32_t last_logged_fit_ = ~0u;
   uint64_t interval_start_frame_ = 0;

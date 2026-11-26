@@ -279,7 +279,7 @@ void BudgetChecks() {
   using gi::Level;
   using gi::Rung;
   const Layout expect[3][3] = {{Layout::kNone, Layout::kNone, Layout::kNone},          // none: off, high, ultra
-                               {Layout::kNone, Layout::kLean, Layout::kStandard},      // weak
+                               {Layout::kNone, Layout::kStandard, Layout::kExtended},      // weak
                                {Layout::kNone, Layout::kStandard, Layout::kExtended}};  // strong
   for (int r = 0; r < 3; ++r)
     for (int l = 0; l < 3; ++l)
@@ -288,7 +288,7 @@ void BudgetChecks() {
   for (int r = 0; r < 3; ++r)
     for (int l = 0; l < 3; ++l) {
       const Layout layout = gi::LayoutFor(Rung(r), Level(l));
-      Check(gi::PixelPassAllowed(Rung(r), layout) == (r == 2 && l == 2), "the per-pixel pass is the strong card's ULTRA layer only");
+      Check(gi::PixelPassAllowed(Rung(r), layout) == (r != 0 && l == 2), "the per-pixel pass is the Ultra layer on every RT adapter");
       Check(gi::ReplacesSsgi(layout) == (layout != Layout::kNone), "the field replaces the screen-space bounce light exactly where it runs");
     }
   // the words: no level called low, `auto` is not a level

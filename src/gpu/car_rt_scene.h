@@ -107,6 +107,7 @@
 #include "car_model_rt_rules.h"
 #include "car_lights.h"
 #include "car_rt_instances.h"
+#include "rt_scene_bounds.h"
 #include "car_rt_lights_rules.h"
 #include "car_rt_memory_rules.h"
 #include "car_rt_scene_rules.h"
@@ -148,6 +149,7 @@ struct CarRtView {
   bool scene_valid = false;
   plume::RenderDescriptorSet* set = nullptr;  // bound by the caller at its own set index
   uint32_t instance_count = 0;
+  rt_scene::Bounds bounds;
   // The OTHER cars' boxes in the frame's view space (the union of each kept car's instances' transformed mesh boxes), one an other car with any
   // instance in this top level, nearest first. `boxes` points at the scene's own list (valid until the next OnResolve or the present). The same
   // boxes are in binding 1's table for a shader: two rows a box (minimum, maximum as float bits) from row `box_row`. Where the player's own box

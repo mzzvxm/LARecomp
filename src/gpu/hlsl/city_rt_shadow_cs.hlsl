@@ -37,6 +37,7 @@
 
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
+#include "rt_ray_bounds.hlsli"
 
 #define CITY_RT_MASK_CITY 0x80  // city_rt_rules.h kMaskCity: the one bit of the instance mask the car scene does not use
 
@@ -65,6 +66,9 @@ struct CityRtShadowPush
     // x, y tan of the half field of view (the depth image's lens), z the rays' length in metres, w the range: a pixel beyond it is 1
     float4 lens;
     // xyz the direction to the sun in view space (unit), w the tangent of the sun disc's radius (the real sun's times the setting)
+    // Optional conservative bounds of the TLAS used by this frame.
+    float4 bounds_min;
+    float4 bounds_max;
     float4 light;
 };
 
@@ -86,6 +90,8 @@ static const float kAlphaCoverage = 0.5;
 static const float kMinAbove = 0.08;          // a ray is kept at least this far (as a cosine) above the point's tangent plane
 static const float kCheckTMin = 0.01;
 static const uint kFlagCarImage = 1u << 8;
+static const uint kFlagSelective = 1u << 9;
+static const uint kFlagBounds = 1u << 10;
 static const uint kFlagAlphaRefShift = 12;
 static const uint kFlagAlphaStats = 1u << 28;
 static const uint kFlagView = 1u << 29;
@@ -261,7 +267,7 @@ bool Blocked(float3 origin, float3 direction, float t_max, uint2 pixel, uint sal
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT;
 }
 
-float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p)
+float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p, float car_visibility)
 {
     const float4 open = float4(1.0, 1.0, 0.0, 1.0);
     const float3 to_sun = g_push.light.xyz;
@@ -285,10 +291,15 @@ float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p)
     // The width of the pixel the rays start from, in metres: what the exact alpha's level starts at.
     const float cone = footprint_unit * t;
     uint path = 0u;
-    float blocked = 0.0;
+    uint blocked = 0u;
+    const bool selective = (g_push.slots.w & kFlagSelective) != 0u;
+    const bool clip = (g_push.slots.w & kFlagBounds) != 0u;
     [loop]
     for (uint k = 0u; k < rays; ++k)
     {
+        if (selective && float(k - blocked) / float(rays) >= car_visibility) {
+            return float4(1.0, car_visibility, 1.0, 1.0);
+        }
         const float2 d = DiscSample(k, rays, noise.x, noise.y);
         float3 direction = normalize(to_sun + sx * (d.x * g_push.light.w) + sy * (d.y * g_push.light.w));
         const float above = dot(direction, n);
@@ -296,9 +307,10 @@ float4 TraceSun(uint2 pixel, uint2 size, float t, float3 p)
         {
             direction = normalize(direction + (kMinAbove - above) * n);
         }
-        if (Blocked(origin, direction, g_push.lens.z, pixel, k, cone, path))
+        const float reach = clip ? RtClippedLength(g_push.bounds_min.xyz, g_push.bounds_max.xyz, origin, direction, g_push.lens.z) : g_push.lens.z;
+        if (reach >= 0.0f && Blocked(origin, direction, reach, pixel, k, cone, path))
         {
-            blocked += 1.0;
+            ++blocked;
         }
     }
     // The exact alpha's picture (mcla_gpu_city_rt_alpha_view): which way the pixel's rays went through the cut-outs, in the place of the visibility.
@@ -416,7 +428,7 @@ void main(uint3 id : SV_DispatchThreadID)
     if (!sky && !vehicle && t < g_push.lens.w)
     {
         const float3 p = ViewPos(float2(id.xy) + 0.5, float2(size), t);
-        const float4 traced = TraceSun(id.xy, size, t, p);
+        const float4 traced = TraceSun(id.xy, size, t, p, car_g);
         result = float4(1.0, min(traced.y, car_g), traced.z, 1.0);
     }
     g_output[id.xy] = result;

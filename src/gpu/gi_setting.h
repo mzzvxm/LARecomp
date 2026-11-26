@@ -72,9 +72,8 @@ enum class Gate : uint8_t {
   kNotBuilt,  // the probe update (G2) is not in this renderer
 };
 
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool update_built) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier, bool update_built) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!update_built) return Gate::kNotBuilt;
   return Gate::kRuns;
 }
@@ -111,7 +110,7 @@ inline gi::Level LevelOfWord(gc::GpuClass cls, gc::RtTier tier, std::string_view
 inline Decision Decide(gc::GpuClass cls, gc::RtTier tier, std::string_view word, bool update_built) {
   Decision d;
   d.gate = GateFor(cls, tier, update_built);
-  d.rung = RungOf(gc::RtRung(cls, tier));
+  d.rung = RungOf(tier);
   d.level = d.gate == Gate::kRuns ? LevelOfWord(cls, tier, word) : gi::Level::kOff;
   d.layout = gi::LayoutFor(d.rung, d.level);
   return d;
@@ -155,6 +154,7 @@ inline float BounceWeight(double value) {
 Decision Current();
 // The probe update is built in (gi_integration.h SetUpdate sets it) / the field stands and replaces the screen-space bounce light (the integration sets it once a frame).
 void NoteUpdateBuilt(bool built);
+void NoteResourcePressure(bool pressure);
 void NoteReplaced(bool replaced);
 // BounceWeight of mcla_gpu_rt_gi_bounces. Any thread.
 float BounceWeightNow();

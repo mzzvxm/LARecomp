@@ -4,7 +4,7 @@
 // ===========================================================================
 // gi_pixel_rules.h is the specification (read its first page: what the pass is, the ray, the hit, the miss, the denoiser, the mix, the raw mode prepared for G6, the identity), hlsl/gi_pixel_common.hlsli its
 // twin, hlsl/gi_pixel_trace_cs.hlsl the trace. This file is the Plume side, modelled on the probe update (gi_update.h): the compute layout with the ray tracing set, the pass set, the buffers, the pipelines,
-// the timestamps and the census; and on RtDenoise's first consumer (rt_denoise.h: the DIFFUSE profile over the plain guides).
+// the census; and on RtDenoise's first consumer (rt_denoise.h: the DIFFUSE profile over the plain guides).
 //
 //   WHEN      GiApply::OnTrigger calls Begin / RecordTrace / RecordDenoise / Publish BEFORE its lookup (the lookup reads the image), at the mid-scene depth copy after the occlusion's apply, outside any
 //             render pass, in the list the frame's top level was built in. The marks are the apply's ('rt gi pixel' before the trace, 'rt gi denoise' before the temporal stage: gi_apply.cpp): the frame
@@ -13,14 +13,12 @@
 //             and keeps the frame's numbers (the cars' lamps are the world frame's emitters: GI-BOUNCE-RT). RecordTrace: one dispatch, the signal and the three guides written as storage images. RecordDenoise: RtDenoise's
 //             temporal stage (the last frame's result by the camera's motion; this class keeps the last pose, the guides' ping-pong and the history's count) then up to three spatial iterations, and the
 //             barriers that let the apply's pixel stage read the result and the guides. Publish puts the image's slot, the guides' slots and the flag in the apply's copy of the field's frame.
-//   GOVERNOR  two timestamps a frame slot around the trace and the denoiser feed gi_pixel_rules.h Governor, which takes the pass from the traced size to half of it on each axis (a quarter of the pixels)
-//             when it stays over its cap, and back. Without timestamps the pass stays at the traced size.
 //   RAW (G6)  in a frame DLSS Ray Reconstruction takes (Inputs::raw, from TemporalSystem::RawModes().RtGi()) RtDenoise's two stages do not run: the 1 spp signal image is what the apply reads (published as the
 //             pixel image; a raw frame's weight is gi_pixel_rules.h RawWeight, 1 where traced) and the hit distance image is the guide pass's last-choice hit distance (RawOutput). The consumer is registered by the
 //             apply (GiApply::BeginFrame: denoiser::NoteConsumer(rr::Consumer::kRtGi, ...)); the denoiser's history is not written in a raw frame, so the next frame starts it again. With the plan not RR nothing
 //             of this exists: the same passes, the same words, the same shaders as before G6.
 //
-// IDENTITY. Nothing is made, recorded or bound while the layout has no per-pixel pass (HIGH, OFF, every card without a strong ray tracing tier), and the apply's shader reads nothing of it while the field's frame
+// IDENTITY. Nothing is made, recorded or bound while the layout has no per-pixel pass (HIGH, OFF, every card without ray tracing support), and the apply's shader reads nothing of it while the field's frame
 // has no kPixelIrradiance. Images go back after kReleaseAfterFrames frames without a run.
 //
 // MEMORY. 60 bytes a pixel of the pass's image (gi_pixel_rules.h BytesPerPixel: the signal, two depth guides, the normal, the hit image, RtDenoise's four): 119 MiB at a traced 1080 lines, a third of that at
@@ -39,7 +37,7 @@
 //         states the hit image at the compute stage (RR-4's images do the same)
 //   G6-2  the raw frame's weight is 1 where traced: the apply's net-irradiance rules (baseline, ceiling, cap, dead band) act on the NOISY sample, so the mean of the clamped samples is not the clamp of the
 //         mean where the clamps bite (a bright lamp's bounce): A/B against the filtered result (mcla_gpu_dlss_rr_rt_gi 0)
-//   G6-3  the noise Ray Reconstruction gets is the traced size's (half the picture's above 1080 lines, and the governor's half of that): spatially correlated (the apply's reads are nearest or depth and
+//   G6-3  the noise Ray Reconstruction gets is the traced size's: spatially correlated (the apply's reads are nearest or depth and
 //         normal weighted bilinear), whereas RR's guide asks for independent noise per pixel: A/B a full size raw trace if the pictures show blocks
 //   G6-4  the hit distance of a pixel whose ray found nothing within 12 m is kMissDistance (4096 m): "reflects far away" for a diffuse bounce whose reach is 12 m; mcla_gpu_dlss_rr_rt_gi 2 leaves the
 //         hit distance out (NVIDIA's advice for a diffuse term) and is the A/B
@@ -124,8 +122,7 @@ class GiPixel {
   };
   RawOutput raw_output() const;
 
-  // After FrameRing::Submit executed the slot's list: the slot's timestamps are in.
-  void OnSubmitted(uint32_t frame_slot);
+  // After FrameRing::Submit executed the slot's list.
   // A guest present: the interval line and the idle count.
   void OnPresent();
 
@@ -140,9 +137,6 @@ class GiPixel {
     std::unique_ptr<plume::RenderBuffer> rows;
     std::array<std::unique_ptr<plume::RenderDescriptorSet>, 2> set;   // by the depth guide's parity
     std::array<uint64_t, 2> set_key = {0, 0};
-    std::unique_ptr<plume::RenderQueryPool> stamps;
-    bool stamps_written = false;
-    bool stamps_pending = false;
   };
 
   bool MakeLayoutsAndShaders(CarRtScene& scene);
@@ -153,7 +147,6 @@ class GiPixel {
   bool EnsureSlot(uint32_t frame_slot);
   void ReleaseImages();
   void RetireSets();
-  void Harvest(Slot& slot);
   void ProcessReadback(uint64_t frame, uint64_t generation);
   void LogInterval(uint64_t frame, const std::array<uint32_t, gi_pixel::kStatWords>& delta, uint32_t frames);
   void CountWhy(gi_pixel::Why why) { ++why_counts_[uint32_t(why)]; }
@@ -178,7 +171,6 @@ class GiPixel {
   std::array<std::unique_ptr<plume::RenderShader>, kVariantCount> shaders_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<Slot, kFramesInFlight> slots_;
-  bool stamps_ok_ = false;
   RtDenoise denoise_;
   RayRegenRadiancePass regen_pass_;
   bool regen_initialized_ = false;
@@ -204,11 +196,10 @@ class GiPixel {
   uint64_t next_readback_ = 0;
 
   // The frame.
-  gi_pixel::Governor governor_;
   gi_pixel::Plan plan_;
   Inputs in_;
   gi::PixelParams params_;
-  uint32_t divisor_ = 1;
+  static constexpr uint32_t divisor_ = gi_pixel::kDivisorFull;
   uint32_t parity_ = 0;                // the depth guide this frame's trace writes
   bool stats_frame_ = false;
   bool history_ok_ = false;            // this frame may read the last frame's result (Begin: the previous frame at this size, no cut)
@@ -228,7 +219,7 @@ class GiPixel {
 
   // The log and the totals.
   bool first_logged_ = false;
-  uint64_t frames_run_ = 0, frames_raw_ = 0, frames_reduced_ = 0;
+  uint64_t frames_run_ = 0, frames_raw_ = 0;
   bool raw_logged_ = false;   // the raw state the log last said (a change is one line)
   std::array<uint64_t, size_t(gi_pixel::Why::kCount)> why_counts_ = {};
 };

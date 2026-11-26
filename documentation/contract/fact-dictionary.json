@@ -95,6 +95,7 @@
     "live.upscaler_state": { "type": "string", "enum": ["ok", "switching", "no_room"], "l0": false, "source": "GetUpscalerAvailability().switching / .no_room", "used_by": "Upscaling row" },
     "live.msaa_switching": { "type": "bool", "l0": false, "source": "MsaaSwitching()", "used_by": "MSAA row" },
     "live.city_data": { "type": "string", "enum": ["ready", "building", "unavailable"], "l0": false, "source": "city_refl_setting::DataNow()", "used_by": "RT City Reflections" },
+    "live.rt_gi_resource_pressure": { "type": "bool", "l0": false, "source": "RtGiResourcePressure()", "used_by": "RT Bounce Light" },
     "live.rt_gi_replaces_bounce": { "type": "bool", "l0": false, "source": "RtGiReplacesBounceLight()", "used_by": "Bounce Light" },
     "live.denoiser.state": { "type": "string", "enum": ["ok", "making", "failed", "restart"], "l0": false, "source": "denoiser::Snapshot / ray_regen::ContextMaking", "used_by": "Denoiser rows" },
     "live.denoiser_gate": { "type": "string", "enum": ["ok", "hidden", "making", "restart", "needs_d3d12", "unsupported", "needs_dlss", "needs_setup", "failed", "not_needed"], "l0": false, "source": "The vendor denoiser's running backend and consumer gate" },

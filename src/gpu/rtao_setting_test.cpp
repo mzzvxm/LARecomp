@@ -50,15 +50,14 @@ void CheckDecisions() {
       const auto cell = ao::gc::RtCell(ao::gc::RtEffect::kRtAo, rungs[c][t]);
       Check(cell == (auto_choices[c][t] == Choice::kRt ? "rt" : ""), "RT Auto cell");
       for (const bool built : {false, true}) {
-        const Gate gate = t == 0 ? Gate::kNoRt : c == 0 ? Gate::kTooSlow
-                                                       : built ? Gate::kRuns : Gate::kNotBuilt;
+        const Gate gate = t == 0 ? Gate::kNoRt : built ? Gate::kRuns : Gate::kNotBuilt;
         Check(ao::GateFor(cls, tier, built) == gate, "capability gate and precedence");
         for (const Choice saved : kChoices) {
           const Choice chosen = saved == Choice::kAuto ? auto_choices[c][t] : saved;
           const auto d = ao::Decide(cls, true, tier, saved, built);
           Check(d.chosen == chosen, "resolved AO choice");
           Check(d.screen == screen[static_cast<int>(chosen)], "screen-space quality");
-          Check(d.rung == rungs[c][t], "effective RT rung");
+          Check(d.rung == tier, "effective RT rung");
           Check(d.gate == gate, "decision carries capability gate");
           Check(d.rt == (chosen == Choice::kRt && gate == Gate::kRuns), "only available RT runs");
         }
@@ -68,7 +67,7 @@ void CheckDecisions() {
   for (const auto cls : kClasses) {
     for (const auto tier : kTiers) {
       const auto unknown = ao::Decide(cls, false, tier, Choice::kAuto, true);
-      Check(unknown.screen == Level::kOff && !unknown.rt && unknown.rung == RtTier::kNone,
+      Check(unknown.screen == Level::kOff && !unknown.rt && unknown.rung == tier,
             "unknown GPU class uses integrated Auto");
     }
   }
@@ -153,7 +152,7 @@ void CheckReaders(const fs::path& src) {
             contains("mc_engine/menus/pause_menu.cpp", "\"live.rtao_pass_built\") return Value::Bool(gpu::rtao_setting::PassBuilt())"),
         "the menu's words and the pass's readiness come from the resolver's header");
   Check(contains("settings/ui_rules.toml", "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']") && contains("settings/ui_rules.toml", "label = \"RT (NO RT GPU)\"") &&
-            contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") && contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "label = \"AUTO (RT)\""),
+            !contains("settings/ui_rules.toml", "label = \"RT (TOO SLOW)\"") && contains("settings/ui_rules.toml", "label = \"RT (NOT READY)\"") && contains("settings/ui_rules.toml", "label = \"AUTO (RT)\""),
         "the rules name the ray traced choice's fallback reasons and AO INTENSITY's dependency counts it");
   Check(contains("gpu/effect_compare_rules.h", "rtao_setting::ParseChoice(saved.occlusion)") &&
             contains("gpu/effect_compare_rules.h", "rtao_setting::Decide(saved.cls,"),

@@ -634,11 +634,10 @@ struct Rig {
       for (uint32_t i = 0; i < budget.cascade[c].dims.Probes(); ++i) state.NoteTraced(c, i);
     for (int i = 0; i < 14; ++i) state.Move(camera);
   }
-  gu::PlanInputs Inputs(float safe_range = 400.0f, float governor = 1.0f) const {
+  gu::PlanInputs Inputs(float safe_range = 400.0f) const {
     gu::PlanInputs in;
     for (int a = 0; a < 3; ++a) in.camera[a] = camera[a];
     in.safe_range_m = safe_range;
-    in.governor_scale = governor;
     in.warmup_scale = state.BudgetScale();
     return in;
   }
@@ -685,16 +684,6 @@ void TestScheduler() {
     Check(share_ok, "in the steady state a frame traces the design's 4,096 + 2,048 + 1,024 probes (458,752 rays)");
     Check(distinct_ok, "a frame's probes are distinct and carry no flag");
     Check(covered[0].size() == 16384 && covered[1].size() == 16384 && covered[2].size() == 16384, "every probe of every cascade is traced once in its interval (4, 8 and 16 frames)");
-  }
-  {
-    // the governor's scale touches the later cascades only
-    Rig rig;
-    rig.Settle();
-    const gu::Plan half = rig.sched.Make(rig.state, rig.Inputs(400.0f, 0.5f), ub.max_probes);
-    Check(half.per_cascade[0] == 4096 && half.per_cascade[1] == 1024 && half.per_cascade[2] == 512, "a governor scale of 0.5 halves the later cascades and never the finest");
-    const gu::Plan more = rig.sched.Make(rig.state, rig.Inputs(400.0f, 1.5f), ub.max_probes);
-    Check(more.per_cascade[0] == 4096 && more.per_cascade[1] == 3072 && more.per_cascade[2] == 1536, "a scale of 1.5 gives the later cascades half as much again");
-    Check(gu::CascadeShare(gi::BudgetOf(gi::Layout::kStandard).cascade[2], 0.0f) == 1 && gu::CascadeShare(gi::BudgetOf(gi::Layout::kStandard).cascade[0], 100.0f) == 16384, "a share is at least one probe and at most the cascade");
   }
   {
     // the safe range: probes beyond it are not traced, dirty ones stay dirty
@@ -788,7 +777,6 @@ void TestBudgets() {
   Check(lean.chunk_probes == 384 && standard.chunk_probes == 7168 && extended.chunk_probes == 15360, "a chunk is the layout's probes a frame");
   Check(lean.ray_buffer_bytes == 196608 && standard.ray_buffer_bytes == 7340032 && extended.ray_buffer_bytes == 15728640, "the ray buffers: 0.19, 7.0 and 15.0 MiB, exactly the field owner's update reserve");
   Check(extended.max_probes == 61440 && uint64_t(extended.max_probes) * 4 == extended.list_bytes, "the probe list holds four chunks of one uint a probe");
-  Check(lean.cap_ms == 0.45f && standard.cap_ms == 0.9f && extended.cap_ms == 1.8f && gu::CapMs(gi::Layout::kNone) == 0.0f, "the governor's caps by layout");
   // a smaller field (the order of loss) has a smaller update
   const gu::Budget reduced = gu::BudgetOf(gf::FitAt(gi::Layout::kStandard, gf::Step::kNoThirdCascade).budget);
   Check(reduced.cascades == 2 && reduced.probes_per_frame == 6144 && reduced.chunk_probes == 6144 && reduced.ray_buffer_bytes < standard.ray_buffer_bytes, "a field without its third cascade updates 6,144 probes a frame");
@@ -798,8 +786,8 @@ void TestBudgets() {
     for (const gi::Level level : {gi::Level::kOff, gi::Level::kHigh, gi::Level::kUltra}) {
       const gi::Layout layout = gi::LayoutFor(rung, level);
       const gu::Budget b = gu::BudgetOf(gi::BudgetOf(layout));
-      if (g_verbose) std::printf("    %-6s %-5s %-8s: %5u probes, %2u rays a probe, %8u rays a frame, ray buffer %6.2f MiB, cap %.2f ms\n", gi::RungName(rung).data(), gi::LevelName(level).data(),
-                                 gi::LayoutName(layout).data(), b.probes_per_frame, b.rays_per_probe, b.rays_per_frame, double(b.ray_buffer_bytes) / (1024.0 * 1024.0), double(b.cap_ms));
+      if (g_verbose) std::printf("    %-6s %-5s %-8s: %5u probes, %2u rays a probe, %8u rays a frame, ray buffer %6.2f MiB\n", gi::RungName(rung).data(), gi::LevelName(level).data(),
+                                 gi::LayoutName(layout).data(), b.probes_per_frame, b.rays_per_probe, b.rays_per_frame, double(b.ray_buffer_bytes) / (1024.0 * 1024.0));
       Check((layout == gi::Layout::kNone) == (b.chunk_probes == 0) && b.rays_per_frame == gi::BudgetRaysPerFrame(gi::BudgetOf(layout)), std::string("cell ") + gi::RungName(rung).data() + "/" + gi::LevelName(level).data() + " runs the layout's rays");
     }
   }
@@ -808,26 +796,6 @@ void TestBudgets() {
 // ---------------------------------------------------------------------------
 // the governor
 // ---------------------------------------------------------------------------
-void TestGovernor() {
-  gu::Governor g;
-  g.AddSample(1.0f, 0.0f);
-  g.AddSample(-1.0f, 0.9f);
-  Check(g.scale() == 1.0f && g.samples() == 0, "no cap or a negative sample is no sample");
-  for (int i = 0; i < 60; ++i) g.AddSample(0.9f * 0.8f, 0.9f);
-  Check(g.scale() == 1.0f, "between 0.6 and 1.0 of the cap the scale holds");
-  for (int i = 0; i < 200; ++i) g.AddSample(1.8f, 0.9f);
-  Check(g.scale() == gi::kGovernorMin, Num("a run over the cap falls to the minimum %.2f and stops there", g.scale()));
-  for (int i = 0; i < 2000; ++i) g.AddSample(0.2f, 0.9f);
-  Check(g.scale() == gi::kGovernorMax, Num("a run well under it rises to the maximum %.2f and stops there", g.scale()));
-  g.Reset();
-  Check(g.scale() == 1.0f && g.samples() == 0 && g.ewma_ms() == 0.0f, "a reset forgets");
-  // the average smooths one slow frame
-  gu::Governor h;
-  for (int i = 0; i < 30; ++i) h.AddSample(0.6f, 0.9f);
-  h.AddSample(3.0f, 0.9f);
-  Check(h.scale() == 1.0f && h.ewma_ms() > 0.6f && h.ewma_ms() < 1.0f, "one slow frame in a steady run does not move the scale");
-}
-
 // ---------------------------------------------------------------------------
 // the census
 // ---------------------------------------------------------------------------
@@ -875,7 +843,6 @@ void TestCensus() {
   info.probes = {4096 * 30, 2048 * 30, 1024 * 30, 0};
   info.cascades = 3;
   info.cuts = 2;
-  info.budget_scale = 1.0f;
   info.finest_dirty_share = 0.01;
   const std::string line = gu::IntervalLine(info, s);
   if (g_verbose) std::printf("    [rt gi] %s\n", line.c_str());
@@ -885,7 +852,7 @@ void TestCensus() {
             Field(line, "([0-9.]+)% changed") == 4.0 && Field(line, "\\(([0-9.]+)% hit") == 62.0,
         "the report's fields: escaped, back faces, probes inside geometry, converged, changed, hit");
   Check(Has(line, "probes updated over the last 120 frames (122880 in cascade 0, 61440 in cascade 1, 30720 in cascade 2)") && Has(line, "100000 rays") && Has(line, "(7 relit)") && Has(line, "2 cuts") &&
-            Has(line, "finest cascade 1.0% dirty") && Has(line, "irradiance mean 0.250 (p5 ") && Has(line, "sky visibility mean 0.50, budget scale 1.00"),
+            Has(line, "finest cascade 1.0% dirty") && Has(line, "irradiance mean 0.250 (p5 ") && Has(line, "sky visibility mean 0.50"),
         "the interval line's words and order are the README's");
   const std::string first = gu::FirstLine(1, gi::Layout::kStandard, 3, 64, 1200, 90, 400, 0.5f, 0.97f, 1.0f);
   Check(Has(first, "frame 1: first update: layout standard (3 cascades), 64 rays a probe, hit shading GI mode, 1200 instances in the top level (90 hi detail and 400 lod sectors), bounce weight 0.50, hysteresis 0.97, strength 1.00"),
@@ -966,15 +933,15 @@ void TestSources(const std::string& dir) {
   Check(Has(cpp, "to_read") && Has(cpp, "Layout::SHADER_READ") && Has(cpp, "to_write") && Has(cpp, "Layout::GENERAL"), "the field's textures are read by the trace and written by the blend");
   Check(Has(cpp, "kPrefix = \"[rt gi]\""), "the census lines carry the prefix the report reads");
   Check(Has(cpp, "hit_scene_->ready() || hit_scene_->stats().committed == 0") || Has(cpp, "!hit_scene_->ready() || hit_scene_->stats().committed == 0"), "the update waits for the hit data's pool (a field of zeros must never replace the screen-space bounce light)");
-  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainBuiltSectors();") && Has(cpp, "MarkStaleBox(") && Has(cpp, "governor_.AddSample("), "the update plans with the field's scheduler, marks built sectors stale and feeds the governor");
+  Check(Has(cpp, "scheduler_.Make(field_->scheduler()") && Has(cpp, "DrainBuiltSectors();") && Has(cpp, "MarkStaleBox(") && !Has(cpp, "writeTimestamp("), "the update plans with the field's scheduler, marks built sectors stale and uses the fixed probe budget");
   const std::string renderer = ReadFile(dir + "/renderer.cpp");
   const std::string renderer_h = ReadFile(dir + "/renderer.h");
   Check(Has(renderer_h, "GiUpdate gi_update_;") && Has(renderer_h, "#include \"gi_update.h\""), "renderer.h owns the update");
   Check(Has(renderer, "gi_update_.Initialize(device_, frames_, heap_, passes_, pass_timing_, gi_field_, car_rt_, city_rt_, city_hit_, rt_scene_, rt_world_, update_listed);") && Has(renderer, "gi_integration_.SetUpdate(") &&
             At(renderer, "gi_update_.Initialize(") > At(renderer, "gi_integration_.Initialize(&gi_field_, &gi_apply_, &ao_, &city_rt_);") && At(renderer, "gi_update_.Initialize(") < At(renderer, "passes_.precache().Start();"),
         "the renderer makes the update after the integration and the world frame, before the precache starts, and gives it to the integration only where it exists");
-  Check(Count(renderer, "gi_update_.Shutdown();") == 2 && Count(renderer, "gi_update_.OnSubmitted(slot);") == 3 && Has(renderer, "gi_update_.CensusText()") && Has(renderer, "AddHolder(\"probe update\""),
-        "the update is shut down on both paths, told of every submit, in the census and in the video memory holders");
+  Check(Count(renderer, "gi_update_.Shutdown();") == 2 && Has(renderer, "gi_update_.CensusText()") && Has(renderer, "AddHolder(\"probe update\""),
+        "the update is shut down on both paths, in the census and in the video memory holders");
   Check(Has(renderer, "gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first\n    gi_update_.Shutdown();") ||
             Has(renderer, "gi_integration_.Shutdown();  // it holds pointers to the field, the apply, the AO and the city scene: first\n  gi_update_.Shutdown();"),
         "the update is shut down right after the integration, before the field");
@@ -1013,7 +980,6 @@ int main(int argc, char** argv) {
   TestBlend();
   TestScheduler();
   TestBudgets();
-  TestGovernor();
   TestCensus();
   TestSources(dir);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);

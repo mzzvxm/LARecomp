@@ -58,12 +58,8 @@ void TestLimits() {
   const ci::Limits low = ci::ClassLimits(GpuClass::kLow);
   const ci::Limits mid = ci::ClassLimits(GpuClass::kMid);
   const ci::Limits high = ci::ClassLimits(GpuClass::kHigh);
-  Check(!low.On() && low.cars == 0, "the Low class has no other cars");
-  Check(mid.On() && mid.cars == 2 && Near(mid.radius, 14.0), "the Mid class: 2 cars within 14 m (the reflection reaches 12 m: RT-HIT-SHADING part two)");
-  Check(high.On() && high.cars == 4 && Near(high.radius, 20.0), "the High class: 4 cars within 20 m (the reflection reaches 18 m)");
-  Check(high.cars > mid.cars && high.radius > mid.radius && high.instances > mid.instances && high.stage_triangles > mid.stage_triangles &&
-            high.content_bytes > mid.content_bytes && high.min_indices < mid.min_indices,
-        "the weaker the class the fewer cars, the nearer, the smaller the budgets, the more small parts left out");
+  Check(high.On() && high.cars == 4 && Near(high.radius, 20.0), "4 cars within 20 m");
+  Check(low == high && mid == high, "instance limits are identical across classes");
   Check(mid.instances <= rr::kMaxInstances && high.instances <= rr::kMaxInstances, "the class budgets are inside the top level's cap");
   // The instance budget holds the cars the class asks for at about 140 draws a car.
   Check(mid.instances >= mid.cars * 140 && high.instances >= high.cars * 140, "the budget holds the cars at about 140 draws a car");
@@ -73,7 +69,7 @@ void TestLimits() {
   l = ci::LimitsFor(GpuClass::kHigh, 0, 0.0);
   Check(!l.On(), "0 cars turns them off");
   l = ci::LimitsFor(GpuClass::kMid, 3, 0.0);
-  Check(l.cars == 3 && l.instances >= 480 && Near(l.radius, 14.0) && l.min_indices == mid.min_indices, "3 cars on the Mid class: the instances grow to hold them, the rest stays");
+  Check(l.cars == 3 && l.instances >= 480 && Near(l.radius, 20.0) && l.min_indices == mid.min_indices, "3 cars on the Mid class: the instances grow to hold them, the rest stays");
   l = ci::LimitsFor(GpuClass::kHigh, 99, 0.0);
   Check(l.cars == ci::kMaxCars && l.instances <= rr::kMaxInstances, "the cars are clamped to the most, the instances to the top level's cap");
   l = ci::LimitsFor(GpuClass::kHigh, -1, 30.0);
@@ -83,10 +79,10 @@ void TestLimits() {
   l = ci::LimitsFor(GpuClass::kLow, 2, 0.0);
   Check(l.On() && l.cars == 2 && Near(l.radius, 20.0), "asked for by hand on the Low class: the High cell's numbers");
   l = ci::LimitsFor(GpuClass::kLow, -1, 12.0);
-  Check(!l.On() || l.cars == 0, "a radius alone does not turn the Low class on");
+  Check(l.On() && l.cars == 4 && Near(l.radius, 12.0), "radius override retains the car limit");
   l = ci::LimitsFor(GpuClass::kMid, -1, -5.0);
   Check(l == mid, "a radius of 0 or less keeps the class's");
-  Check(ci::Describe(low).find("no other cars") != std::string::npos && ci::Describe(high).find("4 cars") != std::string::npos, "the words");
+  Check(ci::Describe(ci::LimitsFor(GpuClass::kLow, 0, 0.0)).find("no other cars") != std::string::npos && ci::Describe(high).find("4 cars") != std::string::npos, "the words");
 }
 
 // ---------------------------------------------------------------------------

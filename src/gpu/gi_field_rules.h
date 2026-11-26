@@ -285,6 +285,15 @@ constexpr Fit FitAt(gi::Layout wanted, Step step) {
   return f;
 }
 
+constexpr Fit RequestedFit(gi::Layout layout) {
+  return FitAt(layout, layout == gi::Layout::kNone ? Step::kNone : Step::kFull);
+}
+
+constexpr bool FixedFitPressure(const Fit& fit, uint64_t held, uint64_t used, uint64_t budget) {
+  const uint64_t total = fit.memory.Total();
+  return !vram_room::HasRoom(used, budget, total > held ? total - held : 0u);
+}
+
 // The first step whose total `fits(bytes)` (the room test the caller supplies: vram_room.h HasRoom against the budget, with what the field already holds taken off), from the full
 // layout down; none when nothing fits. `skip(step)` (optional: a step that is waiting out a refusal) is passed over.
 template <class FitsFn, class SkipFn>
@@ -814,8 +823,8 @@ inline constexpr float kViewMaxDistanceM = 200.0f;
 static_assert(MemoryOf(gi::BudgetOf(gi::Layout::kStandard), false).Field() == 59228160ull && MemoryOf(gi::BudgetOf(gi::Layout::kLean), false).Field() == 4935680ull &&
                   MemoryOf(gi::BudgetOf(gi::Layout::kExtended), false).Field() == 78970880ull,
               "the field's bytes: the atlases, the weight map and the state buffer of each layout");
-static_assert(Cells()[8].layout == gi::Layout::kExtended && Cells()[8].memory.Total() == 190ull * kMiB && Cells()[0].memory.Total() == 0 && Cells()[7].memory.Total() == Cells()[5].memory.Total(),
-              "the strong card's ULTRA cell is the design's 190 MiB; the weak card's ULTRA cell is the strong card's HIGH one");
+static_assert(Cells()[8].layout == gi::Layout::kExtended && Cells()[8].memory.Total() == 190ull * kMiB && Cells()[0].memory.Total() == 0 && Cells()[8].memory.Total() == Cells()[5].memory.Total(),
+              "both RT tiers use the same Ultra field");
 static_assert(FitAt(gi::Layout::kExtended, Step::kNoFourthCascade).budget.cascade_count == 3 && !FitAt(gi::Layout::kExtended, Step::kNoFourthCascade).pixel_images &&
                   FitAt(gi::Layout::kExtended, Step::kFull).pixel_images && FitAt(gi::Layout::kStandard, Step::kNoThirdCascade).budget.cascade_count == 2,
               "the steps of the order of loss");

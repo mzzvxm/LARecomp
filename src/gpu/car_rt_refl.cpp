@@ -69,7 +69,7 @@ std::atomic<bool> g_available{false};
 // The device can run it AND the ray tracing tier lets it: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the shaders) and the Low
 // class (shared memory) trace nothing, so the pause row does not offer RAY TRACED there (rt_tier.h: the rung is none).
 bool CarRtReflAvailable() {
-  return g_available.load(std::memory_order_relaxed) && gpu_class::CurrentRtRung() != gpu_class::RtTier::kNone;
+  return g_available.load(std::memory_order_relaxed) && gpu_class::CurrentRtTier() != gpu_class::RtTier::kNone;
 }
 
 CarRtRefl::~CarRtRefl() = default;

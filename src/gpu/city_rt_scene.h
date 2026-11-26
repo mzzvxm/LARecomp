@@ -54,6 +54,7 @@
 #include "citypack/city_hit_format.h"
 #include "citypack/pack_reader.h"
 #include "city_rt_rules.h"
+#include "rt_scene_bounds.h"
 #include "frame.h"
 #include "temporal_math.h"
 
@@ -109,7 +110,7 @@ class CityRtScene {
   // Called by CarRtScene::OnResolve in the frame's trigger, after the cars' instances are made and before the top level is described: reads, plan, builds (recorded on
   // `list`, outside any render pass; `slot` is the frame's slot), and the city's instances appended to `instances` (in the frame's view space). `view` is the frame's
   // camera (world to view, row vectors), `flip_z` the car scene's decision about its z. Returns the instances appended. Nothing when not wanted or the pack is not there.
-  uint32_t Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances);
+  uint32_t Prepare(const temporal::Mat4& view, bool flip_z, plume::RenderCommandList* list, uint32_t slot, std::vector<plume::RenderTopLevelASInstance>* instances, rt_scene::Bounds* bounds);
   // True when Prepare recorded GPU work in this frame's list (the caller's list state is gone then, as the car scene's builds).
   bool recorded() const { return recorded_; }
 
@@ -157,6 +158,9 @@ class CityRtScene {
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
     uint64_t bytes = 0;
     uint32_t triangles = 0;
+    std::array<float, 3> lo{};
+    std::array<float, 3> hi{};
+    bool bounds_known = false;
   };
   struct SectorSlot {
     Structure hi, lod;

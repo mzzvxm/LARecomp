@@ -104,10 +104,10 @@ void TestFixedCapacity() {
   Check(ResolveFixed(Level::kHigh, Choice::kOff, true).why == Why::kSetting, "RT off");
   const Cell high = ResolveFixed(Level::kUltra, Choice::kHigh, true).cell;
   const Cell ultra = ResolveFixed(Level::kUltra, Choice::kAuto, true).cell;
-  Check(CapacityFor(high, 0, 1) == 250000 && high.reach == 150.0f &&
+  Check(CapacityFor(high, 1) == 250000 && high.reach == 150.0f &&
         high.group_mask == (GroupBit(kGroupBright) | GroupBit(kGroupGround)), "fixed High cell");
-  Check(CapacityFor(ultra, 0, 1) == 1000000 && ultra.reach == 300.0f, "fixed Ultra cell");
-  Check(CapacityFor(ultra, 0, 2) == 500000, "two-ray allocation counts rays");
+  Check(CapacityFor(ultra, 1) == 1000000 && ultra.reach == 300.0f, "fixed Ultra cell");
+  Check(CapacityFor(ultra, 2) == 500000, "two-ray allocation counts rays");
 }
 
 }  // namespace

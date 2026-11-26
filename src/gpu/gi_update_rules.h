@@ -18,11 +18,10 @@
 //                           nearer than kInsideNearestSpacings of a spacing. It is traced again at one visit in eight (SkipInside) so that streaming geometry is noticed. CHECK C1: the pack's winding.
 //   THE SCHEDULER           Scheduler: each frame, per cascade, the probes the field's dirty set names first (new ones the window's move exposed, ones a built sector or a cut made stale), nearest the camera
 //                           first, then a round robin over the cascade's slots so that every probe is traced once in `interval_frames` (gi_frame.h Budget); the budget of a cascade is its ProbesPerFrame times
-//                           the field's warm-up scale (4x for 12 frames after a cut) and, for the cascades after the finest, the governor's scale. A probe beyond M1's safe range is not traced (its weight
+//                           the field's warm-up scale (4x for 12 frames after a cut) when warming up. A probe beyond M1's safe range is not traced (its weight
 //                           is 0 and it stays dirty). The finest cascade is never scaled down: "never below the minimum that keeps the near cascade fresh".
-//   THE GOVERNOR            Governor: an EWMA of the update's GPU time against the cell's cap scales the later cascades' budget between gi::kGovernorMin and gi::kGovernorMax.
 //   THE BUDGETS             BudgetOf(fit): rays a probe, the chunk (the probes one pass of the two holds: the ray buffer is sized for the layout's rays a frame, G1's update_reserve; a larger plan, the
-//                           warm-up's, runs in several chunks), the ray buffer's bytes, the cap of the governor, per (tier, level) cell through the layout (gi::LayoutFor).
+//                           warm-up's, runs in several chunks), the ray buffer's bytes and the selected layout (gi::LayoutFor).
 //   THE CENSUS              the counters' words the two passes add to (Stats), their decode (DecodeStats) and the text of the four '[rt gi]' lines (perf/city-rt-m3/scenes/README.md).
 //
 // Everything here is plain data and pure functions (render thread only where a class has state). The header includes nothing of Plume. Numbers marked `G2a` are first guesses (values, changeable without
@@ -292,25 +291,13 @@ struct Budget {
   gi::Layout layout = gi::Layout::kNone;
   uint32_t cascades = 0;
   uint32_t rays_per_probe = 0;
-  uint32_t probes_per_frame = 0;     // the nominal budget (gi_frame.h ProbesPerFrame summed), before the warm-up and the governor
+  uint32_t probes_per_frame = 0;     // the nominal budget (gi_frame.h ProbesPerFrame summed), before the warm-up
   uint32_t rays_per_frame = 0;       // ... times the rays: the design's 12 K, 459 K and 983 K
   uint32_t chunk_probes = 0;         // the probes one chunk (one trace dispatch and one blend dispatch) holds: the ray buffer's capacity
   uint32_t max_probes = 0;           // the most a frame's plan holds (kMaxChunks chunks)
   uint64_t ray_buffer_bytes = 0;     // chunk_probes x rays_per_probe x kRayBytes: G1's update_reserve exactly
   uint64_t list_bytes = 0;           // the probe list's upload buffer: a uint a probe of max_probes
-  float cap_ms = 0.0f;               // the governor's cap on the update's GPU time (the trace and the blend of a frame)
 };
-
-// The cap of the update's GPU time (COST PASS): the trace and blend share of the layout's estimated cost on a strong card (M3 section 6: trace 0.4 to 0.7, blend 0.1 to 0.2 of 0.9 to 1.5 at HIGH).
-constexpr float CapMs(gi::Layout layout) {
-  switch (layout) {
-    case gi::Layout::kLean: return 0.45f;
-    case gi::Layout::kStandard: return 0.9f;
-    case gi::Layout::kExtended: return 1.8f;
-    case gi::Layout::kNone: break;
-  }
-  return 0.0f;
-}
 
 // All the cascades of a budget trace the same number of rays (the trace pass packs 64 / rays probes in a group of 64 threads).
 constexpr bool UniformRays(const gi::Budget& b) {
@@ -333,7 +320,6 @@ constexpr Budget BudgetOf(const gi::Budget& g) {
   b.max_probes = b.chunk_probes * kMaxChunks;
   b.ray_buffer_bytes = uint64_t(b.chunk_probes) * b.rays_per_probe * kRayBytes;
   b.list_bytes = uint64_t(b.max_probes) * 4u;
-  b.cap_ms = CapMs(g.layout);
   return b;
 }
 
@@ -344,7 +330,6 @@ constexpr Budget BudgetOf(const gi::Budget& g) {
 struct PlanInputs {
   double camera[3] = {0, 0, 0};  // the play camera, world metres
   float safe_range_m = 0.0f;     // M1's SafeRange: a probe beyond it is not traced
-  float governor_scale = 1.0f;   // the governor's, for the cascades after the finest
   float warmup_scale = 1.0f;     // gi_field_rules.h FieldState::BudgetScale
 };
 
@@ -409,7 +394,7 @@ class Scheduler {
     uint32_t left = max_probes;
     for (uint32_t c = 0; c < budget_.cascade_count && left > 0; ++c) {
       const gi::CascadeSpec& spec = budget_.cascade[c];
-      const float scale = in.warmup_scale * (c == 0 ? 1.0f : in.governor_scale);
+      const float scale = in.warmup_scale;
       const uint32_t want = std::min(CascadeShare(spec, scale), left);
       const gi::Dims& d = spec.dims;
       const gi::Coord origin = state.origin(c);
@@ -509,45 +494,6 @@ constexpr uint32_t TraceGroups(uint32_t probes, uint32_t rays) {
 }
 
 // ---------------------------------------------------------------------------
-// the governor
-// ---------------------------------------------------------------------------
-
-// The later cascades' budget scale from the update's measured GPU time against the cell's cap. An EWMA smooths the frames; over the cap the scale falls by 3% a sample down to gi::kGovernorMin, well
-// under it (0.6 of the cap) it rises by 1% a sample up to gi::kGovernorMax, between them it holds. No sample (timestamps unavailable) holds the scale at 1.
-class Governor {
- public:
-  static constexpr float kAlpha = 0.1f;
-  static constexpr float kOver = 1.0f;
-  static constexpr float kUnder = 0.6f;
-  static constexpr float kFall = 0.97f;
-  static constexpr float kRise = 1.01f;
-  void Reset() {
-    scale_ = 1.0f;
-    ewma_ms_ = 0.0f;
-    samples_ = 0;
-  }
-  void AddSample(float ms, float cap_ms) {
-    if (!(ms >= 0.0f) || !(cap_ms > 0.0f)) return;
-    ewma_ms_ = samples_ == 0 ? ms : ewma_ms_ + kAlpha * (ms - ewma_ms_);
-    ++samples_;
-    const float ratio = ewma_ms_ / cap_ms;
-    if (ratio > kOver) {
-      scale_ = std::max(gi::kGovernorMin, scale_ * kFall);
-    } else if (ratio < kUnder) {
-      scale_ = std::min(gi::kGovernorMax, scale_ * kRise);
-    }
-  }
-  float scale() const { return scale_; }
-  float ewma_ms() const { return ewma_ms_; }
-  uint64_t samples() const { return samples_; }
-
- private:
-  float scale_ = 1.0f;
-  float ewma_ms_ = 0.0f;
-  uint64_t samples_ = 0;
-};
-
-// ---------------------------------------------------------------------------
 // the census: the counters' words the two passes add to (never cleared: the host takes the difference between two readbacks)
 // ---------------------------------------------------------------------------
 
@@ -630,7 +576,6 @@ struct IntervalInfo {
   std::array<uint64_t, gi::kMaxCascades> probes = {};         // planned in each cascade over the interval
   uint32_t cascades = 0;
   uint64_t cuts = 0;
-  float budget_scale = 1.0f;                                  // the governor's scale now
   double finest_dirty_share = 0;                              // 0..1
 };
 
@@ -655,9 +600,9 @@ inline std::string IntervalLine(const IntervalInfo& info, const StatSummary& s) 
   char text[1024];
   std::snprintf(text, sizeof(text),
                 "frame %llu: %llu probes updated over the last %u frames (%s), %llu rays (%.1f%% hit, %.1f%% escaped, %.1f%% back faces), %llu probes inside geometry, %.1f%% changed by more than 2%% at the last blend "
-                "(%llu relit), %.1f%% converged, irradiance mean %.3f (p5 %.3f, p95 %.3f), sky visibility mean %.2f, budget scale %.2f, %llu cuts, finest cascade %.1f%% dirty",
+                "(%llu relit), %.1f%% converged, irradiance mean %.3f (p5 %.3f, p95 %.3f), sky visibility mean %.2f, %llu cuts, finest cascade %.1f%% dirty",
                 (unsigned long long)info.frame, (unsigned long long)probes, info.frames, per.c_str(), (unsigned long long)s.rays, s.hit_share * 100.0, s.escaped_share * 100.0, s.back_share * 100.0,
-                (unsigned long long)s.probes_inside, s.changed_share * 100.0, (unsigned long long)s.probes_relit, s.converged_share * 100.0, s.mean_irradiance, s.p5, s.p95, s.mean_sky, double(info.budget_scale),
+                (unsigned long long)s.probes_inside, s.changed_share * 100.0, (unsigned long long)s.probes_relit, s.converged_share * 100.0, s.mean_irradiance, s.p5, s.p95, s.mean_sky,
                 (unsigned long long)info.cuts, info.finest_dirty_share * 100.0);
   return text;
 }

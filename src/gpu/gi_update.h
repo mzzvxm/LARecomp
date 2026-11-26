@@ -3,7 +3,7 @@
 // MCLA GPU renderer -- the probe update (CITY-RT M3, package G2 of perf/CITY-RT-M3.md sections 3.1 to 3.3, 6, 7)
 // ===========================================================================
 // G1 made the field (gi_field.h) and gave it the seams; this is what fills it with light. gi_update_rules.h is the specification of everything that needs no device (the ray set, the classification, the
-// blend, the scheduler, the governor, the budgets, the census), hlsl/gi_update_common.hlsli its twin, hlsl/gi_update_trace_cs.hlsl and hlsl/gi_update_blend_cs.hlsl the passes. This file is the Plume side:
+// blend, the scheduler, the budgets, the census), hlsl/gi_update_common.hlsli its twin, hlsl/gi_update_trace_cs.hlsl and hlsl/gi_update_blend_cs.hlsl the passes. This file is the Plume side:
 //
 //   WHEN      GiIntegration::OnResolve calls Record between GiField::RecordMaintenance and RecordFinish (gi_field.h THE FRAME, step 3), at the mid-scene depth copy, outside any render pass, in the list the top
 //             level of the frame was built in (CarRtScene::OnResolve and RtWorldFrame::OnTrigger have run: scene.cpp), and only where the hit data's pool stands (CityHitScene::ready(), a block committed): a
@@ -13,8 +13,6 @@
 //             update_reserve exactly; the warm-up after a cut is up to four chunks). For each chunk two compute dispatches: TRACE (one thread a ray: the closest hit in the city, shaded in the city hit
 //             library's GI mode, one ray record each) and BLEND (one 10 x 10 group a probe: classification, integration, the blend with adaptive hysteresis, the tile, the state word). The field's three textures
 //             are sampled by the trace (the field one frame old is the hit's second bounce) and written as storage images by the blend: a transition between the two (GENERAL <-> SHADER_READ) for each chunk.
-//   GOVERNOR  two timestamps around the update (a pool a frame slot, read back when the slot comes round: the GpuTiming rule) feed gi_update_rules.h Governor, which scales the later cascades' share of the
-//             budget between 0.5 and 1.5 against the layout's cap. Without timestamps the scale stays 1.
 //   CENSUS    the passes add to a counters buffer (never cleared); every kReadbackEveryFrames frames it is copied to a readback buffer and the difference is printed as the '[rt gi]' lines the chain's report
 //             reads (perf/city-rt-m3/scenes/README.md). The pass-timing labels are `rt gi trace` and `rt gi blend` (mcla_gpu_pass_timing).
 //
@@ -36,7 +34,6 @@
 //   G2-d  the units: the trace shades in the paint's units (params.units = 1), the field's, as gi_frame.h says; the apply's baseline and cap are in the same units (gi_apply.h G3h)
 //   G2-e  the shadow rays of the hit shading see the cars in the top level (the library's sun and lamp rays use every mask): a car's shadow enters the probes beside it
 //   G2-f  the stale boxes: a built sector marks the probes near it in the scheduler's own set (not the field's dirty sets: they drive the field's fade), CityRtScene::DrainBuilt
-//   G2-g  the timestamps: a pool of two a frame slot, reset and written in the middle of the frame's list and read when the slot comes round, only for frames that were submitted (OnSubmitted)
 //   G2-h  the cost against M3 section 6 (trace 0.4 to 0.7 ms, blend 0.1 to 0.2 at HIGH on a 5080 at 4K): the first cost run decides every number marked COST PASS in gi_frame.h and gi_update_rules.h
 // ===========================================================================
 
@@ -86,13 +83,11 @@ class GiUpdate {
   void OnWant(gi::Level level);
   // The probe update (gi_integration.h UpdateFn): records the frame's chunks on `list`. Does nothing where THE IDENTITY (above) says.
   void Record(plume::RenderCommandList* list, uint32_t frame_slot, const gi::GiFrame& update_frame);
-  // After FrameRing::Submit executed the slot's list (not after an abandoned one): the slot's timestamps are in.
-  void OnSubmitted(uint32_t frame_slot);
+  // After FrameRing::Submit executed the slot's list.
 
   // What the update has done (for the tests of the order and the log).
   bool recorded_this_frame() const { return recorded_frame_ == frame_; }
   uint64_t chunks() const { return chunks_total_; }
-  float governor_scale() const { return governor_.scale(); }
 
   uint64_t HeldBytes() const;
   std::string CensusText() const;
@@ -108,16 +103,13 @@ class GiUpdate {
     float tune2[4];       // the tangent of a ray's cone's half angle, 0, 0, 0
   };
   static_assert(sizeof(Push) == gi_update::kPushBytes, "the push block is 64 bytes (hlsl/gi_update_trace_cs.hlsl GiuPush)");
-  // Per frame slot: the rows' and the probe list's upload buffers, the pass set naming them with the ray buffer, the textures, the state and the counters, and the timestamps.
+  // Per frame slot: the rows' and the probe list's upload buffers, the pass set naming them with the ray buffer, the textures, the state and the counters.
   struct Slot {
     std::unique_ptr<plume::RenderBuffer> rows;
     std::unique_ptr<plume::RenderBuffer> list;
     uint64_t list_bytes = 0;
     std::unique_ptr<plume::RenderDescriptorSet> set;
     uint64_t set_key = 0;  // what the set was made for (SetKey)
-    std::unique_ptr<plume::RenderQueryPool> stamps;
-    bool stamps_written = false;
-    bool stamps_pending = false;
   };
 
   bool MakeLayoutsAndShaders(CarRtScene& scene);
@@ -129,7 +121,6 @@ class GiUpdate {
   uint64_t SetKey() const;
   void RetireSets();
   void ReleaseBuffers();
-  void Harvest(Slot& slot);
   void DrainBuiltSectors();
   void ProcessReadback(uint64_t frame, uint64_t generation);
   void LogInterval(uint64_t frame, const gi_update::StatSummary& stats, uint32_t frames);
@@ -157,13 +148,11 @@ class GiUpdate {
   std::unique_ptr<plume::RenderShader> blend_shader_;
   std::array<std::unique_ptr<plume::RenderPipeline>, kVariantCount> pipelines_;
   std::array<Slot, kFramesInFlight> slots_;
-  bool stamps_ok_ = false;
 
   // The buffers the passes share: the ray records (sized for the layout), the counters and their readback.
   std::unique_ptr<plume::RenderBuffer> rays_;
   uint64_t ray_bytes_ = 0;
   uint32_t ray_serial_ = 0;
-  gi_update::Budget buffers_for_;
   std::unique_ptr<plume::RenderBuffer> stats_;
   std::unique_ptr<plume::RenderBuffer> readback_;
   bool readback_busy_ = false;
@@ -173,7 +162,6 @@ class GiUpdate {
 
   // The frame.
   gi_update::Scheduler scheduler_;
-  gi_update::Governor governor_;
   uint32_t scheduler_generation_ = 0;
   uint64_t frame_ = 0;
   uint64_t recorded_frame_ = ~uint64_t(0);

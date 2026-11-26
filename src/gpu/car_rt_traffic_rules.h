@@ -96,24 +96,12 @@ struct Level {
   bool operator==(const Level&) const = default;
 };
 
-inline Level LevelFor(gpu_class::GpuClass cls) {
+inline Level LevelFor(gpu_class::GpuClass) {
   Level level;
-  switch (cls) {
-    case gpu_class::GpuClass::kHigh:
-      level.on = true;
-      level.share = 0.40;
-      level.max_depth = 45.0f;
-      level.min_texels = 600;
-      break;
-    case gpu_class::GpuClass::kMid:
-      level.on = true;
-      level.share = 0.25;
-      level.max_depth = 30.0f;
-      level.min_texels = 600;
-      break;
-    case gpu_class::GpuClass::kLow:
-      break;
-  }
+  level.on = true;
+  level.share = 0.40;
+  level.max_depth = 45.0f;
+  level.min_texels = 600;
   return level;
 }
 
@@ -161,7 +149,7 @@ struct TrafficPlan {
 // The plan of a frame. The opponents' cars (`traffic` false) are admitted as op::PlanDispatches does it: largest first, the first always, the others while the sum of the areas stays within twice
 // the budget. The TRAFFIC cars come after them, largest first, each admitted when the level is on, it is near enough and big enough, and (the pass has nothing yet, or the sum stays within
 // twice the budget and either the traffic's own sum stays within its share or this is the first traffic car). So the opponents' admission never depends on the traffic, the traffic never
-// takes more than its share (the first car apart) and never takes the pass over its limit (the pass's first car apart), and the rays follow the total as before. With no traffic car this is
+// takes more than its share (the first car apart) and never takes the pass over its limit (the pass's first car apart), and the sample count follows the same setting. With no traffic car this is
 // op::PlanDispatches' answer (the test holds it to that on random scenes).
 inline TrafficPlan PlanDispatches(const std::vector<CarRect>& cars, uint64_t budget, const Level& level, uint32_t rays_override = 0, uint32_t max_dispatches = op::kMaxDispatches) {
   TrafficPlan out;
@@ -214,7 +202,7 @@ inline TrafficPlan PlanDispatches(const std::vector<CarRect>& cars, uint64_t bud
       ++out.plan.skipped;
     }
   }
-  out.plan.rays = (rays_override == op::kRaysFull || rays_override == op::kRaysReduced || rays_override == op::kRaysMirror) ? rays_override : op::RaysFor(out.plan.texels, budget);
+  out.plan.rays = op::RaysFor(rays_override);
   out.plan.dispatches = op::MergeRects(std::move(admitted), max_dispatches);
   for (const op::TexelRect& r : out.plan.dispatches) {
     out.plan.covered += r.Area();

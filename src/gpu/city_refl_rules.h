@@ -104,40 +104,26 @@ struct Cell {
 };
 
 // The cell of a level on a ray tracing budget class (rt_tier.h RtClass: a weak card is at most Mid). Low is none.
-constexpr Cell CellFor(Level level, gpu_class::GpuClass cls) {
+constexpr Cell CellFor(Level level, gpu_class::GpuClass) {
   Cell c;
-  if (level == Level::kOff || cls == gpu_class::GpuClass::kLow) {
+  if (level == Level::kOff) {
     return c;
   }
   c.level = level;
   c.textures = TextureScope::kAll;
   c.coat_layer = true;
-  if (cls == gpu_class::GpuClass::kHigh) {
-    if (level == Level::kHigh) {
-      c.reach = 150.0f;
-      c.fade_from = 0.6f;
-      c.cone_rays = 4;
-      c.opp_texels = 250000;
-      c.opp_rays = 2;
-    } else {
-      c.reach = 1000.0f;
-      c.fade_from = 0.3f;
-      c.cone_rays = 4;
-      c.opp_texels = 500000;
-      c.opp_rays = 4;
-    }
-  } else if (level == Level::kHigh) {
-    c.reach = 60.0f;  // a Mid class by hand (CITY-RT-M2.md section 8: "60 m, hi ring 150 m")
+  if (level == Level::kHigh) {
+    c.reach = 150.0f;
     c.fade_from = 0.6f;
-    c.cone_rays = 2;
-    c.opp_texels = 100000;
-    c.opp_rays = 1;
-  } else {
-    c.reach = 150.0f;  // ultra asked of a Mid class: the High cell's reach with the Mid class's rays
-    c.fade_from = 0.6f;
-    c.cone_rays = 2;
-    c.opp_texels = 150000;
+    c.cone_rays = 4;
+    c.opp_texels = 250000;
     c.opp_rays = 2;
+  } else {
+    c.reach = 1000.0f;
+    c.fade_from = 0.3f;
+    c.cone_rays = 4;
+    c.opp_texels = 500000;
+    c.opp_rays = 4;
   }
   return c;
 }
@@ -145,7 +131,7 @@ constexpr Cell CellFor(Level level, gpu_class::GpuClass cls) {
 // The level a setting text comes to on this class and tier: `auto` is rt_tier.h's cell of kRtReflections (the rung gates it), a hand set high or ultra runs wherever the card can trace
 // (never on the rung none: no ray tracing units, or the Low class). Debug-only values the list does not know are `auto`.
 inline Level LevelFor(gpu_class::GpuClass cls, gpu_class::RtTier tier, std::string_view text) {
-  if (gpu_class::RtRung(cls, tier) == gpu_class::RtTier::kNone) {
+  if (tier == gpu_class::RtTier::kNone) {
     return Level::kOff;
   }
   const Choice choice = city_rt::ParseChoice(text);

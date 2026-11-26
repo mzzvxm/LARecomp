@@ -40,7 +40,6 @@
 //   G5-d  a car's hit is a grey (kCarAlbedo) lit by the frame's ambient and the sun without a shadow ray; no paint colour, no glow of its lamps (the car scene's instance table is the way in).
 //   G5-e  the emitters' units: a light's colour is a shader output unit (the paint's, no exposure) times the night factor and the pass's gain (rt_emitters_rules.h), so the term is added at units 1 like the
 //         field's; the deferred light pass also multiplies by the height factor (local_lights_rules.h), which the bounce leaves out: a mismatch that depends on the height is that.
-//   G5-f  the timestamps: two a frame slot around the trace and the denoise (GpuTiming's rule); without them the governor stays at the full size.
 // ===========================================================================
 
 #include <algorithm>
@@ -85,16 +84,15 @@ struct Cell {
   uint32_t rays_per_pixel = 0;       // 1: one cosine ray a pixel at the pass's size
   float reach_m = 0.0f;
   uint32_t denoise_iterations = 0;   // a-trous iterations at most (steps 1, 2, 4)
-  float cap_ms = 0.0f;               // the governor's cap on the pass (trace + denoise) at the traced 1080 lines; est. 5080: trace 1.0 to 1.5, denoise 0.3 to 0.6
   float est_ms_lo = 0.0f, est_ms_hi = 0.0f;
 };
 
-// The cell of a (rung, level): only the strong rung at ULTRA runs the pass (gi_frame.h LayoutFor / PixelPassAllowed); every other cell is "none" (the identity).
+// The cell of a (rung, level): ULTRA on every RT adapter runs the pass (gi_frame.h LayoutFor / PixelPassAllowed); every other cell is "none" (the identity).
 constexpr Cell CellFor(gi::Rung rung, gi::Level level) {
   const gi::Layout layout = gi::LayoutFor(rung, level);
   const gi::Budget& budget = gi::BudgetOf(layout);
   if (!gi::PixelPassAllowed(rung, layout) || budget.pixel_rays_per_pixel == 0) return Cell{};
-  return Cell{true, budget.pixel_rays_per_pixel, kReachM, rt_denoise::kMaxIterations, 2.2f, 1.3f, 2.1f};
+  return Cell{true, budget.pixel_rays_per_pixel, kReachM, rt_denoise::kMaxIterations, 1.3f, 2.1f};
 }
 
 // What the pass holds in video memory at a size: the signal, the two depth guides (ping-pong: the temporal stage reads the last frame's), the view normal, the hit image, and RtDenoise's own four
@@ -103,58 +101,17 @@ constexpr uint64_t BytesPerPixel() { return 8 + 4 + 4 + 8 + 4 + 4 * rt_denoise::
 constexpr uint64_t ImageBytes(uint32_t width, uint32_t height) { return uint64_t(width) * height * BytesPerPixel(); }
 
 // ---------------------------------------------------------------------------
-// the size and the governor
+// the traced size
 // ---------------------------------------------------------------------------
 
 // The pass runs at the occlusion's traced size divided by this: 1 (the traced size) or 2 (a quarter of the pixels, the doc's "quarter of it"; the apply reads it with a depth and normal weighted
-// bilinear). The governor's step is the divisor.
+// bilinear).
 inline constexpr uint32_t kDivisorFull = 1;
 inline constexpr uint32_t kDivisorReduced = 2;
 constexpr uint32_t DivisorOf(bool reduced) { return reduced ? kDivisorReduced : kDivisorFull; }
 constexpr uint32_t PixelExtent(uint32_t traced, uint32_t divisor) { return divisor <= 1 ? traced : (traced + divisor - 1) / divisor; }
 // The traced texel a pixel of the pass stands for (its top left one), clamped into the traced image.
 constexpr uint32_t TracedTexel(uint32_t pixel, uint32_t divisor, uint32_t traced) { return std::min(pixel * (divisor == 0 ? 1u : divisor), traced > 0 ? traced - 1 : 0u); }
-
-// The step governor: an EWMA of the pass's measured milliseconds against the cell's cap. It goes to the reduced size after kDownFrames frames over kDownFactor x the cap, and back after kUpFrames frames in
-// which four times the reduced cost (what the full size would cost) is under kUpFactor x the cap. Hysteresis: a pass near the cap does not flicker between the two.
-class Governor {
- public:
-  static constexpr float kAlpha = 0.1f;
-  static constexpr float kDownFactor = 1.15f;
-  static constexpr float kUpFactor = 0.9f;
-  static constexpr uint32_t kDownFrames = 30;
-  static constexpr uint32_t kUpFrames = 150;
-  void Reset() { *this = Governor{}; }
-  void AddSample(float ms, float cap_ms) {
-    if (!(ms >= 0.0f) || !(cap_ms > 0.0f)) return;
-    ewma_ = have_ ? ewma_ + kAlpha * (ms - ewma_) : ms;
-    have_ = true;
-    if (!reduced_) {
-      over_ = ewma_ > kDownFactor * cap_ms ? over_ + 1 : 0;
-      if (over_ >= kDownFrames) {
-        reduced_ = true;
-        over_ = under_ = 0;
-        have_ = false;   // the next samples are the reduced size's: the average starts again
-      }
-    } else {
-      under_ = 4.0f * ewma_ < kUpFactor * cap_ms ? under_ + 1 : 0;
-      if (under_ >= kUpFrames) {
-        reduced_ = false;
-        over_ = under_ = 0;
-        have_ = false;
-      }
-    }
-  }
-  bool reduced() const { return reduced_; }
-  uint32_t divisor() const { return DivisorOf(reduced_); }
-  float ewma() const { return ewma_; }
-
- private:
-  float ewma_ = 0.0f;
-  bool have_ = false;
-  bool reduced_ = false;
-  uint32_t over_ = 0, under_ = 0;
-};
 
 // ---------------------------------------------------------------------------
 // the plan: whether the pass runs this frame, and what it does
@@ -411,9 +368,9 @@ inline void MotionRows(const CameraPose& cur, const CameraPose& prev, float out[
 constexpr float AssumedLength(uint32_t frames) { return float(std::min(frames + 1u, uint32_t(rt_denoise::kMaxLength))); }
 
 static_assert(kReachM == 12.0f && kPixelRows == 3, "the cell's numbers");
-static_assert(!CellFor(gi::Rung::kNone, gi::Level::kUltra).runs && !CellFor(gi::Rung::kWeak, gi::Level::kUltra).runs && !CellFor(gi::Rung::kStrong, gi::Level::kHigh).runs && !CellFor(gi::Rung::kStrong, gi::Level::kOff).runs &&
+static_assert(!CellFor(gi::Rung::kNone, gi::Level::kUltra).runs && CellFor(gi::Rung::kWeak, gi::Level::kUltra).runs && !CellFor(gi::Rung::kStrong, gi::Level::kHigh).runs && !CellFor(gi::Rung::kStrong, gi::Level::kOff).runs &&
                   CellFor(gi::Rung::kStrong, gi::Level::kUltra).runs,
-              "only the strong rung at ULTRA runs the per-pixel pass: every other cell is the identity");
+              "Ultra runs the per-pixel pass on both RT tiers");
 static_assert(kBufferAlloc >= kBufferBytes && kSetViews == 6, "the rows and the set");
 
 }  // namespace mcla::gpu::gi_pixel

@@ -82,7 +82,6 @@ class RtAo {
   bool PipelineReady(bool ms);
   bool EnsureImages(uint32_t width, uint32_t height);
   void ReleaseImages();
-  void FinishTraceTiming(plume::RenderCommandList*);
   void CloseSpan(plume::RenderCommandList*);
   void ReadStats(uint64_t frame, uint64_t mesh_epoch, bool probe);
   void NoteFallback(uint64_t frame, rtao::Fallback);
@@ -103,8 +102,6 @@ class RtAo {
   std::unique_ptr<plume::RenderPipeline> pipeline_[2];
   std::unique_ptr<plume::RenderDescriptorSet> output_[2];
   std::unique_ptr<plume::RenderBuffer> stats_, zeros_, readback_;
-  std::array<std::unique_ptr<plume::RenderQueryPool>, kFramesInFlight> stamps_;
-  plume::RenderQueryPool* pending_timing_ = nullptr;
 
   HostImage signal_, depth_[2], normal_, id_share_;
   const HostImage* filtered_ = nullptr;
@@ -131,8 +128,6 @@ class RtAo {
   float reach_override_ = 0, range_override_ = 0;
   uint32_t rays_ = 0, scale_ = 0, check_ = 0;
   int view_ = 0;
-  gi_pixel::Governor governor_;
-  bool govern_ = false;
   uint64_t passes_run_ = 0, closed_probes_ = 0, open_probes_ = 0, idle_ = 0;
   uint64_t next_sample_ = 0;
   std::array<uint64_t, 7> fallback_{};

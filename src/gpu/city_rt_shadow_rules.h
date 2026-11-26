@@ -92,6 +92,12 @@ inline uint32_t RaysFor(bool ultra, int32_t forced) {
   return ultra ? 4u : 2u;
 }
 
+// Even if every remaining ray is blocked, this many open rays already
+// leave the city visibility at least as high as the car carrier.
+constexpr bool CarrierWins(uint32_t open, uint32_t rays, float car_visibility) {
+  return float(open) / float(rays) >= car_visibility;
+}
+
 // ---------------------------------------------------------------------------
 // alpha tested triangles (the pack's second geometry of a sector)
 // ---------------------------------------------------------------------------
@@ -147,6 +153,8 @@ inline bool AcceptCandidate(AlphaMode mode, bool known, float exact_alpha, float
 // ---------------------------------------------------------------------------
 inline constexpr uint32_t kFlagRaysShift = 0;        // bits 0-3: the rays a pixel (1 to 8)
 inline constexpr uint32_t kFlagAlphaShift = 4;       // bits 4-5: AlphaMode
+inline constexpr uint32_t kFlagSelective = 1u << 9;
+inline constexpr uint32_t kFlagBounds = 1u << 10;
 inline constexpr uint32_t kFlagCarImage = 1u << 8;   // the car ray traced image's slot is in noise.w: the result is the darker of the two
 inline constexpr uint32_t kFlagAlphaRefShift = 12;   // bits 12-19: the alpha reference of the exact mode, unorm8
 inline constexpr uint32_t kFlagAlphaStats = 1u << 28;  // the exact alpha's statistics into the counters, and its picture as the g channel (mcla_gpu_city_rt_alpha_view)

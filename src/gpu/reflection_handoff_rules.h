@@ -45,8 +45,11 @@ struct Frame {
   uint32_t classify_group_mask = 0;
   uint32_t classify_stride = 0;
   uint32_t classify_plan = 0;
+  std::array<float, 3> rt_bounds_min{};
+  uint32_t rt_bounds_valid = 0;
+  std::array<float, 3> rt_bounds_max{};
 };
-static_assert(sizeof(Frame) == 152);
+static_assert(sizeof(Frame) == 180 && offsetof(Frame, rt_bounds_min) == 152 && offsetof(Frame, rt_bounds_max) == 168);
 static_assert(offsetof(Frame, classify_flags) == 128 && offsetof(Frame, classify_stride) == 144);
 inline constexpr uint32_t kClassifyEnabled = 1u;
 inline constexpr uint32_t kClassifyHistory = 2u;

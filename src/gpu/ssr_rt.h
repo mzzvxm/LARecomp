@@ -4,8 +4,7 @@
 // ===========================================================================
 // The design, the cells and the numbers are ssr_rt_rules.h (read its first page); the shaders are hlsl/ssr_rt_common.hlsli, ssr_rt_select_cs.hlsl and ssr_rt_trace_cs.hlsl, and the trace pass that writes the
 // confidence target is hlsl/ssr_trace_ps.hlsl compiled with SSR_RT 1. This class owns the fallback's compute side: the pipeline layout (the SSR host pass layout, then the output set and the car scene's
-// ray tracing set), the two compute pipelines (the trace in a plain and a multisampled variant), the control buffer and the list, the output descriptor set over the trace image, the governor and its two
-// timestamps, the calibration's and the census's readback. ScreenReflections (ssr.cpp) owns the images (the trace image as a storage image, the confidence image) and the graphics side, and calls:
+// ray tracing set), the two compute pipelines (the trace in a plain and a multisampled variant), the control buffer and the list, the output descriptor set over the trace image, the calibration's and the census's readback. ScreenReflections (ssr.cpp) owns the images (the trace image as a storage image, the confidence image) and the graphics side, and calls:
 //
 //   Initialize       after the car scene's and the scene service's (the ray tracing set exists): the layout and the shaders; the pipelines are made in the background when first wanted
 //   BeginFrame       the effect's frame start: the debug word and the card's rung give the level (ssr_rt_rules.h Resolve), and the scene service is asked for the city's structures, hit data and
@@ -20,13 +19,12 @@
 //
 // CHECK (nothing here ran on a device; ssr_rt_rules_test.cpp holds the rules and the shader texts, the shaders compile for DXIL and SPIR-V and validate): the output set's three views on D3D12 (the same
 // counting as the city shadow pass's), a typed UAV load of RGBA16F on D3D12 (the trace image is read and written by the trace pass: TypedUAVLoadAdditionalFormats), the compute layout's seven sets on
-// Vulkan (maxBoundDescriptorSets >= 8 on every desktop driver), the two timestamps (the governor has no signal where the device cannot write them: it holds the cell's cap), the cost.
+// Vulkan (maxBoundDescriptorSets >= 8 on every desktop driver), the cost.
 //
 // Threading: render thread only, except Initialize and Shutdown (the lifecycle thread, GPU idle and the FrameRing drained).
 // ===========================================================================
 
 #include <array>
-#include <chrono>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -36,6 +34,7 @@
 
 #include "host_passes.h"
 #include "ssr_rt_rules.h"
+#include "rt_scene_bounds.h"
 #include "ssr_rules.h"
 
 namespace mcla::gpu {
@@ -54,7 +53,7 @@ class RtWorldFrame;
 
 class ScreenReflectionsRt {
  public:
-  ScreenReflectionsRt();   // (defined in ssr_rt.cpp with the destructor: Timer is incomplete here)
+  ScreenReflectionsRt();
   ~ScreenReflectionsRt();
   ScreenReflectionsRt(const ScreenReflectionsRt&) = delete;
   ScreenReflectionsRt& operator=(const ScreenReflectionsRt&) = delete;
@@ -71,6 +70,9 @@ class ScreenReflectionsRt {
   void BeginFrame(ssr::Level ssr_level, bool classified);
   bool wanted() const { return ready_ && resolved_.level != ssr_rt::Level::kOff; }
   const ssr_rt::Resolved& resolved() const { return resolved_; }
+  const rt_scene::Bounds* SceneBounds() const;
+  plume::RenderBuffer* RankFallback() const { return ctl_.get(); }
+  bool indirect_ready() const { return trace_dispatch_ != nullptr; }
 
   // The pipelines of this MSAA level are made (listed with the precache the first time it is asked).
   bool PipelinesReady(bool multisampled);
@@ -80,6 +82,7 @@ class ScreenReflectionsRt {
     HostImage* trace = nullptr;       // RGBA16F storage image at the SSR size, left in a shader-read layout by the trace pass
     const HostImage* confidence = nullptr;  // R8G8_UNORM, the trace pass's second target, shader-read
     plume::RenderDescriptorSet* handoff = nullptr;
+    plume::RenderBuffer* ranks = nullptr;
     const backend::IndirectCompute* indirect = nullptr;
     HostImage* capture_hit = nullptr;  // optional R32_UINT trace MRT for VISMET
     ssr::Push push;                   // the trace pass's push block (the road view's word and share set): the fallback adds its words to a copy
@@ -108,7 +111,6 @@ class ScreenReflectionsRt {
 
  private:
   enum Variant : uint32_t { kVSelect, kVTrace, kVTraceMs, kVariantCount };
-  struct Timer;
 
   bool MakeLayoutAndShaders(Device& device, HostPasses& passes, CarRtScene& scene);
   std::unique_ptr<plume::RenderPipelineLayout> MakeLayout(const plume::RenderDescriptorSetBuilder& output,
@@ -140,6 +142,7 @@ class ScreenReflectionsRt {
   std::unique_ptr<plume::RenderBuffer> ctl_;           // the control and statistics words (ssr_rt_rules.h buf::)
   std::unique_ptr<plume::RenderBuffer> list_;          // the candidates' pixels
   std::unique_ptr<plume::RenderBuffer> readback_;
+  std::unique_ptr<backend::IndirectCompute> trace_dispatch_;
   std::unique_ptr<plume::RenderDescriptorSet> set_;
   const plume::RenderTexture* set_texture_ = nullptr;
   plume::RenderDescriptorSetBuilder capture_builder_;
@@ -165,13 +168,6 @@ class ScreenReflectionsRt {
   uint32_t why_logged_ = ~0u;
   uint32_t idle_frames_ = 0;
   bool ran_ = false;
-
-  // the governor and its timer
-  ssr_rt::Governor governor_;
-  std::unique_ptr<Timer> timer_;
-  double ms_ = -1.0;
-  std::chrono::steady_clock::time_point clock_start_ = std::chrono::steady_clock::now();
-  uint32_t logged_step_ = 0;
 
   // the census
   ssr_rt::Totals totals_;

@@ -316,7 +316,7 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
       if (!why.empty()) {
         REXLOG_INFO("[gpu] car ray tracing: not available: {}", why);
       } else if (car_rt_.Initialize(device_, frames_, upload_, heap_, passes_, edram_, pass_timing_, car_frame_)) {
-        if (gpu_class::CurrentRtRung() == gpu_class::RtTier::kNone) {
+        if (gpu_class::CurrentRtTier() == gpu_class::RtTier::kNone) {
           // The device can trace, but the ray tracing tier (rt_tier.h) is none: a card with no ray tracing units (the GTX 10 and 16 series run DXR in the
           // shaders, far too slowly) or the Low class (shared memory). The effects stay off and the pause row does not offer RAY TRACED (CarRtReflAvailable);
           // the structures are still set up, so mcla_gpu_rt_tier can force a tier for a test. The launcher reads this line like the others.

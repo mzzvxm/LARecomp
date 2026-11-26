@@ -36,7 +36,6 @@ constexpr uint32_t kGroup = 8;
 constexpr uint32_t kCounterBytes = 7 * sizeof(uint32_t);
 constexpr uint32_t kOutputSet = 4, kSceneSet = 5, kPushSpace = 6;
 constexpr uint64_t kProbeInterval = 120, kStatsInterval = 120, kReportInterval = 3600;
-constexpr float kGovernorCapMs = 1.2f;
 constexpr auto kStorage = plume::RenderTextureFlag::STORAGE | plume::RenderTextureFlag::UNORDERED_ACCESS;
 
 constexpr uint64_t Key(uint32_t variant) {
@@ -125,7 +124,6 @@ void RtAo::Shutdown() {
   denoise_.reset();
   for (auto& p : pipeline_) p.reset();
   for (auto& s : shader_) s.reset();
-  for (auto& q : stamps_) q.reset();
   layout_.reset();
   readback_.reset();
   zeros_.reset();
@@ -183,7 +181,6 @@ void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool play_view) {
     check_ = uint32_t(settings::mcla_gpu_rtao_check.Get());
     view_ = settings::mcla_gpu_rtao_view.Get();
     blend_car_ = settings::mcla_gpu_rtao_blend_car.Get() != 0;
-    govern_ = decision.rung == gpu_class::RtTier::kStrong && scale_ == 0;
   }
   if (wanted_) {
     rt_scene::Needs needs;
@@ -223,7 +220,7 @@ rtao::Plan RtAo::PlanFrame(const Inputs& in, const CarRtView& top_level, bool bo
   facts.render[1] = in.render[1];
   facts.look_radius = in.look_radius;
   facts.reach_override = reach_override_;
-  facts.scale = scale_ == 1 || scale_ == 2 || scale_ == 4 ? scale_ : governor_.reduced() ? 4u : 2u;
+  facts.scale = scale_ == 1 || scale_ == 2 || scale_ == 4 ? scale_ : 2u;
   if (facts.wanted && facts.play_view && available()) {
     const bool trace_ready = PipelineReady(in.stencil_ms);
     const bool compose_ready = compose_->available();
@@ -359,16 +356,6 @@ bool RtAo::RecordTrace(plume::RenderCommandList* list, const Inputs& in) {
                    (match_cabin_guide_ ? interior_camera::kRtAoMatchGuide : 0u) |
                    (probe ? rtao::kFlagProbe : 0u) | (sample ? rtao::kFlagStats : 0u);
   timing_->Mark(list, "rtao trace");
-  if (govern_ && !plan_.raw && backend::TimestampsSupported(device_->device())) {
-    auto& stamp = stamps_[frames_->slot()];
-    if (!stamp)
-      stamp = device_->CreateQueryPool(2, "rtao timestamps");
-    if (stamp) {
-      pending_timing_ = stamp.get();
-      list->resetQueryPool(stamp.get(), 0, 2);
-      list->writeTimestamp(stamp.get(), 0);
-    }
-  }
   // CHECK: both backends' stencil plane views and typed UAV barriers in a play frame.
   list->setComputePipelineLayout(layout_.get());
   for (uint32_t set = 0; set < kOutputSet; ++set)
@@ -443,25 +430,8 @@ bool RtAo::RecordFilter(plume::RenderCommandList* list, const FilterInputs& in) 
   previous_match_cabin_guide_ = match_cabin_guide_;
   std::copy_n(tan_, 2, previous_tan_);
   std::copy_n(plan_.traced, 2, previous_size_);
-  FinishTraceTiming(list);
   CloseSpan(list);
   return previous_ours_;
-}
-
-void RtAo::FinishTraceTiming(plume::RenderCommandList* list) {
-  if (!pending_timing_)
-    return;
-  auto* pool = pending_timing_;
-  pending_timing_ = nullptr;
-  list->writeTimestamp(pool, 1);
-  frames_->RetireAction([this, pool, reduced = governor_.reduced()] {
-    if (!govern_ || reduced != governor_.reduced())
-      return;
-    pool->queryResults();
-    const uint64_t* ticks = pool->getResults();
-    if (ticks[1] >= ticks[0])
-      governor_.AddSample(float(double(ticks[1] - ticks[0]) / 1.0e6), kGovernorCapMs);
-  });
 }
 
 uint32_t RtAo::RecordCompose(plume::RenderCommandList* list, const ComposeInputs& in) {
@@ -532,16 +502,14 @@ void RtAo::OnPresent() {
     if (passes_run_ % kReportInterval == 0) {
       REXLOG_INFO("[rtao] frame {}: {} passes, sampled {} rays, {} hits, {} alpha candidates, {} texture reads, {} uncovered pixels; "
                   "cabin probes {} closed, {} open; fallback counts play {}, pipeline {}, top level {}, city {}, images {}; "
-                  "history length mean {:.2f}, governor {} ({:.3f} ms)",
+                  "history length mean {:.2f}",
                   frame_, passes_run_, counters_[0], counters_[1], counters_[2], counters_[3], counters_[6], closed_probes_, open_probes_,
-                  fallback_[2], fallback_[3], fallback_[4], fallback_[5], fallback_[6], denoise_->LastMeanLength(),
-                  governor_.reduced() ? "reduced" : "full", governor_.ewma());
+                  fallback_[2], fallback_[3], fallback_[4], fallback_[5], fallback_[6], denoise_ ? denoise_->LastMeanLength() : 0.0f);
       counters_.fill(0);
     }
   } else if (signal_.texture && ++idle_ >= rtao::kReleaseAfterFrames) {
     ReleaseImages();
     compose_->ReleaseImage();
-    governor_.Reset();
   }
   recorded_ = false;
   filtered_ = depth_full_ = nullptr;

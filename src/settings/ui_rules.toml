@@ -33,8 +33,8 @@ hdr_on = "live.hdr_active ?? (s.mcla_gpu_hdr == 'on' || (s.mcla_gpu_hdr == 'auto
 ao_on = "resolved(s.mcla_gpu_ao) in ['high','ultra','rt']"
 shadows_on = "!s.perf_no_shadows"
 rt_field_class = "live.rt_field_class ?? gpu.class"
-rt_gi_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && build.rt_gi_update_built"
-rtao_open = "gpu.rt_tier != 'none' && d.rt_field_class != 'low' && (live.rtao_pass_built ?? false)"
+rt_gi_open = "gpu.rt_tier != 'none' && build.rt_gi_update_built"
+rtao_open = "gpu.rt_tier != 'none' && (live.rtao_pass_built ?? false)"
 bounce_on = "(d.ao_on && (resolved(s.mcla_gpu_ssgi) in ['high','ultra'])) || (d.rt_gi_open && (resolved(s.mcla_gpu_rt_gi) in ['high','ultra']))"
 shown_upscaler.cases = [
   { when = "s.mcla_gpu_upscaler == 'fsr31' && features.upscalers.fsr31", value = "fsr31" },
@@ -285,7 +285,6 @@ label_rules = [
 [rows.PM_RxGpuAo.value."rt"]
 label_rules = [
   { when = "gpu.rt_tier == 'none'", label = "RT (NO RT GPU)" },
-  { when = "d.rt_field_class == 'low'", label = "RT (TOO SLOW)" },
   { when = "!(live.rtao_pass_built ?? false)", label = "RT (NOT READY)" },
 ]
 
@@ -356,7 +355,6 @@ auto_label = true
 [rows.PM_RxGpuRtShadows]
 states = [
   { when = "!api.city_rt_shadows", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "gpu.class == 'low'", enabled = false, suffix = " (GPU TOO SLOW)" },
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
   { when = "!(resolved(s.mcla_gpu_contact_shadows) in ['high','ultra'])", enabled = false, reason = "Contact shadows are off." },
 ]
@@ -380,8 +378,8 @@ auto_label = true
 [rows.PM_RxGpuRtGi]
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)" },
   { when = "!build.rt_gi_update_built", enabled = false, suffix = " (NOT READY)" },
+  { when = "live.rt_gi_resource_pressure ?? false", suffix = " (VRAM)", reason = "The selected probe field needs more video memory." },
 ]
 
 [rows.PM_RxGpuRtGi.value."auto"]
@@ -398,7 +396,6 @@ states = [
 [rows.PM_RxGpuRtCityRefl]
 states = [
   { when = "gpu.rt_tier == 'none'", enabled = false, suffix = " (NO RT GPU)", label = "RT CITY" },
-  { when = "d.rt_field_class == 'low'", enabled = false, suffix = " (TOO SLOW)", label = "RT CITY" },
   { when = "!d.car_rt_runs", enabled = false, suffix = " (NEEDS CAR RT)", label = "RT CITY" },
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'unavailable'", enabled = false, suffix = " (NOT READY)", label = "RT CITY" },
   { when = "d.rt_city_wanted && (live.city_data ?? 'unknown') == 'building'", enabled = true, suffix = " (BUILDING DATA)", label = "RT CITY" },

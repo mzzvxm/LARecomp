@@ -23,6 +23,66 @@ ByteAddressBuffer g_tile_list : register(t1, space7);
 
 RWByteAddressBuffer g_ctl : register(u1, space5);
 RWByteAddressBuffer g_list : register(u2, space5);
+RWByteAddressBuffer g_trace_dispatch : register(u3, space5);
+RWByteAddressBuffer g_ranks : register(u2, space7);
+
+// One uint2 mask per tile, one exclusive prefix per rotated tile, then
+// one prefix per block of 64 tiles. Match ssr_rt::RankBytes and PackSelect.
+static const uint kSelectShift = 28u;
+static const uint kScanStride = 1024u;
+static const uint kCount = 1u, kScan = 2u, kBlocks = 3u, kEmit = 4u;
+static const uint kTileLanes = 64u;
+groupshared uint gs_scan[kTileLanes];
+groupshared uint gs_mask[2];
+
+uint ExclusiveScan(uint lane, uint value) {
+  gs_scan[lane] = value;
+  GroupMemoryBarrierWithGroupSync();
+  [unroll] for (uint offset = 1u; offset < kTileLanes; offset <<= 1u) {
+    const uint before = lane >= offset ? gs_scan[lane - offset] : 0u;
+    GroupMemoryBarrierWithGroupSync();
+    gs_scan[lane] += before;
+    GroupMemoryBarrierWithGroupSync();
+  }
+  return gs_scan[lane] - value;
+}
+
+void ScanTileBlock(uint block, uint lane, uint tile_count, uint rotation) {
+  const uint block_count = (tile_count + kTileLanes - 1u) / kTileLanes;
+  if (block >= block_count) return;
+  const uint ordered = block * kTileLanes + lane;
+  uint samples = 0u;
+  if (ordered < tile_count) {
+    const uint2 mask = g_ranks.Load2(8u * ((ordered + rotation) % tile_count));
+    samples = countbits(mask.x) + countbits(mask.y);
+  }
+  const uint before = ExclusiveScan(lane, samples);
+  if (ordered < tile_count) g_ranks.Store(4u * (2u * tile_count + ordered), before);
+  if (lane == kTileLanes - 1u) g_ranks.Store(4u * (3u * tile_count + block), before + samples);
+}
+
+void ScanBlocks(uint lane, uint tile_count, uint capacity, uint slot) {
+  const uint blocks = (tile_count + kTileLanes - 1u) / kTileLanes;
+  const uint per_lane = (blocks + kTileLanes - 1u) / kTileLanes;
+  const uint first = lane * per_lane;
+  const uint last = min(first + per_lane, blocks);
+  uint sum = 0u;
+  for (uint block = first; block < last; ++block) {
+    sum += g_ranks.Load(4u * (3u * tile_count + block));
+  }
+  uint before = ExclusiveScan(lane, sum);
+  for (uint block = first; block < last; ++block) {
+    const uint address = 4u * (3u * tile_count + block);
+    const uint count = g_ranks.Load(address);
+    g_ranks.Store(address, before);
+    before += count;
+  }
+  if (lane == kTileLanes - 1u) {
+    const uint listed = SsrRtListed(before, capacity);
+    g_ctl.Store(4u * (SSR_RT_CTL_LISTED + slot), listed);
+    g_trace_dispatch.Store3(0u, uint3((listed + kTileLanes - 1u) / kTileLanes, 1u, 1u));
+  }
+}
 
 groupshared uint gs_total;
 groupshared uint gs_kept;
@@ -46,8 +106,10 @@ void main(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
   const uint slot = rt_frame % 3u;
   const uint previous = (rt_frame + 2u) % 3u;
   const uint next = (rt_frame + 1u) % 3u;
-  const bool classified = g_handoff.Load(140u) != 0u;
-  const bool clear = SsrW(SSR_W_RT_CAP) == 0u;
+  const uint pass = SsrW(SSR_W_RT_CAP) >> kSelectShift;
+  const uint capacity = SsrW(SSR_W_RT_CAP) & ((1u << kSelectShift) - 1u);
+  const bool classified = pass != 0u;
+  const bool clear = capacity == 0u;
   if ((clear || !classified) && gid.x == 0u && gid.y == 0u && gi == 0u) {
     g_ctl.Store((SSR_RT_CTL_TOTAL + next) * 4u, 0u);
     g_ctl.Store((SSR_RT_CTL_LISTED + next) * 4u, 0u);
@@ -56,6 +118,16 @@ void main(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
   const int2 ssr = SsrSize();
   const uint tiles_x = uint(ssr.x + 7) / 8u;
   const uint tiles_y = uint(ssr.y + 7) / 8u;
+  const uint tile_count = tiles_x * tiles_y;
+  const uint rotation = SsrRtTileOf(0u, 0u, tiles_x, tile_count, rt_frame);
+  if (pass == kScan) {
+    ScanTileBlock(gid.x + gid.y * kScanStride, gi, tile_count, rotation);
+    return;
+  }
+  if (pass == kBlocks) {
+    ScanBlocks(gi, tile_count, capacity, slot);
+    return;
+  }
   int2 tile;
   if (classified) {
     const uint index = gid.x + gid.y * g_handoff.Load(144u);
@@ -67,7 +139,22 @@ void main(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     tile = int2(entry % tiles_x, entry / tiles_x);
   }
   const int2 pix = tile * int(kSsrTileSize) + int2(gi & 7u, gi >> 3u);
-  const uint capacity = SsrW(SSR_W_RT_CAP);
+  const uint canonical = uint(tile.x) + uint(tile.y) * tiles_x;
+  if (pass == kEmit) {
+    const uint2 mask = g_ranks.Load2(8u * canonical);
+    const uint bit = 1u << (gi & 31u);
+    const uint half_mask = gi < 32u ? mask.x : mask.y;
+    if ((half_mask & bit) == 0u) return;
+    const uint ordered = SsrRtRankedTile(canonical, rotation, tile_count);
+    const uint block = ordered / kTileLanes;
+    const uint prefix = g_ranks.Load(4u * (2u * tile_count + ordered))
+                      + g_ranks.Load(4u * (3u * tile_count + block));
+    const uint rank = (gi < 32u ? 0u : countbits(mask.x)) + countbits(half_mask & (bit - 1u));
+    if (prefix + rank < capacity) {
+      g_list.Store((prefix + rank) * 4u, uint(pix.x) | (uint(pix.y) << 16u));
+    }
+    return;
+  }
   const float keep = SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + previous) * 4u));
   if (gi == 0u) {
     if (classified) {
@@ -76,6 +163,7 @@ void main(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     }
     gs_total = 0u;
     gs_kept = 0u;
+    gs_mask[0] = gs_mask[1] = 0u;
     gs_base = 0u;
   }
   GroupMemoryBarrierWithGroupSync();
@@ -101,19 +189,26 @@ void main(uint3 gid : SV_GroupID, uint gi : SV_GroupIndex) {
     InterlockedAdd(gs_total, 1u, before);
   }
   if (kept) {
-    InterlockedAdd(gs_kept, 1u, rank);
+    if (pass == kCount) {
+      InterlockedOr(gs_mask[gi / 32u], 1u << (gi & 31u));
+    } else {
+      InterlockedAdd(gs_kept, 1u, rank);
+    }
   }
   GroupMemoryBarrierWithGroupSync();
   if (gi == 0u) {
     if (gs_total != 0u) {
       g_ctl.InterlockedAdd((SSR_RT_CTL_TOTAL + slot) * 4u, gs_total);
     }
-    if (gs_kept != 0u) {
+    if (pass == kCount) {
+      g_ranks.Store2(8u * canonical, uint2(gs_mask[0], gs_mask[1]));
+    } else if (gs_kept != 0u) {
       uint base;
       g_ctl.InterlockedAdd((SSR_RT_CTL_LISTED + slot) * 4u, gs_kept, base);
       gs_base = base;
     }
   }
+  if (pass == kCount) return;
   GroupMemoryBarrierWithGroupSync();
   if (kept) {
     const uint index = gs_base + rank;

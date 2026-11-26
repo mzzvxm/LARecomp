@@ -171,8 +171,6 @@ inline constexpr uint32_t kCutWarmupFrames = 12;          // frames of the 4x bu
 inline constexpr float kCutWarmupBudgetScale = 4.0f;
 inline constexpr float kFadeInSeconds = 0.4f;             // the field's weight rises from 0 over this long after a cut
 inline constexpr float kFadeOutSeconds = 0.5f;            // ... and the screen-space bounce light crossfades in over this long where the field goes invalid
-inline constexpr float kGovernorMin = 0.5f;               // the probe budget a frame scales between these by the pass timings
-inline constexpr float kGovernorMax = 1.5f;
 inline constexpr float kBounceWeightDefault = 0.5f;       // the probes' own feedback (about two bounces); 0 = strictly one bounce
 
 // ---------------------------------------------------------------------------
@@ -213,7 +211,7 @@ constexpr Level AutoLevel(Rung rung) { return rung == Rung::kStrong ? Level::kHi
 // Which budget a field runs.
 enum class Layout : uint8_t {
   kNone,      // no field: the screen-space bounce light is the source
-  kLean,      // 2 cascades of 16 x 8 x 16 probes at 3 and 6 m, 32 rays: the Mid column of M3 section 6 (a weak card by hand, a card under 6 GB)
+  kLean,      // 2 cascades of 16 x 8 x 16 probes at 3 and 6 m, 32 rays: legacy two-cascade layout
   kStandard,  // 3 cascades of 32 x 16 x 32 probes at 2, 4 and 8 m, 64 rays: the High column
   kExtended,  // 4 cascades (the fourth at 16 m), 64 rays, refreshed twice as often, and the per-pixel detail pass: the Ultra column
 };
@@ -229,17 +227,15 @@ constexpr std::string_view LayoutName(Layout layout) {
   return "?";
 }
 
-// The (rung, level) -> layout table. None never runs the field. Weak: probes only (no per-pixel pass at any level): HIGH is the lean field, ULTRA by hand the standard one (G0c).
-// Strong: HIGH the standard field, ULTRA the extended one with the per-pixel pass (the ULTRA layer only a strong card may have). COST PASS: every cell.
+// High uses the standard field. Ultra adds the extended field and per-pixel detail.
 constexpr Layout LayoutFor(Rung rung, Level level) {
   if (rung == Rung::kNone || level == Level::kOff) return Layout::kNone;
-  if (rung == Rung::kWeak) return level == Level::kHigh ? Layout::kLean : Layout::kStandard;
   return level == Level::kHigh ? Layout::kStandard : Layout::kExtended;
 }
 
 // What a layout does where the rung is the one that decides.
 constexpr bool FieldOn(Layout layout) { return layout != Layout::kNone; }
-constexpr bool PixelPassAllowed(Rung rung, Layout layout) { return rung == Rung::kStrong && layout == Layout::kExtended; }
+constexpr bool PixelPassAllowed(Rung rung, Layout layout) { return rung != Rung::kNone && layout == Layout::kExtended; }
 // The screen-space bounce light stops being the source (the field replaces it) exactly where a field runs (and is valid: GiFrame::ReplacesSsgi).
 constexpr bool ReplacesSsgi(Layout layout) { return FieldOn(layout); }
 
@@ -1019,13 +1015,13 @@ static_assert(BudgetOf(Layout::kStandard).cascade[1].spacing_m == 2.0f * BudgetO
 // The cells of the table (the (tier, level) -> layout rule).
 static_assert(LayoutFor(Rung::kNone, Level::kUltra) == Layout::kNone && LayoutFor(Rung::kNone, Level::kHigh) == Layout::kNone && LayoutFor(Rung::kNone, Level::kOff) == Layout::kNone,
               "none: no field, the screen-space bounce light");
-static_assert(LayoutFor(Rung::kWeak, Level::kOff) == Layout::kNone && LayoutFor(Rung::kWeak, Level::kHigh) == Layout::kLean && LayoutFor(Rung::kWeak, Level::kUltra) == Layout::kStandard,
-              "weak: probes only: lean at HIGH, standard by hand at ULTRA");
+static_assert(LayoutFor(Rung::kWeak, Level::kOff) == Layout::kNone && LayoutFor(Rung::kWeak, Level::kHigh) == Layout::kStandard && LayoutFor(Rung::kWeak, Level::kUltra) == Layout::kExtended,
+              "weak and strong use the same layouts");
 static_assert(LayoutFor(Rung::kStrong, Level::kOff) == Layout::kNone && LayoutFor(Rung::kStrong, Level::kHigh) == Layout::kStandard && LayoutFor(Rung::kStrong, Level::kUltra) == Layout::kExtended,
               "strong: standard at HIGH, extended (with the per-pixel pass) at ULTRA");
-static_assert(!PixelPassAllowed(Rung::kWeak, Layout::kStandard) && !PixelPassAllowed(Rung::kWeak, Layout::kExtended) && !PixelPassAllowed(Rung::kStrong, Layout::kStandard) &&
+static_assert(!PixelPassAllowed(Rung::kWeak, Layout::kStandard) && PixelPassAllowed(Rung::kWeak, Layout::kExtended) && !PixelPassAllowed(Rung::kStrong, Layout::kStandard) &&
                   PixelPassAllowed(Rung::kStrong, Layout::kExtended) && !PixelPassAllowed(Rung::kNone, Layout::kExtended),
-              "the per-pixel pass is the strong card's ULTRA layer only");
+              "the per-pixel pass is the ULTRA layer on RT-capable cards");
 static_assert(AutoLevel(Rung::kNone) == Level::kOff && AutoLevel(Rung::kWeak) == Level::kOff && AutoLevel(Rung::kStrong) == Level::kHigh, "auto: the field on a strong card at HIGH only (rt_tier.h kRtGi)");
 static_assert(!ReplacesSsgi(Layout::kNone) && ReplacesSsgi(Layout::kLean) && ReplacesSsgi(Layout::kStandard) && ReplacesSsgi(Layout::kExtended), "the field replaces the screen-space bounce light wherever it runs");
 static_assert(static_cast<uint8_t>(Rung::kNone) == 0 && static_cast<uint8_t>(Rung::kWeak) == 1 && static_cast<uint8_t>(Rung::kStrong) == 2, "the order of gpu_class::RtTier");

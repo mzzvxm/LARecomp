@@ -24,6 +24,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 RWTexture2D<float4> g_tiles : register(u0, space6);
 RWByteAddressBuffer g_active_tiles : register(u1, space6);
 RWByteAddressBuffer g_dispatch : register(u2, space6);
+RWByteAddressBuffer g_ranks : register(u4, space6);
 
 groupshared float4 gs_feedback[16];
 groupshared uint gs_candidates[16];
@@ -103,6 +104,10 @@ void main(uint3 group : SV_GroupID, uint3 lane : SV_GroupThreadID, uint index : 
     g_tiles[group.xy] = float4(hits, misses, noise, float(SsrTileState(min(age + 1u, 15u), mode)));
   }
 
+  if (rt) {
+    const uint columns = (uint(SsrSize().x) + kSsrTileSize - 1u) / kSsrTileSize;
+    g_ranks.Store2(8u * (group.x + group.y * columns), uint2(0u, 0u));
+  }
   if ((gs_candidates[0] & (kSkippedSample - 1u)) != 0u) {
     uint entry;
     g_active_tiles.InterlockedAdd(0u, 1u, entry);

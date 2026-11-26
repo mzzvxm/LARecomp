@@ -262,7 +262,7 @@ void TestCarHits() {
   Check(!hs::SsrRtCarReceiver(rt::push::kFlagStats, uint32_t(SC::kWetRoad)), "disabled car hits keep the original road reflection");
   Check(!hs::SsrRtCarReceiver(cars, uint32_t(SC::kSidewalk)) && !hs::SsrRtCarReceiver(cars, uint32_t(SC::kGlass)), "car shading is limited to road receivers");
   Check(!rt::CarHitsEnabled(rt::kUltraCell, false) && rt::CarHitsEnabled(rt::kUltraCell, true), "the road-capable cell respects the toggle");
-  Check(rt::CarHitsEnabled(rt::kHighCell, true) && !rt::CarHitsEnabled(rt::kMidCell, true), "strong High shades ground hits; the weak cell only traces bright receivers");
+  Check(rt::CarHitsEnabled(rt::kHighCell, true) && !rt::CarHitsEnabled({}, true), "High shades ground hits and off leaves them alone");
   Check(!rt::NeedsFor(rt::Level::kUltra).cars && rt::NeedsFor(rt::Level::kUltra, true).cars && !rt::NeedsFor(rt::Level::kOff, true).any(), "active road car shading requests the meshes independently");
   Check(hs::kSsrRtCarLampVisits == 8u, "the car lighting has a fixed eight-lamp visit limit");
   Check(hs::SsrRtCarLampWeight(0.0f) == 1.0f && hs::SsrRtCarLampWeight(16.0f) == 1.0f, "nearby street lamps give their full light");
@@ -333,19 +333,11 @@ void TestCap() {
   Check(perm, "every frame's tile order is a permutation of the tiles, as the shader makes it");
   Check(moves, "the order turns from one frame to the next");
   Check(rt::TileOf(3, 4, 10, 0, 5) == 0, "no tiles (a zero count) does not divide by zero");
-  // the capacity and the steps
-  Check(rt::Capacity(rt::kHighCell, 0) == 250000 && rt::Capacity(rt::kUltraCell, 0) == 500000 && rt::Capacity(rt::kMidCell, 0) == 100000, "the capacity in pixels at the full step: the cap over the rays a pixel");
-  Check(rt::RayCap(rt::kHighCell, 1) == 125000 && rt::RayCap(rt::kHighCell, 2) == 62500 && rt::RayCap(rt::kHighCell, 3) == 31250 && rt::RayCap(rt::kHighCell, 9) == 31250, "each step halves the cap, three at most");
-  Check(rt::RayCap(rt::kMidCell, 3) == 12500 && rt::RayCap(rt::Cell{0, 5000, 1, 1.0f, 1.0f}, 3) == 5000 && rt::RayCap(rt::Cell{}, 0) == 0, "a cap is never under kMinRays (a small cell keeps its own), and an empty cell has none");
+  Check(rt::Capacity(rt::kHighCell) == 250000 && rt::Capacity(rt::kUltraCell) == 500000, "the level fixes the pixel capacity");
   Check(rt::GroupsFor(500000) == 7813 && rt::GroupsFor(64) == 1 && rt::GroupsFor(65) == 2 && rt::GroupsFor(0) == 0, "groups of 64");
-  for (uint32_t step = 0; step <= rt::Governor::kMaxStep; ++step) {
-    const auto rays = rt::RaysUsed(rt::kUltraCell, 2, true);
-    const auto capacity = rt::CapacityFor(rt::kUltraCell, step, rays);
-    Check(rays == 1 && capacity == 2 * rt::Capacity(rt::kUltraCell, step) && capacity * rays == rt::RayCap(rt::kUltraCell, step),
-          "single-ray Ultra doubles pixel capacity at each step and preserves the ray cap");
-  }
+  Check(rt::CapacityFor(rt::kUltraCell, 1) == 2 * rt::Capacity(rt::kUltraCell), "single ray keeps the same ray cap");
   Check(rt::RaysUsed(rt::kUltraCell, 2) == 2 && rt::RaysUsed(rt::kHighCell, 1, true) == 1, "default Ultra and one-ray High retain their sample counts");
-  Check(rt::CapacityFor(rt::kUltraCell, 0, 1) == rt::kMaxListEntries && rt::kListBytes == 4000000, "the list holds one million pixels (4 MB)");
+  Check(rt::CapacityFor(rt::kUltraCell, 1) == rt::kMaxListEntries && rt::kListBytes == 4000000, "the list holds one million pixels (4 MB)");
 }
 
 // ---------------------------------------------------------------------------
@@ -604,6 +596,42 @@ void TestSelectModel() {
   Check(frames[1].list[0] != frames[2].list[0] || frames[2].list[0] != frames[3].list[0], "the order of the tiles turns from frame to frame");
 }
 
+void TestRankedSelection() {
+  for (const uint32_t tiles : {1u, 63u, 64u, 65u, 129u, 2049u}) {
+    for (uint32_t phase : {0u, 1u, 77u, 9999u}) {
+      const uint32_t rotation = hs::SsrRtTileOf(0, 0, tiles, tiles, phase);
+      std::vector<uint32_t> counts(tiles);
+      std::vector<uint32_t> prefix(tiles);
+      uint32_t kept = 0;
+      for (uint32_t order = 0; order < tiles; ++order) {
+        const uint32_t tile = (rotation + order) % tiles;
+        Check(hs::SsrRtRankedTile(tile, rotation, tiles) == order, "rotation is reversible");
+        counts[tile] = (phase + tile * 7u) % 65u;
+        prefix[order] = kept;
+        kept += counts[tile];
+      }
+      for (uint32_t capacity : {0u, 1u, 65u, kept / 2u, kept, kept + 100u}) {
+        const uint32_t listed = hs::SsrRtListed(kept, capacity);
+        Check(listed == std::min(kept, capacity), "listed work is strictly capped");
+        std::vector<uint32_t> hits(listed, 0);
+        // Feed the active tiles in reverse order, as if their append order
+        // changed between vendors. Every rank still has exactly one writer.
+        bool bounded = true;
+        for (uint32_t tile = tiles; tile-- > 0;) {
+          const uint32_t before = prefix[hs::SsrRtRankedTile(tile, rotation, tiles)];
+          for (uint32_t sample = 0; sample < counts[tile] && before + sample < capacity; ++sample) {
+            const uint32_t rank = before + sample;
+            bounded = bounded && rank < listed;
+            if (rank < listed) ++hits[rank];
+          }
+        }
+        Check(bounded && std::all_of(hits.begin(), hits.end(), [](uint32_t n) { return n == 1u; }), "the capped queue has no gaps or duplicates");
+        Check(rt::GroupsFor(listed) <= rt::GroupsFor(capacity), "the indirect count is bounded by the legacy dispatch");
+      }
+    }
+  }
+}
+
 void TestDecision() {
   const rt::Level levels[3] = {rt::Level::kOff, rt::Level::kHigh, rt::Level::kUltra};
   const rt::Choice choices[4] = {rt::Choice::kAuto, rt::Choice::kOff, rt::Choice::kHigh, rt::Choice::kUltra};
@@ -620,11 +648,7 @@ void TestDecision() {
           continue;
         }
         if (choice == rt::Choice::kAuto) {
-          if (rung == gc::RtTier::kStrong) {
-            follows = follows && r.level == ssr && r.why == rt::Why::kRuns && r.cell.ray_cap == rt::CellFor(ssr, rung).ray_cap;
-          } else {
-            follows = follows && r.level == rt::Level::kOff && r.why == rt::Why::kWeakAuto;
-          }
+          follows = follows && r.level == ssr && r.why == rt::Why::kRuns && r.cell.ray_cap == rt::CellFor(ssr, gc::RtTier::kStrong).ray_cap;
           continue;
         }
         const rt::Level wanted = choice == rt::Choice::kHigh ? rt::Level::kHigh : rt::Level::kUltra;
@@ -633,22 +657,19 @@ void TestDecision() {
     }
   }
   Check(identity, "the effect off, a card that does not trace and the debug word off all give no fallback at all (the effect is what it was)");
-  Check(follows, "auto follows the effect's level on a strong card and is off on a weak one");
+  Check(follows, "Auto follows the effect level on every RT adapter");
   Check(by_hand, "high and ultra by hand run on a strong card and on a weak one (a card that does not trace never)");
   Check(rt::Resolve({rt::Level::kHigh, rt::Choice::kUltra, gc::RtTier::kStrong}).cell.group_mask == rt::kUltraCell.group_mask, "the debug word can run ULTRA's cell under the effect's high");
-  Check(rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.ray_cap == rt::kMidCell.ray_cap && rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak}).cell.reach == 60.0f,
-        "a weak card by hand takes the Mid cell, 60 m, whatever it asks for");
+  const auto weak = rt::Resolve({rt::Level::kUltra, rt::Choice::kUltra, gc::RtTier::kWeak});
+  Check(weak.cell.ray_cap == rt::kUltraCell.ray_cap && weak.cell.reach == rt::kUltraCell.reach, "the weak tier keeps the full Ultra work");
   Check(rt::ParseChoice("auto") == rt::Choice::kAuto && rt::ParseChoice("off") == rt::Choice::kOff && rt::ParseChoice("high") == rt::Choice::kHigh && rt::ParseChoice("ultra") == rt::Choice::kUltra &&
             rt::ParseChoice("") == rt::Choice::kAuto && rt::ParseChoice("medium") == rt::Choice::kAuto,
         "the debug word: a word that is none is auto");
   // the cells
-  Check(rt::kMidCell.group_mask == rt::GroupBit(rt::kGroupBright) && rt::kHighCell.group_mask == (rt::GroupBit(rt::kGroupBright) | rt::GroupBit(rt::kGroupGround)) &&
+  Check(rt::kHighCell.group_mask == (rt::GroupBit(rt::kGroupBright) | rt::GroupBit(rt::kGroupGround)) &&
             rt::kUltraCell.group_mask == rt::kHighCell.group_mask,
-        "strong High and Ultra trace glossy and ground holes; weak RT traces the bright group");
+        "High and Ultra trace glossy and ground holes");
   Check(rt::kHighCell.ray_cap == 250000 && rt::kUltraCell.ray_cap == 1000000 && rt::kHighCell.rays == 1 && rt::kUltraCell.rays == 2 && rt::kHighCell.reach == 150.0f && rt::kUltraCell.reach == 300.0f, "the design's numbers: 0.25 M and 1.0 M rays, one and two a pixel, 150 and 300 m");
-  Check(rt::kMidCell.ray_cap < rt::kHighCell.ray_cap && rt::kHighCell.ray_cap < rt::kUltraCell.ray_cap && rt::kMidCell.reach < rt::kHighCell.reach && rt::kHighCell.reach < rt::kUltraCell.reach &&
-            rt::kMidCell.budget_ms == 0.30f && rt::kHighCell.budget_ms == 0.40f && rt::kUltraCell.budget_ms == 0.50f,
-        "the cells rise: cap, reach, budget");
   Check(rt::kHighCell.rays == mcla::gpu::ssr::NumbersOf(mcla::gpu::ssr::Level::kHigh).rays && rt::kUltraCell.rays == mcla::gpu::ssr::NumbersOf(mcla::gpu::ssr::Level::kUltra).rays,
         "the cells' rays a pixel are the effect's own (the fallback regenerates the trace's rays)");
   Check(rt::CellFor(rt::Level::kOff, gc::RtTier::kStrong).ray_cap == 0 && rt::CellFor(rt::Level::kHigh, gc::RtTier::kNone).ray_cap == 0, "off and no ray tracing have an empty cell");
@@ -730,116 +751,6 @@ void TestWords() {
 // ---------------------------------------------------------------------------
 
 // A pass whose cost is work / 2^step milliseconds (the cost follows the rays), `samples` seconds of 60 FPS frames, the budget as given. Returns the steps taken at every second.
-std::vector<uint32_t> Simulate(rt::Governor* g, double work_ms, double budget, double seconds, double t0 = 0.0) {
-  std::vector<uint32_t> steps;
-  double t = t0;
-  for (int frame = 0; frame < int(seconds * 60.0); ++frame, t += 1.0 / 60.0) {
-    g->Note(work_ms / double(1u << g->step()));
-    g->Update(t, budget);
-    if (frame % 60 == 59) steps.push_back(g->step());
-  }
-  return steps;
-}
-
-void TestGovernor() {
-  using G = rt::Governor;
-  {
-    G g;
-    const std::vector<uint32_t> steps = Simulate(&g, 0.4, 0.8, 10.0);
-    Check(g.step() == 0 && g.changes() == 0, "under the budget nothing changes");
-  }
-  {
-    G g;
-    const std::vector<uint32_t> steps = Simulate(&g, 3.0, 0.8, 12.0);
-    // 3.0 ms of work against 0.8: step 2 costs 0.75, fits; it must stop there
-    Check(g.step() == 2, Num("a cost of 3.0 against a budget of 0.8 settles at step 2 (took %.0f)", g.step()));
-    Check(steps.front() >= 1, "it reacts within the first second");
-    Check(g.changes() == 2, Num("two steps, no oscillation (%.0f changes)", g.changes()));
-  }
-  {
-    G g;
-    Simulate(&g, 100.0, 0.8, 20.0);
-    Check(g.step() == G::kMaxStep, "a hopeless cost stops at the last step (an eighth)");
-  }
-  {
-    // grows back when the load goes away, one step at a time, and not before the hold after the last change is over
-    G g;
-    double t = 0.0;
-    double last_change = 0.0;
-    for (int frame = 0; frame < 60 * 8; ++frame, t += 1.0 / 60.0) {
-      g.Note(3.0 / double(1u << g.step()));
-      if (g.Update(t, 0.8)) last_change = t;
-    }
-    const uint32_t before = g.step();
-    double first_regrow = -1.0;
-    for (int frame = 0; frame < 60 * 12; ++frame, t += 1.0 / 60.0) {
-      g.Note(0.3 / double(1u << g.step()));   // the load goes: 0.3 ms of work
-      if (g.Update(t, 0.8) && first_regrow < 0.0) first_regrow = t;
-    }
-    Check(before == 2 && g.step() == 0, Num("it grows back to the full step when the load goes (from %.0f to %.0f)", before, g.step()));
-    Check(first_regrow >= last_change + G::kHoldSeconds - 1e-9, Num("the first regrowth waits for the hold of two seconds after the last change (%.2f s after it)", first_regrow - last_change));
-  }
-  {
-    // a change right before the load goes: the hold applies from the change
-    G g;
-    double t = 0.0;
-    double drop = -1.0;
-    for (int frame = 0; frame < 60 * 4 && drop < 0.0; ++frame, t += 1.0 / 60.0) {
-      g.Note(1.6);
-      if (g.Update(t, 0.8)) drop = t;
-    }
-    double regrow = -1.0;
-    for (int frame = 0; frame < 60 * 6 && regrow < 0.0; ++frame, t += 1.0 / 60.0) {
-      g.Note(0.1);
-      if (g.Update(t, 0.8)) regrow = t;
-    }
-    Check(drop > 0.0 && regrow >= drop + 2.0 - 1e-9 && regrow < drop + 3.0, Num("dropped at %.2f s, grown back no sooner than 2 s later (%.2f s)", drop, regrow - drop));
-  }
-  {
-    // a cost that would not fit one step up does not grow back (no oscillation at the edge)
-    G g;
-    Simulate(&g, 1.2, 0.8, 6.0);   // step 1 costs 0.6
-    const uint32_t settled = g.step();
-    const uint32_t changes = g.changes();
-    Simulate(&g, 1.2, 0.8, 30.0, 6.0);
-    Check(settled == 1 && g.step() == 1 && g.changes() == changes, "at the edge (the full step costs 1.2 against 0.8) it stays at step 1 and does not flap");
-  }
-  {
-    // noise around the budget: the average decides, not one frame
-    G g;
-    Lcg rng;
-    double t = 0.0;
-    for (int frame = 0; frame < 60 * 20; ++frame, t += 1.0 / 60.0) {
-      g.Note(0.4 + (rng.Next() < 0.02f ? 3.0 : 0.0));   // a spike now and then (one frame in fifty), the mean about 0.46
-      g.Update(t, 0.8);
-    }
-    Check(g.step() == 0, "an occasional spike does not drop the cap");
-  }
-  {
-    // one frame that took twenty times as long (a stall: a shader compile, a texture upload) is over the budget at one decision at most and the cap does not move
-    G g;
-    double t = 0.0;
-    for (int frame = 0; frame < 60 * 8; ++frame, t += 1.0 / 60.0) {
-      g.Note(frame == 200 ? 20.0 : 0.4);
-      g.Update(t, 0.8);
-    }
-    Check(g.step() == 0 && g.changes() == 0, "a single stall does not drop the cap (two decisions over the budget are needed)");
-  }
-  {
-    G g;
-    g.Note(-1.0);
-    g.Note(std::nan(""));
-    Check(!g.has_samples(), "a bad sample is ignored");
-    Check(!g.Update(5.0, 0.8), "no samples, no decision");
-    g.Note(5.0);
-    Check(!g.Update(5.0, 0.8), "too few samples, no decision");
-    g.Reset();
-    Check(g.step() == 0 && !g.has_samples() && g.changes() == 0, "reset forgets everything");
-    for (int i = 0; i < 20; ++i) g.Note(2.0);
-    Check(!g.Update(1.0, 0.0), "a budget of nothing decides nothing");
-  }
-}
-
 // ---------------------------------------------------------------------------
 // the counters and the census
 // ---------------------------------------------------------------------------
@@ -856,7 +767,6 @@ void TestCensus() {
   f.group_mask = rt::kUltraCell.group_mask;
   f.reach = 300.0f;
   f.capacity = 500000;
-  f.step = 0;
   f.rays_per_pixel = 2;
   f.candidates = 120400;
   f.listed = 120400;
@@ -869,18 +779,15 @@ void TestCensus() {
   f.screen = 30000;
   f.shaded = 61000;
   f.filled = 83000;
-  f.ms = 0.42;
-  f.budget_ms = 1.8f;
   const std::string line = rt::FormatFrameLine(f);
   if (g_print) std::printf("%s\n", line.c_str());
-  Check(line.rfind("[ssr rt] frame 1200: level ultra, groups glass+metal+water+road+sidewalk+tunnels, reach 300 m, capacity 500000 px at step 0 (2 rays), candidates 120400 listed 120400 keep 1.00, rays 240800 city 91000 car 2100 miss 147700 no data 0 screen 30000 shaded 61000 filled 83000, 0.42 ms (budget 1.80)", 0) == 0,
+  Check(line.rfind("[ssr rt] frame 1200: level ultra, groups glass+metal+water+road+sidewalk+tunnels, reach 300 m, capacity 500000 px (2 rays), candidates 120400 listed 120400 keep 1.00, rays 240800 city 91000 car 2100 miss 147700 no data 0 screen 30000 shaded 61000 filled 83000", 0) == 0,
         "the frame line the chains read: " + line);
-  f.ms = -1.0;
   f.rays_per_pixel = 1;
   f.level = rt::Level::kHigh;
   f.group_mask = rt::kHighCell.group_mask;
   const std::string untimed = rt::FormatFrameLine(f);
-  Check(Has(untimed, "level high, groups glass+metal+water+road+sidewalk+tunnels, ") && Has(untimed, "(1 ray)") && Has(untimed, "no timing (budget 1.80)"), "a line without timing says so; one ray is singular");
+  Check(Has(untimed, "level high, groups glass+metal+water+road+sidewalk+tunnels, ") && Has(untimed, "(1 ray)"), "one ray is singular");
   rt::Totals t;
   Check(rt::FormatTotals(t).empty(), "a fallback that never was wanted adds nothing to the census");
   t.frames_run = 900;
@@ -888,12 +795,9 @@ void TestCensus() {
   t.stats_frames = 45;
   t.candidates = 5000000;
   t.rays = 4000000;
-  t.step = 1;
-  t.step_changes = 3;
-  t.ms = 0.31;
   t.last_why = rt::Why::kNoScene;
   const std::string text = rt::FormatTotals(t);
-  Check(text.rfind("; ssr rt: 900 frames ran, 12 wanted and did not (last: no ray tracing top level in this frame), 45 stats frames (candidates 5000000, rays 4000000, ", 0) == 0 && Has(text, "governor step 1 (3 changes), 0.31 ms"),
+  Check(text.rfind("; ssr rt: 900 frames ran, 12 wanted and did not (last: no ray tracing top level in this frame), 45 stats frames (candidates 5000000, rays 4000000, ", 0) == 0 && Has(text, "shaded "),
         "the census text: " + text);
 }
 
@@ -937,7 +841,7 @@ void TestShaderSources(const std::string& dir) {
   Check(Has(trace, "#define CAR_RT_SPACE 6") && Has(trace, "#define RT_WORLD_SPACE 6") && Has(trace, "#define CITY_HIT_SPACE 6") && Has(trace, "register(u0, space5)") && Has(trace, "register(u1, space5)") &&
             Has(trace, "register(u2, space5)") && Has(select, "register(u1, space5)") && Has(select, "register(u2, space5)"),
         "the layout's spaces: the textures 0 to 3, the samplers and the push block 4, the output set 5, the ray tracing set 6");
-  Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst, ground)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
+  Check(Has(trace, "CityHitResolve(p, f, s, ray, hit.inst, ground)") && Has(trace, "CityHitTrace(origin, dir, 0.0f, trace_reach, kSsrRtMask") && Has(trace, "RtWorldLoad()") && Has(trace, "RT_WORLD_VALID") && Has(trace, "CITY_HIT_GAIN(cls) RtWorldClassGain(cls)"),
         "the trace pass resolves its hits with the city hit library in the world frame's light, with the world frame's class gains");
   Check(Has(trace, "const bool ground = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;") &&
             Has(trace, "if (ground && (flags & SSR_RT_FLAG_SCREEN) == 0u)") &&
@@ -964,7 +868,7 @@ void TestShaderSources(const std::string& dir) {
   Check(Has(trace, "if (fade > 0.0f && SsrRtShadeCar(") && Has(trace, "sum += (min(colour, float3(cap, cap, cap)) - fallback) * (fade * ray_share);") &&
             Has(trace, "rt_id = kReflHitRtCarShaded;"),
         "a shaded car uses the fallback fade, subtracts the planar share and enters the existing history distance path");
-  Check(Has(trace, "register(u3, space5)") && Has(trace, "ReflHitPackHandoff(visible, rt_id >= kReflHitRtCity ? rt_id : rejected, screen_id, native, screen_fraction)"),
+  Check(Has(trace, "register(u4, space5)") && Has(trace, "ReflHitPackHandoff(visible, rt_id >= kReflHitRtCity ? rt_id : rejected, screen_id, native, screen_fraction)"),
         "the capture pass stores discarded query classes separately from the visible source");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),
         "the hit's flags are the car reflections' (the sun's ray, glow) and a stats frame calibrates through the control buffer's region");
@@ -986,10 +890,10 @@ void TestHostSources(const std::string& dir) {
         "the compute layout: four texture sets, the samplers at 4, the output set at 5, the car scene's ray tracing set at 6, the push block at (b0, space4)");
   Check(Has(rt_cpp, "list->setComputeDescriptorSet(hit ? capture_set_.get() : set_.get(), 5);") && Has(rt_cpp, "list->setComputeDescriptorSet(view.set, 6);") && Has(rt_cpp, "list->setComputeDescriptorSet(heap_->sampler_set(), 4);"), "the sets are bound at the indices the shaders declare");
   // D3D12 sizes a descriptor set by its view count: the literal is the builder's ranges (u0, u1, u2)
-  Check(Count(rt_cpp, "output_builder_.addReadWrite") == 3 && Has(rt_cpp, "CreateDescriptorSet(output_builder_, 3, 0, \"ssr rt output set\")"),
-        "the output set is made with the three views its builder describes (D3D12 counts them)");
-  Check(Count(rt_cpp, "capture_builder_.addReadWrite") == 4 && Has(rt_cpp, "CreateDescriptorSet(capture_builder_, 4, 0, \"ssr rt capture output\")") &&
-            Has(rt_cpp, "capture_set_->setTexture(3, hit.texture.get()"), "the capture output set adds the hit ID image at u3");
+  Check(Count(rt_cpp, "output_builder_.addReadWrite") == 4 && Has(rt_cpp, "CreateDescriptorSet(output_builder_, 4, 0, \"ssr rt output set\")"),
+        "the output set is made with the four views its builder describes (D3D12 counts them)");
+  Check(Count(rt_cpp, "capture_builder_.addReadWrite") == 5 && Has(rt_cpp, "CreateDescriptorSet(capture_builder_, 5, 0, \"ssr rt capture output\")") &&
+            Has(rt_cpp, "capture_set_->setTexture(4, hit.texture.get()"), "the capture output set adds the hit ID image at u4");
   Check(Has(rt_cpp, "set_->setTexture(0, trace.texture.get(), plume::RenderTextureLayout::GENERAL, trace.view.get());") && Has(rt_cpp, "set_->setBuffer(1, ctl_.get()") && Has(rt_cpp, "set_->setBuffer(2, list_.get()"),
         "u0 is the trace image, u1 the control words, u2 the list");
   // the pass: the barriers and the order of the dispatches
@@ -1001,26 +905,25 @@ void TestHostSources(const std::string& dir) {
   const size_t back = At(rt_cpp, "const plume::RenderTextureBarrier read(in.trace->texture.get(), Layout::SHADER_READ);");
   Check(gen != std::string::npos && gen < select && select < first_dispatch && first_dispatch < trace_pipe && trace_pipe < trace_dispatch && trace_dispatch < back,
         "the trace image goes to a storage layout, the select pass runs, then the trace pass, then the image goes back to a shader read");
-  Check(Count(rt_cpp, "list->barriers(Stage::COMPUTE, between, 2);") >= 2 && Has(rt_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read, 1);"),
+  Check(Count(rt_cpp, "list->barriers(Stage::COMPUTE, control, 2);") >= 2 && Has(rt_cpp, "list->barriers(Stage::GRAPHICS_AND_COMPUTE, nullptr, 0, &read, 1);"),
         "the control words and the list are barriered between the passes and the trace image is readable by the graphics passes after");
   Check(Has(rt_cpp, "reset_pending_") && Has(rt_cpp, "pk::kFlagReset") && Has(rt_cpp, "ssr_rt::GroupsFor(capacity)") &&
-            Has(rt_cpp, "classified_ ? 0u : governor_.step()") && Has(rt_cpp, "ssr_rt::CapacityFor(cell, step, rays)") &&
+            Has(rt_cpp, "ssr_rt::CapacityFor(cell, rays)") &&
             Has(rt_cpp, "ssr_rt::RaysUsed(cell,"),
         "the first frame clears the control words and the cap uses a fixed step with classification");
   const size_t indirect = At(rt_cpp, "in.indirect->Dispatch(*list);");
-  Check(select < indirect && indirect < trace_pipe && Has(rt_cpp, "reset_pending_ || in.indirect") &&
+  Check(select < indirect && indirect < trace_pipe && Has(rt_cpp, "reset_pending_ || indirect") &&
             Has(rt_cpp, "reset.Set(pk::kCap, 0);"),
         "the indirect list is selected before tracing and clears its counters even when empty");
-  Check(Has(rt_cpp, "governor_.Update(now, double(cell.budget_ms))") && Has(rt_cpp, "governor_.Note(ms)") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 0);") && Has(rt_cpp, "list->writeTimestamp(timer_->pools[timer_slot].get(), 1);") &&
-            Has(rt_cpp, "frames_->RetireAction("),
-        "the governor is fed by two timestamps round the passes, read once the list has completed");
+  Check(!Has(rt_cpp, "writeTimestamp(") && !Has(rt_cpp, "governor_") &&
+            Has(rt_cpp, "trace_dispatch_->Dispatch(*list);"),
+        "both SSR arms use fixed work and the classified trace launches only listed tiles");
   Check(Has(rt_cpp, "world_->AddCalibration(delta.data() + ssr_rt::buf::kStatCal)") && Has(rt_cpp, "world_->StatsFrame()"), "a stats frame's calibration counters go to the world frame's one window");
   Check(Has(rt_cpp, "service_->Want(rt_scene::Consumer::kSsrFallback, ssr_rt::NeedsFor(resolved_.level, shade_cars_))") && Has(rt_cpp, "if (wanted() && service_) {") &&
             Has(rt_cpp, "ssr_rt::CarHitsEnabled(now.cell, larecomp::settings::mcla_gpu_ssr_rt_cars.Get())") && Has(rt_cpp, "if (shade_cars_) flags |= pk::kFlagCars;"),
         "the frame's resolved car setting is shared by the scene request and trace flags");
   Check(Has(rt_cpp, "static LiveText text(\"mcla_gpu_ssr_rt\");") && Has(rt_cpp, "ssr_rt::ParseChoice(Setting().Get())") &&
-            Has(rt_cpp, "ssr_rt::ResolveFixed(ssr_level, choice, ready_)") &&
-            Has(rt_cpp, "ssr_rt::Resolve({ssr_level, choice, gpu_class::CurrentRtRung()})"),
+            Has(rt_cpp, "ssr_rt::ResolveFixed(ssr_level, choice, ready_)"),
         "the classified path resolves work from the chosen level and ray-query support");
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
@@ -1091,9 +994,9 @@ int main(int argc, char** argv) {
   TestRayIsTheTraces();
   TestSelectModel();
   TestThinNoise();
+  TestRankedSelection();
   TestDecision();
   TestWords();
-  TestGovernor();
   TestCensus();
   if (!src_dir.empty()) {
     TestShaderSources(src_dir);

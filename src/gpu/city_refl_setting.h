@@ -123,9 +123,8 @@ enum class Gate : uint8_t {
 };
 
 // `wanted`: the word comes to something above off (the data's state only matters then).
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool car_rt_on, bool wanted, Data data) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier, bool car_rt_on, bool wanted, Data data) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!car_rt_on) return Gate::kNeedsCarRt;
   if (wanted && data == Data::kUnavailable) return Gate::kNotReady;
   if (wanted && data == Data::kBuilding) return Gate::kBuilding;

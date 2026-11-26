@@ -201,10 +201,8 @@ int main(int argc, char** argv) {
   {
     const tr::Level high = tr::LevelFor(GpuClass::kHigh), mid = tr::LevelFor(GpuClass::kMid), low = tr::LevelFor(GpuClass::kLow);
     Check(high.on && Near(high.share, 0.40) && high.max_depth == 45.0f && high.min_texels == 600, "High: on, 40 percent of the budget, 45 m, 600 texels");
-    Check(mid.on && Near(mid.share, 0.25) && mid.max_depth == 30.0f && mid.min_texels == 600, "Mid: on, 25 percent, 30 m, 600 texels");
-    Check(!low.on && low.share == 0.0, "Low: no traffic reflection (the pass has no ray tracing there)");
-    Check(high.share > mid.share && high.max_depth > mid.max_depth, "the weaker the class the smaller the share and the nearer the limit");
-    Check(Near(double(op::TexelBudget(GpuClass::kHigh, -1, 0)) * high.share, 200000.0) && Near(double(op::TexelBudget(GpuClass::kMid, -1, 0)) * mid.share, 50000.0), "the shares are 200k texels on High and 50k on Mid");
+    Check(mid == high && low == high, "traffic uses the same distance, share and texel minimum across classes");
+    Check(Near(double(op::TexelBudget(GpuClass::kMid, -1, 0)) * mid.share, 200000.0), "the traffic share is 200k texels");
     Check(tr::LevelWith(high, -1) == high && tr::LevelWith(mid, -1) == mid && tr::LevelWith(low, -1) == low, "-1 keeps the class's level");
     Check(!tr::LevelWith(high, 0).on && !tr::LevelWith(mid, 0).on, "0 turns the traffic off");
     const tr::Level fifty = tr::LevelWith(high, 50);
@@ -235,7 +233,7 @@ int main(int argc, char** argv) {
     }
     {
       const tr::TrafficPlan p = tr::PlanDispatches({Car(1200000, true, 4.0f)}, budget, high);
-      Check(p.traffic_admitted == 1 && p.plan.rays == op::kRaysMirror, "a traffic car filling the picture (1.2M, over its share and the budget's twice) is still the first and always traced, with the mirror ray alone");
+      Check(p.traffic_admitted == 1 && p.plan.rays == op::kRaysFull, "a traffic car filling the picture (1.2M, over its share and the budget's twice) is still the first and always traced, with the full cone");
     }
     {
       // four traffic cars: the nearest is the first; the second does not fit the 200k share; the third and fourth do
@@ -258,7 +256,7 @@ int main(int argc, char** argv) {
       const tr::TrafficPlan p = tr::PlanDispatches(scene, budget, high);
       Check(p.plan.admitted == 3 && p.traffic_admitted == 1 && p.traffic_over == 1 && p.plan.texels == 950000,
             "two opponents (850k) and two traffic cars: the first traffic car fits the pass's limit (950k <= 1M), the second does not (1.05M)");
-      Check(p.plan.rays == op::kRaysReduced, "the rays follow the total (950k is over the budget, under twice it): the outer pair");
+      Check(p.plan.rays == op::kRaysFull, "the cone keeps its samples as coverage grows");
       const tr::TrafficPlan opponents_only = tr::PlanDispatches({scene[0], scene[1]}, budget, high);
       Check(opponents_only.plan.admitted == 2 && opponents_only.plan.skipped == 0, "the opponents are admitted the same without the traffic");
     }
@@ -286,7 +284,7 @@ int main(int argc, char** argv) {
       const tr::Level mid = tr::LevelFor(GpuClass::kMid);
       const uint64_t mid_budget = op::TexelBudget(GpuClass::kMid, -1, 0);
       const tr::TrafficPlan p = tr::PlanDispatches({Car(260000, true, 6.0f, 0), Car(30000, true, 14.0f, 5000), Car(30000, true, 16.0f, 9000)}, mid_budget, mid);
-      Check(p.traffic_admitted == 1 && p.traffic_over == 2 && p.plan.rays == op::kRaysReduced, "Mid: the first car (260k, over the budget of 200k and the share of 50k) is traced alone, with the outer pair; the others are over the share");
+      Check(p.traffic_admitted == 1 && p.traffic_over == 2 && p.plan.rays == op::kRaysFull, "the first car is traced alone; the remaining cars exceed the share");
     }
   }
 
@@ -327,7 +325,7 @@ int main(int argc, char** argv) {
       limit_held = limit_held && (double(p.plan.texels) <= limit || p.plan.admitted == 1);
       counters_add = counters_add && p.traffic_admitted + p.traffic_far + p.traffic_over == p.traffic_cars && p.plan.admitted + p.plan.skipped + p.traffic_far == p.plan.cars &&
                      p.traffic_texels <= p.plan.texels;
-      rays_follow = rays_follow && (p.plan.admitted == 0 || p.plan.rays == op::RaysFor(p.plan.texels, budget));
+      rays_follow = rays_follow && (p.plan.admitted == 0 || p.plan.rays == op::RaysFor(0));
       // every traffic car admitted passes the near and small rules: recount by re-planning with the car alone
       for (const tr::CarRect& c : scene) {
         if (!c.traffic) continue;

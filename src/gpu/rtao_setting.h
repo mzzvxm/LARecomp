@@ -26,9 +26,8 @@ inline Choice ParseChoice(std::string_view word) {
 
 enum class Gate : uint8_t { kRuns, kNoRt, kTooSlow, kNotBuilt };
 
-constexpr Gate GateFor(gc::GpuClass cls, gc::RtTier tier, bool pass_built) {
+constexpr Gate GateFor(gc::GpuClass, gc::RtTier tier, bool pass_built) {
   if (tier == gc::RtTier::kNone) return Gate::kNoRt;
-  if (cls == gc::GpuClass::kLow) return Gate::kTooSlow;
   if (!pass_built) return Gate::kNotBuilt;
   return Gate::kRuns;
 }
@@ -47,10 +46,10 @@ inline Decision Decide(gc::GpuClass cls, bool class_known, gc::RtTier tier, Choi
                        bool pass_built) {
   if (!class_known) cls = gc::GpuClass::kLow;
   Decision d;
-  d.rung = gc::RtRung(cls, tier);
+  d.rung = tier;
   d.gate = GateFor(cls, tier, pass_built);
   if (choice == Choice::kAuto) {
-    const std::string_view rt_cell = gc::RtCell(gc::RtEffect::kRtAo, d.rung);
+    const std::string_view rt_cell = gc::RtCell(gc::RtEffect::kRtAo, gc::RtRung(cls, tier));
     choice = ParseChoice(rt_cell.empty() ? gc::Cell(gc::Effect::kAmbientOcclusion, cls) : rt_cell);
   }
   d.chosen = choice;
