@@ -132,6 +132,7 @@ add_library(larecomp_gpu OBJECT
     side_view_foliage_impostor.cpp
     side_view_reflection.cpp
     side_view_shadow.cpp
+    shadow_fit_depth.cpp
     side_view_ui_map.cpp
     side_views.cpp
     split.cpp
@@ -230,6 +231,7 @@ add_executable(larecomp_shadow_filter_noise_test EXCLUDE_FROM_ALL shadow_filter_
 #   cmake --build <dir> --target larecomp_shadow_filter_resolve_test, then run src/gpu/larecomp_shadow_filter_resolve_test [<src/gpu dir>] [--print] (a few seconds).
 add_executable(larecomp_shadow_filter_resolve_test EXCLUDE_FROM_ALL shadow_filter_resolve_test.cpp)
 add_executable(larecomp_cascade_schedule_test EXCLUDE_FROM_ALL cascade_schedule_test.cpp)
+add_executable(larecomp_cascade_fit_test EXCLUDE_FROM_ALL cascade_fit_test.cpp)
 # NOISE-RESOLVE (noise_resolve.h, NOISE-AUDIT.md CHECK 1 and 2): the effects that held one pattern without a temporal upscaler (the contact march, the traced sun rays, the shafts, the car reflection cone) change their noise
 # every frame and resolve it with a history; the twins of the passes measure the per-frame variation, the error after the history under a still and a moving camera, the flicker and the ghost; the upscaler's jitter in
 # a pinned still; the memory; the sources:
@@ -1247,6 +1249,8 @@ larecomp_gpu_host_shader(local_light_ps ps_6_0 DEFINES LL_PASS_MS=0)
 larecomp_gpu_host_shader(local_light_ms_ps ps_6_0 SOURCE local_light_ps DEFINES LL_PASS_MS=1)
 # The shared screen products (screen_shared.h): one level of the Hi-Z chain (the min of the linear depth), and the debug view of the products.
 larecomp_gpu_host_shader(screen_hiz_ps ps_6_0)
+larecomp_gpu_host_shader(shadow_fit_depth_cs cs_6_0)
+larecomp_gpu_host_shader(shadow_fit_depth_ms_cs cs_6_0 SOURCE shadow_fit_depth_cs DEFINES SHADOW_FIT_MS=1)
 # ... and the colour captures: colour_post's level 0 from the main colour (plain or multisampled) and a mip level of it.
 larecomp_gpu_host_shader(screen_colour_ps ps_6_0 DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=0)
 larecomp_gpu_host_shader(screen_colour_ms_ps ps_6_0 SOURCE screen_colour_ps DEFINES SCREEN_COLOUR_PASS=0 SCREEN_COLOUR_MS=1)

@@ -673,6 +673,7 @@ void AmbientOcclusion::Shutdown() {
   if (passes_) {
     passes_->precache().Stop();
   }
+  shadow_fit_depth_.Shutdown();
   if (rtao_) {
     rtao_->Shutdown();
     rtao_.reset();
@@ -1112,6 +1113,7 @@ plume::RenderPipeline* AmbientOcclusion::Pipeline(uint32_t variant) {
 }
 
 void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
+  shadow_fit_wanted_ = cascade_fit::depth_wanted.load(std::memory_order_acquire);
   if (gbuffer::PauseFxCameraChanged(previous_pause_, pause_fx_, pause_fx)) {
     // AO and screen-space bounce share a history. Contact shadows can also
     // keep their own. Start both over when the pause camera changes mode.
@@ -1614,6 +1616,7 @@ void AmbientOcclusion::OnAnchor(const ConstantBanks::Banks& banks, bool requeste
     NoteVehicles(ps);
   }
   camera_ = camera;
+  if (!pause && shadow_fit_wanted_) shadow_fit_depth_.NoteCamera(frame_, camera);
   have_camera_ = true;
   previous_ = camera;
   previous_pause_ = pause;
@@ -1785,6 +1788,13 @@ bool AmbientOcclusion::OnResolve(const ResolveRecord& record, const ResolveCache
   }
   if (refused != 0 || !list || !ready_ || !summary.source) {
     return false;
+  }
+  if (!pause && shadow_fit_wanted_ && device_ && frames_ && passes_ && edram_ && pass_timing_) {
+    uint32_t width = 0, height = 0;
+    PictureSize(summary, &width, &height);
+    auto& source = *summary.source;
+    shadow_fit_depth_.Record(*device_, *frames_, *passes_, *edram_, *pass_timing_, list, source,
+                             source.scale.Edge(width), source.scale.Edge(height), frame_);
   }
 
   // The trigger. The depth chain also runs, with the occlusion off, at the census's frames: its

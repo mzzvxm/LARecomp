@@ -422,6 +422,7 @@
 #include "records.h"
 #include "resolve.h"
 #include "screen_extract.h"
+#include "shadow_fit_depth.h"
 #include "temporal_camera.h"
 #include "temporal_identities.h"
 #include "vehicle_motion.h"
@@ -513,7 +514,8 @@ class AmbientOcclusion {
   // True while the draw hooks have anything to do (the occlusion or the contact shadows are on, or
   // the census).
   bool wants_draws() const {
-    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0 || screen_wants_ || world_light_wanted_;
+    return mode_ != Mode::kOff || contact_mode_ != Mode::kOff || census_every_ != 0 ||
+           screen_wants_ || world_light_wanted_ || shadow_fit_wanted_;
   }
   // The ray tracing world frame (rt_world_frame.h) needs the frame's light and the road's wetness from the main view's draws whether or not any effect of this family is on: while it says so
   // the draw hooks collect them (and nothing else: the passes stay as the settings say). Render thread; read at the next draw.
@@ -1376,6 +1378,8 @@ class AmbientOcclusion {
   ScreenShared* screen_ = nullptr;   // the shared screen products (SetScreenShared); not owned
   bool screen_wants_ = false;        // this frame: a consumer outside this family wants the depth chain (ScreenShared::NeedsDepthChain), read in BeginFrame
   bool world_light_wanted_ = false;   // the ray tracing world frame wants the light and the wetness (SetWorldLightWanted)
+  bool shadow_fit_wanted_ = false;
+  ShadowFitDepth shadow_fit_depth_;
   ResolveCache* resolve_ = nullptr;  // finds the game's shadow mask (contact shadows)
   bool ready_ = false;  // the layout and the shaders exist (the contact march's only when it is on: Initialize)
   bool contact_shader_failed_ = false;

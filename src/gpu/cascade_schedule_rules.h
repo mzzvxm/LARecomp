@@ -4,6 +4,8 @@
 #include <cmath>
 #include <cstdint>
 
+#include "cascade_fit_rules.h"
+
 namespace mcla::gpu::cascade_schedule {
 
 constexpr uint32_t kCascadeMask = 0x1e0;
@@ -63,7 +65,9 @@ struct View {
   Vec forward{};
   Vec heading{};  // horizontal projection, Y is up
   Vec sun{};
-  std::array<float, 5> fit{};  // far, FOV and bias scales, and the viewport FOV
+  std::array<float, 8> fit{};  // far, FOV and bias scales, viewport FOV and aspect inputs
+  Vec up{};
+  float stable_far = 0.0f;
   uint32_t cut = 0;
   uint32_t hour_jump = 0;
   int weather = -1;
@@ -132,11 +136,21 @@ inline Reason Decide(uint8_t cascade, uint64_t age, const View& old, const View&
   // of 0.25 degrees spans about three guest texels across the box.
   if (old.hour_jump != now.hour_jump || old.weather != now.weather ||
       DeltaSquared(old.sun, now.sun) > 0.00001903856f) return Reason::kLight;
-  if (old.fit != now.fit) return Reason::kFit;
-  const float travel = Width(cascade) / 64.0f;
-  if (DeltaSquared(old.eye, now.eye) > travel * travel) return Reason::kTravel;
-  if (Dot(old.heading, now.heading) < 0.998629535f ||
-      Dot(old.forward, now.forward) < 0.998629535f) return Reason::kTurn;
+  if (old.fit != now.fit || old.stable_far != now.stable_far) return Reason::kFit;
+  if (now.stable_far > 0.0f) {
+    if ((std::abs(old.sun[1]) < 0.99f) != (std::abs(now.sun[1]) < 0.99f)) return Reason::kLight;
+    const double travel = std::sqrt(DeltaSquared(old.eye, now.eye));
+    if (travel > cascade_fit::kOneFrameTravel) return Reason::kTravel;
+    // In a world-aligned frame a turn can hold while the padded box still
+    // encloses the new cone. Include both pitch and roll in the angle bound.
+    const float cosine = std::min(Dot(old.forward, now.forward), Dot(old.up, now.up));
+    if (!cascade_fit::HoldCovers(travel, cosine, now.stable_far)) return Reason::kTurn;
+  } else {
+    const float travel = Width(cascade) / 64.0f;
+    if (DeltaSquared(old.eye, now.eye) > travel * travel) return Reason::kTravel;
+    if (Dot(old.heading, now.heading) < 0.998629535f ||
+        Dot(old.forward, now.forward) < 0.998629535f) return Reason::kTurn;
+  }
   if (CasterChanged(cascade, old_casters, casters)) return Reason::kCaster;
   if (age >= Period(cascade)) return Reason::kCadence;
   return Reason::kHold;
