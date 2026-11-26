@@ -100,6 +100,7 @@ float4 SsrTraceBody(float4 position) {
   // the class group the fallback may trace for this pixel: none where the term the apply takes is under a tenth of a whole one (a road just wet enough to cross the smoothness floor)
   const uint rt_group = SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH)) >= kSsrRtMinRamp ? SsrRtGroupOf(surface.cls) : kSsrRtGroupNone;
   float conf_sum = 0.0f;
+  float first_confidence = 0.0f;
 #endif
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
@@ -206,6 +207,9 @@ float4 SsrTraceBody(float4 position) {
 #endif
 #if SSR_RT
     conf_sum += conf;
+    if (ray == 0u) {
+      first_confidence = conf;
+    }
 #endif
     if (length_to_hit < travelled) {
       travelled = length_to_hit;
@@ -224,7 +228,7 @@ float4 SsrTraceBody(float4 position) {
   g_reflhit = ReflHitPack(visible, kReflHitNone, screen_id, native);
 #endif
 #if SSR_RT
-  g_confidence = float2(SsrRtGroupOut(rt_group), saturate(conf_sum / float(rays)));
+  g_confidence = float2(SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / float(rays)));
 #endif
   return float4(rgb, SsrPackHit(distance_out, vehicle_hit, vehicle_id));
 }

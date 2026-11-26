@@ -377,15 +377,17 @@ void SampleChecks() {
 
 void TextChecks(const std::string& src) {
   const std::string car = ReadFile(src + "/gpu/hlsl/car_rt_hit_shade.hlsli");
+  const std::string material = ReadFile(src + "/gpu/hlsl/car_rt_hit_material.hlsli");
   const std::string frame = ReadFile(src + "/gpu/hlsl/rt_hit_frame.hlsli");
   const std::string sample = ReadFile(src + "/gpu/hlsl/rt_hit_sample.hlsli");
   const std::string common = ReadFile(src + "/gpu/hlsl/rt_hit_common.hlsli");
-  if (car.empty() || frame.empty() || sample.empty()) {
+  if (car.empty() || material.empty() || frame.empty() || sample.empty()) {
     std::printf("the sources were not found under %s: the text checks are skipped\n", src.c_str());
     return;
   }
   const auto has = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
-  CHECK(has(car, "#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]") && has(car, "#define RT_HIT_TLAS gCarRtTlas") && has(car, "#include \"rt_hit_frame.hlsli\"") && has(car, "#include \"rt_hit_sample.hlsli\""));
+  CHECK(has(car, "#include \"car_rt_hit_material.hlsli\"") && has(material, "#ifndef RT_HIT_FRAME_ROW\n#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]") &&
+        has(material, "#define RT_HIT_TLAS gCarRtTlas") && has(material, "#include \"rt_hit_frame.hlsli\"") && has(material, "#include \"rt_hit_sample.hlsli\""));
   CHECK(has(common, "#include \"rt_hit_frame.hlsli\"") && has(common, "#include \"rt_hit_sample.hlsli\""));
   CHECK(has(sample, "#include \"rt_hit_frame.hlsli\""));
   CHECK(!has(car, "CarMatSample") && !has(car, "CarMatCascadeLit") && !has(car, "CarMatFrame") && !has(car, "CAR_MAT_FRAME_"));  // nothing of the moved code is left behind under its old names

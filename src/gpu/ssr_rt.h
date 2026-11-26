@@ -148,6 +148,7 @@ class ScreenReflectionsRt {
 
   // the frame
   ssr_rt::Resolved resolved_;
+  bool shade_cars_ = false;
   ssr_rt::Level logged_level_ = ssr_rt::Level::kOff;
   bool logged_level_once_ = false;
   uint32_t rt_frame_ = 0;                              // frames the passes were recorded (the counters' rotation, the tile order, the thinning)

@@ -27,35 +27,11 @@
 #ifndef CAR_RT_HIT_SHADE_HLSLI
 #define CAR_RT_HIT_SHADE_HLSLI
 
-ByteAddressBuffer gCarRtUvs : register(t4, CAR_RT_SPACE_NAME);
-StructuredBuffer<uint4> gCarRtMaterials : register(t5, CAR_RT_SPACE_NAME);
-
-// The pieces every hit shading shares are in rt_hit_common.hlsli (CITY-RT M2 H4): the frame's rows and the hit's light (rt_hit_frame.hlsli, included here), the bindless texture reads, the game's
-// cascades, the environment map and the sun's ray (rt_hit_sample.hlsli, included below after the car's own records). The frame's rows are the first rows of binding 5 here, and the sun's ray
-// looks in the car scene's top level.
-#define RT_HIT_FRAME_ROW(i) gCarRtMaterials[i]
-#define RT_HIT_TLAS gCarRtTlas
-#include "rt_hit_frame.hlsli"
+#include "car_rt_hit_material.hlsli"
 #include "nan_guard.hlsli"
 
 static const float kCarHitMaxColour = 60000.0;   // a hit's colour in the history's units: what a half float keeps with room
 
-#define CAR_MAT_CLASS_NONE 0
-#define CAR_MAT_CLASS_PAINT 1
-#define CAR_MAT_CLASS_GLASS 2
-#define CAR_MAT_CLASS_TYRE 3
-#define CAR_MAT_CLASS_CHROME 4
-#define CAR_MAT_CLASS_LIGHT 5
-#define CAR_MAT_CLASS_INTERIOR 6
-#define CAR_MAT_CLASS_OTHER 7
-
-#define CAR_MAT_FLAG_PAINT 1
-#define CAR_MAT_FLAG_DECAL 2
-#define CAR_MAT_FLAG_UV 4
-#define CAR_MAT_FLAG_EMISSIVE 8
-
-static const uint kMatRows = 2;
-static const uint kMatGlowDriven = 1u;  // word w of an instance's second row, bit 0 (car_rt_material_rules.h kRecordGlowDriven)
 // RT-HIT-SHADING-5 (car_rt_material_rules.h has each number and says what it is)
 static const float kNightFillShare = 0.4;
 static const float kLampDiffuse = 0.6;  // RT-HIT-SHADING-6 (car_rt_material_rules.h kLampDiffuse): the street lamp's light on a surface that faces up, at night
@@ -81,69 +57,10 @@ static float gCarHitNdl = 0.0;
 static float gCarHitVisible = 1.0;
 static float gCarHitGlow = 0.0;
 
-// The class's own numbers where the draw's constants say nothing (car_rt_material_rules.h kDefaults: none, paint, glass, tyre, chrome, light, interior, other).
-static const float kClassFresnelMin[8] = {0.04, 0.05, 0.04, 0.02, 0.70, 0.04, 0.02, 0.04};
-static const float kClassFresnelMax[8] = {0.30, 0.60, 1.00, 0.10, 1.00, 0.90, 0.15, 0.30};
-static const float kClassEnvLod[8] = {1.5, 0.5, 0.5, 3.0, 0.7, 0.5, 2.5, 1.5};
-static const float kClassSpecGain[8] = {0.5, 1.0, 1.0, 0.3, 1.0, 1.0, 0.3, 0.5};
-static const float kClassDiffuseGain[8] = {1.0, 1.0, 1.0, 1.0, 0.1, 0.3, 1.0, 1.0};
 // RT-HIT-SHADING-5 (car_rt_material_rules.h kClassAmbient, kClassGlint)
 static const float kClassAmbient[8] = {1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 0.45, 0.85};
 static const float kClassGlint[8] = {0.5, 1.0, 1.0, 0.0, 1.0, 0.8, 0.0, 0.3};
 
-struct CarMat
-{
-    uint cls;
-    uint flags;
-    float fresnelMin;
-    float fresnelMax;
-    float fresnelPower;
-    uint diffuse;
-    float3 tintA;
-    float3 tintB;
-    float flop;
-    float lodBase;
-    float emissive;
-    bool glowDriven;   // the emissive scale is the game's lamps' (car_rt_lights_rules.h): the night factor does not multiply it
-};
-
-CarMat CarMatLoad(uint instance)
-{
-    const uint base = kRtHitFrameRows + instance * kMatRows;
-    const uint4 r0 = gCarRtMaterials[base];
-    const uint4 r1 = gCarRtMaterials[base + 1u];
-    CarMat m;
-    m.cls = r0.x & 0xFu;
-    m.flags = (r0.x >> 4) & 0xFu;
-    m.fresnelMin = float((r0.x >> 8) & 0xFFu) / 255.0;
-    m.fresnelMax = float((r0.x >> 16) & 0xFFu) / 255.0;
-    m.fresnelPower = float((r0.x >> 24) & 0xFFu) / 16.0;
-    m.diffuse = r0.y;
-    m.tintA = RtHitRgb10(r0.z);
-    m.tintB = RtHitRgb10(r0.w);
-    m.flop = asfloat(r1.x);
-    m.lodBase = asfloat(r1.y);
-    m.emissive = asfloat(r1.z);
-    m.glowDriven = (r1.w & kMatGlowDriven) != 0u;
-    return m;
-}
-
-// The hit's texture coordinates, interpolated (the vertices as CarRtHitNormal finds them).
-float2 CarRtHitUv(uint instance, uint primitive, float2 barycentrics)
-{
-    const uint4 row = gCarRtInstances[instance];
-    const uint tri = (row.x + primitive * 3u) * 4u;
-    const uint3 vertex = uint3(gCarRtIndices.Load(tri), gCarRtIndices.Load(tri + 4u), gCarRtIndices.Load(tri + 8u)) + row.y;
-    const uint p0 = gCarRtUvs.Load(vertex.x * 4u);
-    const uint p1 = gCarRtUvs.Load(vertex.y * 4u);
-    const uint p2 = gCarRtUvs.Load(vertex.z * 4u);
-    const float2 t0 = float2(f16tof32(p0 & 0xFFFFu), f16tof32(p0 >> 16));
-    const float2 t1 = float2(f16tof32(p1 & 0xFFFFu), f16tof32(p1 >> 16));
-    const float2 t2 = float2(f16tof32(p2 & 0xFFFFu), f16tof32(p2 >> 16));
-    return t0 * (1.0 - barycentrics.x - barycentrics.y) + t1 * barycentrics.x + t2 * barycentrics.y;
-}
-
-#include "rt_hit_sample.hlsli"
 
 // RT-HIT-SHADING-5: a small integer hash (PCG; car_rt_material_rules.h Pcg) and the two numbers in [0, 1) the sky ray's jitter takes from the hit's place (OpenHash).
 uint CarMatPcg(uint v)
@@ -210,29 +127,8 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     {
         return false;
     }
-    const bool paint = (m.flags & CAR_MAT_FLAG_PAINT) != 0u;
     const float nv = saturate(-dot(normal, direction));
-
-    // the albedo: the paint's gradient, the diffuse texture (or the livery over the paint), the tint
-    float3 albedo = m.tintA;
-    if (paint && m.flop > 0.0)
-    {
-        albedo = lerp(m.tintB, m.tintA, pow(max(nv, 1e-4), m.flop));
-    }
-    if (m.diffuse != kRtHitNoSlot && (m.flags & CAR_MAT_FLAG_UV) != 0u)
-    {
-        const float2 uv = CarRtHitUv(instance, primitive, barycentrics);
-        const float lod = log2(max(footprint, 1e-4)) + m.lodBase;
-        const float4 texel = RtHitSample(m.diffuse, uv, lod, true);
-        if ((m.flags & CAR_MAT_FLAG_DECAL) != 0u)
-        {
-            albedo = lerp(albedo, texel.rgb, saturate(texel.a));
-        }
-        else
-        {
-            albedo *= texel.rgb;
-        }
-    }
+    const float3 albedo = CarMatAlbedo(m, instance, primitive, barycentrics, footprint, nv);
 
     // the light: the ambient with a hemisphere term, the sun by N.L and its visibility
     const float3 up = f.axisY;
@@ -280,7 +176,7 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     gCarHitClass = m.cls;
     gCarHitNdl = ndl * daySun;  // at night the sun does not reach anything: "facing away" in the census
     gCarHitVisible = visible;
-    const float glowNight = m.glowDriven ? 1.0 : night;  // a lens the game's lamps drive glows by its lamps' level alone; any other by the hour, and the hour is only known with the sun (night is 0 without it, as for the light above)
+    const float glowNight = CarMatGlowScale(m, night);
     gCarHitGlow = (m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u ? m.emissive * glowNight : 0.0;
 
     // the reflection: the environment map at the reflected direction, by the fresnel
@@ -297,7 +193,7 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     {
         env = f.ambient * (0.6 + 0.4 * dot(reflected, up));
     }
-    const float fresnel = m.fresnelMin + (m.fresnelMax - m.fresnelMin) * pow(max(1.0 - nv, 1e-4), max(m.fresnelPower, 0.01));
+    const float fresnel = CarMatFresnel(m, nv);
     const float3 tint = m.cls == CAR_MAT_CLASS_CHROME ? albedo : float3(1.0, 1.0, 1.0);
 
     float3 result = albedo * light * kClassDiffuseGain[m.cls] + env * (fresnel * kClassSpecGain[m.cls] * f.specGain) * tint * ground;
