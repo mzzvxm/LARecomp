@@ -1317,6 +1317,8 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_pipeline_warm, true, "Move costly pipelines that a draw had to wait for earlier in the next start's pipeline cache. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_ui_sharp_background, true, "Draw with the original UI shader when its pipeline is ready while the sharper one builds. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_pipeline_cache, true, "Keep the pipelines the game asked for across sessions ("
     "24.35, M5.3): their keys go to cache/mcla_gpu_pipelines_<backend>.bin beside the "
     "executable on exit, and are read back at start -- the other backend's file too, so what one "
@@ -2427,6 +2429,7 @@ inline auto& mcla_gpu_pause_world_fx = g_gpu.mcla_gpu_pause_world_fx;
 inline auto& mcla_gpu_perf_markers = g_gpu.mcla_gpu_perf_markers;
 inline auto& mcla_gpu_perf_markers_level = g_gpu.mcla_gpu_perf_markers_level;
 inline auto& mcla_gpu_pipeline_warm = g_gpu.mcla_gpu_pipeline_warm;
+inline auto& mcla_gpu_ui_sharp_background = g_gpu.mcla_gpu_ui_sharp_background;
 inline auto& mcla_gpu_pipeline_cache = g_gpu.mcla_gpu_pipeline_cache;
 inline auto& mcla_gpu_vulkan_pipeline_cache = g_gpu.mcla_gpu_vulkan_pipeline_cache;
 inline auto& mcla_gpu_present_dither = g_gpu.mcla_gpu_present_dither;

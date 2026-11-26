@@ -580,6 +580,7 @@ void Pipelines::Shutdown() {
   if (handovers_ != 0) {
     REXLOG_INFO("{}", sync_build_log::FormatHandoverSession(handovers_, made_here_too_));
   }
+  LogAndClearDrawUses();
   handovers_ = 0;
   made_here_too_ = 0;
   sync_log_ = sync_build_log::Counters{};
@@ -1113,12 +1114,21 @@ void Pipelines::PushUrgent(Urgent urgent) {
 
 bool Pipelines::MaySkip(Miss& miss) {
   const Deferral* deferral = miss.deferral;
-  const bool rule = deferral && deferral->may_skip && deferral->may_skip(deferral->context);
+  using Background = sync_build_log::Background;
+  if (miss.ready_fallback) {
+    miss.background = Background::kAllowed;
+  } else if (deferral && deferral->check) {
+    miss.background = deferral->check(deferral->context);
+  }
+  const bool rule = miss.background == Background::kAllowed;
   // While a capture runs nothing is left out for a build under way (sync_builds.h): the caller
   // takes the way of a draw that may not be skipped, and the wait is counted.
   const bool capture = rule && sync_builds::CaptureActive();
   const sync_builds::Verdict verdict = sync_builds::Decide(capture, rule);
   miss.held |= verdict.held;
+  if (verdict.held) {
+    miss.background = Background::kCapture;
+  }
   return verdict.may_skip;
 }
 
@@ -1210,7 +1220,7 @@ plume::RenderPipeline* Pipelines::TakePrecached(const PipelineKey& key, Miss& mi
   }
   std::lock_guard<std::mutex> lock(precache_mutex_);
   if (p.state.load() != kReady) {
-    if (miss.deferral && miss.deferral->has_fallback) {
+    if (miss.HasFallback()) {
       // Failed on a worker, and the draw has another pipeline to draw with: final for the key. Not made again here (the render thread would stall for a pipeline that
       // fails the same), reported once like any failed build, and remembered as failed, as a build that failed on this thread would be.
       LogFailure(key, p.vs_result, p.ps_result, true);
@@ -1276,7 +1286,7 @@ plume::RenderPipeline* Pipelines::TakeRequested(const PipelineKey& key, Miss& mi
     return nullptr;
   }
   Request& r = *found->second;
-  if (miss.deferral && miss.deferral->has_fallback) {
+  if (miss.HasFallback()) {
     r.fallback = true;  // a copy made for an MSAA level or another asker: the draw that takes it has a fallback key, so a failure is final and logged for the key
   }
   uint8_t state = r.state.load();
@@ -1428,6 +1438,10 @@ void Pipelines::LoadRecords() {
 size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, bool zero_bias) {
   std::ifstream file(path, std::ios::binary);
   if (!file) {
+    if (path == starter_path_) {
+      REXLOG_WARN("[gpu] pipelines: cannot open the shipped starter list at {}; exact pipeline "
+                  "misses outside the saved cache will build at draw time", path.string());
+    }
     REXLOG_INFO("[gpu] pipelines: no cache at {} yet", path.string());
     return 0;
   }
@@ -2014,6 +2028,20 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   } else {
     deferral = nullptr;  // nowhere to say "pending": the draw may not wait
   }
+  // Finish each frame using the same UI PSO for this key. The worker may have
+  // completed between two draws of the same text or bitmap.
+  if (deferral && deferral->ready_fallback) {
+    deferral->ready_fallback->used = false;
+    if (ui_fallback_frame_ == frame_) {
+      const auto used = pending_ui_fallbacks_.find(key);
+      if (used != pending_ui_fallbacks_.end() && used->second.UsedIn(frame_)) {
+        if (plume::RenderPipeline* fallback = FindReadyFallback(deferral)) {
+          NoteReadyFallback(key, *deferral->ready_fallback, true);
+          return fallback;
+        }
+      }
+    }
+  }
   if (draw_memo_enabled_) {
     ++draw_memo_profile_.get.tries;
     const auto* found = pipeline_lookup_memo_.Find(key);
@@ -2028,6 +2056,12 @@ plume::RenderPipeline* Pipelines::Get(const PipelineKey& key, const PipelineInpu
   const auto it = pipelines_.find(key);
   if (it != pipelines_.end()) {
     plume::RenderPipeline* got = it->second.get();
+    if (!got && deferral && deferral->ready_fallback) {
+      if (plume::RenderPipeline* fallback = FindReadyFallback(deferral)) {
+        NoteReadyFallback(key, *deferral->ready_fallback, false);
+        return fallback;
+      }
+    }
     if (draw_memo_enabled_ && got) {
       // Only the owning map has precedence for the entire pipeline lifetime.
       pipeline_lookup_memo_.Put(key, got);
@@ -2322,6 +2356,8 @@ plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const Pipeline
                                           const Deferral* deferral, bool* pending) {
   Miss miss;
   miss.deferral = deferral;
+  plume::RenderPipeline* fallback = FindReadyFallback(deferral);
+  miss.ready_fallback = fallback != nullptr;
   const auto began = std::chrono::steady_clock::now();
   plume::RenderPipeline* got = ResolveMiss(key, inputs, miss, pending);
   if (miss.held && deferral) {
@@ -2332,7 +2368,9 @@ plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const Pipeline
     const uint64_t elapsed = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now() - began).count());
     if (pipeline_warm_order::Learn(larecomp::settings::mcla_gpu_pipeline_warm.Get(), elapsed, [&] {
-          return deferral && deferral->may_skip && deferral->may_skip(deferral->context);
+          return miss.ready_fallback ||
+                 (deferral && deferral->check &&
+                  deferral->check(deferral->context) == sync_build_log::Background::kAllowed);
         })) {
       // CHECK: compare warm-cache driving on both APIs. The exact shader/layout/state key is
       // moved forward for the next start, keeping the draw's synchronous correctness fallback.
@@ -2346,7 +2384,35 @@ plume::RenderPipeline* Pipelines::Resolve(const PipelineKey& key, const Pipeline
       }
     }
   }
+  if (!got && fallback && deferral && deferral->ready_fallback && pending &&
+      !sync_builds::CaptureActive()) {
+    NoteReadyFallback(key, *deferral->ready_fallback, *pending);
+    *pending = false;
+    return fallback;
+  }
   return got;
+}
+
+plume::RenderPipeline* Pipelines::FindReadyFallback(const Deferral* deferral) const {
+  if (!deferral || !deferral->ready_fallback || sync_builds::CaptureActive()) {
+    return nullptr;
+  }
+  const PipelineKey& key = deferral->ready_fallback->key;
+  if (const auto found = pipelines_.find(key); found != pipelines_.end()) {
+    return found->second.get();
+  }
+  const auto alias = aliases_.find(key);
+  return alias != aliases_.end() ? alias->second : nullptr;
+}
+
+void Pipelines::NoteReadyFallback(const PipelineKey& key, ReadyFallback& fallback, bool pending) {
+  fallback.used = true;
+  if (pending) {
+    ui_fallback_frame_ = frame_;
+    pending_ui_fallbacks_[key].Note(frame_);
+  } else {
+    failed_ui_fallbacks_[key].Note(frame_);
+  }
 }
 
 void Pipelines::NoteSyncWait(const PipelineKey& key, sync_builds::Kind kind,
@@ -2378,6 +2444,21 @@ sync_build_log::KeyWords WordsOf(const PipelineKey& key) {
 
 }  // namespace
 
+void Pipelines::LogAndClearDrawUses() {
+  const auto log = [](auto& uses, const char* action) {
+    for (const auto& [key, use] : uses) {
+      REXLOG_INFO("[pipeline] {}: {}, key {:016X}, {} draws in {} guest frames ({} to {})",
+                  action, sync_build_log::KeyText(WordsOf(key)), uint64_t(PipelineKeyHash{}(key)),
+                  use.draws, use.frames, use.first_frame, use.last_frame);
+    }
+    uses.clear();
+  };
+  log(skipped_draws_, "guest draws skipped while pending");
+  log(pending_ui_fallbacks_, "guest UI used while sharpening pending");
+  log(failed_ui_fallbacks_, "guest UI used after sharpening build did not succeed");
+  ui_fallback_frame_.reset();
+}
+
 void Pipelines::LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t ns) {
   const uint64_t n = sync_log_.NoteBuild(ns);
   if (!sync_build_log::LogThis(n)) {
@@ -2386,9 +2467,7 @@ void Pipelines::LogSyncBuild(const PipelineKey& key, const Miss& miss, uint64_t 
   const sync_build_log::Why why = miss.take == Take::kMakeHere ? sync_build_log::Why::kClaimed
                                   : miss.take == Take::kFailed ? sync_build_log::Why::kAgain
                                                                : sync_build_log::Why::kNew;
-  // Whether the draw's own rule would have let it wait for a builder thread (asked only for a line that is written).
-  const bool skippable = miss.deferral && miss.deferral->may_skip && miss.deferral->may_skip(miss.deferral->context);
-  REXLOG_INFO("{}", sync_build_log::FormatBuild(n, frame_, ns, why, WordsOf(key), skippable));
+  REXLOG_INFO("{}", sync_build_log::FormatBuild(n, frame_, ns, why, WordsOf(key), miss.background));
 }
 
 void Pipelines::LogSyncWait(const PipelineKey& key, const char* source, uint64_t ns) {
@@ -2456,7 +2535,6 @@ bool Pipelines::WaitForBuild(const std::atomic<uint8_t>& state, const std::atomi
 
 plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const PipelineInputs& inputs,
                                               Miss& miss, bool* pending) {
-  const bool has_fallback = miss.deferral && miss.deferral->has_fallback;
   // A background build asked for earlier, then the precache list's entry.
   if (!requests_.empty()) {
     if (plume::RenderPipeline* requested = TakeRequested(key, miss)) {
@@ -2476,13 +2554,17 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       return nullptr;
     case Take::kNone:
       // Nobody has it: a worker makes it when the draw may wait for it.
-      if (MaySkip(miss) && StartRequest(key, inputs, has_fallback)) {
-        *pending = true;
-        return nullptr;
+      if (MaySkip(miss)) {
+        if (StartRequest(key, inputs, miss.HasFallback())) {
+          *pending = true;
+          return nullptr;
+        }
+        miss.background = sync_build_log::Background::kCannotQueue;
       }
       ++stats_.made_here_new;
       break;
     case Take::kFailed:
+      miss.background = sync_build_log::Background::kRetryListed;
       ++stats_.made_here_retry;
       break;
     case Take::kMakeHere:
@@ -2514,7 +2596,7 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
       RecordPipeline(key, *inputs.input_layout);
     }
   } else {
-    LogFailure(key, vs_result, ps_result, has_fallback);
+    LogFailure(key, vs_result, ps_result, miss.HasFallback());
   }
   plume::RenderPipeline* raw = pipeline.get();
   pipelines_.emplace(key, std::move(pipeline));

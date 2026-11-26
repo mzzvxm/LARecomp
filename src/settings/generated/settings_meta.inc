@@ -532,6 +532,7 @@
 {"mcla_gpu_perf_markers", "MCLA/GPU"},
 {"mcla_gpu_perf_markers_level", "MCLA/GPU"},
 {"mcla_gpu_pipeline_warm", "MCLA/GPU"},
+{"mcla_gpu_ui_sharp_background", "MCLA/GPU"},
 {"mcla_gpu_pipeline_cache", "MCLA/GPU"},
 {"mcla_gpu_vulkan_pipeline_cache", "MCLA/GPU"},
 {"mcla_gpu_present_dither", "MCLA/GPU"},

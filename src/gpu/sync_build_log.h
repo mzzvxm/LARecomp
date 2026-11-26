@@ -51,6 +51,34 @@ constexpr bool LogThis(uint64_t n) {
 
 enum class Why : uint8_t { kNew, kClaimed, kAgain };
 
+// The first condition that kept a successful build on the render thread.
+enum class Background : uint8_t {
+  kAllowed,
+  kRequired,
+  kSingleSample,
+  kStencilWrite,
+  kTargetHistory,
+  kNoTarget,
+  kCapture,
+  kCannotQueue,
+  kRetryListed,
+};
+
+inline const char* BackgroundName(Background reason) {
+  switch (reason) {
+    case Background::kAllowed: return "eligible";
+    case Background::kRequired: return "exact draw required";
+    case Background::kSingleSample: return "single-sample guest target";
+    case Background::kStencilWrite: return "writes stencil";
+    case Background::kTargetHistory: return "target lacks consecutive draws";
+    case Background::kNoTarget: return "no eligible target";
+    case Background::kCapture: return "capture needs exact draw";
+    case Background::kCannotQueue: return "request could not be queued";
+    case Background::kRetryListed: return "retry of a listed build";
+  }
+  return "?";
+}
+
 inline const char* WhyName(Why why) {
   switch (why) {
     case Why::kNew: return "new";
@@ -124,6 +152,29 @@ inline std::string FormatBuild(uint64_t n, uint64_t frame, uint64_t ns, Why why,
   return std::format("[pipeline] sync build #{}: guest frame {}, {:.1f} ms, {}, {}, background build {}", n, frame,
                      double(ns) / 1.0e6, WhyName(why), KeyText(k), skippable ? "allowed" : "refused");
 }
+
+inline std::string FormatBuild(uint64_t n, uint64_t frame, uint64_t ns, Why why, const KeyWords& k,
+                               Background reason) {
+  const bool eligible = reason == Background::kAllowed || reason == Background::kCapture ||
+                        reason == Background::kCannotQueue;
+  return std::format("{} ({})", FormatBuild(n, frame, ns, why, k, eligible), BackgroundName(reason));
+}
+
+struct DrawUse {
+  uint64_t draws = 0;
+  uint64_t frames = 0;
+  uint64_t first_frame = 0;
+  uint64_t last_frame = 0;
+
+  void Note(uint64_t frame) {
+    if (draws == 0) first_frame = frame;
+    if (draws == 0 || frame != last_frame) ++frames;
+    last_frame = frame;
+    ++draws;
+  }
+
+  bool UsedIn(uint64_t frame) const { return draws != 0 && last_frame == frame; }
+};
 
 // `source`: "list" (an entry of the starter / record list that a builder thread was making) or "request"
 // (a key a draw asked a builder thread for).

@@ -93,6 +93,27 @@ void TestBuildLine() {
   Check(WhyName(Why::kNew) == std::string("new") && WhyName(Why::kClaimed) == std::string("claimed") &&
             WhyName(Why::kAgain) == std::string("again"),
         "the three reasons keep their words (stall_check.py reads them)");
+  for (Background reason : {Background::kRequired, Background::kSingleSample, Background::kStencilWrite,
+                            Background::kTargetHistory, Background::kNoTarget, Background::kRetryListed}) {
+    Check(Has(FormatBuild(12, 3456, 41'200'000, Why::kNew, NightKey(), reason),
+              std::string("background build refused (") + BackgroundName(reason) + ")"),
+          "mandatory draws and listed retries retain the old log prefix and name their reason");
+  }
+  Check(Has(FormatBuild(1, 1, 0, Why::kNew, plain, Background::kCapture),
+            "background build allowed (capture needs exact draw)"), "a capture overrides an eligible draw");
+  Check(Has(FormatBuild(1, 1, 0, Why::kNew, plain, Background::kCannotQueue),
+            "background build allowed (request could not be queued)"), "a queue rejection is distinct from the draw rule");
+}
+
+void TestDrawUse() {
+  DrawUse use;
+  Check(!use.UsedIn(0), "a key never used as a fallback is not held in guest frame zero");
+  use.Note(0);
+  use.Note(0);
+  Check(use.UsedIn(0) && !use.UsedIn(1), "the fallback holds only through the last affected guest frame");
+  use.Note(4);
+  Check(use.draws == 3 && use.frames == 2 && use.first_frame == 0 && use.last_frame == 4,
+        "tracks distinct affected guest frames, including gaps, independently of draw count");
 }
 
 void TestWaitLine() {
@@ -198,6 +219,7 @@ int main() {
   TestRateLimit();
   TestCounters();
   TestBuildLine();
+  TestDrawUse();
   TestWaitLine();
   TestHandoverLines();
   TestSessionLine();

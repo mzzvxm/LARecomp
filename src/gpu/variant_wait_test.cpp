@@ -70,6 +70,17 @@ void TestIdentityBloom() {
   }
 }
 
+void TestUiSharpFallback() {
+  const uint32_t feature = chain::FeatureBit(sp::kFeatureUiSharp);
+  for (uint32_t spec : {0u, 1u}) {
+    Check(vw::CanUseUiSharpFallback(chain::Word(feature, spec), false), "both UI specializations may use a matching guest pipeline");
+    Check(!vw::CanUseUiSharpFallback(chain::Word(feature, spec), true), "an attached plane must keep its existing fallback ladder");
+    Check(!vw::CanUseUiSharpFallback(spec, false), "a guest draw without the optional shader stays mandatory where required");
+    Check(!vw::CanUseUiSharpFallback(chain::Word(feature | chain::FeatureBit(sp::kFeatureHeadlight), spec), false),
+          "a composed word cannot fall back by stripping UI sharpening alone");
+  }
+}
+
 // The case the runs showed: a lit world draw writes the stencil, the game's rule says no, and the draw has the headlight and/or the planes.
 void TestTheStencilWritingLitDraw() {
   const bool rule = false;  // Scene::MaySkipForPipeline on a stencil-writing draw (and on a 1-sample one)
@@ -284,6 +295,14 @@ void SourceChecks(const std::string& gpu) {
   Check(Count(lookup, "&deferral") == 1 && lookup.find("? &waits : &deferral;") != std::string::npos, "the game's rule is used in one place: ask_for's answer for a key with no extra");
   Check(lookup.find("const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};") != std::string::npos,
         "the deferral of a key with a fallback always says pending, counts as a guest draw and says it has a fallback (a failed build is final for it)");
+  Check(lookup.find("variant_wait::CanUseUiSharpFallback(key.ps_variant, d.gbuffer_attached)") != std::string::npos &&
+            lookup.find("larecomp::settings::mcla_gpu_ui_sharp_background.Get()") != std::string::npos &&
+            lookup.find("ui_fallback.key = key;\n        ui_fallback.key.ps_variant = chain::SpecOf(key.ps_variant);") != std::string::npos &&
+            lookup.find("return &ui_deferral;") != std::string::npos,
+        "the UI fallback requires the switch and changes only the pixel word, preserving alpha specialization");
+  Check(lookup.find("if (ui_fallback.used)") < lookup.find("pipeline_key = ui_fallback.key;") &&
+            lookup.find("pipeline_key = ui_fallback.key;") < lookup.find("} else if (d.pipeline) {"),
+        "the fallback uses the guest constants and leaves the original pipeline out of the draw memo");
   Check(lookup.find("variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant),") != std::string::npos &&
             lookup.find("variant_wait::RoadFeature(key.ps_variant) != chain::kNoFeature") != std::string::npos &&
             lookup.find("variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways") != std::string::npos,
@@ -318,11 +337,21 @@ void SourceChecks(const std::string& gpu) {
   const std::string pipelines = ReadFile(gpu + "/pipelines.cpp");
   Check(!pipelines.empty(), "pipelines.cpp is readable in " + gpu);
   Check(Count(pipelines, "LogFailure(") == 4, "LogFailure books every failed build: its definition and three calls (the render thread's build, an adopted request, a precache entry)");
-  Check(pipelines.find("LogFailure(key, vs_result, ps_result, has_fallback);") != std::string::npos, "the render thread's build reports a failure with whether the draw has a fallback");
+  Check(pipelines.find("LogFailure(key, vs_result, ps_result, miss.HasFallback());") != std::string::npos,
+        "the render thread's build reports a failure with whether the draw has a fallback");
   Check(pipelines.find("LogFailure(key, vs_result, ps_result, r.fallback);") != std::string::npos, "an adopted background request reports it with what its asker said");
   Check(pipelines.find("LogFailure(key, p.vs_result, p.ps_result, true);") != std::string::npos && pipelines.find("p.vs_result = vs_result;") != std::string::npos,
         "a precache entry that failed on a worker keeps its error and is reported, not made again, for a draw that has a fallback");
   Check(pipelines.find("if (fallback) {") != std::string::npos && pipelines.find("++stats_.variant_failed;") != std::string::npos, "a failed key with a fallback is logged once and counted");
+  Check(pipelines.find("miss.ready_fallback = fallback != nullptr;") != std::string::npos &&
+            pipelines.find("if (miss.ready_fallback)") != std::string::npos,
+        "the UI variant is eligible to defer only after an original pipeline is found");
+  Check(pipelines.find("if (!deferral || !deferral->ready_fallback || sync_builds::CaptureActive())") != std::string::npos &&
+            pipelines.find("const auto alias = aliases_.find(key);\n  return alias != aliases_.end() ? alias->second : nullptr;") != std::string::npos,
+        "captures use the exact pipeline and the UI fallback lookup only reads already adopted pipelines");
+  Check(pipelines.find("used->second.UsedIn(frame_)") != std::string::npos &&
+            pipelines.find("NoteReadyFallback(key, *deferral->ready_fallback, true);") != std::string::npos,
+        "each key that fell back while pending stays on the same pipeline for that guest frame");
 }
 
 }  // namespace
@@ -339,6 +368,7 @@ int main(int argc, char** argv) {
   }
   TestFallback();
   TestIdentityBloom();
+  TestUiSharpFallback();
   TestTheStencilWritingLitDraw();
   TestLadders();
   TestWordWithoutHeadlight();

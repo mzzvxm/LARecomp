@@ -390,7 +390,7 @@ class Scene {
     const Scene* scene;
     const PreparedDraw* draw;
   };
-  static bool MaySkipForPipeline(const void* context);
+  static sync_build_log::Background MaySkipForPipeline(const void* context);
   // A draw left out for its pipeline still counts as a draw into its targets,
   // or a frame that skipped all of a target's draws would end its run.
   void NoteTargetsDrawn(const PreparedDraw& d);
@@ -470,7 +470,9 @@ class Scene {
   // does.
   void RecordUpscalerMask(const PreparedDraw& d, plume::RenderCommandList* list,
                           uint64_t ps_identity);
-  static bool AlwaysMaySkip(const void*) { return true; }
+  static sync_build_log::Background AlwaysMaySkip(const void*) {
+    return sync_build_log::Background::kAllowed;
+  }
   void ResetListState();
   bool UploadConstants(uint32_t device, const ConstantBanks::Banks& banks,
                        const SharedConstants& shared, PreparedDraw& d);

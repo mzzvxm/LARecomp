@@ -3073,6 +3073,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_ui_sharp_background": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Draw with the original UI shader when its pipeline is ready while the sharper one builds. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_pipeline_cache": {
   "type": "bool",
   "default": "true",
