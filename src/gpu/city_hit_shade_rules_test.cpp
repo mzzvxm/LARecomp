@@ -23,6 +23,7 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "citypack/city_hit_format.h"
@@ -246,7 +247,8 @@ void TwinChecks() {
   double worst_angle = 0.0;
   bool above = true;
   for (int i = 0; i < 4000; ++i) {
-    const cs::V3 dir = cs::SunDirection(sun, normal, 0.0047f, rng.Next(), rng.Next());
+    const float u = rng.Next(), v = rng.Next();
+    const cs::V3 dir = cs::SunDirection(sun, normal, 0.0047f, u, v);
     CHECK(Near(cs::Length(dir), 1.0, 1e-4));
     worst_angle = std::max(worst_angle, std::asin(double(std::min(1.0f, cs::Length(cs::Cross(dir, sun))))));  // the angle by the cross product: acos of a float near 1 is coarse
     above = above && cs::Dot(dir, normal) >= cs::kMinAbove * 0.95f;
@@ -254,12 +256,17 @@ void TwinChecks() {
   Check(worst_angle < 0.0047 * 1.0005 && worst_angle > 0.0040, Num("the jittered sun ray stays on the disc (the widest angle %.5f rad of 0.0047)", worst_angle));
   CHECK(above);
   const cs::V3 grazing = cs::Normalize({0.0f, 1.0f, 0.0f}), low_sun = cs::Normalize({1.0f, 0.02f, 0.0f});
-  for (int i = 0; i < 200; ++i) CHECK(cs::Dot(cs::SunDirection(low_sun, grazing, 0.0047f, rng.Next(), rng.Next()), grazing) >= cs::kMinAbove * 0.95f);  // pushed up to the limit (the shadow pass's rule: normalised after, so a hair under)
+  for (int i = 0; i < 200; ++i) {
+    const float u = rng.Next(), v = rng.Next();
+    // The shadow pass pushes up to the limit and then normalizes, leaving the dot product a little under the limit.
+    CHECK(cs::Dot(cs::SunDirection(low_sun, grazing, 0.0047f, u, v), grazing) >= cs::kMinAbove * 0.95f);
+  }
   // the disc's samples cover it evenly: the mean radius squared of the area sample is 1/2
   double radius2 = 0.0;
   for (int i = 0; i < 20000; ++i) {
     float s[2];
-    cs::DiscSample(rng.Next(), rng.Next(), s);
+    const float u = rng.Next(), v = rng.Next();
+    cs::DiscSample(u, v, s);
     radius2 += s[0] * s[0] + s[1] * s[1];
   }
   Check(std::fabs(radius2 / 20000.0 - 0.5) < 0.02, Num("the disc sample is area uniform (mean r^2 %.3f)", radius2 / 20000.0));
@@ -456,7 +463,7 @@ void MakeFakeTexture(Lcg& rng, uint32_t slot, uint32_t width, uint32_t height, u
   for (uint32_t l = 0; l < levels; ++l) {
     const uint32_t w = std::max(width >> l, 1u), h = std::max(height >> l, 1u);
     std::vector<hlsl_shim::float4> level(size_t(w) * h);
-    for (auto& v : level) v = hlsl_shim::float4(rng.Range(0.05f, 1.0f), rng.Range(0.05f, 1.0f), rng.Range(0.05f, 1.0f), 1.0f);
+    for (auto& v : level) v = hlsl_shim::float4{rng.Range(0.05f, 1.0f), rng.Range(0.05f, 1.0f), rng.Range(0.05f, 1.0f), 1.0f};
     t.levels.push_back(level);
   }
 }
@@ -486,7 +493,8 @@ Sector MakeSector(Lcg& rng, uint32_t material, bool runs, bool corners, bool bui
     for (int t = 0; t < 2; ++t)
       for (int k = 0; k < 3; ++k) {
         s.blob.corners.push_back(EncodeCornerUv(run, uv[t][k][0], uv[t][k][1]));
-        s.blob.corners.push_back(PackCornerColour(rng.Below(256), rng.Below(256), rng.Below(256), 80 + rng.Below(176)));
+        const uint32_t red = rng.Below(256), green = rng.Below(256), blue = rng.Below(256), alpha = 80 + rng.Below(176);
+        s.blob.corners.push_back(PackCornerColour(red, green, blue, alpha));
       }
   }
   return s;
@@ -1132,7 +1140,7 @@ void TextChecks(const std::string& src) {
   const std::string lib = ReadFile(src + "/gpu/hlsl/city_hit_shade.hlsli");
   const std::string check = ReadFile(src + "/gpu/hlsl/city_hit_shade_check_cs.hlsl");
   if (lib.empty() || check.empty()) {
-    std::printf("the sources were not found under %s: the text checks are skipped\n", src.c_str());
+    Check(false, "cannot read city hit shader sources under " + src);
     return;
   }
   const auto has = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };

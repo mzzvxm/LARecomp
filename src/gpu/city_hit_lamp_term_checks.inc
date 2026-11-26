@@ -566,8 +566,14 @@ void ReflectionGlueChecks(const City& city, const std::vector<uint32_t>& words, 
     float centre[3];
     rh::WorldPoint(k.frame.camera_world, k.frame.world_axes_view, view, centre);
     GridWorld w;
-    MakeGridWorld(&w, k.frame, LampsAround(rng, centre, rng.Below(30), rng.Below(12), rng.Range(10.0f, 60.0f), 15.0f, 90.0f), rng.Range(21.0f, 23.5f), rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f),
-                  rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f), stats);
+    const uint32_t fill_count = rng.Below(30);
+    const uint32_t street_count = rng.Below(12);
+    const float spread = rng.Range(10.0f, 60.0f);
+    auto lamps = LampsAround(rng, centre, fill_count, street_count, spread, 15.0f, 90.0f);
+    const float hour = rng.Range(21.0f, 23.5f);
+    const float street_override = rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f);
+    const float fill_override = rng.Below(2) == 0 ? -1.0f : rng.Range(0.0f, 1.0f);
+    MakeGridWorld(&w, k.frame, std::move(lamps), hour, street_override, fill_override, stats);
     const uint32_t world_flags = valid ? w.decoded.flags : 0u;
     const cr::LampTerm term = cr::LampTermFor(lamps_flag, world_flags, w.decoded.lamp_factor, sun_schedule);
     // the decision itself
@@ -651,8 +657,8 @@ void LampTermTextChecks(const std::string& src) {
   const std::string lib = ReadFile(src + "/gpu/hlsl/city_hit_shade.hlsli");
   const std::string lamp_cs = ReadFile(src + "/gpu/hlsl/rt_world_lamp_light_cs.hlsl");
   const std::string check_cs = ReadFile(src + "/gpu/hlsl/city_hit_shade_check_cs.hlsl");
-  if (lib.empty() || lamp_cs.empty()) {
-    std::printf("the sources were not found under %s: the lamp term's text checks are skipped\n", src.c_str());
+  if (lib.empty() || lamp_cs.empty() || check_cs.empty()) {
+    Check(false, "cannot read lamp shader sources under " + src);
     return;
   }
   const auto has = [](const std::string& text, const char* part) { return text.find(part) != std::string::npos; };
