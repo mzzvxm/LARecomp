@@ -806,7 +806,7 @@ void CheckSources(const std::string& gpu) {
     Check(last != std::string::npos, std::string(r.name) + ": the first label '" + r.label + "' is a Mark in " + r.label_file);
     for (const char* more : r.more_labels) {
       if (more == nullptr) continue;
-      const size_t at = At(text, std::string("Mark(list, \"") + more + "\")");
+      const size_t at = text.find(std::string("Mark(list, \"") + more + "\")", last == std::string::npos ? 0 : last + 1);
       Check(at != std::string::npos && at > last, std::string(r.name) + ": the mark '" + more + "' is in " + r.label_file + " after the one before it");
       last = at == std::string::npos ? last : at;
     }

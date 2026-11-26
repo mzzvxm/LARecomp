@@ -23,6 +23,7 @@
 #include "gbuffer.h"
 #include "gpu_class.h"
 #include "host_shaders.h"
+#include "rt_denoise_v2_rules.h"
 #include "live_text.h"
 #include "pass_timing.h"
 #include "ray_regen.h"
@@ -115,6 +116,11 @@ void ScreenReflections::InitializeRt(Device& device, FrameRing& frames, Bindless
   if (rt_.available()) {
     const HostShaderBlob spatial = SsrDenoiseSpatialShader();
     denoise_.Initialize(device, frames, heap, passes, /*instance=*/0, "ssr", RtDenoise::Blob{spatial.data, spatial.size, spatial.name}, RtDenoise::Blob{});
+    const auto v2_spatial = RtDenoiseV2SsrShader(false);
+    const auto v2_temporal = RtDenoiseV2SsrShader(true);
+    denoise_.InitializeV2({v2_spatial.data, v2_spatial.size, v2_spatial.name}, {v2_temporal.data, v2_temporal.size, v2_temporal.name});
+    const auto v2_ms = RtDenoiseV2SsrMsShader();
+    denoise_.InitializeV2Multisampled({v2_ms.data, v2_ms.size, v2_ms.name});
   }
 }
 
@@ -801,13 +807,39 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     }
   }
 
-  if (!raw && !regen_ok) {
+  const int denoise_setting = int(larecomp::settings::mcla_gpu_rt_denoise.Get());
+  const HostImage* filtered_v2 = nullptr;
+  if (!raw && !regen_ok && rt_recorded && denoise_setting != 0 && RtDenoise::V2Enabled()) {
+    RtDenoise::Frame stage;
+    stage.list = list;
+    stage.signal = &trace_;
+    stage.reads = {&confidence_};
+    stage.width = width;
+    stage.height = height;
+    stage.iterations = rt_denoise::v2::ReflectionIterations(level_ == ssr::Level::kUltra, denoise_setting);
+    stage.history_valid = use_history && last_denoise_v2_;
+    stage.multisampled = ms;
+    stage.patch = ssr_denoise::PatchFor();
+    ssr::Push pass = push;
+    pass.Set(pk::kCol01, ssr::PackSlots(confidence_.slot, vehicle_table_slot));
+    pass.SetFloat(pk::kPrevTanX, last_tan_[0]);
+    pass.SetFloat(pk::kPrevTanY, last_tan_[1]);
+    pass.SetFloat(pk::kHistoryWeight, history_weight);
+    for (uint32_t i = 0; i < 12; ++i) {
+      pass.SetFloat(i < 8 ? pk::kMotion + i : pk::kLinX + i - 8, motion_known ? cam.motion[i] : 0.0f);
+    }
+    stage.push = pass.w;
+    pass_timing_->Mark(list, "ssr denoise");
+    filtered_v2 = denoise_.RecordV2(stage);
+  }
+
+  if (!raw && !regen_ok && !filtered_v2) {
     // The accumulation. A raw frame (RR-4a) has none: Ray Reconstruction is the denoiser, the resolve reads the trace itself. A regen frame (RG-3) has none either, unless its dispatch was refused.
     ssr::Push temporal = push;
     temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, accum_[write_ ^ 1u].slot));
-    flags.history = use_history;
+    flags.history = use_history && !last_denoise_v2_;
     temporal.Set(pk::kFlags, ssr::PackFlags(flags));
-    temporal.SetFloat(pk::kHistoryWeight, use_history ? history_weight : 0.0f);
+    temporal.SetFloat(pk::kHistoryWeight, flags.history ? history_weight : 0.0f);
     temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get(), upscaler_running,
                                                      larecomp::settings::mcla_gpu_ssr_sparkle_resolve.Get()));
     temporal.SetFloat(pk::kPrevTanX, last_tan_[0]);
@@ -822,10 +854,10 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // CITY-RT R6, RtDenoise's spatial stage (ssr_denoise_rules.h has when): between the accumulation and the resolve, in a frame the fallback followed, a bilateral a-trous over the accumulated image on the
   // pixels the fallback made (their share is 1 - the picture's confidence); the resolve reads its result in place of the accumulation. The accumulation's own image stays the next frame's history (a blur
   // fed back would stack). A raw frame (Ray Reconstruction takes it) skips it: RR is the denoiser of the raw ray.
-  const HostImage* resolve_source = &accum_[write_];
+  const HostImage* resolve_source = filtered_v2 ? filtered_v2 : &accum_[write_];
   ssr_denoise::Facts denoise_facts;
   denoise_facts.level = level_;
-  denoise_facts.setting = int(larecomp::settings::mcla_gpu_rt_denoise.Get());
+  denoise_facts.setting = denoise_setting;
   denoise_facts.raw = raw;
   if (regen_ok) {
     // RG-3: AMD FSR Ray Regeneration denoised this frame and no accumulation was written: this stage would filter an image no pass made this frame, and the resolve reads the runtime's output. Counted with the raw
@@ -837,11 +869,14 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   denoise_facts.pipelines_ready = true;
   denoise_facts.images_ok = true;
   ssr_denoise::Plan denoise = ssr_denoise::Decide(denoise_facts);
-  if (denoise.runs()) {
+  if (filtered_v2) {
+    denoise.why = ssr_denoise::Why::kRuns;
+    denoise.iterations = rt_denoise::v2::ReflectionIterations(level_ == ssr::Level::kUltra, denoise_setting);
+  } else if (denoise.runs()) {
     denoise_facts.pipelines_ready = denoise_.SpatialReady();   // everything else says go: ask for the pipeline (listed with the host precache the first time)
     denoise = ssr_denoise::Decide(denoise_facts);
   }
-  if (denoise.runs()) {
+  if (denoise.runs() && !filtered_v2) {
     pass_timing_->Mark(list, "ssr denoise");
     RtDenoise::Frame stage;
     stage.list = list;
@@ -876,10 +911,11 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     } else if (denoise.why != ssr_denoise::Why::kOff && denoise.why != ssr_denoise::Why::kNoFallback) {
       ++denoise_totals_.frames_other;
     }
-    if (uint32_t(denoise.why) != denoise_why_logged_) {
-      denoise_why_logged_ = uint32_t(denoise.why);
+    const uint32_t denoise_mode = uint32_t(denoise.why) | (filtered_v2 ? 0x100u : 0u);
+    if (denoise_mode != denoise_why_logged_) {
+      denoise_why_logged_ = denoise_mode;
       REXLOG_INFO("{} denoise (RtDenoise, the fallback's pixels): {}{} (logged when it changes)", kPrefix, ssr_denoise::WhyName(denoise.why),
-                  denoise.runs() ? std::format(": {} iteration{} of the bilateral a-trous (steps 1, 2, 4), mcla_gpu_rt_denoise {}", denoise.iterations, denoise.iterations == 1 ? "" : "s", denoise_facts.setting) : std::string());
+                  denoise.runs() ? std::format(": {} a-trous iterations, {}", denoise.iterations, filtered_v2 ? "variance-guided" : "legacy") : std::string());
     }
   }
 
@@ -896,6 +932,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)
     apply.Set(pk::kRoadViewApply, road_word);
   }
+  const HostImage* confidence = filtered_v2 ? denoise_.V2Confidence() : nullptr;
+  apply.Set(pk::kDenoiseConfidence, confidence ? confidence->slot : pk::kNoSlot16);
   edram_->Transition(list, *colour, plume::RenderTextureLayout::COLOR_WRITE);
   EdramTargets::Target* only[1] = {colour};
   plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, nullptr);
@@ -936,10 +974,11 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     last_key_ = now;
     last_tan_[0] = sf.camera.tan_half_fov[0];
     last_tan_[1] = sf.camera.tan_half_fov[1];
-    write_ ^= 1u;
+    if (!filtered_v2) write_ ^= 1u;
   } else {
     last_key_.valid = false;
   }
+  last_denoise_v2_ = filtered_v2 != nullptr;
   if (regen_ok) {
     regen_key_ = now;
     regen_city_ = rt_recorded;
@@ -955,7 +994,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     ++raw_frames_;
   } else if (regen_ok) {
     ++regen_frames_;
-  } else if (use_history) {
+  } else if (filtered_v2 ? denoise_.last_history_read() : use_history && flags.history) {
     ++history_frames_;
   } else {
     ++no_motion_frames_;

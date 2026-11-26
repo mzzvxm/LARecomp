@@ -27,6 +27,7 @@
 #include "lamp_shadows_rules.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "rt_denoise_v2_rules.h"
 #include "rt_scene_service.h"
 #include "rt_world_frame.h"
 #include "vol_lamp_list.h"
@@ -93,9 +94,12 @@ void RtLights::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap,
   // over 8 bit images and the visibility's lighter guides (RT_DN_VIS, RT_DN_OUT_UNORM8: rt_lights_rules.h "the memory").
   const HostShaderBlob spatial = RtDenoiseVisShader(false);
   const HostShaderBlob temporal = RtDenoiseVisShader(true);
+  const auto v2_spatial = RtDenoiseV2VisShader(false);
+  const auto v2_temporal = RtDenoiseV2VisShader(true);
   for (uint32_t g = 0; g < rt::kMaxImages; ++g) {
     denoise_[g].Initialize(device, frames, heap, passes, rt::kFirstDenoiseInstance + g, "rt lights", RtDenoise::Blob{spatial.data, spatial.size, spatial.name},
                            RtDenoise::Blob{temporal.data, temporal.size, temporal.name}, rt_denoise::Format::kRgba8);
+    denoise_[g].InitializeV2({v2_spatial.data, v2_spatial.size, v2_spatial.name}, {v2_temporal.data, v2_temporal.size, v2_temporal.name});
     if (!denoise_[g].available()) {
       passes.precache().Note("ray traced light visibility: the denoiser could not be made (the shadow atlas alone shadows the lights)", 0);
       return;
@@ -710,11 +714,17 @@ void RtLights::RecordDenoise(plume::RenderCommandList* list) {
     stage.reads = {&depth_[parity_], &normal_, &depth_[prev], nullptr, nullptr, nullptr, nullptr, nullptr};
     stage.width = image_width_;
     stage.height = image_height_;
-    stage.iterations = rt::DenoiseIterations(step_);
     stage.push = gi_pixel::MakePush(v);
     stage.push[rt_denoise::plain::kFrame] = uint32_t(in_.frame);   // the sample of the 8 bit average's random rounding (RT_DN_VIS)
     stage.patch = rt_denoise::plain::PatchFor();
     stage.history_valid = history_ok_;
+    stage.iterations = rt_denoise::v2::VisibilityIterations(step_);
+    if (check_ == rt::kCheckOff) result_[g] = denoise_[g].RecordV2(stage);
+    if (result_[g]) {
+      read_history = read_history || denoise_[g].last_history_read();
+      continue;
+    }
+    stage.iterations = rt::DenoiseIterations(step_);
     const HostImage* accumulated = denoise_[g].RecordTemporal(stage);
     if (accumulated == nullptr) {
       all = false;

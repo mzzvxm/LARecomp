@@ -87,6 +87,7 @@ float4 RtDnHistoryAt(float2 uv) {
 float4 RtDnHistoryAt(float2 uv) { return g_textures[RtDnLo(RtDnW(RTDNP_W_HISTORY))].SampleLevel(g_samplers[kSamplerLinearClamp], uv, 0.0f); }
 #endif
 
+#ifndef RT_DN_SHADOW
 RtDnPixel RtDnLoad(int2 pix) {
   RtDnPixel r;
   r.ok = false;
@@ -133,6 +134,7 @@ RtDnPixel RtDnLoad(int2 pix) {
   r.share = hs.y;
   return r;
 }
+#endif
 
 RtDnPrevious RtDnToPrevious(float3 p) {
   RtDnPrevious r;

@@ -342,6 +342,7 @@ inline constexpr uint32_t kSrc = 2;
 inline constexpr uint32_t kHiz01 = 3;
 inline constexpr uint32_t kHiz23 = 4;
 inline constexpr uint32_t kHiz45 = 5;
+inline constexpr uint32_t kDenoiseConfidence = kHiz45;  // apply: optional per-pixel history length
 inline constexpr uint32_t kCol01 = 6;
 inline constexpr uint32_t kCol23 = 7;
 inline constexpr uint32_t kRender = 8;

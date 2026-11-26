@@ -2161,10 +2161,11 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
   Check(Has(header, "enum Shader : uint32_t { kShaderTrace, kShaderTraceMs, kShaderTemporal, kShaderApply, kShaderApplyMs, kShaderTraceRt, kShaderTraceRtMs, kShaderApplyRaw, kShaderHit, kShaderCount };") &&
             Has(header, "enum Variant : uint32_t { kVTrace, kVTraceMs, kVTemporal, kVApplyBase, kVTraceRt = kVApplyBase + 8, kVTraceRtMs, kVApplyRaw, kVHit, kVariantCount };"),
         "RR-4a: the shader and variant enums add the two after the old ones (the old numbering is untouched)");
-  // the apply: the raw block only in the raw compilation, the plain branch exactly what it was
+  // The raw compile still uses Hi-Z. The plain compile can also weigh V2 confidence.
   Check(Has(apply_ps, "#ifndef SSR_RAW\n#define SSR_RAW 0\n#endif") && Has(apply_ps, "#if SSR_RAW\n    if (t.w != 0.0f) {\n      const float dz = (SsrHizAt(SsrHz(), q.x, q.y) - z) / sigma;") &&
-            Has(apply_ps, "#else\n    if (t.w > 0.0f) {\n      const float dz = (t.w - z) / sigma;\n      w = wx * wy / (1.0f + dz * dz);\n    }\n#endif") && Count(apply_ps, "#if SSR_RAW") == 1,
-        "RR-4a: the apply's raw compilation weighs the trace's texels by the Hi-Z's receiver depth (the trace's alpha is the hit), and the plain branch is the one it always was; one block only");
+            Has(apply_ps, "#else\n    if (t.w > 0.0f) {\n      const float dz = (t.w - z) / sigma;\n      w = wx * wy / (1.0f + dz * dz);") &&
+            Has(PlainOf(apply_ps), "if (SsrHasSlot(confidence))") && Count(apply_ps, "#if SSR_RAW") == 1,
+        "The raw apply uses Hi-Z and the plain apply preserves depth weighting with optional V2 confidence");
   Check(!Has(PlainOf(apply_ps), "SsrHizAt(") && Has(PlainOf(apply_ps), "if (t.w > 0.0f) {"), "RR-4a: with the raw block out the apply is the old text (no Hi-Z read, the accumulation's alpha test)");
   // the hit pass: the apply's gates and weights, the trace's alpha through SsrHitDistance, nothing for a vehicle
   Check(Has(hit_ps, "SsrClassGain(surface.cls, surface.flags)") && Has(hit_ps, "SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET))") && Has(hit_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))") &&
@@ -2191,8 +2192,8 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
             Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false, const RegenAsk& regen = RegenAsk{});"),
         "RR-4a: the frame is raw by the rules' decision on what the caller asked (the default is plain), a hit image that cannot be made keeps the frame plain");
   Check(Has(trigger, "if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {") && Has(trigger, "if (raw_requested) {\n    raw_ever_asked_ = true;\n  }"), "RR-4a: nothing is logged until the mode was asked for once: the log of a run with the plan not RR is what it was");
-  Check(Has(trigger, "  if (!raw && !regen_ok) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
-        "RR-4a: the accumulation runs only in a plain frame");
+  Check(Has(trigger, "  if (!raw && !regen_ok && !filtered_v2) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
+        "Legacy accumulation runs only when neither a vendor denoiser nor V2 supplied the result");
   Check(Has(trigger, "if (raw) {\n    // RR-4a: the resolve reads the trace itself") && Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") &&
             Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
             Has(trigger, "list->setPipeline(raw ? raw_apply_pipeline : (regen_ok ? regen_apply_pipeline : apply_pipeline));") && Has(trigger, "pass_timing_->Mark(list, \"ssr apply raw\");"),
@@ -2373,7 +2374,7 @@ void TestSources(const std::string& dir) {
       {"SSR_W_TAN_X", "kTanX"},         {"SSR_W_TAN_Y", "kTanY"},    {"SSR_W_LIN_X", "kLinX"},    {"SSR_W_LIN_Y", "kLinY"},   {"SSR_W_LIN_Z", "kLinZ"},   {"SSR_W_LIN_W", "kLinW"},
       {"SSR_W_NEAR", "kNear"},          {"SSR_W_MAX_DIST", "kMaxDist"}, {"SSR_W_RIGHT", "kRight"}, {"SSR_W_UP", "kUp"},        {"SSR_W_STRENGTH", "kStrength"}, {"SSR_W_MIN_SMOOTH", "kMinSmooth"},
       {"SSR_W_STUB_SMOOTH", "kStubSmooth"}, {"SSR_W_WET", "kWet"},   {"SSR_W_THICK", "kThick"},   {"SSR_W_CAP", "kCap"},      {"SSR_W_MOTION", "kMotion"}, {"SSR_W_PREV_TAN_X", "kPrevTanX"},
-      {"SSR_W_PREV_TAN_Y", "kPrevTanY"}, {"SSR_W_HISTORY_WEIGHT", "kHistoryWeight"},
+      {"SSR_W_PREV_TAN_Y", "kPrevTanY"}, {"SSR_W_HISTORY_WEIGHT", "kHistoryWeight"}, {"SSR_W_DENOISE_CONFIDENCE", "kDenoiseConfidence"},
       {"SSR_W_ROAD_VIEW", "kRoadView"}, {"SSR_W_FALLBACK", "kFallback"}, {"SSR_W_VEH_TABLE", "kVehTable"}, {"SSR_W_STENCIL", "kStencil"}, {"SSR_W_ROAD_VIEW_APPLY", "kRoadViewApply"}};
   bool defined = true, filled = true;
   for (const std::string* text : {&pass, &trace_ps, &temporal_ps, &apply_ps}) {

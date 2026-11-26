@@ -45,6 +45,7 @@
 #include "city_rt_rules.h"
 #include "city_rt_shadow_rules.h"
 #include "host_passes.h"
+#include "rt_denoise.h"
 
 namespace mcla::gpu {
 
@@ -93,6 +94,7 @@ class CityRtShadow {
     uint32_t sun_frame = 0;            // the frame the rays' noise is shifted by (0: a fixed pattern) in the low 10 bits, bit 29 the blue noise tile (ao_stable.h kBlueNoiseFlag)
     uint32_t car_slot = kNoSlot;       // the car ray traced image (car_rt_ao.h) of this frame: the result is the darker of the two where it exists
     uint64_t frame = 0;
+    RtDenoise::VisibilityFrame denoise;
   };
   struct Result {
     bool recorded = false;
@@ -129,6 +131,7 @@ class CityRtShadow {
   void ProcessReadback(uint64_t frame, uint64_t generation, uint32_t width, uint32_t height, uint32_t instances, bool check, bool alpha_view);
 
   Device* device_ = nullptr;
+  RtDenoise denoise_;
   FrameRing* frames_ = nullptr;
   BindlessHeap* heap_ = nullptr;
   HostPasses* passes_ = nullptr;

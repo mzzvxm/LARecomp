@@ -23,6 +23,7 @@
 #include "pass_timing.h"
 #include "ray_regen.h"
 #include "ray_regen_plan.h"
+#include "rt_denoise_v2_rules.h"
 #include "rt_world_frame.h"
 
 namespace mcla::gpu {
@@ -79,6 +80,9 @@ void GiPixel::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
   const HostShaderBlob spatial = RtDenoiseDiffuseShader(false);
   const HostShaderBlob temporal = RtDenoiseDiffuseShader(true);
   denoise_.Initialize(device, frames, heap, passes, /*instance=*/1, "gi pixel", RtDenoise::Blob{spatial.data, spatial.size, spatial.name}, RtDenoise::Blob{temporal.data, temporal.size, temporal.name});
+  const auto v2_spatial = RtDenoiseV2DiffuseShader(false);
+  const auto v2_temporal = RtDenoiseV2DiffuseShader(true);
+  denoise_.InitializeV2({v2_spatial.data, v2_spatial.size, v2_spatial.name}, {v2_temporal.data, v2_temporal.size, v2_temporal.name});
   if (!denoise_.available()) {
     passes.precache().Note("ray traced bounce light's per-pixel pass: the denoiser could not be made (the probe field alone is the bounce light)", 0);
     return;
@@ -536,17 +540,21 @@ void GiPixel::RecordDenoise(plume::RenderCommandList* list) {
     stage.reads = {&depth_[parity_], &normal_, &hit_, &depth_[prev], nullptr, nullptr, nullptr, nullptr};
     stage.width = image_width_;
     stage.height = image_height_;
-    stage.iterations = rules::CellFor(gi::Rung::kStrong, gi::Level::kUltra).denoise_iterations;
     stage.push = rules::MakePush(v);
     stage.patch = rt_denoise::plain::PatchFor();
     stage.history_valid = history_ok_;
-    const HostImage* accumulated = denoise_.RecordTemporal(stage);
-    if (accumulated) {
-      history_frames_ = denoise_.last_history_read() ? std::min(history_frames_ + 1, 64u) : 0u;
-      v.length = rules::AssumedLength(history_frames_);
-      stage.signal = const_cast<HostImage*>(accumulated);   // the class only reads it (RtDenoise::Frame holds non-const pointers for the images it moves to the read state)
-      stage.push = rules::MakePush(v);
-      result_ = denoise_.RecordSpatial(stage);
+    stage.iterations = rt_denoise::v2::kDiffuseIterations;
+    result_ = denoise_.RecordV2(stage);
+    if (!result_) {
+      stage.iterations = rules::CellFor(gi::Rung::kStrong, gi::Level::kUltra).denoise_iterations;
+      const HostImage* accumulated = denoise_.RecordTemporal(stage);
+      if (accumulated) {
+        history_frames_ = denoise_.last_history_read() ? std::min(history_frames_ + 1, 64u) : 0u;
+        v.length = rules::AssumedLength(history_frames_);
+        stage.signal = const_cast<HostImage*>(accumulated);   // the class only reads it (RtDenoise::Frame holds non-const pointers for the images it moves to the read state)
+        stage.push = rules::MakePush(v);
+        result_ = denoise_.RecordSpatial(stage);
+      }
     }
   } else if (plan_.raw) {
     // G6: a RAW frame (Ray Reconstruction takes it and is the denoiser): neither stage runs. The apply reads the 1 spp signal itself, and the guide pass reads the hit distance image (as the last choice of its

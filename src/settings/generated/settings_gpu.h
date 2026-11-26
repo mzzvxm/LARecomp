@@ -1062,6 +1062,7 @@ class GPUSettings final : public rex::SettingOwner {
     "takes a lighter version). Needs ray queries, the city pack and the city hit data, and REFLECTIONS ON SURFACES on; a governor lowers the cap by half, up to three times, while the passes take more than "
     "their share of the frame. Live.", rex::kDebugOnly, rex::Allowed("auto", "off", "high", "ultra"));
 
+  REX_SETTING(bool, mcla_gpu_rt_denoise_v2, true, "Use the variance-guided RT denoiser when a vendor denoiser is inactive. False uses the previous filter. Applies live.", rex::kDebugOnly);
   REX_SETTING(i32, mcla_gpu_rt_denoise, -1, "Diagnostic (screen-space reflections, the ray traced fallback): RtDenoise, the filter that cleans the fallback's noise where DLSS Ray Reconstruction does not (a bilateral a-trous on the pixels the fallback made: the kernel follows the reflection, wide for a rough surface and a far hit, narrow for a near mirror, and stops at edges of depth, normal, roughness, brightness and hit distance). -1 (the default): the level of REFLECTIONS ON SURFACES gives the number of iterations (high 2, ultra 3); 0: off (the comparison); 1 to 3: that many iterations (steps of 1, 2 and 4 pixels of the half size image). Skipped by itself in a frame Ray Reconstruction takes. Live.", rex::kDebugOnly, rex::Range{-1, 3});
 
   REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
@@ -2310,6 +2311,7 @@ inline auto& mcla_gpu_ssr_fallback = g_gpu.mcla_gpu_ssr_fallback;
 inline auto& mcla_gpu_ssr_vehicle_rows = g_gpu.mcla_gpu_ssr_vehicle_rows;
 inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;
 inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;
+inline auto& mcla_gpu_rt_denoise_v2 = g_gpu.mcla_gpu_rt_denoise_v2;
 inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;
 inline auto& mcla_gpu_ssr_sparkle_resolve = g_gpu.mcla_gpu_ssr_sparkle_resolve;

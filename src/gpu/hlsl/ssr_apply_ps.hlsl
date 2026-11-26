@@ -133,6 +133,11 @@ float4 main(float4 position : SV_Position) : SV_Target {
     if (t.w > 0.0f) {
       const float dz = (t.w - z) / sigma;
       w = wx * wy / (1.0f + dz * dz);
+      const uint confidence = SsrLo(SsrW(SSR_W_DENOISE_CONFIDENCE));
+      if (SsrHasSlot(confidence)) {
+        const float samples = g_textures[confidence].Load(int3(q, 0)).a;
+        w *= lerp(0.75f, 1.0f, saturate((samples - 1.0f) / 7.0f));
+      }
     }
 #endif
     sum += t.xyz * w;

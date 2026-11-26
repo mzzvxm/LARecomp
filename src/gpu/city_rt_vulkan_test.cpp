@@ -166,6 +166,8 @@ const ImagePair kImages[] = {
     {"car_rt_refl_hit_cs.hlsl", "g_output", "r16f", "car_rt_refl.cpp", "car rt refl hit distance", false, "R16_FLOAT"},
     {"ssr_rt_trace_cs.hlsl", "g_trace", "rgba16f", "ssr.cpp", "kFormat", true, "R16G16B16A16_FLOAT"},
     {"rt_denoise_engine.hlsli", "g_dn_out", "rgba16f", "rt_denoise.cpp", "rt denoise image", false, "R16G16B16A16_FLOAT"},
+    {"rt_denoise_v2_engine.hlsli", "g_dn2_out", "rgba16f", "rt_denoise.cpp", "rt denoise image", false, "R16G16B16A16_FLOAT"},
+    {"rt_denoise_v2_engine.hlsli", "g_dn2_features", "rgba32f", "rt_denoise.cpp", "rt denoise v2 features", false, "R32G32B32A32_FLOAT"},
     {"gi_pixel_trace_cs.hlsl", "g_signal", "rgba16f", "gi_pixel.cpp", "gi pixel signal", false, "R16G16B16A16_FLOAT"},
     {"gi_pixel_trace_cs.hlsl", "g_depth", "r32f", "gi_pixel.cpp", "gi pixel depth 0", false, "R32_FLOAT"},
     {"gi_pixel_trace_cs.hlsl", "g_normal", "rgba16f", "gi_pixel.cpp", "gi pixel normal", false, "R16G16B16A16_FLOAT"},
@@ -186,7 +188,7 @@ const ImagePair kImages[] = {
 std::string HostFormatOf(const std::string& spirv_format) {
   static const std::map<std::string, std::string> kMap = {{"rgba8", "R8G8B8A8_UNORM"}, {"rgba16f", "R16G16B16A16_FLOAT"}, {"rg16f", "R16G16_FLOAT"},
                                                           {"r16f", "R16_FLOAT"},        {"r32f", "R32_FLOAT"},            {"r8", "R8_UNORM"},
-                                                          {"rgba8snorm", "R8G8B8A8_SNORM"}};
+                                                          {"rgba8snorm", "R8G8B8A8_SNORM"}, {"rgba32f", "R32G32B32A32_FLOAT"}};
   const auto it = kMap.find(spirv_format);
   return it == kMap.end() ? std::string() : it->second;
 }

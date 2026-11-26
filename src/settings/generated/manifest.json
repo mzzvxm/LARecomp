@@ -2343,6 +2343,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_denoise_v2": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use the variance-guided RT denoiser when a vendor denoiser is inactive. False uses the previous filter. Applies live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_ssr_blue_noise": {
   "type": "bool",
   "default": "true",

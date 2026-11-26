@@ -432,6 +432,7 @@
 {"mcla_gpu_ssr_vehicle_rows", "MCLA/GPU"},
 {"mcla_gpu_ssr_rt", "MCLA/GPU"},
 {"mcla_gpu_rt_denoise", "MCLA/GPU"},
+{"mcla_gpu_rt_denoise_v2", "MCLA/GPU"},
 {"mcla_gpu_ssr_blue_noise", "MCLA/GPU"},
 {"mcla_gpu_ssr_resolve", "MCLA/GPU"},
 {"mcla_gpu_ssr_sparkle_resolve", "MCLA/GPU"},

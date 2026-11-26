@@ -97,6 +97,10 @@ void CarRtAo::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, 
     return;
   }
   ready_ = true;
+  denoise_.Initialize(device, frames, heap, passes, 6, "car ao and sun", {}, {}, rt_denoise::Format::kRgba8);
+  const auto dn_spatial = RtDenoiseV2ShadowShader(false);
+  const auto dn_temporal = RtDenoiseV2ShadowShader(true);
+  denoise_.InitializeV2({dn_spatial.data, dn_spatial.size, dn_spatial.name}, {dn_temporal.data, dn_temporal.size, dn_temporal.name});
   // Listed with the start's precache only where the occlusion or the contact shadows are on at the start and the setting is not off; else it is made
   // in the background when first wanted (PipelineReady).
   if (listed_at_start && SettingNow() != rules::Setting::kOff) {
@@ -134,6 +138,7 @@ bool CarRtAo::MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene
 }
 
 void CarRtAo::Shutdown() {
+  denoise_.Shutdown();
   // The host builder's function names this object's layout and shader: stop it first.
   if (passes_) {
     passes_->precache().Stop();
@@ -204,6 +209,7 @@ bool CarRtAo::PipelineReady() {
 // ---------------------------------------------------------------------------
 
 void CarRtAo::BeginFrame(bool occlusion_on, bool contact_on) {
+  denoise_.OnPresent();
   wanted_ = false;
   if (!ready_ || !scene_) {
     return;
@@ -230,7 +236,7 @@ void CarRtAo::BeginFrame(bool occlusion_on, bool contact_on) {
 
 CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in) {
   Result result;
-  if (!list || !wanted_ || !ready_ || !in.depth || !in.depth->texture || in.depth->slot == kNoSlot) {
+  if (!list || !wanted_ || !ready_ || !scene_ || !car_frame_ || !pass_timing_ || !in.depth || !in.depth->texture || in.depth->slot == kNoSlot) {
     return result;
   }
   const rules::Terms terms = rules::Wanted(setting_, true, in.occlusion, in.contact);
@@ -341,6 +347,16 @@ CarRtAo::Result CarRtAo::Record(plume::RenderCommandList* list, const Inputs& in
 
   result.recorded = true;
   result.slot = image_.slot;
+  result.raw_slot = image_.slot;
+  if (RtDenoise::V2Enabled()) {
+    pass_timing_->Mark(list, "car rt ao denoise");
+    const uint32_t key = (terms.occlusion ? 1u : 0u) | (sun ? 2u : 0u) | (in.cabin_sun ? 4u : 0u) | (rays << 3);
+    auto denoise = in.denoise;
+    denoise.bounds = {rect.x0, rect.y0, rect.x1, rect.y1};
+    if (const HostImage* filtered = denoise_.RecordVisibility(list, image_, *in.depth, denoise, in.frame, in.tan_x, in.tan_y, in.fade_end, key)) {
+      result.slot = filtered->slot;
+    }
+  }
   result.occlusion = terms.occlusion;
   result.contact = sun;
   idle_frames_ = 0;
@@ -422,7 +438,7 @@ void CarRtAo::ReleaseImage() {
 }
 
 uint64_t CarRtAo::HeldBytes() const {
-  return image_.texture ? TextureBytes(image_.width, image_.height, 1, image_.format) : 0;
+  return (image_.texture ? TextureBytes(image_.width, image_.height, 1, image_.format) : 0) + denoise_.HeldBytes();
 }
 
 std::string CarRtAo::CensusText() const {

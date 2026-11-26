@@ -470,7 +470,7 @@ inline constexpr std::array<Row, kStepCount> kRows = {{
              "not; the products it wants are timed under the owner's 'screen hiz' and 'screen colour post'. Its Hi-Z comes from the screen frame published inside the AO's frame. CITY-RT R4: on a card that "
              "traces rays, with the effect on, the label 'ssr rt' (written between the trace and the accumulation, only in a frame the ray traced fallback follows: ssr_rt.h) covers its two compute passes "
              "(the candidates' tile list and the rays into this frame's top level, which the car structures' step built: a soft read); with no ray tracing the label is not there and nothing else changes. CITY-RT R6: "
-             "the label 'ssr denoise' (between the accumulation and the resolve, only in a frame the fallback followed and Ray Reconstruction did not take: RtDenoise's spatial iterations, rt_denoise.h) covers "
+             "the label 'ssr denoise' covers temporal and spatial V2 filtering of the raw hybrid signal, or the legacy spatial iterations after 'ssr temporal'. It runs on frames with the fallback and no vendor denoiser. It covers "
              "its compute passes; it reads the trace, the confidence and the accumulated image, so it follows the accumulation"},
     {.step = Step::kCarHistory, .phase = Phase::kTrigger, .kind = Kind::kNoted, .name = "car self-reflection history and ray traced reflection", .call = "car_refl_->OnResolve(record, summary, list)",
      .label_file = "car_selfrefl.cpp", .label = "car history", .soft_reads = data::kColourPost | data::kCarStructures, .makes = data::kCarHistory | data::kRrHitCar, .wants_screen = data::kColourPost,

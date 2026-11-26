@@ -2909,6 +2909,14 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // against this frame's top level structure (built before these passes: scene.cpp OnResolve calls CarRtScene::OnResolve first), into an image the
   // visibility pass (the plain one and the bounce light's) and the contact march read. Nothing recorded: they are as they were.
   CarRtAo::Result rt;
+  RtDenoise::VisibilityFrame visibility_motion;
+  const bool denoise_visibility = RtDenoise::V2Enabled();
+  if (denoise_visibility && ((rt_ao_ && rt_ao_->wanted()) || (city_shadow_ && city_shadow_->wanted() && contact))) {
+    FrameCameraOut camera;
+    FrameCameraNow(&camera);
+    visibility_motion.motion_valid = camera.have_motion;
+    std::copy_n(camera.motion, 12, visibility_motion.motion.begin());
+  }
   rt_contact_slot_ = kNoSlot;
   const auto record_car = [&](bool rtao_runs) {
     if (!rt_ao_ || !rt_ao_->wanted())
@@ -2922,7 +2930,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // An RTAO frame records the car pass's SUN TERM only (the world trace sees the same triangles from every pixel); the A/B arm mcla_gpu_rtao_blend_car also keeps its occlusion,
     // which the screen-space pass (where it runs) and the compose (below, the car term) take the darker of.
     in.occlusion = car_rt_ao::OcclusionOn(plan.occlusion, rtao_runs, blend_car);
-    in.compute_read = rtao_runs && in.occlusion;
+    in.compute_read = (rtao_runs && in.occlusion) || (contact && city_shadow_ && city_shadow_->wanted());
     in.contact = contact;
     in.cabin_sun = plan.cabin_shadow_mode == cabin_shadow::kCabinRt;
     in.ultra = plan.mode == Mode::kUltra;
@@ -2933,8 +2941,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     // while a scene runs, counting the frames a held scene stays on one number (scene_noise.h NoiseIndex).
     in.noise_code = ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), larecomp::settings::mcla_gpu_ao_blue_noise.Get());
     // The sun ray's sample moves every frame when something averages it: a temporal upscaler, or (NOISE-RESOLVE) the contact image's own history, which the traced term goes through with the march. Else a fixed (blue) pattern, as the march's.
-    in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;
+    in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history || denoise_visibility) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;
     in.frame = frame_;
+    in.denoise = visibility_motion;
     rt = rt_ao_->Record(list, in);
     if (rt.recorded && rt.contact) {
       rt_contact_slot_ = rt.slot;
@@ -2953,9 +2962,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     }
     // The frame the rays' noise is shifted by (the scene's noise index while a scene runs: scene_noise.h NoiseIndex): a fixed (blue) pattern unless a temporal upscaler averages the frames or (NOISE-RESOLVE) the contact image's own history does, as the march's; bit 29 says the blue noise tile
     // (mcla_gpu_ao_blue_noise, hlsl/city_rt_shadow_noise.hlsli), else the first version's gradient noise.
-    city_in.sun_frame = (noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u) | (larecomp::settings::mcla_gpu_ao_blue_noise.Get() ? ao_stable::kBlueNoiseFlag : 0u);
-    city_in.car_slot = (rt.recorded && rt.contact) ? rt.slot : CityRtShadow::kNoSlot;
+    city_in.sun_frame = (noise_resolve::Varies(plan.upscaler, plan.contact_history || denoise_visibility) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u) | (larecomp::settings::mcla_gpu_ao_blue_noise.Get() ? ao_stable::kBlueNoiseFlag : 0u);
+    city_in.car_slot = (rt.recorded && rt.contact) ? rt.raw_slot : CityRtShadow::kNoSlot;
     city_in.frame = frame_;
+    city_in.denoise = visibility_motion;
     const CityRtShadow::Result city = city_shadow_->Record(list, city_in);
     if (city.recorded) {
       rt_contact_slot_ = city.slot;
