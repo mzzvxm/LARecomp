@@ -16,7 +16,7 @@
 // The ground is probed with the game's own segment probe (sub_82574418 on the physics level dword_828DA464, the call map_warp.cpp's teleport snap and the
 // Director's query.pick make), from the camera the front-end camera hook publishes (mc_engine/camera/final_camera.h): a few rays through the
 // lower part of the picture every tenth of a second, the upward-facing hits' lower quartile (title_road_plane.h). It runs on the guest thread that
-// calls sub_822F3918, which is where the game calls its own probes from. Nothing is written to the guest's memory but a 160-byte scratch for the
+// calls sub_822F3918 (a guest thread, which the call into the game needs). Nothing is written to the guest's memory but a 160-byte scratch for the
 // probe's segment and result, made once.
 //
 // Log, tag "[title plane]": the first plane found, and then one line when it moved by more than 3 m or the state changed, at most one every 5 s.
@@ -54,6 +54,7 @@ struct State {
   float plane = 1.0f;            // the plane that is applied (smoothed)
   float target = 1.0f;           // the last probe's
   Clock::time_point probed_at;
+  bool probed_once = false;
   Clock::time_point applied_at;
   bool applied_valid = false;
   uint32_t calls = 0;            // the plane function's calls without a player view (the warm-up)
@@ -186,9 +187,9 @@ void Hook_TitlePlaneZ(PPCRegister& f31) {
   ++s.calls;
   const auto now = Clock::now();
   if (s.calls > tp::kWarmupCalls) {
-    const bool due = !s.applied_valid ? true
-                                      : std::chrono::duration<float>(now - s.probed_at).count() >= tp::kRefreshSeconds;
+    const bool due = !s.probed_once || std::chrono::duration<float>(now - s.probed_at).count() >= tp::kRefreshSeconds;
     if (due) {
+      s.probed_once = true;
       s.probed_at = now;
       float plane = 0.0f;
       size_t ground = 0, rays = 0;

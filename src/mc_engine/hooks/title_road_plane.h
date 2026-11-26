@@ -5,16 +5,19 @@
 // title_road_plane.cpp holds the hooks and the game calls; what they decide is here, as pure functions on plain numbers, so a test needs no game
 // (title_road_plane_test.cpp).
 //
-// THE BUG (owner, 2026-11-25; the same on the stock Xenia renderer, so it is the game's own): in rain the title screen's puddles are large flat white
-// blocks. The wet road's pixel shaders (xCityRoad, xCityTunnelRoad, the sidewalks, the windows, the water) mix their lit colour with ONE texture, the
-// road reflection view: the game draws the city a second time from the main camera with every vertex mirrored about a plane by the vertex shader
-// (VS c43.z, gReflectionParams.z) and stretches the 256 x 256 result over the screen. The plane is the street's height, which sub_822F3918 puts there
-// every frame from the PLAYER's ground height (the matrix of player slot 0, +52). The title screen has no player: sub_822A39C0 says no view, and the
-// function stores its default, the constant 1.0 (the float at 0x82001D14), which is a plane at sea level. The front-end's cameras look at the
-// city from 40 to 150 metres up, so the roads in the picture lie tens of metres above a plane at y = 1, the mirrored city lands far below the
-// picture, and the reflection the puddles mix in is the picture of nothing: in rain, where VS c43.y is 1.19 and the puddle mask is the whole
-// road, that reads as flat blocks. (The pause menu, the map and the garage all have a player, so their plane is right: only the title does not.
-// A dry night hides it: c43.y is 0.095 there and the mix is a tenth of the reflection.)
+// THE DEFECT (found 2026-11-25 while looking into the owner's report of flat white puddles on the title screen in rain, which the stock
+// Xenia renderer shows too, so it is the game's own): the wet road's pixel shaders (xCityRoad, xCityTunnelRoad, the sidewalks, the windows, the
+// water) mix their lit colour with ONE texture, the road reflection view: the game draws the LOD city a second time from the main camera with every
+// vertex mirrored about a plane by the vertex shader (VS c43.z, gReflectionParams.z) and stretches the 256 x 256 result over the screen. The plane
+// is the street's height, which sub_822F3918 puts there every frame from the PLAYER's ground height (the matrix of player slot 0, +52). The
+// title screen has no player: sub_822A39C0 says no view, and the function stores its default, the float constant 1.0 at 0x82001D14, which is a
+// plane at sea level (measured: c43.z = 1.0 on every road reflection draw of the front end, 17.6 to 32.4 m in the city, and the SSR debug view
+// of the road reflection image, mcla_gpu_ssr_view 5, is black in a shot 83 m up with the plane at 1 m). The front end's cameras look at roads that
+// lie 10 to 80 metres higher, so the mirrored city lands far from the picture. The pause menu, the map and the garage have a player, so
+// their plane is right: only the front end does not.
+//
+// WHAT THIS DOES NOT DO: with the plane at the road the reflection image shows the mirrored city (view 5), and the road's puddles in rain
+// look the same as before. The flat white blocks of a rainy title are not made by the plane. See the AGENTS.md row TITLE-RAIN-PUDDLES for what is known.
 //
 // THE FIX: when the game has no player view, the plane is the height of the ground the camera is looking at. The camera's final pose is published
 // by the front-end camera hook (mc_engine/camera/final_camera.h); a few segments through the lower part of the picture are probed against the
