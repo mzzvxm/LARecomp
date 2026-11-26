@@ -209,8 +209,11 @@ class ScreenReflections {
   bool RecordRegen(plume::RenderCommandList* list, const ssr::Push& base, const screen::ScreenFrame& sf, const RegenCameraRows* cam, bool motion_usable, const RegenAsk& ask, uint32_t width,
                    uint32_t height, const ssr::HistoryKey& now);
   void ReleaseImages();
-  // The trace pass with two targets (the trace image and the confidence image), the same sequence as DrawPass.
-  void DrawPassRt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push);
+  // The trace/confidence and temporal/guide passes each write two targets.
+  void DrawPassMrt(plume::RenderCommandList* list, HostImage& signal, HostImage& guide, const plume::RenderFramebuffer* framebuffer,
+                   const plume::RenderPipeline* pipeline, const ssr::Push& push, bool compute_read);
+  bool EnsureHistory(uint32_t width, uint32_t height);
+  void ReleaseHistory();
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
@@ -254,6 +257,10 @@ class ScreenReflections {
   ssr_denoise::Totals denoise_totals_;
   uint32_t denoise_why_logged_ = ~0u;
   std::array<HostImage, 2> accum_;
+  std::array<HostImage, 2> history_guide_;
+  std::array<std::unique_ptr<plume::RenderFramebuffer>, 2> history_framebuffer_;
+  bool last_resolve_ = false;
+  bool last_rt_ = false;
   RayRegenRadiancePass regen_pass_;        // RG-3: the guide and signal pass (and its images: the signal, the guides, the denoised image)
   ssr::HistoryKey regen_key_;         // the last frame that was a regen frame (its dispatch's history)
   bool regen_city_ = false;           // city contributed to the previous AMD signal

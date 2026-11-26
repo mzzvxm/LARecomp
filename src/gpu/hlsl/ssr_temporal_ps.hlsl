@@ -1,143 +1,273 @@
-// MCLA GPU renderer -- screen-space reflections (ssr.h, GB-I1), pass 2: the accumulation over frames.
-//
-// One stochastic ray a pixel is noise; this pass averages it over frames. A full-screen triangle into an RGBA16F image of the SSR size (the next frame's history, the previous one is read):
-//
-//   rgb  the radiance the pixel has accumulated (premultiplied by the fades like the trace's: a ray that missed brings 0, and the average fades a reflection out smoothly), a the pixel's
-//        receiver depth (the Hi-Z's, linear), which the next frame's history test and the apply pass's upsample read; 0 where nothing was traced.
-//
-// THE VIRTUAL IMAGE. A reflection moves on the screen like the MIRROR IMAGE of what it shows, not like the surface it is on: unfold the reflected path into a straight line and the hit stands
-// `distance` behind the receiver along the view ray (hlsl/ssr_common.hlsli SsrVirtualPoint, exact for a flat mirror whatever the hit's place). That point, moved into the last frame's view space
-// with the camera's own motion (the 3x4 of the occlusion's accumulation pass, ao.h FrameCameraNow) and projected with the last frame's lens, is where the same reflection was last frame; the
-// history is read there (bilinear). A ray that found nothing has a distance of kSsrMissLength: the history of the sky, which moves with the camera's rotation alone.
-//
-// THE RESOLVE (2026-11-22). The trace's 3x3 is read first: its centre-weighted average over the pixels of the same surface (ssr_common.hlsli SsrTapKernel, SsrTapSameSurface) is the pixel's
-// current value (nine rays of one lobe are nearer its mean than one), and where the centre's own ray found nothing, the nearest hit of those pixels gives the distance of the virtual image
-// (SsrReprojectDistance: the history round a reflection is looked up with the reflection's parallax, not the sky's, whatever the noise did to this pixel's ray). After the clip the history keeps
-// kSsrClipKeep of itself at least (SsrKeepClip), except under a temporal upscaler (SSR_TEMPORAL_UPSCALER). The sparkle A/B restores that floor with a motion taper on validated history
-// (SSR_TEMPORAL_SPARKLE_RESOLVE). SSR_TEMPORAL_FIRST_RESOLVE (mcla_gpu_ssr_resolve false) is the first version: the centre pixel alone, the clip whole.
-//
-// WHAT IS KEPT. Only where the receiver itself was the same surface: its own reprojection (the plain position, not the image) must land on a history texel whose stored depth agrees within 8% (a car
-// that passed, a wall that came into view, an edge: no history), and the image's position must be more than a texel inside the picture (GB-I2: the clamped sample of an edge smears it). The history
-// is CLIPPED to the neighbourhood of this frame's 3x3 of the trace: the box is the neighbourhood's mean +- 1.25 standard deviations, no wider than its min / max widened by a tenth (the variance
-// clip), and the history goes along the line to the box's centre, so a reflection that changed, a light that went out, is a ghost for as long as it takes the clip, and keeps its colour.
-//
-// GB-I2, THE VEHICLES. A hit on a VEHICLE's pixel (the sign of the trace's alpha, SsrPackHit; the stencil ID in its low bits) moves by the vehicle's own motion, not the world's: where the AO has a
-// motion row for that ID (its vehicle table, vehicle_motion.h: the 3x4 that takes this frame's view space into the last frame's with the vehicle's step on top of the camera's, the very rows the AO's
-// own history uses) the image of the hit is reprojected with it (hlsl/ssr_common.hlsli SsrVehicleImage: the virtual image undone to the hit, the hit moved by the vehicle's row, mirrored again in
-// the surface as it was) and the history keeps 0.8 of its weight; with no row (the AO is off, an ID that was not seen, the pause view) the image is taken as the world's and the history keeps
-// 0.35. The weight the history keeps is SSR_W_FRAME as a float (ssr_rules.h NumbersOf), 0 for a frame without a usable history.
-//
-// Push block: the trace in the low half of SSR_W_SRC and the history in the high half; the Hi-Z; the lens; the last frame's lens in SSR_W_NEAR and SSR_W_MAX_DIST; the motion's rows from SSR_W_MOTION;
-// the AO's vehicle table in the low half of SSR_W_VEH_TABLE (0xFFFF: none), the options in its high half.
-
+// Accumulate the signed reflection correction at half resolution. Motion
+// comes from the virtual image behind the reflector. The geometry plane
+// validates both the receiver and each tap of the reprojected history.
 #include "ssr_pass.hlsli"
 
-float4 main(float4 position : SV_Position) : SV_Target {
+// The debug switch still exposes the original centre-sample resolve for A/B.
+float4 SsrFirstResolve(float4 position) {
   const int2 pix = int2(position.xy);
-  const int2 ssr = SsrSize();
-  if (pix.x >= ssr.x || pix.y >= ssr.y) {
-    return float4(0.0f, 0.0f, 0.0f, 0.0f);
-  }
+  const int2 size = SsrSize();
   const uint trace_slot = SsrLo(SsrW(SSR_W_SRC));
   const uint history_slot = SsrHi(SsrW(SSR_W_SRC));
-  const float4 trace_raw = g_textures[trace_slot].Load(int3(pix, 0));
-  const float4 current = float4(NgFinite3(trace_raw.xyz), trace_raw.w);   // a colour that is not a number is none (nan_guard.hlsli): this image becomes the history
-  if (current.w == 0.0f) {
-    return float4(0.0f, 0.0f, 0.0f, 0.0f);   // nothing was traced here
+  const float4 current = g_textures[trace_slot].Load(int3(pix, 0));
+  const float z = SsrHizAt(SsrHz(), pix.x, pix.y);
+  if (current.w == 0.0f || z >= kSsrSky * 0.5f) {
+    return 0.0f;
   }
-  const float z_block = SsrHizAt(SsrHz(), pix.x, pix.y);
-  if (z_block >= kSsrSky * 0.5f) {
-    return float4(0.0f, 0.0f, 0.0f, 0.0f);
+  const float3 value = NgFinite3(current.rgb);
+  if (!SsrFlag(SSR_FLAG_HISTORY)) {
+    return float4(value, z);
   }
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
-  const float3 receiver = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
-  const uint temporal_options = SsrHi(SsrW(SSR_W_VEH_TABLE));
-  const bool resolve = (temporal_options & SSR_TEMPORAL_FIRST_RESOLVE) == 0u;
-  const bool upscaler = (temporal_options & SSR_TEMPORAL_UPSCALER) != 0u;
-
-  // the trace's 3x3, once: the clip's box (the mean, the deviation and the range of the pixels that were traced) and the resolve (the tent's average of the pixels of the same surface, and the
-  // nearest hit among them); with the first version's resolve only the centre joins the average
-  float3 lo = current.xyz;
-  float3 hi = current.xyz;
-  float3 sum = float3(0.0f, 0.0f, 0.0f);
-  float3 sum2 = float3(0.0f, 0.0f, 0.0f);
+  const float3 receiver = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(size.x), float(size.y), z, tan_x, tan_y);
+  const float4 m0 = float4(SsrF(SSR_W_MOTION + 0u), SsrF(SSR_W_MOTION + 1u), SsrF(SSR_W_MOTION + 2u), SsrF(SSR_W_MOTION + 3u));
+  const float4 m1 = float4(SsrF(SSR_W_MOTION + 4u), SsrF(SSR_W_MOTION + 5u), SsrF(SSR_W_MOTION + 6u), SsrF(SSR_W_MOTION + 7u));
+  const float4 m2 = float4(SsrF(SSR_W_MOTION + 8u), SsrF(SSR_W_MOTION + 9u), SsrF(SSR_W_MOTION + 10u), SsrF(SSR_W_MOTION + 11u));
+  const float prev_tan_x = SsrF(SSR_W_PREV_TAN_X);
+  const float prev_tan_y = SsrF(SSR_W_PREV_TAN_Y);
+  const float travelled = SsrHitDistance(current.w);
+  SsrPrevious image = SsrToPrevious(m0, m1, m2, SsrVirtualPoint(receiver, travelled), prev_tan_x, prev_tan_y);
+  float vehicle_scale = 1.0f;
+  if (SsrHitIsVehicle(current.w)) {
+    vehicle_scale = kSsrVehicleNoRowWeight;
+    const uint table = SsrLo(SsrW(SSR_W_VEH_TABLE));
+    const uint id = SsrHitVehicleId(current.w);
+    if (SsrHasSlot(table) && id != 0u && g_textures[table].Load(int3(3, int(id), 0)).x > 0.5f) {
+      const float4 v0 = g_textures[table].Load(int3(0, int(id), 0));
+      const float4 v1 = g_textures[table].Load(int3(1, int(id), 0));
+      const float4 v2 = g_textures[table].Load(int3(2, int(id), 0));
+      const float3 normal = SsrDepthNormal(SsrHz(), pix.x, pix.y, size.x, size.y, z, receiver, tan_x, tan_y);
+      image = SsrVehicleImage(m0, m1, m2, v0, v1, v2, receiver, normal, travelled, prev_tan_x, prev_tan_y);
+      vehicle_scale = kSsrVehicleRowWeight;
+    }
+  }
+  const SsrPrevious plain = SsrToPrevious(m0, m1, m2, receiver, prev_tan_x, prev_tan_y);
+  if (!plain.ok || !image.ok || !SsrHistoryInside(image.u, image.v, float(size.x), float(size.y))) {
+    return float4(value, z);
+  }
+  const int2 q = clamp(int2(float2(plain.u, plain.v) * float2(size)), 0, size - 1);
+  const float stored = g_textures[history_slot].Load(int3(q, 0)).w;
+  if (stored <= 0.0f || !SsrSameSurface(stored, plain.z)) {
+    return float4(value, z);
+  }
+  float3 lo = value;
+  float3 hi = value;
+  float3 sum = 0.0f;
+  float3 sum2 = 0.0f;
   float count = 0.0f;
-  float3 tent_sum = float3(0.0f, 0.0f, 0.0f);
-  float tent_weight = 0.0f;
-  float nearest_tap = kSsrMissLength;
+  [unroll] for (int y = -1; y <= 1; ++y) {
+    [unroll] for (int x = -1; x <= 1; ++x) {
+      const int2 p = clamp(pix + int2(x, y), 0, size - 1);
+      const float4 tap = g_textures[trace_slot].Load(int3(p, 0));
+      if (tap.w != 0.0f) {
+        const float3 colour = NgFinite3(tap.rgb);
+        lo = min(lo, colour);
+        hi = max(hi, colour);
+        sum += colour;
+        sum2 += colour * colour;
+        count += 1.0f;
+      }
+    }
+  }
+  const float3 mean = sum / count;
+  const float3 sigma = sqrt(max(sum2 / count - mean * mean, 0.0f));
+  const float3 margin = (hi - lo) * kSsrClipMargin;
+  const float3 history = NgFinite3(g_textures[history_slot].SampleLevel(g_samplers[kSamplerLinearClamp], float2(image.u, image.v), 0.0f).rgb);
+  const float3 clipped = SsrClipToBox(history, max(mean - kSsrClipGamma * sigma, lo - margin), min(mean + kSsrClipGamma * sigma, hi + margin));
+  return float4(NgFinite3(lerp(value, clipped, SsrF(SSR_W_HISTORY_WEIGHT) * vehicle_scale)), z);
+}
+
+struct SsrHistoryOutput {
+  float4 colour : SV_Target0;   // signed premultiplied correction; receiver depth for apply
+  float4 guide : SV_Target1;    // octahedral plane normal, virtual Z, packed source/miss/sample counts
+};
+
+float SsrPreviousPlane(int2 p, float4 guide, float stored_z, float3 plane_point, float3 plane_normal,
+                       float2 size, float2 lens) {
+  if (stored_z <= 0.0f || SsrGuideSamples(uint(guide.w)) == 0u ||
+      dot(SsrDecodePlaneNormal(guide.xy), plane_normal) < 0.85f) {
+    return 0.0f;
+  }
+  const float3 sample_position = SsrViewPos(float(p.x) + 0.5f, float(p.y) + 0.5f, size.x, size.y, stored_z, lens.x, lens.y);
+  const float footprint = 2.0f * max(lens.x / size.x, lens.y / size.y) * plane_point.z;
+  return SsrPlaneWeight(sample_position, plane_point, plane_normal, footprint);
+}
+
+SsrHistoryOutput SsrAccumulate(int2 pix, uint options) {
+  SsrHistoryOutput out_history = (SsrHistoryOutput)0;
+  const int2 size = SsrSize();
+  const uint trace_slot = SsrLo(SsrW(SSR_W_SRC));
+  const float4 current = g_textures[trace_slot].Load(int3(pix, 0));
+  if (current.w == 0.0f) {
+    return out_history;
+  }
+  const uint hz = SsrHz();
+  const float z = SsrHizAt(hz, pix.x, pix.y);
+  if (z >= kSsrSky * 0.5f) {
+    return out_history;
+  }
+
+  const float2 lens = float2(SsrF(SSR_W_TAN_X), SsrF(SSR_W_TAN_Y));
+  const float3 receiver = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(size.x), float(size.y), z, lens.x, lens.y);
+  const float3 normal = SsrDepthNormal(hz, pix.x, pix.y, size.x, size.y, z, receiver, lens.x, lens.y);
+  const float footprint = 2.0f * max(lens.x / float(size.x), lens.y / float(size.y)) * z;
+  float3 sum = 0.0f;
+  float3 sum2 = 0.0f;
+  float3 lo = NgFinite3(current.rgb);
+  float3 hi = lo;
+  float total = 0.0f;
+  float hit_weight = 0.0f;
+  float representative = current.w;
+  float best = 0.0f;
+  const bool centre_hit = SsrHistorySource(current.w) != kSsrDistantHit;
   [unroll] for (int dy = -1; dy <= 1; ++dy) {
     [unroll] for (int dx = -1; dx <= 1; ++dx) {
-      const int2 p = clamp(pix + int2(dx, dy), int2(0, 0), ssr - 1);
-      const float4 traced = g_textures[trace_slot].Load(int3(p, 0));
-      const float4 t = float4(NgFinite3(traced.xyz), traced.w);   // (nan_guard.hlsli: a tap that is not a number is none)
-      if (t.w != 0.0f) {
-        lo = min(lo, t.xyz);
-        hi = max(hi, t.xyz);
-        sum += t.xyz;
-        sum2 += t.xyz * t.xyz;
-        count += 1.0f;
-        const bool centre = dx == 0 && dy == 0;
-        if (centre || (resolve && SsrTapSameSurface(SsrHizAt(SsrHz(), p.x, p.y), z_block))) {
-          const float k = SsrTapKernel(dx, dy);
-          tent_sum += t.xyz * k;
-          tent_weight += k;
-          nearest_tap = min(nearest_tap, SsrHitDistance(t.w));
+      const int2 p = pix + int2(dx, dy);
+      if (any(p < 0) || any(p >= size)) {
+        continue;
+      }
+      const float4 tap = g_textures[trace_slot].Load(int3(p, 0));
+      if (tap.w == 0.0f) {
+        continue;
+      }
+      const float tap_z = SsrHizAt(hz, p.x, p.y);
+      const float3 sample_position = SsrViewPos(float(p.x) + 0.5f, float(p.y) + 0.5f, float(size.x), float(size.y), tap_z, lens.x, lens.y);
+      const float w = SsrTapKernel(dx, dy) * SsrPlaneWeight(sample_position, receiver, normal, footprint);
+      if (w <= 0.0f) {
+        continue;
+      }
+      const float3 colour = NgFinite3(tap.rgb);
+      sum += w * colour;
+      sum2 += w * colour * colour;
+      lo = min(lo, colour);
+      hi = max(hi, colour);
+      total += w;
+      if (SsrHistorySource(tap.w) != kSsrDistantHit) {
+        hit_weight += w;
+        // Preserve the identity along with the neighbouring ray's distance.
+        if (SsrPreferHistoryHit(centre_hit, tap.w, w, best)) {
+          best = w;
+          representative = tap.w;
         }
       }
     }
   }
-  const float3 value = tent_sum / max(tent_weight, 1.0e-6f);
-  const float travelled = resolve ? SsrReprojectDistance(SsrHitDistance(current.w), nearest_tap) : SsrHitDistance(current.w);
-  const bool vehicle_hit = SsrHitIsVehicle(current.w);
-  const uint vehicle_id = SsrHitVehicleId(current.w);
+  const float inv_total = 1.0f / max(total, 1.0e-6f);
+  const float3 value = sum * inv_total;
+  const float support = hit_weight * inv_total;
+  uint source = SsrHistorySource(representative);
+  float distance_to_hit = SsrHitDistance(representative);
+  uint misses = 0u;
+  uint samples = 1u;
+  float3 result = value;
 
-  float weight = 0.0f;
-  float3 history = float3(0.0f, 0.0f, 0.0f);
-  float keep = SsrClipKeepFor(resolve, upscaler);
   if (SsrFlag(SSR_FLAG_HISTORY)) {
     const float4 m0 = float4(SsrF(SSR_W_MOTION + 0u), SsrF(SSR_W_MOTION + 1u), SsrF(SSR_W_MOTION + 2u), SsrF(SSR_W_MOTION + 3u));
     const float4 m1 = float4(SsrF(SSR_W_MOTION + 4u), SsrF(SSR_W_MOTION + 5u), SsrF(SSR_W_MOTION + 6u), SsrF(SSR_W_MOTION + 7u));
     const float4 m2 = float4(SsrF(SSR_W_MOTION + 8u), SsrF(SSR_W_MOTION + 9u), SsrF(SSR_W_MOTION + 10u), SsrF(SSR_W_MOTION + 11u));
-    const float prev_tan_x = SsrF(SSR_W_PREV_TAN_X);
-    const float prev_tan_y = SsrF(SSR_W_PREV_TAN_Y);
-    SsrPrevious image = SsrToPrevious(m0, m1, m2, SsrVirtualPoint(receiver, travelled), prev_tan_x, prev_tan_y);
-    float vehicle_scale = 1.0f;
-    if (vehicle_hit) {
-      // a reflected vehicle: its own row where the AO has one, else the world's (and little of the history)
-      vehicle_scale = kSsrVehicleNoRowWeight;
-      const uint table = SsrLo(SsrW(SSR_W_VEH_TABLE));
-      if (SsrHasSlot(table) && vehicle_id != 0u && g_textures[table].Load(int3(3, int(vehicle_id), 0)).x > 0.5f) {
-        const float4 v0 = g_textures[table].Load(int3(0, int(vehicle_id), 0));
-        const float4 v1 = g_textures[table].Load(int3(1, int(vehicle_id), 0));
-        const float4 v2 = g_textures[table].Load(int3(2, int(vehicle_id), 0));
-        const float3 n = SsrDepthNormal(SsrHz(), pix.x, pix.y, ssr.x, ssr.y, z_block, receiver, tan_x, tan_y);
-        image = SsrVehicleImage(m0, m1, m2, v0, v1, v2, receiver, n, travelled, prev_tan_x, prev_tan_y);
-        vehicle_scale = kSsrVehicleRowWeight;
-      }
-    }
-    const SsrPrevious plain = SsrToPrevious(m0, m1, m2, receiver, prev_tan_x, prev_tan_y);
-    if (image.ok && plain.ok && SsrHistoryInside(image.u, image.v, float(ssr.x), float(ssr.y))) {
-      const int2 q = clamp(int2(plain.u * float(ssr.x), plain.v * float(ssr.y)), int2(0, 0), ssr - 1);
-      const float stored = g_textures[history_slot].Load(int3(q, 0)).w;
-      if (stored > 0.0f && SsrSameSurface(stored, plain.z)) {
-        weight = SsrF(SSR_W_HISTORY_WEIGHT) * vehicle_scale;
-        history = NgFinite3(g_textures[history_slot].SampleLevel(g_samplers[kSamplerLinearClamp], float2(image.u, image.v), 0.0f).rgb);   // (a NaN texel in the bilinear footprint is no history)
-        if ((temporal_options & SSR_TEMPORAL_SPARKLE_RESOLVE) != 0u && vehicle_scale != kSsrVehicleNoRowWeight) {
-          const float2 motion = float2(image.u, image.v) * float2(ssr) - (float2(pix) + 0.5f);
-          keep = SsrSparkleClipKeep(motion.x, motion.y);
+    const float2 prev_lens = float2(SsrF(SSR_W_PREV_TAN_X), SsrF(SSR_W_PREV_TAN_Y));
+    const SsrPrevious plain = SsrToPrevious(m0, m1, m2, receiver, prev_lens.x, prev_lens.y);
+    if (plain.ok && SsrHistoryInside(plain.u, plain.v, float(size.x), float(size.y))) {
+      const uint history_slot = SsrHi(SsrW(SSR_W_SRC));
+      const uint guide_slot = SsrW(SSR_W_HISTORY_GUIDE);
+      const float3 prev_receiver = SsrViewPos(plain.u, plain.v, 1.0f, 1.0f, plain.z, prev_lens.x, prev_lens.y);
+      const float3 prev_normal = normalize(float3(SsrDot3(m0, normal), SsrDot3(m1, normal), SsrDot3(m2, normal)));
+      const int2 q = int2(float2(plain.u, plain.v) * float2(size));
+      const float4 plain_guide = g_textures[guide_slot].Load(int3(q, 0));
+      const float plain_z = g_textures[history_slot].Load(int3(q, 0)).w;
+      const float receiver_weight = SsrPreviousPlane(q, plain_guide, plain_z, prev_receiver, prev_normal, float2(size), prev_lens);
+      if (receiver_weight > 0.0f) {
+        const uint plain_state = uint(plain_guide.w);
+        if (source == kSsrDistantHit && SsrCanCarryHit(plain_state) && plain_guide.z > plain_z) {
+          // No finite ray in this frame's footprint. Reuse a nearby path
+          // briefly. A vehicle still needs its own motion row below.
+          const float3 q_receiver = SsrViewPos(float(q.x) + 0.5f, float(q.y) + 0.5f, float(size.x), float(size.y),
+                                              plain_z, prev_lens.x, prev_lens.y);
+          distance_to_hit = SsrCarryDistance(plain_guide.z, plain_z, length(q_receiver));
+          source = SsrGuideSource(plain_state);
+          misses = SsrGuideMisses(plain_state) + 1u;
+        }
+        SsrPrevious image = SsrToPrevious(m0, m1, m2, SsrVirtualPoint(receiver, distance_to_hit), prev_lens.x, prev_lens.y);
+        float motion_weight = 1.0f;
+        if (source > kSsrWorldHit && source <= kSsrUnknownVehicle) {
+          // Unknown motion gets current-frame spatial filtering only.
+          motion_weight = 0.0f;
+          const uint table = SsrLo(SsrW(SSR_W_VEH_TABLE));
+          if (source < kSsrUnknownVehicle && SsrHasSlot(table) &&
+              g_textures[table].Load(int3(3, int(source), 0)).x > 0.5f) {
+            const float4 v0 = g_textures[table].Load(int3(0, int(source), 0));
+            const float4 v1 = g_textures[table].Load(int3(1, int(source), 0));
+            const float4 v2 = g_textures[table].Load(int3(2, int(source), 0));
+            image = SsrVehicleImage(m0, m1, m2, v0, v1, v2, receiver, normal, distance_to_hit, prev_lens.x, prev_lens.y);
+            motion_weight = kSsrVehicleRowWeight;
+          }
+        }
+        if (motion_weight > 0.0f && image.ok && SsrHistoryInside(image.u, image.v, float(size.x), float(size.y))) {
+          const float2 texels = float2(image.u, image.v) * float2(size) - 0.5f;
+          const int2 base = int2(floor(texels));
+          const float2 f = frac(texels);
+          float3 history_sum = 0.0f;
+          float coverage = 0.0f;
+          float sample_sum = 0.0f;
+          [unroll] for (int y = 0; y <= 1; ++y) {
+            [unroll] for (int x = 0; x <= 1; ++x) {
+              const int2 p = base + int2(x, y);
+              const float4 guide = g_textures[guide_slot].Load(int3(p, 0));
+              const uint state = uint(guide.w);
+              if (SsrGuideSource(state) != source) {
+                continue;
+              }
+              const float4 old = g_textures[history_slot].Load(int3(p, 0));
+              float w = (x == 0 ? 1.0f - f.x : f.x) * (y == 0 ? 1.0f - f.y : f.y);
+              w *= SsrPreviousPlane(p, guide, old.w, prev_receiver, prev_normal, float2(size), prev_lens);
+              w *= SsrImageDepthWeight(guide.z, image.z, source);
+              history_sum += w * NgFinite3(old.rgb);
+              sample_sum += w * float(SsrGuideSamples(state));
+              coverage += w;
+            }
+          }
+          if (coverage > 1.0e-4f) {
+            const float3 history = history_sum / coverage;
+            const float3 sigma = sqrt(max(sum2 * inv_total - value * value, 0.0f));
+            const float3 margin = (hi - lo) * kSsrClipMargin;
+            const float3 clipped = SsrClipToBox(history, max(value - kSsrClipGamma * sigma, lo - margin),
+                                               min(value + kSsrClipGamma * sigma, hi + margin));
+            const float validity = coverage * receiver_weight;
+            const bool upscaler = (options & SSR_TEMPORAL_UPSCALER) != 0u;
+            const bool sparkle = (options & SSR_TEMPORAL_SPARKLE_RESOLVE) != 0u;
+            // CHECK: compare wet-road dolly highlights and moving taillight trails in game.
+            const float keep = SsrValidatedClipKeep(support, validity, upscaler, sparkle);
+            const float3 kept = float3(SsrKeepSigned(history.x, clipped.x, keep), SsrKeepSigned(history.y, clipped.y, keep),
+                                       SsrKeepSigned(history.z, clipped.z, keep));
+            const uint previous_samples = uint(round(sample_sum / coverage));
+            const float weight = SsrHistoryMix(SsrF(SSR_W_HISTORY_WEIGHT), validity * motion_weight, previous_samples);
+            result = lerp(value, kept, weight);
+            samples = min(1u + uint(round(validity * float(previous_samples))), kSsrMaxHistorySamples);
+          }
+        }
+        if (misses != 0u && samples == 1u) {
+          // Keep a carried distance only if the image lookup also validated it.
+          misses = 0u;
+          source = kSsrDistantHit;
+          distance_to_hit = kSsrMissLength;
         }
       }
     }
   }
-  // the clip's box from the trace's neighbourhood (the pixels that were traced; the sums above)
-  if (weight > 0.0f) {
-    const float3 mean = sum / max(count, 1.0f);
-    const float3 sigma = sqrt(max(sum2 / max(count, 1.0f) - mean * mean, float3(0.0f, 0.0f, 0.0f)));
-    const float3 box_lo = float3(SsrBoxLoChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxLoChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxLoChannel(mean.z, sigma.z, lo.z, hi.z));
-    const float3 box_hi = float3(SsrBoxHiChannel(mean.x, sigma.x, lo.x, hi.x), SsrBoxHiChannel(mean.y, sigma.y, lo.y, hi.y), SsrBoxHiChannel(mean.z, sigma.z, lo.z, hi.z));
-    const float3 clipped = SsrClipToBox(history, box_lo, box_hi);
-    history = SsrKeepClip(history, clipped, keep);
+
+  out_history.colour = float4(NgFinite3(result), z);
+  out_history.guide = float4(SsrEncodePlaneNormal(normal), SsrVirtualPoint(receiver, distance_to_hit).z,
+                             float(SsrGuideState(source, misses, samples)));
+  return out_history;
+}
+
+SsrHistoryOutput main(float4 position : SV_Position) {
+  const uint options = SsrHi(SsrW(SSR_W_VEH_TABLE));
+  if ((options & SSR_TEMPORAL_FIRST_RESOLVE) != 0u) {
+    SsrHistoryOutput legacy = (SsrHistoryOutput)0;
+    legacy.colour = SsrFirstResolve(position);
+    return legacy;
   }
-  return float4(NgFinite3(lerp(value, history, weight)), z_block);   // (what is kept for the next frame is always a number)
+  return SsrAccumulate(int2(position.xy), options);
 }

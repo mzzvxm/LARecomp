@@ -77,17 +77,8 @@ float4 SsrTraceBody(float4 position) {
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 pc = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
-  // the normal: RT1's where there is one that faces the camera, else the depth's
-  const float4 g_normal = SsrViewNormalAt(texel, pc);
-  float3 n = g_normal.xyz;
-  if (g_normal.w < 0.5f) {
-    n = SsrDepthNormal(hz, pix.x, pix.y, ssr.x, ssr.y, z_block, pc, tan_x, tan_y);
-  }
   const float3 to_camera = pc * (-1.0f / length(pc));
-  const float facing = dot(n, to_camera);
-  if (facing < 0.05f) {
-    n = normalize(n + to_camera * (0.05f - facing));
-  }
+  const float3 n = SsrReceiverNormal(pix, texel, surface.cls, pc, to_camera);
   const float alpha = SsrAlphaOfSmooth(smoothness);
 
   // the walk's numbers
@@ -114,6 +105,7 @@ float4 SsrTraceBody(float4 position) {
   const float3 origin = pc + n * bias;
   const uint rays = SsrRays();
   const uint frame = SsrW(SSR_W_FRAME);
+  const bool stable = SsrStableTrace();
   const float cap = SsrF(SSR_W_CAP);
 
   // the game's own reflection of this pixel (GB-I2): the road view at the pixel's screen position, in the colour's units, the share of it the effect takes out
@@ -144,12 +136,16 @@ float4 SsrTraceBody(float4 position) {
       const int hx = clamp(int(hit.px), 0, h0.x - 1);
       const int hy = clamp(int(hit.py), 0, h0.y - 1);
       // a surface that faces away from the ray is a back face: the screen shows its front, which is somewhere else
-      if (SsrHitFacing(tp, hx, hy, hit.surface_z, dir.x, dir.y, dir.z) < 0.15f) {
+      const float hit_facing = SsrHitFacing(tp, hx, hy, hit.surface_z, dir.x, dir.y, dir.z);
+      if (hit_facing < 0.15f) {
         const float2 uv = float2(hit.px / tp.width, hit.py / tp.height);
+        const float edge = SsrEdgeFade(uv.x, uv.y);
+        const float facing = SsrFacingFade(dir.z);
+        const float fade = stable ? SsrScreenHitConfidence(edge, facing, hit_facing, hit.depth_error_fraction) : edge * facing;
         const float3 surface_point = SsrViewPos(float(hx) + 0.5f, float(hy) + 0.5f, tp.width, tp.height, hit.surface_z, tan_x, tan_y);
-        length_to_hit = max(length(surface_point - pc), 0.02f);
-        const float fade = SsrEdgeFade(uv.x, uv.y) * SsrFacingFade(dir.z);
-        const float lod = SsrConeLod(alpha, length_to_hit, hit.surface_z, tan_x, colour_width, colour_levels);
+        const float distance = max(length(surface_point - pc), 0.02f);
+        length_to_hit = stable && fade <= 0.0f ? kSsrMissLength : distance;
+        const float lod = SsrConeLod(alpha, distance, hit.surface_z, tan_x, colour_width, colour_levels);
         radiance = SsrColour(uv, lod) * fade;
         conf = fade;
         is_vehicle = SsrVehicleAt(hx, hy);

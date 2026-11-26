@@ -65,6 +65,7 @@
 #define SSR_W_PREV_TAN_Y SSR_W_MAX_DIST
 #define SSR_W_HISTORY_WEIGHT SSR_W_FRAME
 #define SSR_W_MOTION 20
+#define SSR_W_HISTORY_GUIDE SSR_W_COL01    // temporal: previous frame's plane normal, virtual depth and history state
 // GB-I2: the words the new parts use, each in a pass that does not read the word's first meaning (ssr_rules.h push::)
 #define SSR_W_ROAD_VIEW 2         // trace: the game's road reflection view (256x256 at the guest's size): its slot (bits 0-15, 0xFFFF none) | its host samples - 1 << 16 (3 bits) | its side in host pixels << 19 (10 bits)
 #define SSR_W_FALLBACK 26         // trace: float, the share of that view the effect takes out of the road where a ray finds a reflection (0 adds the reflection on top, as GB-I1)
@@ -84,6 +85,7 @@
 #define SSR_FLAG_SHIFT 12u
 #define SSR_RAYS_SHIFT 18u
 #define SSR_VIEW_SHIFT 20u
+#define SSR_TRACE_STABLE (1u << SSR_VIEW_SHIFT)  // the trace uses the apply's view field for its stability switch
 #define SSR_ITER_SHIFT 24u
 
 // ---- numbers -------------------------------------------------------------------------------------------------------------------------------------------------------------------------

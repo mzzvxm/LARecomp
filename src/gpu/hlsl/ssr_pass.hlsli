@@ -19,6 +19,7 @@
 #define SSR_LOOP [loop]
 
 #include "ssr_common.hlsli"
+#include "ssr_history.hlsli"
 
 // SSR_REGEN_EXTRA 1 (ray_regen_ssr_cs.hlsl, AMD FSR Ray Regeneration's guide and signal pass: a compute pass, Direct3D 12 only): 16 words more after the 32
 // (ray_regen_guides_rules.h push::). No other compilation has them.
@@ -61,6 +62,7 @@ uint SsrColourLevels() { return (SsrW(SSR_W_FLAGS) >> 8u) & 15u; }
 bool SsrFlag(uint flag) { return ((SsrW(SSR_W_FLAGS) >> SSR_FLAG_SHIFT) & flag) != 0u; }
 uint SsrRays() { return ((SsrW(SSR_W_FLAGS) >> SSR_RAYS_SHIFT) & 3u) + 1u; }
 uint SsrView() { return (SsrW(SSR_W_FLAGS) >> SSR_VIEW_SHIFT) & 15u; }
+bool SsrStableTrace() { return (SsrW(SSR_W_FLAGS) & SSR_TRACE_STABLE) != 0u; }
 uint SsrMaxIter() { return SsrW(SSR_W_FLAGS) >> SSR_ITER_SHIFT; }
 int2 SsrRender() { return int2(int(SsrLo(SsrW(SSR_W_RENDER))), int(SsrHi(SsrW(SSR_W_RENDER)))); }
 // The SSR images' size: half of the picture, rounded up.
@@ -294,6 +296,24 @@ float3 SsrDepthNormal(uint level, int cx, int cy, int w, int h, float zc, float3
     result = -result;
   }
   return result;
+}
+
+float3 SsrReceiverNormal(int2 pix, int2 texel, uint cls, float3 pc, float3 to_camera) {
+  const float4 shading = SsrViewNormalAt(texel, pc);
+  const bool wet_road = SsrStableTrace() &&
+      (cls == uint(GB_CLASS_ROAD) || cls == uint(GB_CLASS_WET_ROAD)) && SsrF(SSR_W_WET) > 0.0f;
+  float3 n = shading.xyz;
+  if (shading.w < 0.5f || wet_road) {
+    const int2 size = SsrSize();
+    const float3 plane = SsrDepthNormal(SsrHz(), pix.x, pix.y, size.x, size.y, pc.z, pc, SsrF(SSR_W_TAN_X), SsrF(SSR_W_TAN_Y));
+    if (shading.w < 0.5f) {
+      n = plane;
+    } else if (dot(plane, n) > 0.8f) {
+      n = normalize(lerp(n, plane, SsrWetNormalWeight(SsrF(SSR_W_WET), dot(plane, to_camera))));
+    }
+  }
+  const float facing = dot(n, to_camera);
+  return facing < 0.05f ? normalize(n + to_camera * (0.05f - facing)) : n;
 }
 
 #endif  // MCLA_GPU_SSR_PASS_HLSLI

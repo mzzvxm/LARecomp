@@ -347,7 +347,7 @@ inline constexpr uint32_t kCol23 = 7;
 inline constexpr uint32_t kRender = 8;
 inline constexpr uint32_t kFlags = 9;
 inline constexpr uint32_t kFrame = 10;
-// The frame word's bit 31 (the trace pass; hlsl/ssr_common.hlsli SSR_FRAME_LEGACY_NOISE): the first version's noise, mcla_gpu_ssr_blue_noise false. The frame's number is in the low 31 bits.
+// The trace frame word's high bit selects legacy noise.
 inline constexpr uint32_t kFrameLegacyNoise = 0x80000000u;
 inline constexpr uint32_t kLin0 = 11;
 inline constexpr uint32_t kTanX = 12;
@@ -372,6 +372,7 @@ inline constexpr uint32_t kPrevTanX = kNear;
 inline constexpr uint32_t kPrevTanY = kMaxDist;
 inline constexpr uint32_t kHistoryWeight = kFrame;
 inline constexpr uint32_t kMotion = 20;
+inline constexpr uint32_t kHistoryGuide = kCol01;
 // GB-I2: the words of the new parts, each a word the pass does not read for its first meaning. The trace: the road view (slot, host samples - 1, side: PackRoadView) in the source word and the share of it taken
 // out (a float) in the strength word; the stencil plane's slot in the high half of the lin depth word. The temporal pass: the AO's vehicle table in the low half of the planes' word. The apply (its
 // debug view of the road view): the road view in the Hi-Z's first word, which it does not read.
@@ -395,6 +396,7 @@ inline constexpr uint32_t kFlagCamera = 32;
 inline constexpr uint32_t kFlagShift = 12;
 inline constexpr uint32_t kRaysShift = 18;
 inline constexpr uint32_t kViewShift = 20;
+inline constexpr uint32_t kStableTrace = 1u << kViewShift;  // the trace has no debug view
 inline constexpr uint32_t kIterShift = 24;
 inline constexpr uint32_t kNoSlot16 = 0xFFFFu;
 }  // namespace push
@@ -450,6 +452,11 @@ constexpr uint32_t PackFlags(const FlagsIn& f) {
   const uint32_t rays = f.rays < 1 ? 1 : (f.rays > kMaxRays ? kMaxRays : f.rays);
   return (f.sample0 & 15u) | ((HizLevelsUsed(f.hiz_levels) & 15u) << 4) | ((ColourLevelsUsed(f.colour_levels) & 15u) << 8) | (bits << push::kFlagShift) | ((rays - 1) << push::kRaysShift) |
          ((f.view & 15u) << push::kViewShift) | ((f.max_iterations > kMaxIterations ? kMaxIterations : f.max_iterations) << push::kIterShift);
+}
+
+constexpr uint32_t PackTraceFlags(FlagsIn f, bool stable) {
+  f.view = 0;
+  return PackFlags(f) | (stable ? push::kStableTrace : 0u);
 }
 
 // ---------------------------------------------------------------------------

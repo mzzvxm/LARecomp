@@ -100,19 +100,10 @@ SsrRtReceiver SsrRtReceiverAt(int2 pix) {
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 pc = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
-  const float4 g_normal = SsrViewNormalAt(texel, pc);
-  float3 n = g_normal.xyz;
-  if (g_normal.w < 0.5f) {
-    n = SsrDepthNormal(hz, pix.x, pix.y, ssr.x, ssr.y, z_block, pc, tan_x, tan_y);
-  }
   const float3 to_camera = pc * (-1.0f / length(pc));
-  const float facing = dot(n, to_camera);
-  if (facing < 0.05f) {
-    n = normalize(n + to_camera * (0.05f - facing));
-  }
   r.ok = true;
   r.pc = pc;
-  r.n = n;
+  r.n = SsrReceiverNormal(pix, texel, surface.cls, pc, to_camera);
   r.to_camera = to_camera;
   r.alpha = SsrAlphaOfSmooth(smoothness);
   r.cls = surface.cls;
@@ -158,12 +149,17 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float cap = SsrF(SSR_W_CAP);
   const uint rays = ((conf_word >> SSR_RT_RAYS_SHIFT) & 3u) + 1u;
   const uint frame = SsrW(SSR_W_FRAME);
+  const bool stable = SsrStableTrace();
+  const uint noise_rays = stable ? SsrRays() : rays;
   const float receiver_distance = length(r.pc);
   const float pixel_angle = 2.0f * tan_y / float(max(ssr.y, 1));
   const float cone_tan = r.alpha * kSsrConeScale;
   const float lift = SsrRtLift(r.pc.z, 2.0f * tan_y / float(max(h0.y, 1)));
   const float3 origin = r.pc + r.n * lift;
-  const float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
+  float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
+  if (stable) {
+    weight *= SsrRtHistoryEdge(confidence, SsrF(SSR_W_RT_THRESHOLD));
+  }
   // Ground surfaces already have SSR and the game's planar view. Only replace their reflection where the detailed hit agrees with the rasterized view.
   const bool ground = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;
   if (ground && (flags & SSR_RT_FLAG_SCREEN) == 0u) {
@@ -202,7 +198,7 @@ void main(uint3 id : SV_DispatchThreadID) {
   float nearest = kSsrMissLength;
   bool any_hit = false;
   [loop] for (uint k = 0u; k < rays; ++k) {
-    const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, rays);
+    const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, noise_rays);
     SsrRtCount(stats, SSR_RT_CENSUS_RAYS);
     const CityHitTraceResult hit = CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask, pixel_angle * receiver_distance, cone_tan, 0.5f);
     if (hit.hit == 0u) {

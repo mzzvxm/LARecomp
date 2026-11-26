@@ -845,8 +845,10 @@ void TestShaderSources(const std::string& dir) {
             DefineOf(common, "SSR_W_RT_THRESHOLD") == rt::push::kThreshold && DefineOf(common, "SSR_W_RT_FRAME") == rt::push::kFrame && DefineOf(common, "SSR_RT_STAT_WORDS") == rt::buf::kStatWords,
         "the text of ssr_rt_common.hlsli holds the header's words");
   // one ray: the trace and the fallback take it from the same function
-  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, rays)"),
-        "the trace and the fallback regenerate the ray with the one function SsrSampleRay (the same pixel, frame, ray index and rays a pixel: the noise's sample number is frame * rays + ray)");
+  Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") &&
+            Has(trace, "noise_rays = stable ? SsrRays() : rays") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, noise_rays)") &&
+            Has(trace, "weight *= SsrRtHistoryEdge(confidence, SsrF(SSR_W_RT_THRESHOLD))"),
+        "native fallback regenerates SSR rays even when it budgets fewer, and fades at the candidate cutoff");
   Check(!Has(trace_ps, "SsrSampleReflection("), "the trace has no copy of the ray's formula left");
   // the identity of the plain compilations: the trace's plain entry and everything the confidence adds is under SSR_RT
   Check(Has(trace_ps, "#ifndef SSR_RT\n#define SSR_RT 0\n#endif") && Has(trace_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return SsrTraceBody(position);\n}") && Count(trace_ps, "#if SSR_RT") == 5 &&

@@ -137,6 +137,12 @@ void ScreenReflections::Shutdown() {
   rt_framebuffer_for_[0] = rt_framebuffer_for_[1] = nullptr;
   rt_.Shutdown();   // its pipelines are the host builder's too (stopped above)
   denoise_.Shutdown();
+  for (auto& framebuffer : history_framebuffer_) {
+    framebuffer.reset();
+  }
+  for (HostImage& image : history_guide_) {
+    image = HostImage{};
+  }
   for (HostImage& image : accum_) {
     image = HostImage{};
   }
@@ -171,7 +177,7 @@ const char* ScreenReflections::VariantName(uint32_t variant) const {
 }
 
 std::unique_ptr<plume::RenderPipeline> ScreenReflections::MakePipeline(uint32_t variant) {
-  if (!layout_) {
+  if (!layout_ || !passes_) {
     return nullptr;
   }
   const plume::RenderBlendDesc copy = plume::RenderBlendDesc::Copy();
@@ -199,7 +205,10 @@ std::unique_ptr<plume::RenderPipeline> ScreenReflections::MakePipeline(uint32_t 
   switch (variant) {
     case kVTrace: return make(kShaderTrace, copy, 1);
     case kVTraceMs: return make(kShaderTraceMs, copy, 1);
-    case kVTemporal: return make(kShaderTemporal, copy, 1);
+    case kVTemporal: {
+      const plume::RenderFormat formats[2] = {kFormat, kFormat};
+      return shaders_[kShaderTemporal] ? passes_->CreateMrtPipeline(*layout_, *shaders_[kShaderTemporal], formats, 2, VariantName(variant)) : nullptr;
+    }
     case kVTraceRt:
     case kVTraceRtMs: {
       const Shader shader = variant == kVTraceRt ? kShaderTraceRt : kShaderTraceRtMs;
@@ -279,30 +288,71 @@ void ScreenReflections::DrawPass(plume::RenderCommandList* list, HostImage& imag
   image.layout = plume::RenderTextureLayout::SHADER_READ;
 }
 
-void ScreenReflections::DrawPassRt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push) {
-  // The same sequence as DrawPass over two targets: both to colour targets (cleared on their first use: D3D12 debug layer id 1422), one triangle over all of them, both back to a shader read for graphics AND
-  // compute (the fallback's compute passes read the confidence image and read and write the trace image).
-  const bool first_use = trace_.layout == plume::RenderTextureLayout::UNKNOWN || confidence_.layout == plume::RenderTextureLayout::UNKNOWN;
-  const plume::RenderTextureBarrier to_write[2] = {{trace_.texture.get(), plume::RenderTextureLayout::COLOR_WRITE}, {confidence_.texture.get(), plume::RenderTextureLayout::COLOR_WRITE}};
+void ScreenReflections::DrawPassMrt(plume::RenderCommandList* list, HostImage& signal, HostImage& guide, const plume::RenderFramebuffer* framebuffer,
+                                    const plume::RenderPipeline* pipeline, const ssr::Push& push, bool compute_read) {
+  if (!list || !pipeline || !framebuffer || !signal.texture || !guide.texture) {
+    return;
+  }
+  // CHECK: validate the temporal MRT's first-use clears and the transition of both targets on D3D12 and Vulkan.
+  const bool first_use = signal.layout == plume::RenderTextureLayout::UNKNOWN || guide.layout == plume::RenderTextureLayout::UNKNOWN;
+  const plume::RenderTextureBarrier to_write[2] = {{signal.texture.get(), plume::RenderTextureLayout::COLOR_WRITE}, {guide.texture.get(), plume::RenderTextureLayout::COLOR_WRITE}};
   list->barriers(plume::RenderBarrierStage::GRAPHICS, to_write, 2);
-  trace_.layout = confidence_.layout = plume::RenderTextureLayout::COLOR_WRITE;
-  list->setFramebuffer(rt_framebuffer_.get());
+  signal.layout = guide.layout = plume::RenderTextureLayout::COLOR_WRITE;
+  list->setFramebuffer(framebuffer);
   if (first_use) {
     list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
     list->clearColor(1, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
   }
-  const plume::RenderViewport viewport{0.0f, 0.0f, float(trace_.width), float(trace_.height)};
+  const plume::RenderViewport viewport{0.0f, 0.0f, float(signal.width), float(signal.height)};
   list->setViewports(&viewport, 1);
-  const plume::RenderRect scissor(0, 0, int32_t(trace_.width), int32_t(trace_.height));
+  const plume::RenderRect scissor(0, 0, int32_t(signal.width), int32_t(signal.height));
   list->setScissors(&scissor, 1);
   Bind(list);
   list->setPipeline(pipeline);
   list->setGraphicsPushConstants(0, &push, 0, sizeof(push));
   list->drawInstanced(3, 1, 0, 0);
   list->setFramebuffer(nullptr);
-  const plume::RenderTextureBarrier to_read[2] = {{trace_.texture.get(), plume::RenderTextureLayout::SHADER_READ}, {confidence_.texture.get(), plume::RenderTextureLayout::SHADER_READ}};
-  list->barriers(plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE, to_read, 2);
-  trace_.layout = confidence_.layout = plume::RenderTextureLayout::SHADER_READ;
+  const plume::RenderTextureBarrier to_read[2] = {{signal.texture.get(), plume::RenderTextureLayout::SHADER_READ}, {guide.texture.get(), plume::RenderTextureLayout::SHADER_READ}};
+  list->barriers(compute_read ? plume::RenderBarrierStage::GRAPHICS_AND_COMPUTE : plume::RenderBarrierStage::GRAPHICS, to_read, 2);
+  signal.layout = guide.layout = plume::RenderTextureLayout::SHADER_READ;
+}
+
+bool ScreenReflections::EnsureHistory(uint32_t width, uint32_t height) {
+  if (!passes_) {
+    return false;
+  }
+  for (uint32_t i = 0; i < accum_.size(); ++i) {
+    HostImage& colour = accum_[i];
+    HostImage& guide = history_guide_[i];
+    if (colour.width != width || colour.height != height || guide.width != width || guide.height != height) {
+      passes_->RetireFramebuffer(std::move(history_framebuffer_[i]));
+      last_key_.valid = false;
+    }
+    if (!passes_->EnsureImage(colour, width, height, kFormat, "ssr accumulated") ||
+        !passes_->EnsureImage(guide, width, height, kFormat, "ssr history guide")) {
+      return false;
+    }
+    if (!history_framebuffer_[i]) {
+      const plume::RenderTexture* attachments[2] = {colour.texture.get(), guide.texture.get()};
+      history_framebuffer_[i] = passes_->CreateMrtFramebuffer(attachments, 2, "ssr temporal framebuffer");
+      if (!history_framebuffer_[i]) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void ScreenReflections::ReleaseHistory() {
+  if (!passes_) {
+    return;
+  }
+  for (uint32_t i = 0; i < accum_.size(); ++i) {
+    passes_->RetireFramebuffer(std::move(history_framebuffer_[i]));
+    passes_->ReleaseImage(accum_[i]);
+    passes_->ReleaseImage(history_guide_[i]);
+  }
+  last_key_.valid = false;
 }
 
 bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw, uint32_t render_width, uint32_t render_height) {
@@ -313,7 +363,7 @@ bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, b
   if (raw) {
     ok = ok && passes_->EnsureImage(hit_, render_width, render_height, kHitFormat, "ssr hit distance");
   } else {
-    ok = ok && passes_->EnsureImage(accum_[0], width, height, kFormat, "ssr accumulated 0") && passes_->EnsureImage(accum_[1], width, height, kFormat, "ssr accumulated 1");
+    ok = ok && EnsureHistory(width, height);
   }
   if (rt) {
     ok = ok && passes_->EnsureImage(confidence_, width, height, kConfidenceFormat, "ssr confidence");
@@ -347,7 +397,8 @@ void ScreenReflections::ReleaseImages() {
     return;
   }
   hit_ready_ = false;
-  for (HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
+  ReleaseHistory();
+  for (HostImage* image : {&trace_, &confidence_, &hit_}) {
     if (image->texture) {
       passes_->ReleaseImage(*image);
     }
@@ -361,7 +412,7 @@ void ScreenReflections::ReleaseImages() {
 
 uint64_t ScreenReflections::HeldBytes() const {
   uint64_t bytes = regen_pass_.HeldBytes();   // RG-3: the signal, the guides and the denoised image while a regen frame ran lately
-  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &confidence_, &hit_}) {
+  for (const HostImage* image : {&trace_, &accum_[0], &accum_[1], &history_guide_[0], &history_guide_[1], &confidence_, &hit_}) {
     if (image->texture) {
       bytes += TextureBytes(image->width, image->height, 1, image->format);
     }
@@ -610,7 +661,9 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   now.size[1] = height;
   now.generation = sf.generation;
   const float history_weight = history_override_ >= 0.0f ? history_override_ : numbers.history_weight;
-  const bool use_history = ssr::HistoryUsable(last_key_, now, motion_known) && last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
+  const bool resolve = larecomp::settings::mcla_gpu_ssr_resolve.Get();
+  const bool history_eligible = ssr::HistoryUsable(last_key_, now, motion_known) && last_resolve_ == resolve &&
+      last_tan_[0] > 0.0f && last_tan_[1] > 0.0f && history_weight > 0.0f;
   if (!camera_logged_) {
     camera_logged_ = true;
     REXLOG_INFO("{} the camera's axes come from {}; the history {}", kPrefix,
@@ -686,9 +739,9 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
 
   // GB-I2, the vehicles: the AO's motion rows of this frame (its history pass drew them for its own use), for the temporal pass's reflected vehicles. None: they are taken as the world's.
   uint32_t vehicle_table_slot = screen::kNoSlot;
-  if (vehicle_rows_ && ao_) {
+  if (history_eligible && !raw && vehicle_rows_ && ao_) {
     AmbientOcclusion::VehicleTableOut table;
-    if (ao_->VehicleTableNow(&table)) {
+    if (ao_->VehicleTableNow(&table) || (resolve && ao_->RecordReflectionVehicleTable(list, &table))) {
       vehicle_table_slot = table.slot;
     }
   }
@@ -753,12 +806,13 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // CHECK (not run): the three passes on both APIs with the Vulkan synchronisation validation on (the Hi-Z and the colour in the shader-read layout the owner left them in, the G-buffer's planes
   // as published, the depth plane, the new images' first use), MSAA 1, 2, 4 and 8, and the cost: the trace is the pass that matters (the walk's iterations, the class gate's early out).
   ssr::Push trace_push = push;
+  trace_push.Set(pk::kFlags, ssr::PackTraceFlags(flags, resolve && !raw));
   trace_push.Set(pk::kRoadView, road_word);
   trace_push.SetFloat(pk::kFallback, road_why == ssr::RoadViewWhy::kUsed ? road.share : 0.0f);
   pass_timing_->Mark(list, "ssr trace");
   bool rt_recorded = false;   // the fallback's compute passes were recorded in this frame
   if (rt) {
-    DrawPassRt(list, trace_rt_pipeline, trace_push);
+    DrawPassMrt(list, trace_, confidence_, rt_framebuffer_.get(), trace_rt_pipeline, trace_push, true);
     // the ray traced fallback: the pixels the picture could not speak for, traced into the city and added to the trace image (its two compute passes' time is the label 'ssr rt': it runs to the next mark)
     pass_timing_->Mark(list, "ssr rt");
     ScreenReflectionsRt::Frame rt_frame;
@@ -801,22 +855,24 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     }
   }
 
+  const bool use_history = history_eligible && last_rt_ == rt_recorded;
   if (!raw && !regen_ok) {
     // The accumulation. A raw frame (RR-4a) has none: Ray Reconstruction is the denoiser, the resolve reads the trace itself. A regen frame (RG-3) has none either, unless its dispatch was refused.
     ssr::Push temporal = push;
-    temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, accum_[write_ ^ 1u].slot));
+    temporal.Set(pk::kSrc, ssr::PackSlots(trace_.slot, use_history ? accum_[write_ ^ 1u].slot : trace_.slot));
     flags.history = use_history;
     temporal.Set(pk::kFlags, ssr::PackFlags(flags));
     temporal.SetFloat(pk::kHistoryWeight, use_history ? history_weight : 0.0f);
-    temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get(), upscaler_running,
+    temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, resolve, upscaler_running,
                                                      larecomp::settings::mcla_gpu_ssr_sparkle_resolve.Get()));
+    temporal.Set(pk::kHistoryGuide, use_history ? history_guide_[write_ ^ 1u].slot : trace_.slot);
     temporal.SetFloat(pk::kPrevTanX, last_tan_[0]);
     temporal.SetFloat(pk::kPrevTanY, last_tan_[1]);
     for (uint32_t i = 0; i < 12; ++i) {
       temporal.SetFloat(pk::kMotion + i, motion_known ? cam.motion[i] : 0.0f);
     }
     pass_timing_->Mark(list, "ssr temporal");
-    DrawPass(list, accum_[write_], temporal_pipeline, temporal);
+    DrawPassMrt(list, accum_[write_], history_guide_[write_], history_framebuffer_[write_].get(), temporal_pipeline, temporal, true);
   }
 
   // CITY-RT R6, RtDenoise's spatial stage (ssr_denoise_rules.h has when): between the accumulation and the resolve, in a frame the fallback followed, a bilateral a-trous over the accumulated image on the
@@ -934,6 +990,8 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // The frame is the history of the next (a raw frame made none: the frame after it starts again, whatever mode it is in; a regen frame's history is the runtime's, and ours is the lens and the key).
   if (!raw && !regen_ok) {
     last_key_ = now;
+    last_resolve_ = resolve;
+    last_rt_ = rt_recorded;
     last_tan_[0] = sf.camera.tan_half_fov[0];
     last_tan_[1] = sf.camera.tan_half_fov[1];
     write_ ^= 1u;
@@ -964,11 +1022,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   if (raw) {
     plain_streak_ = 0;
     if (++raw_streak_ >= ssr::kRawReleaseAfter && (accum_[0].texture || accum_[1].texture)) {
-      for (HostImage* image : {&accum_[0], &accum_[1]}) {
-        if (image->texture) {
-          passes_->ReleaseImage(*image);
-        }
-      }
+      ReleaseHistory();
       ++images_generation_;
       last_key_.valid = false;
     }

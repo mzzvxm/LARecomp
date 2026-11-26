@@ -2275,6 +2275,17 @@ bool AmbientOcclusion::VehicleTableNow(VehicleTableOut* out) const {
   return true;
 }
 
+bool AmbientOcclusion::RecordReflectionVehicleTable(plume::RenderCommandList* list, VehicleTableOut* out) {
+  if (!list || !out || !passes_ || !have_previous_ || previous_frame_ + 1 != frame_ || previous_pause_ != trigger_pause_) {
+    return false;
+  }
+  HistoryUse use;
+  bool cut = false;
+  use.on = FrameMotion(&use.motion, &use.pose, &cut) && !cut;
+  uint32_t slot = kNoSlot;
+  return RecordVehicleTable(list, use, &slot) != 0 && VehicleTableNow(out);
+}
+
 AmbientOcclusion::HistoryUse AmbientOcclusion::ChooseHistory(const Plan& plan) const {
   HistoryUse use;
   use.cap = uint32_t(std::clamp(larecomp::settings::mcla_gpu_ao_history.Get(), 1, 64));

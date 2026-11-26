@@ -50,6 +50,7 @@ struct SsrHit {
   float px;             // the hit's or the end's position in texels of level 0
   float py;
   float surface_z;      // the hit surface's linear depth
+  float depth_error_fraction;  // how deeply the ray entered a cell behind its surface, relative to hit thickness
   uint iterations;
 };
 
@@ -83,6 +84,7 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
   h.px = 0.0f;
   h.py = 0.0f;
   h.surface_z = 0.0f;
+  h.depth_error_fraction = 0.0f;
   h.iterations = 0u;
   if (!(oz > 0.0f)) {
     return h;
@@ -172,6 +174,7 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
           h.px = px;
           h.py = py;
           h.surface_z = zs;
+          h.depth_error_fraction = max(zr - zs, 0.0f) / thick;
           break;
         }
         tau = t_exit + eps_tau;  // behind a thin thing: on past it

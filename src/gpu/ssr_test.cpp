@@ -113,6 +113,7 @@ float SsrHizAt(uint level, int cx, int cy) {
 #include "hlsl/ao_gbuffer_normal.hlsli"
 #include "hlsl/blue_noise.hlsli"
 #include "hlsl/ssr_common.hlsli"
+#include "hlsl/ssr_history.hlsli"
 #include "hlsl/ssr_trace.hlsli"
 }  // namespace hlsl_shim
 
@@ -413,7 +414,9 @@ void TestPush() {
             int(SSR_VIEW_SHIFT) == int(p::kViewShift) && int(SSR_ITER_SHIFT) == int(p::kIterShift),
         "the flag bits and shifts are the .hlsli's");
   Check(p::kMotion == p::kRight && p::kPrevTanX == p::kNear && p::kPrevTanY == p::kMaxDist && p::kHistoryWeight == p::kFrame, "the temporal pass's overlay");
-  Check(SSR_W_MOTION == int(p::kMotion) && SSR_W_PREV_TAN_X == int(p::kPrevTanX) && SSR_W_PREV_TAN_Y == int(p::kPrevTanY) && SSR_W_HISTORY_WEIGHT == int(p::kHistoryWeight), "the .hlsli names the same overlay");
+  Check(SSR_W_MOTION == int(p::kMotion) && SSR_W_PREV_TAN_X == int(p::kPrevTanX) && SSR_W_PREV_TAN_Y == int(p::kPrevTanY) &&
+            SSR_W_HISTORY_WEIGHT == int(p::kHistoryWeight) && SSR_W_HISTORY_GUIDE == int(p::kHistoryGuide) && SSR_TRACE_STABLE == p::kStableTrace,
+        "the shader names the same temporal overlay and trace flag");
   Check(p::kMotion + 12 == p::kWords, "the motion's twelve floats end the block");
   // words that the three passes need at once do not overlap: the camera rows (the apply, the trace) and the motion (the temporal) are different passes, the rest never share
   Check(p::kUp + 3 == p::kStrength && p::kRight + 3 == p::kUp, "the camera's two axes sit before the tunables");
@@ -445,6 +448,9 @@ void TestPush() {
   Check(((word >> SSR_FLAG_SHIFT) & (SSR_FLAG_MS | SSR_FLAG_HZ | SSR_FLAG_STUB)) == (SSR_FLAG_MS | SSR_FLAG_HZ | SSR_FLAG_STUB) && ((word >> SSR_FLAG_SHIFT) & (SSR_FLAG_COL_HALF | SSR_FLAG_HISTORY | SSR_FLAG_CAMERA)) == 0,
         "the flag bits");
   Check(((word >> SSR_RAYS_SHIFT) & 3u) == 1 && ((word >> SSR_VIEW_SHIFT) & 15u) == 3 && (word >> SSR_ITER_SHIFT) == 64, "rays - 1, the view, the iterations");
+  const uint32_t trace_word = word & ~(15u << SSR_VIEW_SHIFT);
+  Check(sr::PackTraceFlags(f, false) == trace_word && sr::PackTraceFlags(f, true) == (trace_word | SSR_TRACE_STABLE),
+        "the trace flag reuses the debug view field and preserves the ray count and iteration budget");
   f.max_iterations = 9999;
   f.rays = 9;
   const uint32_t clamped = sr::PackFlags(f);
@@ -1425,6 +1431,81 @@ ResolveNumbers ResolveMeasure(const ResolveScene& sc, bool resolve, bool upscale
 }
 }  // namespace
 
+void TestGuidedResolve() {
+  const hs::float3 normal = hs::normalize(hs::float3(0.1f, 0.9f, -0.4f));
+  for (const float sign : {1.0f, -1.0f}) {
+    const hs::float3 n = normal * sign;
+    Check(hs::dot(n, hs::SsrDecodePlaneNormal(hs::SsrEncodePlaneNormal(n))) > 0.9999f, "plane normal round trips in both hemispheres");
+  }
+  const hs::float3 road(0.0f, -1.0f, 15.0f);
+  const hs::float3 up(0.0f, 1.0f, 0.0f);
+  Check(hs::SsrPlaneWeight(hs::float3(0.1f, -1.0f, 25.0f), road, up, 0.025f) == 1.0f, "grazing road taps pass despite a big Z change");
+  Check(hs::SsrPlaneWeight(hs::float3(0.1f, -0.8f, 15.0f), road, up, 0.025f) == 0.0f, "raised kerb excluded at equal Z");
+  Check(hs::SsrImageDepthWeight(12.0f, 12.0f, 0u) == 1.0f &&
+            hs::SsrImageDepthWeight(8.0f, 12.0f, 0u) == 0.0f && hs::SsrImageDepthWeight(8.0f, 12.0f, 25u) == 1.0f,
+        "different reflected depth rejects history except for the distant direction");
+  Check(hs::SsrImageDepthWeight(11.0f, 12.0f, 0u) > 0.0f &&
+            hs::SsrImageDepthWeight(11.0f, 12.0f, 0u) < 1.0f,
+        "virtual depth acceptance tapers continuously");
+
+  const float car = hs::SsrPackHit(11.0f, true, 17u);
+  Check(hs::SsrHistorySource(car) == 17u && hs::SsrHistorySource(hs::SsrPackHit(11.0f, true, 0u)) == 24u &&
+            hs::SsrHistorySource(11.0f) == 0u && hs::SsrHistorySource(hs::kSsrMissLength) == 25u,
+        "source distinguishes vehicles, the world and a distant direction");
+  Check(hs::SsrPreferHistoryHit(false, car, 2.0f, 1.0f) && !hs::SsrPreferHistoryHit(true, car, 2.0f, 1.0f) &&
+            !hs::SsrPreferHistoryHit(false, car, 1.0f, 2.0f) &&
+            !hs::SsrPreferHistoryHit(false, hs::kSsrMissLength, 2.0f, 1.0f),
+        "only a centre miss borrows a finite, stronger neighbour's full packed hit");
+  for (uint source = 0; source <= 25; ++source) {
+    for (uint misses = 0; misses <= 3; ++misses) {
+      for (uint samples : {0u, 1u, 15u}) {
+        const uint state = hs::SsrGuideState(source, misses, samples);
+        Check(state < 2048 && hs::SsrGuideSource(state) == source && hs::SsrGuideMisses(state) == misses &&
+                  hs::SsrGuideSamples(state) == samples,
+              "guide state round trips within half's exact integer range");
+        const bool carry = samples > 0 && ((source == 0 && misses < 3) ||
+                                          (source >= 1 && source <= 23 && misses == 0));
+        Check(hs::SsrCanCarryHit(state) == carry,
+              "world carry expires after three misses and a known vehicle after one");
+      }
+    }
+  }
+  const float path = hs::SsrCarryDistance(20.0f, 10.0f, 12.5f);
+  Check(path == 12.5f && hs::SsrCarryDistance(8.0f, 10.0f, 12.5f) == 0.0f,
+        "carried virtual Z recovers the ray length along the oblique eye ray");
+  Check(hs::SsrHistoryMix(0.9f, 0.0f, 15) == 0.0f && hs::SsrHistoryMix(0.9f, 1.0f, 1) == 0.5f &&
+            hs::SsrHistoryMix(0.9f, 0.5f, 15) == 0.45f,
+        "low coverage and young history put more weight on the current frame");
+
+  const float keep = hs::SsrValidatedClipKeep(0.0f, 1.0f, true, false);
+  Check(keep == 0.75f && hs::SsrValidatedClipKeep(0.0f, 1.0f, true, true) > keep &&
+            hs::SsrValidatedClipKeep(1.0f, 1.0f, true, false) == 0.0f &&
+            hs::SsrValidatedClipKeep(0.0f, 0.0f, true, false) == 0.0f,
+        "the default DLAA path preserves validated sparse hits while dense or rejected evidence follows the box");
+  Check(hs::SsrKeepSigned(4.0f, 0.0f, keep) == 3.0f && hs::SsrKeepSigned(-4.0f, 0.0f, keep) == -3.0f &&
+            hs::SsrKeepSigned(4.0f, -2.0f, 0.0f) == -2.0f && hs::SsrKeepSigned(0.0f, -2.0f, keep) == -2.0f,
+        "planar subtraction survives sparse samples and a full clip can cross zero");
+  float highlight = 1.0f;
+  for (int i = 0; i < 4; ++i) {
+    highlight = hs::SsrKeepSigned(highlight, 0.0f, keep) * 0.9f;
+  }
+  Check(highlight > 0.15f && highlight < 0.25f, "a sparse highlight survives a single miss and repeated misses decay");
+
+  Check(hs::SsrWetNormalWeight(0.0f, 0.0f) == 0.0f && hs::SsrWetNormalWeight(1.0f, 0.0f) == 0.65f &&
+            hs::SsrWetNormalWeight(1.0f, 0.6f) == 0.0f,
+        "only wet, grazing rays reduce shading-normal variation");
+  Check(hs::SsrScreenHitConfidence(0.5f, 0.5f, -0.2f, 0.0f) == 0.25f &&
+            hs::SsrScreenHitConfidence(1.0f, 1.0f, 0.15f, 0.0f) == 0.0f &&
+            hs::SsrScreenHitConfidence(1.0f, 1.0f, -0.2f, 1.0f) == 0.0f &&
+            hs::SsrScreenHitConfidence(1.0f, 1.0f, -0.2f, 0.75f) == 0.5f,
+        "screen hit confidence falls away at back faces, thickness, and the picture edge");
+  Check(hs::SsrRtHistoryEdge(0.97f, 0.97f) == 0.0f && hs::SsrRtHistoryEdge(0.4f, 0.97f) == 1.0f &&
+            hs::SsrRtHistoryEdge(0.96f, 0.97f) < 0.01f && hs::SsrRtHistoryEdge(0.9f, 0.97f) > 0.2f,
+        "RT radiance goes to zero at the candidate cutoff");
+  Check(hs::SsrNoise2(7, 11, 95u, 0u, 2u) != hs::SsrNoise2(7, 11, 96u, 0u, 2u),
+        "a pixel's blue-noise phase changes on the next frame");
+}
+
 void TestResolve() {
   // the kernel: a tent of 16, the centre 4 times a corner
   float total = 0.0f;
@@ -2191,7 +2272,7 @@ void TestRawSources(const std::string& dir, const std::string& rules, const std:
             Has(trigger, "bool raw = raw_why == ssr::RawWhy::kRaw;") && Has(trigger, "raw_why = ssr::RawWhy::kImages;") && Has(header, "bool OnTrigger(const ResolveCache::Summary& summary, plume::RenderCommandList* list, bool raw_requested = false, bool upscaler_running = false, const RegenAsk& regen = RegenAsk{});"),
         "RR-4a: the frame is raw by the rules' decision on what the caller asked (the default is plain), a hit image that cannot be made keeps the frame plain");
   Check(Has(trigger, "if (raw_ever_asked_ && uint32_t(raw_why) != raw_why_logged_) {") && Has(trigger, "if (raw_requested) {\n    raw_ever_asked_ = true;\n  }"), "RR-4a: nothing is logged until the mode was asked for once: the log of a run with the plan not RR is what it was");
-  Check(Has(trigger, "  if (!raw && !regen_ok) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPass(list, accum_[write_], temporal_pipeline, temporal);\n  }"),
+  Check(Has(trigger, "  if (!raw && !regen_ok) {\n    // The accumulation.") && Has(trigger, "pass_timing_->Mark(list, \"ssr temporal\");\n    DrawPassMrt(list, accum_[write_], history_guide_[write_],"),
         "RR-4a: the accumulation runs only in a plain frame");
   Check(Has(trigger, "if (raw) {\n    // RR-4a: the resolve reads the trace itself") && Has(trigger, "apply.Set(pk::kSrc, ssr::PackSlots(trace_.slot, trace_.slot));") &&
             Has(trigger, "  } else {\n    apply.Set(pk::kSrc, ssr::PackSlots(resolve_source->slot, trace_.slot));   // the accumulation, or its filtered image (RtDenoise)\n    apply.Set(pk::kRoadViewApply, road_word);\n  }") &&
@@ -2373,7 +2454,7 @@ void TestSources(const std::string& dir) {
       {"SSR_W_TAN_X", "kTanX"},         {"SSR_W_TAN_Y", "kTanY"},    {"SSR_W_LIN_X", "kLinX"},    {"SSR_W_LIN_Y", "kLinY"},   {"SSR_W_LIN_Z", "kLinZ"},   {"SSR_W_LIN_W", "kLinW"},
       {"SSR_W_NEAR", "kNear"},          {"SSR_W_MAX_DIST", "kMaxDist"}, {"SSR_W_RIGHT", "kRight"}, {"SSR_W_UP", "kUp"},        {"SSR_W_STRENGTH", "kStrength"}, {"SSR_W_MIN_SMOOTH", "kMinSmooth"},
       {"SSR_W_STUB_SMOOTH", "kStubSmooth"}, {"SSR_W_WET", "kWet"},   {"SSR_W_THICK", "kThick"},   {"SSR_W_CAP", "kCap"},      {"SSR_W_MOTION", "kMotion"}, {"SSR_W_PREV_TAN_X", "kPrevTanX"},
-      {"SSR_W_PREV_TAN_Y", "kPrevTanY"}, {"SSR_W_HISTORY_WEIGHT", "kHistoryWeight"},
+      {"SSR_W_PREV_TAN_Y", "kPrevTanY"}, {"SSR_W_HISTORY_WEIGHT", "kHistoryWeight"}, {"SSR_W_HISTORY_GUIDE", "kHistoryGuide"},
       {"SSR_W_ROAD_VIEW", "kRoadView"}, {"SSR_W_FALLBACK", "kFallback"}, {"SSR_W_VEH_TABLE", "kVehTable"}, {"SSR_W_STENCIL", "kStencil"}, {"SSR_W_ROAD_VIEW_APPLY", "kRoadViewApply"}};
   bool defined = true, filled = true;
   for (const std::string* text : {&pass, &trace_ps, &temporal_ps, &apply_ps}) {
@@ -2432,7 +2513,8 @@ void TestSources(const std::string& dir) {
   Check(!table_accessor.empty() && Has(ao_h, "bool VehicleTableNow(VehicleTableOut* out) const;") && Has(table_accessor, "vehicle_table_frame_ != frame_") && !Has(table_accessor, "list->") && Has(ao_cpp, "  vehicle_table_frame_ = frame_;\n  vehicle_table_ids_ = mask;"),
         "ao.h / ao.cpp: the vehicle table accessor is const, answers only for a table drawn in this frame and records nothing");
   Check(Has(trigger, "vehicle_rows_ && ao_") && Has(trigger, "ao_->VehicleTableNow(&table)") &&
-            Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, larecomp::settings::mcla_gpu_ssr_resolve.Get(), upscaler_running,") &&
+            Has(trigger, "temporal.Set(pk::kVehTable, ssr::PackTemporalWord(vehicle_table_slot, resolve, upscaler_running,") &&
+            Has(trigger, "ao_->RecordReflectionVehicleTable(list, &table)") &&
             Has(trigger, "larecomp::settings::mcla_gpu_ssr_sparkle_resolve.Get()));") &&
             Has(trigger, "push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));"),
         "ssr.cpp: the vehicle table goes to the temporal pass, the stencil plane to the trace");
@@ -2463,13 +2545,20 @@ void TestSources(const std::string& dir) {
         "the stencil plane rides in the high half of the lin depth word; the trace packs the vehicle, the temporal pass moves it");
   Check(Has(trace_ps, "radiance - fallback * conf") && Has(trace_ps, "fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;") && Has(apply_ps, "term = SsrGuardTerm(term,") && Has(apply_ps, "SsrSmoothRamp(smoothness, SsrF(SSR_W_MIN_SMOOTH))"),
         "the trace brings the difference to the road view, the apply guards the term and ramps it by the smoothness");
-  Check(Has(temporal_ps, "const float3 clipped = SsrClipToBox(history, box_lo, box_hi);") && Has(temporal_ps, "history = SsrKeepClip(history, clipped, keep);") && Has(temporal_ps, "SsrHistoryInside(image.u, image.v") && !Has(temporal_ps, "SsrClampToBox"), "the temporal pass clips its history and does not read at the edge");
-  const std::string validated_history = FunctionText(temporal_ps, "if (stored > 0.0f && SsrSameSurface(stored, plain.z)) {");
-  Check(Has(temporal_ps, "float keep = SsrClipKeepFor(resolve, upscaler);") &&
-            Has(validated_history, "(temporal_options & SSR_TEMPORAL_SPARKLE_RESOLVE) != 0u && vehicle_scale != kSsrVehicleNoRowWeight") &&
-            Has(validated_history, "float2(image.u, image.v) * float2(ssr) - (float2(pix) + 0.5f)") &&
-            Has(validated_history, "keep = SsrSparkleClipKeep(motion.x, motion.y);"),
-        "the sparkle floor is opt-in, requires valid history and excludes vehicle hits without motion rows");
+  const std::string guided = FunctionText(temporal_ps, "SsrHistoryOutput SsrAccumulate(");
+  Check(Has(guided, "SsrClipToBox(history,") && Has(guided, "SsrHistoryInside(image.u, image.v") &&
+            Has(guided, "if (SsrGuideSource(state) != source)") && Has(guided, "w *= SsrImageDepthWeight(guide.z, image.z, source)") &&
+            Has(guided, "w *= SsrPreviousPlane(p, guide, old.w"),
+        "every bilinear history tap passes the source, reflected depth and receiving plane checks");
+  Check(Has(guided, "SsrValidatedClipKeep(support, validity, upscaler, sparkle)") &&
+            Has(guided, "SsrPreferHistoryHit(centre_hit, tap.w, w, best)") && Has(guided, "representative = tap.w;") &&
+            Has(guided, "source = SsrGuideSource(plain_state);") && Has(guided, "if (motion_weight > 0.0f && image.ok"),
+        "the clip floor requires validated history and a borrowed hit retains the vehicle identity");
+  Check(Has(trigger, "last_resolve_ == resolve") && Has(trigger, "last_rt_ == rt_recorded") &&
+            Has(trigger, "trace_push.Set(pk::kFlags, ssr::PackTraceFlags(flags, resolve && !raw));") &&
+            Has(trigger, "temporal.Set(pk::kHistoryGuide, use_history ? history_guide_[write_ ^ 1u].slot : trace_.slot);") &&
+            Has(trigger, "last_resolve_ = resolve;") && Has(trigger, "last_rt_ = rt_recorded;"),
+        "guide ping-pong and invalidation follow the signal across mode changes");
   const std::string sparkle_setting = std::string("REX_") + "SETTING(bool, mcla_gpu_ssr_sparkle_resolve, false,";
   const std::string debug_pages = Read(dir, "../mc_engine/menus/debug_menu_pages.cpp");
   const size_t sparkle_at = settings.find(sparkle_setting);
@@ -2518,6 +2607,7 @@ int main(int argc, char** argv) {
   TestRaw();
   TestVehicleImage();
   TestClip();
+  TestGuidedResolve();
   TestResolve();
   TestRoadViewRules();
   TestMarchAnalytic();
