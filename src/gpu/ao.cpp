@@ -4305,6 +4305,11 @@ uint32_t AmbientOcclusion::RecordCarSunLookup(plume::RenderCommandList* list, co
 
 uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const Plan& plan,
                                          const Push& base, uint32_t mask_slot) {
+  HostPasses* const passes = passes_;
+  if (!list || !passes || !pass_timing_) {
+    return kNoSlot;
+  }
+  // CHECK: exercise creation and retirement of the skip image when the mask becomes unavailable.
   plume::RenderPipeline* march = Pipeline(kVContact);
   // With mcla_gpu_contact_shadows_fast the apply pass does the filter: the denoise pass is not drawn.
   const bool in_apply = plan.ContactFilterInApply();
@@ -4319,9 +4324,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   const HostImage& contact_depth = split ? DepthFull() : Depth(0);
   HostImage& contact_raw = split ? contact_raw_ : raw_;
   HostImage& contact_dn = split ? contact_dn_ : denoised_;
-  if (passes_) {
-    passes_->ActivateAliasedTarget(list, contact_raw);
-  }
+  passes->ActivateAliasedTarget(list, contact_raw);
   // The march: the linear depth in, the contact visibility out (contact_raw). Its constants are in the
   // header of hlsl/ao_contact_ps.hlsl.
   pass_timing_->Mark(list, "ao contact");
@@ -4380,7 +4383,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   if (skip) {
     const uint32_t block_w = uint32_t(contact_trace::SkipBlockCount(int(mask_w)));
     const uint32_t block_h = uint32_t(contact_trace::SkipBlockCount(int(mask_h)));
-    if (!passes_->EnsureImage(contact_skip_, block_w, block_h, plume::RenderFormat::R16_FLOAT, "ao contact skip blocks")) {
+    if (!passes->EnsureImage(contact_skip_, block_w, block_h, plume::RenderFormat::R16_FLOAT, "ao contact skip blocks")) {
       return kNoSlot;
     }
     // The block pass: slots2.w the mask's slot, shape.w the limit, extra.x and extra.z one over the mask's size.
@@ -4409,7 +4412,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
                   block_h);
     }
   } else if (contact_skip_.texture) {
-    passes_->ReleaseImage(contact_skip_);
+    passes->ReleaseImage(contact_skip_);
   }
   const bool stat_wanted = larecomp::settings::mcla_gpu_contact_skip_stat.Get() > 0 && c.fast && in_apply && mask_slot != kNoSlot && !debug_picture;
   Push stat_push = push;  // the march's push as it is: the statistics pass is the same shader, the flag and the mask's slot added
@@ -4481,7 +4484,7 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
     if (stat_wanted) {
       RecordContactStat(list, plan, stat_push, mask_slot, skip ? skip_limit : -1.0f);
     } else if (contact_stat_.texture) {
-      passes_->ReleaseImage(contact_stat_);
+      passes->ReleaseImage(contact_stat_);
     }
     // The apply pass reads the march's own image and does the 3x3 filter itself (flag bit 25 there, ao_apply_ps).
     return contact_raw.slot;

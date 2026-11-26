@@ -58,7 +58,9 @@ struct Fixture final : Env {
         auto it = values.find(key);
         return it == values.end() ? Value{} : it->second;
     }
-    void S(const char* key, std::string_view value) { settings[key] = Value::String(std::string(value)); }
+    void S(std::string_view key, std::string_view value) {
+        settings[std::string(key)] = Value::String(std::string(value));
+    }
     void B(const char* key, bool value) { facts[key] = Value::Bool(value); }
     void F(const char* key, std::string_view value) { facts[key] = Value::String(std::string(value)); }
     void N(const char* key, double value) { facts[key] = Value::Number(value); }
@@ -118,7 +120,7 @@ void Lighting(Fixture& f) {
             const auto effect = gc::Effect(i);
             const auto cvar = gc::CvarName(effect);
             if (class_rows[i]) {
-                f.S(cvar.data(), "auto");
+                f.S(cvar, "auto");
                 f.Decodes(class_rows[i], gc::CellFor(effect, cls, handheld));
             }
         }

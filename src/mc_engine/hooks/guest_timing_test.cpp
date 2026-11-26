@@ -19,7 +19,8 @@ void Check(bool ok, const char* message) {
     ++checks;
     if (!ok) {
         std::fprintf(stderr, "FAIL: %s\n", message);
-        std::exit(1);
+        std::fflush(stderr);
+        std::_Exit(1);
     }
 }
 

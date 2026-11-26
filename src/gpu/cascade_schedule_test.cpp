@@ -12,7 +12,8 @@ void Check(bool ok, const char* what) {
   ++checks;
   if (ok) return;
   std::fprintf(stderr, "FAIL: %s\n", what);
-  std::exit(1);
+  std::fflush(stderr);
+  std::_Exit(1);
 }
 }
 
@@ -40,7 +41,7 @@ int main() {
       case 0x30008: return 0x52000;
       case 0x2000c: return 0x43000;
       case 0x3000c: return 0x53000;
-      default: std::exit(2);
+      default: std::_Exit(2);
     }
   };
   Check(cs::ReadTileAddresses(0x10000, 3, read) == cs::TileAddresses{0x42000, 0x52000}, "cascade 3 reads its own pointers");
@@ -60,7 +61,8 @@ int main() {
     Check(refresh == (c == 4 ? 3 : c == 3 ? 6 : 12), "cadence over a steady sequence");
   }
   const auto decide = [&](const cs::View& v) { return cs::Decide(4, 1, old, v, empty, empty); };
-  Check(decide(old) == Reason::kHold && decide(old) == Reason::kHold, "fixed inputs hold");
+  Check(decide(old) == Reason::kHold, "fixed inputs hold before the refresh period");
+  Check(cs::Decide(4, 4, old, old, empty, empty) == Reason::kCadence, "fixed inputs refresh at the period");
   cs::View now = old;
   now.valid = false;
   Check(decide(now) == Reason::kCold, "invalid data fail open");

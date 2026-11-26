@@ -2495,12 +2495,14 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kTextureTables);
   // Write notifications first: a memoized binding must not outlive a write.
   textures_->Sync();
+  // Keep the key representation and dword decoding on the same frame setting.
+  const bool raw_fetch_keys = fetch_memo_raw_;
   for (uint32_t mask = fetch_mask; mask != 0; mask &= mask - 1) {
     const uint32_t slot = uint32_t(std::countr_zero(mask));
     uint32_t dwords[6];
-    const void* key = fetch_memo_raw_ ? view.FetchBytes(slot) : static_cast<const void*>(dwords);
+    const void* key = raw_fetch_keys ? view.FetchBytes(slot) : static_cast<const void*>(dwords);
     // CHECK: compare live A/B through product resolves, invalidation, texture mods and reload.
-    if (!fetch_memo_raw_) {
+    if (!raw_fetch_keys) {
       view.FetchGroup(slot, dwords);
     }
     const auto holds = [&](const FetchMemo& m) {
@@ -2514,7 +2516,7 @@ void Scene::FillTextureTables(const DrawView& view, uint32_t fetch_mask, Scale s
     if (last_fetch_[slot] && holds(*last_fetch_[slot])) {
       hit = last_fetch_[slot];
     } else {
-      if (fetch_memo_raw_) {
+      if (raw_fetch_keys) {
         view.FetchGroup(slot, dwords);
       }
       uint64_t h = 0;
