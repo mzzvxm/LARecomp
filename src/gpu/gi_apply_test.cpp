@@ -165,7 +165,9 @@ inline float asfloat(uint v) { return std::bit_cast<float>(v); }
 inline int asint(uint v) { return std::bit_cast<int>(v); }
 
 std::vector<uint4> g_rows;
+uint g_irradiance_reads = 0;
 inline float4 ShimIrradiance(float2 uv) {
+  ++g_irradiance_reads;
   const gi::Rgba c = g_atlas->SampleIrradiance(uv.x, uv.y);
   return float4(c.r, c.g, c.b, c.a);
 }
@@ -896,6 +898,12 @@ void TextChecks(const std::string& dir) {
             Has(ps, "all((pixel & 3) == 0) && all(pixel <= last)") && Has(ps, "Load(int3(pixel / 4, 0)).xyz") &&
             Has(ps, "lerp(exact, radiance / max(weight, 1.0e-8f), GiaQuarterBlend(weight))"),
         "the quarter lookup covers the original pixel centres and falls back at unsupported edges");
+  Check(Count(ps, "GatherRed(g_samplers[0], uv).wzxy") == 2 && Has(ps, "all(q0 + 1 < tsize)") &&
+            Has(ps, "guideVehicle = float4(tags & 1u)"),
+        "guide gathers use row-major order and preserve the depth mark, with clamped loads at the border");
+  Check(Has(ps, "guideVehicle.x == 0.0f && guideAo.x == 1.0f") && Has(ps, "guidesDone = GbRt1Valid(centre)") &&
+            Has(ps, "j < 2 && !guidesDone"),
+        "the constant quarter guides need a valid anchor unless they equal the empty filter's result");
   // every number #define of the .hlsli against the C++ value
   const std::map<std::string, double> expected = {
       {"GIA_FORMAT_VERSION", double(ga::kFormatVersion)}, {"GIA_ROWS", double(ga::kApplyRows)},
@@ -905,7 +913,8 @@ void TextChecks(const std::string& dir) {
       {"GIA_DEPTH_TOLERANCE_FLOOR", double(ga::kDepthToleranceFloor)}, {"GIA_MIN_UPSAMPLE_WEIGHT", double(ga::kMinUpsampleWeight)},
       {"GIA_PAINT_FROM", double(ga::kPaintFrom)},        {"GIA_VIEW_SCALE", double(ga::kViewScale)},
       {"GIA_FLAG_LOW_TRACED", double(ga::kFlagLowTraced)}, {"GIA_FLAG_VISIBILITY", double(ga::kFlagVisibility)},
-      {"GIA_FLAG_QUARTER_LOOKUP", double(ga::kFlagQuarterLookup)}, {"GIA_NO_SLOT", double(0xFFFFFFFFu)}};
+      {"GIA_FLAG_QUARTER_LOOKUP", double(ga::kFlagQuarterLookup)}, {"GIA_FLAG_FAST_LOOKUP_APPLY", double(ga::kFlagFastLookupApply)},
+      {"GIA_NO_SLOT", double(0xFFFFFFFFu)}};
   int defined = 0, wrong = 0;
   std::istringstream lines(common);
   for (std::string line; std::getline(lines, line);) {
@@ -1001,6 +1010,78 @@ void TextChecks(const std::string& dir) {
         "DAYLIGHT: inline, half-size and mixed Ultra lookups use the same rules");
 }
 
+void FastLookupChecks() {
+  using namespace hlsl_shim;
+  Check(GiDominantShare(0.96f, 1.0f) == 0.0f && Near(GiDominantShare(0.97f, 1.0f), 0.5, 1e-5) &&
+            GiDominantShare(0.99f, 1.0f) == 1.0f,
+        "the dominant probe fades in smoothly, then takes one tap");
+  for (int i = 0; i <= 1000; ++i) {
+    const float fraction = float(i) / 1000.0f;
+    Check(GiDominantShare(fraction, 1.0f) * (1.0f - fraction) <= 0.020001f, "discarded probe weight is bounded");
+  }
+
+  const double camera[3] = {-17.0, 2.0, -9.0};
+  Field field = MakeField(gi::Layout::kStandard, camera, [](gi::Vec3) { return gi::Rgba{0, 0, 0, 0}; });
+  Lcg rng;
+  for (float& v : field.atlas.irr) v = rng.Next();
+  for (size_t i = 0; i < field.atlas.mom.size(); i += 2) {
+    const float mean = rng.Range(0.1f, 2.0f);
+    field.atlas.mom[i] = mean;
+    field.atlas.mom[i + 1] = mean * mean + rng.Range(0.0f, 0.1f);
+  }
+  for (uint8_t& w : field.atlas.weight) w = uint8_t(rng.U32() >> 24);
+  g_atlas = &field.atlas;
+  const ga::Buffer rows = ga::MakeBuffer(gi::MakeGpuFrame(field.frame), ga::Frame{});
+  g_rows.clear();
+  for (size_t i = 0; i < rows.size(); i += 4) g_rows.emplace_back(rows[i], rows[i + 1], rows[i + 2], rows[i + 3]);
+
+  int fewer_reads = 0;
+  for (int i = 0; i < 4096; ++i) {
+    const auto p = H3({float(camera[0]) + rng.Range(-37.0f, 37.0f), float(camera[1]) + rng.Range(-8.0f, 8.0f),
+                       float(camera[2]) + rng.Range(-37.0f, 37.0f)});
+    const auto n = H3(rng.Direction());
+    g_irradiance_reads = 0;
+    const GiSample full = GiLookup(p, n);
+    const uint full_reads = g_irradiance_reads;
+    g_irradiance_reads = 0;
+    const GiSample fast = GiLookup(p, n, true);
+    fewer_reads += int(g_irradiance_reads < full_reads);
+    Check(g_irradiance_reads <= full_reads && full.confidence == fast.confidence,
+          "dominant lookup keeps cascade confidence and never adds irradiance reads");
+    Check(NearV(C3(full.irradiance), C3(fast.irradiance), 0.02001f) && Near(full.skyVisibility, fast.skyVisibility, 0.02001f),
+          "irradiance and sky visibility stay inside the bound on random probes with visibility moments");
+  }
+  Check(fewer_reads > 0, "random visibility fields exercise the one-probe path");
+  g_atlas = nullptr;
+}
+
+void FastUpsampleChecks() {
+  using namespace hlsl_shim;
+  const float4 world{0.0f, 0.0f, 0.0f, 0.0f};
+  const float4 open{1.0f, 1.0f, 1.0f, 1.0f};
+  const float4 shadow{0.3f, 0.3f, 0.3f, 0.3f};
+  Check(GiaConstantGuide(world) && GiaConstantGuide(open) && GiaConstantGuide(shadow), "uniform AO and vehicle guides can be reused");
+  Check(!GiaConstantGuide({1.0f, 0.0f, 0.0f, 0.0f}) && !GiaConstantGuide({0.0f, 1.0f, 0.0f, 0.0f}) &&
+            !GiaConstantGuide({0.0f, 0.0f, 1.0f, 0.0f}) && !GiaConstantGuide({0.0f, 0.0f, 0.0f, 1.0f}),
+        "each lane can require the weighted filter on a vehicle edge or AO contact");
+
+  // A thin receiver is absent from all four quarter samples. Across a
+  // depth step even matching normals must not borrow the other surface.
+  const float depthStep = GiaDepthWeight(10.0f, 12.0f);
+  const float otherSurface = GiaQuarterTap(0.25f, depthStep);
+  Check(otherSurface == 0.0f && GiaQuarterBlend(4.0f * otherSurface) == 0.0f, "unsupported edges use the direct field");
+  Check(GiaQuarterBlend(GiaQuarterTap(0.25f, GiaDepthWeight(10.0f, 10.0f))) == 1.0f,
+        "one matching quarter tap can support the receiver without a fallback");
+  for (float depth : {0.1f, 2.0f, 10.0f, 100.0f, 500.0f}) {
+    for (int i = 0; i < 160; ++i) {
+      const float td = depth + GiaDepthTolerance(depth) * (float(i) * 0.01f);
+      const bool may_contribute = GiaQuarterDepthMayContribute(td - depth, GiaDepthTolerance(depth));
+      Check(may_contribute || GiaQuarterTap(1.0f, GiaDepthWeight(depth, td)) == 0.0f,
+            "the cheap depth test never drops a supported quarter tap");
+    }
+  }
+}
+
 std::string DirOfThisFile() {
   std::string path = __FILE__;
   const size_t slash = path.find_last_of("/\\");
@@ -1027,6 +1108,8 @@ int main(int argc, char** argv) {
   LayoutChecks();
   LeakChecks();
   TwinChecks();
+  FastLookupChecks();
+  FastUpsampleChecks();
   TextChecks(dir);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

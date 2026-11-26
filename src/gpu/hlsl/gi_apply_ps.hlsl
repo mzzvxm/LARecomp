@@ -141,6 +141,11 @@ bool GiaQuarterLookup()
     return (g_push.info.w & GIA_FLAG_QUARTER_LOOKUP) != 0u;
 }
 
+bool GiaFastLookupApply()
+{
+    return (g_push.info.w & GIA_FLAG_FAST_LOOKUP_APPLY) != 0u;
+}
+
 uint GiaView()
 {
     return (g_push.info.w >> 8u) & 0xFFu;
@@ -174,6 +179,11 @@ float GiaDepthOf(float depthRaw)
     return asfloat(asuint(depthRaw) & 0xFFFFFFF8u);
 }
 
+float3 GiaReceiverPosition(int2 pixel, float t, GiaFrame fr)
+{
+    return GiaWorldPosition(fr, (float)pixel.x + 0.5f, (float)pixel.y + 0.5f, fr.render.x, fr.render.y, t);
+}
+
 #if GIA_PASS == 0
 
 float4 main(float4 position : SV_Position) : SV_Target
@@ -198,8 +208,8 @@ float4 main(float4 position : SV_Position) : SV_Target
         return float4(0.0f, 0.0f, 0.0f, t);
     }
     float3 n = GbRt1Decode(rt1);
-    float3 pos = GiaWorldPosition(fr, (float)r.x + 0.5f, (float)r.y + 0.5f, fr.render.x, fr.render.y, t);
-    GiSample s = GiLookup(pos, n);
+    float3 pos = GiaReceiverPosition(r, t, fr);
+    GiSample s = GiLookup(pos, n, GiaFastLookupApply());
     float3 e = GiaLookupNetMixed(s, n, fr, GiaPixelTerm(p, t, n, fr));
     return float4(e.x, e.y, e.z, t);
 }
@@ -212,7 +222,7 @@ float3 GiaTone(float3 c)
 }
 
 #if GIA_UP
-float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, float3 pos, GiaFrame fr)
+float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, GiaFrame fr, bool fast)
 {
     int2 last = int2(fr.render) - 1;
     if (all((pixel & 3) == 0) && all(pixel <= last))
@@ -226,6 +236,7 @@ float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, float3 pos, GiaFrame 
     int2 q0 = int2(floor(q));
     float2 f = q - float2(q0);
     int2 size = (int2(fr.render) + 3) / 4;
+    float depthTolerance = GiaDepthTolerance(t);
     float3 radiance = 0.0f;
     float weight = 0.0f;
     [unroll] for (int j = 0; j < 2; ++j)
@@ -239,13 +250,22 @@ float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, float3 pos, GiaFrame 
             }
             int2 c = min(q0 + int2(i, j), size - 1);
             float4 look = g_textures[g_push.info.y].Load(int3(c, 0));
-            float2 nc1 = GiaLoadPlane(g_push.slots.y, min(c * 4, last)).xy;
-            if (GbRt1Valid(nc1) && look.w > 0.0f && look.w < GIA_SKY)
+            if (look.w > 0.0f && look.w < GIA_SKY &&
+                (!fast || GiaQuarterDepthMayContribute(abs(look.w - t), depthTolerance)))
             {
-                float bilateral = GiaDepthWeight(t, look.w) * GiaNormalWeight(n, GbRt1Decode(nc1));
-                float w = GiaQuarterTap(bilinear, bilateral);
-                radiance += look.xyz * w;
-                weight += w;
+                float depth = GiaDepthWeight(t, look.w);
+                // The normal agreement cannot raise this tap above the cutoff.
+                if (!fast || depth > kGiaQuarterMinAgreement)
+                {
+                    float2 nc1 = GiaLoadPlane(g_push.slots.y, min(c * 4, last)).xy;
+                    if (GbRt1Valid(nc1))
+                    {
+                        float bilateral = depth * GiaNormalWeight(n, GbRt1Decode(nc1));
+                        float w = GiaQuarterTap(bilinear, bilateral);
+                        radiance += look.xyz * w;
+                        weight += w;
+                    }
+                }
             }
         }
     }
@@ -255,7 +275,7 @@ float3 GiaQuarterIrradiance(int2 pixel, float t, float3 n, float3 pos, GiaFrame 
     {
         return radiance / weight;
     }
-    float3 exact = GiaLookupNet(GiLookup(pos, n), n, fr);
+    float3 exact = GiaLookupNet(GiLookup(GiaReceiverPosition(pixel, t, fr), n), n, fr);
     return lerp(exact, radiance / max(weight, 1.0e-8f), GiaQuarterBlend(weight));
 }
 #endif
@@ -297,11 +317,11 @@ float4 main(float4 position : SV_Position) : SV_Target
         discard;
     }
     float3 n = GbRt1Decode(rt1);
-    float3 pos = GiaWorldPosition(fr, (float)pixel.x + 0.5f, (float)pixel.y + 0.5f, fr.render.x, fr.render.y, t);
 
     // The views that look at the field itself.
     if (view == 1u || view == 2u || view == 3u || view == 5u || view == 6u)
     {
+        float3 pos = GiaReceiverPosition(pixel, t, fr);
         GiSample s = GiLookup(pos, n);
         float3 colour = float3(1.0f, 0.0f, 1.0f);
         if (view == 1u)
@@ -333,8 +353,19 @@ float4 main(float4 position : SV_Position) : SV_Target
     float3 eNet = float3(0.0f, 0.0f, 0.0f);
     float vehicle = 0.0f;
     float ao = 1.0f;
+    bool fast = GiaFastLookupApply();
+    bool visibility = GiaHasVisibility() && (!fast || (fr.aoStrength > 0.0f && t < fr.aoFadeEnd));
 #if GIA_UP
     {
+        bool quarter = GiaQuarterLookup();
+        if (quarter)
+        {
+            eNet = GiaQuarterIrradiance(pixel, t, n, fr, fast);
+            if (fast && !any(eNet > 0.0f))
+            {
+                discard;
+            }
+        }
         float2 q = (float2(pixel) + 0.5f) * 0.5f - 0.5f;
         int2 q0 = int2(floor(q));
         float2 f = q - float2(q0);
@@ -344,7 +375,39 @@ float4 main(float4 position : SV_Position) : SV_Target
         float vSum = 0.0f;
         float aoSum = 0.0f;
         float wSum = 0.0f;
-        for (int j = 0; j < 2; ++j)
+        // CHECK: confirm the gather's order and marked depth bits on both APIs.
+        // Gather is only needed on the interior; padded and border pixels use clamped loads.
+        bool gather = fast && all(q0 >= 0) && all(q0 + 1 < tsize);
+        float4 guideVehicle = 0.0f;
+        float4 guideAo = 1.0f;
+        bool guidesDone = false;
+        if (gather)
+        {
+            float2 uv = (float2(q0) + 1.0f) / fr.traced;
+            uint4 tags = asuint(g_textures[g_push.slots.w].GatherRed(g_samplers[0], uv).wzxy);
+            guideVehicle = float4(tags & 1u);
+            if (visibility)
+            {
+                guideAo = g_textures[g_push.info.x].GatherRed(g_samplers[0], uv).wzxy;
+            }
+            if (quarter && GiaConstantGuide(guideVehicle) && GiaConstantGuide(guideAo))
+            {
+                // If every normal is missing, the filter returns these defaults.
+                guidesDone = guideVehicle.x == 0.0f && guideAo.x == 1.0f;
+                if (!guidesDone)
+                {
+                    // A valid anchor guarantees a positive weight in the same quad.
+                    float2 centre = GiaLoadPlane(g_push.slots.y, min(pixel & ~1, rlast)).xy;
+                    guidesDone = GbRt1Valid(centre);
+                }
+                if (guidesDone)
+                {
+                    vehicle = guideVehicle.x;
+                    ao = guideAo.x;
+                }
+            }
+        }
+        for (int j = 0; j < 2 && !guidesDone; ++j)
         {
             for (int i = 0; i < 2; ++i)
             {
@@ -357,7 +420,7 @@ float4 main(float4 position : SV_Position) : SV_Target
                     continue;
                 }
                 float4 look = 0.0f;
-                if (GiaQuarterLookup())
+                if (quarter)
                 {
                     // Match the original RGBA16F lookup's guide precision.
                     float depth = GiaLinearDepth(GiaLoadPlane(g_push.slots.x, r).x, fr.lin);
@@ -368,39 +431,45 @@ float4 main(float4 position : SV_Position) : SV_Target
                     look = g_textures[g_push.info.y].Load(int3(c, 0));
                 }
                 float w = bilinear * max(GiaDepthWeight(t, look.w) * GiaNormalWeight(n, GbRt1Decode(nc1)), GIA_MIN_UPSAMPLE_WEIGHT);
-                eSum = eSum + float3(look.x, look.y, look.z) * w;
-                vSum = vSum + GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(c, 0)).x) * w;
-                if (GiaHasVisibility())
+                if (!quarter)
                 {
-                    aoSum = aoSum + g_textures[g_push.info.x].Load(int3(c, 0)).x * w;
+                    eSum = eSum + look.xyz * w;
+                }
+                int tap = j * 2 + i;
+                float v = gather ? guideVehicle[tap] : GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(c, 0)).x);
+                vSum = vSum + v * w;
+                if (visibility)
+                {
+                    float seen = gather ? guideAo[tap] : g_textures[g_push.info.x].Load(int3(c, 0)).x;
+                    aoSum = aoSum + seen * w;
                 }
                 wSum = wSum + w;
             }
         }
         if (wSum > 1.0e-8f)
         {
-            eNet = eSum * (1.0f / wSum);
-            vehicle = vSum / wSum;
-            ao = GiaHasVisibility() ? aoSum / wSum : 1.0f;
-        }
-        if (GiaQuarterLookup())
-        {
-            eNet = GiaQuarterIrradiance(pixel, t, n, pos, fr);
+            float invWeight = 1.0f / wSum;
+            if (!quarter)
+            {
+                eNet = eSum * invWeight;
+            }
+            vehicle = vSum * invWeight;
+            ao = visibility ? aoSum * invWeight : 1.0f;
         }
     }
 #else
     {
-        GiSample s = GiLookup(pos, n);
+        GiSample s = GiLookup(GiaReceiverPosition(pixel, t, fr), n, fast);
         eNet = GiaLookupNetMixed(s, n, fr, GiaPixelTerm(pixel, t, n, fr));
         vehicle = GiaVehicleMark(g_textures[g_push.slots.w].Load(int3(pixel, 0)).x);
-        if (GiaHasVisibility())
+        if (visibility)
         {
             ao = g_textures[g_push.info.x].Load(int3(pixel, 0)).x;
         }
     }
 #endif
 
-    float aoTerm = GiaHasVisibility() ? GiaAoTerm(ao, vehicle, t, fr.aoStrength, fr.aoFadeEnd, fr.paintPower) : 1.0f;
+    float aoTerm = visibility ? GiaAoTerm(ao, vehicle, t, fr.aoStrength, fr.aoFadeEnd, fr.paintPower) : 1.0f;
     float nDotL = saturate(dot(n, fr.sunDir));
     float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
 
@@ -411,7 +480,7 @@ float4 main(float4 position : SV_Position) : SV_Target
     if (cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT)
     {
         float2 rt3 = GiaLoadPlane(GiaMaterialSlot(), pixel).xy;
-        cabin = GicShare(cabinA, GiaCabinRow(1u), pos, GbRt3Class(rt3), GbRt3Flags(rt3));
+        cabin = GicShare(cabinA, GiaCabinRow(1u), GiaReceiverPosition(pixel, t, fr), GbRt3Class(rt3), GbRt3Flags(rt3));
     }
     float3 add = NgFinite3(GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare * cabin, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
 

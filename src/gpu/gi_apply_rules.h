@@ -214,6 +214,7 @@ inline constexpr uint32_t kPushSpace = 4;
 inline constexpr uint32_t kFlagLowTraced = 1u;      // the traced size is half the picture's: the visibility image is read with the same upsample
 inline constexpr uint32_t kFlagVisibility = 2u;     // info.x is a visibility image
 inline constexpr uint32_t kFlagQuarterLookup = 4u;
+inline constexpr uint32_t kFlagFastLookupApply = 8u;
 constexpr bool UseQuarterLookup(bool enabled, bool half_traced, uint32_t render_height, bool field_only, bool special_view) {
   return enabled && half_traced && render_height >= 2160u && field_only && !special_view;
 }

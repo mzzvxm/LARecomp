@@ -306,8 +306,16 @@ float GiRangeFade(float distanceM, float safeRangeM)
     return saturate((safeRangeM - distanceM) / (safeRangeM - start));
 }
 
+// Fade out the tail over the last 4% of the weight. The maximum omitted share
+// is 2% (at dominance 98%), so each channel's error is bounded by 2% of its
+// local probe range, including sky visibility. Confidence uses all valid taps.
+float GiDominantShare(float leading, float total)
+{
+    return saturate((leading / total - 0.96f) * 50.0f);
+}
+
 // One cascade's lookup at world point p, normal n (unit): the eight probes round the point, weighted by trilinear x validity x the smooth back face term x the Chebyshev visibility.
-GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p, float3 n)
+GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p, float3 n, bool useDominant)
 {
     float offset = GI_NORMAL_OFFSET_SPACINGS * k.spacing;
     float3 q = float3(p.x + n.x * offset, p.y + n.y * offset, p.z + n.z * offset);
@@ -327,8 +335,19 @@ GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p
     float sumT = 0.0f;
     float sky = 0.0f;
     float3 acc = float3(0.0f, 0.0f, 0.0f);
+    float weights[8];
+    float leading = 0.0f;
+    uint leader = 0u;
+    // Wrap each axis once. The second corner either advances a slot or wraps to zero.
+    uint sx0 = GiWrap(bx, k.dimX), sx1 = sx0 + 1u == k.dimX ? 0u : sx0 + 1u;
+    uint sy0 = GiWrap(by, k.dimY), sy1 = sy0 + 1u == k.dimY ? 0u : sy0 + 1u;
+    uint sz0 = GiWrap(bz, k.dimZ), sz1 = sz0 + 1u == k.dimZ ? 0u : sz0 + 1u;
     for (uint i = 0u; i < 8u; ++i)
     {
+        if (useDominant)
+        {
+            weights[i] = 0.0f;
+        }
         uint ox = i & 1u;
         uint oy = (i >> 1u) & 1u;
         uint oz = (i >> 2u) & 1u;
@@ -336,9 +355,9 @@ GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p
         int cy = by + (int)oy;
         int cz = bz + (int)oz;
         float wt = (ox != 0u ? fx : 1.0f - fx) * (oy != 0u ? fy : 1.0f - fy) * (oz != 0u ? fz : 1.0f - fz);
-        uint sx = GiWrap(cx, k.dimX);
-        uint sy = GiWrap(cy, k.dimY);
-        uint sz = GiWrap(cz, k.dimZ);
+        uint sx = ox != 0u ? sx1 : sx0;
+        uint sy = oy != 0u ? sy1 : sy0;
+        uint sz = oz != 0u ? sz1 : sz0;
         float wv = GI_LOAD_PROBE_WEIGHT(sx + k.dimX * sy, k.weightY + sz);
         if (!(wt * wv > 0.0f))
         {
@@ -360,10 +379,22 @@ GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p
             wc = max(c * c * c, GI_CHEBYSHEV_FLOOR);
         }
         float w = wt * wv * bf * wc;
-        float2 uv = GiProbeUv(k, invAtlasW, invAtlasH, sx, sy, sz, octN);
-        float4 e = GI_SAMPLE_IRRADIANCE(uv);
-        acc = acc + float3(e.x, e.y, e.z) * w;
-        sky = sky + e.w * w;
+        if (useDominant)
+        {
+            weights[i] = w;
+            if (w > leading)
+            {
+                leading = w;
+                leader = i;
+            }
+        }
+        else
+        {
+            float2 uv = GiProbeUv(k, invAtlasW, invAtlasH, sx, sy, sz, octN);
+            float4 e = GI_SAMPLE_IRRADIANCE(uv);
+            acc = acc + float3(e.x, e.y, e.z) * w;
+            sky = sky + e.w * w;
+        }
         sumW = sumW + w;
         sumT = sumT + wt * wv;
     }
@@ -372,6 +403,34 @@ GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p
     s.skyVisibility = 0.0f;
     if (sumW > GI_MIN_WEIGHT_SUM)
     {
+        if (useDominant)
+        {
+            float share = GiDominantShare(leading, sumW);
+            if (share >= 1.0f)
+            {
+                uint sx = (leader & 1u) != 0u ? sx1 : sx0;
+                uint sy = (leader & 2u) != 0u ? sy1 : sy0;
+                uint sz = (leader & 4u) != 0u ? sz1 : sz0;
+                float4 e = GI_SAMPLE_IRRADIANCE(GiProbeUv(k, invAtlasW, invAtlasH, sx, sy, sz, octN));
+                s.irradiance = float3(e.x, e.y, e.z);
+                s.skyVisibility = e.w;
+                s.confidence = sumT;
+                return s;
+            }
+            for (uint j = 0u; j < 8u; ++j)
+            {
+                float w = weights[j] * (1.0f - share) + (j == leader ? share * sumW : 0.0f);
+                if (w > 0.0f)
+                {
+                    uint sx = (j & 1u) != 0u ? sx1 : sx0;
+                    uint sy = (j & 2u) != 0u ? sy1 : sy0;
+                    uint sz = (j & 4u) != 0u ? sz1 : sz0;
+                    float4 e = GI_SAMPLE_IRRADIANCE(GiProbeUv(k, invAtlasW, invAtlasH, sx, sy, sz, octN));
+                    acc = acc + float3(e.x, e.y, e.z) * w;
+                    sky = sky + e.w * w;
+                }
+            }
+        }
         float rcp = 1.0f / sumW;
         s.irradiance = acc * rcp;
         s.skyVisibility = sky * rcp;
@@ -382,7 +441,7 @@ GiSample GiCascadeLookup(GiCascade k, float invAtlasW, float invAtlasH, float3 p
 
 // The field's lookup at world point p with unit normal n: the finest cascade that holds the point, blended into the coarser ones over the band at its edge, each cascade counted by how much
 // of its probes are valid there (a cascade that is still being built hands the point to the next one), and the whole faded to 0 toward the safe range.
-GiSample GiLookup(float3 p, float3 n)
+GiSample GiLookup(float3 p, float3 n, bool useDominant)
 {
     uint4 header = GI_FRAME_ROW(GI_ROW_HEADER);
     uint count = min(header.y, GI_MAX_CASCADES);
@@ -399,7 +458,7 @@ GiSample GiLookup(float3 p, float3 n)
         {
             continue;
         }
-        GiSample s = GiCascadeLookup(k, invAtlasW, invAtlasH, p, n);
+        GiSample s = GiCascadeLookup(k, invAtlasW, invAtlasH, p, n, useDominant);
         float cw = remaining * (w * s.confidence);
         acc = acc + s.irradiance * cw;
         sky = sky + s.skyVisibility * cw;
@@ -423,6 +482,11 @@ GiSample GiLookup(float3 p, float3 n)
     float3 dc = float3(p.x - cam.x, p.y - cam.y, p.z - cam.z);
     outS.confidence = cover * GiRangeFade(sqrt(dot(dc, dc)), GiSafeRange());
     return outS;
+}
+
+GiSample GiLookup(float3 p, float3 n)
+{
+    return GiLookup(p, n, false);
 }
 
 // ---- the ambient, the baseline, the share -----------------------------------------------------------------------------------------------------

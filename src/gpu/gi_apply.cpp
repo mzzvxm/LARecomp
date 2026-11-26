@@ -403,7 +403,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   // and the vehicle mark at half the coordinates.
   const bool up = (sf.flags & screen::kFrameHalfTraced) != 0;
   AmbientOcclusion::OcclusionView ov;
-  const bool has_visibility = ao_->FrameOcclusionNow(&ov) && ov.has_visibility && ov.visibility_slot != ga::kNoSlot && ov.traced[0] == sf.traced[0] && ov.traced[1] == sf.traced[1];
+  const bool has_visibility = ao_ && ao_->FrameOcclusionNow(&ov) && ov.has_visibility && ov.visibility_slot != ga::kNoSlot && ov.traced[0] == sf.traced[0] && ov.traced[1] == sf.traced[1];
   const bool view_run = view_ != 0;
   const uint32_t apply_shader = 2u + (gb.host_samples > 1 ? 1u : 0u) + (up ? 2u : 0u);
   const uint32_t lookup_shader = gb.host_samples > 1 ? 1u : 0u;
@@ -428,9 +428,11 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   // CHECK: compare thin geometry, curb edges and moving shadows in 4K DLAA.
   // The quarter-size grid is for the field alone. AO and vehicle weights keep
   // their half-size guides, and poorly supported pixels look up the field directly.
-  bool quarter = ga::UseQuarterLookup(larecomp::settings::mcla_gpu_rt_gi_quarter_lookup.Get(), up, sf.render[1],
-                                     gi::BudgetOf(gf.layout).pixel_rays_per_pixel == 0,
-                                     view_run || raw_requested || CurrentRenderedCameraRig() == 1);
+  const bool field_only = gi::BudgetOf(gf.layout).pixel_rays_per_pixel == 0;
+  const bool special_view = view_run || raw_requested || CurrentRenderedCameraRig() == 1;
+  // CHECK: time lookup and apply together, and compare motion across dominant-probe and coarse-grid transitions.
+  const bool fast_lookup_apply = larecomp::settings::mcla_gpu_rt_gi_fast_lookup_apply.Get() && !special_view;
+  bool quarter = ga::UseQuarterLookup(larecomp::settings::mcla_gpu_rt_gi_quarter_lookup.Get(), up, sf.render[1], field_only, special_view);
   if (quarter && !passes_->EnsureImage(lookup_, ga::QuarterLookupExtent(sf.render[0]), ga::QuarterLookupExtent(sf.render[1]),
                                        kLookupFormat, "gi apply lookup")) {
     quarter = false;
@@ -552,7 +554,7 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   push.info[1] = up ? lookup_.slot : ga::kNoSlot;
   push.info[2] = gb.sample0;
   const uint32_t flags = (up ? ga::kFlagLowTraced : 0u) | (has_visibility ? ga::kFlagVisibility : 0u) |
-                         (quarter ? ga::kFlagQuarterLookup : 0u);
+                         (quarter ? ga::kFlagQuarterLookup : 0u) | (fast_lookup_apply ? ga::kFlagFastLookupApply : 0u);
   push.info[3] = gi_cabin::PackMaterialSlot(ga::PackInfoW(flags, view_), cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot);
 
   if (up) {

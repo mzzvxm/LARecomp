@@ -971,6 +971,7 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_rt_gi_reuse_coarse_probes, true, "Debug: refresh half as many already populated coarse RT bounce probes after warm-up. New and stale probes keep priority. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rt_gi_short_refresh_rays, true, "Debug: Use fewer rays to refresh established RT bounce probes. Keep full coverage during warm-up and streaming. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_rt_gi_quarter_lookup, true, "Debug: Sample the RT bounce field at quarter size in exterior 4K views and use the full field lookup at unsupported edges. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_rt_gi_fast_lookup_apply, true, "Debug: Use the dominant RT bounce probe where it accounts for almost all the light and reuse matching upsample guides. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_rt_gi_dry_run, false, "Diagnostic (ray traced bounce light): lets the probe field run while the probe update (package G2 of the design) is not built into this renderer, to prove the field's owner and the order of the frame. "
     "With RT BOUNCE LIGHT on, the field's textures are made, its reset and weights passes run and the apply is told of it, but nothing traces into the probes, so the field never becomes ready, shows nothing, "
@@ -2279,6 +2280,7 @@ inline auto& mcla_gpu_rt_gi_bounces = g_gpu.mcla_gpu_rt_gi_bounces;
 inline auto& mcla_gpu_rt_gi_reuse_coarse_probes = g_gpu.mcla_gpu_rt_gi_reuse_coarse_probes;
 inline auto& mcla_gpu_rt_gi_short_refresh_rays = g_gpu.mcla_gpu_rt_gi_short_refresh_rays;
 inline auto& mcla_gpu_rt_gi_quarter_lookup = g_gpu.mcla_gpu_rt_gi_quarter_lookup;
+inline auto& mcla_gpu_rt_gi_fast_lookup_apply = g_gpu.mcla_gpu_rt_gi_fast_lookup_apply;
 inline auto& mcla_gpu_rt_gi_dry_run = g_gpu.mcla_gpu_rt_gi_dry_run;
 inline auto& mcla_gpu_gi_cabin = g_gpu.mcla_gpu_gi_cabin;
 inline auto& mcla_gpu_gi_cabin_rig = g_gpu.mcla_gpu_gi_cabin_rig;

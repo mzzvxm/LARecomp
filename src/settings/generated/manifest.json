@@ -2253,6 +2253,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_rt_gi_fast_lookup_apply": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Debug: Use the dominant RT bounce probe where it accounts for almost all the light and reuse matching upsample guides. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_rt_gi_reuse_coarse_probes": {
   "type": "bool",
   "default": "true",

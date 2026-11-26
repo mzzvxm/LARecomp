@@ -425,6 +425,7 @@
 {"mcla_gpu_rt_gi_reuse_coarse_probes", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_short_refresh_rays", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_quarter_lookup", "MCLA/GPU"},
+{"mcla_gpu_rt_gi_fast_lookup_apply", "MCLA/GPU"},
 {"mcla_gpu_rt_gi_dry_run", "MCLA/GPU"},
 {"mcla_gpu_gi_cabin", "MCLA/GPU"},
 {"mcla_gpu_ssr_strength", "MCLA/GPU"},
