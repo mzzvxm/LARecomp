@@ -58,6 +58,35 @@
 #define SSR_W_WET 29           // float: the road's wetness 0..1
 #define SSR_W_THICK 30         // float: the surface's thickness as a share of its depth
 #define SSR_W_CAP 31           // float: the brightest colour a reflection brings (the target's units)
+struct ReflectionWeights {
+  float screen, reuse, rt, planar, env;
+};
+
+ReflectionWeights ReflectionHandoff(float screen, float reuse, float rt, float planar) {
+  ReflectionWeights w;
+  w.screen = saturate(screen);
+  const float after_screen = 1.0f - w.screen;
+  w.reuse = after_screen * saturate(reuse);
+  const float after_reuse = after_screen - w.reuse;
+  w.rt = after_reuse * saturate(rt);
+  const float after_rt = after_reuse - w.rt;
+  w.planar = after_rt * saturate(planar);
+  w.env = after_rt - w.planar;
+  return w;
+}
+
+float SsrReuseTrust(float edge, float facing, float depth_error) {
+  return 0.55f * saturate(edge) * saturate((facing - 0.15f) / 0.35f) * (1.0f - saturate(depth_error));
+}
+
+float SsrReuseAgreement(float normal_dot, float depth_error) {
+  return saturate((normal_dot - 0.80f) / 0.20f) * (1.0f - saturate(abs(depth_error)));
+}
+
+float SsrHitThickness(float depth, float relative, float support) {
+  return max(0.3f, relative * depth) * (0.25f + 0.75f * saturate(support));
+}
+
 #define SSR_PUSH_WORDS 32
 #define SSR_FRAME_LEGACY_NOISE 0x80000000u   // bit 31 of SSR_W_FRAME: the first version's noise (interleaved gradient noise sliding across the picture), for mcla_gpu_ssr_blue_noise false
 // the temporal pass's own names for words it reuses (ssr_rules.h push::kPrevTanX ...)
@@ -65,6 +94,7 @@
 #define SSR_W_PREV_TAN_Y SSR_W_MAX_DIST
 #define SSR_W_HISTORY_WEIGHT SSR_W_FRAME
 #define SSR_W_MOTION 20
+#define SSR_W_HISTORY_GUIDE SSR_W_COL01    // temporal: previous frame's plane normal, virtual depth and history state
 // GB-I2: the words the new parts use, each in a pass that does not read the word's first meaning (ssr_rules.h push::)
 #define SSR_W_ROAD_VIEW 2         // trace: the game's road reflection view (256x256 at the guest's size): its slot (bits 0-15, 0xFFFF none) | its host samples - 1 << 16 (3 bits) | its side in host pixels << 19 (10 bits)
 #define SSR_W_FALLBACK 26         // trace: float, the share of that view the effect takes out of the road where a ray finds a reflection (0 adds the reflection on top, as GB-I1)
@@ -85,6 +115,7 @@
 #define SSR_FLAG_SHIFT 12u
 #define SSR_RAYS_SHIFT 18u
 #define SSR_VIEW_SHIFT 20u
+#define SSR_TRACE_STABLE (1u << SSR_VIEW_SHIFT)  // the trace uses the apply's view field for its stability switch
 #define SSR_ITER_SHIFT 24u
 
 // ---- numbers -------------------------------------------------------------------------------------------------------------------------------------------------------------------------

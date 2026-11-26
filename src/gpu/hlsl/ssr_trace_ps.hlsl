@@ -7,24 +7,16 @@
 //                 their own reflections) and the smoothness decide whether anything is traced: a pixel that reflects nothing writes (0, 0, 0, 0) and costs the gate's reads.
 //   the ray       one GGX visible-normal sample of the surface's lobe (two at ultra), the road's smoothness raised by the wetness, the origin moved off the surface; walked through the Hi-Z
 //                 (ssr_trace.hlsli). A hit is rejected where the surface faces away from the ray (a back face the screen does not show).
-//   the colour    colour_post at the hit, the mip chosen by the lobe's width at the hit; the sky at the vanishing point of the ray where it ended on the picture without a hit. Multiplied by
-//                 the edge fade and the facing fade: a hit near the picture's edge, or a ray that points back at the camera, brings less and less, and what is not brought is the game's own
-//                 reflection (the planar view of the road, the env map), which is already in the colour.
+// Current hits use mip-filtered colour_post. At screen edges, occluders
+// and backfaces, the previous view can fill part of the missing lobe
+// after its depth and normal confirm the reprojected hit. The uncovered
+// share uses planar on ground receivers or the roughness-filtered env map.
 //
-// Output: rgb the radiance (the rays' mean, premultiplied by the fades, capped at SSR_W_CAP, in the colour target's own units), a the distance to the NEAREST hit of the rays packed with what
-// the hit is (hlsl/ssr_common.hlsli SsrPackHit: a vehicle's pixel sets the sign and carries its stencil ID, whose motion is not the world's), kSsrMissLength where none found anything; exactly 0
-// where nothing was traced (the temporal pass and the apply read that as "no reflection here"). A ray that points back at the camera is not walked (its fade is 0): the window of a shop front,
-// whose mirror ray goes behind the camera, costs the gate only.
-//
-// GB-I2, THE ROAD VIEW (the off-screen fallback). On a ROAD pixel the game's own reflection, the 256x256 planar view of the whole screen (side_views.h), is already in the colour this term is added to.
-// Where a ray finds a reflection the trace therefore brings the DIFFERENCE: radiance minus the road view at the pixel's screen position (times the share SSR_W_FALLBACK takes out), each times the
-// ray's fade: the sharp reflection replaces the soft one instead of lying on top of it (no doubling), and where the ray found nothing, or its hit is faded out by the picture's edge or by a surface
-// that faces away, the difference is 0 and the game's reflection stays alone (no seam: the fallback IS the colour that is there). The rgb is then signed. Pixels of other classes keep the plain
-// radiance (the game's environment map under them stays, only faded: its dual paraboloid mapping is the game's own and not reproduced here).
-//
-// CITY-RT R4, SSR_RT 1 (ssr_trace_rt_ps, ssr_trace_rt_ms_ps): the same pass for a frame the ray traced fallback follows (ssr_rt.h). It writes a second target, the pixel's CONFIDENCE (hlsl/ssr_rt_common.hlsli: r the class
-// group, g the share of the reflection that is the picture's: the mean of its rays' fades), which the fallback reads to find the pixels the picture could not speak for. The first target is what it always
-// was; the plain compilations do not contain any of this (their code is the same as before the fallback).
+// RGB is the capped mean radiance, expressed as a delta wherever the guest
+// scene already includes the fallback. Alpha packs hit distance and
+// vehicle identity for reprojection, or 0 for an ineligible receiver.
+// SSR_RT also writes the group and the residual per-ray distribution,
+// which let RT replace only the still-uncovered fallback before denoising.
 //
 // Compilations: SSR_MS 0 / 1 (ssr_trace_ps, ssr_trace_ms_ps); with SSR_RT 1 the same two (ssr_trace_rt_ps, ssr_trace_rt_ms_ps).
 
@@ -33,7 +25,8 @@
 #endif
 
 #include "ssr_pass.hlsli"
-#include "ssr_trace.hlsli"
+#include "ssr_handoff.hlsli"
+#include "ssr_reuse.hlsli"
 #if SSR_REFLHIT
 #include "reflhit.hlsli"
 static uint g_reflhit = 0u;
@@ -85,9 +78,10 @@ float4 SsrTraceBody(float4 position) {
   const SsrSurface surface = SsrSurfaceAt(texel, vehicle);
 #if SSR_REFLHIT
   const bool planar = (SsrW(SSR_W_ROAD_VIEW) & SSR_REFLHIT_PLANAR_BIT) != 0u;
-  const uint native = ReflHitFallback(surface.cls, surface.flags, planar);
+  uint native = ReflHitFallback(surface.cls, surface.flags, planar);
   g_reflhit = ReflHitPack(native, kReflHitNone, kReflHitNone, native);
   float screen_weight = 0.0f;
+  float reuse_weight = 0.0f;
   float best_fade = 0.0f;
   uint screen_id = kReflHitNone;
 #endif
@@ -105,21 +99,14 @@ float4 SsrTraceBody(float4 position) {
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 pc = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
-  // the normal: RT1's where there is one that faces the camera, else the depth's
-  const float4 g_normal = SsrViewNormalAt(texel, pc);
-  float3 n = g_normal.xyz;
-  if (g_normal.w < 0.5f) {
-    n = SsrDepthNormal(hz, pix.x, pix.y, ssr.x, ssr.y, z_block, pc, tan_x, tan_y);
-  }
   const float3 to_camera = pc * (-1.0f / length(pc));
-  const float facing = dot(n, to_camera);
-  if (facing < 0.05f) {
-    n = normalize(n + to_camera * (0.05f - facing));
-  }
+  const float3 n = SsrReceiverNormal(pix, texel, surface.cls, pc, to_camera);
   const float alpha = SsrAlphaOfSmooth(smoothness);
 
   // the walk's numbers
-  SsrTraceParams tp;
+  SsrTraceParams tp = (SsrTraceParams)0;
+  const bool handoff = SsrHandoffEnabled();
+  tp.adaptive_thickness = handoff;
   const int2 h0 = SsrHiz0Size();
   tp.width = float(h0.x);
   tp.height = float(h0.y);
@@ -142,16 +129,15 @@ float4 SsrTraceBody(float4 position) {
   const float3 origin = pc + n * bias;
   const uint rays = SsrRays();
   const uint frame = SsrW(SSR_W_FRAME);
+  const bool stable = SsrStableTrace();
   const float cap = SsrF(SSR_W_CAP);
 
-  // the game's own reflection of this pixel (GB-I2): the road view at the pixel's screen position, in the colour's units, the share of it the effect takes out
-  float3 fallback = float3(0.0f, 0.0f, 0.0f);
-  const float share = SsrF(SSR_W_FALLBACK);
-  const uint road_view = SsrW(SSR_W_ROAD_VIEW);
-  if ((surface.cls == uint(GB_CLASS_ROAD) || surface.cls == uint(GB_CLASS_WET_ROAD)) && share > 0.0f && SsrHasSlot(SsrRoadViewSlot(road_view))) {
-    const float2 screen_uv = (float2(texel) + 0.5f) / float2(render);
-    fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;   // (the game's own view: a NaN or an infinity in it is none, nan_guard.hlsli)
+  const SsrFallback fallback = SsrSurfaceFallback(surface.cls, texel, pc, n, smoothness, handoff);
+#if SSR_REFLHIT
+  if (handoff) {
+    native = fallback.has_planar ? kReflHitPlanar : (fallback.has_env ? kReflHitEnvironment : kReflHitNone);
   }
+#endif
 
   float3 sum = float3(0.0f, 0.0f, 0.0f);
   float travelled = kSsrMissLength;   // the nearest hit's distance of the rays (the virtual image's), a miss's where none hit
@@ -159,7 +145,8 @@ float4 SsrTraceBody(float4 position) {
   uint vehicle_id = 0u;
   SSR_LOOP for (uint ray = 0u; ray < rays; ++ray) {
     const float3 dir = SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays);   // (a sample that points below the surface is the mirror direction)
-    if (SsrFacingFade(dir.z) <= 0.0f) {
+    const float facing = SsrFacingFade(dir.z);
+    if (!handoff && facing <= 0.0f) {
       continue;   // a ray that points back at the camera brings nothing (the screen does not show what is behind the surface it hits): not walked
     }
     float3 radiance = float3(0.0f, 0.0f, 0.0f);
@@ -167,18 +154,25 @@ float4 SsrTraceBody(float4 position) {
     float length_to_hit = kSsrMissLength;
     bool is_vehicle = false;
     uint hit_vehicle = 0u;
-    const SsrHit hit = SsrTrace(tp, origin.x, origin.y, origin.z, dir.x, dir.y, dir.z);
+    SsrHit hit = (SsrHit)0;
+    hit.behind_distance = kSsrMissLength;
+    if (facing > 0.0f) {
+      hit = SsrTrace(tp, origin.x, origin.y, origin.z, dir.x, dir.y, dir.z);
+    }
     if (hit.hit) {
       const int hx = clamp(int(hit.px), 0, h0.x - 1);
       const int hy = clamp(int(hit.py), 0, h0.y - 1);
       // a surface that faces away from the ray is a back face: the screen shows its front, which is somewhere else
-      if (SsrHitFacing(tp, hx, hy, hit.surface_z, dir.x, dir.y, dir.z) < 0.15f) {
+      const float hit_facing = SsrHitFacing(tp, hx, hy, hit.surface_z, dir.x, dir.y, dir.z);
+      if (hit_facing < 0.15f) {
         const float2 uv = float2(hit.px / tp.width, hit.py / tp.height);
+        const float edge = SsrEdgeFade(uv.x, uv.y);
+        const float fade = (stable || handoff) ? SsrScreenHitConfidence(edge, facing, hit_facing, hit.depth_error_fraction) : edge * facing;
         const float3 surface_point = SsrViewPos(float(hx) + 0.5f, float(hy) + 0.5f, tp.width, tp.height, hit.surface_z, tan_x, tan_y);
-        length_to_hit = max(length(surface_point - pc), 0.02f);
-        const float fade = SsrEdgeFade(uv.x, uv.y) * SsrFacingFade(dir.z);
-        const float lod = SsrConeLod(alpha, length_to_hit, hit.surface_z, tan_x, colour_width, colour_levels);
-        radiance = SsrColour(uv, lod) * fade;
+        const float distance = max(length(surface_point - pc), 0.02f);
+        length_to_hit = (stable || handoff) && fade <= 0.0f ? kSsrMissLength : distance;
+        const float lod = SsrConeLod(alpha, distance, hit.surface_z, tan_x, colour_width, colour_levels);
+        radiance = SsrColour(uv, lod);
         conf = fade;
         is_vehicle = SsrVehicleAt(hx, hy);
         hit_vehicle = is_vehicle ? SsrVehicleIdAt(hx, hy) : 0u;
@@ -193,18 +187,35 @@ float4 SsrTraceBody(float4 position) {
       if (SsrHizAt(0u, ex, ey) >= kSsrSky * 0.5f) {
         const float2 uv = float2(hit.px / tp.width, hit.py / tp.height);
         const float fade = SsrEdgeFade(uv.x, uv.y) * SsrFacingFade(dir.z);
-        radiance = SsrColour(uv, 0.0f) * fade;
+        radiance = SsrColour(uv, 0.0f);
         conf = fade;
 #if SSR_REFLHIT
         if (conf > best_fade) screen_id = kReflHitSsrSky;
 #endif
       }
     }
-    sum += radiance - fallback * conf;
+    SsrReusedHit reused = (SsrReusedHit)0;
+    if (handoff) {
+      reused = SsrReuse(tp, origin, dir, hit, conf);
+    }
+    const ReflectionWeights weights = ReflectionHandoff(conf, reused.confidence, 0.0f, fallback.has_planar ? 1.0f : 0.0f);
+    if (handoff) {
+      sum += radiance * weights.screen + reused.colour * weights.reuse +
+             fallback.planar * weights.planar + fallback.env * weights.env - fallback.stock;
+      if (weights.reuse > weights.screen) {
+        length_to_hit = max(reused.distance, 0.02f);
+        is_vehicle = false;
+        hit_vehicle = 0u;
+      }
+    } else {
+      sum += (radiance - fallback.stock) * conf;
+    }
 #if SSR_REFLHIT
     best_fade = max(best_fade, conf);
-    screen_weight += conf;
+    screen_weight += weights.screen;
+    reuse_weight += weights.reuse;
 #endif
+    conf = weights.screen + weights.reuse;
 #if SSR_RT
     conf_sum += conf;
     if (ray == 0u) {
@@ -224,8 +235,9 @@ float4 SsrTraceBody(float4 position) {
   }
   const float distance_out = clamp(travelled, 0.02f, 60000.0f);
 #if SSR_REFLHIT
-  const uint visible = ReflHitDominant(screen_id, screen_weight / float(rays), kReflHitNone, 0.0f, native);
-  g_reflhit = ReflHitPack(visible, kReflHitNone, screen_id, native);
+  const uint visible = ReflHitHandoffDominant(screen_id, screen_weight / float(rays), reuse_weight / float(rays), kReflHitNone, 0.0f, native);
+  const float screen_fraction = screen_weight / max(screen_weight + reuse_weight, 1.0e-5f);
+  g_reflhit = ReflHitPackHandoff(visible, kReflHitNone, screen_id, native, screen_fraction);
 #endif
 #if SSR_RT
   g_confidence = float2(SsrRtGroupOut(rt_group, SsrRtFirstRayShare(first_confidence, conf_sum, rays)), saturate(conf_sum / float(rays)));

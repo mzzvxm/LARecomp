@@ -262,7 +262,7 @@ void TestCarHits() {
   Check(!hs::SsrRtCarReceiver(rt::push::kFlagStats, uint32_t(SC::kWetRoad)), "disabled car hits keep the original road reflection");
   Check(!hs::SsrRtCarReceiver(cars, uint32_t(SC::kSidewalk)) && !hs::SsrRtCarReceiver(cars, uint32_t(SC::kGlass)), "car shading is limited to road receivers");
   Check(!rt::CarHitsEnabled(rt::kUltraCell, false) && rt::CarHitsEnabled(rt::kUltraCell, true), "the road-capable cell respects the toggle");
-  Check(!rt::CarHitsEnabled(rt::kHighCell, true) && !rt::CarHitsEnabled(rt::kMidCell, true), "cells that only trace bright surfaces keep the original scene");
+  Check(rt::CarHitsEnabled(rt::kHighCell, true) && !rt::CarHitsEnabled(rt::kMidCell, true), "strong High shades ground hits; the weak cell only traces bright receivers");
   Check(!rt::NeedsFor(rt::Level::kUltra).cars && rt::NeedsFor(rt::Level::kUltra, true).cars && !rt::NeedsFor(rt::Level::kOff, true).any(), "active road car shading requests the meshes independently");
   Check(hs::kSsrRtCarLampVisits == 8u, "the car lighting has a fixed eight-lamp visit limit");
   Check(hs::SsrRtCarLampWeight(0.0f) == 1.0f && hs::SsrRtCarLampWeight(16.0f) == 1.0f, "nearby street lamps give their full light");
@@ -632,11 +632,12 @@ void TestDecision() {
             rt::ParseChoice("") == rt::Choice::kOff && rt::ParseChoice("medium") == rt::Choice::kOff,
         "legacy Auto and unrecognised values keep the fallback off");
   // the cells
-  Check(rt::kHighCell.group_mask == rt::GroupBit(rt::kGroupBright) && rt::kUltraCell.group_mask == (rt::GroupBit(rt::kGroupBright) | rt::GroupBit(rt::kGroupGround)) && rt::kMidCell.group_mask == rt::kHighCell.group_mask,
-        "HIGH takes glass, metal and water; ULTRA adds the road, the sidewalk and the tunnels; the Mid cell is HIGH's classes");
+  Check(rt::kMidCell.group_mask == rt::GroupBit(rt::kGroupBright) && rt::kHighCell.group_mask == (rt::GroupBit(rt::kGroupBright) | rt::GroupBit(rt::kGroupGround)) &&
+            rt::kUltraCell.group_mask == rt::kHighCell.group_mask,
+        "strong High and Ultra trace glossy and ground holes; weak RT traces the bright group");
   Check(rt::kHighCell.ray_cap == 250000 && rt::kUltraCell.ray_cap == 1000000 && rt::kHighCell.rays == 1 && rt::kUltraCell.rays == 2 && rt::kHighCell.reach == 150.0f && rt::kUltraCell.reach == 300.0f, "the design's numbers: 0.25 M and 1.0 M rays, one and two a pixel, 150 and 300 m");
   Check(rt::kMidCell.ray_cap < rt::kHighCell.ray_cap && rt::kHighCell.ray_cap < rt::kUltraCell.ray_cap && rt::kMidCell.reach < rt::kHighCell.reach && rt::kHighCell.reach < rt::kUltraCell.reach &&
-            rt::kHighCell.budget_ms < rt::kUltraCell.budget_ms,
+            rt::kMidCell.budget_ms == 0.30f && rt::kHighCell.budget_ms == 0.40f && rt::kUltraCell.budget_ms == 0.50f,
         "the cells rise: cap, reach, budget");
   Check(rt::kHighCell.rays == mcla::gpu::ssr::NumbersOf(mcla::gpu::ssr::Level::kHigh).rays && rt::kUltraCell.rays == mcla::gpu::ssr::NumbersOf(mcla::gpu::ssr::Level::kUltra).rays,
         "the cells' rays a pixel are the effect's own (the fallback regenerates the trace's rays)");
@@ -869,7 +870,7 @@ void TestCensus() {
   f.level = rt::Level::kHigh;
   f.group_mask = rt::kHighCell.group_mask;
   const std::string untimed = rt::FormatFrameLine(f);
-  Check(Has(untimed, "level high, groups glass+metal+water, ") && Has(untimed, "(1 ray)") && Has(untimed, "no timing (budget 1.80)"), "a line without timing says so; one ray is singular");
+  Check(Has(untimed, "level high, groups glass+metal+water+road+sidewalk+tunnels, ") && Has(untimed, "(1 ray)") && Has(untimed, "no timing (budget 1.80)"), "a line without timing says so; one ray is singular");
   rt::Totals t;
   Check(rt::FormatTotals(t).empty(), "a fallback that never was wanted adds nothing to the census");
   t.frames_run = 900;
@@ -904,8 +905,9 @@ void TestShaderSources(const std::string& dir) {
         "the text of ssr_rt_common.hlsli holds the header's words");
   // one ray: the trace and the fallback take it from the same function
   Check(Count(ssr_common, "float3 SsrSampleRay(") == 1 && Has(trace_ps, "SsrSampleRay(n, to_camera, alpha, pix.x, pix.y, frame, ray, rays)") &&
-            Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays)") && Has(trace, "const uint pattern_rays = single_ray ? SsrRays() : rays;"),
-        "the trace and the fallback regenerate the ray with the one function SsrSampleRay (the same pixel, frame, ray index and rays a pixel: the noise's sample number is frame * rays + ray)");
+            Has(trace, "pattern_rays = (stable || single_ray || handoff) ? SsrRays() : rays") && Has(trace, "SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays)") &&
+            Has(trace, "weight *= SsrRtHistoryEdge(confidence, SsrF(SSR_W_RT_THRESHOLD))"),
+        "native fallback regenerates SSR rays even when it budgets fewer, and fades at the candidate cutoff");
   Check(!Has(trace_ps, "SsrSampleReflection("), "the trace has no copy of the ray's formula left");
   // the identity of the plain compilations: the trace's plain entry and everything the confidence adds is under SSR_RT
   Check(Has(trace_ps, "#ifndef SSR_RT\n#define SSR_RT 0\n#endif") && Has(trace_ps, "float4 main(float4 position : SV_Position) : SV_Target {\n  return SsrTraceBody(position);\n}") &&
@@ -933,11 +935,11 @@ void TestShaderSources(const std::string& dir) {
             Has(trace, "SsrRtCount(stats, SSR_RT_CENSUS_NO_DATA);\n      continue;"),
         "ground hits require screen support or an opted-in raster proxy, and rejected rays leave the radiance and hit distance alone");
   Check(Has(trace, "SsrRtHitCoverage(ground, res.screen)") && Has(trace, "coverage * SsrRtReachFade(hit.t, reach)") &&
-            Has(trace, "if (!ground || fade >= 0.5f)") && Has(trace, "confidence < 0.5f && nearest < kSsrMissLength"),
+            Has(trace, "if (!ground || fade >= 0.5f)") && Has(trace, "rt_distance && nearest < kSsrMissLength"),
         "fade replaces both ground radiance and the matching planar share; weak hits keep the old distance");
-  Check(Has(trace, "&& has_planar && (f.flags & RT_HIT_FRAME_ENV) != 0u"),
-        "replacing the planar view needs both sources");
-  Check(Has(trace, "NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight))") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
+  Check(Has(trace, "&& has_planar && (f.flags & RT_HIT_FRAME_ENV) != 0u") && Has(trace, "hit_coverage * rt_weight_scale > confidence"),
+        "replacing the planar view needs both sources, and environment misses do not replace the hit distance");
+  Check(Has(trace, "NgFinite3(current.xyz + sum * rt_weight_scale)") && Has(trace, "SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u)"), "the result is the blend, and the hit distance goes into the trace's alpha packed as the trace's own");
   Check(Has(trace, "const bool shade_cars = SsrRtCarReceiver(flags, r.cls);") && Has(trace, "if (!CityHitIsCity(hit.inst.instanceId))") &&
             Has(trace, "SsrRtCount(stats, SSR_RT_CENSUS_CAR);") && Has(trace, "if (shade_cars)") && Has(trace, "SsrRtCount(stats, SSR_RT_CENSUS_CAR_SHADED);"),
         "car hits are counted and shade only on enabled road receivers");
@@ -950,13 +952,11 @@ void TestShaderSources(const std::string& dir) {
             Has(trace, "lamp.radiance * SsrRtCarLampWeight(lamp.distance)") && Has(trace, "colour = NgHeld3(result * p.units, kCityHitMaxColour);") &&
             Count(trace, "CityHitTrace(") == 2 && !Has(trace, "RayQuery<"),
         "car hits use a bounded lamp lookup and cascades without adding a ray query");
-  Check(Has(trace, "if (fade > 0.0f && SsrRtShadeCar(") && Has(trace, "sum += (min(colour, float3(cap, cap, cap)) - fallback) * fade;") &&
-            Has(trace, "nearest = min(nearest, hit.t);\n          filled = true;\n          SsrRtCount(stats, SSR_RT_CENSUS_CAR_SHADED);"),
+  Check(Has(trace, "if (fade > 0.0f && SsrRtShadeCar(") && Has(trace, "sum += (min(colour, float3(cap, cap, cap)) - fallback) * (fade * ray_share);") &&
+            Has(trace, "rt_id = kReflHitRtCarShaded;"),
         "a shaded car uses the fallback fade, subtracts the planar share and enters the existing history distance path");
-  Check(Has(trace, "register(u3, space5)") && Has(trace, "ReflHitPack(visible, filled ? rt_id : rejected, screen_id, native)"),
+  Check(Has(trace, "register(u3, space5)") && Has(trace, "ReflHitPackHandoff(visible, rt_id >= kReflHitRtCity ? rt_id : rejected, screen_id, native, screen_fraction)"),
         "the capture pass stores discarded query classes separately from the visible source");
-  Check(Has(trace, "rt_id = kReflHitRtCarShaded;") && Has(trace, "rejected = kReflHitRtCar;") && Has(trace, "if (shade_cars)"),
-        "the capture marks a shaded car hit as its own class and a skipped one stays the rejected car");
   Check(Has(trace, "CITY_HIT_P_SUN_RAY | CITY_HIT_P_EMISSIVE") && Has(trace, "CITY_HIT_P_CALIBRATE") && Has(trace, "CITY_HIT_STAT_ADD(word, value) g_ctl.InterlockedAdd((SSR_RT_STAT_CAL + (word)) * 4u, (value))"),
         "the hit's flags are the car reflections' (the sun's ray, glow) and a stats frame calibrates through the control buffer's region");
   Check(Has(trace, "SsrRtLift(r.pc.z,") && Has(trace, "SsrRtReachFade(hit.t, reach)") && Has(trace, "SsrRtFootprint(pixel_angle, receiver_distance, hit.t, cone_tan)"), "the ray's lift, the hit's fade and the footprint are the twins'");
@@ -1040,11 +1040,15 @@ void TestHostSources(const std::string& dir) {
   Check(shadow_init != std::string::npos && shadow_init < rt_init && rt_init < precache_start && Has(renderer_cpp, "rt_world_.CensusText() + ssr_.RtCensusText()"),
         "the renderer starts the fallback after the car scene's, the scene service's and the world frame's start, before the precache, and prints its census with the city's");
   // the setting
-  Check(Has(settings, "REX_SETTING(std::string, " "mcla_gpu_ssr_rt, \"off\"") && Has(settings, "rex::Allowed(\"auto\", \"off\", \"high\", \"ultra\"));") && Has(settings, "inline auto& mcla_gpu_ssr_rt = g_gpu.mcla_gpu_ssr_rt;"),
-        "the player setting defaults to off and accepts the legacy word");
-  const auto car_setting = setting_source::Find(dir, rt_cpp, "mcla_gpu_ssr_rt_cars");
-  Check(car_setting.found && car_setting.debug_only && car_setting.live && car_setting.default_text == "true",
-        "road car shading is live, debug-only and defaults to on");
+  const auto rt_setting = setting_source::Find(dir, rt_cpp, "mcla_gpu_ssr_rt");
+  Check(rt_setting.found && !rt_setting.debug_only && rt_setting.live && rt_setting.default_text == "\"off\"",
+        "surface RT is a live graphics row and needs an explicit preset or row choice");
+  for (const char* name : {"mcla_gpu_ssr_rt_cars", "mcla_gpu_ssr_rt_single_ray",
+                           "mcla_gpu_ssr_rt_sky_miss", "mcla_gpu_ssr_rt_screen_proxy"}) {
+    const auto setting = setting_source::Find(dir, rt_cpp, name);
+    Check(setting.found && setting.debug_only && setting.live && setting.default_text == "true",
+          std::string(name) + " is live, debug-only and on by default");
+  }
 }
 }  // namespace
 

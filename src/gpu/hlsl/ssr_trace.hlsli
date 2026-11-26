@@ -42,6 +42,8 @@ struct SsrTraceParams {
   float thick_rel;      // a surface's thickness as a share of its depth
   uint levels;          // the Hi-Z's levels that can be read (1 up to 6)
   uint max_iter;
+  bool previous;
+  bool adaptive_thickness;
 };
 
 struct SsrHit {
@@ -50,6 +52,10 @@ struct SsrHit {
   float px;             // the hit's or the end's position in texels of level 0
   float py;
   float surface_z;      // the hit surface's linear depth
+  float depth_error_fraction;  // how deeply the ray entered a cell behind its surface, relative to hit thickness
+  float ray_distance;    // distance at the hit, or at the exit/end
+  float behind_distance; // first rejected occluder, if any
+  bool left_screen;
   uint iterations;
 };
 
@@ -75,6 +81,30 @@ uint SsrLevelSize(uint extent, uint level) {
   return (extent + (1u << level) - 1u) >> level;
 }
 
+float SsrTraceDepth(SsrTraceParams p, uint level, int cx, int cy) {
+#ifdef SSR_PREVIOUS_TRACE
+  if (p.previous) {
+    return SsrPreviousHizAt(level, cx, cy);
+  }
+#endif
+  return SsrHizAt(level, cx, cy);
+}
+
+float SsrTraceDistance(float tau, float len, float oz, float ez) {
+  return len * tau * oz / (ez + (oz - ez) * tau);
+}
+
+float SsrTraceSupport(SsrTraceParams p, int cx, int cy, float z) {
+  const int right = int(p.width_i) - 1;
+  const int bottom = int(p.height_i) - 1;
+  const float tol = max(0.15f, z * 0.015f);
+  const float x0 = abs(SsrTraceDepth(p, 0u, max(cx - 1, 0), cy) - z);
+  const float x1 = abs(SsrTraceDepth(p, 0u, min(cx + 1, right), cy) - z);
+  const float y0 = abs(SsrTraceDepth(p, 0u, cx, max(cy - 1, 0)) - z);
+  const float y1 = abs(SsrTraceDepth(p, 0u, cx, min(cy + 1, bottom)) - z);
+  return 1.0f - saturate(max(min(x0, x1), min(y0, y1)) / tol);
+}
+
 // Walks the ray from the origin (ox, oy, oz) along the unit direction (rx, ry, rz). The origin must be on the picture and in front of the camera.
 SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float ry, float rz) {
   SsrHit h;
@@ -83,6 +113,10 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
   h.px = 0.0f;
   h.py = 0.0f;
   h.surface_z = 0.0f;
+  h.depth_error_fraction = 0.0f;
+  h.ray_distance = 0.0f;
+  h.behind_distance = kSsrMissLength;
+  h.left_screen = false;
   h.iterations = 0u;
   if (!(oz > 0.0f)) {
     return h;
@@ -109,19 +143,27 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
   const float dy = py1 - py0;
   const float dd = d1 - d0;
   // The part of the segment that is on the picture.
+  float tau_start = 0.0f;
   float tau_end = 1.0f;
   if (dx > 1.0e-9f) {
+    tau_start = max(tau_start, -px0 / dx);
     tau_end = min(tau_end, (p.width - px0) / dx);
   } else if (dx < -1.0e-9f) {
-    tau_end = min(tau_end, (0.0f - px0) / dx);
+    tau_start = max(tau_start, (p.width - px0) / dx);
+    tau_end = min(tau_end, -px0 / dx);
   }
   if (dy > 1.0e-9f) {
+    tau_start = max(tau_start, -py0 / dy);
     tau_end = min(tau_end, (p.height - py0) / dy);
   } else if (dy < -1.0e-9f) {
-    tau_end = min(tau_end, (0.0f - py0) / dy);
+    tau_start = max(tau_start, (p.height - py0) / dy);
+    tau_end = min(tau_end, -py0 / dy);
   }
   const bool leaves = tau_end < 1.0f;
-  if (px0 < 0.0f || py0 < 0.0f || px0 >= p.width || py0 >= p.height) {
+  const bool origin_inside = px0 >= 0.0f && py0 >= 0.0f && px0 < p.width && py0 < p.height;
+  const bool parallel_outside = (abs(dx) <= 1.0e-9f && (px0 < 0.0f || px0 >= p.width)) ||
+      (abs(dy) <= 1.0e-9f && (py0 < 0.0f || py0 >= p.height));
+  if ((!p.previous && !origin_inside) || parallel_outside || !(tau_start < tau_end)) {
     return h;
   }
   const float major = max(abs(dx), abs(dy));
@@ -129,7 +171,7 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
     return h;
   }
   const float eps_tau = kSsrStepEps / major;
-  float tau = kSsrStartTexels / major;
+  float tau = max(tau_start + eps_tau, kSsrStartTexels / major);
   const uint max_level = min(p.levels, 6u) - 1u;
   uint level = min(1u, max_level);
   const float sky_half = kSsrSky * 0.5f;
@@ -146,7 +188,7 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
     const int lh = int(SsrLevelSize(p.height_i, level));
     const int cx = clamp(int(floor(px / scale)), 0, lw - 1);
     const int cy = clamp(int(floor(py / scale)), 0, lh - 1);
-    const float zs = SsrHizAt(level, cx, cy);
+    const float zs = SsrTraceDepth(p, level, cx, cy);
     const float ds = zs >= sky_half ? 2.0f : SsrDOfZ(p, zs);
     // where the ray leaves this cell
     float tx = 1.0e30f;
@@ -166,13 +208,20 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
       // at or behind the nearest surface of the cell
       if (level == 0u) {
         const float zr = SsrZOfD(p, d);
-        const float thick = max(kSsrThickAbs, p.thick_rel * zs);
+        float thick = max(kSsrThickAbs, p.thick_rel * zs);
+        if (p.adaptive_thickness && zr > zs && zr - zs <= thick) {
+          thick = SsrHitThickness(zs, p.thick_rel, SsrTraceSupport(p, cx, cy, zs));
+        }
         if (zr - zs <= thick) {
           h.hit = true;
           h.px = px;
           h.py = py;
           h.surface_z = zs;
+          h.depth_error_fraction = max(zr - zs, 0.0f) / thick;
           break;
+        }
+        if (h.behind_distance == kSsrMissLength) {
+          h.behind_distance = SsrTraceDistance(tau, len, oz, ez);
         }
         tau = t_exit + eps_tau;  // behind a thin thing: on past it
       } else {
@@ -202,6 +251,8 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
     }
   }
   h.iterations = i;
+  h.left_screen = leaves && tau >= tau_end;
+  h.ray_distance = SsrTraceDistance(clamp(h.hit ? tau : min(tau_end, tau), 0.0f, 1.0f), len, oz, ez);
   if (!h.hit) {
     h.inside_end = !leaves && tau >= tau_end && i < p.max_iter;
     h.px = px0 + dx * min(tau_end, 1.0f);
@@ -212,15 +263,15 @@ SsrHit SsrTrace(SsrTraceParams p, float ox, float oy, float oz, float rx, float 
 
 // The surface's facing at a hit: the normal from the Hi-Z's level 0 neighbours (the one on each axis whose depth is nearer to the hit's, as hlsl/ao_common.hlsli AoNormalFromImage), the
 // dot product of its view-space direction with the ray's. A surface facing the ray's origin has a negative value; a positive one is a back face the screen does not show properly.
-float SsrHitFacing(SsrTraceParams p, int cx, int cy, float z, float rx, float ry, float rz) {
+float3 SsrHitNormal(SsrTraceParams p, int cx, int cy, float z) {
   const int xl = max(cx - 1, 0);
   const int xr = min(cx + 1, int(p.width_i) - 1);
   const int yt = max(cy - 1, 0);
   const int yb = min(cy + 1, int(p.height_i) - 1);
-  const float zl = SsrHizAt(0u, xl, cy);
-  const float zr = SsrHizAt(0u, xr, cy);
-  const float zt = SsrHizAt(0u, cx, yt);
-  const float zb = SsrHizAt(0u, cx, yb);
+  const float zl = SsrTraceDepth(p, 0u, xl, cy);
+  const float zr = SsrTraceDepth(p, 0u, xr, cy);
+  const float zt = SsrTraceDepth(p, 0u, cx, yt);
+  const float zb = SsrTraceDepth(p, 0u, cx, yb);
   const float3 pc = SsrViewPos(float(cx) + 0.5f, float(cy) + 0.5f, p.width, p.height, z, p.tan_x, p.tan_y);
   const float3 pl = SsrViewPos(float(xl) + 0.5f, float(cy) + 0.5f, p.width, p.height, zl, p.tan_x, p.tan_y);
   const float3 pr = SsrViewPos(float(xr) + 0.5f, float(cy) + 0.5f, p.width, p.height, zr, p.tan_x, p.tan_y);
@@ -231,14 +282,19 @@ float SsrHitFacing(SsrTraceParams p, int cx, int cy, float z, float rx, float ry
   float3 n = cross(vv, hh);
   const float len = sqrt(dot(n, n));
   if (!(len > 1.0e-20f)) {
-    return -1.0f;
+    return float3(0.0f, 0.0f, 0.0f);
   }
   n = n * (1.0f / len);
   // facing the camera
   if (dot(n, pc) > 0.0f) {
     n = n * -1.0f;
   }
-  return dot(n, float3(rx, ry, rz));
+  return n;
+}
+
+float SsrHitFacing(SsrTraceParams p, int cx, int cy, float z, float rx, float ry, float rz) {
+  const float3 n = SsrHitNormal(p, cx, cy, z);
+  return dot(n, n) > 0.0f ? dot(n, float3(rx, ry, rz)) : -1.0f;
 }
 
 #endif  // MCLA_GPU_SSR_TRACE_HLSLI

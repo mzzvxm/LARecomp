@@ -66,7 +66,8 @@ ScreenReflectionsRt::~ScreenReflectionsRt() = default;
 // ---------------------------------------------------------------------------
 
 void ScreenReflectionsRt::Initialize(Device& device, FrameRing& frames, BindlessHeap& heap, HostPasses& passes, PassTiming& pass_timing, CarRtScene* car_scene, RtSceneService* service,
-                                     RtWorldFrame* world) {
+                                     RtWorldFrame* world, const plume::RenderDescriptorSetBuilder& handoff) {
+  handoff_builder_ = &handoff;
   device_ = &device;
   frames_ = &frames;
   heap_ = &heap;
@@ -130,7 +131,7 @@ bool ScreenReflectionsRt::MakeLayoutAndShaders(Device& device, HostPasses& passe
 
 std::unique_ptr<plume::RenderPipelineLayout> ScreenReflectionsRt::MakeLayout(const plume::RenderDescriptorSetBuilder& output,
                                                                            const CarRtScene& scene, const char* name) {
-  if (!device_ || !heap_) return nullptr;
+  if (!device_ || !heap_ || !handoff_builder_) return nullptr;
   // The SSR host pass layout (ssr.cpp Initialize: the four texture sets, the samplers, the push block at (b0, space4)) with this pass's output set at 5 and the car scene's ray tracing set at 6.
   plume::RenderPipelineLayoutBuilder builder;
   builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
@@ -140,9 +141,10 @@ std::unique_ptr<plume::RenderPipelineLayout> ScreenReflectionsRt::MakeLayout(con
   const uint32_t sampler_set = builder.addDescriptorSet(heap_->sampler_set_builder());
   const uint32_t output_set = builder.addDescriptorSet(output);
   const uint32_t scene_set = builder.addDescriptorSet(scene.SetDesc());
+  const uint32_t handoff_set = builder.addDescriptorSet(*handoff_builder_);
   builder.addPushConstant(0, 4, sizeof(ssr::Push), plume::RenderShaderStageFlag::COMPUTE);
   builder.end();
-  if (sampler_set != 4 || output_set != 5 || scene_set != 6) {
+  if (sampler_set != 4 || output_set != 5 || scene_set != 6 || handoff_set != 7) {
     REXLOG_ERROR("{} the layout's sets are not in the order the shaders declare them", kPrefix);
     return nullptr;
   }
@@ -343,7 +345,7 @@ void ScreenReflectionsRt::ReleaseCaptureSet() {
 }
 
 bool ScreenReflectionsRt::Record(const Frame& in) {
-  if (!ready_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !car_scene_ || !world_ || !wanted()) {
+  if (!ready_ || !in.list || !in.trace || !in.trace->texture || !in.confidence || !in.confidence->texture || !in.handoff || !car_scene_ || !world_ || !wanted()) {
     return false;
   }
   plume::RenderCommandList* list = in.list;
@@ -435,6 +437,7 @@ bool ScreenReflectionsRt::Record(const Frame& in) {
   list->setComputeDescriptorSet(heap_->sampler_set(), 4);
   list->setComputeDescriptorSet(hit ? capture_set_.get() : set_.get(), 5);
   list->setComputeDescriptorSet(view.set, 6);
+  list->setComputeDescriptorSet(in.handoff, 7);
 
   const uint32_t tiles_x = (in.width + ssr_rt::kTile - 1) / ssr_rt::kTile;
   const uint32_t tiles_y = (in.height + ssr_rt::kTile - 1) / ssr_rt::kTile;

@@ -18,13 +18,15 @@
 //
 // Layout (ssr_rt.cpp): sets 0 to 3 the bindless texture set bound four times (set 0 Texture2D, set 1 Texture2DMS: SSR_MS 1 reads the planes as the trace does), set 4 the samplers, the push block at
 // (b0, space4); set 5 this pass's own (u0 the trace image, u1 the control and statistics words, u2 the list); set 6 the car scene's ray tracing set (CAR_RT_SPACE 6: the top level t0, the hit data t6..t9,
-// the world rows t10 and the lamps t11). Shader Model 6.5 (DXIL), SPIR-V 1.5 for Vulkan 1.2 (VK_KHR_ray_query). Compilations: SSR_MS 0 / 1 (ssr_rt_trace_cs, ssr_rt_trace_ms_cs).
+// the world rows t10 and the lamps t11); set 7 the shared handoff frame. Shader Model 6.5 (DXIL), SPIR-V 1.5 for Vulkan 1.2 (VK_KHR_ray_query). Compilations: SSR_MS 0 / 1 (ssr_rt_trace_cs, ssr_rt_trace_ms_cs).
 
 #define CAR_RT_SPACE 6
 #define RT_WORLD_SPACE 6
 #define CITY_HIT_SPACE 6
 #include "car_rt_common.hlsli"
 #include "ssr_pass.hlsli"
+#define SSR_HANDOFF_RT 1
+#include "ssr_handoff.hlsli"
 #include "ssr_rt_common.hlsli"
 #include "rt_world_frame.hlsli"
 
@@ -156,6 +158,7 @@ struct SsrRtReceiver {
   float3 n;
   float3 to_camera;
   float alpha;
+  float smoothness;
   uint cls;
   int2 texel;   // the pixel of the 2 x 2 block the class and the normal were read at
 };
@@ -166,6 +169,7 @@ SsrRtReceiver SsrRtReceiverAt(int2 pix) {
   r.n = float3(0.0f, 1.0f, 0.0f);
   r.to_camera = float3(0.0f, 0.0f, -1.0f);
   r.alpha = 1.0f;
+  r.smoothness = 0.0f;
   r.cls = uint(GB_CLASS_NONE);
   r.texel = int2(0, 0);
   const int2 render = SsrRender();
@@ -192,21 +196,13 @@ SsrRtReceiver SsrRtReceiverAt(int2 pix) {
   const float tan_x = SsrF(SSR_W_TAN_X);
   const float tan_y = SsrF(SSR_W_TAN_Y);
   const float3 pc = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
-  const float4 g_normal = SsrViewNormalAt(texel, pc);
-  float3 n = g_normal.xyz;
-  if (g_normal.w < 0.5f) {
-    n = SsrDepthNormal(hz, pix.x, pix.y, ssr.x, ssr.y, z_block, pc, tan_x, tan_y);
-  }
   const float3 to_camera = pc * (-1.0f / length(pc));
-  const float facing = dot(n, to_camera);
-  if (facing < 0.05f) {
-    n = normalize(n + to_camera * (0.05f - facing));
-  }
   r.ok = true;
   r.pc = pc;
-  r.n = n;
+  r.n = SsrReceiverNormal(pix, texel, surface.cls, pc, to_camera);
   r.to_camera = to_camera;
   r.alpha = SsrAlphaOfSmooth(smoothness);
+  r.smoothness = smoothness;
   r.cls = surface.cls;
   r.texel = texel;
   return r;
@@ -251,29 +247,29 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float cap = SsrF(SSR_W_CAP);
   const uint rays = ((conf_word >> SSR_RT_RAYS_SHIFT) & 3u) + 1u;
   const bool single_ray = (flags & SSR_RT_FLAG_SINGLE_RAY) != 0u && SsrRays() == 2u;
-  const uint pattern_rays = single_ray ? SsrRays() : rays;
   const uint frame = SsrW(SSR_W_FRAME);
+  const bool stable = SsrStableTrace();
+  const bool handoff = SsrHandoffEnabled();
+  const uint pattern_rays = (stable || single_ray || handoff) ? SsrRays() : rays;
   const float receiver_distance = length(r.pc);
   const float pixel_angle = 2.0f * tan_y / float(max(ssr.y, 1));
   const float cone_tan = r.alpha * kSsrConeScale;
   const float lift = SsrRtLift(r.pc.z, 2.0f * tan_y / float(max(h0.y, 1)));
   const float3 origin = r.pc + r.n * lift;
-  const float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
+  float weight = SsrRtWeight(SsrRtKeep(capacity, g_ctl.Load((SSR_RT_CTL_TOTAL + (rt_frame + 2u) % 3u) * 4u)));
+  if (stable || handoff) {
+    weight *= SsrRtHistoryEdge(confidence, SsrF(SSR_W_RT_THRESHOLD));
+  }
   // Ground surfaces already have SSR and the game's planar view. Only replace their reflection where the detailed hit agrees with the rasterized view.
   const bool ground = SsrRtGroupOf(r.cls) == kSsrRtGroupGround;
   if (ground && (flags & SSR_RT_FLAG_SCREEN) == 0u) {
     return;
   }
 
-  // the road view the trace takes out of a road where it finds a reflection (the share the trace was given): taken out here for the ray traced one in the same way
-  float3 fallback = float3(0.0f, 0.0f, 0.0f);
-  const float share = SsrF(SSR_W_FALLBACK);
-  const uint road_view = SsrW(SSR_W_ROAD_VIEW);
-  const bool has_planar = share > 0.0f && SsrHasSlot(SsrRoadViewSlot(road_view)) && (r.cls == uint(GB_CLASS_ROAD) || r.cls == uint(GB_CLASS_WET_ROAD));
-  if (has_planar) {
-    const float2 screen_uv = (float2(r.texel) + 0.5f) / float2(SsrRender());
-    fallback = min(NgFinite3(SsrRoadViewAt(road_view, screen_uv)), float3(cap, cap, cap)) * share;   // (nan_guard.hlsli: a NaN or an infinity is none)
-  }
+  // Replace only the fallback radiance represented by the uncovered share.
+  const SsrFallback lower = SsrSurfaceFallback(r.cls, r.texel, r.pc, r.n, r.smoothness, handoff);
+  const float3 fallback = lower.planar + lower.env;
+  const bool has_planar = lower.has_planar;
 
   CityHitParams p;
   p.mode = CITY_HIT_MODE_REFLECT;
@@ -299,6 +295,7 @@ void main(uint3 id : SV_DispatchThreadID) {
 
   float3 sum = float3(0.0f, 0.0f, 0.0f);
   float nearest = kSsrMissLength;
+  float hit_coverage = 0.0f;
   bool filled = false;
 #if SSR_REFLHIT
   uint rt_id = kReflHitNone;
@@ -307,10 +304,14 @@ void main(uint3 id : SV_DispatchThreadID) {
   float best_rt_fade = -1.0f;
 #endif
   [loop] for (uint sample_index = 0u; sample_index < rays; ++sample_index) {
+    const float ray_share = handoff && rays == 2u ? SsrRtRayShare(conf.x, sample_index) : 1.0f / float(rays);
+    if (ray_share <= 0.0f) {
+      continue;
+    }
     // Use a separate temporally stepped blue-noise sample for ray selection. Sampling in proportion to the
     // missing confidence makes the existing mean-confidence blend correct in expectation (up to quantization).
     // CHECK: compare residual grain and edge stability with two-ray RT, including Ray Reconstruction.
-    const uint k = single_ray ? SsrRtPickRay(conf.x, BlueNoiseFrame(pix.x + 17, pix.y + 23, 1u, frame, 2654435769u)) : sample_index;
+    const uint k = (single_ray || (handoff && rays == 1u && SsrRays() == 2u)) ? SsrRtPickRay(conf.x, BlueNoiseFrame(pix.x + 17, pix.y + 23, 1u, frame, 2654435769u)) : sample_index;
     const float3 dir = SsrSampleRay(r.n, r.to_camera, r.alpha, pix.x, pix.y, frame, k, pattern_rays);
     SsrRtCount(stats, SSR_RT_CENSUS_RAYS);
     const CityHitTraceResult hit = CityHitTrace(origin, dir, 0.0f, reach, kSsrRtMask, pixel_angle * receiver_distance, cone_tan, 0.5f);
@@ -331,16 +332,16 @@ void main(uint3 id : SV_DispatchThreadID) {
       }
       const float sky_weight = sky_miss ? SsrRtSkyWeight(up, 0.0f) : 0.0f;
       if (sky_weight > 0.0f) {
-        sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * sky_weight;
+        sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * (sky_weight * ray_share);
         filled = true;
-        SsrRtCount(stats, SSR_RT_CENSUS_ENV_MISS);
 #if SSR_REFLHIT
+        rt_fades += sky_weight * ray_share;
         if (sky_weight > best_rt_fade) {
           rt_id = kReflHitEnvironment;
           best_rt_fade = sky_weight;
         }
-        rt_fades += sky_weight;
 #endif
+        SsrRtCount(stats, SSR_RT_CENSUS_ENV_MISS);
       }
       continue;
     }
@@ -354,21 +355,22 @@ void main(uint3 id : SV_DispatchThreadID) {
         const float footprint = SsrRtFootprint(pixel_angle, receiver_distance, hit.t, cone_tan);
         float3 colour;
         if (fade > 0.0f && SsrRtShadeCar(p, w, f, hit, origin + dir * hit.t, dir, footprint, cone_tan, colour)) {
-          sum += (min(colour, float3(cap, cap, cap)) - fallback) * fade;
+          sum += (min(colour, float3(cap, cap, cap)) - fallback) * (fade * ray_share);
           const float sky_weight = sky_miss ? SsrRtSkyWeight(up, fade) : 0.0f;
           if (sky_weight > 0.0f) {
-            sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * sky_weight;
+            sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * (sky_weight * ray_share);
           }
           nearest = min(nearest, hit.t);
+          hit_coverage += fade * ray_share;
           filled = true;
-          SsrRtCount(stats, SSR_RT_CENSUS_CAR_SHADED);
 #if SSR_REFLHIT
+          rt_fades += (fade + sky_weight) * ray_share;
           if (fade > best_rt_fade) {
             rt_id = kReflHitRtCarShaded;
             best_rt_fade = fade;
           }
-          rt_fades += fade;
 #endif
+          SsrRtCount(stats, SSR_RT_CENSUS_CAR_SHADED);
         }
       }
       continue;
@@ -398,18 +400,21 @@ void main(uint3 id : SV_DispatchThreadID) {
             const float4 proxy = SsrRtScreenProxy(s, ray, hit.inst, decoded);
             const float proxy_coverage = proxy.w * SsrRtReachFade(hit.t, reach);
             if (proxy_coverage > 0.0f) {
-              sum += (min(proxy.rgb, float3(cap, cap, cap)) - fallback) * proxy_coverage;
-              if (proxy_coverage >= 0.5f) nearest = min(nearest, hit.t);
+              sum += (min(proxy.rgb, float3(cap, cap, cap)) - fallback) * (proxy_coverage * ray_share);
+              if (proxy_coverage >= 0.5f) {
+                nearest = min(nearest, hit.t);
+                hit_coverage += proxy_coverage * ray_share;
+              }
               filled = true;
-              SsrRtCount(stats, SSR_RT_CENSUS_PROXY_RECOVERED);
-              SsrRtCount(stats, SSR_RT_CENSUS_SCREEN);
 #if SSR_REFLHIT
+              rt_fades += proxy_coverage * ray_share;
               if (proxy_coverage > best_rt_fade) {
-                rt_id = kReflHitSsrOther;   // the colour is the picture's, taken at the hit's position
+                rt_id = kReflHitSsrOther;
                 best_rt_fade = proxy_coverage;
               }
-              rt_fades += proxy_coverage;
 #endif
+              SsrRtCount(stats, SSR_RT_CENSUS_PROXY_RECOVERED);
+              SsrRtCount(stats, SSR_RT_CENSUS_SCREEN);
               continue;
             }
           }
@@ -421,13 +426,14 @@ void main(uint3 id : SV_DispatchThreadID) {
     }
     SsrRtCount(stats, res.screen >= 0.5f ? SSR_RT_CENSUS_SCREEN : SSR_RT_CENSUS_SHADED);
     const float fade = coverage * SsrRtReachFade(hit.t, reach);
-    sum += (min(res.colour, float3(cap, cap, cap)) - fallback) * fade;
+    sum += (min(res.colour, float3(cap, cap, cap)) - fallback) * (fade * ray_share);
     const float sky_weight = sky_miss ? SsrRtSkyWeight(up, fade) : 0.0f;
     if (sky_weight > 0.0f) {
-      sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * sky_weight;
+      sum += SsrRtEnvironmentTerm(f, dir, r.alpha, w.units, fallback, cap) * (sky_weight * ray_share);
     }
     if (!ground || fade >= 0.5f) {
       nearest = min(nearest, hit.t);
+      hit_coverage += fade * ray_share;
     }
     filled = true;
 #if SSR_REFLHIT
@@ -435,27 +441,34 @@ void main(uint3 id : SV_DispatchThreadID) {
       rt_id = ReflHitCity(res.cls);
       best_rt_fade = fade;
     }
-    rt_fades += fade;
+    rt_fades += (fade + sky_weight) * ray_share;
 #endif
   }
 #if SSR_REFLHIT
   const uint packed = g_reflhit[pix];
   const uint screen_id = ReflHitScreenId(packed);
   const uint native = ReflHitFallbackId(packed);
-  const float rt_weight = (1.0f - confidence) * weight * rt_fades / float(rays);
-  const uint visible = ReflHitDominant(screen_id, confidence, rt_id, rt_weight, native);
-  g_reflhit[pix] = ReflHitPack(visible, filled ? rt_id : rejected, screen_id, native);
+  const float screen_fraction = ReflHitScreenFraction(packed);
+  const float screen_weight = confidence * screen_fraction;
+  const float reuse_weight = confidence - screen_weight;
+  const float rt_weight = ReflectionHandoff(confidence, 0.0f, weight * rt_fades, 0.0f).rt;
+  const uint visible = ReflHitHandoffDominant(screen_id, screen_weight, reuse_weight, rt_id, rt_weight, native);
+  g_reflhit[pix] = ReflHitPackHandoff(visible, rt_id >= kReflHitRtCity ? rt_id : rejected, screen_id, native, screen_fraction);
 #endif
   if (!filled) {
     return;
   }
-  float3 rgb = NgFinite3(SsrRtBlend(current.xyz, confidence, sum / float(rays), weight));   // (a NaN or an infinity is none: it must not reach the cap below nor the history)
+  const float rt_weight_scale = ReflectionHandoff(confidence, 0.0f, weight, 0.0f).rt;
+  float3 rgb = NgFinite3(current.xyz + sum * rt_weight_scale);   // (a NaN or an infinity is none: it must not reach the cap below nor the history)
   const float peak = max(max(abs(rgb.x), abs(rgb.y)), abs(rgb.z));
   if (peak > cap) {
     rgb *= cap / peak;
   }
   float alpha = current.w;
-  if (confidence < 0.5f && nearest < kSsrMissLength) {
+  // CHECK: validate this hit-distance choice across RR, Regen and native
+  // denoising with low-confidence silhouettes and upward RT misses.
+  const bool rt_distance = handoff ? (hit_coverage * rt_weight_scale > confidence) : (confidence < 0.5f);
+  if (rt_distance && nearest < kSsrMissLength) {
     alpha = SsrPackHit(clamp(nearest, 0.02f, 60000.0f), false, 0u);   // the reflection is the ray traced one's: its distance is the virtual image's
   }
   g_trace[pix] = float4(rgb, alpha);

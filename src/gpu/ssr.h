@@ -100,6 +100,7 @@
 
 #include "constants.h"
 #include "edram.h"
+#include "frame.h"
 #include "guest_frame.h"
 #include "host_passes.h"
 #include "ray_regen_guides.h"
@@ -117,7 +118,6 @@ class AmbientOcclusion;
 class BindlessHeap;
 class CarRtScene;
 class Device;
-class FrameRing;
 class GBuffer;
 class PassTiming;
 class RtSceneService;
@@ -156,6 +156,7 @@ class ScreenReflections {
 
   // The owners of what the effect reads (not owned; null: the effect is off). The AO gives the camera (optional). Render thread, before the first frame; Shutdown stops this class first.
   void SetScreenShared(ScreenShared* screen) { screen_ = screen; }
+  void SetResolveCache(ResolveCache* resolves) { resolves_ = resolves; }
   void SetGBuffer(GBuffer* gbuffer) { gbuffer_ = gbuffer; }
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
 
@@ -212,10 +213,36 @@ class ScreenReflections {
   bool RecordRegen(plume::RenderCommandList* list, const ssr::Push& base, const screen::ScreenFrame& sf, const RegenCameraRows* cam, bool motion_usable, const RegenAsk& ask, uint32_t width,
                    uint32_t height, const ssr::HistoryKey& now);
   void ReleaseImages();
+  // The trace/confidence and temporal/guide passes each write two targets.
+  void DrawPassMrt(plume::RenderCommandList* list, HostImage& signal, HostImage& guide, const plume::RenderFramebuffer* framebuffer,
+                   const plume::RenderPipeline* pipeline, const ssr::Push& push, bool compute_read);
+  bool EnsureHistory(uint32_t width, uint32_t height);
+  void ReleaseHistory();
   // The trace with confidence and/or capture IDs, in addition to radiance.
   void DrawTraceMrt(plume::RenderCommandList* list, const plume::RenderPipeline* pipeline, const ssr::Push& push, bool rt, bool capture);
   plume::RenderPipeline* PrepareCaptureHit(bool rt, bool ms);
   void ReleaseCaptureHit();
+
+  plume::RenderDescriptorSet* UploadHandoff(const reflection_handoff::Frame& handoff);
+
+  struct HandoffSlot {
+    std::unique_ptr<plume::RenderBuffer> buffer;
+    std::unique_ptr<plume::RenderDescriptorSet> set;
+  };
+  std::array<HandoffSlot, kFramesInFlight> handoff_slots_;
+  plume::RenderDescriptorSetBuilder handoff_builder_;
+  FrameRing* frames_ring_ = nullptr;
+  ResolveCache* resolves_ = nullptr;
+  plume::RenderDescriptorSet* handoff_set_ = nullptr;
+  ssr::HistoryKey reuse_key_;
+  std::array<float, 4> reuse_projection_{};
+  std::array<float, 2> reuse_tan_{};
+  std::array<uint32_t, 2> reuse_render_{};
+  uint32_t reuse_samples_ = 0;
+  float reuse_near_ = 0.0f;
+  float reuse_exposure_ = 1.0f;
+  bool handoff_enabled_ = false;
+  bool last_handoff_enabled_ = false;
 
   Device* device_ = nullptr;
   BindlessHeap* heap_ = nullptr;
@@ -266,6 +293,10 @@ class ScreenReflections {
   ssr_denoise::Totals denoise_totals_;
   uint32_t denoise_why_logged_ = ~0u;
   std::array<HostImage, 2> accum_;
+  std::array<HostImage, 2> history_guide_;
+  std::array<std::unique_ptr<plume::RenderFramebuffer>, 2> history_framebuffer_;
+  bool last_resolve_ = false;
+  bool last_rt_ = false;
   RayRegenRadiancePass regen_pass_;        // RG-3: the guide and signal pass (and its images: the signal, the guides, the denoised image)
   ssr::HistoryKey regen_key_;         // the last frame that was a regen frame (its dispatch's history)
   bool regen_city_ = false;           // city contributed to the previous AMD signal

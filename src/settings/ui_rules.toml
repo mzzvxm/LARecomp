@@ -274,6 +274,12 @@ decode = "resolved(s.mcla_gpu_reflection_resolution)"
 [rows.PM_RxGpuSsr]
 decode = "resolved(s.mcla_gpu_ssr)"
 
+[rows.PM_RxGpuSsrRt]
+states = [
+  { when = "!api.car_rt", enabled = false, reason = "A GPU with ray queries is required." },
+  { when = "resolved(s.mcla_gpu_ssr) == 'off'", enabled = false, reason = "Surface reflections are off." },
+]
+
 [rows.PM_RxGpuCarRefl]
 decode = "resolved(s.mcla_gpu_env_resolution)"
 

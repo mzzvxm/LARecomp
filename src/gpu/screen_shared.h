@@ -249,6 +249,7 @@ class ScreenShared {
   // The image behind a product of the published frame (a compute consumer needs the texture for its barrier; a pixel consumer reads the slot). Null where the frame has none. The history's
   // image is `Image(kHistory)`.
   const HostImage* Image(screen::Product product, uint32_t level = 0) const;
+  const HostImage* ReflectionHistoryDepth(uint32_t level) const;
 
   // The debug view, right after the other effects of the trigger so that the picture replaces what they drew. True when passes were recorded (the caller's list state is gone).
   bool DrawView(const ResolveCache::Summary& summary, plume::RenderCommandList* list);
@@ -362,6 +363,8 @@ class ScreenShared {
   const HostImage* frame_depth0_ = nullptr;  // this frame's level 0 (depth_[0], or the history image after the trade)
 
   std::array<HostImage, screen::kHizMaxLevels> hiz_;
+  std::array<HostImage, screen::kHizMaxLevels> reflection_history_hiz_;
+  uint32_t reflection_history_levels_ = 0;
   uint32_t hiz_images_ = 0;          // the levels that have an image now
   uint32_t hiz_idle_frames_ = 0;     // frames since the Hi-Z was last wanted (the images go back after kHizReleaseAfterFrames)
   uint64_t hiz_generation_ = 0;      // bumped when the Hi-Z's images are made again

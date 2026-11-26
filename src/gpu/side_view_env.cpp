@@ -64,14 +64,18 @@
 //     applies, and the pause menu's car view (`tour_01_pause` of the race tour) shows the car with its
 //     reflection.
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 
+#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include <rex/xenos/format.h>
 
 #include "edram.h"
+#include "env_fallback_rules.h"
 #include "live_text.h"
+#include "resolve.h"
 #include "side_views.h"
 
 namespace mcla::gpu {
@@ -86,6 +90,19 @@ constexpr uint16_t kColorBase = 416;
 constexpr uint16_t kDepthBase = 0;
 constexpr uint32_t kDeclaredWidth = 512;  // the surface's declared size
 constexpr uint32_t kDeclaredHeight = 256;
+constexpr uint32_t kMapBase = 0x032E2000;
+constexpr uint32_t kMapMips = 0x033E2000;
+
+class EnvFallbackSettings final : public rex::SettingOwner {
+ public:
+  EnvFallbackSettings() : SettingOwner("larecomp") { larecomp::settings::RegisterExtraOwner(*this); }
+
+  REX_SETTING(bool, mcla_gpu_env_fallback, true,
+              "Use the environment map where screen reflections have no usable result. Turn off for comparison. Live.",
+              rex::kDebugOnly);
+};
+
+EnvFallbackSettings& g_env_fallback_settings = larecomp::Leak<EnvFallbackSettings>();
 
 bool Matches(const EdramKey& key, uint32_t size_bits) {
   if (key.pitch != kPitch || key.samples != kSamples || key.reserved != 0) {
@@ -133,5 +150,49 @@ const SideViewRule kEnvRule = {
     .effect = gpu_class::Effect::kEnvResolution,
     .host_samples = HostSamples,
 };
+
+uint32_t env_fallback::MapWord(ResolveCache& resolves, const EdramTargets& edram, Device& device,
+                              BindlessHeap& heap, uint32_t frame_serial) {
+  if (!g_env_fallback_settings.mcla_gpu_env_fallback.Get()) {
+    return 0;
+  }
+
+  // The existing GPU measurements cover the whole capture (0.067-0.082 ms at
+  // 1x). Keep both halves current on every class until an alternating cadence
+  // has measured CPU savings and passes the moving reflection checks.
+  const EdramKey source{.base_tiles = kColorBase,
+                        .pitch = kPitch,
+                        .format = uint8_t(xe::ColorRenderTargetFormat::k_2_10_10_10_FLOAT),
+                        .samples = kSamples};
+  const EdramTargets::Target* target = edram.Find(source);
+  if (!target || !target->texture || target->side_view != SideView::kEnv ||
+      uint32_t(target->drawn_frame) != frame_serial) {
+    return 0;
+  }
+
+  // The EDRAM target also hosts the three mip draws. Read the resolved texture
+  // with all four populated levels, using its own scale and existing view cache.
+  // CHECK: at the SSR trigger, verify this product on both APIs at game/high/ultra,
+  // also after a view or resolution change, and verify the probe follows that eye.
+  const ResolveCache::Product* found = resolves.FindOverlap(kMapBase, 1);
+  if (!found || !found->active || !found->texture || !found->own_scale || found->depth_source ||
+      found->layout != plume::RenderTextureLayout::SHADER_READ ||
+      found->format != plume::RenderFormat::R16G16B16A16_FLOAT || found->scale != target->scale ||
+      uint32_t(found->last_frame) != frame_serial || found->key.base_page != (kMapBase >> 12) ||
+      found->key.mip_page != (kMapMips >> 12) || found->key.width != kDeclaredWidth ||
+      found->key.height != kDeclaredHeight || found->key.levels() != kLevels ||
+      found->coverage.size() != kLevels ||
+      !std::all_of(found->coverage.begin(), found->coverage.end(),
+                   [](const ResolveCache::Product::Coverage& level) { return level.complete(); })) {
+    return 0;
+  }
+  ResolveCache::Product* product = resolves.Find(found->key, found->key.base_page);
+  if (!product || !product->texture) {
+    return 0;
+  }
+  const uint32_t slot = product->views.Slot(device, heap, *product->texture, product->format,
+                                            kLevels, format::kHostSwizzleRGBA, "env fallback map");
+  return PackMapWord(slot, product->scale.Edge(kDeclaredHeight));
+}
 
 }  // namespace mcla::gpu

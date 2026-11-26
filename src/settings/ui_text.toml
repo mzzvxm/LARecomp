@@ -256,7 +256,10 @@ help = "Traces the view behind you in the side mirrors."
 
 [rows.PM_RxGpuSsr]
 native = "kSsrDynamics"
-help = "Adds visible cars and lights to wet roads and glossy surfaces."
+help = "Adds wet-road and glossy reflections using the current and previous view, the planar road view, and the environment map."
+
+[rows.PM_RxGpuSsrRt]
+help = "Uses ray tracing for gaps in surface reflections, including wet roads and sidewalks. Ultra increases reach and budget."
 
 [rows.PM_RxGpuHdr]
 help = "HDR output for an HDR10 display."

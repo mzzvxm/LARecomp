@@ -124,6 +124,10 @@ void ScreenShared::Shutdown() {
   for (HostImage& image : hiz_) {
     image = HostImage{};
   }
+  for (HostImage& image : reflection_history_hiz_) {
+    image = HostImage{};
+  }
+  reflection_history_levels_ = 0;
   hiz_images_ = 0;
   for (HostImage& image : colour_pre_) {
     image = HostImage{};
@@ -256,6 +260,13 @@ bool ScreenShared::EnsureHizImages(uint32_t width, uint32_t height, uint32_t* le
     return false;
   }
   const uint32_t levels = screen::HizLevelCount(width, height);
+  // A resized ping-pong image may still be named by a fused framebuffer.
+  const bool reshaped = hiz_[0].texture && (hiz_[0].width != width || hiz_[0].height != height);
+  const bool reshaped_half = hiz_[1].texture &&
+      (hiz_[1].width != screen::HizLevelSize(width, 1) || hiz_[1].height != screen::HizLevelSize(height, 1));
+  if (reshaped || reshaped_half) {
+    PurgeMrt();
+  }
   // The images: one a level, kept while the size is; a different size remakes them (and the generation says so).
   bool ok = true;
   for (uint32_t level = 0; level < levels && ok; ++level) {
@@ -426,6 +437,14 @@ const HostImage* ScreenShared::Image(screen::Product product, uint32_t level) co
   return nullptr;
 }
 
+const HostImage* ScreenShared::ReflectionHistoryDepth(uint32_t level) const {
+  if (!frame_.Has(screen::kHistory) || level >= reflection_history_levels_) {
+    return nullptr;
+  }
+  const HostImage& image = reflection_history_hiz_[level];
+  return image.texture ? &image : nullptr;
+}
+
 uint64_t ScreenShared::ChainBytes() const {
   uint64_t bytes = 0;
   const auto add = [&bytes](const HostImage& image) {
@@ -460,6 +479,9 @@ uint64_t ScreenShared::HeldBytes() const {
     add(image);
   }
   add(history_);
+  for (const HostImage& image : reflection_history_hiz_) {
+    add(image);
+  }
   add(lights_pre_);   // GI-BOUNCE-SS: the colour before and after the light pass
   add(lights_post_);
   return bytes;
@@ -530,6 +552,24 @@ void ScreenShared::OnPresent() {
   }
   // The history: this frame's capture becomes the last frame's, while the history is wanted (a trade of the two images: no copy). A frame without a capture leaves no history for the next.
   const bool keep = (plan_.make & screen::ProductBit(screen::kHistory)) != 0;
+  // Keep the half-size depth pyramid alongside colour_post. Trade the
+  // images after recording to avoid a copy and preserve their read layouts.
+  reflection_history_levels_ = 0;
+  const bool keep_reflections = (wants_.Of(screen::Consumer::kReflections) & screen::ProductBit(screen::kHistory)) != 0;
+  if (post_done_ && keep_reflections && frame_.hiz_levels != 0) {
+    const uint32_t first = (frame_.flags & screen::kFrameHalfTraced) != 0 ? 0u : 1u;
+    if (first < frame_.hiz_levels) {
+      reflection_history_levels_ = frame_.hiz_levels - first;
+      for (uint32_t level = 0; level < reflection_history_levels_; ++level) {
+        std::swap(hiz_[first + level], reflection_history_hiz_[level]);
+      }
+    }
+  } else if (!keep_reflections && passes_ && reflection_history_hiz_[0].texture) {
+    PurgeMrt();
+    for (HostImage& image : reflection_history_hiz_) {
+      passes_->ReleaseImage(image);
+    }
+  }
   if (post_done_ && keep && post_[0].texture) {
     std::swap(post_[0], history_);
     last_capture_ = this_capture_;

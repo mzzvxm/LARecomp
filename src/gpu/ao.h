@@ -648,6 +648,8 @@ class AmbientOcclusion {
     uint32_t ids = 0;
   };
   bool VehicleTableNow(VehicleTableOut* out) const;
+  // SSR may need the same rows when the AO history did not draw the table.
+  bool RecordReflectionVehicleTable(plume::RenderCommandList* list, VehicleTableOut* out);
 
  private:
   // The push block of every pass (hlsl/ao_common.hlsli AoPush), 128 bytes; its definition is ao_push.h's, since the shared screen products record the depth chain, the normals and the colour chain too (SS-2).

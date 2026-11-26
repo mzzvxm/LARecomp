@@ -11,9 +11,10 @@
 //                 receiver depth agrees with this pixel's (the image's alpha): a texel of another surface, or one nothing was traced for (alpha 0), has no weight.
 // The term is image x Fresnel x the class gain x the smoothness ramp x the strength. The colour is in the target's own units, as colour_post, so no exposure is applied.
 //
-// The game's own reflection (the road's planar view, the glass' env map) is already in the colour this adds to; where the rays missed, or the hit was near the picture's edge, the image is 0 and
-// the pixel is the game's alone. GB-I2: on a road the image is the DIFFERENCE between the reflection the rays found and the road view the game already put there (hlsl/ssr_trace_ps.hlsl), so the
-// term can be negative; it never takes more than kSsrGuard of the colour that was there (colour_post's, before this pass) away. The ramp (SsrSmoothRamp) takes the reflection in over the first 0.2
+// The trace resolves screen, reuse, RT and the planar or environment fallback
+// before accumulation or vendor denoising. The image is a delta where the
+// guest scene already includes the fallback, so a sharper hit can replace
+// it. The final guard limits subtraction using colour_post before this pass. The ramp (SsrSmoothRamp) takes the reflection in over the first 0.2
 // of smoothness above the floor: a road that is just wet enough to cross the floor does not jump to a whole reflection.
 //
 // Compilations: SSR_MS 0 / 1; the pipeline's blend (add, or replace for a view) is the pipeline's.

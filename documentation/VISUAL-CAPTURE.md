@@ -57,10 +57,12 @@ channel names and all IDs. The raster stores two bytes per pixel in `visible`,
 | 7, 8 | Native road reflection view, environment map |
 | 16–23 | RT city unclassified, world, road, wet road, sidewalk, terrain, LOD, foliage |
 | 24–31 | RT city paint, chrome, metal, glass, skin, emissive, interior, water |
-| 32–34 | RT query only: discarded car hit, miss, unresolved city hit |
+| 32-34 | RT query only: discarded car hit, miss, unresolved city hit |
+| 35 | Shaded RT car hit |
+| 36 | Validated previous-frame screen hit |
 
 For `source: surface-trace`, the visible ID describes the largest current
-source weight from the ray fades, RT blend and native fallback. At two rays,
+source weight from current screen hits, previous-frame reuse, RT, and the native fallback. At two rays,
 the highest-fade ray represents each traced source. Tags precede temporal or
 spatial filtering, so they identify this update's source, including when the
 color history still contains an older hit. The RT lane records one query class

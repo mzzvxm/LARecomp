@@ -674,6 +674,10 @@ void CheckScope() {
 int main() {
   CheckTable();
   CheckVanilla();
+  for (const Preset preset : kNamed) {
+    const bool rt = preset == Preset::kEnhancedRt || preset == Preset::kEnhancedRtUltra;
+    CheckEq(gp::CellOf("mcla_gpu_ssr_rt", preset), rt ? "high" : "off", "surface RT follows the RT preset");
+  }
   CheckAutoUnchanged();
   CheckUltra();
   CheckNumber();

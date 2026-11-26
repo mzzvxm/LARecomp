@@ -143,7 +143,7 @@ inline constexpr Row kRows[] = {
     {"mcla_gpu_reflection_resolution", Page::kReflections, {"game", "high", "high", "high", "high"}},
     // CHECK: compare wet-road motion and pinned highlights with these preset levels.
     {"mcla_gpu_ssr", Page::kReflections, {"off", "high", "ultra", "high", "ultra"}},
-    {"mcla_gpu_ssr_rt", Page::kReflections, {"off", "off", "off", "off", "high"}},
+    {"mcla_gpu_ssr_rt", Page::kReflections, {"off", "off", "off", "high", "high"}},
     {"mcla_gpu_env_resolution", Page::kReflections, {"game", "game", "high", "game", "high"}},
     {"mcla_gpu_car_selfrefl", Page::kReflections, {"off", "on", "on", "on", "on"}},
     {"mcla_gpu_car_selfrefl_rt", Page::kReflections, {"off", "off", "off", "on", "on"}},

@@ -1,6 +1,8 @@
 #include "capture_visual.h"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -26,6 +28,9 @@ using uint = uint32_t;
 #define GB_FLAG_VEHICLE mcla::gpu::gbuffer::kMaterialFlagVehicle
 #define GB_FLAG_SSR mcla::gpu::gbuffer::kMaterialFlagSsr
 #include "../../gpu/hlsl/visual_class.hlsli"
+using std::max;
+using std::round;
+inline float saturate(float x) { return std::clamp(x, 0.0f, 1.0f); }
 #include "../../gpu/hlsl/reflhit.hlsli"
 
 namespace {
@@ -102,6 +107,11 @@ void ReflectionIds() {
     Check(ReflHitDominant(1, .10f, 17, 0.f, 0) == 1, "no native fallback");
     Check(ReflHitDominant(0, 0.f, kReflHitRtMiss, 0.f, 7) == 7, "unshaded miss preserves the native result");
     Check(ReflHitDominant(0, 0.f, kReflHitRtCar, 0.f, 0) == 0, "unshaded car is absent from the visible lane");
+    Check(ReflHitHandoffDominant(1, .30f, .40f, 35, .10f, 7) == 36, "validated reuse can win against RT and the native rung");
+    Check(ReflHitHandoffDominant(1, .30f, .32f, 35, .36f, 7) == 35, "shaded cars can be attributed to RT");
+    const auto handoff = ReflHitPackHandoff(36, 35, 1, 8, .6f);
+    Check((handoff & 0xffffu) == 0x2324u && ReflHitFallbackId(handoff) == 8 &&
+          ReflHitScreenId(handoff) == 1 && ReflHitScreenFraction(handoff) == .6f, "visible and query IDs retain their on-disk lanes");
     const auto packed = ReflHitPack(1, kReflHitRtCar, 5, 7);
     Check(packed == 0x07052001u && ReflHitScreenId(packed) == 5 && ReflHitFallbackId(packed) == 7,
           "visible and query bytes precede the scratch bytes");

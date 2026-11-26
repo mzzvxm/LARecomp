@@ -108,9 +108,13 @@ float SsrRtGroupOut(uint group, float first_ray_share = 0.0f) {
   return float((share << 2u) | group) / 255.0f;
 }
 uint SsrRtGroupIn(float r) { return uint(r * 255.0f + 0.5f) & 3u; }
-uint SsrRtPickRay(float packed_group, float noise) {
+float SsrRtRayShare(float packed_group, uint ray) {
   const uint share = uint(packed_group * 255.0f + 0.5f) >> 2u;
-  return noise < float(share) / 63.0f ? 0u : 1u;
+  const float first = float(share) / 63.0f;
+  return ray == 0u ? first : 1.0f - first;
+}
+uint SsrRtPickRay(float packed_group, float noise) {
+  return noise < SsrRtRayShare(packed_group, 0u) ? 0u : 1u;
 }
 
 // Only the uncovered fraction of the ray can replace the game's planar view. Fade out near the horizon.

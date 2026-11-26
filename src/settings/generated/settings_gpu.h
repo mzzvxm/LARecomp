@@ -1009,7 +1009,7 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(i32, mcla_gpu_ssr_vehicle_rows, 1, "Diagnostic (screen-space reflections): 1 moves the reflection of a moving vehicle with the vehicle's own motion (the ambient occlusion's vehicle table), 0 treats it as the world's, which smears it (the comparison). Live.", rex::kDebugOnly, rex::Range{0, 1});
 
-  REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Fills missing surface reflections with ray traced hits. High covers glass, metal and water. Ultra also covers wet roads and sidewalks. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
+  REX_SETTING(std::string, mcla_gpu_ssr_rt, "off", "Ray traces surface reflections where the screen and its history have gaps, including wet roads and sidewalks. Ultra raises the ray budget and reach. Needs surface reflections and ray queries. Live.", rex::Allowed("auto", "off", "high", "ultra"));
 
   REX_SETTING(bool, mcla_gpu_ssr_rt_single_ray, true, "Trace one ray per pixel for the RT reflection fallback. Prefer the ray with less screen coverage. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_rt_sky_miss, true, "Use the environment map for upward RT reflection misses on roads with a planar reflection. Live.", rex::kDebugOnly);
@@ -1021,7 +1021,9 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_ssr_blue_noise, true, "Diagnostic (screen-space reflections): the reflection rays' random numbers (which way inside the surface's lobe each pixel looks) come from a blue noise tile that has no lattice in it, stepped along the R2 sequence every frame, so what the accumulation leaves of the noise is a fine grain that stays where it is. False: the first version's interleaved gradient noise, a lattice that slid across the picture 5.6 pixels a frame and read as stripes crawling over a puddle, for comparing. Live.", rex::kDebugOnly);
 
-  REX_SETTING(bool, mcla_gpu_ssr_resolve, true, "Diagnostic (screen-space reflections): the accumulation averages the trace's 3x3 over the pixels of one surface before it takes the history (nine rays of one lobe are nearer its mean than one), looks the history of a pixel whose ray found nothing up with the nearest hit of its neighbours, and does not let one frame whose rays all missed wipe a bright reflection (the clip takes at most a quarter of it a frame). A lamp's or a tail light's reflection flickered with the sparse hits. False: the first version's resolve (the centre pixel alone, the clip whole), for comparing. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_ssr_handoff, true, "Blend surface reflections through screen history, RT, planar and environment sources. Live.", rex::kDebugOnly);
+
+  REX_SETTING(bool, mcla_gpu_ssr_resolve, true, "Diagnostic (screen-space reflections): filters wet-road normals, fades uncertain hits into the fallback, and accumulates reflections using their own motion and the receiving surface. Off uses the original centre-sample resolve. Live.", rex::kDebugOnly);
   REX_SETTING(bool, mcla_gpu_ssr_sparkle_resolve, true, "A/B for screen-space reflections with temporal upscaling. Preserve more of a slow reflection across sparse ray hits. Live.", rex::kDebugOnly);
 
   REX_SETTING(u32, mcla_gpu_ghost_log_interval, 0, "Diagnostic: log one live frame in every N with the 1280x720 scene clears "
@@ -2285,6 +2287,7 @@ inline auto& mcla_gpu_ssr_rt_probe_misses = g_gpu.mcla_gpu_ssr_rt_probe_misses;
 inline auto& mcla_gpu_ssr_rt_cars = g_gpu.mcla_gpu_ssr_rt_cars;
 inline auto& mcla_gpu_rt_denoise = g_gpu.mcla_gpu_rt_denoise;
 inline auto& mcla_gpu_ssr_blue_noise = g_gpu.mcla_gpu_ssr_blue_noise;
+inline auto& mcla_gpu_ssr_handoff = g_gpu.mcla_gpu_ssr_handoff;
 inline auto& mcla_gpu_ssr_resolve = g_gpu.mcla_gpu_ssr_resolve;
 inline auto& mcla_gpu_ssr_sparkle_resolve = g_gpu.mcla_gpu_ssr_sparkle_resolve;
 inline auto& mcla_gpu_ghost_log_interval = g_gpu.mcla_gpu_ghost_log_interval;
