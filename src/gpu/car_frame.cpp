@@ -176,6 +176,7 @@ void CarFrame::StartFrame() {
   frame_.vehicles_valid = false;
   frame_.player_vehicle_known = false;
   vehicles_read_ = false;
+  have_selection_eye_ = false;
   vehicle_scan_ = car_mesh::VehicleScan{};
   // The other cars asked for in the frame before are collected in this one (a request is for the next frame, as the player's draws are).
   stencil_centres_on_ = std::exchange(stencil_centres_requested_, false) && collecting_;
@@ -320,6 +321,10 @@ void CarFrame::OnMainDraw(const MainDraw& d) {
 }
 
 void CarFrame::OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id) {
+  if (!player_read_ && other_limits_.camera_relative) {
+    // CHECK: Verify the main viewport eye and caster counts against the raster traffic census in play and photo mode.
+    have_selection_eye_ = car_model_walk::ReadMainViewEye(selection_eye_);
+  }
   if (walk_.active()) {
     // The draw's own model-to-world, for the check of the walk's placements (a rigid draw only: the recipe the draw path uses).
     temporal::Mat4 world;
@@ -335,7 +340,7 @@ void CarFrame::OnVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id) {
       }
     }
     // the model walk: the first call of a walk frame walks the cars, every call notes the draw's buffers
-    walk_.OnVehicleDraw(*d.view, *d.state, id, have_world ? &world : nullptr);
+    walk_.OnVehicleDraw(*d.view, *d.state, id, have_world ? &world : nullptr, have_selection_eye_ ? selection_eye_.data() : nullptr);
     if (walk_.TakeFresh()) {
       for (car_frame::Listener* listener : listeners_) {
         listener->OnWalkedCars(walk_.walked(), walk_.mesh_source());  // inside the draw's call: the guest is held back
@@ -370,11 +375,13 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
     if (others_on_ && player_.valid && !vehicles_read_) {
       // The game's other vehicles near it, from the same call (car_rt_memory_rules.h): what places a car the camera does not see.
       vehicles_read_ = true;
-      car_mesh::ReadOtherVehicles(player_, car_rt_memory::ScanRadius(other_limits_.radius), &frame_.vehicles, &vehicle_scan_, log_);
+      car_mesh::ReadOtherVehicles(player_, car_rt_memory::ScanRadius(other_limits_.radius), &frame_.vehicles, &vehicle_scan_, log_,
+                                  have_selection_eye_ ? selection_eye_.data() : nullptr);
       frame_.vehicles_valid = vehicle_scan_.valid;
       frame_.player_vehicle_known = true;
       for (int c = 0; c < 3; ++c) {
         frame_.player_vehicle[c] = player_.position[c];
+        frame_.other_car_origin[c] = have_selection_eye_ ? selection_eye_[c] : player_.position[c];
       }
     }
   }
@@ -415,7 +422,10 @@ void CarFrame::HandleVehicleDraw(const MainDraw& d, uint32_t order, uint32_t id)
     if (others_on_) {
       // Another car's draw (the previous frame's ID is the player's until a draw near the vehicle says otherwise, and a draw of another ID that is not
       // that near the vehicle takes no match: IdentityTracker::kStrictMatchMetres): to the selection of the cars of the ray traced scene.
-      HandleOtherDraw(d, order, id, verdict.distance, bank);
+      const double distance = have_selection_eye_ && finite
+                                  ? car_rt_memory::Distance(translation, selection_eye_.data())
+                                  : verdict.distance;
+      HandleOtherDraw(d, order, id, distance, bank);
       return;
     }
     if (confirmed) {

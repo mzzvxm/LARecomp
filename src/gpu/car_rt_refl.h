@@ -216,6 +216,8 @@ class CarRtRefl {
   // What the history pass says about the image it just made (CarSelfRefl::RecordHistory).
   struct HistoryInfo {
     HostImage* image = nullptr;     // R16G16B16A16_FLOAT, left readable by the history pass
+    uint32_t tile_slot = kInvalidBindlessSlot;
+    bool parked_history = false;    // parked marks are outside the stencil tile mask
     uint32_t divisor = 1;           // the picture over the image, 1 or 2 (car_selfrefl_rules.h HistoryDivisor)
     uint32_t render_width = 0;      // the picture in host pixels
     uint32_t render_height = 0;
@@ -282,7 +284,7 @@ class CarRtRefl {
   static_assert(sizeof(Push) == 96);
   struct TracePush {
     Push base;
-    uint32_t region[4];  // xy: dispatch offset in history texels
+    uint32_t region[4];  // xy: dispatch offset, z: stencil tile slot plus one (0: no mask)
   };
   static_assert(sizeof(TracePush) == 112);
   // The push block of one denoise pass (hlsl/car_rt_refl_denoise_cs.hlsl CarRtDenoisePush).

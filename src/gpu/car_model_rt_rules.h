@@ -70,7 +70,7 @@ namespace rr = car_rt_rules;
 // ---------------------------------------------------------------------------
 
 // The most cars the walk puts in the scene at once (the class's count is at most ci::kMaxCars; the IDs of walked cars follow the remembered cars').
-inline constexpr uint32_t kMaxWalkedCars = 8;
+inline constexpr uint32_t kMaxWalkedCars = ci::kShadowCars;
 // The stencil ID of a walked car in the instance list: after the remembered cars' (car_rt_memory_rules.h kRememberedIdBase + kMaxKits).
 inline constexpr uint32_t kWalkedIdBase = car_rt_memory::kRememberedIdBase + car_rt_memory::kMaxKits;
 static_assert(kWalkedIdBase + kMaxWalkedCars <= ci::kIdSpace, "the instance list's slot table has room for the walked cars' IDs");
@@ -839,7 +839,7 @@ inline bool LeftToDrawPath(bool visible, bool unclaimed) { return visible && !un
 
 // How many traffic cars the walk reads the pose and the parts of in one frame, the NEAREST ones (the bone block and the placement of every part cost the render thread some microseconds
 // a car, and a street has dozens of parked cars): the count the scene stages (its count and a spare) and one more for a car that turns out to be claimed. 0 traffic cars: none.
-inline uint32_t TrafficPartsCap(uint32_t traffic_cars) { return traffic_cars == 0 ? 0u : std::min<uint32_t>(traffic_cars + kStageSpareCars + 1u, kMaxWalkedCars); }
+inline uint32_t TrafficPartsCap(uint32_t traffic_cars) { return traffic_cars == 0 ? 0u : std::min<uint32_t>(traffic_cars + kStageSpareCars + 1u, traffic_cars > ci::kMaxCars ? kMaxWalkedCars : ci::kMaxCars); }
 
 // The verdicts of the cars the walk saw shown: `Note` once a frame per traffic car (at the history trigger, when the draws are known), `Unclaimed` in the next frame's walk.
 class UnclaimedTracker {

@@ -145,7 +145,7 @@ bool ReadRows(const uint8_t* base, uint32_t address, double rows[4][3], bool* re
 }  // namespace
 
 void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::vector<car_rt_memory::VehicleRead>* out, VehicleScan* scan,
-                       bool with_note) {
+                       bool with_note, const double* selection_eye) {
   out->clear();
   *scan = VehicleScan{};
   const uint8_t* base = GuestBase();
@@ -178,6 +178,7 @@ void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::ve
     *value = (uint32_t(p[address & 3u]) << 8) | p[(address & 3u) + 1];
     return true;
   };
+  const double* origin = selection_eye ? selection_eye : player.position;
   const auto take = [&](car_rt_memory::VehicleRead&& v) {
     double position[3];
     v.Position(position);
@@ -186,7 +187,8 @@ void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::ve
       ++scan->own;
       return;
     }
-    if (!(d <= max_distance)) {
+    const double distance = selection_eye ? car_rt_memory::Distance(position, origin) : d;
+    if (!(distance <= max_distance)) {
       return;
     }
     out->push_back(std::move(v));
@@ -263,7 +265,7 @@ void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::ve
       double pa[3], pb[3];
       a.Position(pa);
       b.Position(pb);
-      return car_rt_memory::Distance(pa, player.position) < car_rt_memory::Distance(pb, player.position);
+      return car_rt_memory::Distance(pa, origin) < car_rt_memory::Distance(pb, origin);
     });
     out->resize(kOtherVehicleCap);
   }

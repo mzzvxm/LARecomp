@@ -113,7 +113,7 @@ struct VehicleScan {
 
 // Reads the vehicles of both lists within `max_distance` metres of the player's vehicle (the nearest `kOtherVehicleCap`), the player's own left out. The guest
 // is held back inside a draw's call: the car frame calls it from there, once a frame, with the player's vehicle read just before.
-void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::vector<car_rt_memory::VehicleRead>* out, VehicleScan* scan, bool with_note);
+void ReadOtherVehicles(const PlayerVehicle& player, double max_distance, std::vector<car_rt_memory::VehicleRead>* out, VehicleScan* scan, bool with_note, const double* selection_eye = nullptr);
 
 // ---------------------------------------------------------------------------
 // what a vertex shader reads

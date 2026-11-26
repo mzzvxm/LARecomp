@@ -61,6 +61,22 @@ void TestLimits() {
   Check(high.On() && high.cars == 4 && Near(high.radius, 20.0), "4 cars within 20 m");
   Check(low == high && mid == high, "instance limits are identical across classes");
   Check(mid.instances <= rr::kMaxInstances && high.instances <= rr::kMaxInstances, "the class budgets are inside the top level's cap");
+  const ci::Limits shadow = ci::ShadowLimits(high, true, false);
+  Check(shadow.camera_relative && shadow.radius == 150.0 && shadow.cars == 16 &&
+        shadow.instances == 16 * 160 && shadow.instances < rr::kMaxInstances, "the shadow ring covers raster All");
+  Check(shadow.stage_triangles == high.stage_triangles && shadow.content_bytes == high.content_bytes,
+        "the shadow ring keeps fixed staging work");
+  Check(ci::ShadowLimits(low, true, false) == shadow && ci::ShadowLimits(mid, true, false) == shadow,
+        "the shadow ring is the same on every class");
+  Check(ci::ShadowLimits(high, false, false) == high && ci::ShadowLimits(high, true, true) == high &&
+        !ci::ShadowLimits({}, true, false).On(), "the switch and diagnostic overrides keep the short ring");
+  ci::CarSelector selector;
+  selector.Begin(shadow);
+  for (uint32_t id = 1; id <= shadow.cars; ++id) {
+    Check(selector.OnDraw(id, 134.0 + double(id)).keep, "admit all sixteen cars through 150 m");
+  }
+  Check(!selector.OnDraw(17, 150.01).keep && selector.OnDraw(17, 40.0).evicted == 16,
+        "reject beyond 150 m and replace the farthest with a Near caster");
   // The instance budget holds the cars the class asks for at about 140 draws a car.
   Check(mid.instances >= mid.cars * 140 && high.instances >= high.cars * 140, "the budget holds the cars at about 140 draws a car");
 

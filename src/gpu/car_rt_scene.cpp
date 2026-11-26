@@ -36,7 +36,7 @@ namespace mcla::gpu {
 namespace rr = car_rt_rules;
 
 // The check's scope reads as many of the other cars' boxes as the selection keeps.
-static_assert(rr::kScopeMaxOtherBoxes >= car_rt_instances::kMaxCars, "the check's scope reads every kept car's box");
+static_assert(rr::kScopeMaxOtherBoxes >= car_rt_instances::kShadowCars, "the check's scope reads every kept car's box");
 
 namespace {
 
@@ -281,11 +281,12 @@ void CarRtScene::Request(bool uniform_paint) {
   RequestCollect();
 }
 
-void CarRtScene::RequestCollect() {
+void CarRtScene::RequestCollect(bool shadow_coverage) {
   requested_ = true;
+  shadow_coverage_requested_ |= shadow_coverage;
   if (car_frame_) {
     // The draws of the player's car and, within the class's limits, of the cars beside it (car_rt_instances_rules.h); the debug cvars are read here.
-    const auto limits = instances_.CurrentLimits(uniform_paint_requested_);
+    const auto limits = instances_.CurrentLimits(uniform_paint_requested_, shadow_coverage_requested_);
     car_frame_->RequestOtherCars(limits, instances_.ModelMode(), instances_.TrafficCars(limits), instances_.WheelsOn());
   }
 }
@@ -705,7 +706,7 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     memory_in.match_metres = instances_.MatchMetres();
     memory_in.player_known = frame.player_vehicle_known;
     for (int c = 0; c < 3; ++c) {
-      memory_in.player[c] = frame.player_vehicle[c];
+      memory_in.player[c] = frame.other_car_origin[c];
     }
     memory_in.vehicles_valid = frame.vehicles_valid;
     memory_in.vehicles = &frame.vehicles;
@@ -732,7 +733,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
   // rows (one per item, then one per other car); this block only turns an item into a RenderTopLevelASInstance on the mesh's structure.
   // The traffic cars the walk placed have a count of their own (car_model_parts_rt_rules.h TrafficCarsFor): the list keeps the class's count of cars and these besides.
   car_rt_instances::Limits build_limits = car_frame_->other_limits();
-  build_limits.cars = std::min<uint32_t>(build_limits.cars + walked_traffic_placed_, car_rt_instances::kMaxCars);
+  const uint32_t car_cap = build_limits.camera_relative ? car_rt_instances::kShadowCars : car_rt_instances::kMaxCars;
+  build_limits.cars = std::min(build_limits.cars + walked_traffic_placed_, car_cap);
   UpdateLamps(frame, build_limits.On());  // LU-8: the game's lamps of this frame, for the other cars' lenses
   cpu_timing::Scope instances_time(cpu_timing::Section::kRtInstances);
   const car_rt_instances::List& cars = instances_.Build(
@@ -2198,6 +2200,7 @@ void CarRtScene::OnPresent() {
   requested_prev_ = requested_;
   requested_ = false;
   uniform_paint_requested_ = false;
+  shadow_coverage_requested_ = false;
   anchor_seen_ = false;
   composite_seen_ = false;
   trigger_seen_ = false;
@@ -2377,7 +2380,7 @@ void CarRtScene::ProcessReadback(uint64_t frame, uint64_t generation, uint32_t i
   }
   REXLOG_INFO("{} check of frame {}: {} vehicle pixels in the {}x{} depth image that the scene is meant to hold ({} of them in the box of {} other kept cars, "
               "the rest in the player's car's), {:.1f}% hit a part of a car in the scene ({} missed: the driver, parts not built yet); {} vehicle pixels "
-              "not in the scene by design (cars outside the selection: beyond the class's radius or count, or the cars 0 switch); the hit's distance is "
+              "outside the car selection (radius, count, or the cars 0 switch); the hit's distance is "
               "off the image's by {:.2f}% on average, {} at the median and {} at the 95th percentile, {:.1f}% are within 1%; nearer than the image by over "
               "2%: {:.1f}%, farther: {:.1f}%; hits by class: {} body, {} glass, {} tyres, {} on the other cars' parts; the top level held {} instances{}; "
               "check frames without a depth image so far: {}",

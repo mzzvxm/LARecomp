@@ -195,6 +195,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
   // weak card the traffic share of a strong one.
   Push push = {};
   std::memcpy(&push, f.base_push, kBasePushBytes);
+  push.coverage[0] = f.tile_slot + 1u;
   const bool one_ray = (push.slots[3] & car_rt_refl::kSingleRayFlag) != 0u;
   const auto budget_class = one_ray ? gpu_class::GpuClass::kHigh : gpu_class::CurrentRtClass();
   const traffic::Level traffic_level = TrafficLevel(budget_class);

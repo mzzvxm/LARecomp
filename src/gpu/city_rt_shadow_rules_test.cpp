@@ -481,6 +481,7 @@ void TestShaderNumbers(const std::string& dir) {
   same("kCheckTMin", kCheckTMin);
   same("kHistogramStep", kHistogramStep);
   same("kFlagCarImage", kFlagCarImage);
+  same("kFlagVehicleReceivers", kFlagVehicleReceivers);
   same("kFlagView", kFlagView);
   same("kFlagCheck", kFlagCheck);
   same("kStatPixels", kStatPixels);
@@ -696,6 +697,8 @@ void TestDescriptorSetCounts(const std::string& dir) {
 
 int main(int argc, char** argv) {
   TestNumbers();
+  CHECK(CoverageFadeStart(200.0f) == 150.0f && CoverageFadeStart(170.0f) == 150.0f &&
+        CoverageFadeStart(160.0f) == 140.0f && CoverageFadeStart(20.0f) == 10.0f);
   TestExactAlpha();
   TestHash();
   TestDiscSamples();

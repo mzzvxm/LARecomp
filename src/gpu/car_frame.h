@@ -163,6 +163,7 @@ struct Frame {
   bool vehicles_valid = false;
   bool player_vehicle_known = false;
   double player_vehicle[3] = {};
+  double other_car_origin[3] = {};  // player position or the main viewport eye for the shadow ring
   std::vector<car_rt_memory::VehicleRead> vehicles;
   std::vector<car_rt_memory::SeenCar> seen_cars;
 };
@@ -430,7 +431,9 @@ class CarFrame {
   bool stencil_centres_on_ = false;
   bool player_read_ = false;           // the player's vehicle was read in this frame
   car_mesh::PlayerVehicle player_;
-  bool vehicles_read_ = false;         // the game's other vehicles were read in this frame (others_on_ only)
+  bool vehicles_read_ = false;
+  bool have_selection_eye_ = false;
+  std::array<double, 3> selection_eye_{};         // the game's other vehicles were read in this frame (others_on_ only)
   car_mesh::VehicleScan vehicle_scan_;
   // The other cars (RequestOtherCars): asked for in a frame, collected in the next, under the limits of the request.
   bool others_requested_ = false;

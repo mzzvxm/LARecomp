@@ -609,7 +609,7 @@ crt::CarInfo Car(uint32_t id, bool traffic, double distance, uint32_t parts = 10
 void SelectionTests() {
   const ci::Limits high = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kHigh);
   const ci::Limits mid = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kMid);
-  Check(cmp::TrafficCarsFor(high, -1) == 4 && cmp::TrafficCarsFor(mid, -1) == 2, "the traffic's count is the class's by default");
+  Check(cmp::TrafficCarsFor(high, -1) == 4 && cmp::TrafficCarsFor(mid, -1) == 4, "the traffic count is the same across GPU classes");
   Check(cmp::TrafficCarsFor(high, 0) == 0 && cmp::TrafficCarsFor(high, 3) == 3 && cmp::TrafficCarsFor(high, 99) == ci::kMaxCars, "0 off, N asks, at most the setting's maximum");
   Check(cmp::TrafficCarsFor(ci::Limits{}, -1) == 0 && cmp::TrafficCarsFor(ci::Limits{}, 3) == 0, "no other cars: no traffic");
 
@@ -647,12 +647,18 @@ void SelectionTests() {
   Check(vehicles(crt::ChoosePlaced(cars, high, crt::Mode::kGaps, none, true, 3)) == V({11, 12, 13}), "traffic placed: its three");
   Check(vehicles(cmp::ChoosePlacedAll(cars, high, crt::Mode::kGaps, none, 3)) == V({11, 1, 12, 2, 13, 3, 4}), "both, nearest first: seven");
   Check(vehicles(cmp::ChoosePlacedAll(cars, high, crt::Mode::kGaps, none, 4)).size() == 8, "four and four: eight, the stencil IDs' room");
-  Check(vehicles(cmp::ChoosePlacedAll(cars, high, crt::Mode::kGaps, none, 8)).size() == crt::kMaxWalkedCars, "more than that is cut at the walked cars' IDs");
+  Check(vehicles(cmp::ChoosePlacedAll(cars, high, crt::Mode::kGaps, none, 8)).size() == ci::kMaxCars, "the short ring retains its eight-car cap");
   Check(vehicles(cmp::ChoosePlacedAll(cars, high, crt::Mode::kGaps, none, 0)) == V({1, 2, 3, 4}), "traffic count 0: the racers only (as before)");
   Check(cmp::ChoosePlacedAll(cars, high, crt::Mode::kOff, none, 4).empty(), "mode off: nothing");
   Check(cmp::ChoosePlacedAll(cars, ci::Limits{}, crt::Mode::kGaps, none, 4).empty(), "the other cars off: nothing");
-  // the radius is the class's: the mid class reaches 10 m
-  Check(vehicles(cmp::ChoosePlacedAll(cars, mid, crt::Mode::kGaps, none, 2)) == V({11, 1, 12, 2}), "mid class: 2 racers and 2 traffic cars within 10 m");
+  Check(vehicles(cmp::ChoosePlacedAll(cars, mid, crt::Mode::kGaps, none, 2)) == V({11, 1, 12, 2, 3, 4}), "two traffic and four racers under the same-look limits");
+
+  std::vector<crt::CarInfo> distant;
+  for (uint32_t i = 0; i < 20; ++i) distant.push_back(Car(100 + i, true, 135.0 + i));
+  const ci::Limits shadow = ci::ShadowLimits(high, true, false);
+  const auto admitted = cmp::ChoosePlacedAll(distant, shadow, crt::Mode::kGaps, none, cmp::TrafficCarsFor(shadow, -1));
+  Check(admitted.size() == 16 && distant[admitted.back()].distance == 150.0,
+        "the model path admits all sixteen traffic cars within 150 m of its selection origin");
   // a remembered car (a kit) stands where traffic car 11 is: kGaps leaves it to the kit, kModelFirst does not
   std::vector<ci::OtherCar> kits(1);
   kits[0].remembered = true;
@@ -784,7 +790,8 @@ void ParkedClaimTests() {
 
   // the walk's budget: the pose and the parts are read for the nearest few
   Check(crt::TrafficPartsCap(0) == 0 && crt::TrafficPartsCap(4) == 4 + crt::kStageSpareCars + 1 && crt::TrafficPartsCap(2) == 2 + crt::kStageSpareCars + 1, "the parts are read for the staged count and one more");
-  Check(crt::TrafficPartsCap(8) == crt::kMaxWalkedCars && crt::TrafficPartsCap(100) == crt::kMaxWalkedCars, "... never over the walked cars' IDs");
+  Check(crt::TrafficPartsCap(8) == ci::kMaxCars && crt::TrafficPartsCap(100) == crt::kMaxWalkedCars,
+        "the short and shadow rings keep bounded model walks");
   const ci::Limits high = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kHigh);
   std::vector<crt::CarInfo> street;
   for (uint32_t k = 0; k < 12; ++k) {

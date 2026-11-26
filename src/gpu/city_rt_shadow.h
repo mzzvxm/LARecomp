@@ -98,6 +98,7 @@ class CityRtShadow {
   };
   struct Result {
     bool recorded = false;
+    float receiver_range = 0.0f;
     uint32_t slot = kNoSlot;  // the image's bindless slot (a recorded frame): its g channel is the sun's open share
   };
   // Records the pass on `list` (outside any render pass, after the depth chain and the car's ray traced pass, before the passes that read the image).

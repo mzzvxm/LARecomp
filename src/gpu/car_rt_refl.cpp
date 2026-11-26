@@ -598,7 +598,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
   // including resize, camera cuts, disappearing receivers, and both backends.
   const auto trace_regions = paint::PaintDispatch(trace_coverage_, image_.serial, current, full, one_ray);
   for (const paint::PaintRect& rect : trace_regions) {
-    const TracePush trace_push{push, {uint32_t(rect.x0), uint32_t(rect.y0), 0u, 0u}};
+    const TracePush trace_push{push, {uint32_t(rect.x0), uint32_t(rect.y0), info.tile_slot + 1u, 0u}};
     list->setComputePushConstants(0, &trace_push, 0, sizeof(trace_push));
     list->dispatch(car_rt_opp_refl::GroupsX(rect, kGroup), car_rt_opp_refl::GroupsY(rect, kGroup), 1);
   }
@@ -611,6 +611,7 @@ bool CarRtRefl::OnHistory(plume::RenderCommandList* list, const HistoryInfo& inf
     opponents.view = &view;
     opponents.base_push = &push;
     opponents.base_push_bytes = sizeof(push);
+    if (!info.parked_history) opponents.tile_slot = info.tile_slot;
     opponents.output_set = trace_set_.set.get();
     opponents.image = &image_;
     opponents.aux = &aux_;

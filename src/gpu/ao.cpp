@@ -3114,6 +3114,11 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (city.recorded) {
       rt_contact_slot_ = city.slot;
     }
+    if (city.receiver_range > kContactFadeEnd) {
+      // CHECK: Read both ranges in the shadow coverage ledger during sector transitions.
+      plan.contact.fade_end = city.receiver_range;
+      plan.contact.fade_start = city_rt_shadow::CoverageFadeStart(city.receiver_range);
+    }
   }
 
   if (plan.rtao.on) {
@@ -4090,7 +4095,7 @@ void AmbientOcclusion::PlanContact(Plan* plan) {
                                       double(contact_trace::kFadeStartMax)));
   c.fade_start = kContactFadeStart;
   c.fade_end = kContactFadeEnd;
-  if (!garage && city_shadow_ && city_shadow_->FadeRange() > kContactFadeEnd) {
+  if (!garage && city_shadow_ && !larecomp::settings::mcla_gpu_city_rt_car_coverage.Get() && city_shadow_->FadeRange() > kContactFadeEnd) {
     // === CITY-RT BLOCK: the traced sun term holds as far as the structures are the game's own hi detail (city_rt_shadow.h FadeRange), so the contact term reaches that far. CHECK: the short march
     // runs on the pixels the longer fade keeps, a cost the run plan measures (perf/CITY-RT-M1-RUNPLAN.md R4).
     c.fade_end = city_shadow_->FadeRange();

@@ -313,7 +313,7 @@ void main(uint3 id : SV_DispatchThreadID)
 {
     const uint2 size = uint2(g_push.image.xy);
     const uint2 texel = id.xy + g_push.opp.xy;
-    if (any(texel >= size))
+    if (any(texel >= size) || !StencilTileCovered(texel, g_push.coverage.x))
     {
         return;
     }

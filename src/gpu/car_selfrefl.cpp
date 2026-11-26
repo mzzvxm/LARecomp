@@ -19,6 +19,9 @@
 #include "car_dump.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_instances_rules.h"
+#include "car_rt_paint_tiles.h"
+#include "device.h"
+#include "frame.h"
 #include "car_rt_refl.h"
 #include "denoiser_setting.h"
 #include "descriptors.h"
@@ -111,6 +114,9 @@ const char* CarSelfRefl::PassName(uint32_t pass) {
   switch (pass) {
     case kPassMs: return "car history (multisampled)";
     case kPassMsShared: return "car history (multisampled, shared colour)";
+    case kRasterPassCount + kPassPlain: return "car history tiles";
+    case kRasterPassCount + kPassMs: return "car history tiles (multisampled)";
+    case kRasterPassCount + kPassMsShared: return "car history tiles (multisampled, shared colour)";
     default: return "car history";
   }
 }
@@ -121,7 +127,10 @@ CarSelfRefl::~CarSelfRefl() = default;
 // start and end
 // ---------------------------------------------------------------------------
 
-void CarSelfRefl::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing) {
+void CarSelfRefl::Initialize(HostPasses& passes, EdramTargets& edram, PassTiming& pass_timing, Device& device, FrameRing& frames, BindlessHeap& heap) {
+  device_ = &device;
+  frames_ = &frames;
+  heap_ = &heap;
   passes_ = &passes;
   edram_ = &edram;
   pass_timing_ = &pass_timing;
@@ -151,7 +160,7 @@ bool CarSelfRefl::MakeShaders() {
     return false;
   }
   bool ok = true;
-  for (uint32_t i = 0; i < kPassCount && ok; ++i) {
+  for (uint32_t i = 0; i < kRasterPassCount && ok; ++i) {
     const HostShaderBlob blob = CarHistoryPixelShader(i);
     shaders_[i] = passes_->CreateShader(blob.data, blob.size, blob.name);
     ok = shaders_[i] != nullptr;
@@ -164,6 +173,13 @@ bool CarSelfRefl::MakeShaders() {
     shaders_failed_ = true;
     return false;
   }
+  MakeTileLayout();
+  if (tile_layout_) {
+    for (uint32_t pass = kRasterPassCount; pass < kPassCount; ++pass) {
+      const HostShaderBlob blob = CarHistoryTileShader(pass - kRasterPassCount);
+      shaders_[pass] = passes_->CreateShader(blob.data, blob.size, blob.name);
+    }
+  }
   ready_ = true;
   return true;
 }
@@ -174,7 +190,12 @@ void CarSelfRefl::Shutdown() {
     passes_->precache().Stop();
   }
   // The GPU is idle and the heap goes later: the slot is not handed back (SunShafts::Shutdown).
+  tile_set_.reset();
   history_ = HostImage{};
+  history_tiles_ = HostImage{};
+  parked_rects_.clear();
+  tile_history_serial_ = 0;
+  tile_map_serial_ = 0;
   for (auto& pipeline : pipelines_) {
     pipeline.reset();
   }
@@ -186,12 +207,17 @@ void CarSelfRefl::Shutdown() {
   passes_ = nullptr;
   edram_ = nullptr;
   pass_timing_ = nullptr;
+  tile_layout_.reset();
+  device_ = nullptr;
+  frames_ = nullptr;
+  heap_ = nullptr;
 }
 
 void CarSelfRefl::ListPrecache(const std::string& note) {
   HostPrecache& precache = passes_->precache();
   uint32_t added = 0;
   for (uint32_t pass = 0; pass < kPassCount; ++pass) {
+    if (!shaders_[pass]) continue;
     added += precache.Add(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass), PassName(pass),
                           [this, pass] { return MakePipeline(pass); })
                  ? 1u
@@ -210,6 +236,7 @@ void CarSelfRefl::HoldUntilBuilt(Mode* mode) {
     // Off at the start, on now: made on a worker of their own, in the order of the list.
     std::vector<HostPrecache::Item> fresh;
     for (uint32_t pass = 0; pass < kPassCount; ++pass) {
+      if (!shaders_[pass]) continue;
       fresh.push_back({HostPrecache::Key(HostPrecache::kCarSelfRefl, pass), PassName(pass), [this, pass] { return MakePipeline(pass); }});
     }
     listed_ = true;
@@ -220,7 +247,7 @@ void CarSelfRefl::HoldUntilBuilt(Mode* mode) {
   }
   // Not drawn until every pipeline is made (or has failed, which Pipeline says): a frame never waits for a compile.
   for (uint32_t pass = 0; pass < kPassCount; ++pass) {
-    if (!pipelines_[pass] && !pipeline_failed_[pass] &&
+    if (shaders_[pass] && !pipelines_[pass] && !pipeline_failed_[pass] &&
         !precache.Ready(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass))) {
       *mode = Mode::kOff;
       return;
@@ -230,6 +257,12 @@ void CarSelfRefl::HoldUntilBuilt(Mode* mode) {
 }
 
 std::unique_ptr<plume::RenderPipeline> CarSelfRefl::MakePipeline(uint32_t pass) {
+  if (!shaders_[pass] || !passes_) return nullptr;
+  if (pass >= kRasterPassCount) {
+    if (!tile_layout_ || !device_) return nullptr;
+    constexpr uint32_t size = car_rt_refl::kPaintTile;
+    return device_->CreateComputePipeline(plume::RenderComputePipelineDesc(tile_layout_.get(), shaders_[pass].get(), size, size, 1), PassName(pass));
+  }
   return passes_->CreatePipeline(*shaders_[pass], plume::RenderFormat::R16G16B16A16_FLOAT, PassName(pass));
 }
 
@@ -237,7 +270,7 @@ plume::RenderPipeline* CarSelfRefl::Pipeline(uint32_t pass) {
   if (pipelines_[pass]) {
     return pipelines_[pass].get();
   }
-  if (pipeline_failed_[pass]) {
+  if (!shaders_[pass] || !passes_ || pipeline_failed_[pass]) {
     return nullptr;
   }
   pipelines_[pass] = passes_->precache().Acquire(HostPrecache::Key(HostPrecache::kCarSelfRefl, pass), PassName(pass), [&] { return MakePipeline(pass); });
@@ -304,7 +337,8 @@ void CarSelfRefl::BeginFrame(gbuffer::PauseFxView pause_fx) {
 }
 
 uint64_t CarSelfRefl::HeldBytes() const {
-  const uint64_t rt = rt_ ? rt_->HeldBytes() : 0;
+  uint64_t rt = rt_ ? rt_->HeldBytes() : 0;
+  if (history_tiles_.texture) rt += TextureBytes(history_tiles_.width, history_tiles_.height, 1, history_tiles_.format);
   return rt + (history_.texture ? TextureBytes(history_.width, history_.height, 1, history_.format) : 0);
 }
 
@@ -312,12 +346,98 @@ void CarSelfRefl::ReleaseImage() {
   if (!passes_) {
     return;
   }
+  if (frames_) frames_->Retire(std::move(tile_set_));
   passes_->ReleaseImage(history_);
+  passes_->ReleaseImage(history_tiles_);
+  parked_rects_.clear();
+  tile_history_serial_ = 0;
+  tile_map_serial_ = 0;
   if (rt_) {
     rt_->ReleaseImage();
   }
   history_valid_ = false;
   image_for_[0] = image_for_[1] = 0;
+}
+
+void CarSelfRefl::MakeTileLayout() {
+  if (!device_ || !heap_) return;
+  tile_set_builder_.begin();
+  tile_set_builder_.addReadWriteTexture(0);
+  tile_set_builder_.addReadWriteTexture(1);
+  tile_set_builder_.end();
+  plume::RenderPipelineLayoutBuilder builder;
+  builder.begin(/*isLocal=*/false, /*allowInputLayout=*/false);
+  for (uint32_t set = 0; set < 4; ++set) builder.addDescriptorSet(heap_->texture_set_builder());
+  builder.addDescriptorSet(tile_set_builder_);
+  builder.addPushConstant(0, 4, sizeof(Push), plume::RenderShaderStageFlag::COMPUTE);
+  builder.end();
+  tile_layout_ = device_->CreatePipelineLayout(builder, "car history tile layout");
+}
+
+bool CarSelfRefl::RecordTiles(plume::RenderCommandList* list, plume::RenderPipeline* pipeline,
+                              plume::RenderPipeline* raster, Push push, const HostImage* shared) {
+  if (!list || !pipeline || !raster || !tile_layout_ || !frames_ || !device_ || !heap_ || !passes_ || !history_.texture) return false;
+
+  constexpr uint32_t tile = car_rt_refl::kPaintTile;
+  const uint32_t width = (history_.width + tile - 1) / tile;
+  const uint32_t height = (history_.height + tile - 1) / tile;
+  namespace Flag = plume::RenderTextureFlag;
+  if (!passes_->EnsureImage(history_tiles_, width, height, plume::RenderFormat::R32_FLOAT, "car history coverage", Flag::STORAGE | Flag::UNORDERED_ACCESS)) {
+    return false;
+  }
+
+  using Layout = plume::RenderTextureLayout;
+  const bool initialize = tile_history_serial_ != history_.serial || tile_map_serial_ != history_tiles_.serial;
+  if (initialize || !tile_set_) {
+    frames_->Retire(std::move(tile_set_));
+    tile_set_ = device_->CreateDescriptorSet(tile_set_builder_, 2, 0, "car history tiles");
+    if (!tile_set_) return false;
+    tile_set_->setTexture(0, history_.texture.get(), Layout::GENERAL, history_.view.get());
+    tile_set_->setTexture(1, history_tiles_.texture.get(), Layout::GENERAL, history_tiles_.view.get());
+  } else if (!parked_rects_.empty()) {
+    // Parked marks come from geometry and can occupy an otherwise empty stencil tile.
+    std::vector<Push> clears(parked_rects_.size(), push);
+    for (Push& clear : clears) clear.slots2[1] = 2u;
+    passes_->DrawRectsInto(list, history_, raster, parked_rects_.data(), clears.data(), sizeof(Push), uint32_t(clears.size()));
+  }
+  parked_rects_.clear();
+
+  // Initialize render-target metadata before any later parked-mark raster pass.
+  if (history_.layout == Layout::UNKNOWN) {
+    list->barriers(plume::RenderBarrierStage::GRAPHICS, plume::RenderTextureBarrier(history_.texture.get(), Layout::COLOR_WRITE));
+    list->setFramebuffer(history_.framebuffer.get());
+    list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 0.0f));
+    list->setFramebuffer(nullptr);
+    history_.layout = Layout::COLOR_WRITE;
+  }
+  if (shared && shared->texture) {
+    list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
+                   plume::RenderTextureBarrier(shared->texture.get(), Layout::SHADER_READ));
+  }
+  const plume::RenderTextureBarrier write[] = {
+      {history_.texture.get(), Layout::GENERAL}, {history_tiles_.texture.get(), Layout::GENERAL}};
+  list->barriers(plume::RenderBarrierStage::COMPUTE, nullptr, 0, write, 2);
+  list->setComputePipelineLayout(tile_layout_.get());
+  for (uint32_t set = 0; set < 4; ++set) list->setComputeDescriptorSet(heap_->texture_set(), set);
+  list->setComputeDescriptorSet(tile_set_.get(), 4);
+  list->setPipeline(pipeline);
+  push.slots2[1] = initialize ? 1u : 0u;
+  push.slots2[2] = history_.width;
+  push.slots2[3] = history_.height;
+  list->setComputePushConstants(0, &push, 0, sizeof(push));
+  list->dispatch(width, height, 1);
+  const plume::RenderTextureBarrier read[] = {
+      {history_.texture.get(), Layout::SHADER_READ}, {history_tiles_.texture.get(), Layout::SHADER_READ}};
+  list->barriers(plume::RenderBarrierStages(plume::RenderBarrierStage::GRAPHICS | plume::RenderBarrierStage::COMPUTE),
+                 nullptr, 0, read, 2);
+  history_.layout = Layout::SHADER_READ;
+  history_tiles_.layout = Layout::SHADER_READ;
+  if (initialize) {
+    REXLOG_INFO("{} history tiles {}x{} for a {}x{} history", kPrefix, width, height, history_.width, history_.height);
+  }
+  tile_history_serial_ = history_.serial;
+  tile_map_serial_ = history_tiles_.serial;
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -485,11 +605,19 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
   // it: a plain one reads the same single sample either way, from the shared image (a half float holds what the colour target holds).
   const HostImage* shared = SharedColour(render_w, render_h);
   const bool ms = depth.host_samples > 1;
-  plume::RenderPipeline* pipeline = Pipeline(ms ? (shared ? kPassMsShared : kPassMs) : kPassPlain);
+  const uint32_t pass = ms ? (shared ? kPassMsShared : kPassMs) : kPassPlain;
+  plume::RenderPipeline* pipeline = Pipeline(pass);
+  plume::RenderPipeline* tile_pipeline =
+      summary.stencil_slot != kNoSlot && larecomp::settings::mcla_gpu_car_history_tiles.Get() ? Pipeline(pass + kRasterPassCount) : nullptr;
   if (!pipeline) {
     return false;
   }
-  if (!passes_->EnsureImage(history_, image_w, image_h, plume::RenderFormat::R16G16B16A16_FLOAT, "car history")) {
+  namespace Flag = plume::RenderTextureFlag;
+  constexpr plume::RenderTextureFlags tiled_flags = Flag::RENDER_TARGET | Flag::STORAGE | Flag::UNORDERED_ACCESS;
+  if (tile_pipeline && !passes_->EnsureImage(history_, image_w, image_h, plume::RenderFormat::R16G16B16A16_FLOAT, "car history", tiled_flags)) {
+    tile_pipeline = nullptr;
+  }
+  if (!tile_pipeline && !passes_->EnsureImage(history_, image_w, image_h, plume::RenderFormat::R16G16B16A16_FLOAT, "car history")) {
     if (!failed_logged_) {
       failed_logged_ = true;
       REXLOG_ERROR("{} the history image could not be made: no car self-reflection while that lasts", kPrefix);
@@ -561,8 +689,13 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     FillCityScreen(&info.screen);
   }
   pass_timing_->Mark(list, "car history");
-  // CHECK: compare history bytes and car history timing with the full write on both APIs.
-  passes_->DrawInto(list, history_, pipeline, &push, sizeof(push), discard_background);
+  // CHECK: Compare tiled and full history bytes and timing, including the three MSAA input modes on both APIs.
+  const bool tiled = tile_pipeline && RecordTiles(list, tile_pipeline, pipeline, push, shared);
+  if (!tiled) {
+    tile_history_serial_ = 0;
+    parked_rects_.clear();
+    passes_->DrawInto(list, history_, pipeline, &push, sizeof(push), discard_background);
+  }
   if (shared) {
     ++passes_shared_;
   }
@@ -571,12 +704,14 @@ bool CarSelfRefl::RecordHistory(const ResolveCache::Summary& summary, plume::Ren
     const std::vector<car_rt_parked_paint::Mark> marks = rt_->ParkedMarks(info);
     if (!marks.empty()) {
       RecordMarks(list, pipeline, push, marks);
+      info.parked_history = true;
     }
   }
   if (dump_) {
     dump_->OnHistoryImage(list, history_, divisor, p);  // the debug car dump reads this frame's image back (car_dump.h)
   }
   if (rt_) {
+    info.tile_slot = tiled ? history_tiles_.slot : kNoSlot;
     rt_->OnHistory(list, info);
     // CITY-RT M2 R3b: the player's windows, traced inside OnHistory, are added to the main colour now (after the history pass above: the history holds no glass reflection; after the screen-space reflections: the
     // last pass that adds to the colour at the trigger). Nothing is drawn where the trace did not run this frame.
@@ -601,6 +736,7 @@ void CarSelfRefl::RecordMarks(plume::RenderCommandList* list, plume::RenderPipel
     rects.emplace_back(mark.rect.x0, mark.rect.y0, mark.rect.x1, mark.rect.y1);
   }
   passes_->DrawRectsInto(list, history_, pipeline, rects.data(), pushes.data(), sizeof(Push), uint32_t(pushes.size()));
+  if (tile_history_serial_ == history_.serial) parked_rects_ = std::move(rects);
   ++mark_frames_;
   marks_made_ += marks.size();
   marks_most_ = std::max<uint32_t>(marks_most_, uint32_t(marks.size()));

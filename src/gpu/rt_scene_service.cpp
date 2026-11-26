@@ -56,7 +56,7 @@ void RtSceneService::Shutdown() {
 void RtSceneService::Want(rt_scene::Consumer who, const rt_scene::Needs& needs) {
   board_.Want(who, needs);
   if (needs.cars && cars_ != nullptr) {
-    cars_->RequestCollect();  // the car frame collects the player's draws only while somebody asks (not Request(): that one would add the want to the car effects' own)
+    cars_->RequestCollect(who == rt_scene::Consumer::kCitySunShadow && larecomp::settings::mcla_gpu_city_rt_car_coverage.Get());  // the car frame collects the player's draws only while somebody asks (not Request(): that one would add the want to the car effects' own)
   }
 }
 

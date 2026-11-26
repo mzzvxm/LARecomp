@@ -1409,6 +1409,9 @@ larecomp_gpu_host_shader(car_history_ps ps_6_0 DEFINES CAR_HISTORY_MS=0)
 larecomp_gpu_host_shader(car_history_ms_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1)
 # ... and the same with the colour read from the shared screen products' colour_post (screen_shared.h): the depth and stencil planes multisampled, the colour one single sample image.
 larecomp_gpu_host_shader(car_history_ms_shared_ps ps_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=2)
+larecomp_gpu_host_shader(car_history_tiles_cs cs_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=0 CAR_HISTORY_COMPUTE=1)
+larecomp_gpu_host_shader(car_history_tiles_ms_cs cs_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=1 CAR_HISTORY_COMPUTE=1)
+larecomp_gpu_host_shader(car_history_tiles_ms_shared_cs cs_6_0 SOURCE car_history_ps DEFINES CAR_HISTORY_MS=2 CAR_HISTORY_COMPUTE=1)
 # The player car's sun shadow map (car_shadow_map.h): the depth-only vertex shader of the car's own draws, the 4x1 matrix texture's pass,
 # and the debug view's square.
 larecomp_gpu_host_shader(car_shadow_map_vs vs_6_0)

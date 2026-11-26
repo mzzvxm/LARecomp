@@ -24,6 +24,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "traffic_shadow.h"
+
 namespace mcla::gpu::city_rt_shadow {
 
 // ---------------------------------------------------------------------------
@@ -53,6 +55,13 @@ inline float RayLength(float sun_sin, float reach) { return std::min(reach, kMax
 // way and 90 percent at 0.845 of the diameter: the width is 0.69 of the diameter (the circular segment's area, asin(y) + y sqrt(1 - y^2), at 10 and 90 percent).
 inline constexpr float kPenumbraTenToNinety = 0.69f;
 inline float PenumbraWidth(float blocker_distance, float scale) { return kPenumbraTenToNinety * 2.0f * blocker_distance * kSunRadiusTan * scale; }
+
+// Preserve a transition at the end of the resident range. When that range allows
+// it, keep the traced visibility unfaded throughout the raster All caster ring.
+inline constexpr float kCoverageFadeWidth = 20.0f;
+inline float CoverageFadeStart(float range) {
+  return std::max(0.5f * range, std::min(traffic_shadow::kAllRadius, range - kCoverageFadeWidth));
+}
 
 // ---------------------------------------------------------------------------
 // the ray's origin
@@ -147,6 +156,7 @@ inline bool AcceptCandidate(AlphaMode mode, bool known, float exact_alpha, float
 // ---------------------------------------------------------------------------
 inline constexpr uint32_t kFlagRaysShift = 0;        // bits 0-3: the rays a pixel (1 to 8)
 inline constexpr uint32_t kFlagAlphaShift = 4;       // bits 4-5: AlphaMode
+inline constexpr uint32_t kFlagVehicleReceivers = 1u << 9;
 inline constexpr uint32_t kFlagCarImage = 1u << 8;   // the car ray traced image's slot is in noise.w: the result is the darker of the two
 inline constexpr uint32_t kFlagAlphaRefShift = 12;   // bits 12-19: the alpha reference of the exact mode, unorm8
 inline constexpr uint32_t kFlagAlphaStats = 1u << 28;  // the exact alpha's statistics into the counters, and its picture as the g channel (mcla_gpu_city_rt_alpha_view)
