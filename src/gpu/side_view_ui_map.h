@@ -7,6 +7,16 @@ namespace mcla::gpu::ui_map_views {
 // Xenos render target formats, checked against the SDK in side_view_ui_map.cpp.
 inline constexpr uint8_t kColorFormat = 0;  // k_8_8_8_8
 inline constexpr uint8_t kDepthFormat = 1;  // kD24FS8
+inline constexpr uint32_t kRadarTile = 168;
+inline constexpr uint32_t kRadarPitch = 240;
+inline constexpr uint32_t kRadarExtent = 220;
+
+template <typename Key>
+bool RadarTarget(const Key& key, uint32_t size_bits) {
+  return key.reserved == 0 && !key.depth && key.format == kColorFormat &&
+         key.base_tiles == kRadarTile && key.pitch == kRadarPitch && key.samples == 4 &&
+         side_views::DeclaredSize(size_bits, kRadarExtent, kRadarExtent);
+}
 
 struct Identity {
   bool depth;

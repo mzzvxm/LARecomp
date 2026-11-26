@@ -391,6 +391,7 @@
 {"mcla_gpu_edram_capture", "MCLA/GPU"},
 {"mcla_gpu_env_resolution", "MCLA/GPU"},
 {"mcla_gpu_env_hold", "MCLA/GPU"},
+{"mcla_gpu_hud_map_hold", "MCLA/GPU"},
 {"mcla_gpu_flicker_probe", "MCLA/GPU"},
 {"mcla_gpu_flicker_probe_dumps", "MCLA/GPU"},
 {"mcla_gpu_flicker_probe_shots", "MCLA/GPU"},

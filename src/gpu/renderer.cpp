@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstring>
 #include <cstdlib>
 #include <functional>
 #include <format>
@@ -26,10 +27,13 @@
 #include <rex/platform/native_window.h>
 #include <rex/platform/process.h>
 #include <rex/ui/ui_system.h>
+#include <rex/xenos/register.h>
 
 #include "backend.h"
 #include "device_fault_format.h"
 #include "display_refresh.h"
+#include "draw_decode.h"
+#include "draw_state.h"
 #include "gpu.h"
 #include "gi_setting.h"
 #include "citypack/pack_format.h"
@@ -46,6 +50,7 @@
 #include "rt_bench.h"
 #include "rt_tier.h"
 #include "shutdown_rules.h"
+#include "side_view_ui_map.h"
 #include "native_window.h"
 #include "ray_regen.h"
 #include "temporal_dlss.h"
@@ -868,21 +873,162 @@ void Renderer::Shutdown(bool fast_exit) {
 }
 
 void Renderer::Execute(const RecordHeader& header, const uint8_t* payload) {
+  if ((hud_map_owner_ || header.type == RecordType::kComposite || header.type == RecordType::kPresent) &&
+      HandleHudMapRecord(header, payload)) return;
+  ExecuteProfiledRecord(header, payload);
+}
+
+void Renderer::ExecuteProfiledRecord(const RecordHeader& header, const uint8_t* payload,
+                                     MapRecord map_record) {
   if (!profile_records_) {
-    ExecuteRecord(header, payload);
+    ExecuteRecord(header, payload, map_record);
     return;
   }
   // The record's CPU time: its time less the GPU waits inside it (the totals only grow, so a Take inside the record is harmless).
   ThreadLoad& load = CurrentThreadLoad();
   const uint64_t start = cycles::Now();
   const uint64_t gpu_wait_start = load.gpu_wait_total();
-  ExecuteRecord(header, payload);
+  ExecuteRecord(header, payload, map_record);
   const uint64_t elapsed = cycles::Now() - start;
   const uint64_t waited = load.gpu_wait_total() - gpu_wait_start;
   load.AddRecord(uint32_t(header.type), elapsed - std::min(elapsed, waited));
 }
 
-void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload) {
+namespace {
+
+bool RadarColor(const RegisterWindow& window, uint32_t color, uint32_t size_bits) {
+  rex::xenos::reg::RB_SURFACE_INFO surface;
+  surface.value = window.Register(guest::reg::kRbSurfaceInfo);
+  rex::xenos::reg::RB_COLOR_INFO info;
+  info.value = color;
+  const EdramKey key{.base_tiles = uint16_t(info.color_base | (info.color_base_bit_11 << 11)),
+                     .pitch = uint16_t(surface.surface_pitch),
+                     .format = uint8_t(info.color_format),
+                     .samples = uint8_t(MsaaSampleCount(surface.msaa_samples))};
+  return ui_map_views::RadarTarget(key, size_bits);
+}
+
+bool RadarDraw(const uint8_t* payload) {
+  const DrawView view(payload);
+  const DrawRecord& record = view.record();
+  if (!record.surfaces[0] || record.surfaces[1] || record.surfaces[2] ||
+      record.surfaces[3] || record.surfaces[4]) return false;
+  const RegisterWindow window = view.registers();
+  return RadarColor(window, window.Register(guest::reg::kRbColorInfo), record.target_size_bits);
+}
+
+bool RadarClear(const ClearRecord& record) {
+  if (record.clear_flags != 1u || (record.flags & kEventSurfaceUnreadable)) return false;
+  const RegisterWindow pre(record.state.pre, guest::kEventWindowBegin, guest::kEventWindowBytes);
+  if (!pre.DeviceDword(guest::kDevColorSurfaces)) return false;
+  const auto* rt0 = record.state.surfaces[0];
+  return RadarColor(pre, LoadBe32(rt0 + 0x1C), LoadBe32(rt0 + guest::kSurfaceSizeBitsOffset));
+}
+
+}  // namespace
+
+void Renderer::FlushHudMapRecords(MapRecord map_record) {
+  size_t offset = 0;
+  while (offset < hud_map_records_.size()) {
+    RecordHeader header;
+    const uint8_t* record = hud_map_records_.data() + offset;
+    std::memcpy(&header, record, sizeof(header));
+    ExecuteProfiledRecord(header, record + sizeof(header), map_record);
+    offset += header.size;
+  }
+  hud_map_records_.clear();
+  hud_map_buffering_ = false;
+  hud_map_has_draw_ = false;
+}
+
+bool Renderer::HandleHudMapRecord(const RecordHeader& header, const uint8_t* payload) {
+  if (header.type == RecordType::kComposite) {
+    const auto& marker = *reinterpret_cast<const CompositeRecord*>(payload);
+    if (marker.bucket == hud_map_hold::kBegin) {
+      FlushHudMapRecords(MapRecord::kDeferred);
+      hud_map_owner_ = marker.tag;
+      hud_map_sample_.reset();
+      if (!hud_map_owner_) hud_map_written_ = 0;
+      hud_map_buffering_ = hud_map_written_ && hud_map_owner_ == hud_map_capture_.owner && !edram_.aliasing();
+      return false;
+    }
+    if (marker.bucket == hud_map_hold::kSample) {
+      if (hud_map_owner_ && header.size >= sizeof(RecordHeader) + sizeof(hud_map_hold::SampleRecord)) {
+        const auto& sample = reinterpret_cast<const hud_map_hold::SampleRecord*>(payload)->sample;
+        if (sample.owner == hud_map_owner_) hud_map_sample_ = sample;
+      }
+      return false;
+    }
+    if (marker.bucket == hud_map_hold::kEnd) {
+      FlushHudMapRecords(MapRecord::kDeferred);
+      hud_map_owner_ = 0;
+      hud_map_sample_.reset();
+      return false;
+    }
+  }
+
+  if (header.type == RecordType::kResolve && hud_map_sample_) {
+    auto sample = *hud_map_sample_;
+    hud_map_sample_.reset();
+    sample.cut |= scene_.AnchorCut();
+    const auto& record = *reinterpret_cast<const ResolveRecord*>(payload);
+    const auto copy = ResolveCache::DescribeHudMapCopy(record);
+    // CHECK: use the HUD radar timing and held-product read counts on both APIs.
+    const bool can_hold = hud_map_buffering_ && hud_map_has_draw_ && copy && copy == hud_map_copy_;
+    const auto decision = view_hold::DecideMap(hud_map_capture_, sample, hud_map_deadline_, can_hold);
+    if (decision == view_hold::Decision::kHold) {
+      plume::RenderCommandList* list = OpenFrameList();
+      scene_.BeforeHudMapReplay(list);
+      if (resolve_.ReplayHudMap(*copy, hud_map_written_, list)) {
+        FlushHudMapRecords(MapRecord::kHeld);
+        ExecuteProfiledRecord(header, payload, MapRecord::kHeld);
+        hud_map_seen_ = true;
+        return true;
+      }
+    }
+    FlushHudMapRecords(MapRecord::kDeferred);
+    ExecuteProfiledRecord(header, payload);
+    const uint64_t written = copy ? resolve_.HudMapWritten(*copy) : 0;
+    hud_map_written_ = view_hold::ValidMapSample(sample) ? written : 0;
+    hud_map_seen_ = hud_map_written_ != 0;
+    if (hud_map_seen_) {
+      hud_map_copy_ = copy;
+      hud_map_capture_ = sample;
+      hud_map_deadline_ = view_hold::MapDeadline(sample, hud_map_deadline_, decision);
+    }
+    return true;
+  }
+
+  // Buffer a short, contiguous run of radar-only draws and clears. A fence,
+  // lock, foreign render target or different resolve flushes the stock work
+  // in order. No decision depends on guessing the destination in advance.
+  constexpr size_t kMaxBufferedBytes = 512 * 1024;
+  if (hud_map_buffering_ && !(header.flags & kRecordSync) &&
+      hud_map_records_.size() + header.size <= kMaxBufferedBytes) {
+    const bool draw = header.type == RecordType::kDraw && RadarDraw(payload);
+    const bool clear = header.type == RecordType::kClear &&
+                       RadarClear(*reinterpret_cast<const ClearRecord*>(payload));
+    if (draw || clear) {
+      const size_t offset = hud_map_records_.size();
+      hud_map_records_.resize(offset + header.size);
+      uint8_t* dest = hud_map_records_.data() + offset;
+      std::memcpy(dest, &header, sizeof(header));
+      std::memcpy(dest + sizeof(header), payload, header.size - sizeof(header));
+      hud_map_has_draw_ |= draw;
+      return true;
+    }
+  }
+  if (hud_map_buffering_) FlushHudMapRecords(MapRecord::kDeferred);
+  if (header.type == RecordType::kPresent) {
+    if (!hud_map_seen_) hud_map_written_ = 0;
+    hud_map_seen_ = false;
+    hud_map_owner_ = 0;
+    hud_map_sample_.reset();
+  }
+  return false;
+}
+
+void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload, MapRecord map_record) {
   const auto type = static_cast<size_t>(header.type);
   if (type < std::size(records_)) {
     ++records_[type];
@@ -932,11 +1078,11 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
         validator_.OnDraw(payload);
       }
       census_.OnDraw(payload);
-      scene_.OnDraw(payload, OpenFrameList());
-      MaybeFlushBatch();
+      scene_.OnDraw(payload, OpenFrameList(), map_record == MapRecord::kHeld);
+      if (map_record != MapRecord::kHeld) MaybeFlushBatch();
       textures_.DrawExecuted();
       if (textures_.prefetching()) {
-        PrefetchTextures(header);
+        if (map_record == MapRecord::kLive) PrefetchTextures(header);
       } else if (prefetch_live_) {
         // The burst is over: the next one starts from the record it is on then.
         prefetch_live_ = false;
@@ -950,6 +1096,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       if (validate_) {
         validator_.OnClear(record);
       }
+      if (map_record == MapRecord::kHeld) return;
       plume::RenderCommandList* list = OpenFrameList();
       PerfScope label(markers_, list, "Clear", PerfMarkers::kEvent);
       scene_.OnClear(record, list);
@@ -960,6 +1107,7 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       if (validate_) {
         validator_.OnResolve(record);
       }
+      if (map_record == MapRecord::kHeld) return;
       plume::RenderCommandList* list = OpenFrameList();
       PerfScope label(markers_, list, "Resolve", PerfMarkers::kEvent);
       const hitch::Scope timing(hitch::Event::kResolve);
@@ -1019,6 +1167,9 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload)
       // the HUD, use the composite record as a one-way message to the render thread
       // (mc_engine/display/ultrawide.h, IsUiMessage): not a composition, no list to open.
       const uint32_t bucket = reinterpret_cast<const CompositeRecord*>(payload)->bucket;
+      if (bucket == hud_map_hold::kBegin || bucket == hud_map_hold::kSample || bucket == hud_map_hold::kEnd) {
+        return;
+      }
       if (env_hold::IsMarker(bucket)) {
         scene_.OnEnvMarker(bucket, reinterpret_cast<const CompositeRecord*>(payload)->tag, OpenFrameList());
         return;
@@ -2736,6 +2887,12 @@ void OnGuestLock(uint32_t resource, uint32_t level, uint32_t address, uint32_t s
 void OnGuestSceneComposited(uint32_t bucket, uint32_t tag) {
   if (GuestCapture* c = g_capture_active.load(std::memory_order_acquire)) {
     c->Composite(bucket, tag);
+  }
+}
+
+void hud_map_hold::SubmitSample(const view_hold::MapSample& sample) {
+  if (GuestCapture* capture = g_capture_active.load(std::memory_order_acquire)) {
+    capture->HudMapSample(sample);
   }
 }
 

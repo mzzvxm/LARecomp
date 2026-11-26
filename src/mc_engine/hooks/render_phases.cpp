@@ -24,10 +24,13 @@
 #include "gpu/cut_request.h"
 #include "gpu/env_hold_link.h"
 #include "gpu/gpu.h"
+#include "gpu/hud_map_hold.h"
 #include "gpu/menu_world.h"
 #include "gpu/view_hold_rules.h"
 #include "gpu/world_clock.h"
 #include "mc_engine/camera/menu_camera.h"
+#include "mc_engine/cinematic/capture_mode.h"
+#include "native_gfx/guest/guest_resources.h"
 #endif
 
 // Which render phase bits perf_no_shadows clears.
@@ -125,6 +128,7 @@ namespace {
 namespace env = mcla::gpu::env_hold;
 namespace hold = mcla::gpu::view_hold;
 namespace world_clock = mcla::gpu::world_clock;
+namespace hud_map = mcla::gpu::hud_map_hold;
 
 constexpr uint32_t kEnvPhases = 0x4u | 0x8u;
 constexpr uint32_t kRenderBuffer = 0x827E5640u;
@@ -134,10 +138,12 @@ thread_local hold::Sample g_env_capture{};
 thread_local uint32_t g_env_renderer = 0;
 thread_local uint32_t g_env_marker = 0;
 thread_local bool g_env_have_capture = false;
+thread_local hold::MapSample g_map_sample{};
+thread_local bool g_map_scope = false;
 
 bool GuestPointer(uint32_t p) { return p >= 0x10000u && p < 0xE0000000u; }
 
-uint32_t EnvWorld(const uint8_t* base) {
+uint32_t ViewWorld(const uint8_t* base) {
     const uint32_t pause = ReadGuestU32(base, 0x828CCEA0u);  // Game_IsPaused
     const bool paused = GuestPointer(pause) && base[pause + 4] != 0 && base[pause + 10] == 0;
     // sub_822C0320 tests the HUD manager's photo-mode byte.
@@ -193,7 +199,7 @@ void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
     const bool sharp = env::Resolution(larecomp::settings::mcla_gpu_env_resolution.Get()) == "on";
     // A rig swap can be a cut even when both cameras point along the road.
     const uint32_t rig = uint32_t(CurrentRenderedCameraRig()) & 0xFFu;
-    now.world = EnvWorld(base) | (uint32_t(sharp) << 4) | (rig << 8);
+    now.world = ViewWorld(base) | (uint32_t(sharp) << 4) | (rig << 8);
     now.clock_jumps = world_clock::HourJumps();
     now.weather = world_clock::Weather();
     now.brightness = env::g_brightness.load(std::memory_order_relaxed);
@@ -209,6 +215,77 @@ void ApplyEnvViewHold(PPCRegister& effective, const PPCRegister& renderer) {
     }
     g_env_have_capture = hold::Positioned(now.camera);
     g_env_capture = now;
+#endif
+}
+
+void BeginHudMapPass(const PPCRegister& movie) {
+#if defined(LARECOMP_HAS_GPU)
+    g_map_scope = false;
+    g_map_sample = {};
+    const auto* base = larecomp::guest::Membase();
+    if (!base || !mcla::gpu::Enabled()) return;
+    // sub_827254B0 updates this flag before binding the small or expanded
+    // target. The expanded map shares the resolve address and stays live.
+    const bool small = ReadGuestU32(base, 0x8290A9E0u) == 1;
+    g_map_scope = small && larecomp::settings::mcla_gpu_hud_map_hold.Get();
+    mcla::gpu::OnGuestSceneComposited(hud_map::kBegin, g_map_scope ? movie.u32 : 0u);
+    if (!g_map_scope) return;
+
+    g_map_sample.owner = movie.u32;
+    g_map_sample.world = ViewWorld(base) | ((uint32_t(CurrentRenderedCameraRig()) & 0xFFu) << 8);
+    g_map_sample.time_ns = mc::cinematic::SceneClockNowNs();
+    g_map_sample.clock_epoch = mc::cinematic::SceneClockEpoch();
+    g_map_sample.cut = mcla::gpu::cut::Global().Pending();
+
+    // Player vehicle -> entity -> world matrix, as in car_mesh_read.cpp.
+    constexpr uint32_t kPlayerVehicle = 0x8288DCF8u;
+    constexpr uint32_t kVehicleEntity = 0x14u;
+    constexpr uint32_t kEntityMatrix = 0x90u;
+    const uint32_t vehicle = ReadGuestU32(base, kPlayerVehicle);
+    if (!GuestPointer(vehicle) ||
+        !mcla::native_gfx::IsGuestRangeReadable(vehicle + kVehicleEntity, 4)) return;
+    const uint32_t entity = ReadGuestU32(base, vehicle + kVehicleEntity);
+    if (!GuestPointer(entity) ||
+        !mcla::native_gfx::IsGuestRangeReadable(entity + kEntityMatrix, 64)) return;
+    const uint32_t matrix = entity + kEntityMatrix;
+    for (uint32_t i = 0; i < 3; ++i) {
+        g_map_sample.car.up[i] = ReadGuestF32(base, matrix + 16 + 4 * i);
+        g_map_sample.car.forward[i] = -ReadGuestF32(base, matrix + 32 + 4 * i);
+        g_map_sample.car.position[i] = ReadGuestF32(base, matrix + 48 + 4 * i);
+    }
+#endif
+}
+
+void SampleHudMapTransform(const PPCRegister& stack, const PPCRegister& zoom) {
+#if defined(LARECOMP_HAS_GPU)
+    if (!g_map_scope || g_map_sample.has_transform) return;
+    const auto* base = larecomp::guest::Membase();
+    if (!base || !GuestPointer(stack.u32) || !GuestPointer(zoom.u32) ||
+        !mcla::native_gfx::IsGuestRangeReadable(stack.u32 + 80, 28) ||
+        !mcla::native_gfx::IsGuestRangeReadable(zoom.u32, 12)) return;
+    // CHECK: confirm coverage of pan, rotation and zoom on the radar tour.
+    // sub_82723120 has just fetched the map transform from the movie.
+    // Its three Euler angles are on the stack, then its translation. The
+    // separate vector at r26 scales the basis of the other output matrix.
+    for (uint32_t i = 0; i < 3; ++i) {
+        g_map_sample.angles[i] = ReadGuestF32(base, stack.u32 + 80 + 4 * i);
+        g_map_sample.origin[i] = ReadGuestF32(base, stack.u32 + 96 + 4 * i);
+        g_map_sample.zoom[i] = ReadGuestF32(base, zoom.u32 + 4 * i);
+    }
+    g_map_sample.has_transform = true;
+#endif
+}
+
+void ResolveHudMapPass() {
+#if defined(LARECOMP_HAS_GPU)
+    if (g_map_scope) hud_map::SubmitSample(g_map_sample);
+#endif
+}
+
+void EndHudMapPass() {
+#if defined(LARECOMP_HAS_GPU)
+    if (g_map_scope) mcla::gpu::OnGuestSceneComposited(hud_map::kEnd);
+    g_map_scope = false;
 #endif
 }
 

@@ -51,6 +51,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <vector>
 
 #include "ao.h"
 #include "capture.h"
@@ -87,6 +88,7 @@
 #include "guest_memory.h"
 #include "hdr_scene.h"
 #include "hdr_tonemap.h"
+#include "hud_map_hold.h"
 #include "host_passes.h"
 #include "gi_apply.h"
 #include "vpl.h"
@@ -214,7 +216,12 @@ class Renderer final : public RenderThread::Executor {
   void OnShaderPackAttached();
 
   void Execute(const RecordHeader& header, const uint8_t* payload) override;
-  void ExecuteRecord(const RecordHeader& header, const uint8_t* payload);
+  enum class MapRecord { kLive, kDeferred, kHeld };
+  void ExecuteProfiledRecord(const RecordHeader& header, const uint8_t* payload,
+                             MapRecord map_record = MapRecord::kLive);
+  void ExecuteRecord(const RecordHeader& header, const uint8_t* payload, MapRecord map_record);
+  bool HandleHudMapRecord(const RecordHeader& header, const uint8_t* payload);
+  void FlushHudMapRecords(MapRecord map_record);
   void OnIdle() override;
   int64_t DeferredDue() const override { return deferred_.pending ? deferred_.due : 0; }
   void RunDeferred() override { FlushDeferredPresent(/*wait=*/false); }
@@ -379,6 +386,16 @@ class Renderer final : public RenderThread::Executor {
   HostPasses passes_;       // layout and vertex shader of the full-screen passes
   ResolveMemory resolve_memory_;  // what resolves write, as guest bytes
   ResolveCache resolve_;    // resolve products (owns their textures and views)
+  std::vector<uint8_t> hud_map_records_;
+  std::optional<ResolveCache::HudMapCopy> hud_map_copy_;
+  view_hold::MapSample hud_map_capture_{};
+  std::optional<view_hold::MapSample> hud_map_sample_;
+  int64_t hud_map_deadline_ = 0;
+  uint64_t hud_map_written_ = 0;
+  uint32_t hud_map_owner_ = 0;
+  bool hud_map_buffering_ = false;
+  bool hud_map_has_draw_ = false;
+  bool hud_map_seen_ = false;
   TextureCache textures_;   // textures decoded from guest memory
   VideoMemoryBudget vram_;  // releases what is unused when video memory runs short
   SwapChain swap_chain_;

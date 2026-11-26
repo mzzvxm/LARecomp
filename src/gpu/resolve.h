@@ -56,6 +56,7 @@
 #include <functional>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -225,6 +226,17 @@ class ResolveCache {
   // them. On a refresh every level must also have been written this frame.
   bool EnvProductsReady(Scale map_scale, bool refreshed);
 
+  struct HudMapCopy {
+    TextureKey key;
+    uint32_t flags = 0;
+    uint32_t source_info = 0;
+    bool swap_rb = false;
+    bool operator==(const HudMapCopy&) const = default;
+  };
+  static std::optional<HudMapCopy> DescribeHudMapCopy(const ResolveRecord& record);
+  uint64_t HudMapWritten(const HudMapCopy& copy);
+  bool ReplayHudMap(const HudMapCopy& copy, uint64_t written, plume::RenderCommandList* list);
+
   // A lock record (24.33 M5.2c): the CPU locked a range that
   // holds a resolve destination. The resolve memory copies the range's pages
   // with bytes guest memory lacks into guest memory before the guest thread
@@ -364,6 +376,7 @@ class ResolveCache {
   std::vector<GuestMemory::Range> drained_;
   std::vector<Product*> scratch_hits_;
   uint64_t frame_ = 1;
+  uint64_t hud_map_held_frame_ = 0;
   std::array<uint32_t, size_t(Failure::kCount)> failures_logged_{};
   uint32_t cpu_writes_logged_ = 0;
   // Keys found with a level not wholly written since activation, logged once
@@ -408,6 +421,9 @@ class ResolveCache {
 
   struct Stats {
     uint64_t resolves = 0;
+    uint64_t hud_map_drawn = 0;
+    uint64_t hud_map_held = 0;
+    uint64_t hud_map_reads = 0;
     uint64_t copies = 0;
     uint64_t clear_only = 0;
     uint64_t color_clears = 0;

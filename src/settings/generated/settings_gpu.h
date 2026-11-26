@@ -806,6 +806,9 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(bool, mcla_gpu_env_hold, true, "Reuse the car environment map until the view or lighting changes. "
     "Turn off to draw it every frame for comparison. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_hud_map_hold, true, "Refresh the HUD radar at 30 Hz or sooner when the map changes. "
+    "Turn off to draw it every frame for comparison. Live.", rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_flicker_probe, false, "Diagnostic: read every guest frame back, as the window shows it, and log "
     "the blocks of 16x16 pixels that change for 1-5 frames and come back to exactly their "
     "old bytes (a flicker). Meant for a static scene such as the pause menu. Costs a copy of "
@@ -2242,6 +2245,7 @@ inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
 inline auto& mcla_gpu_env_hold = g_gpu.mcla_gpu_env_hold;
+inline auto& mcla_gpu_hud_map_hold = g_gpu.mcla_gpu_hud_map_hold;
 inline auto& mcla_gpu_flicker_probe = g_gpu.mcla_gpu_flicker_probe;
 inline auto& mcla_gpu_flicker_probe_dumps = g_gpu.mcla_gpu_flicker_probe_dumps;
 inline auto& mcla_gpu_flicker_probe_shots = g_gpu.mcla_gpu_flicker_probe_shots;
