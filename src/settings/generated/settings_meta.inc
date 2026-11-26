@@ -767,6 +767,7 @@
 {"mcla_traffic_probe_detail", "MCLA/Diagnostics"},
 {"mcla_traffic_probe_model", "MCLA/Diagnostics"},
 {"mcla_traffic_probe_spawn", "MCLA/Diagnostics"},
+{"mcla_gpu_impostor_native_size", "MCLA/GPU"},
 {"mcla_ui_minimap_scale", "MCLA/GPU"},
 {"mcla_ui_sharp", "MCLA/GPU"},
 {"mcla_ui_sharp_census", "MCLA/GPU"},

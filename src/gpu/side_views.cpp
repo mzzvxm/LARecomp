@@ -27,6 +27,7 @@ const SideViewRule& Rule(SideView view) {
     case SideView::kShadow: return kShadowRule;
     case SideView::kEnv: return kEnvRule;
     case SideView::kUiMap: return kUiMapRule;
+    case SideView::kFoliageImpostor: return kFoliageImpostorRule;
     default: return kReflectionRule;
   }
 }
@@ -40,7 +41,7 @@ std::string Lower(std::string text) {
 }  // namespace
 
 SideView Classify(const EdramKey& key, uint32_t size_bits) {
-  for (const SideView view : {SideView::kReflection, SideView::kShadow, SideView::kEnv, SideView::kUiMap}) {
+  for (const SideView view : {SideView::kReflection, SideView::kShadow, SideView::kEnv, SideView::kUiMap, SideView::kFoliageImpostor}) {
     const SideViewRule& rule = Rule(view);
     if (rule.matches && rule.matches(key, size_bits)) {
       return view;
