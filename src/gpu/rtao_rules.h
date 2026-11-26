@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <string_view>
 
 #include "car_rt_ao_rules.h"
 #include "city_rt_rules.h"
@@ -84,7 +85,30 @@ constexpr const char* FallbackText(Fallback why) {
   return "unknown";
 }
 
-enum class Screen : uint8_t { kAuto, kOff, kOn };
+enum class Screen : uint8_t { kAuto, kOff, kOn, kWorld };
+
+constexpr Screen ParseScreen(std::string_view text) {
+  if (text == "off") return Screen::kOff;
+  if (text == "on") return Screen::kOn;
+  if (text == "world") return Screen::kWorld;
+  return Screen::kAuto;
+}
+
+constexpr bool ScreenPassInPlay(Screen screen, bool tracing, bool cabin_screen) {
+  return screen != Screen::kOff && (!tracing || cabin_screen || screen == Screen::kOn || screen == Screen::kWorld);
+}
+
+// Shared with hlsl/rtao_denoise_math.hlsli. Bit 1 belongs to the history view.
+constexpr uint32_t kBlendScreenAll = 1u << 0;
+constexpr uint32_t kBlendScreenWorld = 1u << 2;
+
+constexpr uint32_t ScreenBlendFlags(Screen screen, bool force_open) {
+  if (force_open) return 0u;
+  if (screen == Screen::kOn) return kBlendScreenAll;
+  if (screen == Screen::kWorld) return kBlendScreenWorld;
+  return 0u;
+}
+
 enum class Interior : uint8_t { kAuto, kScreen, kRt };
 
 constexpr bool ScreenCabin(Interior policy, bool interior, bool closed) {
@@ -124,7 +148,7 @@ inline Plan Decide(const PlanInputs& in) {
   else plan.why = Fallback::kNone;
   plan.on = plan.why == Fallback::kNone;
   plan.screen_pass = in.bounce_light || plan.why == Fallback::kNotWanted || plan.why == Fallback::kNotPlayView ||
-                     (in.screen != Screen::kOff && (!plan.on || in.cabin_screen || in.screen == Screen::kOn));
+                     ScreenPassInPlay(in.screen, plan.on, in.cabin_screen);
   if (plan.on) {
     plan.raw = in.raw;
     plan.rays = in.raw ? kRawFrameRays : (in.rays ? in.rays : in.budget.rays);

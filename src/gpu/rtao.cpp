@@ -170,8 +170,7 @@ void RtAo::BeginFrame(const rtao_setting::Decision& decision, bool play_view) {
     budget_ = rtao::BudgetFor(decision.rung);
     const auto alpha_text = settings::mcla_gpu_rtao_alpha.Get();
     alpha_ = alpha_text == "auto" && budget_.exact_alpha ? Alpha::kExact : city_rt_shadow::ParseAlphaMode(alpha_text);
-    const auto screen_text = settings::mcla_gpu_rtao_screen.Get();
-    screen_ = screen_text == "off" ? rtao::Screen::kOff : screen_text == "on" ? rtao::Screen::kOn : rtao::Screen::kAuto;
+    screen_ = rtao::ParseScreen(settings::mcla_gpu_rtao_screen.Get());
     const auto interior_text = settings::mcla_gpu_rtao_interior.Get();
     interior_policy_ = interior_text == "screen" ? rtao::Interior::kScreen
                     : interior_text == "rt" ? rtao::Interior::kRt : rtao::Interior::kAuto;
@@ -459,14 +458,15 @@ void RtAo::FinishTraceTiming(plume::RenderCommandList* list) {
 }
 
 uint32_t RtAo::RecordCompose(plume::RenderCommandList* list, const ComposeInputs& in) {
-  if (!recorded_)
+  if (!recorded_ || !list || !compose_ || !timing_)
     return kNoSlot;
   timing_->Mark(list, "rtao compose");
+  const bool force_open = check_ == 1;
   const RtAoCompose::Frame frame = {
       .list = list, .filtered = filtered_, .depth_guide = &depth_[parity_], .depth_full = depth_full_,
-      .normal_slot = normal_slot_, .screen_term_slot = check_ == 1 ? kNoSlot : in.screen_term_slot,
+      .normal_slot = normal_slot_, .screen_term_slot = force_open ? kNoSlot : in.screen_term_slot,
       .bounce_slot = in.bounce_slot, .traced = {signal_.width, signal_.height}, .plan_ao = {in.plan_ao[0], in.plan_ao[1]},
-      .power = in.power, .floor_ = in.floor, .blend_screen = screen_ == rtao::Screen::kOn && check_ != 1, .view = in.view,
+      .power = in.power, .floor_ = in.floor, .screen_blend_flags = rtao::ScreenBlendFlags(screen_, force_open), .view = in.view,
   };
   // The compose's optional inputs: the trace's own raw signal (coverage, the debug views), the vehicle IDs of the traced pixels, the depth target's stencil plane (the full size picture's
   // vehicle IDs, so a car's edge takes only the car's taps) and the car pass's occlusion image of the A/B arm.

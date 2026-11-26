@@ -9,6 +9,7 @@
 #include "ray_regen_guides_rules.h"
 #include "rt_denoise_rules.h"
 #include "rtao_denoise_rules.h"
+#include "rtao_rules.h"
 
 namespace hlsl_shim {
 struct float4 { float x, y, z, w; };
@@ -30,6 +31,7 @@ float Term(float open, float coverage, float screen, float power, float floor, b
 namespace {
 namespace shader = hlsl_shim;
 namespace ao = mcla::gpu::rtao_denoise;
+namespace rtao = mcla::gpu::rtao;
 namespace dn = mcla::gpu::rt_denoise;
 namespace rgd = mcla::gpu::rayregen::guides;
 
@@ -129,6 +131,25 @@ void CheckCompose() {
   Check(Near(shader::Term(0.5f, 0.5f, 0.8f, 2, 0.1f, false), 0.525f), "coverage mixes powered visibility");
   Check(Near(shader::Term(0, 1, 1, 3.6f, 0.1f, false), 0.1f), "visibility floor");
   Check(Near(shader::Term(0.9f, 1, 0.3f, 2, 0.1f, true), 0.3f), "screen blend takes the darker covered term");
+  const uint32_t world = rtao::ScreenBlendFlags(rtao::Screen::kWorld, false);
+  const uint32_t all = rtao::ScreenBlendFlags(rtao::Screen::kOn, false);
+  const uint32_t history = 1u << 1;
+  Check(shader::RtAoBlendScreen(world | history, false) && !shader::RtAoBlendScreen(world | history, true),
+        "world blending affects world receivers only");
+  Check(shader::RtAoBlendScreen(all, false) && shader::RtAoBlendScreen(all, true),
+        "the existing all-receiver mode still blends vehicle AO");
+  Check(!shader::RtAoBlendScreen(history, false) && !shader::RtAoBlendScreen(history, true),
+        "history presence alone cannot enable blending");
+  const auto world_term = [&](float open, float coverage, float screen, bool vehicle) {
+    return shader::Term(open, coverage, screen, 2.0f, 0.1f, shader::RtAoBlendScreen(world, vehicle));
+  };
+  Check(Near(world_term(1, 1, 0.65f, false), 0.65f) && Near(world_term(1, 1, 0.65f, true), 1),
+        "a covered world ray miss keeps the deck's raster occlusion while the vehicle stays traced");
+  Check(Near(world_term(0.5f, 1, 0.65f, false), 0.25f), "stronger ray occlusion survives");
+  Check(Near(world_term(1, 0, 1, false), 1) && Near(world_term(1, 1, 1, false), 1),
+        "sky and an open world surface remain open");
+  Check(Near(world_term(0, 0, 0.65f, true), 0.65f) && Near(world_term(0.5f, 0.5f, 0.65f, false), 0.45f),
+        "cabin fallback and partial coverage still use the screen term");
   const auto bounce = shader::RtAoWithBounce(0.6f, {0.2f, 0.1f, -0.4f, 3.5f});
   Check(bounce.x == 0.6f && bounce.y == 0.1f && bounce.z == -0.4f && bounce.w == 3.5f, "composition preserves the three bounce channels");
   const std::array<Tap, 4> pole = {{{0, 2, 1, 0}, {1, 10, 1, 0}, {1, 10, 1, 0}, {1, 10, 1, 0}}};

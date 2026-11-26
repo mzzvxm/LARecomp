@@ -21,7 +21,7 @@ class RtAoCompose {
     uint32_t screen_term_slot, bounce_slot;
     uint32_t traced[2], plan_ao[2];
     float power, floor_;
-    bool blend_screen;
+    uint32_t screen_blend_flags;
     int view;
   };
   uint32_t Record(const Frame&);

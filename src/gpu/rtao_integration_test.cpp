@@ -70,6 +70,9 @@ struct Checks {
 
 void SettingsChecks(Checks& checks, const fs::path& src) {
   const auto definitions = Read(src / "settings/generated/settings_gpu.h");
+  checks.Expect(definitions.contains(std::string("REX_") + "SETTING(std::string, mcla_gpu_rtao_screen, \"auto\",") &&
+                    definitions.contains("rex::Allowed(\"auto\", \"off\", \"on\", \"world\")"),
+                "world blending is available with auto still the default");
   std::map<std::string, unsigned> reads;
   const std::regex read(R"rx(\b(mcla_gpu_rtao_\w+|mcla_gpu_dlss_rr_rt_ao)\s*\.\s*Get\s*\()rx");
   for (const auto& file : fs::recursive_directory_iterator(src)) {
@@ -104,6 +107,15 @@ void FrameChecks(Checks& checks, const fs::path& gpu) {
   const auto rules = Read(gpu / "rtao_rules.h");
   const auto trace = Read(gpu / "rtao.cpp");
   const auto denoise = Read(gpu / "rtao_denoise.cpp");
+  const auto compose = Read(gpu / "rtao_compose.cpp");
+  const auto compose_shader = Read(gpu / "hlsl/rtao_compose_cs.hlsl");
+  checks.Expect(trace.contains("ParseScreen(settings::mcla_gpu_rtao_screen.Get())") &&
+                    trace.contains("ScreenBlendFlags(screen_, force_open)") &&
+                    compose.contains("in.screen_blend_flags | (history ? 2u : 0u)") &&
+                    compose_shader.contains("RtAoBlendScreen(g_push.flags, vehicle)"),
+                "the live world blend mode reaches the compose shader without changing the history bit");
+  checks.Expect(ao.contains("ScreenPassInPlay(rtao_->screen_, plan.rtao.on, rtao_->cabin_screen_)"),
+                "a frame losing GI still produces the requested world screen term");
   const auto consumer = Read(gpu / "hlsl/rt_denoise_ao_consumer.hlsli");
   const auto engine = Read(gpu / "hlsl/rt_denoise_engine.hlsli");
   const auto has = [&](const std::string& code, const char* pattern, std::string_view what) {
