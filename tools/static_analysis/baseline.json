@@ -2543,6 +2543,50 @@
       "check": "-Wlifetime-safety-invalidation"
     },
     {
+      "id": "f0645b058629253b6eeea7e846c3559c3d97939cc1a484445334da86d38e76f3",
+      "count": 1,
+      "category": "style",
+      "reason": "A test's deliberate bit-for-bit check that the camera position is untouched; V3 is three floats with no padding.",
+      "path": "src/mc_engine/camera/camera_orbit_test.cpp",
+      "lines": [
+        58
+      ],
+      "check": "bugprone-suspicious-memory-comparison"
+    },
+    {
+      "id": "b041afb70fe360a2f7f3c1312645872a585e34a5683bd1eac74ff18a1cbb2f7b",
+      "count": 1,
+      "category": "style",
+      "reason": "A test's deliberate bit-for-bit check that the camera position is untouched; V3 is three floats with no padding.",
+      "path": "src/mc_engine/camera/camera_orbit_test.cpp",
+      "lines": [
+        59
+      ],
+      "check": "bugprone-suspicious-memory-comparison"
+    },
+    {
+      "id": "43fd96dd6be8544faba30a14967b2fdc1bd828084de62b96c5fa15c566033b81",
+      "count": 1,
+      "category": "style",
+      "reason": "A test's deliberate bit-for-bit check that the camera position is untouched; V3 is three floats with no padding.",
+      "path": "src/mc_engine/camera/camera_orbit_test.cpp",
+      "lines": [
+        147
+      ],
+      "check": "bugprone-suspicious-memory-comparison"
+    },
+    {
+      "id": "d53573edaf741dab8afb965d489c0e60fcd2d6c62c179bc37b24129099931c1d",
+      "count": 1,
+      "category": "style",
+      "reason": "A test's deliberate bit-for-bit check that the camera position is untouched; V3 is three floats with no padding.",
+      "path": "src/mc_engine/camera/camera_orbit_test.cpp",
+      "lines": [
+        251
+      ],
+      "check": "bugprone-suspicious-memory-comparison"
+    },
+    {
       "id": "579961c80381011596dcbf351152d9afe6cb921a96abf5f15765e9c402fc1cfe",
       "count": 1,
       "category": "false-positive",
@@ -2983,6 +3027,28 @@
       "check": "bugprone-suspicious-stringview-data-usage"
     },
     {
+      "id": "dd3a7d46fc210a271b6c6c709015e6600e5f820f6a91ed51ecfcf733b34f7e7b",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The function reassigns, appends to or resizes the caller's string or vector on purpose; no iterator, element reference or view of it survives the change.",
+      "path": "src/mc_engine/gameplay/garage_fixes.cpp",
+      "lines": [
+        195
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "ce4f236ed1c32a7ac310051e01cdac4b22a05a5a936e9f14d4706625fa61c187",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The function reassigns, appends to or resizes the caller's string or vector on purpose; no iterator, element reference or view of it survives the change.",
+      "path": "src/mc_engine/gameplay/garage_fixes_open.cpp",
+      "lines": [
+        104
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
       "id": "d4ee40355bca554d4cffca2994b5d28ab35046a0e2db72530722cb021289d94a",
       "count": 1,
       "category": "style",
@@ -3056,6 +3122,39 @@
       "path": "src/mc_engine/hooks/neon_pulse_test.cpp",
       "lines": [
         349
+      ],
+      "check": "misc-redundant-expression"
+    },
+    {
+      "id": "1ec9d778ea3496fd3b4bf127a33569e57902b7f1053636873b1f2fb897d809e4",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The function reassigns, appends to or resizes the caller's string or vector on purpose; no iterator, element reference or view of it survives the change.",
+      "path": "src/mc_engine/hooks/owned_cars.cpp",
+      "lines": [
+        408
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "661909dadc0c4386cdea7e94c854a43c4434656b613fa4136729baea4eb48e37",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The function reassigns, appends to or resizes the caller's string or vector on purpose; no iterator, element reference or view of it survives the change.",
+      "path": "src/mc_engine/hooks/owned_cars.cpp",
+      "lines": [
+        408
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "7a4e8448da1b7475d0d46baa1cc6bc428ee65ee8994598621e69a00499e22bb9",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "WriteOnce(...) || WriteOnce(...) is a deliberate second attempt (a file briefly held open by another program); the call has side effects.",
+      "path": "src/mc_engine/hooks/owned_cars.cpp",
+      "lines": [
+        487
       ],
       "check": "misc-redundant-expression"
     },
