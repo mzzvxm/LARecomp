@@ -1536,11 +1536,13 @@ int main(int argc, char** argv) {
       Check(Has(refl, "hidden = shaded;") && Has(refl, "else if (hitsOther)") && Has(refl, "hidden *= g_push.tune.x;") && Has(refl, "const float known = OtherCarColour(history, CarRtLoadCar(hitInstance), hidden);"),
             "a shaded hit takes no shade factor, and today's stand-in is what is left for a hit with no material");
       Check(Has(scene, "ReadTexcoords(&staged.uv_floats)") && Has(scene, "crm::MakeFrameRows(in, rows);") && Has(scene, "textures_->Peek2D(texture)") &&
-                // both places that fill the set (the frame with the car's meshes, and the city-only frame) name the texture coordinates' buffer or, where none is made yet, the stand-in: never a null buffer
-                // (CITY-RT-REVIEW M1: the first of them used to say `uvs_.buffer.get()` alone; the pin follows the code, whether or not the light stack is merged in)
-                CountOf(scene, "res.set->setBuffer(uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0);") == 2 && CountOf(scene, "res.set->setBuffer(uvs_index_, uvs_.buffer.get(), 0);") == 0 &&
-                CountOf(scene, "res.set->setBuffer(materials_index_, res.materials.get()") == 2 && Has(scene_h, "Shared uvs_;"),
-            "the scene reads the texture coordinates once a mesh, writes the frame's rows every frame, asks the cache for the textures and binds both buffers (the real ones or the stand-in, in both sets it fills)");
+                Has(scene, "BindSceneDescriptors(res, uint64_t(rows.size()) * sizeof(rr::InstanceRow),\n                         uint64_t(material_words.size()) * sizeof(uint32_t));") &&
+                Has(scene, "BindSceneDescriptors(res, sizeof(rr::InstanceRow), sizeof(uint32_t) * 4);") && CountOf(scene, "BindSceneDescriptors(res,") == 2 &&
+                Has(scene, "{uvs_index_, uvs_.buffer ? uvs_.buffer.get() : standin_.get(), 0, 0}") &&
+                Has(scene, "{materials_index_, slot.materials.get(), materials_bytes, sizeof(uint32_t) * 4}") &&
+                Has(scene, "if (slot.bindings[i + 1].Update(memo, b.buffer, b.bytes)) {") &&
+                Has(scene, "slot.set->setBuffer(b.index, b.buffer, b.bytes, b.stride ? &view : nullptr);") && Has(scene_h, "Shared uvs_;"),
+            "both car and city-only frames bind UVs or the stand-in and their own material rows through the shared descriptor writer");
       Check(Has(frame_cpp, "if (others_on_ && !skinned) {") && Has(frame_cpp, "out.material = MaterialOf(d);") && Has(frame_cpp, "ReadRegister(ps, 39, sun) && car_rt_material::ReadRegister(ps, 26, ambient)") &&
                 Has(frame_cpp, "car_rt_material::ReadRegister(ps, 57, sky)"),
             "the car frame reads the materials only while the other cars are asked for, and the light from the pixel constants c39, c26 and c57");

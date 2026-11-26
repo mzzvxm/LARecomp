@@ -263,9 +263,11 @@ void CheckSources(const std::string& gpu) {
   Check(has(apply, "PaintVisibility(ao, ao_vehicle)") && has(apply, "lerp(1.0f, ao_seen, saturate(g_push.shape.z * share * fade))"),
         "ao_apply_ps.hlsl: the factor is lerp(1, the paint's visibility, strength * share * fade)");
   Check(has(apply, "if (on_car <= 0.0f || !AoPaintOn())"), "ao_apply_ps.hlsl: the world (at most half of the neighbourhood vehicle) returns the visibility as it is");
-  // The vehicle share: the same neighbourhood as the bounce light's, from the occlusion's own upsample or the pixel's own depth.
-  Check(has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle)") && has(apply, "const float ao_vehicle = gi_vehicle;"),
-        "ao_apply_ps.hlsl: the vehicle share is the occlusion's upsample's (the bounce light's variant: its own)");
+  // The paint's vehicle share follows the image that supplied its occlusion.
+  Check(has(apply, "VisibilityAt(g_push.slots.z, pixel, tc, ao_vehicle, thin, optimized && AoRotatingGrid())") &&
+            has(apply, "ao = VisibilityAt(AoVisibilitySlot(), pixel, tc, ao_vehicle);") &&
+            has(apply, "ao = gi_image.x;\n    ao_vehicle = gi_vehicle;"),
+        "ao_apply_ps.hlsl: paint takes the vehicle share from the AO upsample, or from the shared image in the legacy bounce variant");
   // The setting (a REX_SETTING row of src/settings/generated; the REXCVAR_DEFINE of ao.cpp before the conversion): its default and that it is
   // debug-only, live and from 1/16 to 1. Then ao.cpp: the clearing of the radius bits, the code into the flags.
   const setting_source::Info paint = setting_source::Find(gpu, cpp, "mcla_gpu_ao_paint");

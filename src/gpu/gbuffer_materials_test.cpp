@@ -51,11 +51,12 @@ const gb::TextureRow* FindRow(const gb::TextureTable& table, const char* diction
 // Names, keys, the FNV
 // ---------------------------------------------------------------------------
 void NameChecks() {
-  Check(std::size(gb::kSurfaceClassNames) == 16, "sixteen class names");
+  constexpr uint32_t kClassCount = 17;
+  Check(std::size(gb::kSurfaceClassNames) == kClassCount, "seventeen class names including garagefloor");
   std::set<std::string_view> unique(std::begin(gb::kSurfaceClassNames), std::end(gb::kSurfaceClassNames));
-  Check(unique.size() == 16, "the class names are all different");
+  Check(unique.size() == kClassCount, "the class names are all different");
   bool round_trip = true;
-  for (uint32_t i = 0; i < 16; ++i) {
+  for (uint32_t i = 0; i < kClassCount; ++i) {
     gb::SurfaceClass cls = gb::SurfaceClass::kCount;
     round_trip = round_trip && gb::ParseSurfaceClass(gb::SurfaceClassName(gb::SurfaceClass(i)), &cls) && uint32_t(cls) == i;
     gb::SurfaceClass by_number = gb::SurfaceClass::kCount;
@@ -64,7 +65,8 @@ void NameChecks() {
   Check(round_trip, "every class parses from its name and from its number");
   gb::SurfaceClass cls = gb::SurfaceClass::kNone;
   Check(gb::ParseSurfaceClass("GLASS", &cls) && cls == gb::SurfaceClass::kGlass, "a class name in capitals");
-  Check(!gb::ParseSurfaceClass("16", &cls) && !gb::ParseSurfaceClass("", &cls) && !gb::ParseSurfaceClass("glas", &cls) && !gb::ParseSurfaceClass("-1", &cls), "no class 16, no empty, no near miss");
+  Check(gb::ParseSurfaceClass("garagefloor", &cls) && cls == gb::SurfaceClass::kGarageFloor && uint32_t(cls) == 16, "garagefloor is class 16");
+  Check(!gb::ParseSurfaceClass("17", &cls) && !gb::ParseSurfaceClass("", &cls) && !gb::ParseSurfaceClass("glas", &cls) && !gb::ParseSurfaceClass("-1", &cls), "class numbers stop at 16; empty and near-miss names are invalid");
   Check(gb::SurfaceClassName(gb::SurfaceClass::kEmissive) == "emissive" && gb::SurfaceClassName(gb::SurfaceClass::kWetRoad) == "wetroad", "the names of the classes the survey names");
 
   Check(gb::Fnv1aLower("") == 0xcbf29ce484222325ull, "FNV-1a of the empty text is the offset basis");

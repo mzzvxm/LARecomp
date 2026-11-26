@@ -151,8 +151,9 @@ void TestSources(const std::string& dir) {
   g_check(nc::Has(cs, "static const uint kBlueNoiseFlag = 1u << 29;") && as::kBlueNoiseFlag == (1u << 29), "its blue noise flag is bit 29, ao_stable.h's");
   g_check(nc::Has(cs, "float(m), float((m * 8u) % 13u)) * (1.0 / 13.0)") && as::kLatticePeriod == 13 && as::kLatticeStepY == 8, "its frame shift is the occlusion's 13 frame lattice");
   g_check(nc::Has(ao, "in.noise_code = ao_stable::NoiseCode(scene_noise::NoiseIndex(frame_), larecomp::settings::mcla_gpu_ao_stable.Get(), larecomp::settings::mcla_gpu_ao_blue_noise.Get());") &&
-              nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;"),
-          "ao.cpp gives the traced pass the blue flag (mcla_gpu_ao_blue_noise) and the scene's noise index (NoiseIndex: its number plus the frames a held scene has stood on it), like the main pass");
+              nc::Has(ao, "const bool denoise_visibility = RtDenoise::V2Enabled();") &&
+              nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history || denoise_visibility) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;"),
+          "ao.cpp sets the car's blue noise code and advances its sun phase for the upscaler, contact history or v2 visibility denoiser");
 }
 
 }  // namespace

@@ -516,9 +516,12 @@ void TestCoverage() {
   Check(PlacedAt(out, 2000, p) && !PlacedAt(out, 1000, p), "... and only b is placed");
 }
 
-void TestClassCaps() {
-  const ci::Limits mid = ci::ClassLimits(GpuClass::kMid);
-  Check(mid.cars == 2 && Near(mid.radius, 14.0), "the Mid class: 2 cars within 14 m");
+void TestPlacementCaps() {
+  const ci::Limits limits = High();
+  Check(limits.cars == 4 && Near(limits.radius, 20.0) &&
+            ci::ClassLimits(GpuClass::kLow) == limits && ci::ClassLimits(GpuClass::kMid) == limits,
+        "the default places up to four cars within 20 m on every GPU class");
+  const ci::Limits restricted = ci::LimitsFor(GpuClass::kMid, 2, 14.0);
   cm::CarMemory memory;
   cm::CarMemory::Output out;
   // Four parked cars at 3, 5, 7 and 16 m from the player, all drawn once, then all culled.
@@ -533,21 +536,21 @@ void TestClassCaps() {
   for (uint32_t i = 0; i < 4; ++i) {
     f1.Draw(2 + i, vehicles[i], BodyParts(1000 * (i + 1), 8), /*kept=*/true);
   }
-  memory.Update(InputOf(f1, ci::ClassLimits(GpuClass::kHigh)), Resident{}, &out);
+  memory.Update(InputOf(f1, limits), Resident{}, &out);
   Check(out.stats.kits == 4, "four kits");
 
   Frame f2;
   f2.guest_frame = 2;
   f2.vehicles = vehicles;
-  memory.Update(InputOf(f2, mid), Resident{}, &out);
-  Check(out.cars.size() == 2, "the Mid class places two");
-  Check(Near(out.cars[0].distance, 3.0) && Near(out.cars[1].distance, 5.0), "the nearest two, nearest first, by the distance to the player");
-  Check(out.stats.out_of_range == 1, "the car at 16 m is beyond the Mid class's 14 m: kept, not placed");
+  memory.Update(InputOf(f2, restricted), Resident{}, &out);
+  Check(out.cars.size() == 2, "an explicit cap of two places two");
+  Check(out.cars.size() >= 2 && Near(out.cars[0].distance, 3.0) && Near(out.cars[1].distance, 5.0), "the nearest two, nearest first, by the distance to the player");
+  Check(out.stats.out_of_range == 1, "the car at 16 m is kept but excluded from placement by the explicit 14 m radius");
   Frame f3;
   f3.guest_frame = 3;
   f3.vehicles = vehicles;
-  memory.Update(InputOf(f3, High()), Resident{}, &out);
-  Check(out.cars.size() == 4 && Near(out.cars[3].distance, 16.0), "the High class places all four (the 16 m car is within its 20 m)");
+  memory.Update(InputOf(f3, limits), Resident{}, &out);
+  Check(out.cars.size() == 4 && Near(out.cars[3].distance, 16.0), "the default places all four (the 16 m car is within its 20 m)");
   ci::Limits two = High();
   two.cars = 3;
   Frame f4;
@@ -881,7 +884,7 @@ int main() {
   TestLooseCoverage();
   TestNeverSeen();
   TestCoverage();
-  TestClassCaps();
+  TestPlacementCaps();
   TestDrops();
   TestKitPolicy();
   TestStoreFull();

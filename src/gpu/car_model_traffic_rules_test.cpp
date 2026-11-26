@@ -609,7 +609,8 @@ crt::CarInfo Car(uint32_t id, bool traffic, double distance, uint32_t parts = 10
 void SelectionTests() {
   const ci::Limits high = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kHigh);
   const ci::Limits mid = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kMid);
-  Check(cmp::TrafficCarsFor(high, -1) == 4 && cmp::TrafficCarsFor(mid, -1) == 2, "the traffic's count is the class's by default");
+  const ci::Limits low = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kLow);
+  Check(cmp::TrafficCarsFor(high, -1) == 4 && cmp::TrafficCarsFor(mid, -1) == 4 && cmp::TrafficCarsFor(low, -1) == 4, "the default traffic count is four on every GPU class");
   Check(cmp::TrafficCarsFor(high, 0) == 0 && cmp::TrafficCarsFor(high, 3) == 3 && cmp::TrafficCarsFor(high, 99) == ci::kMaxCars, "0 off, N asks, at most the setting's maximum");
   Check(cmp::TrafficCarsFor(ci::Limits{}, -1) == 0 && cmp::TrafficCarsFor(ci::Limits{}, 3) == 0, "no other cars: no traffic");
 
@@ -651,8 +652,8 @@ void SelectionTests() {
   Check(vehicles(cmp::ChoosePlacedAll(cars, high, crt::Mode::kGaps, none, 0)) == V({1, 2, 3, 4}), "traffic count 0: the racers only (as before)");
   Check(cmp::ChoosePlacedAll(cars, high, crt::Mode::kOff, none, 4).empty(), "mode off: nothing");
   Check(cmp::ChoosePlacedAll(cars, ci::Limits{}, crt::Mode::kGaps, none, 4).empty(), "the other cars off: nothing");
-  // the radius is the class's: the mid class reaches 10 m
-  Check(vehicles(cmp::ChoosePlacedAll(cars, mid, crt::Mode::kGaps, none, 2)) == V({11, 1, 12, 2}), "mid class: 2 racers and 2 traffic cars within 10 m");
+  const ci::Limits restricted = ci::LimitsFor(mcla::gpu::gpu_class::GpuClass::kMid, 2, 10.0);
+  Check(vehicles(cmp::ChoosePlacedAll(cars, restricted, crt::Mode::kGaps, none, 2)) == V({11, 1, 12, 2}), "explicit caps of two racers and two traffic cars within 10 m");
   // a remembered car (a kit) stands where traffic car 11 is: kGaps leaves it to the kit, kModelFirst does not
   std::vector<ci::OtherCar> kits(1);
   kits[0].remembered = true;
@@ -735,7 +736,7 @@ void ParkedStagingTests() {
   Check(VehiclesOf(cars, crt::ChoosePlaced(cars, high, crt::Mode::kGaps, none, true, 4)) == V({21, 22, 23, 24}),
         "placed: a shown car with parts that is not drawn is placed like a hidden one; the drawn one (27) is not, the one with no parts (25) and the one beyond the radius (26) are not");
 
-  // a street: ten parked cars in view, unclaimed, 3 to 18 m from the player, the traffic count of the High class (4) and of the Mid class (2)
+  // A street of ten unclaimed parked cars at 3 to 18 m, with traffic caps of four and two.
   std::vector<crt::CarInfo> street;
   for (uint32_t k = 0; k < 10; ++k) {
     street.push_back(ShownCar(40 + k, 3.0 + 1.5 * k, true));

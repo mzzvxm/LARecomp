@@ -665,14 +665,16 @@ crt::CarInfo Info(uint32_t vehicle, double distance, bool visible = false, bool 
 void TestChoose() {
   const ci::Limits high = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kHigh);
   const ci::Limits mid = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kMid);
+  const ci::Limits restricted = ci::LimitsFor(mcla::gpu::gpu_class::GpuClass::kMid, 2, 10.0);
   std::vector<crt::CarInfo> cars = {Info(1, 0.0), Info(2, 12.0), Info(3, 3.5), Info(4, 6.0, true), Info(5, 9.0), Info(6, 30.0), Info(7, 5.0, false, true), Info(8, 4.0), Info(9, 8.0)};
   cars[0].is_player = true;
-  // stage: not the player, not visible, not drawn, within the radius (14 m), nearest first, the class's count and a spare
+  // Stage unseen cars in range, nearest first, up to the count and a spare.
   std::vector<uint32_t> staged = crt::ChooseStaged(cars, high);
   // the cars at 3.5, 4, 8, 9 and 12 m are indices 2, 7, 8, 4, 1; the one at 6 m is visible, the one at 5 m is drawn, the one at 30 m is out of the radius
-  Check(staged == std::vector<uint32_t>({2, 7, 8, 4, 1}), "High stages the nearest 4 cars within 14 m the main view does not show, and a spare, nearest first");
-  staged = crt::ChooseStaged(cars, mid);
-  Check(staged.size() == 3 && staged[0] == 2 && staged[1] == 7 && staged[2] == 8, "Mid: 2 cars within 10 m and a spare");
+  Check(staged == std::vector<uint32_t>({2, 7, 8, 4, 1}) && crt::ChooseStaged(cars, mid) == staged,
+        "the default stages four unseen cars within 20 m and a spare, nearest first, on both classes");
+  staged = crt::ChooseStaged(cars, restricted);
+  Check(staged == std::vector<uint32_t>({2, 7, 8}), "an explicit cap of two within 10 m stages two and a spare");
   Check(crt::ChooseStaged(cars, ci::Limits{}).empty(), "no class limits: none");
   cars[7].parts = 0;
   staged = crt::ChooseStaged(cars, high);
@@ -682,10 +684,11 @@ void TestChoose() {
   // place: not drawn (the draw path keeps those), within the radius, at most the class's count
   const std::vector<ci::OtherCar> none;
   std::vector<uint32_t> placed = crt::ChoosePlaced(cars, high, crt::Mode::kModelFirst, none);
-  Check(placed == std::vector<uint32_t>({2, 7, 3, 8}), "High places the 4 nearest cars within 14 m that the frame does not draw (the one at 6 m is visible by the game's flag but has no draw found: placed)");
+  Check(placed == std::vector<uint32_t>({2, 7, 3, 8}) && crt::ChoosePlaced(cars, mid, crt::Mode::kModelFirst, none) == placed,
+        "the default places the four nearest cars with no draw within 20 m on both classes, including the visible car at 6 m");
   Check(std::find(placed.begin(), placed.end(), 5u) == placed.end() && std::find(placed.begin(), placed.end(), 6u) == placed.end(), "the car at 30 m is beyond the radius, the one the frame draws is the draw path's");
-  placed = crt::ChoosePlaced(cars, mid, crt::Mode::kModelFirst, none);
-  Check(placed == std::vector<uint32_t>({2, 7}), "Mid places 2");
+  placed = crt::ChoosePlaced(cars, restricted, crt::Mode::kModelFirst, none);
+  Check(placed == std::vector<uint32_t>({2, 7}), "an explicit cap of two places the nearest two");
   Check(crt::ChoosePlaced(cars, high, crt::Mode::kOff, none).empty(), "mode off: none");
   // the cars the camera draws are the draw path's: a visible car whose draws the frame did make is `drawn`, one that is only visible (no draw found) is placed
   cars[7].drawn = true;
@@ -769,9 +772,9 @@ void TestBudgets() {
   Check(!crt::MayStage(spent, 40000, 1, high), "over the triangles");
   Check(!crt::MayStage(spent, 1, 100u * 1024u, high), "over the 768 KiB of guest data");
   const ci::Limits mid = ci::ClassLimits(mcla::gpu::gpu_class::GpuClass::kMid);
-  spent.triangles = 20000;
+  spent.triangles = 50000;
   spent.bytes = 10;
-  Check(crt::MayStage(spent, 10000, 10, mid) && !crt::MayStage(spent, 10001, 10, mid), "Mid: 30000 triangles");
+  Check(crt::MayStage(spent, 10000, 10, mid) && !crt::MayStage(spent, 10001, 10, mid), "Mid shares the 60000 triangle budget");
 
   // the build plan: the total budget as the scene's, the walked meshes within their own
   std::vector<crt::BuildItem> items = {{50000, false}, {30000, true}, {30000, true}, {40000, false}, {20000, true}};

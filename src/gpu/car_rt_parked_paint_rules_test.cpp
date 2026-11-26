@@ -196,17 +196,20 @@ void PlanTests() {
     nearest_first = nearest_first && street_marks[i - 1].near_depth <= street_marks[i].near_depth;
   }
   Check(nearest_first && Near(street_marks[0].near_depth, 10.0f - pp::kMarkDepthMargin), "the marks are the nearest cars, nearest first");
-  Check(pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, street_plan, 2).size() == 2, "the cap is a parameter (the Mid class's two)");
+  Check(pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, street_plan, 2).size() == 2, "the cap is a parameter");
   // the cost's measure
   Check(pp::MarkTexels(street_marks) == 4 * 40 * 100 && pp::MarkTexels({}) == 0, "the marks' texels are the sum of the rectangles' areas");
   Check(pp::Describe(2, 9000) == "2 marks over 9000 history texels", "the window line's words");
-  // a Mid class plan marks what its share admits: the first traffic car is always admitted
-  const tr::TrafficPlan mid = tr::PlanDispatches(street_rects, op::kBudgetMid, tr::LevelFor(GpuClass::kMid));
-  const std::vector<pp::Mark> mid_marks = pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, mid);
-  Check(!mid_marks.empty() && mid_marks.size() <= mid.admitted_cars.size() && mid_marks.size() <= pp::kMaxMarks, "a plan on the Mid class marks no car the plan did not admit");
-  // the Low class traces no traffic: nothing marked
-  const tr::TrafficPlan low = tr::PlanDispatches(street_rects, op::kBudgetMid, tr::LevelFor(GpuClass::kLow));
-  Check(pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, low).empty(), "no traffic level, no marks");
+  for (GpuClass cls : {GpuClass::kLow, GpuClass::kMid, GpuClass::kHigh}) {
+    const tr::Level level = tr::LevelFor(cls);
+    const tr::TrafficPlan plan = tr::PlanDispatches(street_rects, op::kBudgetMid, level);
+    const auto marks = pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, plan);
+    Check(level == tr::LevelFor(GpuClass::kHigh) && !marks.empty() && marks.size() <= plan.admitted_cars.size() && marks.size() <= pp::kMaxMarks,
+          "the fixed traffic level admits paint marks on every class, subject to the dispatch and mark caps");
+  }
+  const tr::Level off = tr::LevelWith(tr::LevelFor(GpuClass::kLow), 0);
+  const tr::TrafficPlan stopped = tr::PlanDispatches(street_rects, op::kBudgetMid, off);
+  Check(pp::PlanMarks(street.data(), uint32_t(street.size()), street_rects, street_map, stopped).empty(), "traffic explicitly off produces no marks");
 }
 
 // ---- the paint draw: the constants and their flag, and the variant's reading of the distance ---------------------------------------------

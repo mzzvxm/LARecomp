@@ -1154,6 +1154,8 @@ void TestSources(const std::string& dir) {
   const std::string temporal_cs = nc::ReadFile(dir + "/hlsl/ao_temporal_ps.hlsl");
   const std::string shafts = nc::ReadFile(dir + "/shafts.cpp");
   const std::string shafts_ps = nc::ReadFile(dir + "/hlsl/shafts_temporal_ps.hlsl");
+  const std::string scene = nc::ReadFile(dir + "/scene.cpp");
+  const std::string volume = nc::ReadFile(dir + "/volumetrics.cpp");
   const std::string cone = nc::ReadFile(dir + "/car_rt_refl.cpp");
   const std::string denoise = nc::ReadFile(dir + "/hlsl/car_rt_refl_denoise_cs.hlsl");
   const std::string selfrefl = nc::ReadFile(dir + "/car_selfrefl.cpp");
@@ -1187,10 +1189,12 @@ void TestSources(const std::string& dir) {
   // and the noise holds on exactly those frames. Run's decision and the shaders' empty-slot answers are pinned in the block below (the first form of F6's clear, `plan.contact_history && summary.stencil_slot == kNoSlot`, is gone).
   g_check(!nr::Varies(false, false) && nr::FrameTerm(false, false, 77, 1023) == 0u && nr::FrameTerm(false, true, 77, 1023) == 77u && nr::FrameTerm(true, false, 77, 1023) == 77u,
           "the noise of an effect with its own history moves while the history runs, holds while it does not (Varies)");
-  // the contact march and the car's sun ray
+  // The march uses the contact history. The traced sun also has its own v2 visibility filter.
   g_check(nc::Has(ao, "noise_resolve::Varies(plan.upscaler, plan.contact_history) ? base.slots2[1] : (base.slots2[1] & ao_stable::kBlueNoiseFlag)") &&
-              nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;") && !nc::Has(ao, "plan.upscaler ? base.slots2[1]"),
-          "ao.cpp: the contact march's and the car's sun ray's frame terms advance while an upscaler runs OR the contact history does (the old `plan.upscaler ? frame : 0` is gone)");
+              nc::Has(ao, "const bool denoise_visibility = RtDenoise::V2Enabled();") &&
+              nc::Has(ao, "in.sun_frame = noise_resolve::Varies(plan.upscaler, plan.contact_history || denoise_visibility) ? uint32_t(scene_noise::NoiseIndex(frame_) & 1023) : 0u;") &&
+              !nc::Has(ao, "plan.upscaler ? base.slots2[1]"),
+          "ao.cpp: the march and traced sun advance for the upscaler or contact history, and the traced sun also advances for v2 visibility denoising");
   g_check(nc::Has(ao, "plan.contact_history = contact && !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&\n                         larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
               nc::Has(ao_h, "bool ContactFilterInApply() const { return !contact_history && ao_size::ContactFilterInApply(contact.fast, SizeChoice()); }"),
           "the contact history runs only with no temporal upscaler, the switch on, the occlusion's history length 2 or more and no contact debug picture; the filter is a pass of its own then");
@@ -1218,9 +1222,16 @@ void TestSources(const std::string& dir) {
               nc::Has(ao, "kHistoryFlag = 1u << 20;"),
           "the shader's flag mode skips the wide blur and keeps the occlusion's clamp margin (0.08), plane test and weight: the same ghost as the occlusion's");
   // the shafts
-  g_check(nc::Has(shafts, "plan.history = !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;") && nc::Has(shafts, "const HostImage* resolved = plan.history ? RecordTemporal(list, plan) : nullptr;") &&
-              nc::Has(shafts, "RecordAdd(list, *colour, plan, resolved ? *resolved : shaft_)") && nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;"),
-          "shafts.cpp: the history runs with no upscaler and the switch on (not in a debug view), between the blur and the add pass, and the add pass reads its result");
+  g_check(nc::Has(shafts, "plan.history = !upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_shafts.Get()) && plan.view == 0;") &&
+              nc::Has(shafts, "const HostImage* resolved = plan.history ? RecordTemporal(list, plan) : nullptr;\n  return resolved ? resolved : &shaft_;") &&
+              shafts.find("pass_timing_->Mark(list, \"after shafts blur\");") < shafts.find("const HostImage* resolved = plan.history") &&
+              nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;"),
+          "shafts.cpp: the blur's history runs with the switch on, without an upscaler or debug view, and supplies the image for compositing");
+  g_check(nc::Has(scene, "shafts_->PrepareComposite(list)") && nc::Has(scene, "shafts_->MergeInput(*shine, input)") &&
+              nc::Has(scene, "vol_->Composite(list, merge ? &input : nullptr, merged)") && nc::Has(scene, "shafts_->Composite(list, *shine, merged)") &&
+              nc::Has(shafts, "plan.host_samples, shine.slot,") && nc::Has(volume, "parameters.shafts_slot = shafts->slot;") &&
+              nc::Has(shafts, "RecordAdd(list, *colour, plan, shine)") && nc::Has(shafts, "push.slots[1] = plan.view == 1 ? sky_.slot : shine.slot;"),
+          "the combined atmosphere pass and the separate shafts pass both use the image returned by the temporal resolve");
   g_check(nc::Has(shafts_ps, "const float2 uv = (float2(pixel) + 0.5f) / size + g_push.tint.xy;") && nc::Has(shafts_ps, "const float held = clamp(history, lo - g_push.sun.w, hi + g_push.sun.w);") &&
               nc::Has(shafts_ps, "return float4(lerp(current, held, kept), 0.0f, 0.0f, 0.0f);") && nc::Has(cmake, "larecomp_gpu_host_shader(shafts_temporal_ps ps_6_0)") &&
               nc::Has(host_shaders, "default: return MCLA_GPU_HOST_SHADER_BLOB(shafts_temporal_ps);") && nc::Has(host_shaders, "#include \"shafts_temporal_ps.hlsl.dxil.h\"") && nc::Has(host_shaders, "#include \"shafts_temporal_ps.hlsl.spirv.h\""),
@@ -1237,9 +1248,10 @@ void TestSources(const std::string& dir) {
               nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;") && nc::Has(shafts, "hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 1u;"),
           "shafts.cpp (review F1): EnsureImages compares the history images' textures before and after making them and clears the history's counters; RecordTemporal's gate is the twin's and never reads an image that has no layout yet");
   // the cone
-  g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && !info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);") &&
-              nc::Has(cone, "const uint32_t pattern_phase = noise_resolve::Varies(info.upscaler, resolve_history) ? info.pattern_phase : 0u;") && nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);"),
-          "the cone: the pattern's phase advances while an upscaler runs or the denoise's own history does; car_selfrefl.cpp hands the phase over every frame and car_rt_refl.cpp says where it is used");
+  g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && (one_ray || !info.upscaler) && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);") &&
+              nc::Has(cone, "const uint32_t pattern_phase = (one_ray || noise_resolve::Varies(info.upscaler, resolve_history)) ? info.pattern_phase : 0u;") &&
+              nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);"),
+          "the cone advances with one ray, an upscaler or its own history; one-ray paint can keep its history while an upscaler runs");
   // NOISE-FOLLOW, CHECK 2: the three histories' images stay over the frames a temporal upscaler takes (HistoryLifetime, asked once a frame in the place that makes the images), and what they hold is stale across the gap
   g_check(nc::Has(ao, "plan.contact_history_gap = contact && upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&\n                             larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
               nc::Has(ao, "plan.contact_history_keep = ContactHistoryKeep(plan);") && nc::Has(ao, "} else if (!plan.contact_history_keep) {") &&
@@ -1255,16 +1267,19 @@ void TestSources(const std::string& dir) {
           "car_rt_refl.cpp (city line): the cone history's images stay over frames DLSS Ray Reconstruction takes too (the denoise passes are 0 there because it is the denoiser; the gap asks the setting's own count)");
   g_check(nc::Has(cone, "const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);") &&
               nc::Has(cone, "if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {") &&
-              nc::Has(cone, "const bool have_last = stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_frame_ + 1 == info.frame &&") &&
-              nc::Has(cone, "stable_resolve_paint_ = resolve_paint;"),
-          "car_rt_refl.cpp: the cone history's images are retained across upscaler frames by the lifetime rule, and the history is reused only for consecutive frames in the same paint resolve mode");
-  g_check(nc::Has(cone, "DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half, false, keep, stable_[stable_index_].slot);") &&
+              nc::Has(cone, "const bool have_last = (!one_ray || !info.reset_history) && stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_one_ray_ == one_ray &&") &&
+              nc::Has(cone, "stable_exp_bias_ == info.exp_bias && stable_frame_ + 1 == info.frame &&") &&
+              nc::Has(cone, "stable_resolve_paint_ = resolve_paint;\n      stable_one_ray_ = one_ray;"),
+          "the lifetime rule keeps inactive cone images across upscaler gaps; reuse requires consecutive frames in the same paint mode and respects one-ray resets");
+  g_check(nc::Has(cone, "DispatchDenoise(list, denoise, history.slot, finished, stable_set_[out], 2, history.width, history.height, float(info.tan_y), length, tan_half,\n                      stable_regions, false, keep, stable_[stable_index_].slot, one_ray);") &&
               nc::Has(denoise, "if (g_push.slots.w == 2u)") && nc::Has(denoise, "static const float kTemporalMargin = 0.05;") && nc::Has(denoise, "const float4 last = g_textures[uint(g_push.image.w + 0.5)].Load(int3(centre, 0));") &&
+              nc::Has(denoise, "before.weight = clamp(before.weight, lo.weight - kTemporalMargin, hi.weight + kTemporalMargin);") &&
               nc::Has(cone, "const HostImage& result = result_in_stable_ ? stable_[stable_index_] : (result_in_scratch_ ? scratch_ : image_);"),
           "the denoise shader's third pass averages the finished image with the last result (slot in image.w), clamped to its 3x3 neighbourhood; the paint reads the history's image");
   g_check(std::fabs(double(nr::kConeClampMargin) - 0.05) < 1e-9 && std::fabs(double(nr::kShaftsClampMargin) - 0.02) < 1e-9 && std::fabs(double(nr::kConeStaleFrom) - 0.02) < 1e-9 && std::fabs(double(nr::kConeStaleTo) - 0.05) < 1e-9 &&
               std::fabs(double(nr::kShaftsStaleFrom) - 0.02) < 1e-9 && std::fabs(double(nr::kShaftsStaleTo) - 0.05) < 1e-9 && nc::Has(denoise, "static const float kStaleFrom = 0.02;") && nc::Has(denoise, "static const float kStaleTo = 0.05;") &&
-              nc::Has(denoise, "(1.0 - smoothstep(kStaleFrom, kStaleTo, stale))") && nc::Has(shafts_ps, "smoothstep(g_push.tint.z, g_push.tint.w, abs(history - current))") &&
+              nc::Has(denoise, "const float outside = max(max(abs(raw.weight - before.weight), abs(raw.hidden - before.hidden)),") &&
+              nc::Has(denoise, "(1.0 - smoothstep(kStaleFrom, kStaleTo, oneRay ? outside : stale))") && nc::Has(shafts_ps, "smoothstep(g_push.tint.z, g_push.tint.w, abs(history - current))") &&
               nc::Has(shafts, "push.tint[2] = noise_resolve::kShaftsStaleFrom;") && nc::Has(shafts, "push.tint[3] = noise_resolve::kShaftsStaleTo;"),
           "the shaders' margins and stale ranges are noise_resolve.h's (clamp 0.05, stale 0.02 to 0.05 for the cone; clamp 0.02, stale 0.02 to 0.05 for the shafts)");
   // the jitter

@@ -4310,7 +4310,8 @@ void ShaderConstantsMatch(const std::string& dir) {
             apply.find("bool CarSunOn() { return (g_push.slots.y & 0x100u) != 0u; }") != std::string::npos &&
             apply.find("return CarSunOn() ? CarSunVisibility(pc) : 1.0f;") != std::string::npos &&
             apply.find("sun_vis_used = CarAwareSunVisibility(sun_vis_used, PixelIsVehicle(pixel), pc);") != std::string::npos &&
-            apply.find("gi_sun_vis = CarAwareSunVisibility(gi_sun_vis, PixelIsVehicle(pixel), pc);") != std::string::npos &&
+            apply.find("const uint receiver_vehicle = quarter ? QuarterReceiverVehicle(pixel) : 0u;") != std::string::npos &&
+            apply.find("gi_sun_vis = CarAwareSunVisibility(gi_sun_vis, quarter ? receiver_vehicle != 0u : PixelIsVehicle(pixel), pc);") != std::string::npos &&
             apply.find("g_textures_ms[g_push.slots.x & 0xFFFFu].Load(p, g_push.slots.y & 0xFFu).r") != std::string::npos &&
             apply.find("g_textures[g_push.slots.x & 0xFFFFu].Load(int3(p, 0)).r") != std::string::npos &&
             apply.find("} else if (view == 13u) {") != std::string::npos,

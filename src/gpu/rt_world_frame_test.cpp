@@ -1543,7 +1543,7 @@ void TestSources(const std::string& src) {
       CHECK(Has(cpp, "if (src_.lights != nullptr && src_.lights->active()) {") && Has(cpp, "bi.night = schedule_.fill;") && Has(cpp, "mcla_gpu_gi_bounce_headlights.Get()") && Has(cpp, "mcla_gpu_gi_bounce_neon.Get()") &&
             Has(cpp, "mcla_gpu_gi_bounce_rear.Get()") && Has(cpp, "mcla_gpu_gi_bounce_other.Get()"));
       CHECK(Has(header, "void WantEmitters(bool wanted, bool ultra, bool weak);") && Has(header, "LightManager* lights = nullptr;"));
-      CHECK(Has(ReadFile(src + "/gpu/gi_update.cpp"), "world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, gi_setting::Current().rung == gi::Rung::kWeak);"));
+      CHECK(Has(ReadFile(src + "/gpu/gi_update.cpp"), "world_->WantEmitters(ready_ && service_ != nullptr && level != gi::Level::kOff, level == gi::Level::kUltra, false);"));
       CHECK(Has(ReadFile(src + "/gpu/renderer.cpp"), "world_sources.lights = &light_manager_;"));
     }
   }

@@ -716,8 +716,10 @@ void SourceChecks(const std::string& gpu) {
   Check(Has(shared_cpp, "bool ScreenShared::EnsureHizImages(") && Has(shared_cpp, "if (!EnsureHizImages(depth0.width, depth0.height, &levels)) {"), "the images are made one way for both recordings");
   Check(Has(shared_cpp, "void ScreenShared::ReleaseHiz() {\n  PurgeMrt();") && Has(ext_cpp, "void ScreenShared::ReleaseDepth() {\n  if (!passes_) {\n    return;\n  }\n  PurgeMrt();") && Has(ext_cpp, "mrt_.clear();  // the GPU is idle"),
         "the framebuffers go with the images (the Hi-Z's idle release, the depth chain's release) and at shutdown");
-  Check(Has(ao_cpp, "screen_->RecordDepth(list, chain, base, summary.stencil_slot, normals_.depth_source_bits, ms);") && !Has(ao_cpp, "RecordDepthFused"),
-        "the AO still calls one function for the depth chain and knows nothing of the fusion");
+  Check(Has(ao_cpp, "const uint32_t grid = plan.rotating ? ao_rate::GridFlags(plan.phase) : 0u;") &&
+            Before(ao_cpp, "depth_base.slots2[2] |= grid;", "screen_->RecordDepth(list, chain, depth_base, summary.stencil_slot, normals_.depth_source_bits, ms);") &&
+            !Has(ao_cpp, "RecordDepthFused"),
+        "AO passes its rotating grid flags through the shared depth entry point and leaves fusion to ScreenShared");
   // ---- the setting ----
   Check(Has(manifest, "\"mcla_gpu_screen_hiz_fused\": {\n  \"type\": \"bool\",\n  \"default\": \"true\",") && Has(settings, "(bool, mcla_gpu_screen_hiz_fused, true,") &&
             Has(settings, "inline auto& mcla_gpu_screen_hiz_fused = g_gpu.mcla_gpu_screen_hiz_fused;") && Has(meta, "{\"mcla_gpu_screen_hiz_fused\", \"MCLA/GPU\"},"),

@@ -1528,27 +1528,30 @@ void TestPortToThePass(const std::string& gpu_dir) {
   Check(la::LampsEnabled(1, false) && la::LampsEnabled(1, true), "1: on whatever the pass's own settings say");
   Check(la::kSettingAuto == -1, "auto is -1");
 
-  // 2. THE ROW AND THE CLASSES: ONE LIGHT SHADOWS row (Q3), Auto by class (Low off, Mid medium, High ultra), the lamps' count by the level
-  struct ClassCase {
-    gc::GpuClass cls;
-    const char* name;
+  // 2. Legacy Auto resolves to Medium on every GPU. Explicit levels keep their lamp counts.
+  for (gc::GpuClass cls : {gc::GpuClass::kLow, gc::GpuClass::kMid, gc::GpuClass::kHigh}) {
+    const ls::Choice choice = ls::Resolve(cls, "auto");
+    const la::Budget b = la::BudgetFor(choice.level, 0, true);
+    Check(choice.level == lb::Level::kMedium && b.on() && b.wanted == 2 && b.spare == 1,
+          "legacy Auto on each GPU class uses Medium's two lamps and one spare");
+  }
+  struct LevelCase {
+    const char* word;
     uint32_t wanted;
     uint32_t spare;
     double atlas_mib_max;  // the whole atlas (headlights' replay + the lamps' live and static pools) in MiB
   };
-  const ClassCase cases[] = {{gc::GpuClass::kLow, "Low", 0, 0, 0.0}, {gc::GpuClass::kMid, "Mid", 2, 1, 22.0}, {gc::GpuClass::kHigh, "High", 8, 2, 136.0}};
-  for (const ClassCase& c : cases) {
-    const ls::Choice choice = ls::Resolve(c.cls, "auto");
+  const LevelCase cases[] = {{"medium", 2, 1, 22.0}, {"ultra", 8, 2, 136.0}};
+  for (const LevelCase& c : cases) {
+    const ls::Choice choice = ls::Resolve(gc::GpuClass::kLow, c.word);
     const la::Budget b = la::BudgetFor(choice.level, 0, true);
-    Check(b.on() == (c.wanted != 0) && b.wanted == c.wanted && b.spare == c.spare,
-          std::string("Auto on the ") + c.name + " class: " + std::to_string(c.wanted) + " lamps (+" + std::to_string(c.spare) + ")");
-    if (c.wanted != 0) {
-      const sa::Layout layout = sa::MakeLayout(sa::SpecForLevel(choice.level, 0, true, true));
-      Check(layout.valid() && sa::Mib(sa::Bytes(layout)) <= c.atlas_mib_max,
-            std::string("the ") + c.name + " class's whole atlas (headlight maps + lamp pools) is within " + std::to_string(int(c.atlas_mib_max)) + " MiB");
-    }
+    Check(b.on() && b.wanted == c.wanted && b.spare == c.spare,
+          std::string(c.word) + " has " + std::to_string(c.wanted) + " lamps (+" + std::to_string(c.spare) + ")");
+    const sa::Layout layout = sa::MakeLayout(sa::SpecForLevel(choice.level, 0, true, true));
+    Check(layout.valid() && sa::Mib(sa::Bytes(layout)) <= c.atlas_mib_max,
+          std::string(c.word) + " has a whole atlas within " + std::to_string(int(c.atlas_mib_max)) + " MiB");
   }
-  Check(!la::BudgetFor(lb::Level::kOff, 0, true).on(), "LIGHT SHADOWS off: no lamp has a tile");
+  Check(!la::BudgetFor(ls::Resolve(gc::GpuClass::kHigh, "off").level, 0, true).on(), "LIGHT SHADOWS off: no lamp has a tile");
   Check(la::BudgetFor(lb::Level::kMedium, -1, true).wanted == 0 && la::BudgetFor(lb::Level::kMedium, 10, true).wanted <= la::kMaxSlots,
         "the lamps override: -1 none, 1..10 at most the largest level's slots");
 

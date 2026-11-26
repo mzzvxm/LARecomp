@@ -670,15 +670,24 @@ void CheckWiring(const std::string& dir) {
   const std::string meta = Read(dir, "../settings/generated/settings_meta.inc");
   Check(!ssr_cpp.empty() && !scene.empty() && !temporal.empty() && !menu.empty() && !manifest.empty() && !plan.empty() && !runtime.empty(), "the wired sources are readable");
   // the reflections' frame: the decision, the dispatch, the fallback, the resolve
-  const size_t trace_at = ssr_cpp.find("DrawPass(list, trace_, trace_pipeline, trace_push);");
+  const size_t trace_at = ssr_cpp.find("DrawPass(list, trace_, trace_pipeline, trace_push, classify);");
+  const size_t rt_at = ssr_cpp.find("rt_recorded = rt_.Record(rt_frame);");
   const size_t regen_at = ssr_cpp.find("regen_ok = RecordRegen(list, push, sf,");
+  const size_t denoise_at = ssr_cpp.find("filtered_v2 = denoise_.RecordV2(stage);");
   const size_t temporal_at = ssr_cpp.find("pass_timing_->Mark(list, \"ssr temporal\");");
-  Check(trace_at != std::string::npos && regen_at != std::string::npos && temporal_at != std::string::npos && trace_at < regen_at && regen_at < temporal_at,
-        "the regen pass and the dispatch come after the trace and before the effect's own accumulation (which a refused regen frame then runs)");
-  Check(Has(ssr_cpp, "regen_facts.asked = rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt) && !raw;") && Has(ssr_cpp, "if (rgd::RegenPossible(regen_facts)) {") && Has(ssr_cpp, "rgd::DecideRegen(regen_facts)") && Has(ssr_cpp, "regen_pass_.PipelineReady()"),
-        "the frame is Ray Regeneration's by the rules' decision, never together with the raw mode, and its pipelines are asked for only inside RegenPossible");
-  Check(Has(ssr_cpp, "if (!raw && !regen_ok) {\n    // The accumulation.") && Has(ssr_cpp, "if (!regen_ok) {\n      ++regen_fallbacks_;"),
-        "a regen frame whose pass or dispatch was refused runs the effect's own accumulation and resolve (counted), never nothing");
+  Check(temporal_at != std::string::npos && trace_at < rt_at && rt_at < regen_at && regen_at < denoise_at && denoise_at < temporal_at &&
+            Has(ssr_cpp, "DrawTraceMrt(list, capture_pipeline ? capture_pipeline : trace_rt_pipeline, trace_push, true, capture_pipeline != nullptr);"),
+        "the surface and RT traces precede Ray Regeneration, which precedes both internal denoisers");
+  Check(Has(ssr_cpp, "regen_facts.asked = rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt) && !raw && !garage;") &&
+            Has(ssr_cpp, "if (rgd::RegenPossible(regen_facts)) {\n    regen_apply_pipeline = Pipeline(kVApplyRaw);\n    regen_facts.pipelines_ready = regen_pass_.Available() && regen_pass_.PipelineReady() && regen_apply_pipeline != nullptr;") &&
+            Has(ssr_cpp, "const bool regen = regen_why == rgd::RegenWhy::kRegen;") && Has(ssr_cpp, "rgd::DecideRegen(regen_facts)") &&
+            Has(ssr_cpp, "if (regen && rayregen::ReflectionSignalWanted(ask.asked, ask.city, rt_recorded)) {"),
+        "the decision excludes raw and garage frames, gates pipeline requests and requires a recorded trace for a city-only request");
+  Check(Has(ssr_cpp, "if (!raw && !regen_ok && rt_recorded && denoise_setting != 0 && RtDenoise::V2Enabled()) {") &&
+            Has(ssr_cpp, "if (!raw && !regen_ok && !filtered_v2) {\n    // The accumulation.") &&
+            Has(ssr_cpp, "if (!regen_ok) {\n      ++regen_fallbacks_;") &&
+            Has(ssr_cpp, "const HostImage* resolve_source = filtered_v2 ? filtered_v2 : &accum_[write_];"),
+        "a refused dispatch is counted, then the internal v2 filter or the legacy accumulation supplies the resolve");
   Check(Has(ssr_cpp, "apply.Set(pk::kSrc, ssr::PackSlots(denoised_slot, denoised_slot));") && Has(ssr_cpp, "regen_pass_.image(rgd::Image::kDenoised).slot") && Has(ssr_cpp, "(regen_ok ? regen_apply_pipeline : apply_pipeline)"),
         "the resolve reads the DENOISED image only after a dispatch that was recorded (the signal and the guides are never read as the result)");
   Check(Has(ssr_cpp, "regen_key_ = now;") && Has(ssr_cpp, "regen_key_.valid = false;   // the next regen frame starts the runtime's history again") && Has(ssr_cpp, "ssr::HistoryUsable(regen_key_, now, motion_usable)"),
