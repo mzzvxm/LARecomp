@@ -22,6 +22,8 @@
 //
 // by hand: unit-test.ps1 -Test <this file>  (clang++ -std=c++23; the pragmas below link d3d12 and dxgi)
 
+#include "../os/environment.h"
+
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
 #define _CRT_SECURE_NO_WARNINGS
@@ -449,8 +451,8 @@ int main(int argc, char** argv) {
   fs::path dxc_dir;
   if (argc > 2) {
     dxc_dir = argv[2];
-  } else if (const char* env = std::getenv("LARECOMP_DXC_DIR")) {
-    dxc_dir = env;
+  } else if (const auto env = larecomp::os::ReadEnvironment("LARECOMP_DXC_DIR")) {
+    dxc_dir = *env;
   } else {
     dxc_dir = "C:\\mcv\\larecomp\\downloads\\dxc-v1.9.2609\\x\\bin\\x64";
   }
