@@ -1,5 +1,6 @@
 #ifndef REXGLUE_HAS_XEO3_TARGET
 // larecomp - Save picker
+// GPL-3.0-only. See LICENSE-ADDITIONAL-TERMS.md for the section 7 terms.
 #include "larecomp_profile_picker.h"
 #include "settings/immortal.h"
 
@@ -226,7 +227,7 @@ class ProfilePickerDialog final : public ui::ImGuiDialog {
     ImGui::PopStyleColor(3);
 
     DrawBanner();
-    DrawVersion(io);
+    DrawFooter(io);
 
     if (accept) {
       Accept();
@@ -491,16 +492,29 @@ class ProfilePickerDialog final : public ui::ImGuiDialog {
                          [](size_t) -> ImU32 { return IM_COL32(0xE8, 0xE8, 0xE0, 0xFF); });
   }
 
-  // The release, flush with the bottom-right corner whatever its length.
-  static void DrawVersion(ImGuiIO& io) {
+  // The license and credits sit above the existing release label.
+  // CHECK: footer clearance below the profile list at the smallest window size.
+  static void DrawFooter(ImGuiIO& io) {
     ImFont* font = mcla::ui::GetFonts().version;
     if (!font) return;
     constexpr float kPx = 18.0f;
     constexpr float kMargin = 24.0f;
-    const float w = font->CalcTextSizeA(kPx, FLT_MAX, 0.0f, larecomp::kVersionLabel).x;
-    ImGui::GetBackgroundDrawList()->AddText(
-        font, kPx, ImVec2(io.DisplaySize.x - kMargin - w, io.DisplaySize.y - kMargin - kPx),
-        IM_COL32(0x8C, 0x8C, 0x85, 0xFF), larecomp::kVersionLabel);
+    constexpr float kGap = 4.0f;
+    constexpr const char* kLinesBottomUp[] = {
+        larecomp::kVersionLabel,
+        "LARecomp: mzzvxm (author and maintainer), BadassBaboon, RenanQueiroz, Grien25, Vi.",
+        "LARecomp is free software under GPL-3.0 with additional terms - see LICENSE",
+    };
+    const float wrap_width = std::max(kPx, io.DisplaySize.x - 2.0f * kMargin);
+    ImDrawList* draw = ImGui::GetBackgroundDrawList();
+    float y = io.DisplaySize.y - kMargin;
+    for (const char* line : kLinesBottomUp) {
+      const ImVec2 size = font->CalcTextSizeA(kPx, FLT_MAX, wrap_width, line);
+      y -= size.y;
+      draw->AddText(font, kPx, ImVec2(io.DisplaySize.x - kMargin - size.x, y),
+                    IM_COL32(0x8C, 0x8C, 0x85, 0xFF), line, nullptr, wrap_width);
+      y -= kGap;
+    }
   }
 
   // The first free "Player", "Player2", ... for a new save made from the pad.
