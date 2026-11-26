@@ -363,7 +363,7 @@ rex::Result<void> LarecompApp::OnConfigure(rex::SettingsRegistry& settings) {
   // values whose meaning changed converted. The command line is not applied yet; main hands over a --config_file it saw.
   const std::filesystem::path config =
       config_file_hint_.empty() ? rex::GetPathSettings().config_file.Get() : config_file_hint_;
-  ls::ApplyPlayerConfig(settings, config);
+  preset_file_facts_ = ls::ApplyPlayerConfig(settings, config);
 
   // The setting options of the command line, at the layer the SDK would have used (it parses the rest, which has none of them).
   ApplyCommandLineSettings(settings);
@@ -799,9 +799,8 @@ rex::Result<void> LarecompApp::OnInit() {
       }
       return rex::Err(rex::ErrorCategory::kRuntime, "the Plume renderer could not start");
     }
-    // The graphics presets: the renderer has started (the GPU class and the ray tracing tier are found, CHECK: Device::Open has run by now) and the file, the environment and the command
-    // line are all applied, so a named preset is held over the rows now and a CUSTOM takes its base (gpu/gfx_preset_apply.h). The rows are live: a frame drawn before this one uses their own values.
-    mcla::gpu::gfx_preset::Start();
+    // Device startup and the RT benchmark have supplied the facts for the first-start preset.
+    mcla::gpu::gfx_preset::Start(preset_file_facts_);
   }
 #endif
 

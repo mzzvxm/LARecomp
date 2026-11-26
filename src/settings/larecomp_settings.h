@@ -54,6 +54,10 @@
 #include "settings/larecomp_app_settings.h"
 #include "settings/generated/settings_all.h"
 
+namespace mcla::gpu::gfx_preset {
+struct FileFacts;
+}
+
 namespace larecomp::settings {
 
 // A console command (or any owner declared next to the code that uses it) hands itself over here from its constructor;
@@ -74,9 +78,9 @@ void ApplyLegacyEnvironment();
 //     TITLE layer, which a key of the new kind in the same file still overrides;
 //   * every other key is applied at the FILE layer one by one: a refused value is logged and skipped, it does not
 //     cost the rest of the file (see the header comment).
-// `file` is app.config_file. Safe when the file is missing or unreadable. Returns the number of refused values.
+// `file` is app.config_file. Returns the keys relevant to choosing a graphics preset at renderer startup.
 // Call it AFTER ApplyStartupDefaults: both write the title layer, the last write wins.
-int ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::path& file);
+mcla::gpu::gfx_preset::FileFacts ApplyPlayerConfig(rex::ISettingsRegistry& registry, const std::filesystem::path& file);
 // Normalize retired preset IDs after the SDK applies the file, environment and command line layers.
 void MigrateGraphicsPresetIds();
 

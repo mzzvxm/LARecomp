@@ -35,6 +35,7 @@
 #include <rex/ui/ui_system.h>
 
 #include "app_paths.h"
+#include "gpu/gfx_preset.h"
 #include "machine_facts/machine_facts.h"
 #include "settings/cli_rules.h"
 
@@ -133,6 +134,7 @@ class LarecompApp final : public rex::app::TitleApp, private rex::ui::IUIEventLi
   std::vector<std::string> cli_notes_;              // what was not used and why; logged in OnInit (the log file is open by then)
   std::filesystem::path config_file_hint_;
   std::filesystem::path settings_config_path_;
+  mcla::gpu::gfx_preset::FileFacts preset_file_facts_;
   // MF: per-start state, kept on the UI thread.
   std::filesystem::path machine_output_;
   larecomp::machine::GamePublisher machine_facts_;

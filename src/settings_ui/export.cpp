@@ -119,8 +119,13 @@ Table BuildPresets() {
         items.insert(std::string(gp::Id(preset)), std::move(item));
     }
     presets.insert("order", std::move(order));
-    presets.insert("first_start", std::string(gp::Id(gp::kFirstStart)));
-    presets.insert("legacy_file_preset", std::string(gp::Id(gp::DecideInitial({.has_covered_key = true}))));
+    presets.insert("first_start", std::string(gp::Id(gp::kFallbackPreset)));
+    // CHECK: verify the installed launcher uses this rule with its machine.json and with missing facts.
+    presets.insert("first_start_by", "class_to_preset");
+    presets.insert("legacy_file_preset", std::string(gp::Id(gp::Preset::kCustom)));
+    Array legacy_keys;
+    for (const auto key : gp::kLegacyCoveredKeys) legacy_keys.push_back(std::string(key));
+    presets.insert("legacy_file_keys", std::move(legacy_keys));
     presets.insert("scope", Array{"image_quality", "lighting", "reflections", "world_detail"});
     presets.insert("items", std::move(items));
     Array rules;

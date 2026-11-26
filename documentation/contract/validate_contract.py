@@ -1091,6 +1091,10 @@ def lint_presets(doc, rep, ec, row_section, sections_by_id, settings, value_sets
             rep.error(w, f'{name!r} is in items but not in order')
     if 'first_start' in pr and pr['first_start'] not in order:
         rep.error(w, 'first_start is not in order')
+    if pr.get('first_start_by') == 'class_to_preset':
+        rules = pr['class_to_preset']
+        if not rules or rules[-1]['when'] != 'true' or rules[-1]['preset'] != pr.get('first_start'):
+            rep.error(f'{w}.first_start', 'must match the unconditional fallback in class_to_preset')
     if 'legacy_file_preset' in pr:
         legacy = pr['legacy_file_preset']
         if legacy not in order or legacy not in items:
@@ -1551,6 +1555,7 @@ def selftest():
     expect('a preset that touches DISPLAY', lambda d: d['presets']['items']['enhanced']['values'].update(fps_limit='60'), 'DISPLAY or UPSCALING')
     expect('an unknown legacy preset', lambda d: d['presets'].update(legacy_file_preset='missing'), 'must name a preset')
     expect('a legacy preset that overwrites saved values', lambda d: d['presets'].update(legacy_file_preset='vanilla'), 'preserve the covered settings')
+    expect('a first-start fallback that disagrees with the class map', lambda d: d['presets'].update(first_start='vanilla'), 'unconditional fallback')
     expect('facts_used out of date', lambda d: d['facts_used'].pop(), 'facts_used')
     expect('a duplicate row id', lambda d: row(d, 'PM_RxFpsCap').update(id='PM_RxDisplayMode'), 'used twice')
     expect('a def loop', lambda d: d['defs'].update(loop_a='d.loop_b', loop_b='d.loop_a'), 'loop')

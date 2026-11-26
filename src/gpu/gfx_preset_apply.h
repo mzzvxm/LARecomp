@@ -4,7 +4,7 @@
 // ===========================================================================
 // What a named preset does to the game, and when:
 //   * Start(), once the renderer has started (larecomp_app.cpp OnInit: the GPU class and the ray tracing tier are known, the file, the environment and the command line are applied):
-//     a named preset is HELD over the rows its table covers (a value for every covered row through larecomp::SetCvarForScene: the hold the trailer scenes use, so a save never writes the
+//     the recommendation supplies the first-start default. A named preset is HELD over the rows its table covers (a value for every covered row through larecomp::SetCvarForScene: the hold the trailer scenes use, so a save never writes the
 //     preset's values to larecomp.toml, and the player's own values underneath are kept); CUSTOM takes its base (mcla_gpu_preset_from) for the rows the player's file does not name.
 //     A row that the command line or the environment sets is left to them: those are temporary overrides on top of a preset, never saved, never a change to CUSTOM.
 //   * mcla_gpu_preset changing at run time (the pause row, the launcher's file, the console): picking a named preset holds its values over the rows at once (no restart);
@@ -22,13 +22,10 @@
 namespace mcla::gpu::gfx_preset {
 
 // Once, after the renderer has started. Safe to call again (the second call does nothing).
-void Start();
+void Start(const FileFacts& file);
 
 // The preset the player has chosen (the setting's value); CUSTOM for a word that is none.
 Preset Current();
-
-// The preset this GPU is recommended (rt_tier.h RecommendedPreset of the class and the ray tracing tier found); VANILLA until the class is known.
-Preset Recommended();
 
 // The pause menu is about to write `cvar` for the player. True when that turned a named preset into CUSTOM (the menu may log it); false for every other row and for every other write.
 bool NoteRowWrite(std::string_view cvar);

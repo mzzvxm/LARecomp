@@ -623,8 +623,10 @@
   "presets": {
     "setting": "mcla_gpu_preset",
     "order": ["vanilla", "enhanced", "enhanced_rt", "custom"],
-    "first_start": "vanilla",
+    "first_start": "enhanced",
+    "first_start_by": "class_to_preset",
     "legacy_file_preset": "custom",
+    "legacy_file_keys": ["mcla_gpu_msaa", "mcla_gpu_aa", "mcla_gpu_car_mirror_rt"],
     "scope": ["lighting", "reflections"],
     "items": {
       "vanilla": {
@@ -652,7 +654,8 @@
       "custom": {"label": "CUSTOM", "title": "Custom", "help": "Your own choices on the effect pages.", "needs": null}
     },
     "class_to_preset": [
-      {"when": "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", "preset": "enhanced_rt"},
+      {"when": "gpu.class == 'high' && gpu.rt_tier == 'strong'", "preset": "enhanced_rt"},
+      {"when": "gpu.class == 'low'", "preset": "vanilla"},
       {"when": "true", "preset": "enhanced"}
     ],
     "covers": ["mcla_gpu_rt_reflections", "mcla_gpu_shadow_resolution"],

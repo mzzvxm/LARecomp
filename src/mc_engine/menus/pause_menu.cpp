@@ -2245,7 +2245,10 @@ class PauseRuleEnv final : public expr::Env {
 #if defined(LARECOMP_HAS_GPU)
         namespace gpu = mcla::gpu;
         namespace gc = gpu::gpu_class;
-        if (path == "gpu.class") return text(gc::ClassName(unprobed_world_scale_ ? gc::GpuClass::kLow : gc::Current()));
+        if (path == "gpu.class") {
+            if (unprobed_world_scale_) return text("low");
+            return gc::Known() ? text(gc::ClassName(gc::Current())) : Value{};
+        }
         if (path == "gpu.handheld") return Value::Bool(gc::Handheld());
         if (path == "gpu.rt_tier") return text(gc::RtTierName(gc::CurrentRtTier()));
         if (path == "gpu.rt_rung") return text(gc::RtTierName(gc::RtRung(gc::Current(), gc::CurrentRtTier())));

@@ -62,9 +62,10 @@ shown_per_rendered.cases = [
   { when = "s.mcla_gpu_frame_generation == 'dlss'", value = { expr = "d.dlss_frame_gen_multiplier" } },
   { value = 2 },
 ]
-# The preset this GPU is recommended: the same rule as presets.class_to_preset in the dump (gpu/gfx_preset.h kClassToPreset, rt_tier.h RecommendedPreset; tools/check_gfx_presets.py compares them).
+# The first-start preset and recommendation use the same rules as presets.class_to_preset in the export.
 recommended_preset.cases = [
-  { when = "gpu.class in ['mid', 'high'] && gpu.rt_tier in ['weak', 'strong']", value = "enhanced_rt" },
+  { when = "gpu.class == 'high' && gpu.rt_tier == 'strong'", value = "enhanced_rt" },
+  { when = "gpu.class == 'low'", value = "vanilla" },
   { value = "enhanced" },
 ]
 
