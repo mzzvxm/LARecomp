@@ -56,6 +56,7 @@
 #include "ssgi_stable.h"
 #include "texture_bytes.h"
 #include "traffic_shadow.h"
+#include "vram_quality.h"
 
 
 namespace mcla::gpu {
@@ -1132,6 +1133,23 @@ void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
   // The bounce light: the setting (its auto value resolved for this GPU) or the debug override
   // mcla_gpu_ssgi_test. It needs the occlusion's own images and passes (PlanGi says so again per frame).
   Mode gi_mode = ReadSsgiMode();
+  const bool test = larecomp::settings::mcla_gpu_ssgi_test.Get();
+  if (passes_ && larecomp::settings::mcla_gpu_vram_savings.Get()) {
+    if ((history_[0].texture || history_[1].texture) && ao_decision.chosen == rtao_setting::Choice::kOff) {
+      for (HostImage& image : history_) passes_->ReleaseImage(image);
+      history_valid_ = false;
+    }
+    const bool gi_held = gi_.texture || gi_dn_.texture || gi_hist_[0].texture || gi_hist_[1].texture ||
+                         gi_weight_.texture;
+    if (gi_held && (ao_decision.chosen == rtao_setting::Choice::kOff || (gi_mode == Mode::kOff && !test))) {
+      ReleaseGiImages();
+    }
+    if (contact == Mode::kOff && (contact_hist_.image[0].texture || contact_hist_.image[1].texture)) {
+      for (HostImage& image : contact_hist_.image) passes_->ReleaseImage(image);
+      contact_hist_.valid = false;
+      contact_hist_.cut = false;
+    }
+  }
   if (!ready_) {
     gi_mode = Mode::kOff;  // the passes could not be made (Initialize said so)
   }
@@ -1176,7 +1194,6 @@ void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
     car_frame_->Request();  // CarFrame collects next frame, including on GPUs with both car shadow producers off.
   }
   gi_mode_ = gi_mode;
-  const bool test = larecomp::settings::mcla_gpu_ssgi_test.Get();
   bool bounce_wanted = test || gi_mode_ != Mode::kOff;
   if (bounce_wanted && mode_ != Mode::kOff && Extracting() &&
       !screen_->ChainReady(screen::extract::Bit(screen::extract::Kind::kColour) | screen::extract::Bit(screen::extract::Kind::kColourMs) | screen::extract::Bit(screen::extract::Kind::kColourMip))) {
@@ -1256,7 +1273,7 @@ bool AmbientOcclusion::EnsureScreenDepthPipelines() {
 uint64_t AmbientOcclusion::HeldBytes() const {
   uint64_t bytes = 0;
   const auto add = [&bytes](const HostImage& image) {
-    if (image.texture) {
+    if (image.texture && !image.alias_bytes) {
       bytes += TextureBytes(image.width, image.height, 1, image.format);
     }
   };
@@ -1281,6 +1298,7 @@ uint64_t AmbientOcclusion::HeldBytes() const {
   add(gi_weight_);
   add(vehicle_table_);
   add(car_sun_lookup_);
+  bytes += std::max({gi_.alias_bytes, raw_.alias_bytes, contact_raw_.alias_bytes});
   if (rt_ao_) {
     bytes += rt_ao_->HeldBytes();
   }
@@ -1911,6 +1929,12 @@ bool AmbientOcclusion::ContactHistoryKeep(const Plan& plan) {
   return contact_life_.Frame(plan.contact_history && plan.apply, plan.contact_history_gap && plan.apply, held, size_ok) == noise_resolve::HistoryImages::kKeep;
 }
 
+bool AmbientOcclusion::CanAliasGiContact(const Plan& plan) const {
+  return vram_quality::AliasBounceAndContact(
+      larecomp::settings::mcla_gpu_vram_savings.Get(), plan.gi.on,
+      plan.contact.mode != Mode::kOff, plan.apply, plan.gi.view != 0);
+}
+
 bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   // The coarser depth levels are the occlusion's (and the census probe's); the contact shadows read
   // level 0 only. The two scratch images hold the occlusion's visibility passes and, after those,
@@ -1931,7 +1955,17 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   // The depth chain's images (level 0, the coarser levels while the occlusion or the probe runs, the contact shadows' full size depth beside a half size trace) are the shared screen products'
   // since SS-2: the owner sizes them by the frame (screen_extract.h Frame, the same numbers), keeps them and gives the ones this frame does not need back.
   bool ok = screen_ && screen_->EnsureDepth(ExtractFrame(plan));
-  if (ok && raw_needed) {
+  // Reuse a prepared pair. PrepareGi owns creation, after its pipelines and
+  // colour input are ready, so fallback AO frames never allocate a new pair.
+  const HostImage& contact_scratch_image = split ? contact_raw_ : raw_;
+  const bool aliased = CanAliasGiContact(plan) && gi_.alias_bytes && contact_scratch_image.alias_bytes &&
+                       gi_.width == plan.ao[0] && gi_.height == plan.ao[1] &&
+                       contact_scratch_image.width == plan.contact_size[0] &&
+                       contact_scratch_image.height == plan.contact_size[1];
+  if (!aliased && passes_ && gi_.alias_bytes) {
+    passes_->ReleaseImage(gi_);
+  }
+  if (ok && raw_needed && !(aliased && !split)) {
     ok = passes_->EnsureImage(raw_, plan.ao[0], plan.ao[1], plume::RenderFormat::R16_FLOAT,
                               "ao visibility");
   } else if (!raw_needed && raw_.texture) {
@@ -1945,8 +1979,8 @@ bool AmbientOcclusion::EnsureImages(const Plan& plan) {
   }
   // The contact shadows' own images, at the picture's size (their full size depth is the owner's, made above with the chain).
   if (ok && split && plan.apply) {
-    ok = passes_->EnsureImage(contact_raw_, plan.render[0], plan.render[1], plume::RenderFormat::R16_FLOAT,
-                              "ao contact visibility");
+    ok = aliased || passes_->EnsureImage(contact_raw_, plan.render[0], plan.render[1],
+                                         plume::RenderFormat::R16_FLOAT, "ao contact visibility");
     if (ok && !in_apply) {
       ok = passes_->EnsureImage(contact_dn_, plan.render[0], plan.render[1], plume::RenderFormat::R16_FLOAT,
                                 "ao contact filtered visibility");
@@ -3232,6 +3266,9 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         gi_push.slots2[2] |= kGiFastGatherFlag;
       }
       // The pipeline with the slices, steps and ring steps this frame sends compiled in (FillPush sent the quality's; PrepareGi made it).
+      if (passes_) {
+        passes_->ActivateAliasedTarget(list, gi_);
+      }
       DrawPass(list, gi_, MainGiPipeline(plan.gi), gi_push);
       main_out = &gi_;
     } else {
@@ -4220,6 +4257,9 @@ uint32_t AmbientOcclusion::RecordContact(plume::RenderCommandList* list, const P
   const HostImage& contact_depth = split ? DepthFull() : Depth(0);
   HostImage& contact_raw = split ? contact_raw_ : raw_;
   HostImage& contact_dn = split ? contact_dn_ : denoised_;
+  if (passes_) {
+    passes_->ActivateAliasedTarget(list, contact_raw);
+  }
   // The march: the linear depth in, the contact visibility out (contact_raw). Its constants are in the
   // header of hlsl/ao_contact_ps.hlsl.
   pass_timing_->Mark(list, "ao contact");
@@ -4834,7 +4874,6 @@ bool AmbientOcclusion::EnsureGiImages(const Plan& plan) {
   const uint32_t colour_sizes[screen::kColourPreLevels][2] = {{plan.ao[0], plan.ao[1]}, {plan.level[0][0], plan.level[0][1]}, {plan.level[1][0], plan.level[1][1]}};
   bool ok =
       screen_ && screen_->EnsureColourPre(colour_sizes, kGiFormat) &&
-      passes_->EnsureImage(gi_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi visibility and bounce") &&
       passes_->EnsureImage(gi_dn_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi denoised") &&
       passes_->EnsureImage(gi_hist_[0], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 0") &&
       passes_->EnsureImage(gi_hist_[1], plan.ao[0], plan.ao[1], kGiFormat, "ssgi history 1") &&
@@ -4846,7 +4885,22 @@ bool AmbientOcclusion::EnsureGiImages(const Plan& plan) {
   } else if (gi_weight_.texture) {
     passes_->ReleaseImage(gi_weight_);
   }
-  return ok;
+  if (!ok) {
+    return false;
+  }
+  if (CanAliasGiContact(plan)) {
+    using Desc = plume::RenderTextureDesc;
+    constexpr auto flags = plume::RenderTextureFlag::RENDER_TARGET;
+    HostImage& scratch = plan.SplitContact() ? contact_raw_ : raw_;
+    if (passes_->EnsureAliasedTargets(
+            gi_, Desc::Texture2D(plan.ao[0], plan.ao[1], 1, kGiFormat, flags),
+            "ssgi visibility and bounce", scratch,
+            Desc::Texture2D(plan.contact_size[0], plan.contact_size[1], 1, plume::RenderFormat::R16_FLOAT, flags),
+            "ao contact visibility")) {
+      return true;
+    }
+  }
+  return passes_->EnsureImage(gi_, plan.ao[0], plan.ao[1], kGiFormat, "ssgi visibility and bounce");
 }
 
 void AmbientOcclusion::ReleaseGiImages() {

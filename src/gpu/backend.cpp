@@ -238,6 +238,31 @@ std::string DescribeCapabilities(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(DescribeCapabilities(device));
 }
 
+AliasedTargets CreateAliasedTargets(plume::RenderDevice* device,
+                                    const plume::RenderTextureDesc& first,
+                                    const plume::RenderTextureDesc& second) {
+  const auto valid = [](const plume::RenderTextureDesc& desc) {
+    return desc.dimension == plume::RenderTextureDimension::TEXTURE_2D &&
+           desc.width != 0 && desc.height != 0 && desc.arraySize == 1 &&
+           desc.mipLevels == 1 && desc.multisampling.sampleCount == 1 &&
+           desc.flags == plume::RenderTextureFlag::RENDER_TARGET && !desc.optimizedClearValue &&
+           (desc.format == plume::RenderFormat::R16_FLOAT ||
+            desc.format == plume::RenderFormat::R16G16B16A16_FLOAT);
+  };
+  if (!device || !valid(first) || !valid(second)) {
+    return {};
+  }
+  return MCLA_GPU_ACTIVE(CreateAliasedTargets(device, first, second));
+}
+
+void ActivateAliasedTarget(plume::RenderCommandList* list, plume::RenderTexture* texture) {
+  MCLA_GPU_ACTIVE(ActivateAliasedTarget(list, texture));
+}
+
+bool SupportsPackedColourTarget(plume::RenderDevice* device) {
+  return MCLA_GPU_ACTIVE(SupportsPackedColourTarget(device));
+}
+
 VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   return MCLA_GPU_ACTIVE(QueryVideoMemory(device));
 }

@@ -68,6 +68,7 @@ struct HostImage {
   // One number for each texture EnsureImage makes (never 0, never repeated in a session), kept when images trade places by a swap: whoever keeps an object that names TWO of them (a framebuffer of two
   // targets, ScreenShared's fused passes) tells it still stands by the serials, not by the texture's address, which a later texture can have.
   uint64_t serial = 0;
+  uint64_t alias_bytes = 0;  // Same allocation size on both textures, counted once by the owner.
   plume::RenderFormat format = plume::RenderFormat::UNKNOWN;
   plume::RenderTextureFlags flags = plume::RenderTextureFlag::RENDER_TARGET;
   plume::RenderTextureLayout layout = plume::RenderTextureLayout::UNKNOWN;
@@ -181,6 +182,13 @@ class HostPasses {
                    uint32_t samples = 1);
   // Its slot back to the heap and its objects to the FrameRing.
   void ReleaseImage(HostImage& image);
+
+  // Allocates two colour targets at the same offset. An owner must activate each
+  // before its first write and finish all reads before activating its partner.
+  bool EnsureAliasedTargets(HostImage& first, const plume::RenderTextureDesc& first_desc,
+                            const char* first_name, HostImage& second,
+                            const plume::RenderTextureDesc& second_desc, const char* second_name);
+  void ActivateAliasedTarget(plume::RenderCommandList* list, HostImage& image) const;
   // A framebuffer of `color` (the one colour target) with `depth` attached beside it, which a pass over
   // a game's draws draws with (upscaler_masks.h): the depth is not written when the pipeline says not.
   // Null on failure (logged by Device). Retired with RetireFramebuffer, after the lists that name it.
@@ -204,6 +212,8 @@ class HostPasses {
                      const void* pushes, uint32_t push_size, uint32_t count) const;
 
  private:
+  bool FinishImage(HostImage& image, const plume::RenderTextureDesc& desc, const char* name);
+  uint64_t next_alias_attempt_ = 0;
   Device* device_ = nullptr;
   FrameRing* frames_ = nullptr;
   BindlessHeap* heap_ = nullptr;

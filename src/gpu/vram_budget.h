@@ -73,6 +73,7 @@
 #include "backend.h"
 #include "texture_bytes.h"
 #include "vram_room.h"
+#include "vram_warning.h"
 
 namespace mcla::gpu {
 
@@ -122,7 +123,9 @@ class VideoMemoryBudget {
 
   // Lists memory the response cannot release (see above): `bytes` is asked for the lines it writes
   // and is called on the render thread. The name is plain text for the log ("frame generation").
-  void AddHolder(const char* name, std::function<uint64_t()> bytes);
+  // Where there is a clear link, setting identifies a way to reduce those bytes.
+  void AddHolder(const char* name, std::function<uint64_t()> bytes,
+                 vram_warning::Setting setting = vram_warning::Setting::kNone);
 
   // At the start of a frame, before any record of it (Renderer::OpenFrameList),
   // after the caches' own BeginFrame.
@@ -140,6 +143,7 @@ class VideoMemoryBudget {
   // mcla_gpu_vram_log: every that many frames (a check's frame at the earliest), one line with
   // the use, the budget and what the caches hold, whether or not memory is short.
   void LogUse(const backend::VideoMemory& memory, uint64_t frame);
+  void UpdateWarning(const backend::VideoMemory& memory, uint64_t failed);
   // With no shortage: releases the EDRAM targets that nothing used for about a
   // minute (see the top of this file). Every kLazyEveryChecks-th check.
   void ReleaseIdleTargets();
@@ -167,6 +171,7 @@ class VideoMemoryBudget {
   struct Holder {
     const char* name = "";
     std::function<uint64_t()> bytes;
+    vram_warning::Setting setting = vram_warning::Setting::kNone;
   };
   std::vector<Holder> holders_;
   Device* device_ = nullptr;
@@ -180,6 +185,7 @@ class VideoMemoryBudget {
   uint64_t last_onset_ = 0;  // the frame a shortage was last announced in; 0: never
   bool short_ = false;
   Window window_;
+  vram_warning::Warning warning_;
   // The frame rate of the last checks, from the clock, for the idle limit of the
   // targets released without a shortage.
   std::chrono::steady_clock::time_point last_check_time_{};

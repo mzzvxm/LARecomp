@@ -2022,7 +2022,9 @@ class GPUSettings final : public rex::SettingOwner {
     "upscaler's contexts (vram_room.h). The way to see the NO ROOM paths and the trimming on a card "
     "that has plenty (a 4 GB card is 3900). Live.", rex::kDebugOnly);
 
-  REX_SETTING(u32, mcla_gpu_vram_log, 0, "Diagnostic: every this many frames (at the next check of the video memory, every 30 frames), "
+  REX_SETTING(bool, mcla_gpu_vram_savings, true, "Share non-overlapping render targets, store reflection colour in a smaller format, and release histories for disabled effects. Live.", rex::kDebugOnly);
+
+  REX_SETTING(u32, mcla_gpu_vram_log, 600, "Diagnostic: every this many frames (at the next check of the video memory, every 30 frames), "
     "log how much video memory the process uses against the budget the system gives it, and what "
     "the texture, resolve product, EDRAM target and resolve memory caches hold, whether or not "
     "memory is short. For a report of stutter or crashes on a card with little video memory. "
@@ -2551,6 +2553,7 @@ inline auto& mcla_gpu_upscaler_zero_jitter = g_gpu.mcla_gpu_upscaler_zero_jitter
 inline auto& mcla_gpu_validate = g_gpu.mcla_gpu_validate;
 inline auto& mcla_gpu_verify_constants = g_gpu.mcla_gpu_verify_constants;
 inline auto& mcla_gpu_vram_budget_mb = g_gpu.mcla_gpu_vram_budget_mb;
+inline auto& mcla_gpu_vram_savings = g_gpu.mcla_gpu_vram_savings;
 inline auto& mcla_gpu_vram_log = g_gpu.mcla_gpu_vram_log;
 inline auto& mcla_gpu_vsync = g_gpu.mcla_gpu_vsync;
 inline auto& mcla_gpu_watch_base = g_gpu.mcla_gpu_watch_base;

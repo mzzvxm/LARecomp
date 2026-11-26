@@ -137,6 +137,7 @@ int main(int argc, char** argv) {
   Check(one_selected(probe) && contains(probe, "\"selected\": false"), "exactly one selected adapter");
   Check(contains(probe, "\"dlss\": null") && contains(probe, "\"dlss_modes_refused\": null"),
         "probe leaves unobserved DLSS facts unknown");
+  Check(contains(probe, "\"vram_warning\": null"), "headless probes have no gameplay memory warning");
   const auto probe_doc = Parse(probe);
   CheckDlssCard(probe_doc, true);
   CheckApi(probe_doc, "d3d12", true, "strong", nullptr);
@@ -177,6 +178,15 @@ int main(int argc, char** argv) {
   CheckDlssCard(game_doc, true);
   CheckApi(game_doc, "d3d12", true, "weak", "no");
   Check(publisher.Changed(final), "completed probes update the document");
+  publisher.NoteSuccess(final);
+  gpu.vram_warning = "CITY RT";
+  const auto pressured = machine::Serialize(facts, false);
+  Check(contains(pressured, "\"vram_warning\": \"CITY RT\"") && publisher.Changed(pressured),
+        "a live memory warning updates machine.json with the setting hint");
+  publisher.NoteSuccess(pressured);
+  gpu.vram_warning.clear();
+  Check(publisher.Changed(final) && machine::Serialize(facts, false) == final,
+        "recovery clears the memory warning from machine.json");
   publisher.NoteSuccess(final);
   gpu.class_forced = "low";
   const auto forced = machine::Serialize(facts, false);

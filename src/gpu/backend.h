@@ -223,6 +223,20 @@ struct VideoMemory {
   uint64_t budget = 0;
 };
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
+
+// Two single-sample render targets at the same allocation offset. Each texture owns a
+// share of the allocation so normal FrameRing texture retirement also retires the memory.
+struct AliasedTargets {
+  std::unique_ptr<plume::RenderTexture> first;
+  std::unique_ptr<plume::RenderTexture> second;
+  uint64_t bytes = 0;
+};
+AliasedTargets CreateAliasedTargets(plume::RenderDevice* device,
+                                    const plume::RenderTextureDesc& first,
+                                    const plume::RenderTextureDesc& second);
+void ActivateAliasedTarget(plume::RenderCommandList* list, plume::RenderTexture* texture);
+bool SupportsPackedColourTarget(plume::RenderDevice* device);
+
 // One plain line for the log, written once when the device opens: how the budget above is made on
 // this adapter (a card with its own memory reads one heap or segment; an adapter that shares memory
 // with the CPU reads all the memory the GPU can reach, held to a share of the RAM and floored; which

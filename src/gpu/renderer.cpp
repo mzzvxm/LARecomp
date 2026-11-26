@@ -488,18 +488,34 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     temporal_.SetRrGuidePass(&rr_guides_);  // the upscale runs the guide pass where Ray Reconstruction (or a guide view) wants it
     // Frame generation: probed on a worker thread; the setting is taken at a frame boundary.
     fg_.Initialize(device_, frames_, passes_, pass_timing_, layers_, temporal_, swap_chain_);
+    using VramSetting = vram_warning::Setting;
     // Its images and AMD's context are not something the budget's response can release; its lines
     // name them (vram_budget.h), and frame generation asks the budget's rule before it takes any.
-    vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); });
+    vram_.AddHolder("frame generation", [this] { return fg_.HeldBytes(); }, VramSetting::kFrameGeneration);
     // The city's hit data pool (64 to 256 MiB) is not something the response can release (the structures built over it would be rebuilt): its line names it.
-    vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); });
+    vram_.AddHolder("city hit data", [this] { return city_hit_.HeldBytes(); }, VramSetting::kRtCity);
     // The headlight shadow maps' atlas (the replay's own or the shared one: local_shadow.h HeldBytes counts both) is memory the response cannot release either: the lines name it.
-    vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); });
+    vram_.AddHolder("headlight shadow atlas", [this] { return local_shadow_.HeldBytes(); }, VramSetting::kLightShadows);
     // The probe field's textures (gi_field.h): the OS counts them in the use it reports and the caches' trim cannot give them back; the field asks the room test before it makes any.
-    vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); });
-    vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); });
-    vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); });
-    vram_.AddHolder("rtao", [this] { return ao_.RtAoHeldBytes(); });
+    vram_.AddHolder("probe field", [this] { return gi_field_.HeldBytes(); }, VramSetting::kRtBounce);
+    vram_.AddHolder("probe update", [this] { return gi_update_.HeldBytes(); }, VramSetting::kRtBounce);
+    vram_.AddHolder("per-pixel bounce light", [this] { return gi_pixel_.HeldBytes(); }, VramSetting::kRtBounce);
+    vram_.AddHolder("screen targets", [this] {
+      return gbuffer_.HeldBytes() + screen_.HeldBytes() + ao_.HeldBytes() + shafts_.HeldBytes() +
+             volumetrics_.HeldBytes() + ssr_.HeldBytes() + gi_apply_.HeldBytes();
+    });
+    vram_.AddHolder("vehicle targets", [this] {
+      return car_refl_.HeldBytes() + car_shadow_.HeldBytes() + mirror_view_.HeldBytes() + car_mirror_.HeldBytes();
+    });
+    vram_.AddHolder("ray tracing structures and scratch", [this] {
+      return car_rt_.HeldBytes() + city_rt_.HeldBytes() + rt_world_.HeldBytes();
+    });
+    vram_.AddHolder("display and HDR", [this] {
+      return layers_.HeldBytes() + hdr_scene_.HeldBytes() + hdr_tone_.HeldBytes();
+    });
+    vram_.AddHolder("temporal scaling", [this] { return temporal_.HeldBytes(); }, VramSetting::kUpscaling);
+    vram_.AddHolder("DLSS frame generation", [this] { return dlssg_.HeldBytes(); }, VramSetting::kFrameGeneration);
+    vram_.AddHolder("upload heaps", [this] { return upload_.HeldBytes(); });
     vram_.AddHolder("ray traced light visibility", [this] { return rt_lights_.HeldBytes(); });
     // DLSS frame generation: asked of Streamline when it has started; the setting is taken at a
     // frame boundary.

@@ -106,6 +106,7 @@ void WriteGpu(JsonWriter& out, const GpuFacts& gpu, const Adapter* selected) {
   Field(out, "rt_rung", gpu.rt_rung);
   Text(out, "rt_tier_why", gpu.rt_tier_why);
   Field(out, "rt_benchmarked", gpu.rt_benchmarked);
+  Text(out, "vram_warning", gpu.vram_warning);
   out.Key("adapters").BeginArray();
   // The contract requires one selected entry whenever the list has entries. With no selected
   // device the adapter generator falls back to its offline values.

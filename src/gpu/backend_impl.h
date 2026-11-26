@@ -52,6 +52,11 @@ std::string DescribeCapabilities(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
 std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
+AliasedTargets CreateAliasedTargets(plume::RenderDevice* device,
+                                    const plume::RenderTextureDesc& first,
+                                    const plume::RenderTextureDesc& second);
+void ActivateAliasedTarget(plume::RenderCommandList* list, plume::RenderTexture* texture);
+bool SupportsPackedColourTarget(plume::RenderDevice* device);
 void* CreateLossProbe(plume::RenderDevice* device);
 void DestroyLossProbe(plume::RenderDevice* device, void* probe);
 int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);
@@ -107,6 +112,11 @@ std::string DescribeCapabilities(plume::RenderDevice* device);
 std::string RequirementProblem(plume::RenderDevice* device);
 std::string DescribeVideoMemory(plume::RenderDevice* device);
 VideoMemory QueryVideoMemory(plume::RenderDevice* device);
+AliasedTargets CreateAliasedTargets(plume::RenderDevice* device,
+                                    const plume::RenderTextureDesc& first,
+                                    const plume::RenderTextureDesc& second);
+void ActivateAliasedTarget(plume::RenderCommandList* list, plume::RenderTexture* texture);
+bool SupportsPackedColourTarget(plume::RenderDevice* device);
 void* CreateLossProbe(plume::RenderDevice* device);
 void DestroyLossProbe(plume::RenderDevice* device, void* probe);
 int64_t DeviceRemovedReason(plume::RenderDevice* device, void* probe);

@@ -15,6 +15,7 @@
 #include <rex/logging/log_category.h>
 
 #include "backend.h"
+#include "device.h"
 #include "host_shaders.h"
 #include "menu_world.h"
 #include "pass_timing.h"
@@ -33,6 +34,7 @@ constexpr uint32_t kHizReleaseAfterFrames = 120;
 constexpr plume::RenderFormat kHizFormat = plume::RenderFormat::R32_FLOAT;
 // The colour captures' format (the frozen header: RGBA16F) and the frames the capture's images are kept after the last frame that planned it (a pause spell, a menu).
 constexpr plume::RenderFormat kColourFormat = plume::RenderFormat::R16G16B16A16_FLOAT;
+constexpr plume::RenderFormat kPackedColourFormat = plume::RenderFormat::R11G11B10_FLOAT;
 constexpr uint32_t kPostReleaseAfterFrames = 120;
 // The smallest picture a capture is made for (the car history's rule: a size below it is no main view).
 constexpr uint32_t kMinRenderSize = 64;
@@ -79,8 +81,9 @@ void ScreenShared::Initialize(Device& device, BindlessHeap& heap, HostPasses& pa
   hiz_listed_ = false;
   hiz_failed_ = false;
   view_failed_ = false;
-  colour_listed_ = false;
-  colour_failed_ = false;
+  colour_listed_[0] = colour_listed_[1] = false;
+  colour_failed_[0] = colour_failed_[1] = false;
+  packed_colour_supported_ = backend::SupportsPackedColourTarget(device.device());
   const HostShaderBlob hiz = ScreenHizPixelShader();
   hiz_shader_ = passes.CreateShader(hiz.data, hiz.size, hiz.name);
   if (!hiz_shader_) {
@@ -97,10 +100,10 @@ void ScreenShared::Initialize(Device& device, BindlessHeap& heap, HostPasses& pa
     const HostShaderBlob colour = ScreenColourPixelShader(pass);
     colour_shaders_[pass] = passes.CreateShader(colour.data, colour.size, colour.name);
     if (!colour_shaders_[pass]) {
-      colour_failed_ = true;
+      colour_failed_[0] = colour_failed_[1] = true;
     }
   }
-  if (colour_failed_) {
+  if (colour_failed_[0]) {
     REXLOG_ERROR("{} the colour capture's shaders could not be made: no colour_post this session", kPrefix);
   }
   InitializeChain(device, heap);  // the depth chain's, the normal image's and the colour chain's layout and shaders (screen_extract.cpp)
@@ -667,47 +670,52 @@ void ScreenShared::CapturePre(const std::function<void()>& record) {
 // colour_post and its history
 // ---------------------------------------------------------------------------
 
-std::unique_ptr<plume::RenderPipeline> ScreenShared::MakeColourPipeline(uint32_t pass) {
-  if (!colour_shaders_[pass]) {
+std::unique_ptr<plume::RenderPipeline> ScreenShared::MakeColourPipeline(uint32_t variant) {
+  const uint32_t pass = variant % kColourPassCount;
+  if (!passes_ || !colour_shaders_[pass]) {
     return nullptr;
   }
-  // The host pass layout (a push block of 32 bytes), one RGBA16_FLOAT target, written whole: the full-screen triangle's pipeline.
-  return passes_->CreatePipeline(*colour_shaders_[pass], kColourFormat, pass == kColourMip ? "screen colour post mip" : "screen colour post");
+  const auto format = variant >= kColourPassCount ? kPackedColourFormat : kColourFormat;
+  return passes_->CreatePipeline(*colour_shaders_[pass], format, kPostNames[pass]);
 }
 
-plume::RenderPipeline* ScreenShared::ColourPipeline(uint32_t pass) {
-  if (colour_pipelines_[pass]) {
-    return colour_pipelines_[pass].get();
+plume::RenderPipeline* ScreenShared::ColourPipeline(uint32_t variant) {
+  if (colour_pipelines_[variant]) {
+    return colour_pipelines_[variant].get();
   }
-  if (colour_failed_ || !colour_shaders_[pass]) {
+  const uint32_t packed = variant / kColourPassCount;
+  if (colour_failed_[packed] || !passes_) {
     return nullptr;
   }
   HostPrecache& precache = passes_->precache();
-  const uint64_t key = HostPrecache::Key(HostPrecache::kScreenShared, 1 + pass);
-  if (!colour_listed_) {
-    colour_listed_ = true;
+  const uint64_t key = HostPrecache::Key(HostPrecache::kScreenShared, 1 + variant);
+  if (!colour_listed_[packed]) {
+    colour_listed_[packed] = true;
     std::vector<HostPrecache::Item> items;
-    for (uint32_t i = 0; i < kColourPassCount; ++i) {
-      items.push_back({HostPrecache::Key(HostPrecache::kScreenShared, 1 + i), i == kColourMip ? "screen colour post mip" : "screen colour post", [this, i] { return MakeColourPipeline(i); }});
+    for (uint32_t pass = 0; pass < kColourPassCount; ++pass) {
+      const uint32_t index = pass + packed * kColourPassCount;
+      items.push_back({HostPrecache::Key(HostPrecache::kScreenShared, 1 + index), kPostNames[pass],
+                       [this, index] { return MakeColourPipeline(index); }});
     }
-    const uint32_t count = precache.AddLive("screen products", std::move(items));
-    REXLOG_INFO("{} colour_post is wanted: its pipelines ({}) are made in the background first, and the capture is made from the frame they are done", kPrefix, count);
+    precache.AddLive("screen products", std::move(items));
   }
   if (!precache.Ready(key)) {
-    return nullptr;  // a frame never waits for a compile: no capture this frame
+    return nullptr;
   }
-  colour_pipelines_[pass] = precache.Acquire(key, pass == kColourMip ? "screen colour post mip" : "screen colour post", [this, pass] { return MakeColourPipeline(pass); });
-  if (!colour_pipelines_[pass]) {
-    colour_failed_ = true;
-    REXLOG_ERROR("{} the colour capture's pipeline could not be made: no colour_post this session", kPrefix);
+  colour_pipelines_[variant] = precache.Acquire(key, kPostNames[variant % kColourPassCount],
+                                                [this, variant] { return MakeColourPipeline(variant); });
+  if (!colour_pipelines_[variant]) {
+    colour_failed_[packed] = true;
+    REXLOG_ERROR("{} the {} colour capture pipeline could not be made", kPrefix,
+                 packed ? "packed" : "RGBA16F");
   }
-  return colour_pipelines_[pass].get();
+  return colour_pipelines_[variant].get();
 }
 
-bool ScreenShared::ColourPipelinesReady() {
+bool ScreenShared::ColourPipelinesReady(bool packed) {
   bool ready = true;
   for (uint32_t pass = 0; pass < kColourPassCount; ++pass) {
-    ready = ColourPipeline(pass) != nullptr && ready;
+    ready = ColourPipeline(pass + (packed ? kColourPassCount : 0)) != nullptr && ready;
   }
   return ready;
 }
@@ -779,12 +787,18 @@ bool ScreenShared::CapturePost(const ResolveRecord& record, const ResolveCache::
     }
     return false;
   }
-  if (!ColourPipelinesReady()) {
+  // The capture only stores nonnegative RGB with constant alpha. CHECK: inspect
+  // dark gradients and bright road reflections with the packed RGB float format.
+  const bool want_packed = larecomp::settings::mcla_gpu_vram_savings.Get() && packed_colour_supported_;
+  const bool packed = want_packed && ColourPipelinesReady(true);
+  if (!packed && !ColourPipelinesReady(false)) {
     return false;
   }
+  const auto format = packed ? kPackedColourFormat : kColourFormat;
+  const uint32_t offset = packed ? kColourPassCount : 0;
   const bool ms = depth.host_samples > 1;
-  plume::RenderPipeline* pipeline = ColourPipeline(ms ? kColourMs : kColourPlain);
-  plume::RenderPipeline* mip_pipeline = ColourPipeline(kColourMip);
+  plume::RenderPipeline* pipeline = ColourPipeline(offset + (ms ? kColourMs : kColourPlain));
+  plume::RenderPipeline* mip_pipeline = ColourPipeline(offset + kColourMip);
   if (!pipeline || !mip_pipeline) {
     return false;
   }
@@ -793,11 +807,18 @@ bool ScreenShared::CapturePost(const ResolveRecord& record, const ResolveCache::
   const uint32_t post_w = screen::ColourPostEdge(render_w, half);
   const uint32_t post_h = screen::ColourPostEdge(render_h, half);
   const uint32_t levels = screen::ColourPostLevelCount(post_w, post_h, screen::ColourPostWithMips(wants_, plan_.view, plan_.view_level));
+  const bool keep = (plan_.make & screen::ProductBit(screen::kHistory)) != 0;
+  if (history_.texture && (!keep || history_.format != format || history_.width != post_w ||
+                           history_.height != post_h)) {
+    passes_->ReleaseImage(history_);
+    last_capture_.valid = false;
+    ++colour_generation_;
+  }
   // The images: one a level, kept while the size is. A trade of level 0 with the history is not a new image (the pointer before this call is the one the trade left), a different size is.
   bool ok = true;
   for (uint32_t level = 0; level < levels && ok; ++level) {
     const plume::RenderTexture* before = post_[level].texture.get();
-    ok = passes_->EnsureImage(post_[level], screen::HizLevelSize(post_w, level), screen::HizLevelSize(post_h, level), kColourFormat, kPostNames[level]);
+    ok = passes_->EnsureImage(post_[level], screen::HizLevelSize(post_w, level), screen::HizLevelSize(post_h, level), format, kPostNames[level]);
     if (ok && post_[level].texture.get() != before) {
       ++colour_generation_;
     }
@@ -874,7 +895,6 @@ bool ScreenShared::CapturePost(const ResolveRecord& record, const ResolveCache::
   }
   in.colour_post_size[0] = post_w;
   in.colour_post_size[1] = post_h;
-  const bool keep = (plan_.make & screen::ProductBit(screen::kHistory)) != 0;
   const bool usable = keep && history_.texture && screen::HistoryUsable(last_capture_, this_capture_) && history_.width == post_w && history_.height == post_h;
   in.history_colour = usable ? history_.slot : screen::kNoSlot;
   in.colour_generation = colour_generation_;
@@ -882,8 +902,10 @@ bool ScreenShared::CapturePost(const ResolveRecord& record, const ResolveCache::
   Seal();
   if (!post_first_logged_) {
     post_first_logged_ = true;
-    REXLOG_INFO("{} the first colour_post: {}x{} RGBA16F, {} level{} ({:.1f} MiB), from {} host sample{} of a {}x{} picture{}", kPrefix, post_w, post_h, levels, levels == 1 ? "" : "s",
-                Mib(screen::ColourPostBytes(post_w, post_h, levels)), depth.host_samples, depth.host_samples == 1 ? "" : "s", render_w, render_h, half ? " (half size: above 1080 lines)" : "");
+    REXLOG_INFO("{} the first colour_post: {}x{} {}, {} level{} ({:.1f} MiB), from {} host sample{} of a {}x{} picture{}", kPrefix, post_w, post_h,
+                packed ? "R11G11B10F" : "RGBA16F", levels, levels == 1 ? "" : "s",
+                Mib(screen::ColourPostBytes(post_w, post_h, levels)) * (packed ? 0.5 : 1.0), depth.host_samples,
+                depth.host_samples == 1 ? "" : "s", render_w, render_h, half ? " (half size)" : "");
   }
   if (post_logged_size_[0] != post_w || post_logged_size_[1] != post_h) {
     if (post_logged_size_[0] != 0) {

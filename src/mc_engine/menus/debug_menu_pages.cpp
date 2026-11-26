@@ -134,6 +134,7 @@ constexpr const char* kMarkerLevelNames[] = {"FRAME", "PHASES", "DETAIL"};
 constexpr double kGhostLogVals[]          = {0.0, 1.0, 10.0, 60.0, 300.0};
 constexpr double kMipBiasVals[]           = {-2.0, -1.5, -1.0, -0.5, 0.0, 0.5};
 constexpr double kMemoryLogVals[]         = {0.0, 60.0, 300.0, 1800.0};
+constexpr double kVramLogVals[]           = {0.0, 60.0, 300.0, 600.0, 1800.0};
 constexpr const char* kGlowVisibilityVals[]  = {"game", "soft"};
 constexpr const char* kGlowVisibilityNames[] = {"GAME", "SOFT"};
 // The UI sharpening's strength (ui_sharp.h, mcla_ui_sharp_strength): 1 is the default, 0.5 half of it, 2 a harder edge; 0 does nothing (the Dbl row shows it as NONE).
@@ -154,6 +155,7 @@ const ItemDef kDebugHubItems[] = {
     Submenu("PM_RxDbgSubFixes", "FIXES",       "RxDbgFixesMenu"),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Submenu("PM_RxDbgSubFixes2", "PICTURE FIXES", "RxDbgFixes2Menu")),
+    NativeOnly(Submenu("PM_RxDbgSubGpuFixes", "RENDERER FIXES", "RxDbgGpuFixesMenu")),
 #endif
     Submenu("PM_RxDbgSubPerf",  "PERFORMANCE", "RxDbgPerfMenu"),
     Submenu("PM_RxDbgSubRend",  "RENDERING",   "RxDbgRendMenu"),
@@ -168,21 +170,9 @@ const ItemDef kDebugHubItems[] = {
 // page makes no new switch. A page holds at most 24 rows (pause_menu.cpp kMaxRowsPerMenu: a page over it is refused whole
 // and does not open; tools/check_menu_rows.py fails on it), so the fixes of the Plume renderer's picture are the next
 // page's (PICTURE FIXES, kDebugPictureFixesItems) and a new fix switch goes to the one it belongs to. The reset row ends this page.
-constexpr const char* kRtAoDenoiseVals[] = {"auto", "ours", "off"};
-constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
-
 const ItemDef kDebugFixesItems[] = {
     NativeOnly(Bool("PM_RxSharpUi", "mcla_ui_sharp", "SHARP UI: ")),
     NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale", "SHARP MINIMAP: ")),
-    NativeOnly(Bool("PM_RxDbgRtDesc", "mcla_gpu_rt_descriptor_memo", "RT DESCRIPTOR CACHE: ")),
-    NativeOnly(Bool("PM_RxDbgResolveLayout", "mcla_gpu_resolve_layout_memo", "RESOLVE LAYOUT CACHE: ")),
-    NativeOnly(Bool("PM_RxDbgConstBatch", "mcla_gpu_batch_constant_banks", "BATCH CONSTANT BANKS: ")),
-    NativeOnly(Bool("PM_RxDbgFetchRaw", "mcla_gpu_fetch_memo_raw", "FETCH MEMO RAW: ")),
-#if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Bool("PM_RxDbgAoCheap", "mcla_gpu_ao_cheap", "COMBINED AO FILTER: ")),
-    NativeOnly(Str("PM_RxDbgRtAoDenoise", "mcla_gpu_rtao_denoise", "RT AO FILTER: ",
-                   kRtAoDenoiseVals, kRtAoDenoiseNames, Len(kRtAoDenoiseVals))),
-#endif
     Bool("PM_RxDbgRealDelta",  "real_frame_delta",          "REAL FRAME DELTA: "),
     // The AI racers' driving line is improved at most this often per racer (hooks/race_line.cpp): 30 is the console's rate; EVERY FRAME is the old behaviour.
     Str("PM_RxDbgRaceLine",    "race_line_max_hz",          "RACE LINE RATE: ",
@@ -203,7 +193,6 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgNeonPulse",  "mcla_fix_neon_30hz",        "NEON PULSE 30 HZ: "),
     // The smoke of a closed race checkpoint fades at the console's rate at every frame rate (hooks/checkpoint_effect_fade.cpp).
     Bool("PM_RxDbgCpFade",     "mcla_fix_checkpoint_fade",  "CHECKPOINT SMOKE: "),
-    NativeOnly(Bool("PM_RxDbgEnvHold", "mcla_gpu_env_hold", "ENVIRONMENT MAP HOLD: ")),
     // The process ends right after the orderly shutdown, without the destructors of the exit (exit_fast.h); read when the game closes.
     Bool("PM_RxDbgFastExit",   "mcla_fast_exit",           "FAST EXIT: "),
     Bool("PM_RxDbgSkipGpuTear", "mcla_skip_gpu_teardown",   "SKIP GPU TEARDOWN: "),
@@ -214,17 +203,30 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgPromptsLive", "prompts_live",             "LIVE BUTTON PROMPTS: "),
     // Keyboard steering builds up to full lock and comes back over a short time (keyboard_native.cpp KeySteerScope); off = the old on / off key pair, full lock at once.
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
-    NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
-    NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
-    NativeOnly(Bool("PM_RxDbgRtDenoiseV2", "mcla_gpu_rt_denoise_v2", "RT DENOISE V2: ")),
-#if defined(LARECOMP_HAS_GPU)
-    NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
-#endif
-    NativeOnly(Bool("PM_RxDbgCarRtPaintOneRay", "mcla_gpu_car_rt_paint_one_ray", "RT PAINT ONE RAY: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 
 #if defined(LARECOMP_HAS_GPU)
+constexpr const char* kRtAoDenoiseVals[] = {"auto", "ours", "off"};
+constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
+
+const ItemDef kDebugRendererFixesItems[] = {
+    NativeOnly(Bool("PM_RxDbgSsrClassify", "mcla_gpu_ssr_classify", "REFLECTION TILE CLASSIFICATION: ")),
+    NativeOnly(Bool("PM_RxDbgSsrHandoff", "mcla_gpu_ssr_handoff", "REFLECTION FALLBACK HANDOFF: ")),
+    NativeOnly(Bool("PM_RxDbgRtDenoiseV2", "mcla_gpu_rt_denoise_v2", "RT DENOISE V2: ")),
+    NativeOnly(Bool("PM_RxDbgGarageFx", "mcla_gpu_garage_fx", "GARAGE FX: ")),
+    NativeOnly(Bool("PM_RxDbgCarRtPaintOneRay", "mcla_gpu_car_rt_paint_one_ray", "RT PAINT ONE RAY: ")),
+    NativeOnly(Bool("PM_RxDbgEnvHold", "mcla_gpu_env_hold", "ENVIRONMENT MAP HOLD: ")),
+    NativeOnly(Bool("PM_RxDbgAoCheap", "mcla_gpu_ao_cheap", "COMBINED AO FILTER: ")),
+    NativeOnly(Str("PM_RxDbgRtAoDenoise", "mcla_gpu_rtao_denoise", "RT AO FILTER: ",
+                   kRtAoDenoiseVals, kRtAoDenoiseNames, Len(kRtAoDenoiseVals))),
+    NativeOnly(Bool("PM_RxDbgVramSavings", "mcla_gpu_vram_savings", "VRAM SAVINGS: ")),
+    NativeOnly(Bool("PM_RxDbgRtDesc", "mcla_gpu_rt_descriptor_memo", "RT DESCRIPTOR CACHE: ")),
+    NativeOnly(Bool("PM_RxDbgResolveLayout", "mcla_gpu_resolve_layout_memo", "RESOLVE LAYOUT CACHE: ")),
+    NativeOnly(Bool("PM_RxDbgConstBatch", "mcla_gpu_batch_constant_banks", "BATCH CONSTANT BANKS: ")),
+    NativeOnly(Bool("PM_RxDbgFetchRaw", "mcla_gpu_fetch_memo_raw", "FETCH MEMO RAW: ")),
+};
+
 // PICTURE FIXES: the fixes of the Plume renderer's picture (dither, bloom and exposure at a render scale, the car chrome, the noise of the
 // stochastic effects), each with the switch that turns it off. The rows were the second half of FIXES, which had 30 rows against the 24 a page can
 // hold. Every row is NativeOnly, so the hub lists the page only while the Plume renderer runs.
@@ -518,7 +520,7 @@ const ItemDef kDebugLoggingItems[] = {
     NativeOnly(Dbl("PM_RxDbgMemLog",     "mcla_gpu_process_memory_log", "MEMORY LOG EVERY: ",
                    kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
     NativeOnly(Dbl("PM_RxDbgVramLog",    "mcla_gpu_vram_log",      "VRAM LOG EVERY: ",
-                   kMemoryLogVals, Len(kMemoryLogVals), "%g", "", "OFF")),
+                   kVramLogVals, Len(kVramLogVals), "%g", "", "OFF")),
 #endif
 };
 
@@ -739,6 +741,7 @@ const ItemDef* DebugHubRows(int& count)         { return Rows(kDebugHubItems, co
 const ItemDef* DebugFixesRows(int& count)       { return Rows(kDebugFixesItems, count); }
 #if defined(LARECOMP_HAS_GPU)
 const ItemDef* DebugPictureFixesRows(int& count) { return Rows(kDebugPictureFixesItems, count); }
+const ItemDef* DebugRendererFixesRows(int& count) { return Rows(kDebugRendererFixesItems, count); }
 #endif
 const ItemDef* DebugPerformanceRows(int& count) { return Rows(kDebugPerformanceItems, count); }
 const ItemDef* DebugRenderingRows(int& count)   { return Rows(kDebugRenderingItems, count); }

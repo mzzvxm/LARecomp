@@ -96,7 +96,7 @@ bool ScreenShared::CaptureLightsInto(HostImage& image, const char* label, const 
   if (!colour || colour->host_samples != depth.host_samples || colour->scale != depth.scale) {
     return false;
   }
-  if (!ColourPipelinesReady()) {
+  if (!ColourPipelinesReady(false)) {
     return false;  // listed with the host precache and made in the background: a frame never waits for a compile (the capture is the colour_post capture's pipelines)
   }
   const bool ms = depth.host_samples > 1;

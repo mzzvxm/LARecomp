@@ -1019,6 +1019,7 @@ class AmbientOcclusion {
   uint32_t RecordCarSunLookup(plume::RenderCommandList* list, const float columns[12]);
   // The wetness the frame's main view draws carried (VS c43.x): the commonest value, to 0.1.
   bool PickWet(float* value) const;
+  bool CanAliasGiContact(const Plan& plan) const;
   bool EnsureImages(const Plan& plan);
   // NOISE-FOLLOW: whether the contact history's images that are held stay this frame, though the history does not run (Plan::contact_history_gap); asked once a frame, before the images are ensured.
   bool ContactHistoryKeep(const Plan& plan);

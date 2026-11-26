@@ -4,7 +4,9 @@
 #include "vram_budget.h"
 
 #include <algorithm>
+#include <atomic>
 #include <format>
+#include <span>
 
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
@@ -21,8 +23,15 @@ namespace mcla::gpu {
 namespace {
 
 constexpr double kMiB = 1.0 / (1024.0 * 1024.0);
+using vram_warning::Change;
+using vram_warning::Setting;
+std::atomic<Setting> g_warning_setting{Setting::kNone};
 
 }  // namespace
+
+std::string_view vram_warning::CurrentHint() {
+  return kLabels[Index(g_warning_setting.load(std::memory_order_relaxed))].hint;
+}
 
 void VideoMemoryBudget::Initialize(Device& device, TextureCache& textures, ResolveCache& resolve,
                                    ResolveMemory& resolve_memory, EdramTargets& edram) {
@@ -35,6 +44,8 @@ void VideoMemoryBudget::Initialize(Device& device, TextureCache& textures, Resol
   last_log_ = device.frame();
   next_use_log_ = 0;
   short_ = false;
+  warning_ = {};
+  g_warning_setting.store(Setting::kNone, std::memory_order_relaxed);
   window_ = Window{};
   last_check_time_ = std::chrono::steady_clock::now();
   last_check_frame_ = device.frame();
@@ -43,6 +54,7 @@ void VideoMemoryBudget::Initialize(Device& device, TextureCache& textures, Resol
 }
 
 void VideoMemoryBudget::Shutdown() {
+  g_warning_setting.store(Setting::kNone, std::memory_order_relaxed);
   device_ = nullptr;
   textures_ = nullptr;
   resolve_ = nullptr;
@@ -52,8 +64,9 @@ void VideoMemoryBudget::Shutdown() {
   window_ = Window{};
 }
 
-void VideoMemoryBudget::AddHolder(const char* name, std::function<uint64_t()> bytes) {
-  holders_.push_back({name, std::move(bytes)});
+void VideoMemoryBudget::AddHolder(const char* name, std::function<uint64_t()> bytes,
+                                  Setting setting) {
+  holders_.push_back({name, std::move(bytes), setting});
 }
 
 std::string VideoMemoryBudget::HoldersText() const {
@@ -65,11 +78,50 @@ std::string VideoMemoryBudget::HoldersText() const {
                           double(bytes) * kMiB);
     }
   }
-  return text.empty() ? text : " | held here, not released by this: " + text;
+  return text.empty() ? text : " | renderer allocations (MiB): " + text;
 }
 
 backend::VideoMemory VideoMemoryBudget::Sample() {
   return device_->QueryVideoMemory();
+}
+
+void VideoMemoryBudget::UpdateWarning(const backend::VideoMemory& memory, uint64_t failed) {
+  const Change change = warning_.Sample(memory.used, memory.budget, failed != 0);
+  if (change == Change::kNone) return;
+  if (change == Change::kClear) {
+    g_warning_setting.store(Setting::kNone, std::memory_order_relaxed);
+    return;
+  }
+
+  vram_warning::SettingBytes bytes{};
+  if (edram_ && resolve_) {
+    bytes[vram_warning::Index(Setting::kRenderSize)] = edram_->HeldBytes() + resolve_->HeldBytes();
+  }
+  for (const Holder& holder : holders_) {
+    if (holder.setting != Setting::kNone && holder.bytes) {
+      bytes[vram_warning::Index(holder.setting)] += holder.bytes();
+    }
+  }
+  const auto costs = vram_warning::Rank(bytes);
+  // CHECK: trigger and clear the warning in Graphics and in the launcher on both backends.
+  g_warning_setting.store(costs.front().setting, std::memory_order_relaxed);
+
+  std::string settings;
+  for (const auto& cost : std::span(costs).first<3>()) {
+    if (cost.bytes == 0) break;
+    settings += std::format("{}{} ({:.1f} MiB)", settings.empty() ? "" : ", ",
+                            vram_warning::kLabels[vram_warning::Index(cost.setting)].full,
+                            double(cost.bytes) * kMiB);
+  }
+  if (settings.empty()) settings = "Render Scale / MSAA";
+
+  const std::string usage = memory.budget
+      ? std::format("{} of {} MiB in use", memory.used >> 20, memory.budget >> 20)
+      : "adapter budget unavailable";
+  const std::string failure = failed ? std::format(", allocation of {:.1f} MiB failed",
+                                                   double(failed) * kMiB) : "";
+  REXLOG_WARN("[gpu] video memory pressure: {}{}. Review settings with large video memory costs: {}",
+              usage, failure, settings);
 }
 
 void VideoMemoryBudget::BeginFrame() {
@@ -86,8 +138,9 @@ void VideoMemoryBudget::BeginFrame() {
 
   NoteFrameRate(frame);
   const backend::VideoMemory memory = Sample();
-  LogUse(memory, frame);
   const uint64_t failed = device_->TakeFailedBytes();
+  UpdateWarning(memory, failed);
+  LogUse(memory, frame);
   window_.skipped += device_->TakeSkipped();
   ++window_.checks;
 
@@ -217,7 +270,8 @@ void VideoMemoryBudget::LogUse(const backend::VideoMemory& memory, uint64_t fram
       frame, used, budget, double(textures_->HeldBytes()) * kMiB,
       double(resolve_->HeldBytes()) * kMiB, double(edram_->HeldBytes()) * kMiB,
       double(resolve_memory_->HeldBytes()) * kMiB, HoldersText(),
-      short_ ? "short at the last check" : "not short");
+      !vram_warning::CurrentHint().empty() ? "video memory warning active"
+                                          : short_ ? "short at the last check" : "no pressure warning");
 }
 
 void VideoMemoryBudget::LogReleased(const backend::VideoMemory& memory) {

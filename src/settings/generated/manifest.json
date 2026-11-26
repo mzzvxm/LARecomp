@@ -4893,9 +4893,20 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_vram_savings": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Share non-overlapping render targets, store reflection colour in a smaller format, and release histories for disabled effects. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_vram_log": {
   "type": "u32",
-  "default": "0",
+  "default": "600",
   "category": "MCLA/GPU",
   "help": "\"Diagnostic: every this many frames (at the next check of the video memory, every 30 frames), \"\n    \"log how much video memory the process uses against the budget the system gives it, and what \"\n    \"the texture, resolve product, EDRAM target and resolve memory caches hold, whether or not \"\n    \"memory is short. For a report of stutter or crashes on a card with little video memory. \"\n    \"0: off.\"",
   "traits": [

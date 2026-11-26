@@ -664,6 +664,7 @@
 {"mcla_gpu_light_pick_record", "MCLA/GPU"},
 {"mcla_gpu_light_frame", "MCLA/GPU"},
 {"mcla_gpu_vram_budget_mb", "MCLA/GPU"},
+{"mcla_gpu_vram_savings", "MCLA/GPU"},
 {"mcla_gpu_vram_log", "MCLA/GPU"},
 {"mcla_gpu_vsync", "MCLA/GPU"},
 {"mcla_gpu_watch_base", "MCLA/GPU"},

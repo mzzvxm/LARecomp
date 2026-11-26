@@ -27,6 +27,7 @@
         "device_id": { "type": "integer" },
         "driver_version": { "type": "string" },
         "vram_mb": { "type": "integer", "minimum": 0 },
+        "vram_warning": { "type": ["string", "null"], "pattern": "^[A-Z/ ]{1,8}$", "description": "Compact setting hint from the last published game sample while its video memory warning was active. Null when no warning was reported." },
         "shared_memory": { "type": ["boolean", "null"] },
         "software": { "type": ["boolean", "null"] },
         "rtx": { "type": ["boolean", "null"] },

@@ -323,6 +323,143 @@ uma_budget::Result BudgetOf(const HeapList& list) {
 
 }  // namespace
 
+namespace {
+
+struct AliasAllocation {
+  VmaAllocator allocator = VK_NULL_HANDLE;
+  VmaAllocation allocation = VK_NULL_HANDLE;
+  ~AliasAllocation() {
+    if (allocator && allocation) {
+      vmaFreeMemory(allocator, allocation);
+    }
+  }
+};
+
+struct PlacedTarget final : plume::VulkanTexture {
+  std::shared_ptr<AliasAllocation> heap;
+  ~PlacedTarget() override {
+    if (device && device->vk) {
+      if (imageView) {
+        vkDestroyImageView(device->vk, imageView, nullptr);
+        imageView = VK_NULL_HANDLE;
+      }
+      if (vk) {
+        vkDestroyImage(device->vk, vk, nullptr);
+        vk = VK_NULL_HANDLE;
+      }
+    }
+  }
+};
+
+constexpr VkImageUsageFlags kAliasUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                                         VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+constexpr VkFormat kPackedColour = VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+
+std::unique_ptr<PlacedTarget> MakeUnboundTarget(plume::VulkanDevice& dev,
+                                               const plume::RenderTextureDesc& desc) {
+  VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  info.flags = VK_IMAGE_CREATE_ALIAS_BIT;
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = desc.format == plume::RenderFormat::R16_FLOAT
+                    ? VK_FORMAT_R16_SFLOAT : VK_FORMAT_R16G16B16A16_SFLOAT;
+  info.extent = {desc.width, desc.height, 1};
+  info.mipLevels = 1;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = kAliasUsage;
+  auto image = std::make_unique<PlacedTarget>();
+  image->device = &dev;
+  image->desc = desc;
+  image->imageFormat = info.format;
+  image->imageUsage = info.usage;
+  image->imageFlags = info.flags;
+  if (vkCreateImage(dev.vk, &info, nullptr, &image->vk) != VK_SUCCESS) {
+    return nullptr;
+  }
+  return image;
+}
+
+VkMemoryRequirements AliasRequirements(VkDevice device, VkImage image) {
+  VkImageMemoryRequirementsInfo2 input{VK_STRUCTURE_TYPE_IMAGE_MEMORY_REQUIREMENTS_INFO_2};
+  input.image = image;
+  VkMemoryDedicatedRequirements dedicated{VK_STRUCTURE_TYPE_MEMORY_DEDICATED_REQUIREMENTS};
+  VkMemoryRequirements2 output{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2, &dedicated};
+  vkGetImageMemoryRequirements2(device, &input, &output);
+  return dedicated.requiresDedicatedAllocation ? VkMemoryRequirements{} : output.memoryRequirements;
+}
+
+}  // namespace
+
+AliasedTargets CreateAliasedTargets(plume::RenderDevice* device,
+                                    const plume::RenderTextureDesc& first,
+                                    const plume::RenderTextureDesc& second) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || !dev->vk || !dev->allocator || !vkGetImageMemoryRequirements2) {
+    return {};
+  }
+  auto a = MakeUnboundTarget(*dev, first);
+  auto b = a ? MakeUnboundTarget(*dev, second) : nullptr;
+  if (!a || !b) {
+    return {};
+  }
+  const auto req_a = AliasRequirements(dev->vk, a->vk);
+  const auto req_b = AliasRequirements(dev->vk, b->vk);
+  const VkMemoryRequirements req{std::max(req_a.size, req_b.size), std::max(req_a.alignment, req_b.alignment),
+                                 req_a.memoryTypeBits & req_b.memoryTypeBits};
+  if (req.memoryTypeBits == 0) {
+    return {};
+  }
+  auto heap = std::make_shared<AliasAllocation>();
+  heap->allocator = dev->allocator;
+  VmaAllocationCreateInfo request{};
+  request.requiredFlags = VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+  if (vmaAllocateMemory(heap->allocator, &req, &request, &heap->allocation, nullptr) != VK_SUCCESS) {
+    return {};
+  }
+  for (auto* image : {a.get(), b.get()}) {
+    image->heap = heap;
+    if (vmaBindImageMemory(heap->allocator, heap->allocation, image->vk) != VK_SUCCESS) {
+      return {};
+    }
+    image->fillSubresourceRange();
+    image->createImageView(image->imageFormat);
+    if (!image->imageView) {
+      return {};
+    }
+  }
+  return {std::move(a), std::move(b), req.size};
+}
+
+void ActivateAliasedTarget(plume::RenderCommandList* list, plume::RenderTexture* texture) {
+  auto* commands = static_cast<plume::VulkanCommandList*>(list);
+  auto* image = static_cast<plume::VulkanTexture*>(texture);
+  if (!commands || !commands->vk || !image || !image->vk) {
+    return;
+  }
+  // CHECK: synchronization validation across both activations and across command list submits.
+  // Both aliases run on the graphics queue. Wait for reads and make earlier writes
+  // available before the next alias's UNDEFINED -> COLOR_ATTACHMENT transition and clear.
+  const VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                               VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT};
+  vkCmdPipelineBarrier(commands->vk, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                       0, 1, &barrier, 0, nullptr, 0, nullptr);
+  ForgetImageContents(image);
+}
+
+bool SupportsPackedColourTarget(plume::RenderDevice* device) {
+  auto* dev = static_cast<plume::VulkanDevice*>(device);
+  if (!dev || !dev->physicalDevice || !vkGetPhysicalDeviceImageFormatProperties) {
+    return false;
+  }
+  VkImageFormatProperties properties{};
+  VkFormatProperties format{};
+  vkGetPhysicalDeviceFormatProperties(dev->physicalDevice, kPackedColour, &format);
+  return (format.optimalTilingFeatures & VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT) &&
+         vkGetPhysicalDeviceImageFormatProperties(dev->physicalDevice, kPackedColour, VK_IMAGE_TYPE_2D,
+                                                   VK_IMAGE_TILING_OPTIMAL, kAliasUsage, 0, &properties) == VK_SUCCESS;
+}
+
 VideoMemory QueryVideoMemory(plume::RenderDevice* device) {
   // A card with its own memory: the biggest device-local heap, as always. An adapter that shares
   // memory with the CPU: every heap the GPU can reach, held to a share of the RAM and floored

@@ -300,6 +300,16 @@ void UploadRing::ResetSlot(uint32_t slot) {
   }
 }
 
+uint64_t UploadRing::HeldBytes() const {
+  uint64_t bytes = 0;
+  for (const auto& chunk : spares_) bytes += chunk.size;
+  for (const auto& slot : slots_) {
+    for (const auto& chunk : slot.chunks) bytes += chunk.size;
+    for (const auto& chunk : slot.oversized) bytes += chunk.size;
+  }
+  return bytes;
+}
+
 size_t UploadRing::chunk_count() const {
   size_t n = spares_.size();
   for (const Slot& s : slots_) {
