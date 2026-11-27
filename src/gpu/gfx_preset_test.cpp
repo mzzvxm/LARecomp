@@ -237,7 +237,7 @@ struct EnhancedValues {
   const char* enhanced_rt;
 };
 constexpr EnhancedValues kEnhanced[] = {
-    {"mcla_gpu_anisotropy", "game", "16"},
+    {"mcla_gpu_anisotropy", "16", "16"},  // owner 11-27: 16x on both ENHANCED presets
     {"disable_dof", "true", "true"},
     {"disable_motion_blur", "false", "false"},
     {"perf_no_shadows", "false", "false"},
