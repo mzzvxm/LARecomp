@@ -159,7 +159,9 @@ void MirrorOverlay::Shutdown() {
   }
   cabin_mask_.Shutdown();
   mirror_view::PublishCabinDrawn(false);
-  cabin_drawn_ = cabin_pose_ = cabin_logged_ = false;
+  cabin_drawn_ = cabin_pose_ = false;
+  cabin_log_key_ = 0;
+  cabin_status_ = {};
   pipelines_.clear();
   listed_.clear();
   failed_.clear();
@@ -363,14 +365,31 @@ void MirrorOverlay::NoteViewDrawn(const car_frame::Frame& frame, uint64_t guest_
   field_v_ = v;
   pose_ = rules::ViewPose{};
   cabin_pose_ = false;
-  if (field_known_ && frame.valid && rules::PoseOfView(frame.view, double(h), double(v), guest_frame, &pose_) && cabin_offset != 0) {
+  picture_cabin_offset_ = cabin_offset;
+  picture_frame_ = frame_;
+  picture_guest_frame_ = guest_frame;
+  FinishViewPose(frame);
+}
+
+void MirrorOverlay::FinishViewPose(const car_frame::Frame& frame) {
+  // The rear phase can finish before the main vehicle's draws are available.
+  // CHECK: the main-colour copy recovers that phase's pose on both APIs.
+  if (!rules::CanFinishViewPose(field_known_, pose_.known, frame.valid, picture_frame_, frame_)) return;
+  if (rules::PoseOfView(frame.view, double(field_h_), double(field_v_), picture_guest_frame_, &pose_) && picture_cabin_offset_ != 0) {
     const auto axis = [](const double v[3]) { return cab::V3{v[0], v[1], v[2]}; };
-    const auto delta = cab::OffsetInRearAxes(cab::UnpackOffset(cabin_offset), axis(pose_.right), axis(pose_.up), axis(pose_.forward) * -1.0);
+    const auto delta = cab::OffsetInRearAxes(cab::UnpackOffset(picture_cabin_offset_), axis(pose_.right), axis(pose_.up), axis(pose_.forward) * -1.0);
     pose_.eye[0] += delta.x;
     pose_.eye[1] += delta.y;
     pose_.eye[2] += delta.z;
     cabin_pose_ = true;
   }
+}
+
+void MirrorOverlay::LogCabin(uint64_t key, std::string_view status) {
+  if (cabin_log_key_ == key && cabin_status_ == status) return;
+  cabin_log_key_ = key;
+  cabin_status_ = status;
+  if (key) REXLOG_INFO("[cabin mirror] frame {}: overlay key {:016x}: {}", frame_, key, status);
 }
 
 void MirrorOverlay::OnPresent() {
@@ -387,6 +406,10 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   }
   const MirrorView::Picture picture = in.view->CurrentPicture();
   const mirror_glass::Result& glass = in.glass->Current();
+  FinishViewPose(*in.frame);
+  const uint64_t cabin_key = glass.glass[cab::kGlassIndex].mesh_key;
+  const bool cabin_needed = (glass.need.mask & cab::kReader) != 0;
+  if (!cabin_needed) LogCabin(0, {});
   rules::Facts facts;
   facts.setting_on = on_;
   facts.picture_whole = picture.whole && picture.slot != kInvalidBindlessSlot;
@@ -398,16 +421,23 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   facts.field_known = field_known_;
   facts.pose_known = pose_.known;
   const rules::Why why = rules::Decide(facts);
+  if (cabin_needed && !cabin_pose_) {
+    LogCabin(cabin_key, picture_cabin_offset_ == 0 ? "rear phase used the stock eye" :
+        !field_known_ ? "rear phase field unavailable" : "camera pose unavailable for rear phase");
+  }
   if (why != rules::Why::kDraw) {
+    if (cabin_needed && cabin_pose_) LogCabin(cabin_key, rules::WhyName(why));
     Count(why);
     return false;
   }
   if (!colour || !depth || !colour->texture || !depth->texture || colour->host_samples != depth->host_samples || colour->scale != depth->scale) {
+    if (cabin_needed && cabin_pose_) LogCabin(cabin_key, "main colour/depth pair unavailable");
     Count(rules::Why::kTargets);
     return false;
   }
   const uint32_t sample_index = rules::SampleIndex(colour->host_samples);
   if (sample_index > 3) {
+    if (cabin_needed && cabin_pose_) LogCabin(cabin_key, "unsupported main view sample count");
     Count(rules::Why::kTargets);
     return false;
   }
@@ -424,10 +454,13 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   size_t count = 0;
   bool pending = false;
   rules::Why last = rules::Why::kGeometry;
+  const char* cabin_failure = nullptr;
   for (uint32_t k = 0; k < 3; ++k) {
     if ((facts.needed_mask & (1u << k)) == 0) {
       continue;
     }
+    const bool cabin = k == cab::kGlassIndex;
+    if (cabin) cabin_failure = "glass draw or vertex input unavailable";
     const mirror_glass::Glass& g = glass.glass[k];
     const car_frame::Draw* d = in.glass->DrawOf(k);
     if (!d || d->part != car_frame::Part::kBody || !d->viewport_known) {
@@ -436,6 +469,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     }
     const rules::DepthTest test = rules::DepthTestOf(d->depth_word);
     if (test == rules::DepthTest::kNone) {
+      if (cabin) cabin_failure = "glass depth test cannot be replayed";
       last = rules::Why::kDepthFunc;
       continue;
     }
@@ -451,8 +485,11 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
       last = rules::Why::kGeometry;
       continue;
     }
-    plume::RenderPipeline* pipeline = Pipeline(rules::Variant(sm::VariantKey(kind, uint32_t(geo.topology), d->position_stride), sample_index, test), &pending);
+    bool item_pending = false;
+    plume::RenderPipeline* pipeline = Pipeline(rules::Variant(sm::VariantKey(kind, uint32_t(geo.topology), d->position_stride), sample_index, test), &item_pending);
+    pending |= item_pending;
     if (!pipeline) {
+      if (cabin) cabin_failure = item_pending ? "overlay pipeline pending" : "overlay pipeline failed";
       last = rules::Why::kNotReady;
       continue;
     }
@@ -473,6 +510,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     const rules::PushResult made = rules::MakePush(push, &constants.push);
     if (made != rules::PushResult::kOk) {
       last = made == rules::PushResult::kProjection ? rules::Why::kProjection : made == rules::PushResult::kBadCamera ? rules::Why::kNoCamera : rules::Why::kNoPose;
+      if (cabin) cabin_failure = rules::WhyName(last);
       if (made == rules::PushResult::kProjection && !projection_logged_) {
         projection_logged_ = true;
         REXLOG_WARN("{} the frame's camera has a projection that is not a perspective of the main view space (the game's clip space is not sparse there): no overlay (reported once; CHECK 'projection' of "
@@ -482,11 +520,12 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
       continue;
     }
     const UploadSpan span = in.upload->Allocate(in.slot, sizeof(constants), 256);
+    if (cabin) cabin_failure = "overlay constants unavailable";
     if (!span || !span.cpu) continue;
-    const bool cabin = k == cab::kGlassIndex;
     if (cabin) {
-      const uint32_t mask = cabin_mask_.Record(*list, *device_, *passes_, *pass_timing_, *in.frame, *d, glass);
-      if (mask == kInvalidBindlessSlot) continue;
+      const auto mask = cabin_mask_.Record(*list, *device_, *passes_, *pass_timing_, *in.frame, *d, glass);
+      cabin_failure = mask.reason;
+      if (mask.slot == kInvalidBindlessSlot) continue;
       const auto& a = glass.aperture;
       const double width = a.right - a.left, height = a.top - a.bottom;
       const auto centre = glass.cabin_centre_model;
@@ -499,7 +538,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
       constants.mask_v[2] = float(-a.up.z / height);
       constants.mask_v[3] = float((cab::Dot(a.up, centre) + a.top) / height);
       const float night = rt_hit::NightFromSunHeight(float(in.frame->to_sun[1]));
-      constants.mask_meta[0] = rules::Bits(mask);
+      constants.mask_meta[0] = rules::Bits(mask.slot);
       constants.mask_meta[1] = car_rt_material::ClassAmbient(car_rt_material::Class::kInterior) * (0.065f - 0.055f * night) + 0.002f * night;
       constants.mask_meta[2] = 1.0f;
     }
@@ -511,6 +550,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     items[count].viewport = d->viewport.viewport;
     ++count;
   }
+  if (cabin_failure) LogCabin(cabin_key, cabin_failure);
   FlushListing();
   if (pending && !pending_logged_) {
     pending_logged_ = true;
@@ -527,6 +567,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
   EdramTargets::Target* only[1] = {colour};
   plume::RenderFramebuffer* framebuffer = edram_->Framebuffer(only, 1, depth);
   if (!framebuffer) {
+    if (cabin_needed && cabin_pose_ && !cabin_failure) LogCabin(cabin_key, "main framebuffer unavailable");
     Count(rules::Why::kTargets);
     return true;  // the layouts were recorded: the caller's list state is gone
   }
@@ -565,10 +606,7 @@ bool MirrorOverlay::Record(plume::RenderCommandList* list, const Inputs& in, Edr
     // CHECK: confirm the depth-tested cabin patch and HUD suppression line up in cockpit cuts on both APIs.
     cabin_drawn_ |= item.cabin;
   }
-  if (cabin_drawn_ && !cabin_logged_) {
-    cabin_logged_ = true;
-    REXLOG_INFO("[cabin mirror] overlay recorded from shared view {}x{}", picture.width, picture.height);
-  }
+  if (cabin_drawn_) LogCabin(cabin_key, "draw recorded");
   list->setFramebuffer(nullptr);
   // The closing mark (PassTiming: a mark's time runs to the next mark): what is recorded next is not the overlay's.
   pass_timing_->Mark(list, "after mirror overlay");

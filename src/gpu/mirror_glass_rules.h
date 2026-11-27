@@ -362,13 +362,37 @@ inline const char* WhyName(Why w) {
   return "?";
 }
 
+enum class CabinWhy : uint8_t {
+  kOutsideCockpit, kDisabled, kNoCar, kNoVehicleAxes, kNoBodyBounds, kNarrowBody, kNoShape,
+  kOutsideCabin, kBadCamera, kOffPicture, kBadEye, kRequested
+};
+
+inline const char* CabinWhyName(CabinWhy why) {
+  switch (why) {
+    case CabinWhy::kOutsideCockpit: return "outside cockpit";
+    case CabinWhy::kDisabled: return "cabin mirror disabled";
+    case CabinWhy::kNoCar: return "no player car draws";
+    case CabinWhy::kNoVehicleAxes: return "no vehicle transform";
+    case CabinWhy::kNoBodyBounds: return "no vehicle bounds";
+    case CabinWhy::kNarrowBody: return "body too narrow";
+    case CabinWhy::kNoShape: return "no mirror-shaped rigid patch";
+    case CabinWhy::kOutsideCabin: return "patches outside cabin mirror position or orientation";
+    case CabinWhy::kBadCamera: return "camera or lens unavailable";
+    case CabinWhy::kOffPicture: return "patch outside picture";
+    case CabinWhy::kBadEye: return "reflected eye unavailable";
+    case CabinWhy::kRequested: return "rear view requested";
+  }
+  return "?";
+}
+
 struct Result {
   uint64_t guest_frame = 0;
   Why why = Why::kNoCar;
   bool found = false;       // a pair was chosen: glass[0] and glass[1]
   Glass glass[3];           // [0] side left, [1] side right, [2] cabin
   bool cabin_found = false;
-  bool cabin_scanned = false;
+  CabinWhy cabin_why = CabinWhy::kOutsideCockpit;
+  uint32_t cabin_shapes = 0;
   cabin_mirror::Aperture aperture;
   mirror_view::V3 cabin_normal_model;
   mirror_view::V3 cabin_centre_model;
@@ -642,10 +666,7 @@ class Finder {
 
   Result Choose(uint64_t guest_frame, const Camera& camera, const temporal::Mat4& world_to_vehicle = {}, const ci::ViewBox& body = {}) {
     Result r = ChooseSides(guest_frame, camera);
-    if (body.valid) {
-      r.cabin_scanned = true;
-      ChooseCabin(camera, world_to_vehicle, body, r);
-    }
+    if (body.valid) ChooseCabin(camera, world_to_vehicle, body, r);
     FitRearField(r);
     return r;
   }
@@ -661,52 +682,60 @@ class Finder {
  private:
   void ChooseCabin(const Camera& camera, const temporal::Mat4& world_to_vehicle, const ci::ViewBox& body, Result& r) const {
     namespace cab = cabin_mirror;
-    const Candidate* best = nullptr;
+    const double width = double(body.max[0]) - body.min[0];
+    r.cabin_why = CabinWhy::kNarrowBody;
+    if (!cab::BodyCanHaveMirror(width)) return;
+    r.cabin_why = CabinWhy::kBadCamera;
+    double eye_world[3];
+    if (!ci::CameraWorld(camera.view, eye_world) || !LensOf(camera.view, camera.view_projection, &r.tan_x, &r.tan_y)) return;
+    r.lens_known = true;
+    const auto eye = cab::Point({eye_world[0], eye_world[1], eye_world[2]}, world_to_vehicle);
+    r.cabin_why = CabinWhy::kNoShape;
     double score = -1.0;
-    const cab::V3 body_min{body.min[0], body.min[1], body.min[2]};
-    const cab::V3 body_max{body.max[0], body.max[1], body.max[2]};
     for (const Candidate& c : candidates_) {
       if (!c.cabin) continue;
+      ++r.cabin_shapes;
+      if (!r.cabin_found) r.cabin_why = CabinWhy::kOutsideCabin;
       const auto to_body = temporal::Mul(c.model_to_world, world_to_vehicle);
       const auto centre = cab::Point({c.stats.centroid[0], c.stats.centroid[1], c.stats.centroid[2]}, to_body);
       const auto normal = cab::Normalize(cab::Vector({c.stats.normal[0], c.stats.normal[1], c.stats.normal[2]}, to_body));
-      const double rank = cab::Score(centre, normal, body_min, body_max);
-      if (rank > score) {
-        score = rank;
-        best = &c;
+      const double rank = cab::Score(centre, normal, eye);
+      if (!(rank >= 0.0)) continue;
+      float t[3][4];
+      if (!rr::PackInstanceTransform(c.model_to_world, camera.view, camera.flip_z, t)) continue;
+      const cm::Candidate placed = cm::Place(0, t, c.stats);
+      Glass g;
+      GrowViewBox(&g.box, t, c.has_box, c.box_min, c.box_max);
+      g.rect = ReferenceRect(g.box, r.tan_x, r.tan_y);
+      g.px_wide = g.rect.Width();
+      const cab::V3 view_centre{placed.centre[0], placed.centre[1], placed.centre[2]};
+      const cab::V3 view_normal{placed.normal[0], placed.normal[1], placed.normal[2]};
+      const uint32_t offset = cab::PackOffset(cab::VirtualOffset({}, view_centre, view_normal));
+      const bool visible = !g.rect.Empty();
+      g.needed = visible && offset && cab::Dot(view_centre, view_normal) < -0.02;
+      // A hidden, higher-ranked trim patch must never displace usable glass.
+      if (!cab::PreferPatch(g.needed, rank, r.cabin_offset != 0, score)) continue;
+      score = rank;
+      g.draw = c.draw;
+      g.mesh_key = c.mesh_key;
+      g.area = c.stats.area;
+      for (int i = 0; i < 3; ++i) {
+        g.centre_view[i] = placed.centre[i];
+        g.normal_view[i] = placed.normal[i];
       }
+      WorldPose(c, &g);
+      r.glass[cab::kGlassIndex] = g;
+      r.cabin_found = true;
+      r.cabin_why = g.needed ? CabinWhy::kRequested : visible ? CabinWhy::kBadEye : CabinWhy::kOffPicture;
+      r.aperture = c.aperture;
+      r.cabin_normal_model = {c.stats.normal[0], c.stats.normal[1], c.stats.normal[2]};
+      r.cabin_centre_model = {c.stats.centroid[0], c.stats.centroid[1], c.stats.centroid[2]};
+      r.cabin_offset = g.needed ? offset : 0;
     }
-    if (!best) return;
-    float t[3][4];
-    if (!rr::PackInstanceTransform(best->model_to_world, camera.view, camera.flip_z, t)) return;
-    const cm::Candidate placed = cm::Place(0, t, best->stats);
-    Glass& g = r.glass[cab::kGlassIndex];
-    g.draw = best->draw;
-    g.mesh_key = best->mesh_key;
-    g.area = best->stats.area;
-    r.aperture = best->aperture;
-    r.cabin_normal_model = {best->stats.normal[0], best->stats.normal[1], best->stats.normal[2]};
-    r.cabin_centre_model = {best->stats.centroid[0], best->stats.centroid[1], best->stats.centroid[2]};
-    for (int i = 0; i < 3; ++i) {
-      g.centre_view[i] = placed.centre[i];
-      g.normal_view[i] = placed.normal[i];
-    }
-    WorldPose(*best, &g);
-    GrowViewBox(&g.box, t, best->has_box, best->box_min, best->box_max);
-    r.cabin_found = true;
-    r.need.found = true;
-    r.lens_known = LensOf(camera.view, camera.view_projection, &r.tan_x, &r.tan_y);
-    if (!r.lens_known) return;
-    g.rect = ReferenceRect(g.box, r.tan_x, r.tan_y);
-    g.px_wide = g.rect.Width();
-    const cab::V3 centre{g.centre_view[0], g.centre_view[1], g.centre_view[2]};
-    const cab::V3 normal{g.normal_view[0], g.normal_view[1], g.normal_view[2]};
-    const uint32_t offset = cab::PackOffset(cab::VirtualOffset({}, centre, normal));
-    if (g.rect.Empty() || g.px_wide < kMinNeedWidth || !offset || cab::Dot(centre, normal) >= -0.02) return;
-    g.needed = true;
-    r.cabin_offset = offset;
+    r.need.found |= r.cabin_found;
+    if (!r.cabin_offset) return;
     r.need.mask |= cab::kReader;
-    r.need.widest = uint16_t(std::min<int32_t>(std::max<int32_t>(r.need.widest, g.px_wide), 0xFFFF));
+    r.need.widest = uint16_t(std::clamp(r.glass[cab::kGlassIndex].px_wide, int32_t(r.need.widest), 0xFFFF));
     r.why = Why::kNeeded;
   }
 

@@ -134,14 +134,16 @@ plume::RenderPipeline* CabinMask::Pipeline(uint32_t variant) {
   return entry.pipeline.get();
 }
 
-uint32_t CabinMask::Record(plume::RenderCommandList& list, Device& device, HostPasses& passes, PassTiming& timing,
-                          const car_frame::Frame& frame, const car_frame::Draw& mirror, const mirror_glass::Result& glass) {
+CabinMask::Result CabinMask::Record(plume::RenderCommandList& list, Device& device, HostPasses& passes, PassTiming& timing,
+                                  const car_frame::Frame& frame, const car_frame::Draw& mirror, const mirror_glass::Result& glass) {
   temporal::Mat4 view_to_world, world_to_mirror;
-  if (!temporal::Inverse(frame.view, &view_to_world) || !temporal::Inverse(mirror.model_to_world, &world_to_mirror)) return kInvalidBindlessSlot;
+  if (!temporal::Inverse(frame.view, &view_to_world) || !temporal::Inverse(mirror.model_to_world, &world_to_mirror)) {
+    return {kInvalidBindlessSlot, "mask transform unavailable"};
+  }
   const cab::V3 eye = cab::Point(cab::Point({}, view_to_world), world_to_mirror);
   const cab::V3 centre = glass.cabin_centre_model, normal = glass.cabin_normal_model;
   const cab::V3 virtual_eye = eye + cab::VirtualOffset(eye, centre, normal);
-  if (!(cab::Dot(centre - virtual_eye, normal) > 0.02)) return kInvalidBindlessSlot;
+  if (!(cab::Dot(centre - virtual_eye, normal) > 0.02)) return {kInvalidBindlessSlot, "mask eye on or behind glass"};
 
   // CHECK: verify rear window, pillars and headrests are submitted in the
   // cockpit draw list on both APIs. Replay the submitted rigid LOD geometry
@@ -168,15 +170,19 @@ uint32_t CabinMask::Record(plume::RenderCommandList& list, Device& device, HostP
   const auto now = std::chrono::steady_clock::now();
   const bool valid = last_glass_ == mirror.mesh_key && image_.slot != kInvalidBindlessSlot;
   const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - updated_).count();
-  if (!cab::Refresh(valid, changed, motion, elapsed)) return image_.slot;
+  if (!cab::Refresh(valid, changed, motion, elapsed)) return {image_.slot, nullptr};
 
-  if (!Prepare(device, passes)) return kInvalidBindlessSlot;
+  if (!Prepare(device, passes)) return {kInvalidBindlessSlot, "mask shaders or layout unavailable"};
   bool pending = false;
   for (const auto& p : parts_) {
-    pending |= Pipeline(p.variant) == nullptr;
+    if (!Pipeline(p.variant)) {
+      if (pipelines_.at(p.variant).resolved) return {kInvalidBindlessSlot, "mask pipeline failed"};
+      pending = true;
+    }
   }
-  if (pending || !passes.EnsureImage(image_, cab::kMaskWidth, cab::kMaskHeight, kFormat, "cabin mask") || !image_.texture || !image_.framebuffer) {
-    return kInvalidBindlessSlot;
+  if (pending) return {kInvalidBindlessSlot, "mask pipeline pending"};
+  if (!passes.EnsureImage(image_, cab::kMaskWidth, cab::kMaskHeight, kFormat, "cabin mask") || !image_.texture || !image_.framebuffer) {
+    return {kInvalidBindlessSlot, "mask target unavailable"};
   }
 
   const auto projection = cab::MaskProjection(glass.aperture, centre, normal, virtual_eye);
@@ -229,7 +235,7 @@ uint32_t CabinMask::Record(plume::RenderCommandList& list, Device& device, HostP
   last_eye_ = eye;
   updated_ = now;
   cached_parts_.swap(parts_);
-  return image_.slot;
+  return {image_.slot, nullptr};
 }
 
 }  // namespace mcla::gpu

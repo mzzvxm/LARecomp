@@ -29,6 +29,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -90,7 +91,13 @@ class MirrorOverlay {
   CabinMask cabin_mask_;
   bool cabin_drawn_ = false;
   bool cabin_pose_ = false;
-  bool cabin_logged_ = false;
+  uint64_t cabin_log_key_ = 0;
+  std::string_view cabin_status_;
+  uint32_t picture_cabin_offset_ = 0;
+  uint64_t picture_frame_ = 0;
+  uint64_t picture_guest_frame_ = 0;
+  void FinishViewPose(const car_frame::Frame& frame);
+  void LogCabin(uint64_t key, std::string_view status);
   bool MakeShaders();
   void ListBase(bool at_start, const std::string& note);
   static uint64_t PrecacheKey(uint32_t variant);
