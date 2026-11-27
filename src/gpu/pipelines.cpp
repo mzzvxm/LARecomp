@@ -50,6 +50,7 @@
 #include "side_views.h"
 #include "stencil_ref.h"
 #include "temporal_backend.h"
+#include "vertex_input_locations.h"
 
 #if defined(_WIN32)
 #ifndef WIN32_LEAN_AND_MEAN
@@ -1466,6 +1467,7 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
   // (Semantic names go to names_ as they are read; a discarded file leaves a
   // few unused strings there.)
   std::vector<std::unique_ptr<StoredLayout>> layouts;
+  uint32_t restored_locations = 0;
   for (uint32_t i = 0; i < header.layout_count; ++i) {
     uint64_t hash = 0;
     uint32_t element_count = 0;
@@ -1505,6 +1507,17 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
                     bytes);
     if (XXH3_64bits(bytes.data(), bytes.size()) != hash) {
       return discard("a layout does not match its hash");
+    }
+    // Lists made with the compact-location translator can share this cache
+    // version. Recover the v8 mapping from the semantics before deduplicating
+    // the layouts. This preserves each attribute's stream, format and offset.
+    // CHECK: exercise this migration in a live Vulkan validation boot.
+    if (vertex_input_locations::RestoreFixedLocations(s->elements)) {
+      bytes.clear();
+      SerializeLayout(s->elements.data(), s->elements.size(), s->slots.data(), s->slots.size(),
+                      bytes);
+      s->hash = XXH3_64bits(bytes.data(), bytes.size());
+      ++restored_locations;
     }
     layouts.push_back(std::move(s));
   }
@@ -1567,16 +1580,20 @@ size_t Pipelines::LoadFile(const std::filesystem::path& path, Backend backend, b
     // A depth format this device has no target for (the other API's file holds D24).
     r.key.depth_format =
         uint32_t(format::HostDepthFormat(plume::RenderFormat(r.key.depth_format)));
+    // Layout locations are part of the persistent key. Use the recovered hash
+    // so these records also match the fixed locations that a live draw uses.
+    r.key = PersistentKey(r.key, r.layout);
     if (recorded_.insert(r.key).second) {
       records_.push_back(r);
       ++added;
     }
   }
   REXLOG_INFO("[gpu] pipelines: {} records and {} layouts in {}: {} new here ({} dropped: a "
-              "shader the pack does not have{}{})",
+              "shader the pack does not have{}{}{})",
               header.record_count, header.layout_count, path.string(), added, dropped,
               zeroed ? std::format("; {} static depth biases zeroed", zeroed) : std::string(),
-              refs_cleared ? std::format("; {} stencil references cleared (on the list now)", refs_cleared) : std::string());
+              refs_cleared ? std::format("; {} stencil references cleared (on the list now)", refs_cleared) : std::string(),
+              restored_locations ? std::format("; restored fixed Vulkan locations in {} layouts", restored_locations) : std::string());
   return added;
 }
 

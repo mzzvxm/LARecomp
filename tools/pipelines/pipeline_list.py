@@ -4,6 +4,7 @@
   python pipeline_list.py merge -o assets/mcla_pipelines.bin FILE...
   python pipeline_list.py add --base assets/mcla_pipelines.bin [-o OUT] [--skip-level-copies] [--max-colour-targets N] FILE...
   python pipeline_list.py check --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v3.pack] FILE...
+  python pipeline_list.py vertex-inputs --pack mcla_shaders.v8.pack [--variant-pack mcla_shaders_variants.v3.pack] [--details] FILE...
   python pipeline_list.py reorder -o assets/mcla_pipelines.bin --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py lacks --base assets/mcla_pipelines.bin FILE...
   python pipeline_list.py selftest
@@ -44,6 +45,10 @@ check --pack: records whose vertex or pixel shader the pack does not have (the g
 --variant-pack the variants of the variant pack (ps_variant and vs_variant 2 and up: words of features, shaderpack/variant_chain.h: the HDR
 scene's tone map, the bloom's Gaussians, the shadow collector's soft lookup, the glow sprites' soft visibility, a composed shader ...) whose shader has no entry for that word in it. The
 exit status is 1 when a record has no shader or a variant has no entry.
+
+vertex-inputs checks every stored guest pipeline key against the exact vertex shader word on both APIs.
+It reads DXIL input semantics and SPIR-V entry-point locations, including names when DXC retained them.
+Use a pack with both formats. Check a saved pipeline list after boot to audit the layouts used by the renderer.
 
 lacks --base LIST FILE...: what the runs' pipeline files hold that LIST does not, grouped by the variant words, the colour targets, the sample count and whether the
 pipeline writes the stencil (the pipelines a play made on the render thread, or in the background, because the list had no record of them: a run that started with an empty cache folder
@@ -317,19 +322,24 @@ def reorder(base, firsts, out):
     write_list(out, layouts, [records[i] for i in order])
 
 
-def read_pack(path, magic, version, header, entry):
-    """The shader keys of a pack: key -> the spec mask (main pack), or (vertex shader?, variant word, key) triples (variant pack)."""
-    data = open(path, "rb").read()
+def pack_data(path, magic, version, header, entry, strict=False):
+    with open(path, "rb") as source:
+        data = source.read()
     if len(data) < header or data[:4] != magic:
         raise Bad(f"{path}: not a shader pack ({magic.decode()})")
     got, count = struct.unpack_from("<2I", data, 4)
     if got != version:
-        if magic == VARIANT_PACK_MAGIC:
-            # another version's entries are another size: nothing of the file can be read (the game refuses such a pack whole, too)
-            raise Bad(f"{path}: variant pack version {got}, this tool reads version {version}: it was built by another version of the shader pack build")
+        if strict or magic == VARIANT_PACK_MAGIC:
+            raise Bad(f"{path}: pack version {got}, this tool reads version {version}")
         print(f"{path}: pack version {got}, this tool knows {version}", file=sys.stderr)
     if header + count * entry > len(data):
         raise Bad(f"{path}: the entries are cut short")
+    return data, count
+
+
+def read_pack(path, magic, version, header, entry):
+    """The shader keys of a pack: key -> the spec mask (main pack), or (vertex shader?, variant word, key) triples (variant pack)."""
+    data, count = pack_data(path, magic, version, header, entry)
     keys = {}
     for i in range(count):
         at = header + i * entry
@@ -377,6 +387,151 @@ def check(pack, variant_pack, paths):
     return 1 if bad else 0
 
 
+def dxil_inputs(blob):
+    # DXC puts the signature in an ISG1 part of the DXBC container. Offsets
+    # inside that part are relative to its payload, including the name table.
+    if blob[:4] != b"DXBC":
+        raise Bad("missing DXIL container")
+    for i in range(u32(blob, 28)):
+        offset = u32(blob, 32 + i * 4)
+        kind, size = struct.unpack_from("<4sI", blob, offset)
+        if kind != b"ISG1":
+            continue
+        signature = blob[offset + 8:offset + 8 + size]
+        count, first = struct.unpack_from("<2I", signature)
+        inputs = set()
+        for index in range(count):
+            at = first + index * 32
+            name, semantic_index, system_value = struct.unpack_from("<3I", signature, at + 4)
+            if not system_value:
+                end = signature.index(b"\0", name)
+                inputs.add((signature[name:end].decode("ascii").upper(), semantic_index))
+        return inputs
+    raise Bad("missing DXIL input signature (ISG1)")
+
+
+def spirv_inputs(blob):
+    words = struct.unpack(f"<{len(blob) // 4}I", blob)
+    if len(words) < 5 or words[0] != 0x07230203:
+        raise Bad("missing SPIR-V header")
+    entry = None
+    variables = set()
+    locations = {}
+    names = {}
+    at = 5
+    while at < len(words):
+        length, opcode = words[at] >> 16, words[at] & 0xffff
+        if not length or at + length > len(words):
+            raise Bad("truncated SPIR-V instruction")
+        operands = words[at + 1:at + length]
+        if opcode == 15 and operands[0] == 0:  # OpEntryPoint Vertex
+            # The literal "main" ends with a separate zero word.
+            if operands[2:4] == (int.from_bytes(b"main", "little"), 0):
+                entry = operands[4:]
+        elif opcode == 5:  # OpName
+            name = struct.pack(f"<{length - 2}I", *operands[1:]).split(b"\0", 1)[0]
+            if name.startswith(b"in.var.") and len(name) > 7:
+                semantic = name[7:].decode("ascii").upper()
+                names[operands[0]] = semantic if semantic[-1].isdigit() else semantic + "0"
+        elif opcode == 71 and operands[1] == 30:  # OpDecorate Location
+            locations[operands[0]] = operands[2]
+        elif opcode == 59 and operands[2] == 1:  # OpVariable Input
+            variables.add(operands[1])
+        at += length
+    if entry is None:
+        raise Bad("missing SPIR-V vertex entry point main")
+    return [(locations[i], names.get(i)) for i in entry if i in variables and i in locations]
+
+
+def vertex_signatures(pack, variant_pack):
+    """The exact DXIL and SPIR-V vertex signatures keyed by (shader, word)."""
+    signatures = {}
+
+    def save(data, key, word, dxil_at, spirv_at):
+        try:
+            dxil_off, dxil_size = struct.unpack_from("<2I", data, dxil_at)
+            spv_off, spv_size = struct.unpack_from("<2I", data, spirv_at)
+            if max(dxil_off + dxil_size, spv_off + spv_size) > len(data):
+                raise Bad("truncated vertex shader blob")
+            signatures[key, word] = (dxil_inputs(data[dxil_off:dxil_off + dxil_size]),
+                                     spirv_inputs(data[spv_off:spv_off + spv_size]))
+        except (Bad, IndexError, ValueError, struct.error) as err:
+            raise Bad(f"VS {key:016X}/{word}: {err}") from err
+
+    data, count = pack_data(pack, PACK_MAGIC, PACK_VERSION, PACK_HEADER, PACK_ENTRY, strict=True)
+    for i in range(count):
+        at = PACK_HEADER + i * PACK_ENTRY
+        key, stage, spec = struct.unpack_from("<QBB", data, at)
+        if stage == ord("v"):
+            save(data, key, 0, at + 24, at + 56)
+            if spec:
+                save(data, key, 1, at + 40, at + 72)
+    if variant_pack:
+        data, count = pack_data(variant_pack, VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION,
+                                VARIANT_PACK_HEADER, VARIANT_PACK_ENTRY)
+        for i in range(count):
+            at = VARIANT_PACK_HEADER + i * VARIANT_PACK_ENTRY
+            word, flags = struct.unpack_from("<2I", data, at + VARIANT_AT)
+            if flags & 1:
+                key, = struct.unpack_from("<Q", data, at)
+                save(data, key, word, at + 56, at + 72)
+    return signatures
+
+
+def layout_inputs(layout):
+    """Attribute names for D3D12 and name-by-location for Vulkan."""
+    semantics = set()
+    locations = {}
+    at = 8
+    for _ in range(u32(layout, 0)):
+        length = u32(layout, at)
+        at += 4
+        semantic = layout[at:at + length].decode("ascii").upper()
+        index, location = struct.unpack_from("<2I", layout, at + length)
+        semantics.add((semantic, index))
+        locations.setdefault(location, []).append(f"{semantic}{index}")
+        at += length + 20
+    return semantics, locations
+
+
+def vertex_inputs(pack, variant_pack, paths, details=False):
+    signatures = vertex_signatures(pack, variant_pack)
+    failed = False
+    for path in paths:
+        backend, layouts, records = read_list(path, raw=True)
+        attributes = [layout_inputs(blob) for _, blob in layouts]
+        bad_dxil = bad_spirv = no_vs = 0
+        for key, layout in records:
+            vs, ps, vs_word, ps_word = struct.unpack_from("<QQII", key)
+            signature = signatures.get((vs, vs_word))
+            dxil_errors = []
+            spirv_errors = []
+            if signature is None:
+                no_vs += 1
+            else:
+                dxil, spirv = signature
+                semantics, locations = attributes[layout]
+                dxil_errors = [f"{name}{index}" for name, index in sorted(dxil - semantics)]
+                for location, name in sorted(spirv, key=lambda item: item[0]):
+                    found = locations.get(location, [])
+                    if len(found) != 1 or (name is not None and found[0] != name):
+                        spirv_errors.append(f"{location}:{name or '?'} has {','.join(found) or '-'}")
+                bad_dxil += bool(dxil_errors)
+                bad_spirv += bool(spirv_errors)
+            if details and (signature is None or dxil_errors or spirv_errors):
+                print(f"  VS {vs:016X}/{vs_word} PS {ps:016X}/{ps_word}"
+                      f" layout {layouts[layout][0]:016X} samples {samples_of(key)}"
+                      f" colours {u32(key, COLOR_COUNT_AT)} state {key[24:].hex()}"
+                      + (f" DXIL missing {','.join(dxil_errors)}" if dxil_errors else "")
+                      + (f" SPIR-V {', '.join(spirv_errors)}" if spirv_errors else "")
+                      + (" missing vertex shader word" if signature is None else ""))
+        print(f"{path} ({backend} list): {len(records)} keys,"
+              f" {bad_dxil} DXIL mismatches, {bad_spirv} SPIR-V mismatches,"
+              f" {no_vs} missing vertex shader words")
+        failed |= bool(bad_dxil or bad_spirv or no_vs)
+    return int(failed)
+
+
 # --- selftest: made-up lists and packs, no game data -----------------------------------------------------
 
 def _key(vs, ps, samples=2, bias=0, ps_variant=0, vs_variant=0, colours=0):
@@ -413,6 +568,73 @@ def _quiet(fn, *a):
     with contextlib.redirect_stdout(io.StringIO()) as s:
         r = fn(*a)
     return r, s.getvalue()
+
+
+def _vertex_blobs(semantic, location):
+    signature = struct.pack("<2I", 2, 8)
+    signature += struct.pack("<8I", 0, 72, 0, 0, 3, 0, 0xf, 0)
+    signature += struct.pack("<8I", 0, 73 + len(semantic), 0, 6, 1, 1, 1, 0)
+    signature += semantic.encode("ascii") + b"\0SV_VertexID\0"
+    dxil = b"DXBC" + bytes(24) + struct.pack("<2I", 1, 36)
+    dxil += b"ISG1" + struct.pack("<I", len(signature)) + signature
+
+    def instruction(opcode, *args):
+        return struct.pack(f"<{1 + len(args)}I", ((1 + len(args)) << 16) | opcode, *args)
+
+    name = f"in.var.{semantic}0\0".encode("ascii")
+    name += bytes(-len(name) % 4)
+    spv = struct.pack("<5I", 0x07230203, 0x10000, 0, 8, 0)
+    spv += instruction(15, 0, 1, int.from_bytes(b"main", "little"), 0, 2, 3, 4)
+    spv += instruction(5, 2, *struct.unpack(f"<{len(name) // 4}I", name))
+    spv += instruction(71, 2, 30, location)
+    spv += instruction(71, 3, 30, 2)  # Output.
+    spv += instruction(71, 5, 30, 3)  # Input of another entry point.
+    for result_id, storage in ((2, 1), (3, 3), (4, 1), (5, 1)):  # 4 is a built-in.
+        spv += instruction(59, 7, result_id, storage)
+    return dxil, spv
+
+
+def _vertex_input_selftest(path, expect):
+    def pack(name, magic, version, vertex_blobs, dxil_at, spv_at):
+        header = magic + struct.pack("<3I", version, 1, 3) + bytes(16)
+        entry = bytearray(88)
+        struct.pack_into("<Q", entry, 0, 1)
+        if magic == PACK_MAGIC:
+            entry[8] = ord("v")
+        else:
+            struct.pack_into("<2I", entry, VARIANT_AT, 8192, 1)
+        dxil, spv = vertex_blobs
+        struct.pack_into("<2I", entry, dxil_at, 120, len(dxil))
+        struct.pack_into("<2I", entry, spv_at, 120 + len(dxil), len(spv))
+        with open(path(name), "wb") as out:
+            out.write(header + entry + dxil + spv)
+
+    pack("inputs.pack", PACK_MAGIC, PACK_VERSION, _vertex_blobs("TEXCOORD", 4), 24, 56)
+    pack("inputs-variants.pack", VARIANT_PACK_MAGIC, VARIANT_PACK_VERSION,
+         _vertex_blobs("COLOR", 8), 56, 72)
+
+    def test_layout(element, location):
+        name = element.encode("ascii")
+        return struct.pack("<3I", 1, 1, len(name)) + name + struct.pack("<8I", 0, location, 1, 0, 0, 0, 16, 0)
+
+    def run(texcoord, variant_colour, variant_location, variant_word=8192):
+        layouts = [(1, test_layout("TEXCOORD", texcoord)), (2, test_layout(variant_colour, variant_location))]
+        keys = [(_key(1, 0), 0), (_key(1, 0, vs_variant=variant_word), 1)]
+        _quiet(write_list, path("inputs.bin"), layouts, keys)
+        return _quiet(vertex_inputs, path("inputs.pack"), path("inputs-variants.pack"), [path("inputs.bin")], True)
+
+    code, out = run(4, "COLOR", 8)
+    expect(code == 0 and "2 keys, 0 DXIL mismatches, 0 SPIR-V mismatches" in out,
+           "checks base and exact variant, ignoring shader built-ins and outputs")
+    code, out = run(0, "COLOR", 1)
+    expect(code == 1 and "0 DXIL mismatches, 2 SPIR-V mismatches" in out,
+           "rejects the compact locations in a list paired with the fixed-location pack")
+    code, out = run(4, "NORMAL", 8)
+    expect(code == 1 and "1 DXIL mismatches, 1 SPIR-V mismatches" in out,
+           "rejects an input slot that has the expected location and the wrong semantic")
+    code, out = run(4, "COLOR", 8, 8193)
+    expect(code == 1 and "1 missing vertex shader words" in out,
+           "rejects a missing vertex word instead of substituting the base shader")
 
 
 def stencil_writes(key):
@@ -464,6 +686,8 @@ def selftest():
 
         def write(n, recs, layouts):
             _quiet(write_list, path(n), layouts, recs)
+
+        _vertex_input_selftest(path, expect)
 
         # the starter: a record with a static bias (a), one without (b), a 4-sample one (c4)
         a, b, c4 = _key(1, 2, 2, bias=-7), _key(3, 4, 2), _key(5, 6, 4)
@@ -606,6 +830,11 @@ def main():
     ck.add_argument("--pack", required=True)
     ck.add_argument("--variant-pack", "--hdr-pack", dest="variant_pack", default="")
     ck.add_argument("files", nargs="+")
+    vi = sub.add_parser("vertex-inputs")
+    vi.add_argument("--pack", required=True)
+    vi.add_argument("--variant-pack", default="")
+    vi.add_argument("--details", action="store_true")
+    vi.add_argument("files", nargs="+")
     r = sub.add_parser("reorder")
     r.add_argument("-o", "--out", required=True)
     r.add_argument("--base", required=True)
@@ -623,6 +852,8 @@ def main():
             lacks(a.base, a.files)
         elif a.cmd == "check":
             sys.exit(check(a.pack, a.variant_pack, a.files))
+        elif a.cmd == "vertex-inputs":
+            sys.exit(vertex_inputs(a.pack, a.variant_pack, a.files, a.details))
         elif a.cmd == "selftest":
             sys.exit(selftest())
         else:

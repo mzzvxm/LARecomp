@@ -13,6 +13,7 @@
 #include "format.h"
 #include "guest_device.h"
 #include "native_gfx/vertex_declaration.h"
+#include "vertex_input_locations.h"
 
 namespace mcla::gpu {
 
@@ -22,38 +23,13 @@ using plume::RenderFormat;
 namespace {
 
 // D3DDECLUSAGE values (shader.h DeclUsage).
-constexpr uint32_t kUsagePosition = 0;
 constexpr uint32_t kUsageNormal = 3;
-constexpr uint32_t kUsageTexCoord = 5;
 constexpr uint32_t kUsageTangent = 6;
 constexpr uint32_t kUsageBinormal = 7;
-constexpr uint32_t kUsageColor = 10;
 
 // The usages the translated shaders declare as uint4 (USAGE_TYPES).
 bool IsUintUsage(uint32_t usage) {
   return usage == kUsageNormal || usage == kUsageTangent || usage == kUsageBinormal;
-}
-
-// LAR-XenosRecomp's USAGE_LOCATIONS (shader_recompiler.cpp), the Vulkan
-// location of each vertex input. UINT32_MAX when the generator gives none.
-uint32_t VulkanLocation(uint32_t usage, uint32_t index) {
-  struct Entry {
-    uint32_t usage, index, location;
-  };
-  static constexpr Entry kTable[] = {
-      {kUsagePosition, 0, 0}, {kUsageNormal, 0, 1},   {kUsageTangent, 0, 2},
-      {kUsageBinormal, 0, 3}, {kUsageTexCoord, 0, 4}, {kUsageTexCoord, 1, 5},
-      {kUsageTexCoord, 2, 6}, {kUsageTexCoord, 3, 7}, {kUsageColor, 0, 8},
-      {2 /* BlendIndices */, 0, 9}, {1 /* BlendWeight */, 0, 10}, {kUsageColor, 1, 11},
-      {kUsageTexCoord, 4, 12}, {kUsageTexCoord, 5, 13}, {kUsageTexCoord, 6, 14},
-      {kUsageTexCoord, 7, 15}, {kUsagePosition, 1, 16},
-  };
-  for (const Entry& e : kTable) {
-    if (e.usage == usage && e.index == index) {
-      return e.location;
-    }
-  }
-  return UINT32_MAX;
 }
 
 // Bytes a vertex format occupies and the unit its components swap in.
@@ -207,8 +183,8 @@ std::unique_ptr<InputLayout> InputLayouts::Build(const ShaderStore::Entry& vs,
       report("usage without a semantic", ve.usage, ve.usage_index, 0);
       continue;
     }
-    const uint32_t location = VulkanLocation(ve.usage, ve.usage_index);
-    if (location == UINT32_MAX) {
+    const uint32_t location = vertex_input_locations::FixedLocation(semantic, ve.usage_index);
+    if (location == vertex_input_locations::kUnmapped) {
       report("usage without a Vulkan location", ve.usage, ve.usage_index, 0);
     }
     const bool uint_input = IsUintUsage(ve.usage);
@@ -222,7 +198,7 @@ std::unique_ptr<InputLayout> InputLayouts::Build(const ShaderStore::Entry& vs,
     Pending p;
     p.element.semanticName = semantic;
     p.element.semanticIndex = ve.usage_index;
-    p.element.location = location == UINT32_MAX ? 0 : location;
+    p.element.location = location == vertex_input_locations::kUnmapped ? 0 : location;
     if (!match) {
       // Unpatched vfetch: the hardware reads zeros.
       p.zero = true;
