@@ -246,6 +246,7 @@ class LocalLights {
   float gain_ = 1.0f;
   float car_gain_ = 1.0f;
   uint32_t cost_off_ = 0;  // GB-NEON-COST: mcla_gpu_local_lights_cost_off (local_lights_rules.h kCostOff*): the savings switched OFF for the A/B (0: all on)
+  bool pbr_on_ = true;      // PBR level 1: mcla_gpu_pbr: the lights the pass owns are shaded by the physically based model (hlsl/pbr_brdf.hlsli); off: the first model. Live
   bool contact_on_ = true;  // GB-NEON-CONTACT: mcla_gpu_neon_contact: a neon light is shut out of the car's own panels (the contact term of GB-NEON-BLEED), live
   larecomp::gpu::local_lights::Tier tier_ = larecomp::gpu::local_lights::Tier::kMedium;  // the budgets' tier: the light shadows' level
   larecomp::gpu::headlight_pass::Route route_ = larecomp::gpu::headlight_pass::Route::kForward;  // GB-H2: which of the two ways lights the frame's headlights (mcla_gpu_headlight_pass)

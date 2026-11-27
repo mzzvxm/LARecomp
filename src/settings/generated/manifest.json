@@ -2208,10 +2208,22 @@
   "type": "i32",
   "default": "0",
   "category": "MCLA/GPU",
-  "help": "\"Diagnostic (G-buffer): draws one plane of the G-buffer over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (only while mcla_gpu_gbuffer makes the plane): 1 the normal as a colour (0.5 + 0.5 n), 2 the albedo, 3 the smoothness, 4 the class \"\n    \"of each pixel as a colour, 5 which pixels hold data (white) and which do not (black), 6 the lit weight, 7 the missing pixels (green: data; red: the depth \"\n    \"holds geometry and the planes hold no data; black: the sky). The planes no shader writes yet show as no data. The rest of the frame (particles, tone map, \"\n    \"glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.\"",
+  "help": "\"Diagnostic (G-buffer): draws one plane of the G-buffer over the main view at the mid-scene depth copy, where the ambient \"\n    \"occlusion runs (only while mcla_gpu_gbuffer makes the plane): 1 the normal as a colour (0.5 + 0.5 n), 2 the albedo, 3 the smoothness, 4 the class \"\n    \"of each pixel as a colour, 5 which pixels hold data (white) and which do not (black), 6 the lit weight, 7 the missing pixels (green: data; red: the depth \"\n    \"holds geometry and the planes hold no data; black: the sky), 8 the metals (white: the class chrome or metal, or the metal flag), 9 the roughness (1 - the smoothness) as a grey. The planes no shader writes yet show as no data. The rest of the frame (particles, tone map, \"\n    \"glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.\"",
   "traits": [
    "rex::kDebugOnly",
-   "rex::Range{0, 7}"
+   "rex::Range{0, 9}"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_gbuffer_texture_rows": {
+  "type": "i32",
+  "default": "1",
+  "category": "MCLA/GPU",
+  "help": "\"Diagnostic (G-buffer, PBR level 2): which per-texture material rows change what the G-buffer's draws carry. 1: the compiled-in table (our \"\n    \"classification of the game's textures, tools/gbuffer_materials), then the files (the generated table beside the shader pack, the mods folder's \"\n    \"gbuffer_texture_materials.txt, MCLA_GBUFFER_TEXTURE_MATERIALS). 0: no row at all, every draw has its shader family's own material (the A/B switch, and \"\n    \"what a census run sees). 2: the compiled-in table only. 3: the files only. Live: the next frame reads the rows again.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::Range{0, 3}"
   ],
   "comments": [],
   "pp_depth": 0
@@ -4681,6 +4693,15 @@
   "traits": [
    "rex::kDebugOnly"
   ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_gpu_pbr": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use physically based shading for added lights, reflections and indirect lighting. Applies live.\"",
+  "traits": [],
   "comments": [],
   "pp_depth": 0
  },

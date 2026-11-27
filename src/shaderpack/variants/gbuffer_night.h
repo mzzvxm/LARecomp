@@ -44,7 +44,7 @@
 // writes its register again (`float3 gbAlbedo = r6.xzw;`), the same rule as the normal's. A shader with no such fetch writes the "no data" code (all zero) to RT2, EXCEPT the 11 shaders that have a
 // RECIPE (gbuffer_night_albedo.h, GB-H2-COVER: the road, the terrain, the grass, the tints and the traffic body, which the forward headlight stage lights): their surface colour is a register after
 // a statement the table names, or a constant, and is captured / written the same way. The edits only add lines.
-// RT3 (package GB-W2, shaderpack/variants/gbuffer_material_plane.h: the smoothness, the class and the flags): a fourth output, `out float2 oC3 : SV_Target3`, and after the albedo
+// RT3 (package GB-W2, shaderpack/variants/gbuffer_material_plane.h: the smoothness, the class and the flags): a fourth output, `out float4 oC3 : SV_Target3`, and after the albedo
 // `oC3 = GbMaterialRt3(<the draw's material word>)` under GB_MODE_WRITE_MATERIAL (else the "no data" code). The word needs nothing from the shader's text, so every shader of the stage
 // writes it, the ones with no albedo too. The write block comes from one function (NightWriteBlock in gbuffer_night.cpp).
 // ===========================================================================

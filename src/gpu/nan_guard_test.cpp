@@ -229,7 +229,7 @@ void TestPlaces(const std::string& gpu) {
        {"const float3 factor3 = ao_factor * contact_factor3;", "const float3 gi_factor = factor3 + bounce;"}, "the factor the picture is multiplied by: a NaN is no change"},
       {"ao_color_ps.hlsl", {"#include \"nan_guard.hlsli\"", "colour = NgHeld3(colour, kColourMax);"}, {"colour = min(max(colour, 0.0f), kColourMax);"}, "the bounce light's colour capture of the game's scene"},
       // the lights and the bounce light added to the scene, the denoiser's guides
-      {"local_light_ps.hlsl", {"#include \"nan_guard.hlsli\"", "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));", "add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));"}, {"float3 add = LpPixelLight(l, g, world, normal, albedo, lit);", "add[i] = LpPixelLight(l[i], g, world, normal, albedo, lit);"},
+      {"local_light_ps.hlsl", {"#include \"nan_guard.hlsli\"", "float3 add = NgFinite3(LpLightAt(l, g, world, normal, albedo, lit, mat));", "add[i] = NgFinite3(LpLightAt(l[i], g, world, normal, albedo, lit, mat));"}, {"float3 add = LpLightAt(l, g, world, normal, albedo, lit, mat);", "add[i] = LpLightAt(l[i], g, world, normal, albedo, lit, mat);"},
        "a local light's term added to the scene"},
       {"gi_apply_ps.hlsl", {"#include \"nan_guard.hlsli\"", "float3 add = NgFinite3(GiaBounceAdd("}, {"float3 add = GiaBounceAdd("}, "the bounce light added to the scene"},
       {"rr_guides_common.hlsli", {"#include \"nan_guard.hlsli\"", "return NgSaturate(NgMax(reactive, transparency));"}, {"return saturate(max(reactive, transparency));"}, "the responsivity guide"},

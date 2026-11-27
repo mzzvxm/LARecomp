@@ -74,7 +74,7 @@ RtDnPixel RtDnLoad(int2 pix) {
   r.z = signal.w;
   r.pos = pc;
   r.n = n;
-  r.rough = 1.0f - saturate(smoothness);
+  r.rough = SsrRoughness(smoothness, SsrPbr());
   r.hit = trace.w != 0.0f ? SsrHitDistance(trace.w) : 0.0f;
   r.share = group != 0u ? saturate(1.0f - conf.y) : 0.0f;
   return r;

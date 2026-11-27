@@ -1452,7 +1452,7 @@ void TestPass(const std::string& gpu_dir) {
   Check(Has(ps, "add = game_lit ? -add * (1.0f - lamp_vis) : add * lamp_vis;") && Has(ps, "(l.flags & uint(LL_FLAG_GAME_LIT)) != 0u"),
         "a game lamp's shadowed share is taken away, an owned lamp's light is multiplied");
   // INTEGRATION-TRIAL: the lookups are inside LpShadowed (called by LpOneLight once the term is known), the lamps' before the headlights' path
-  const size_t lit_at = ps.find("float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));");
+  const size_t lit_at = ps.find("float3 add = NgFinite3(LpLightAt(l, g, world, normal, albedo, lit, mat));");
   const size_t lamp_at = ps.find("LslLampLit(");
   const size_t head_at = ps.find("add *= LslLightLit(");
   const size_t call_at = ps.find("return LpShadowed(l, g, flags, p, world, normal, add);");

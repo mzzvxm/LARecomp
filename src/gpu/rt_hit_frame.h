@@ -13,7 +13,7 @@
 //
 // The frame's rows (binding 5 of the car scene's set: kFrameRows rows of four words before the instances' rows; any other pass of a pure city consumer has them in a buffer of its own,
 // hlsl/rt_hit_common.hlsli RT_HIT_FRAME_ROW):
-//   0 xyz the direction to the sun in VIEW space (unit), w flags (kFrameShade, kFrameShadow, kFrameEnv, kFrameSun, kFrameCascade)
+//   0 xyz the direction to the sun in VIEW space (unit), w flags (kFrameShade, kFrameShadow, kFrameEnv, kFrameSun, kFrameCascade, kFramePbr)
 //   1 xyz the sun's colour (PS c39 of the car's own draws, in the paint's units), w the sun shadow ray's reach in metres
 //   2 xyz the ambient (PS c26), w its gain
 //   3 x the environment map's slot (bit 31 the gamma bit), y the blurred map's slot, z the night factor (from the sun's height where the frame knows the sun, from the sun's colour where not:
@@ -147,6 +147,7 @@ inline constexpr uint32_t kFrameShadow = 2;   // the sun's visibility ray is cas
 inline constexpr uint32_t kFrameEnv = 4;      // the environment map's slot is valid
 inline constexpr uint32_t kFrameSun = 8;      // the direction to the sun is known
 inline constexpr uint32_t kFrameCascade = 16; // the game's sun cascades and the camera's world position are in the rows: the sun's visibility at a hit is read from them
+inline constexpr uint32_t kFramePbr = 32;     // PBR level 1 (the debug switch mcla_gpu_pbr): the hit shading uses the shared physically based light model (hlsl/pbr_rt_hit.hlsli); not set: the model of old
 
 inline float Dot3(const float a[3], const float b[3]) { return a[0] * b[0] + a[1] * b[1] + a[2] * b[2]; }
 
@@ -158,6 +159,7 @@ struct Tuning {
   float ambient = 1.0f;  // the ambient's share
   float spec = 1.0f;     // the environment reflection's share
   float detail = 1.0f;   // RT-HIT-SHADING-5: the hit's own detail (the coat's glints, the sky's openness, the contact darkening, the class's ambient); 0 is the shading as it was, above 1 stronger glints
+  bool pbr = false;      // PBR level 1 (1B): the shared physically based light model (the host sets it from the debug switch, pbr_rt_hit_switch.h); false here so a frame built without it is the model of old
 };
 
 // The lighting of the frame as the car's own draws saw it (PS c26 ambient, c39 sun colour, c57 sky ambient; the environment map's slots in the fetch constants 0 and 1).
@@ -258,6 +260,9 @@ inline void MakeFrameRows(const FrameInput& in, uint32_t rows[kFrameRows][4]) {
   }
   if (in.sun_known) {
     flags |= kFrameSun;
+  }
+  if (in.tuning.pbr) {
+    flags |= kFramePbr;
   }
   if (in.tuning.cascade && CascadesUsable(in.cascades) && in.camera_known) {
     flags |= kFrameCascade;

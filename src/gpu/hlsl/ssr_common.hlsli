@@ -20,6 +20,7 @@
 #define MCLA_GPU_SSR_COMMON_HLSLI
 
 #include "gbuffer_common.hlsli"
+#include "pbr_screen_common.hlsli"
 #include "ao_gbuffer_normal.hlsli"
 #include "nan_guard.hlsli"
 #include "blue_noise.hlsli"
@@ -40,7 +41,7 @@
 #define SSR_W_COL01 6          // colour_post's levels 0 | 1 << 16
 #define SSR_W_COL23 7
 #define SSR_W_RENDER 8         // the picture's size in host pixels: width | height << 16
-#define SSR_W_FLAGS 9          // sample0 (4 bits) | hiz levels << 4 | colour levels << 8 | SSR_FLAG_* << 12 | rays - 1 << 18 | view << 20 | max iterations << 24
+#define SSR_W_FLAGS 9          // sample0 (4 bits) | hiz levels << 4 | colour levels << 8 | SSR_FLAG_* << 12 | rays - 1 << 18 (1 bit: 1 or 2 rays) | SSR_PBR << 19 | view << 20 | max iterations << 24
 #define SSR_W_FRAME 10         // trace, apply: the frame's number (the noise) in bits 0-30, bit 31 SSR_FRAME_LEGACY_NOISE; temporal: the weight the history keeps (float)
 #define SSR_W_LIN0 11          // the depth chain's level 0 (the vehicle mark) | the depth target's stencil plane << 16 (the trace: the vehicle a hit is on; 0xFFFF none)
 #define SSR_W_TAN_X 12         // floats: tan of the half field of view, x then y
@@ -116,6 +117,7 @@ float SsrHitThickness(float depth, float relative, float support) {
 #define SSR_FLAG_CAMERA 32u     // the camera's rows are the frame's own (else the G-buffer's normal is not used: the depth's normal)
 #define SSR_FLAG_SHIFT 12u
 #define SSR_RAYS_SHIFT 18u
+#define SSR_PBR_SHIFT 19u       // PBR level 1C: bit 19 of SSR_W_FLAGS is the shared physically based model (mcla_gpu_pbr); 0 the passes' old maths (the rays take bit 18 only: kMaxRays is 2)
 #define SSR_VIEW_SHIFT 20u
 #define SSR_TRACE_STABLE (1u << SSR_VIEW_SHIFT)  // the trace uses the apply's view field for its stability switch
 #define SSR_ITER_SHIFT 24u
@@ -220,6 +222,11 @@ float SsrAlphaOfSmooth(float smoothness) {
   return max(r * r, kSsrMinAlpha);
 }
 
+// ---- PBR level 1C: the roughness and the reflection's weight through the shared model (pbr_screen_common.hlsli, perf\PBR.md "1C screen passes and guides") ------------------------------------------------------
+// `pbr` is the flags' SSR_PBR bit (mcla_gpu_pbr). Off: the passes' own maths as they were (roughness 1 - smoothness, F0 0.04 and a metal's albedo through the environment BRDF below). On: the contract's roughness
+// (PbrRoughnessFromSmoothness) and weight (PbrEnvSpecularWeight, through PbrScreenReflectionWeight: the metalness of RT3's metal flag or of the class, the class's F0: water 0.02, and the contract's own fit of
+// the split sum). What PBR-1 refines in the contract reaches every SSR pass through here.
+
 // ---- Fresnel: the environment BRDF's scale and bias (Karis, "Physically Based Shading on Mobile", 2014): the reflected colour is F0 * x + y of the pair this returns, `rough` the perceptual
 // roughness (1 - smoothness), `nov` the cosine between the normal and the direction to the camera.
 float2 SsrEnvBrdf(float rough, float nov) {
@@ -229,6 +236,30 @@ float2 SsrEnvBrdf(float rough, float nov) {
   const float rw = rough * 0.022f - 0.04f;
   const float a004 = min(rx * rx, exp2(-9.28f * saturate(nov))) * rx + ry;
   return float2(-1.04f * a004 + rz, 1.04f * a004 + rw);
+}
+
+float SsrRoughness(float smoothness, bool pbr) {
+  return pbr ? PbrRoughnessFromSmoothness(smoothness) : 1.0f - saturate(smoothness);
+}
+
+// The GGX alpha the trace's lobe has: the roughness squared, never under the mirror's floor.
+float SsrAlpha(float smoothness, bool pbr) {
+  const float r = SsrRoughness(smoothness, pbr);
+  return max(r * r, kSsrMinAlpha);
+}
+
+// The reflection's weight at a pixel (the resolve's Fresnel term and the Ray Regeneration guide's specular albedo, which are the same number): `albedo` RT2's decoded where `have_albedo` (read for a metal only).
+// Off: F0 0.04, a metal CLASS's albedo (0.6 where the frame has none), the environment BRDF at 1 - smoothness, saturated. On: PbrScreenReflectionWeight.
+float3 SsrFresnel(uint cls, bool metal_flag, float3 albedo, bool have_albedo, float smoothness, float nov, bool pbr) {
+  if (pbr) {
+    return PbrScreenReflectionWeight(cls, metal_flag, smoothness, albedo, have_albedo, nov);
+  }
+  float3 f0_rgb = float3(0.04f, 0.04f, 0.04f);
+  if (cls == uint(GB_CLASS_METAL)) {
+    f0_rgb = have_albedo ? albedo : float3(0.6f, 0.6f, 0.6f);
+  }
+  const float2 ab = SsrEnvBrdf(1.0f - smoothness, nov);
+  return saturate(float3(f0_rgb.x * ab.x + ab.y, f0_rgb.y * ab.x + ab.y, f0_rgb.z * ab.x + ab.y));
 }
 
 // ---- the noise -----------------------------------------------------------------------------------------------------------------------------------------------------------------------

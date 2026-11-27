@@ -1,49 +1,81 @@
 # The rules of the G-buffer's per-texture material table: THE FILE TO EDIT.
 # python -I author_materials.py --census census.tsv --rules material_rules.txt --out mcla_gbuffer_texture_materials.txt
-# (the grammar and every condition and field are described at the top of author_materials.py; the table's own format at the top of src/gpu/gbuffer_materials.h)
+# (the grammar and every condition and field are described at the top of author_materials.py; the table's own format at the top of src/gpu/gbuffer_materials.h; the whole pipeline in perf/PBR.md section 2)
 #
-# One rule per line:   <id>: <conditions> => <fields>
+# One rule per line:   <id>: <conditions> => <fields> [conf=high|medium|low]
+# A keyword that is also a piece of other words ("rim" in "trim", "tire" in "entire", "iron" in "environment") is written w:rim, a whole word: the name split at every character that is not a
+# letter or a digit has it.
 # Every rule that matches a texture applies, in this file's order; where two give the same field the LATER one wins, so the broad rules go first and the exceptions after them.
-# A texture that matches no rule, or that the rules would leave as its shader family already has it, gets no row: it keeps the family's material (the class table of the shader groups,
-# and the game's own specular exponent where the shader has one).
+# A texture that matches no rule, or that the rules would leave as its shader family already has it, gets no row: it keeps the family's material (the class table of the shader groups, the family
+# table (gbuffer_material.h kFamilyRows: tyres, rims, rotors, the painted caliper ...), and the game's own specular exponent where the shader has one).
+#
+# CONFIDENCE (PBR-2). A rule says how far its evidence is to be trusted. high: a word that means one thing ("chrome", "windshield", "tyre") or a list of hashes a person reviewed. medium (the default):
+# a keyword that is nearly always what it says ("glass", "metal", "concrete"). low: a keyword that is often something else ("light", "paint", "water", "line") or a number of the game's own gloss
+# constants with no word to back it. A row's confidence is the lowest of the rules that gave it a field; a row below the tool's --min-confidence (medium) is NOT written to the table but listed in
+# <table>.review.tsv, for a person to decide with the texture in front of them (the contact sheet of the busiest textures per family). Low confidence rows are listed, never guessed.
 #
 # Most of the city's textures have NO NAME in the retail game (the console builds strip them: in a dump, every texture of the dictionaries `common` and `lod_0` and nearly nine in ten of
 # the `Unknown_file_in_an_archive` ones are "unnamed"), so the keywords below can only reach the named ones: the cars' and pedestrians' textures, the sky and the effects, the runtime
-# ones, mods' textures. An unnamed texture is keyed by its content hash (the census prints it; so do the texture dumps, `unnamed__<hash>.dds`), and gets its rule from the REVIEW:
-# look at the busiest textures of each family on a contact sheet, and list the hashes of the ones that are metal, wet asphalt, glass ... in a rule with `hash=` (examples at the end).
+# ones, mods' textures, and the city's textures when the census is given the city hit data's name list (census_merge.py --names). An unnamed texture is keyed by its content hash (the census
+# prints it; so do the texture dumps, `unnamed__<hash>.dds`), and gets its rule from the REVIEW: look at the busiest textures of each family on a contact sheet, and list the hashes of the
+# ones that are metal, wet asphalt, glass ... in a rule with `hash=` (examples at the end).
 #
 # CHECK: every keyword and number below is a first guess from naming habits and from the survey (perf/GBUFFER-SURVEY.md 5), not a measurement: the census and the pictures decide.
-# rough is the PERCEPTUAL roughness (1 chalk .. 0 mirror); metal is stored in the material word but no plane carries it yet, so metal surfaces also get class=metal or class=chrome
-# (F0 = albedo).
+# rough is the PERCEPTUAL roughness (1 chalk .. 0 mirror); metal is the word's metalness byte (the ray traced consumers read it; the screen ones read the class and the metal flag a byte of 0.5 or more sets:
+# perf/PBR.md 1.4 and 2.3); a metal surface also gets class=metal or class=chrome (F0 = albedo for every consumer that reads the class), a dielectric a class that is not one, and a class without
+# metal= takes that class's metalness (gbuffer_material.h DefaultMetal).
 
 # --- glass: the family says glass for window shaders; this is for glass textures drawn with a plain wall or prop shader
-glass-world:     name~glass,window,windshield,windscreen,visor  novehicle   => class=glass rough=0.05 ssr=1
-glass-vehicle:   name~glass,window,windshield,windscreen,visor  vehicle     => class=glass rough=0.05 ssr=0
+glass-world:     name~glass,window,visor  novehicle   => class=glass rough=0.05 ssr=1 conf=medium
+glass-vehicle:   name~glass,window,visor  vehicle     => class=glass rough=0.05 ssr=0 conf=medium
+windshields:     name~windshield,windscreen  => class=glass rough=0.04 ssr=0 conf=high
+dirty-glass:     name~dirt,grime,smudge,crack,broken,shatter  class=glass  => rough=0.35 conf=medium
 
 # --- metal and chrome (a vehicle's keep the game's own environment reflections: no SSR)
-chrome-world:    name~chrome,mirror,polished  novehicle  => class=chrome rough=0.05 metal=1 ssr=1
-chrome-vehicle:  name~chrome,mirror,polished  vehicle    => class=chrome rough=0.05 metal=1 ssr=0
-metal-props:     name~metal,steel,aluminum,aluminium,iron,galvanized  novehicle  => class=metal rough=0.40 metal=1 ssr=1
-brake-parts:     name~rotor,caliper,brake  => class=metal rough=0.45 metal=1 ssr=0
-rust:            name~rust,rusty  => rough=0.80
+chrome-world:    name~chrome,polished  novehicle  => class=chrome rough=0.05 metal=1 ssr=1 conf=high
+chrome-vehicle:  name~chrome,polished  vehicle    => class=chrome rough=0.05 metal=1 ssr=0 conf=high
+mirrors:         name~mirror  => class=chrome rough=0.03 metal=1 ssr=1 conf=medium
+rims:            name~w:rim,w:rims,alloy  vehicle  => class=chrome rough=0.15 metal=1 ssr=0 conf=medium
+wheels-maybe:    name~w:wheel,w:wheels,hubcap  vehicle  => class=chrome rough=0.2 metal=1 ssr=0 conf=low
+exhausts:        name~exhaust,tailpipe,muffler  => class=metal rough=0.45 metal=1 ssr=0 conf=medium
+metal-props:     name~metal,steel,aluminum,aluminium,w:iron,galvanized  novehicle  => class=metal rough=0.40 metal=1 ssr=1 conf=medium
+rotors:          name~rotor  => class=metal rough=0.55 metal=1 ssr=0 conf=medium
+rust:            name~w:rust,w:rusty  => rough=0.80 conf=medium
+
+# --- soft materials and rubber
+rubber:          name~w:tire,w:tires,w:tyre,w:tyres,rubber  => rough=0.92 metal=0 conf=high
+plastics:        name~plastic  => rough=0.55 metal=0 conf=medium
+cloth:           name~cotton,denim,leather,cloth,fabric  => rough=0.85 conf=medium
+plates:          name~license,licence,w:plate  => rough=0.35 conf=medium
+
+# --- the ground and the walls, when a texture says so
+puddles:         name~puddle,w:wet  class=road,world,sidewalk  => class=wetroad rough=0.10 ssr=1 conf=medium
+asphalt:         name~asphalt,tarmac  group~road  => rough=0.65 conf=high
+asphalt-named:   name~asphalt,tarmac  novehicle  class!=road,wetroad  => class=road rough=0.65 ssr=1 conf=medium
+concrete:        name~concrete,w:cement,curb,kerb  => rough=0.85 conf=medium
+brick:           name~brick,stucco,plaster  => rough=0.90 conf=medium
+tiles:           name~w:tile,w:tiles,ceramic  => rough=0.35 conf=low
+road-paint:      name~stripe,crosswalk,marking  group~road  => rough=0.50 conf=low
+water-names:     name~water,w:pond,ocean  class=world,road,terrain,sidewalk  => class=water rough=0.04 ssr=1 conf=low
 
 # --- what lights itself
-emissive-names:  name~neon,emissive,bulb,lampon,lamp_on  => class=emissive
+emissive-names:  name~neon,emissive,bulb,lampon,lamp_on  => class=emissive conf=medium
+lamp-lenses:     name~headlight,taillight,tail_light,w:lens  vehicle  => class=glass rough=0.05 conf=low
 # Lit windows of a night (CITY-RT R7): the ray traced city hit data (the reflections' and the bounce light's hits) makes a material glow where a row says its texture lights itself: class=emissive, or
 # a lit weight under 1 (the glow is 1 - lit, by the fill lights' night curve; a lamp lens and a traffic signal are known from their shader groups). Use it for the textures that are lit windows or lit
 # signs themselves: on the raster side lit=0 also tells the deferred local lights (headlights, lamps) to add nothing to those pixels, so a facade that only has windows painted on it is left out.
 # Which window textures are lit comes from the census and the pictures, by hash (the first line is a template and matches nothing):
-# lit-windows:     hash=0123456789ABCDEF,FEDCBA9876543210  => lit=0
+# lit-windows:     hash=0123456789ABCDEF,FEDCBA9876543210  => lit=0 conf=high
 
-# --- soft materials and rubber
-rubber:          name~tire,tyre,rubber  => rough=0.92
-cloth:           name~cotton,denim,leather,cloth,fabric  => rough=0.85
-plates:          name~license,licence,plate  => rough=0.35
+# --- the game's own gloss constants (the family's smoothness byte is the draw's SpecularExponent through the GGX fit): an unnamed texture on a plain wall or prop shader that the game itself draws
+# very glossy is a candidate for polished metal, glass or tile; one drawn on asphalt that the game draws chalk-rough is a candidate for rough concrete. Not enough to write a row: low confidence
+# lists them in the review (a texture with a name is judged by the rules above, not by these).
+gloss-polished:  unnamed novehicle group~xCityDefault,xCityBumpSpec,xPropDefault,xPropBumpSpec smooth>=190 draws>=100  => ssr=1 conf=low
+gloss-rough-road: unnamed group~xCityRoad,xCityRiverRoad,xCityTunnelRoad class=road smooth<=40 draws>=100  => rough=0.85 conf=low
 
-# --- the road, when a texture says so
-puddles:         name~puddle,wet  class=road,world,sidewalk  => class=wetroad rough=0.10 ssr=1
-asphalt:         name~asphalt,tarmac  group~road  => rough=0.65
+# The caliper shader tints a painted surface. Keep its family word when the census associates a metal-sounding texture with this shader.
+painted-calipers: group=xbrakecaliper  => skip
 
 # --- reviewed lists of unnamed textures go here, by hash (the census prints it; the first line is a template and matches nothing):
-# manhole-covers:  hash=0123456789ABCDEF,FEDCBA9876543210  => class=metal rough=0.45 metal=1 ssr=1
-# wet-asphalt:     hash=00B2E7B3C830B0E7  => class=wetroad rough=0.12 ssr=1
+# manhole-covers:  hash=0123456789ABCDEF,FEDCBA9876543210  => class=metal rough=0.45 metal=1 ssr=1 conf=high
+# wet-asphalt:     hash=00B2E7B3C830B0E7  => class=wetroad rough=0.12 ssr=1 conf=high

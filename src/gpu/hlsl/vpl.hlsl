@@ -2,6 +2,7 @@
 // stores history. The current receivers are shaded afresh each frame.
 #include "host_pass_common.hlsli"
 #include "gbuffer_common.hlsli"
+#include "pbr_screen_common.hlsli"
 #include "light_laws.hlsli"
 
 #ifndef VPL_MS
@@ -36,6 +37,7 @@ static const float kVehicleShare = 0.35f;
 struct View {
   float3 right, up, forward, eye;
   float exposure;
+  uint material_code;
   float4 lens, depth;
   float4 cabin_min, cabin_max;
   uint4 sizes, counts, slots, guides, apply;
@@ -43,7 +45,9 @@ struct View {
 
 View VplView() {
   View v;
-  v.right = asfloat(g_frame.Load4(0)).xyz;
+  const float4 right = asfloat(g_frame.Load4(0));
+  v.right = right.xyz;
+  v.material_code = uint(right.w);
   v.up = asfloat(g_frame.Load4(16)).xyz;
   v.forward = asfloat(g_frame.Load4(32)).xyz;
   float4 eye = asfloat(g_frame.Load4(48));
@@ -459,6 +463,16 @@ float4 VplComposite(float4 position) {
   float4 rt2 = v.guides.x == kNoSlot ? 0.0f : Plane(v, v.guides.x, pixel);
   float3 albedo = (rt2.w > 0.0f || any(rt2.rgb > 0.0f)) ? GbAlbedoDecode(rt2.rgb) * saturate(rt2.w) :
     SurfaceBase(WorldVector(v, GeometricNormal(v, int2(uv * v.counts.xy), Linear(raw))));
+  if (v.material_code != 0u) {
+    const float3 material = Plane(v, v.material_code - 1u, pixel).xyz;
+    const uint cls = GbRt3Class(material.xy);
+    if (cls != GB_CLASS_NONE) {
+      const float3 normal = WorldVector(v, GeometricNormal(v, int2(uv * v.counts.xy), Linear(raw)));
+      const float3 to_view = v.eye - world;
+      const float nv = saturate(dot(normal, to_view / max(length(to_view), 1.0e-6f)));
+      albedo *= PbrScreenDiffuseShare(cls, GbRt3MetalFlag(material), GbRt3Smoothness(material.xy), nv);
+    }
+  }
   float ao = 1.0f;
   if (v.guides.z != kNoSlot) {
     float a = g_textures[v.guides.z].Load(int3(int2(uv * v.counts.xy), 0)).x;

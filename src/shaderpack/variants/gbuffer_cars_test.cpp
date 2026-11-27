@@ -202,7 +202,7 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 a) { return a; }\n"
     "uint GbMaterialWord(float s, uint c, uint f, float l) { return c; }\n"
-    "float2 GbMaterialRt3(uint w) { return float2(w, w); }\n"
+    "float4 GbMaterialRt3(uint w) { return float4(w, w, w, 0); }\n"
     "float GbMaterialLit(uint w) { return 1.0f; }\n"
     "float3 GbWorldPoint(float4 ray, float4 q, float px, float py, float w) { return ray.xyz; }\n"
     "float3 GbFaceNormal(float3 dpdx, float3 dpdy, float3 to_camera) { return dpdx; }\n";
@@ -696,6 +696,7 @@ constexpr ClassPin kPins[] = {
     {"xAmbientCarPaint", gb::SurfaceClass::kPaint, true},
     {"xAmbientBumpSpec", gb::SurfaceClass::kPaint, true},
     {"xAmbientVehicle", gb::SurfaceClass::kPaint, true},
+    {"xbrakecaliper", gb::SurfaceClass::kPaint, true},
     // chrome, rims, badges
     {"xBumpedAlphaChrome", gb::SurfaceClass::kChrome, true},
     {"xChrome", gb::SurfaceClass::kChrome, true},
@@ -706,7 +707,6 @@ constexpr ClassPin kPins[] = {
     {"xAnisotropicBilletMetal", gb::SurfaceClass::kMetal, true},
     {"xBrushedMetal", gb::SurfaceClass::kMetal, true},
     {"xBumpedBrushedMetal", gb::SurfaceClass::kMetal, true},
-    {"xbrakecaliper", gb::SurfaceClass::kMetal, true},
     {"xWheelBrakeRotor", gb::SurfaceClass::kMetal, true},
     // glass drawn opaque (the blended glass is left out)
     {"xBlackOpaqueGlass", gb::SurfaceClass::kGlass, true},
@@ -1071,7 +1071,7 @@ int main(int argc, char** argv) {
   if (real_helper) {
     for (const char* needle : {"#define GB_CLASS_PAINT 8", "#define GB_CLASS_CHROME 9", "#define GB_CLASS_METAL 10", "#define GB_CLASS_GLASS 11", "#define GB_CLASS_SKIN 12", "#define GB_CLASS_EMISSIVE 13",
                                "#define GB_CLASS_WORLD 1", "#define GB_FLAG_VEHICLE 4", "#define GB_MODE_WRITE_MATERIAL 4", "#define GB_MODE_FLIP_BACKFACE 8", "uint GbMaterialWord(float gbSmoothness,",
-                               "float2 GbMaterialRt3(uint word)", "float GbMaterialLit(uint word)", "float3 GbAlbedoEncode(float3 albedo)"}) {
+                               "float4 GbMaterialRt3(uint word)", "float GbMaterialLit(uint word)", "float3 GbAlbedoEncode(float3 albedo)"}) {
       Check(Count(helper, needle) == 1, std::string("the real helper has ") + needle);
     }
     Check(Count(helper, "float smoothness") == 0, "the helper has no parameter named smoothness (a game constant's name)");

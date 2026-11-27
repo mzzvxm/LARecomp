@@ -183,7 +183,7 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
     "float GbMaterialLit(uint word) { return 1.0f; }\n"
-    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
+    "float4 GbMaterialRt3(uint word) { return float4(0.0f, 0.0f, 0.0f, 0.0f); }\n"
     "#define GB_MODE_WRITE_NORMAL 1\n"
     "#define GB_MODE_WRITE_ALBEDO 2\n"
     "#define GB_MODE_WRITE_MATERIAL 4\n";
@@ -305,11 +305,11 @@ void CheckTransform() {
   const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
   Check(r.ok && !r.skip && r.error.empty(), "the fixture transforms: " + r.error);
   if (!r.ok) return;
-  Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+  Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float4 oC3 : SV_Target3") == 1,
         "the second, third and fourth outputs follow the colour output");
   Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(gbNormal);\n\t}"
                       "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"
-                      "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
+                      "\n\toC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
         "the writes follow the game's last colour statement (this fixture has no diffuse fetch: RT2 gets the no data code only; RT3 gets the material word's bytes all the same)");
   Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
             Count(r.hlsl, "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)") == 1 &&
@@ -416,7 +416,7 @@ void CheckAlbedoTransform() {
     const sp::VariantTransformResult r = sp::TransformGBufferNightHlsl(shader, text, kHelper, sp::SoloContext(sp::kFeatureGBuffer));
     Check(r.ok && Count(r.hlsl, "oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(r.hlsl, "GB_MODE_WRITE_ALBEDO") == 1 /* the stand-in helper's define */ && Count(r.hlsl, "gbAlbedo") == 0,
           "a shader with no DiffuseSampler texel: the no data write only, no albedo code " + r.error);
-    Check(r.ok && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1,
+    Check(r.ok && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 && Count(r.hlsl, "oC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1,
           "... and RT3 is written all the same: the class and the smoothness are the draw's, not the texel's");
   }
   // 6. a helper without the albedo functions is an error that names them (the real helper has them: the real-helper run checks it)
@@ -988,7 +988,7 @@ void CheckRetail(const fs::path& folder, const std::string& helper, const fs::pa
                 Count(alone.hlsl, "float3 gbAlbedo = ") == (a.albedo.found && a.albedo.captured ? 1u : 0u),
             file->stem + ": RT2: one output, the no data write, " + (a.albedo.found ? (a.albedo.captured ? "the albedo from one capture" : "the albedo from the fetch's lanes") : "no albedo"));
       // RT3 in every shader of the stage, with an albedo or without, and after RT2's write
-      Check(Count(alone.hlsl, "oC3 : SV_Target3") == 1 && Count(alone.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 && Count(alone.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 &&
+      Check(Count(alone.hlsl, "oC3 : SV_Target3") == 1 && Count(alone.hlsl, "oC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(alone.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == 1 &&
                 alone.hlsl.find("oC3 = GbMaterialRt3(") > alone.hlsl.find("oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"),
             file->stem + ": RT3: one output, the no data write and the word's bytes, after RT2's");
     }

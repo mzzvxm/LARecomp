@@ -142,7 +142,7 @@ std::vector<ch::Lamp> LampsAround(Lcg& rng, const float centre[3], uint32_t fill
 }
 
 struct GridCoverage {
-  int cases = 0, lit_cases = 0, cap_count = 0, cap_sum = 0, lamp_rays = 0, glow_kind[3] = {}, calibrate = 0, shadow = 0, empty = 0;
+  int cases = 0, lit_cases = 0, cap_count = 0, cap_sum = 0, lamp_rays = 0, glow_kind[3] = {}, calibrate = 0, shadow = 0, empty = 0, directions = 0;  // directions: PBR 1B, lookups that left a direction
 };
 
 // The decode of a case against material words of the test's own (the kinds patched in).
@@ -186,13 +186,20 @@ cs::Reads MakeGridReads(const Case& k, const GridWorld& w, TwinCensus* census, G
     cov->lit_cases += t.lit != 0 ? 1 : 0;
     return t.light;
   };
+  // PBR 1B: the same lookup's direction (no shadow ray recorded: the light's lookup above did it)
+  r.lamps_dir_at = [frame, decoded, lamp_words, factor](cs::V3 position, cs::V3 normal, bool shadow, float noise) {
+    return rw::LampLightAt(decoded, lamp_words->data(), frame.world_axes_view, factor, position, normal, shadow, noise, [](cs::V3 o, cs::V3 d, float reach) {
+             return hlsl_shim::FakeBlocked(o.x, o.y, o.z, d.x, d.y, d.z);
+           })
+        .direction;
+  };
   r.glow_factor = [decoded](uint32_t kind) { return decoded.GlowFactor(kind); };
   r.census = [census](uint32_t word, uint32_t value) { census->words[word] += value; };
   return r;
 }
 
 void GridShadeChecks(const City& city, const std::vector<uint32_t>& words, Lcg& rng, int rounds, GridCoverage* cov) {
-  int wrong_valid = 0, wrong_colour = 0, wrong_glow = 0, wrong_rays = 0, wrong_census = 0;
+  int wrong_valid = 0, wrong_colour = 0, wrong_glow = 0, wrong_rays = 0, wrong_census = 0, wrong_direction = 0;
   double worst = 0.0;
   std::vector<hlsl_shim::uint4> frame_rows;
   for (int round = 0; round < rounds; ++round) {
@@ -243,6 +250,14 @@ void GridShadeChecks(const City& city, const std::vector<uint32_t>& words, Lcg& 
     if (!Close(s.colour, t.colour, 5e-4)) ++wrong_colour;
     worst = std::max(worst, double(std::fabs(s.colour.x - t.colour.x) / std::max(1.0f, t.colour.x)));
     if (!Near(s.glow, t.glow, 1e-5)) ++wrong_glow;
+    // PBR 1B: where the shader's lamp lookup ran (the lamp flag, the schedule over 0) it left the direction toward the lamps' brightness weighted mean (the chosen lamp's with the shadow flag): the twin's
+    if ((k.p.flags & cs::kPLamps) != 0 && k.p.lamp_factor > 0.0f) {
+      const cs::V3 hit_point = k.ray.origin + k.ray.direction * k.ray.t;
+      const cs::LampLight want = rw::LampLightAt(w.decoded, w.lamps.words.data(), k.frame.world_axes_view, k.p.lamp_factor, hit_point, t.normal, (k.p.flags & cs::kPLampShadow) != 0, k.p.noise[2],
+                                                 [](cs::V3 o, cs::V3 d2, float) { return hlsl_shim::FakeBlocked(o.x, o.y, o.z, d2.x, d2.y, d2.z); });
+      if (!Close(hlsl_shim::grid::gCityHitLampDirection, want.direction, 1e-4)) ++wrong_direction;
+      cov->directions += cs::Dot(want.direction, want.direction) > 0.5f ? 1 : 0;
+    }
     if (t.glow > 0.0f) ++cov->glow_kind[GlowKindOfMaterial(d.material)];
     for (uint32_t i = 0; i < 8; ++i) {
       if (hlsl_shim::gCensus[i] != twin_census.words[i]) {
@@ -256,6 +271,7 @@ void GridShadeChecks(const City& city, const std::vector<uint32_t>& words, Lcg& 
   Check(wrong_glow == 0, Num("the glow by kind and schedule is the twin's (%.0f wrong)", wrong_glow));
   Check(wrong_rays == 0, Num("the sun's and the lamps' rays are cast from the same points, in the same directions, as far (%.0f cases differ)", wrong_rays));
   Check(wrong_census == 0, Num("the census' counters (lookups, lamps examined, lit, the caps, the glowing hits by kind) are the twin's (%.0f cases differ)", wrong_census));
+  Check(wrong_direction == 0 && cov->directions > 200, Num2("the lamps' direction through the world frame's grid is the twin's (%.0f differ, %.0f with a lamp's light)", wrong_direction, cov->directions));
 }
 
 float float3Luma(const hlsl_shim::float3& v) { return 0.2126f * v.x + 0.7152f * v.y + 0.0722f * v.z; }

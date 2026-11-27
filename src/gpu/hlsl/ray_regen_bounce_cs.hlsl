@@ -1,6 +1,7 @@
 // Per-pixel RT bounce is already irradiance without receiver albedo.
 // Pack its hit distance and build AMD's guides at the trace's own size.
 #include "host_pass_common.hlsli"
+#include "pbr_screen_common.hlsli"
 #include "gbuffer_common.hlsli"
 #include "ray_regen_common.hlsli"
 
@@ -13,7 +14,7 @@ struct BouncePush {
   float4 motion[3];
   float2 jitter;      // render pixels
   uint have_motion;
-  uint padding;
+  uint pbr;
 };
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<BouncePush> g_push;
@@ -61,12 +62,16 @@ void main(uint3 id : SV_DispatchThreadID) {
   const uint2 pixel = min(id.xy * g_push.render_step.z, render - 1u);
   const int3 gb = int3(pixel, 0);
   const float2 normal = g_textures[g_push.inputs.w].Load(gb).xy;
-  const float2 material = g_textures[g_push.planes_size.y].Load(gb).xy;
-  const uint cls = GbRt3Class(material);
-  const float roughness = cls == GB_CLASS_NONE ? 1.0f : 1.0f - GbRt3Smoothness(material);
+  const float3 material = g_textures[g_push.planes_size.y].Load(gb).xyz;
+  const uint cls = GbRt3Class(material.xy);
+  const float smoothness = GbRt3Smoothness(material.xy);
+  const bool pbr = g_push.pbr != 0u && cls != GB_CLASS_NONE;
+  const float roughness = cls == GB_CLASS_NONE ? 1.0f : (pbr ? PbrRoughnessFromSmoothness(smoothness) : 1.0f - smoothness);
   const float3 albedo = GbAlbedoDecode(g_textures[g_push.planes_size.x].Load(gb).xyz);
   g_normals[id.xy] = RgNormalsTexel(GbRt1Decode(normal), roughness, 0u);
-  g_diffuse[id.xy] = float4(cls == GB_CLASS_METAL ? float3(0.0f, 0.0f, 0.0f) : albedo, 1.0f);
+  const float3 diffuse = pbr ? albedo * (1.0f - PbrMetalOfScreen(cls, GbRt3MetalFlag(material))) :
+                              (cls == GB_CLASS_METAL ? float3(0.0f, 0.0f, 0.0f) : albedo);
+  g_diffuse[id.xy] = float4(diffuse, 1.0f);
   g_signal[id.xy] = RgSignalTexel(g_textures[g_push.inputs.x].Load(tap).xyz, hit.x, true);
 
   float4 motion = 0.0f;

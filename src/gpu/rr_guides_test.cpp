@@ -80,6 +80,7 @@ inline float dot(float4 a, float4 b) { return a.x * b.x + a.y * b.y + a.z * b.z 
 inline float3 cross(float3 a, float3 b) { return float3(a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x); }
 inline float3 normalize(float3 v) { return v * (1.0f / std::sqrt(dot(v, v))); }
 inline float lerp(float a, float b, float t) { return a + (b - a) * t; }
+inline float clamp(float v, float lo, float hi) { return std::min(std::max(v, lo), hi); }
 inline float min(float a, float b) { return a < b ? a : b; }
 inline float max(float a, float b) { return a > b ? a : b; }
 inline uint min(uint a, uint b) { return a < b ? a : b; }
@@ -87,6 +88,7 @@ inline uint max(uint a, uint b) { return a > b ? a : b; }
 inline float exp2(float v) { return std::exp2(v); }
 inline float log2(float v) { return std::log2(v); }
 #include "hlsl/gbuffer_common.hlsli"
+#include "pbr_screen_shim.h"   // what the contract (hlsl/pbr_brdf.hlsli, included by rr_guides_common.hlsli through pbr_screen_common.hlsli: PBR level 1C) needs and this shim does not have
 #include "hlsl/rr_guides_common.hlsli"
 }  // namespace hlsl_shim
 
@@ -140,6 +142,7 @@ struct Rng {
 
 bool Near(float a, float b, float tol) { return std::fabs(a - b) <= tol; }
 bool Near3(hs::float3 a, rg::Vec3 b, float tol) { return Near(a.x, b.x, tol) && Near(a.y, b.y, tol) && Near(a.z, b.z, tol); }
+bool Near3(hs::float3 a, hs::float3 b, float tol) { return Near(a.x, b.x, tol) && Near(a.y, b.y, tol) && Near(a.z, b.z, tol); }
 hs::float3 ToShim(rg::Vec3 v) { return hs::float3(v.x, v.y, v.z); }
 
 gb::Vec3 UnitRandom(Rng& rng) {
@@ -381,6 +384,8 @@ void DecodeChecks() {
   Rng rng;
   // random pixels: the shader's text against the twin, every output
   int compared = 0, with_depth_normal = 0, valid_normals = 0, no_albedo = 0, emissive = 0, metal = 0;
+  double fit_sum = 0.0, fit_max = 0.0;   // PBR 1C: the model's specular albedo against NVIDIA's fit, dielectrics
+  int fit_count = 0;
   for (int trial = 0; trial < 20000; ++trial) {
     float rt1[2] = {0, 0};
     const bool normal_on = rng.F() < 0.7f;
@@ -400,9 +405,11 @@ void DecodeChecks() {
       if (albedo_kind < 0.25f) rt2[0] = rt2[1] = rt2[2] = 0.0f;  // black with a lit weight
       if (albedo_kind > 0.9f) rt2[3] = 0.0f;                     // emissive: an albedo and no lit weight
     }
-    const uint32_t cls = rng.Next() % 32u;
+    const uint32_t material_code = rng.Next();
+    const uint32_t cls = material_code % uint32_t(gb::SurfaceClass::kCount);
+    const bool mflag = (material_code & 0x100u) != 0u;
     const uint32_t flags = rng.Next() & 7u;
-    float rt3[2] = {float(rng.Next() & 255u) / 255.0f, float((cls | (flags << 5u)) & 255u) / 255.0f};
+    const float rt3[3] = {float(rng.Next() & 255u) / 255.0f, float((cls | (flags << 5u)) & 255u) / 255.0f, mflag ? 128.0f / 255.0f : 127.0f / 255.0f};
     emissive += cls == uint32_t(gb::SurfaceClass::kEmissive);
     metal += cls == uint32_t(gb::SurfaceClass::kMetal) || cls == uint32_t(gb::SurfaceClass::kChrome);
     gb::Vec3 depth_normal = {0, 0, 0};
@@ -418,6 +425,39 @@ void DecodeChecks() {
     Check(same, "a random surface pixel: the shader's text and the twin agree (trial " + std::to_string(trial) + ")");
     if (!same) break;
     ++compared;
+    // PBR level 1C: the same pixel through the shared model: the shader's text against the twin
+    {
+      const hs::RrPixel pa = hs::RrSurfacePixelPbr(hs::float2(rt1[0], rt1[1]), hs::float4(rt2[0], rt2[1], rt2[2], rt2[3]), hs::float3(rt3[0], rt3[1], rt3[2]), ToShim(depth_normal), ToShim(dir));
+      const rg::Pixel pb = rg::SurfacePixelPbr(rt1, rt2, rt3, depth_normal, dir);
+      const bool pbr_same = Near3(pa.diffuse, pb.diffuse, tol) && Near3(pa.normal, pb.normal, tol) && Near(pa.roughness, pb.roughness, tol) && Near3(pa.specular, pb.specular, tol) && pa.hit == pb.hit;
+      Check(pbr_same, "PBR 1C: a random surface pixel through the model: the shader's text and the twin agree (trial " + std::to_string(trial) + ")");
+      if (!pbr_same) break;
+      // against the first version: the same normal; a dielectric's diffuse albedo is the same, a pure metal's is the floor (RT3's metal flag or the chrome class), the metal class (0.85) keeps 15 per cent of it; an emissive
+      // surface reflects nothing; the specular albedo of a dielectric is the contract's split sum, which differs from NVIDIA's EnvBRDFApprox2 by 0.1 at most on average over the cases here (perf\PBR.md 1C)
+      const float metalness = mcla::gpu::pbr_screen::Metalness(cls, mflag);
+      const bool is_emissive = cls == uint32_t(gb::SurfaceClass::kEmissive);
+      bool relation = Near3(pa.normal, a.normal, tol) && pa.hit == a.hit;
+      if (metalness == 0.0f) relation = relation && Near3(pa.diffuse, a.diffuse, tol);
+      if (metalness == 1.0f) relation = relation && pa.diffuse.x == hs::kRrMinAlbedo && pa.diffuse.y == hs::kRrMinAlbedo && pa.diffuse.z == hs::kRrMinAlbedo;
+      if (is_emissive) relation = relation && pa.specular.x == 0.0f && pa.specular.y == 0.0f && pa.specular.z == 0.0f;
+      if (!is_emissive) relation = relation && pa.specular.x >= 0.0f && pa.specular.x <= 1.0f && pa.specular.y >= 0.0f && pa.specular.y <= 1.0f && pa.specular.z >= 0.0f && pa.specular.z <= 1.0f;
+      if (metalness == 0.0f && !is_emissive) {
+        relation = relation && Near3(pa.specular, a.specular, 0.2f);
+        const double dd = std::max({std::fabs(double(pa.specular.x) - a.specular.x), std::fabs(double(pa.specular.y) - a.specular.y), std::fabs(double(pa.specular.z) - a.specular.z)});
+        fit_sum += dd;
+        fit_max = std::max(fit_max, dd);
+        ++fit_count;
+      }
+      const float expect_roughness = std::min(std::max(1.0f - rt3[0], 0.045f), 1.0f);
+      relation = relation && Near(pa.roughness, expect_roughness, 1.0e-6f);
+      Check(relation, "PBR 1C: against the first version the model keeps the normal, a dielectric's diffuse albedo and roughness (floored at 0.045), takes a pure metal's diffuse to the floor, an emissive surface's reflection to 0 and "
+                      "the specular albedo of a dielectric to within 0.2 of NVIDIA's fit (trial " + std::to_string(trial) + ")");
+      if (!relation) {
+        std::printf("  cls %u metalness %.2f emissive %d: first spec %.4f %.4f %.4f, model %.4f %.4f %.4f; diffuse %.4f / %.4f; roughness %.4f / %.4f\n", cls, double(metalness), int(is_emissive), a.specular.x, a.specular.y, a.specular.z,
+                    pa.specular.x, pa.specular.y, pa.specular.z, a.diffuse.x, pa.diffuse.x, a.roughness, pa.roughness);
+        break;
+      }
+    }
     // the definitions
     if (normal_on) {
       const float dotn = a.normal.x * world.x + a.normal.y * world.y + a.normal.z * world.z;
@@ -436,6 +476,8 @@ void DecodeChecks() {
       break;
     }
   }
+  std::printf("  CALIBRATION: the specular albedo guide, the model against NVIDIA's EnvBRDFApprox2 (dielectrics, random angles and roughness): mean %.4f, largest %.4f over %d pixels\n", fit_sum / std::max(fit_count, 1), fit_max, fit_count);
+  Check(fit_count > 5000 && fit_sum / std::max(fit_count, 1) < 0.06, "PBR 1C: the model's specular albedo is within 0.06 of NVIDIA's fit on average over dielectrics");
   Check(compared == 20000 && valid_normals > 12000 && with_depth_normal > 8000 && no_albedo > 2000 && emissive > 300 && metal > 1000, "the random pixels cover the cases (normals, depth normals, no albedo, emissive, metals)");
   // the albedo: squared, floored, 0.5 where RT2 holds none (all four values 0), and an albedo of black with a lit weight is the floor
   {
@@ -938,6 +980,10 @@ void RulesChecks(const std::string& gpu) {
       std::string header, source;
       Check(Slurp(gpu + "/rr_guides.h", &header) && Slurp(gpu + "/rr_guides.cpp", &source), "rr_guides.h and rr_guides.cpp are readable");
       Check(Has(header, "static constexpr uint32_t kOutputSet = 4;") && Has(header, "static constexpr uint32_t kPushSpace = 5;"), "the layouts put the outputs at set 4 and the push block at space 5");
+      Check(RR_FLAG_PBR == rg::kFlagPbr && std::bit_cast<uint32_t>(rg::FlagsWord(true)) == 1u && std::bit_cast<uint32_t>(rg::FlagsWord(false)) == 0u &&
+                Has(cs, "if ((asuint(g_push.forward.w) & RR_FLAG_PBR) != 0u)") && Has(cs, "px = RrSurfacePixelPbr(rt1, rt2, rt3, depth_normal, view_dir);") && Has(cs, "px = RrSurfacePixel(rt1, rt2, rt3.xy, depth_normal, view_dir);") &&
+                Has(source, "push.forward[3] = rr_guides::FlagsWord(pbr_screen::Enabled());") && Has(source, "#include \"pbr_screen_switch.h\""),
+            "PBR 1C: the pass's flags ride in forward.w as bits (the PBR bit is the HLSL's), the shader takes the model's guides with it and the first version's without, the host sets it from the setting");
       Check(Has(cs, "register(b0, space5)") && Has(view_cs, "register(b0, space5)") && Has(cs, "register(u0, space4)") && Has(cs, "register(u4, space4)") && Has(view_cs, "register(u0, space4)") &&
                 !Has(cs, "register(u5,"),
             "the shaders declare the push block at space 5 and the five outputs u0 to u4 at space 4 (the view's one at u0)");

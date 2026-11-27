@@ -6,7 +6,8 @@
 // Per pixel of the picture:
 //   the class     RT3's class, flags and smoothness (or the stub's); the class gate (ssr_common.hlsli SsrClassGain), the road's wetness, the smoothness floor. A pixel that reflects nothing adds 0.
 //   the normal    RT1's world normal in view space (a pixel RT1 holds none for, or that faces away, adds 0: without a normal there is no Fresnel term to trust).
-//   Fresnel       the environment BRDF (SsrEnvBrdf) with F0 0.04, a metal's F0 its albedo (RT2) where the frame has it, saturated (the table overshoots to 1.04 at exactly grazing).
+//   Fresnel       the shared model's reflection weight (PBR level 1C: ssr_common.hlsli SsrFresnel, the contract's split sum PbrEnvSpecularWeight: F0 0.04, water 0.02, a metal's F0 its albedo (RT2) where the frame has it, the metal flag of RT3),
+//                 saturated (the table overshoots to 1.04 at exactly grazing); with mcla_gpu_pbr 0 the first version's (the same split sum with F0 0.04 and a metal's albedo, no floor on the roughness).
 //   the image     the accumulated reflection (the temporal pass's output, half size) read at the pixel's place with the four nearest texels, each weighted by the bilinear share times how well its
 //                 receiver depth agrees with this pixel's (the image's alpha): a texel of another surface, or one nothing was traced for (alpha 0), has no weight.
 // The term is image x Fresnel x the class gain x the smoothness ramp x the strength. The colour is in the target's own units, as colour_post, so no exposure is applied.
@@ -107,13 +108,14 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const float3 n = g_normal.xyz;
   const float nov = saturate(dot(n, pc * (-1.0f / length(pc))));
-  float3 f0 = float3(0.04f, 0.04f, 0.04f);
-  if (surface.cls == uint(GB_CLASS_METAL)) {
+  float3 albedo = float3(0.0f, 0.0f, 0.0f);   // RT2's albedo, read for a metal only (its F0)
+  bool have_albedo = false;
+  if (PbrScreenMetalness(surface.cls, surface.metal) > 0.0f) {
     const float4 rt2 = SsrRt2At(p);
-    f0 = (rt2.x + rt2.y + rt2.z) > 0.0f ? GbAlbedoDecode(rt2.xyz) : float3(0.6f, 0.6f, 0.6f);
+    have_albedo = (rt2.x + rt2.y + rt2.z) > 0.0f;
+    albedo = GbAlbedoDecode(rt2.xyz);
   }
-  const float2 ab = SsrEnvBrdf(1.0f - smoothness, nov);
-  const float3 fresnel = saturate(f0 * ab.x + ab.y);
+  const float3 fresnel = SsrFresnel(surface.cls, surface.metal, albedo, have_albedo, smoothness, nov, SsrPbr());   // PBR level 1C: ssr_common.hlsli (mcla_gpu_pbr 0: the first version's, F0 0.04 and a metal's albedo through the environment BRDF)
 
   // the accumulated image at the pixel's place: four texels, bilinear x agreement of the receiver's depth
   float3 sum = float3(0.0f, 0.0f, 0.0f);

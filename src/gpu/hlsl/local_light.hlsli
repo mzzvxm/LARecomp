@@ -11,6 +11,7 @@
 #define LARECOMP_LOCAL_LIGHT_HLSLI
 
 #include "light_laws.hlsli"
+#include "pbr_brdf.hlsli"
 
 // ---- the buffer (local_lights_rules.h PassHeader, kLightsOffset) -----------------------------------------------------------------------------
 
@@ -63,8 +64,9 @@
 #define LP_PUSH_LATE_REACH 1
 #define LP_PUSH_FULL_CONTACT 2
 #define LP_PUSH_NO_CONTACT 4
-#define LP_PUSH_FAR_DEPTH_SHIFT 3
+#define LP_PUSH_FAR_DEPTH_SHIFT 4
 #define LP_PUSH_REACH_MASK (1u << 31)
+#define LP_PUSH_NO_PBR 8
 
 // ---- the street lamps' table (local_lights_rules.h kLampOffset; lamp_shadow_frame.h GpuLampTable) --------------------------------------------------
 // After the headlights' table: a 32 byte header (uint count, atlas bindless slot, atlas width, atlas height, layers of entries 0..15, layers of entries 16..31, two reserved), then twenty 96 byte views
@@ -167,6 +169,73 @@ float3 LpPixelLight(LlLight l, LpGlobals g, float3 world, float3 normal, float3 
   float night = (l.law == LL_LAW_HEADLIGHT) ? 1.0f : g.night;
   float factor = scale * lit * night * g.gain * g.exposure * LpOcclusion(g.occ, world.y);
   return albedo * l.color * factor;
+}
+
+// ---- PBR level 1: the light model of the lights the pass owns (hlsl/pbr_brdf.hlsli, perf/PBR.md 1.2 to 1.5) -----------------------------------------------------------------------------
+
+// What the G-buffer says a surface is made of: RT3's smoothness, class and metal flag as the model's roughness, metalness and F0; `on` is 0 for the first model (LP_PUSH_NO_PBR). A frame
+// with no RT3 (no material plane) uses LP_DEFAULT_SMOOTHNESS (gbuffer_material.h DefaultSmoothness(kWorld)) and the class 1 (a world surface: no metal, F0 0.04).
+#define LP_DEFAULT_SMOOTHNESS 0.15f
+#define LP_CLASS_DEFAULT 1
+struct LpMaterial {
+  float roughness;
+  float metalness;
+  float f0;
+  float on;
+};
+
+LpMaterial LpMakeMaterial(float smoothness, uint surface_class, bool metal_flag, bool pbr_on) {
+  LpMaterial m;
+  m.roughness = PbrRoughnessFromSmoothness(smoothness);
+  m.metalness = PbrMetalOfScreen(surface_class, metal_flag);
+  m.f0 = PbrF0OfClass(surface_class);
+  m.on = pbr_on ? 1.0f : 0.0f;
+  return m;
+}
+
+// Whether the model shades this light: not for the first model, and not for a lamp the GAME lights (its grid has added its own diffuse and Blinn-Phong highlight: the pass only takes the shadowed
+// share of that diffuse term away, which must be the first model's, or it would take away more than the game put there).
+bool LpUsesPbr(LlLight l, LpMaterial m) {
+  return m.on > 0.5f && (l.flags & LL_FLAG_GAME_LIT) == 0u;
+}
+
+// How the law faces the surface: the term's own N.L (a street lamp's, a police and neon light's: saturate(N.L)), or the headlight's wrap, the factor LlLightScale holds inside `scale`.
+float LpFacing(LlLight l, float3 normal, float3 to_light, float len2) {
+  float nd = dot(normal, to_light) / sqrt(len2);
+  if (l.law == LL_LAW_HEADLIGHT) {
+    return saturate(LL_SURFACE_WRAP + (1.0f - LL_SURFACE_WRAP) * nd);
+  }
+  return saturate(nd);
+}
+
+// The light one light adds to one pixel under the model (local_lights_rules.h PixelLightPbr is the twin). The law's `scale` is the irradiance at normal incidence times the facing factor: dividing
+// the facing out gives the irradiance, which is what the lobes take (pi x colour x irradiance x the units is the model's radiance: a Lambert surface then returns albedo x colour x scale, the first
+// model); the diffuse lobe keeps the law's own facing (the headlight's wrap), the highlight takes the lobe's N.L and the light's size (PbrLightRadius of the source).
+float3 LpPixelLightPbr(LlLight l, LpGlobals g, float3 world, float3 normal, float3 albedo, float lit, LpMaterial mat) {
+  float scale = LlLightScale(l, world, normal, 1.0f);
+  float3 to_light = l.pos - world;
+  float len2 = dot(to_light, to_light);
+  float3 to_eye = g.position - world;
+  float eye2 = dot(to_eye, to_eye);
+  if (!(scale > 0.0f) || !(len2 > 1.0e-6f) || !(eye2 > 1.0e-8f)) {
+    return float3(0.0f, 0.0f, 0.0f);
+  }
+  float facing = LpFacing(l, normal, to_light, len2);
+  float irradiance = scale / max(facing, 1.0e-4f);
+  float night = (l.law == LL_LAW_HEADLIGHT) ? 1.0f : g.night;
+  float k = irradiance * lit * night * g.gain * g.exposure * LpOcclusion(g.occ, world.y);
+  PbrSurface s = PbrMakeSurface(normal, albedo, mat.roughness, mat.metalness, mat.f0);
+  PbrSphereLobes o = PbrSphereLightLobes(s, to_eye * (1.0f / sqrt(eye2)), to_light, PbrLightRadius(l.source));
+  float3 radiance = l.color * (kPbrPi * k);
+  return (o.diffuse * facing + o.specular) * radiance;
+}
+
+// What one light adds at a pixel: the model's, or the first model's where the model does not shade the light.
+float3 LpLightAt(LlLight l, LpGlobals g, float3 world, float3 normal, float3 albedo, float lit, LpMaterial mat) {
+  if (LpUsesPbr(l, mat)) {
+    return LpPixelLightPbr(l, g, world, normal, albedo, lit, mat);
+  }
+  return LpPixelLight(l, g, world, normal, albedo, lit);
 }
 
 // ---- GB-NEON-BLEED: a neon light does not shine through the car that is lit -----------------------------------------------------------------

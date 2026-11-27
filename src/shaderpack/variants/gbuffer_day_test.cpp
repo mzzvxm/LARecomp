@@ -102,7 +102,7 @@ std::string WithoutDayStage(std::string text, std::string helper, const sp::GBuf
   };
   while (!helper.empty() && (helper.back() == '\n' || helper.back() == '\r' || helper.back() == ' ' || helper.back() == '\t')) helper.pop_back();
   const std::string no_cr = LfOnly(helper);
-  cut("the second, third and fourth outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3");
+  cut("the second, third and fourth outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float4 oC3 : SV_Target3");
   constexpr std::string_view kCamRow = "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)";
   const size_t begin = text.find("\n// G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants)");
   const size_t cam = text.find(kCamRow);
@@ -172,7 +172,7 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
     "float GbMaterialLit(uint word) { return 1.0f; }\n"
-    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
+    "float4 GbMaterialRt3(uint word) { return float4(0.0f, 0.0f, 0.0f, 0.0f); }\n"
     "#define GB_MODE_WRITE_ALBEDO 2\n"
     "#define GB_MODE_WRITE_MATERIAL 4\n"
     "float3 GbWorldPoint(float4 ray, float4 q, float px, float py, float w) { return ray.xyz; }\n"
@@ -213,7 +213,7 @@ void CheckPixelFixture() {
     const sp::VariantTransformResult r = sp::TransformGBufferDayHlsl(shader, kPixelFixture, kHelper);
     Check(r.ok && !r.skip && r.error.empty(), std::string(name) + ": the fixture transforms: " + r.error);
     if (!r.ok) continue;
-    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float4 oC3 : SV_Target3") == 1,
           std::string(name) + ": the second, third and fourth outputs follow the colour output");
     Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
               Count(r.hlsl, "float4 g_GBufferCam : packoffset(c40);") == 1,
@@ -259,8 +259,8 @@ void CheckPixelFixture() {
     }
     // RT3: the word's bytes for every shader that is not a card (with an albedo or without: the class and the smoothness are the draw's), the no data code for the cards; after RT2's
     {
-      Check(Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == (masked ? 0u : 1u) &&
-                r.hlsl.find("oC3 = float2(0.0f, 0.0f);") > r.hlsl.find("oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"),
+      Check(Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 && Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == (masked ? 0u : 1u) &&
+                r.hlsl.find("oC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);") > r.hlsl.find("oC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);"),
             std::string(name) + ": RT3: one output, the no data write, " + (masked ? "no word (a card)" : "the material word's bytes under the mode bit") + ", after RT2's");
     }
     const std::string diff = FirstDifference(WithoutDayStage(r.hlsl, kHelper, *row, kPixelFixture), LfOnly(kPixelFixture));
@@ -400,7 +400,7 @@ void CheckTable() {
 }
 
 void CheckDefinitions() {
-  Check(sp::kGBufferDayVersion == 3, "the day stage's version is 3 (RT3: the smoothness, the class and the flags)");
+  Check(sp::kGBufferDayVersion == 4, "the day stage writes RT3 metalness");
   const sp::VariantDef day = sp::MakeGBufferDayStageFromText(kHelper);
   Check(day.feature == sp::kFeatureGBuffer && day.name == "gbuffer" && !day.vertex && day.needs_rpf && day.pixel_name_suffixes.size() == 42 && day.input_xxh3 != 0,
         "the day stage is the G-buffer's feature 10, 42 shaders by name, a pixel stage, with the helper in its fingerprint");
@@ -593,7 +593,7 @@ void CheckRetail(const std::filesystem::path& folder, const std::string& helper,
       std::printf("  %-44s %s\n", std::string(row.name).c_str(), row.source == sp::GBufferDaySource::kMasked ? "[card: no data in every plane]" : albedo.found ? ("[albedo " + albedo.detail + "]").c_str() : ("[no albedo: " + albedo.why_not + "]").c_str());
     }
     // RT3: the output once, the no data write once, the word's bytes in every shader but the cards (with an albedo or without)
-    Check(Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = float2(0.0f, 0.0f);") == 1 &&
+    Check(Count(r.hlsl, "oC3 : SV_Target3") == 1 && Count(r.hlsl, "oC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);") == 1 &&
               Count(r.hlsl, "oC3 = GbMaterialRt3(g_GBufferMode.y);") == (row.source == sp::GBufferDaySource::kMasked ? 0u : 1u),
           std::string(row.name) + ": RT3: one output, the no data write, " + (row.source == sp::GBufferDaySource::kMasked ? "no word (a card)" : "the material word's bytes"));
     // the facts the sources stand on, in the retail text

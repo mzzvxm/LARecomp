@@ -1687,6 +1687,7 @@ const ItemDef kImageQualityItems[] = {
 };
 
 const ItemDef kLightItems[] = {
+    NativeOnly(Bool("PM_RxGpuPbr", "mcla_gpu_pbr", "PHYSICALLY BASED LIGHTING: ")),
     Bool("PM_RxNoShadows", "perf_no_shadows", "SUN SHADOWS: ", true),
 #if defined(LARECOMP_HAS_GPU)
     NativeOnly(Str("PM_RxGpuShadowDetail", "mcla_gpu_shadow_resolution", "SUN SHADOW DETAIL: ",

@@ -50,6 +50,13 @@
 // UNITS. The frame's colours (the sun, the ambient) are in the paint's units (a shader's output); the picture is in those times 2^exp_bias (CityHitParams::units, as the car pass's g_push.up.w).
 // The shaded colour is in the picture's units. The frame's own gain row (the cars' calibration) is NOT applied: a hit on the city has the class gains.
 //
+// PBR LEVEL 1 (task PBR-1B; the frame's RT_HIT_FRAME_PBR, the debug switch mcla_gpu_pbr): with the flag the surface is lit by the SHARED physically based model (hlsl/pbr_brdf.hlsli through hlsl/pbr_rt_hit.hlsli)
+// instead of "albedo x light by the class's shares plus Schlick's sky": a PbrSurface from the material (roughness from its smoothness, metalness from its metal byte and its class, the class's F0), the
+// sun through PbrDirect, the lamps through PbrDirect from their mean direction, the ambient (and the emitters', the field's feedback) through PbrEnvDiffuseWeight, the sky/environment reflection through
+// PbrEnvSpecularWeight. REFLECT mode does all of it; GI mode (a bounce is diffuse transport) takes every light, the sun and the lamps too, through the diffuse weight. Without the flag every line below that is not
+// marked PBR is the model of old, unchanged (the class's gains, Schlick). THE CLASS'S OLD SHARES that still stand in the model: the transmitted share of glass and water (level 1 has no transmission), the share of
+// the sky a class sees (the old specular share: walls between buildings see half of it). Wet roads, tint, occlusion, glow, haze, the units and the cap are not the model's and stay as they were.
+//
 // WHAT THE CONSUMERS STILL NEED (found while writing the library; none of it is in this package):
 //   R1, R2   the car pass's history image holds only vehicle pixels, so the picture for ResolveHit is ScreenShared's colour_post and lin_depth (SS-1), read at the trigger; the player's pixels are
 //            CITY_HIT_SCREEN_REJECT. CityHitTrace's mask is the city's bit with the cars' (CAR_RT_MASK_ALL | 0x80); a city hit is told from a car's by CityHitIsCity(InstanceID).
@@ -68,6 +75,7 @@
 #include "city_hit_common.hlsli"
 #include "rt_hit_common.hlsli"
 #include "nan_guard.hlsli"
+#include "pbr_rt_hit.hlsli"
 
 #ifndef CITY_HIT_BRANCH
 #define CITY_HIT_BRANCH [branch]
@@ -113,7 +121,7 @@
 #define CITY_HIT_CLASS_EMISSIVE 13u
 #define CITY_HIT_CLASS_INTERIOR 14u
 #define CITY_HIT_CLASS_WATER 15u
-#define CITY_HIT_CLASS_COUNT 16u
+#define CITY_HIT_CLASS_COUNT 17u
 
 static const float kCityHitGrazingMin = 0.35;     // N.V below this reads the texture at the level of this (a ray that grazes a wall covers more of it than its width says)
 static const float kCityHitSpecFrom = 0.3;        // a surface smoother than this reflects the sky: weight ((smoothness - from) / (1 - from))^2
@@ -155,8 +163,29 @@ static const uint kCityHitCityMask = 0x80u;        // ... the ray sees the CITY 
 #define CITY_HIT_CENSUS_WORDS 8u
 
 // Per class: the diffuse's share (glass and chrome let most of the light go through or off), the sky reflection's share. Indexed by the G-buffer's class (CITY_HIT_CLASS_*).
-static const float kCityHitDiffuseGain[16] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.5, 0.25, 1.0, 1.0, 1.0, 0.15};
-static const float kCityHitSpecGain[16] = {0.0, 0.5, 1.0, 1.0, 1.0, 0.5, 0.5, 0.3, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.5, 1.0};
+static const float kCityHitDiffuseGain[17] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.1, 0.5, 0.25, 1.0, 1.0, 1.0, 0.15, 1.0};
+static const float kCityHitSpecGain[17] = {0.0, 0.5, 1.0, 1.0, 1.0, 0.5, 0.5, 0.3, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0, 0.5, 1.0, 1.0};
+
+// PBR 1B (the physically based model, RT_HIT_FRAME_PBR): what the model needs of a class besides the material's own smoothness and metal byte. THE ONE PLACE PBR-1 (the metalness from the class) and PBR-2 (the material
+// table) rewire: CityHitPbrMetalness and CityHitPbrF0.
+//   metalness  the class's own, PBR-1's numbers (perf\PBR.md 1.4, PbrMetalOfClass): chrome 1 (F0 = the albedo, no diffuse), the metal class 0.85 (grimy city metal, brushed metal, rotors); the material's metal byte (PBR-2's
+//              table) wins where it is higher (PbrMetalOfWord)
+//   body       the share of the albedo's light a surface keeps: glass and water let most of it through (level 1 has no transmission: level 3); every other class all
+//   F0         the dielectric's reflectance at normal incidence, PBR-1's numbers (PbrF0OfClass): water 0.02, skin 0.028, the rest 0.04
+static const float kCityHitClassMetalness[17] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.85, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+static const float kCityHitClassBody[17] = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.25, 1.0, 1.0, 1.0, 0.15, 1.0};
+static const float kCityHitWaterF0 = 0.02;
+static const float kCityHitSkinF0 = 0.028;
+
+float CityHitPbrMetalness(uint cls, float metalByte)
+{
+    return max(kCityHitClassMetalness[cls], metalByte);
+}
+
+float CityHitPbrF0(uint cls)
+{
+    return cls == CITY_HIT_CLASS_WATER ? kCityHitWaterF0 : (cls == CITY_HIT_CLASS_SKIN ? kCityHitSkinF0 : kCityHitDielectricF0);
+}
 
 // ---- the inputs and results -------------------------------------------------------------------------------------------------------------------
 
@@ -576,6 +605,16 @@ void CityHitCensus(CityHitParams p, uint word, uint value)
 #endif
 }
 
+// PBR 1B: where the light CityHitLamps returned comes from, for the surface's highlight: the unit direction from the point toward the brightness weighted mean of the lamps that lit it (with the shadow flag: toward
+// the one lamp chosen); 0 where it returned no light. Every CityHitLamps call sets it, CityHitShadeHit reads it right after (a pass that does not read it, like the world frame's lamp sums, lets the compiler drop it).
+static float3 gCityHitLampDirection = float3(0.0, 0.0, 0.0);
+
+float3 CityHitLampDirectionOf(float3 weightedSum)
+{
+    const float l2 = dot(weightedSum, weightedSum);
+    return l2 > 1e-12 ? weightedSum * (1.0 / sqrt(l2)) : float3(0.0, 0.0, 0.0);
+}
+
 #if defined(CITY_HIT_LAMP_GRID)
 // Lamp `index` of the world frame's list at a point: row 0 first (the position and the intensity), rows 1 and 2 (the axis, the cone, the colour) only where the lamp reaches the point (the game's reach, where its
 // term is 1 per cent): the same arithmetic as CityHitLampAt over CityHitLampFromRows, a third of the loads for a lamp that does not reach.
@@ -609,6 +648,7 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
     const RtWorld w = RtWorldLoad();
     const float radius = w.lookupM > 0.0 ? w.lookupM : kCityHitLampLookup;
     float3 sum = float3(0.0, 0.0, 0.0);
+    float3 directionSum = float3(0.0, 0.0, 0.0);   // PBR 1B: the lamps' directions by their brightness
     float weightSum = 0.0;
     uint examined = 0u;   // the lamps that reach the hit (the cap's count)
     uint walked = 0u;     // the lamps the cursor passed, those that reach and those that do not
@@ -620,6 +660,7 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
         const CityHitLampEval e = CityHitLampAtIndex(p, w, c.index, position, normal);
         const float luma = CityHitLuma(e.radiance);
         sum += e.radiance;
+        directionSum += e.toLamp * luma;
         weightSum += luma;
         lit += luma > 0.0 ? 1u : 0u;
         examined += e.reaches;
@@ -633,6 +674,7 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
     CityHitCensus(p, CITY_HIT_CENSUS_CAP_COUNT, c.done == 0u ? 1u : 0u);
     CityHitCensus(p, CITY_HIT_CENSUS_CAP_SUM, capSum ? 1u : 0u);
     const float keep = capSum ? kCityHitLampSumCap / weightSum : 1.0;
+    gCityHitLampDirection = CityHitLampDirectionOf(directionSum);
     if ((p.flags & CITY_HIT_P_LAMP_SHADOW) == 0u || !(weightSum > 0.0))
     {
         return sum * keep;
@@ -665,8 +707,10 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
     }
     if (!(weightChosen > 0.0))
     {
+        gCityHitLampDirection = float3(0.0, 0.0, 0.0);
         return float3(0.0, 0.0, 0.0);
     }
+    gCityHitLampDirection = toChosen;
     const float3 origin = position + normal * CityHitLift(position.z);
     const bool blocked = CityHitLampRay(origin, toChosen, max(distanceChosen - kCityHitLampEnd, 0.0), footprint);
     return blocked ? float3(0.0, 0.0, 0.0) : chosen * (keep * weightSum / weightChosen);
@@ -677,14 +721,18 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
 float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footprint)
 {
     float3 sum = float3(0.0, 0.0, 0.0);
+    float3 directionSum = float3(0.0, 0.0, 0.0);   // PBR 1B: the lamps' directions by their brightness
     float weightSum = 0.0;
     CITY_HIT_LOOP
     for (uint i = 0u; i < p.lampCount; ++i)
     {
         const CityHitLampEval e = CityHitLampAt(p, CITY_HIT_LAMP_LOAD(p.lampFirst + i), position, normal);
+        const float luma = CityHitLuma(e.radiance);
         sum += e.radiance;
-        weightSum += CityHitLuma(e.radiance);
+        directionSum += e.toLamp * luma;
+        weightSum += luma;
     }
+    gCityHitLampDirection = CityHitLampDirectionOf(directionSum);
     if ((p.flags & CITY_HIT_P_LAMP_SHADOW) == 0u || !(weightSum > 0.0))
     {
         return sum;
@@ -711,8 +759,10 @@ float3 CityHitLamps(CityHitParams p, float3 position, float3 normal, float footp
     }
     if (!(weightChosen > 0.0))
     {
+        gCityHitLampDirection = float3(0.0, 0.0, 0.0);
         return float3(0.0, 0.0, 0.0);
     }
+    gCityHitLampDirection = toChosen;
     const float3 origin = position + normal * CityHitLift(position.z);
     const bool blocked = CityHitLampRay(origin, toChosen, max(distanceChosen - kCityHitLampEnd, 0.0), footprint);
     return blocked ? float3(0.0, 0.0, 0.0) : chosen * (weightSum / weightChosen);
@@ -869,18 +919,30 @@ CityHitShaded CityHitShadeHit(CityHitParams p, RtHitFrame f, CityHitRay ray, Cit
     {
         visible = CityHitSunVisible(p, f, hit, normal, toSun, ray.footprint);
     }
-    light += f.sun * (ndl * visible);
-#if defined(CITY_HIT_LAMP_GRID)
+    // PBR 1B: keep the lamp contribution separate from ambient in REFLECT mode so rounding against ambient cannot erase weak lamp channels before PbrDirect.
+    const bool pbr = (f.flags & RT_HIT_FRAME_PBR) != 0u;
+    const bool pbrDirect = pbr && p.mode == CITY_HIT_MODE_REFLECT;
+    float3 lampLight = float3(0.0, 0.0, 0.0);
+    gCityHitLampDirection = float3(0.0, 0.0, 0.0);
     CITY_HIT_BRANCH
-    if ((p.flags & CITY_HIT_P_LAMPS) != 0u && p.lampFactor > 0.0)
+    if (!pbrDirect)
     {
-        light += CityHitLamps(p, hit, normal, ray.footprint);
+        light += f.sun * (ndl * visible);
     }
-#elif defined(CITY_HIT_LAMP_LOAD)
+#if defined(CITY_HIT_LAMP_GRID) || defined(CITY_HIT_LAMP_LOAD)
+    const bool lampsEnabled = (p.flags & CITY_HIT_P_LAMPS) != 0u && p.lampFactor > 0.0;
     CITY_HIT_BRANCH
-    if ((p.flags & CITY_HIT_P_LAMPS) != 0u && p.lampCount != 0u && p.lampFactor > 0.0)
+#if defined(CITY_HIT_LAMP_GRID)
+    if (lampsEnabled)
+#else
+    if (lampsEnabled && p.lampCount != 0u)
+#endif
     {
-        light += CityHitLamps(p, hit, normal, ray.footprint);
+        const float3 lamps = CityHitLamps(p, hit, normal, ray.footprint);
+        if (pbrDirect)
+            lampLight = lamps;
+        else
+            light += lamps;
     }
 #endif
 #if defined(CITY_HIT_EMITTER_RADIANCE)
@@ -903,22 +965,61 @@ CityHitShaded CityHitShadeHit(CityHitParams p, RtHitFrame f, CityHitRay ray, Cit
     const uint cls = min(m.cls, CITY_HIT_CLASS_COUNT - 1u);
     float3 result = albedo * light * (kCityHitDiffuseGain[cls] * (1.0 - metal));
     CITY_HIT_BRANCH
-    if (p.mode == CITY_HIT_MODE_REFLECT)
+    if (pbr)
     {
-        const float weight = CityHitSpecWeight(m.smoothness) * kCityHitSpecGain[cls];
+        // CHECK: Compare PBR on/off in city reflections, including opposed lamps and window glints at 720p and 4K.
+        // PBR 1B: the same hit through the shared model. The surface: the material's smoothness as roughness, the metalness of the class or of the material's byte, the class's F0, the albedo by the body's share.
+        const PbrSurface surface = PbrMakeSurface(normal, albedo * kCityHitClassBody[cls], PbrRoughnessFromSmoothness(m.smoothness), CityHitPbrMetalness(cls, metal), CityHitPbrF0(cls));
+        const float3 toViewer = -ray.direction;
+        result = PbrRtDiffuse(surface, nv, light);   // REFLECT: the ambient (and the emitters'); GI: everything, the sun and the lamps too
         CITY_HIT_BRANCH
-        if (weight > 0.0)
+        if (pbrDirect)
         {
-            const float3 reflected = reflect(ray.direction, normal);
-            const float lod = (1.0 - m.smoothness) * kCityHitEnvLodSmooth + log2(1.0 + kRtHitConeLodScale * ray.footprint / max(2.0 * ray.t, 1e-3));
-            float3 env = f.ambient * (0.6 + 0.4 * dot(reflected, f.axisY));
-            if ((f.flags & RT_HIT_FRAME_ENV) != 0u)
+            CITY_HIT_BRANCH
+            if (ndl > 0.0)
             {
-                env = RtHitEnvAt(f, reflected, lod);
+                result += PbrRtDirect(surface, toViewer, toSun, f.sun * visible);
             }
-            const float3 f0 = lerp(float3(kCityHitDielectricF0, kCityHitDielectricF0, kCityHitDielectricF0), albedo, metal);
-            const float3 fresnel = float3(CityHitSchlick(f0.x, nv), CityHitSchlick(f0.y, nv), CityHitSchlick(f0.z, nv));
-            result = result * (1.0 - weight * fresnel) + env * fresnel * (weight * f.specGain);
+            CITY_HIT_BRANCH
+            if (dot(lampLight, lampLight) > 0.0)
+            {
+                result += PbrRtDirectIrradiance(surface, toViewer, gCityHitLampDirection, lampLight);
+            }
+            const float share = kCityHitSpecGain[cls];
+            CITY_HIT_BRANCH
+            if (share > 0.0)
+            {
+                const float3 reflected = reflect(ray.direction, normal);
+                const float lod = surface.roughness * kCityHitEnvLodSmooth + log2(1.0 + kRtHitConeLodScale * ray.footprint / max(2.0 * ray.t, 1e-3));
+                float3 env = f.ambient * (0.6 + 0.4 * dot(reflected, f.axisY));
+                if ((f.flags & RT_HIT_FRAME_ENV) != 0u)
+                {
+                    env = RtHitEnvAt(f, reflected, lod);
+                }
+                result += PbrRtReflection(surface, nv, env) * (share * f.specGain);
+            }
+        }
+    }
+    else
+    {
+        CITY_HIT_BRANCH
+        if (p.mode == CITY_HIT_MODE_REFLECT)
+        {
+            const float weight = CityHitSpecWeight(m.smoothness) * kCityHitSpecGain[cls];
+            CITY_HIT_BRANCH
+            if (weight > 0.0)
+            {
+                const float3 reflected = reflect(ray.direction, normal);
+                const float lod = (1.0 - m.smoothness) * kCityHitEnvLodSmooth + log2(1.0 + kRtHitConeLodScale * ray.footprint / max(2.0 * ray.t, 1e-3));
+                float3 env = f.ambient * (0.6 + 0.4 * dot(reflected, f.axisY));
+                if ((f.flags & RT_HIT_FRAME_ENV) != 0u)
+                {
+                    env = RtHitEnvAt(f, reflected, lod);
+                }
+                const float3 f0 = lerp(float3(kCityHitDielectricF0, kCityHitDielectricF0, kCityHitDielectricF0), albedo, metal);
+                const float3 fresnel = float3(CityHitSchlick(f0.x, nv), CityHitSchlick(f0.y, nv), CityHitSchlick(f0.z, nv));
+                result = result * (1.0 - weight * fresnel) + env * fresnel * (weight * f.specGain);
+            }
         }
     }
     float glow = 0.0;

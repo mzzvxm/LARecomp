@@ -19,6 +19,7 @@
 #include "host_precache.h"
 #include "host_shaders.h"
 #include "pass_timing.h"
+#include "pbr_screen_switch.h"
 #include "texture_bytes.h"
 
 namespace mcla::gpu {
@@ -301,6 +302,7 @@ bool RrGuides::Record(plume::RenderCommandList* list, const Inputs& in) {
   }
   push.right[3] = in.tan_x;
   push.up[3] = in.tan_y;
+  push.forward[3] = rr_guides::FlagsWord(pbr_screen::Enabled());   // PBR level 1C: the guides through the shared physically based model (mcla_gpu_pbr)
   for (int i = 0; i < 4; ++i) {
     push.lin[i] = in.lin[i];
   }

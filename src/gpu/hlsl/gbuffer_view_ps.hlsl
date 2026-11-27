@@ -10,6 +10,8 @@
 //   view 4  the class as a colour (a hue per class; a pixel that has a normal and no RT3 is dark green: written, class unknown); black: no data
 //   view 5  coverage: white where RT1 holds a normal, black where it does not (the "missing pixels" picture of the survey's run plan R2)
 //   view 6  the lit weight (RT2.a) as a grey
+//   view 8  the metals: white where the screen consumers see a metal (the class chrome or metal, or the metal flag, RT3.g's bit 4: perf/PBR.md 1.4), black elsewhere (PBR-2)
+//   view 9  the roughness (1 - RT3.r, the perceptual roughness) as a grey: white chalk, black mirror (PBR-2)
 //   view 7  the missing pixels: GREEN where RT1 holds a normal, RED where the main view's depth holds geometry (stored depth above 0: the guest's depth is 1 near, 0 far) and RT1
 //           holds no data (a shader with no variant yet, a mirror's window, a masked draw), black where there is neither (the sky). The survey's R2 picture: which families still have
 //           no data.
@@ -67,7 +69,7 @@ float3 ClassColour(uint cls) {
 float4 main(float4 position : SV_Position) : SV_Target {
   const int2 p = int2(position.xy);
   const uint view = g_push.slots.w;
-  if (view == 8u) {  // capture class IDs into a single-sample R8_UNORM target
+  if (view == 0x100u) {  // capture class IDs into a single-sample R8_UNORM target
     const uint material = uint(LoadPlane(g_push.slots.z, p).y * 255.0f + 0.5f);
     const bool sky = g_push.info.z != 0xFFFFFFFFu &&
                      g_textures[g_push.info.z].Load(int3(p, 0)).x == 0.0f;
@@ -106,13 +108,19 @@ float4 main(float4 position : SV_Position) : SV_Target {
     if (have_albedo) {
       colour = LoadPlane(g_push.slots.y, p).aaa;
     }
-  } else if (view == 3u || view == 4u) {
+  } else if (view == 3u || view == 4u || view == 8u || view == 9u) {
     if (have_material) {
-      const float2 rt3 = LoadPlane(g_push.slots.z, p).xy;
+      const float3 rt3 = LoadPlane(g_push.slots.z, p).xyz;
       if (view == 3u) {
-        colour = GbRt3Smoothness(rt3).xxx;
+        colour = GbRt3Smoothness(rt3.xy).xxx;
+      } else if (view == 8u) {
+        const uint cls = GbRt3Class(rt3.xy);
+        const bool flag = GbRt3MetalFlag(rt3);
+        colour = (flag || cls == uint(GB_CLASS_CHROME) || cls == uint(GB_CLASS_METAL)) ? float3(1.0f, 1.0f, 1.0f) : float3(0.0f, 0.0f, 0.0f);
+      } else if (view == 9u) {
+        colour = (1.0f - GbRt3Smoothness(rt3.xy)).xxx;
       } else {
-        colour = ClassColour(GbRt3Class(rt3));
+        colour = ClassColour(GbRt3Class(rt3.xy));
       }
     } else if (view == 4u && valid) {
       colour = float3(0.0f, 0.3f, 0.0f);

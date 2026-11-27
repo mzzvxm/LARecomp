@@ -43,7 +43,7 @@ uint SsrHitClass(int2 p, float z, bool vehicle) {
     const uint pick = SsrPickInBlock(SsrLinearAt(a), SsrLinearAt(b), SsrLinearAt(c), SsrLinearAt(d), z);
     p = pick == 0u ? a : (pick == 1u ? b : (pick == 2u ? c : d));
   }
-  const float2 material = SsrRt3At(p);
+  const float2 material = SsrRt3At(p).xy;
   return ReflHitScreen(GbRt3Class(material), GbRt3Flags(material), vehicle);
 }
 #endif
@@ -110,7 +110,7 @@ float4 SsrTraceBody(float4 position) {
   const float3 pc = SsrViewPos(float(pix.x) + 0.5f, float(pix.y) + 0.5f, float(ssr.x), float(ssr.y), z_block, tan_x, tan_y);
   const float3 to_camera = pc * (-1.0f / length(pc));
   const float3 n = SsrReceiverNormal(pix, texel, surface.cls, pc, to_camera);
-  const float alpha = SsrAlphaOfSmooth(smoothness);
+  const float alpha = SsrAlpha(smoothness, SsrPbr());
 
   // the walk's numbers
   SsrTraceParams tp = (SsrTraceParams)0;

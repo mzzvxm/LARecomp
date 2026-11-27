@@ -17,7 +17,7 @@
 //     pixels. Two sectors that use one shader instance and one texture name can therefore have two materials (the key is part of a material's identity, hit_material.h).
 //   * the average colour of a hit's texture is H2's (`average`), the mean of the picture.
 //
-// CHECK (H2's, still open): the key is the XXH3-64 of the entry's base level STORAGE bytes as the guest has them; whether the renderer's texture hash (textures.h ContentHashOf, the number
+// CHECK: the key is the XXH3-64 of the entry's base level STORAGE bytes as the guest has them; whether the renderer's texture hash (textures.h ContentHashOf, the number
 // GB-F2's census logs) is taken over the same bytes is not proven here: the first game run's census and this file's keys must be compared (a census line's hash against a material's key).
 //
 // Compiled only where texture_set.h is (the two packages are on separate branches until they are merged: __has_include); LARECOMP_HIT_HAS_TEXTURE_SET says so.

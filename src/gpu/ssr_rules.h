@@ -69,7 +69,7 @@ inline constexpr LevelNumbers NumbersOf(Level level) {
   }
   return {0, 0, 0.0f};
 }
-inline constexpr uint32_t kMaxRays = 2;
+inline constexpr uint32_t kMaxRays = 2;          // the push keeps rays - 1 in ONE bit (kRaysShift): bit 19 is the PBR switch's (kPbrShift)
 inline constexpr uint32_t kMaxIterations = 255;   // the push's 8 bits
 
 // ---------------------------------------------------------------------------
@@ -417,12 +417,15 @@ inline constexpr uint32_t kFlagStub = 8;
 inline constexpr uint32_t kFlagHistory = 16;
 inline constexpr uint32_t kFlagCamera = 32;
 inline constexpr uint32_t kFlagShift = 12;
-inline constexpr uint32_t kRaysShift = 18;
+inline constexpr uint32_t kRaysShift = 18;      // rays - 1, one bit (kMaxRays is 2)
+// PBR level 1C: bit 19 of the flags word, the shared physically based model (mcla_gpu_pbr; hlsl/ssr_common.hlsli SSR_PBR_SHIFT, SsrRoughness, SsrFresnel); 0 the passes' old maths.
+inline constexpr uint32_t kPbrShift = 19;
 inline constexpr uint32_t kViewShift = 20;
 inline constexpr uint32_t kStableTrace = 1u << kViewShift;  // the trace has no debug view
 inline constexpr uint32_t kIterShift = 24;
 inline constexpr uint32_t kNoSlot16 = 0xFFFFu;
 }  // namespace push
+static_assert(kMaxRays - 1 < (1u << (push::kPbrShift - push::kRaysShift)), "rays - 1 fits the bits below the PBR switch's");
 
 struct Push {
   std::array<uint32_t, push::kWords> w{};
@@ -465,6 +468,7 @@ struct FlagsIn {
   bool stub = false;
   bool history = false;
   bool camera = false;
+  bool pbr = false;     // PBR level 1C: the shared physically based model is on (mcla_gpu_pbr)
   uint32_t rays = 1;
   uint32_t view = 0;
   uint32_t max_iterations = 0;
@@ -473,7 +477,7 @@ constexpr uint32_t PackFlags(const FlagsIn& f) {
   uint32_t bits = (f.ms ? push::kFlagMs : 0u) | (f.hz1 ? push::kFlagHz : 0u) | (f.colour_half ? push::kFlagColourHalf : 0u) | (f.stub ? push::kFlagStub : 0u) |
                   (f.history ? push::kFlagHistory : 0u) | (f.camera ? push::kFlagCamera : 0u);
   const uint32_t rays = f.rays < 1 ? 1 : (f.rays > kMaxRays ? kMaxRays : f.rays);
-  return (f.sample0 & 15u) | ((HizLevelsUsed(f.hiz_levels) & 15u) << 4) | ((ColourLevelsUsed(f.colour_levels) & 15u) << 8) | (bits << push::kFlagShift) | ((rays - 1) << push::kRaysShift) |
+  return (f.sample0 & 15u) | ((HizLevelsUsed(f.hiz_levels) & 15u) << 4) | ((ColourLevelsUsed(f.colour_levels) & 15u) << 8) | (bits << push::kFlagShift) | ((rays - 1) << push::kRaysShift) | (f.pbr ? 1u << push::kPbrShift : 0u) |
          ((f.view & 15u) << push::kViewShift) | ((f.max_iterations > kMaxIterations ? kMaxIterations : f.max_iterations) << push::kIterShift);
 }
 

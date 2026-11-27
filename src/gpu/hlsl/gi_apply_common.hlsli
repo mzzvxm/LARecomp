@@ -34,6 +34,7 @@
 #define GIA_FLAG_VISIBILITY 2u
 #define GIA_FLAG_QUARTER_LOOKUP 4u
 #define GIA_FLAG_FAST_LOOKUP_APPLY 8u
+#define GIA_FLAG_PBR 16u
 #define GIA_NO_SLOT 0xFFFFFFFFu
 
 static const float kGiaQuarterSupport = 0.25f;

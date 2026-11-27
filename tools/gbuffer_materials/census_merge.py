@@ -161,8 +161,9 @@ def fill_hashes_from_dump(textures, dump):
     return filled
 
 
-def records(textures, names=None):
-    """One dict per texture, most draws first."""
+def records(textures, names=None, aliases=None):
+    """One dict per texture, most draws first. `aliases` ({hash: name}, the city name list): an unnamed texture whose hash it names shows that name in the `name` column, so that the rules'
+    name conditions reach it; its key stays the content hash (a city file name is not unique across the sectors' dictionaries)."""
     out = []
     for tex in textures.values():
         by_group = defaultdict(int)
@@ -175,7 +176,7 @@ def records(textures, names=None):
         word = tex.pairs[main_ps][2]
         w = g.split_word(word)
         out.append({
-            "key": tex.key(), "dictionary": tex.dictionary, "name": tex.name, "hash": ("%016X" % tex.hash) if tex.hash else "-",
+            "key": tex.key(), "dictionary": tex.dictionary, "name": (aliases.get(tex.hash) if (aliases and not tex.named and tex.hash) else None) or tex.name, "hash": ("%016X" % tex.hash) if tex.hash else "-",
             "width": tex.width, "height": tex.height, "format": tex.fmt, "draws": tex.draws, "indices": tex.indices, "rowdraws": tex.rowdraws,
             "group": group, "groups": ",".join("%s:%d" % (k, v) for k, v in sorted(by_group.items(), key=lambda kv: (-kv[1], kv[0]))),
             "class": g.class_name(w.cls), "smooth": w.smooth, "flags": w.flags, "lit": w.lit, "word": "%08X" % word,
@@ -275,6 +276,7 @@ def main(argv=None):
     ap.add_argument("--out", help="the census table to write (census.tsv)")
     ap.add_argument("--shader-names", help="mcla_gbuffer_shader_names.v1.tsv, next to the shader pack: joins pixel shader identities to groups")
     ap.add_argument("--dump-listing", help="a texture dump folder (<mods>\\textures_dump): only the file names are read; gives the hash of named textures the census saw without one")
+    ap.add_argument("--names", help="city_texture_names.tsv (the hit data build's name list, LARECOMP_CITY_TEXTURE_NAMES=1): names the unnamed textures whose content hash it knows, for the rules' name conditions")
     ap.add_argument("--top", type=int, default=40, help="how many of the busiest textures the summary lists")
     a = ap.parse_args(argv)
     names = g.load_shader_names(a.shader_names) if a.shader_names else None
@@ -283,7 +285,12 @@ def main(argv=None):
     if dump is not None:
         filled = fill_hashes_from_dump(textures, dump)
         print("dump listing: %d textures, %d named census textures got their hash from it" % (len(dump), filled))
-    rows = records(textures, names)
+    aliases = g.load_name_list(a.names) if a.names else None
+    rows = records(textures, names, aliases)
+    if aliases is not None:
+        unnamed_before = sum(1 for t in textures.values() if not t.named)
+        named_now = sum(1 for t in textures.values() if not t.named and t.hash in aliases)
+        print("city name list: %d names; %d of the census's %d unnamed textures got a name from it (the rest: no hash, or a hash the list does not have)" % (len(aliases), named_now, unnamed_before))
     if a.out:
         write_tsv(a.out, rows)
         print("wrote %s (%d textures)" % (a.out, len(rows)))

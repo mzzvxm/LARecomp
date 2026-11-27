@@ -318,9 +318,9 @@ constexpr bool SidecarAffordable(uint32_t planes, uint32_t width, uint32_t heigh
 // write the sidecar bind it, and the pixels of the others keep what an earlier draw of the window wrote there (see Why and PlaneMode: that is the one inexactness of the writers only way).
 //
 // WHAT THAT MEANS FOR THE THREE PLANES (GB-W2: RT3 is the stage's third plane): with one blend state, every sidecar target takes RT0's blend and RT0's write mask, so (1) a writer is
-// carried only when RT0's mask holds every channel any plane has (ChannelsNeeded: the albedo's alpha, the lit weight, makes it 0xF; RT3's R and G add nothing to that), the draws
+// carried only when RT0's mask holds every channel any plane has (ChannelsNeeded: the albedo's alpha, the lit weight, makes it 0xF; RT3 uses the same mask), the draws
 // with an RGB mask are left to the game's own shader (Why::kMaskedNarrowMask) and keep the planes' old data under them; (2) the draws that must not write the sidecar (blended glass, a
-// shader with no variant) cannot bind it at all. With #15 each plane has its own mask (BlendFor(mode, plane): RT1 and RT3 R and G, RT2 R, G, B and A), the narrow mask rule goes away
+// shader with no variant) cannot bind it at all. With #15 each plane has its own mask (BlendFor(mode, plane): RT1 R and G, RT2 and RT3 RGBA), the narrow mask rule goes away
 // and the clears and masks work as on Vulkan: the kMaskedNarrowMask count falls to 0 and `attach=auto` carries the non writers.
 // CHECK: Vulkan's per target blend states with the clear (ZERO / ZERO) and the mask (write mask 0) on a pixel shader that writes no output at that slot, and D3D12's with the fix: not run.
 inline constexpr bool kD3d12PerTargetBlend = true;   // the pin has Plume #15 (5d60b70, merged as 2998422): per-target blend + mask on D3D12
@@ -880,11 +880,14 @@ inline uint32_t MaterialFlagsOf(uint32_t word) { return FlagsOfByte(MaterialRt3C
 // The word with more flags (kMaterialFlag*) set: a draw whose pixel shader is the alpha test twin adds kMaterialFlagAlphaCovered.
 inline uint32_t MaterialWordWithFlags(uint32_t word, uint32_t flags) { return word | ((flags & 7u) << kMaterialFlagsShift); }
 
-// The metalness byte: bits 24..31 of the word, which the interface keeps for it (gbuffer_types.h "reserved"): 0 dielectric .. 255 metal. No plane carries it yet (RT3 is the smoothness and the
-// class: kMetal and kChrome mean F0 = albedo, which is what a consumer reads today); the per-texture table (gbuffer_materials.h) fills it so that the day a plane takes it the data is there.
+// The metalness byte: bits 24..31 of the word, which the interface keeps for it (gbuffer_types.h "reserved"): 0 dielectric .. 255 metal. PBR-2 fills it for every draw: the group's family
+// (gbuffer_material.h FamilyRow, DefaultMetal) and then the texture's row (gbuffer_materials.h). RT3 preserves that byte in its blue channel. For legacy shading, kMetal and kChrome mean F0 =
+// albedo, which is what a consumer reads; perf/PBR.md section 2 has the contract (the screen consumers read the class and a metal flag, the ray traced ones this byte).
 // Every reader of the word masks its own byte (hlsl/gbuffer_common.hlsli), so a word with this byte set reads the same everywhere else.
 inline constexpr uint32_t kMaterialMetalShift = 24;
 inline uint32_t MaterialMetalByte(uint32_t word) { return (word >> kMaterialMetalShift) & 255u; }
 inline uint32_t MaterialWordWithMetal(uint32_t word, float metal) { return (word & 0x00FFFFFFu) | (uint32_t(Saturate(metal) * 255.0f + 0.5f) << kMaterialMetalShift); }
+// The same with the byte itself (the table's records and rows hold the unorm8, not a float).
+inline uint32_t MaterialWordWithMetalByte(uint32_t word, uint32_t metal_byte) { return (word & 0x00FFFFFFu) | ((metal_byte & 255u) << kMaterialMetalShift); }
 
 }  // namespace mcla::gpu::gbuffer

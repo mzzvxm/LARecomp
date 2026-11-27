@@ -2,6 +2,8 @@
 
 #include "gi_pixel.h"
 
+#include "pbr_screen_switch.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -591,6 +593,7 @@ const HostImage* GiPixel::RecordRegen(plume::RenderCommandList* list) {
   push.jitter[0] = in_.jitter[0];
   push.jitter[1] = in_.jitter[1];
   push.have_motion = regen_motion_;
+  push.pbr = pbr_screen::Enabled();
   if (regen_motion_) rules::MotionRows(pose_, prev_pose_, push.motion);
   // and check half-size jitter and the material boundaries on RX 9000.
   if (!regen_pass_.RecordBounce(list, push, signal_, depth_[parity_], hit_)) return nullptr;

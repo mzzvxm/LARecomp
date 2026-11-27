@@ -40,8 +40,8 @@
 // sidecar is made only while a consumer wants a plane (the ambient occlusion, GB-E, will), so with none no image exists and no draw changes. Wants are read at each frame
 // boundary (live; one frame late the first time).
 //
-// The debug views (mcla_gpu_gbuffer_view 0..7, hlsl/gbuffer_view_ps.hlsl): the normal, the albedo, the smoothness, the class (a colour per family once RT3 is written),
-// the coverage, the lit weight, and "missing": the pixels where the depth holds geometry and the planes hold no data.
+// The debug views (mcla_gpu_gbuffer_view 0..9, hlsl/gbuffer_view_ps.hlsl): the normal, the albedo, the smoothness, the class (a colour per family once RT3 is written),
+// the coverage, the lit weight, "missing" (the pixels where the depth holds geometry and the planes hold no data), and, since PBR-2, the metals (8) and the roughness (9).
 //
 // Logs (info, "[gbuffer]"): the first frame with the sidecar and every time it is made again (size, samples, planes, bytes), the policy (what the non writers do), the window's
 // clears (the first few frames: how many, how many partial: survey C6), and a line every 600 frames with the draws by outcome and the pixel shaders that wrote it or that

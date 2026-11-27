@@ -311,7 +311,7 @@ void EmitterTextChecks(const std::string& src) {
   CHECK(has(lib, "bool CityHitEmitterRay(float3 origin, float3 direction, float reach, float footprint)") && has(lib, "kCityHitCityMask") && has(lib, "CityHitBlockedBy(origin, direction, reach, footprint, 0.0, kCityHitCityMask)"));
   CHECK(has(lib, "return CityHitBlockedBy(origin, direction, tMax, footprint0, tanHalf, 0xFFu);") && has(lib, "query.TraceRayInline(RT_HIT_TLAS, RAY_FLAG_NONE, mask, ray);"));
   CHECK(has(lib, "if ((p.flags & CITY_HIT_P_EMITTERS) != 0u)") && has(lib, "light += CityHitEmitters(p, hit, normal, ray.footprint);"));
-  const size_t lamps_at = lib.find("light += CityHitLamps(p, hit, normal, ray.footprint);"), emit_at = lib.find("light += CityHitEmitters(p, hit, normal, ray.footprint);"), feedback_at = lib.find("light += CITY_HIT_FEEDBACK(hit, normal) * p.bounce;");
+  const size_t lamps_at = lib.find("const float3 lamps = CityHitLamps(p, hit, normal, ray.footprint);"), emit_at = lib.find("light += CityHitEmitters(p, hit, normal, ray.footprint);"), feedback_at = lib.find("light += CITY_HIT_FEEDBACK(hit, normal) * p.bounce;");
   CHECK(lamps_at != std::string::npos && emit_at != std::string::npos && feedback_at != std::string::npos && lamps_at < emit_at && emit_at < feedback_at);
   CHECK(has(lib, "if (!(weightSum > 0.0))") && has(lib, "seen == reaching") && has(lib, "min(uint(CITY_HIT_EMITTER_COUNT), kCityHitEmitterMax)"));
   // the includers: the probe field reads the STATIC emitters, the per-pixel pass all of them; both turn the flags on only where the world frame has emitters; the per-pixel pass's own headlights are gone

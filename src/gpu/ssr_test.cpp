@@ -35,6 +35,7 @@
 #include "screen_rules.h"
 #include "dlss_rr_rules.h"
 #include "frame_order.h"
+#include "pbr_screen_rules.h"
 #include "ssr_rules.h"
 
 // ---------------------------------------------------------------------------
@@ -110,6 +111,7 @@ float SsrHizAt(uint level, int cx, int cy) {
   return g_hiz.data[l][cy * g_hiz.w[l] + cx];
 }
 #include "hlsl/gbuffer_common.hlsli"
+#include "pbr_screen_shim.h"   // the operators the contract (hlsl/pbr_brdf.hlsli, which ssr_common.hlsli includes through pbr_screen_common.hlsli: PBR level 1C) needs and this shim does not have
 #include "hlsl/ao_gbuffer_normal.hlsli"
 #include "hlsl/blue_noise.hlsli"
 #include "hlsl/ssr_common.hlsli"
@@ -450,8 +452,8 @@ void TestPush() {
         "the lens, camera and tunable words are the .hlsli's");
   Check(int(SSR_FLAG_MS) == int(p::kFlagMs) && int(SSR_FLAG_HZ) == int(p::kFlagHz) && int(SSR_FLAG_COL_HALF) == int(p::kFlagColourHalf) && int(SSR_FLAG_STUB) == int(p::kFlagStub) &&
             int(SSR_FLAG_HISTORY) == int(p::kFlagHistory) && int(SSR_FLAG_CAMERA) == int(p::kFlagCamera) && int(SSR_FLAG_SHIFT) == int(p::kFlagShift) && int(SSR_RAYS_SHIFT) == int(p::kRaysShift) &&
-            int(SSR_VIEW_SHIFT) == int(p::kViewShift) && int(SSR_ITER_SHIFT) == int(p::kIterShift),
-        "the flag bits and shifts are the .hlsli's");
+            int(SSR_VIEW_SHIFT) == int(p::kViewShift) && int(SSR_ITER_SHIFT) == int(p::kIterShift) && int(SSR_PBR_SHIFT) == int(p::kPbrShift),
+        "the flag bits and shifts are the .hlsli's (the PBR switch's too)");
   Check(p::kMotion == p::kRight && p::kPrevTanX == p::kNear && p::kPrevTanY == p::kMaxDist && p::kHistoryWeight == p::kFrame, "the temporal pass's overlay");
   Check(SSR_W_MOTION == int(p::kMotion) && SSR_W_PREV_TAN_X == int(p::kPrevTanX) && SSR_W_PREV_TAN_Y == int(p::kPrevTanY) &&
             SSR_W_HISTORY_WEIGHT == int(p::kHistoryWeight) && SSR_W_HISTORY_GUIDE == int(p::kHistoryGuide) && SSR_TRACE_STABLE == p::kStableTrace,
@@ -486,15 +488,25 @@ void TestPush() {
   Check((word & 15u) == 3 && ((word >> 4) & 15u) == 6 && ((word >> 8) & 15u) == 4, "the flags word: sample0, the Hi-Z's levels (6 at most), the colour's (4 at most)");
   Check(((word >> SSR_FLAG_SHIFT) & (SSR_FLAG_MS | SSR_FLAG_HZ | SSR_FLAG_STUB)) == (SSR_FLAG_MS | SSR_FLAG_HZ | SSR_FLAG_STUB) && ((word >> SSR_FLAG_SHIFT) & (SSR_FLAG_COL_HALF | SSR_FLAG_HISTORY | SSR_FLAG_CAMERA)) == 0,
         "the flag bits");
-  Check(((word >> SSR_RAYS_SHIFT) & 3u) == 1 && ((word >> SSR_VIEW_SHIFT) & 15u) == 3 && (word >> SSR_ITER_SHIFT) == 64, "rays - 1, the view, the iterations");
+  Check(((word >> SSR_RAYS_SHIFT) & 1u) == 1 && ((word >> SSR_VIEW_SHIFT) & 15u) == 3 && (word >> SSR_ITER_SHIFT) == 64, "rays - 1, the view, the iterations");
   const uint32_t trace_word = word & ~(15u << SSR_VIEW_SHIFT);
   Check(sr::PackTraceFlags(f, false) == trace_word && sr::PackTraceFlags(f, true) == (trace_word | SSR_TRACE_STABLE),
         "the trace flag reuses the debug view field and preserves the ray count and iteration budget");
+  {
+    sr::FlagsIn on = f;
+    on.pbr = true;
+    const uint32_t pw = sr::PackFlags(on);
+    Check(sr::PackTraceFlags(on, true) == (trace_word | SSR_TRACE_STABLE | (1u << SSR_PBR_SHIFT)),
+          "stable ranked traces preserve the PBR bit");
+    Check(pw == (word | (1u << SSR_PBR_SHIFT)) && ((pw >> SSR_RAYS_SHIFT) & 1u) == 1 && ((pw >> SSR_VIEW_SHIFT) & 15u) == 3 && (pw >> SSR_ITER_SHIFT) == 64,
+          "the PBR bit (19) is the only bit that the switch changes: the rays, the view and the iterations are the same");
+  }
   f.max_iterations = 9999;
   f.rays = 9;
   const uint32_t clamped = sr::PackFlags(f);
-  Check((clamped >> SSR_ITER_SHIFT) == 255 && ((clamped >> SSR_RAYS_SHIFT) & 3u) == 1, "the iterations and the rays are clamped to their fields");
-  Check(((SSR_FLAG_COL_HALF | SSR_FLAG_STUB | SSR_FLAG_HISTORY | SSR_FLAG_CAMERA | SSR_FLAG_MS | SSR_FLAG_HZ) << SSR_FLAG_SHIFT) < (1u << SSR_RAYS_SHIFT), "the flag bits end below the rays");
+  Check((clamped >> SSR_ITER_SHIFT) == 255 && ((clamped >> SSR_RAYS_SHIFT) & 1u) == 1 && ((clamped >> SSR_PBR_SHIFT) & 1u) == 0, "the iterations and the rays are clamped to their fields (the rays never reach the PBR bit)");
+  Check(((SSR_FLAG_COL_HALF | SSR_FLAG_STUB | SSR_FLAG_HISTORY | SSR_FLAG_CAMERA | SSR_FLAG_MS | SSR_FLAG_HZ) << SSR_FLAG_SHIFT) < (1u << SSR_RAYS_SHIFT) && SSR_PBR_SHIFT == SSR_RAYS_SHIFT + 1 && SSR_VIEW_SHIFT == SSR_PBR_SHIFT + 1,
+        "the flag bits end below the rays, the rays' one bit is followed by the PBR switch, then the view");
   sr::Push push;
   push.SetFloat(p::kTanX, 0.575f);
   push.Set(p::kFrame, 77);
@@ -603,7 +615,8 @@ void TestGate() {
         "the class and flag numbers are the interface's");
   // the RT3 texel's decode into the gate (r smoothness, g class | flags << 5)
   const uint32_t word = (200u) | (uint32_t(gb::SurfaceClass::kRoad) << 8) | (uint32_t(gb::kMaterialFlagSsr) << 13);
-  const hs::float2 rt3 = hs::GbMaterialRt3(word);
+  const hs::float4 packed = hs::GbMaterialRt3(word);
+  const hs::float2 rt3(packed.x, packed.y);
   Check(hs::GbRt3Class(rt3) == uint32_t(gb::SurfaceClass::kRoad) && (hs::GbRt3Flags(rt3) & 1u) != 0 && Near(hs::GbRt3Smoothness(rt3), 200.0 / 255.0, 1e-5), "RT3 of a road: the class, the flag and the smoothness");
   // the stub: a world normal up is a road, a wall is nothing
   Check(hs::SsrStubClass(1.0f) == uint32_t(GB_CLASS_ROAD) && hs::SsrStubClass(0.86f) == uint32_t(GB_CLASS_ROAD) && hs::SsrStubClass(0.84f) == uint32_t(GB_CLASS_NONE) && hs::SsrStubClass(-1.0f) == uint32_t(GB_CLASS_NONE),
@@ -615,6 +628,87 @@ void TestGate() {
 // ---------------------------------------------------------------------------
 // the environment BRDF, the noise, the GGX sampling, the fades
 // ---------------------------------------------------------------------------
+
+// PBR level 1C (hlsl/ssr_common.hlsli SsrRoughness, SsrAlpha, SsrFresnel; pbr_screen_rules.h): the passes' old maths with the switch off, the shared model with it on.
+void TestPbr() {
+  namespace ps = mcla::gpu::pbr_screen;
+  const uint kRoad = uint(GB_CLASS_ROAD), kMetal = uint(GB_CLASS_METAL), kWater = uint(GB_CLASS_WATER), kGlass = uint(GB_CLASS_GLASS), kEmissive = uint(GB_CLASS_EMISSIVE);
+  // the roughness and the alpha
+  bool rough_ok = true, alpha_ok = true;
+  for (int i = 0; i <= 100; ++i) {
+    const float s = float(i) / 100.0f;
+    rough_ok = rough_ok && hs::SsrRoughness(s, false) == 1.0f - s && Near(hs::SsrRoughness(s, true), ps::pbr::RoughnessFromSmoothness(s), 1e-7);
+    // with the contract's mapping (1 - s, floored at 0.045) the trace's lobe is the old one: the alpha's own floor (0.005) is above the square of the roughness floor (0.002)
+    alpha_ok = alpha_ok && Near(hs::SsrAlpha(s, false), hs::SsrAlphaOfSmooth(s), 1e-9) && Near(hs::SsrAlpha(s, true), hs::SsrAlphaOfSmooth(s), 1e-9) && hs::SsrAlpha(s, true) >= hs::kSsrMinAlpha;
+  }
+  Check(rough_ok, "SsrRoughness: off 1 - smoothness, on the contract's mapping");
+  Check(alpha_ok, "SsrAlpha: off the old alpha, on the contract's roughness squared (the same numbers), never under the mirror's floor");
+  // the weight: off is the old Fresnel (F0 0.04, a metal class's albedo, the environment BRDF), on is the model's
+  Lcg rng;
+  int off_bad = 0, on_bad = 0, trials = 0;
+  double worst = 0.0, sum = 0.0, worst_wet = 0.0, sum_wet = 0.0;
+  int n_wet = 0, n_all = 0;
+  for (int i = 0; i < 6000; ++i) {
+    const uint cls = (i % 5 == 0) ? kMetal : (i % 5 == 1) ? kRoad : (i % 5 == 2) ? kGlass : (i % 5 == 3) ? kWater : uint(GB_CLASS_SIDEWALK);
+    const bool flag = (i % 11) == 0;
+    const float smooth = 0.4f + 0.6f * rng.Next();
+    const float nov = rng.Next();
+    const hs::float3 albedo(rng.Next(), rng.Next(), rng.Next());
+    const bool have = (i % 7) != 0;
+    float f0[3] = {0.04f, 0.04f, 0.04f};
+    if (cls == kMetal) {
+      const float m[3] = {albedo.x, albedo.y, albedo.z};
+      for (int k = 0; k < 3; ++k) f0[k] = have ? m[k] : 0.6f;
+    }
+    const hs::float2 ab = hs::SsrEnvBrdf(1.0f - smooth, nov);
+    const hs::float3 off = hs::SsrFresnel(cls, flag, albedo, have, smooth, nov, false);
+    const float want_off[3] = {std::min(std::max(f0[0] * ab.x + ab.y, 0.0f), 1.0f), std::min(std::max(f0[1] * ab.x + ab.y, 0.0f), 1.0f), std::min(std::max(f0[2] * ab.x + ab.y, 0.0f), 1.0f)};
+    if (!(Near(off.x, want_off[0], 1e-6) && Near(off.y, want_off[1], 1e-6) && Near(off.z, want_off[2], 1e-6))) ++off_bad;
+    const hs::float3 on = hs::SsrFresnel(cls, flag, albedo, have, smooth, nov, true);
+    const ps::Vec3 tw = ps::ReflectionWeight(cls, flag, smooth, ps::Vec3{albedo.x, albedo.y, albedo.z}, have, nov);
+    if (!(Near(on.x, tw.x, 1e-6) && Near(on.y, tw.y, 1e-6) && Near(on.z, tw.z, 1e-6))) ++on_bad;
+    // on against off for the dielectrics the first version had the same inputs for (no metal flag, not water, not the metal class): the two fits of the split sum
+    if (cls != kWater && cls != kMetal && !flag) {
+      const double d = std::max({std::fabs(double(on.x) - off.x), std::fabs(double(on.y) - off.y), std::fabs(double(on.z) - off.z)});
+      worst = std::max(worst, d);
+      sum += d;
+      ++n_all;
+      if (smooth >= 0.8f) {   // a wet road, wet sidewalk, glass: the surfaces the effect mostly weighs
+        worst_wet = std::max(worst_wet, d);
+        sum_wet += d;
+        ++n_wet;
+      }
+    }
+    ++trials;
+  }
+  Check(off_bad == 0, Num("SsrFresnel off: the first version's Fresnel on %.0f random pixels", double(trials)));
+  Check(on_bad == 0, "SsrFresnel on: the C++ twin's reflection weight (pbr_screen_rules.h) on random pixels");
+  std::printf("  CALIBRATION: the reflections' weight, the model against the first version (dielectrics, smoothness 0.4 to 1): mean %.4f, largest %.4f; smoothness 0.8 to 1 (wet roads, glass): mean %.4f, largest %.4f\n",
+              sum / std::max(n_all, 1), worst, sum_wet / std::max(n_wet, 1), worst_wet);
+  Check(sum / std::max(n_all, 1) < 0.03 && sum_wet / std::max(n_wet, 1) < 0.03, "the model's reflection weight stays within 0.03 of the first version's on average for the dielectrics the effect weighs (no recalibration of the effect's strength)");
+  // water: about half the reflectance at normal incidence, the same at grazing
+  {
+    const hs::float3 a(0.5f, 0.5f, 0.5f);
+    const float w_on = hs::SsrFresnel(kWater, false, a, true, 0.9f, 1.0f, true).x;
+    const float w_off = hs::SsrFresnel(kWater, false, a, true, 0.9f, 1.0f, false).x;
+    const float g_on = hs::SsrFresnel(kWater, false, a, true, 0.9f, 0.05f, true).x;
+    const float g_off = hs::SsrFresnel(kWater, false, a, true, 0.9f, 0.05f, false).x;
+    Check(w_on < w_off && w_on > 0.4f * w_off && Near(g_on, g_off, 0.1), Num("water: %.3f face on against %.3f (F0 0.02 against 0.04); grazing %.3f against %.3f", w_on, w_off, g_on, g_off));
+  }
+  // a metal is tinted by its albedo, a dielectric is grey; the metal flag of RT3 makes any class a metal; an emissive pixel reflects nothing
+  {
+    const hs::float3 gold(0.9f, 0.7f, 0.2f);
+    const hs::float3 m = hs::SsrFresnel(kMetal, false, gold, true, 0.8f, 0.9f, true);
+    const hs::float3 d = hs::SsrFresnel(kRoad, false, gold, true, 0.8f, 0.9f, true);
+    const hs::float3 f = hs::SsrFresnel(kRoad, true, gold, true, 0.8f, 0.9f, true);
+    Check(m.x > m.y && m.y > m.z && Near(d.x, d.y, 1e-6) && Near(d.y, d.z, 1e-6), "a metal's reflection is tinted by its albedo (F0), a dielectric's is grey");
+    Check(f.x > 5.0f * d.x && f.x > f.y && f.y > f.z, "RT3's metal flag makes a road pixel a metal: tinted, many times the dielectric's weight");
+    const hs::float3 e = hs::SsrFresnel(kEmissive, false, gold, true, 0.9f, 0.1f, true);
+    Check(e.x == 0.0f && e.y == 0.0f && e.z == 0.0f, "an emissive pixel reflects nothing in the model");
+    const hs::float3 mu = hs::SsrFresnel(kMetal, false, gold, false, 0.8f, 0.9f, true);
+    Check(Near(mu.x, mu.y, 1e-6) && mu.x > 0.3f, "a metal with no albedo in the frame takes the grey 0.6 (as the first version did)");
+  }
+}
 
 void TestBrdf() {
   // a smooth dielectric (F0 0.04): the usual Fresnel curve: about 0.04 face on and 0.5 and more at grazing
@@ -2670,7 +2764,7 @@ void TestSources(const std::string& dir) {
   const size_t env_occlusion = fallback.find("result.env *= result.visibility;");
   Check(planar_stock < planar_occlusion && planar_occlusion != std::string::npos &&
             env_stock < env_occlusion && env_occlusion != std::string::npos &&
-            Has(fallback, "SpecularOcclusion(dot(normal, to_camera), ao, SsrAlphaOfSmooth(smoothness))"),
+            Has(fallback, "SpecularOcclusion(dot(normal, to_camera), ao, SsrAlpha(smoothness, SsrPbr()))"),
         "specular occlusion leaves the guest estimate intact and attenuates both fallback rungs");
   const std::string rt_trace = Read(dir, "hlsl/ssr_rt_trace_cs.hlsl");
   Check(Has(rt_trace, "const float3 fallback = lower.planar + lower.env;") &&
@@ -2741,6 +2835,7 @@ int main(int argc, char** argv) {
   TestCamera();
   TestGate();
   TestBrdf();
+  TestPbr();
   TestNoise();
   TestNoiseResolve();
   TestGgx();

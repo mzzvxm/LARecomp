@@ -31,6 +31,7 @@
 #include "city_refl_rules.h"  // REFL-LAMPS: the reflection passes' lamp term in front of the library (ReflectionGlueChecks)
 #include "gbuffer_types.h"
 #include "hlsl_cpp_shim.h"
+#include "pbr_rt_hit_rules.h"
 #include "rt_hit_calibration.h"
 #include "rt_hit_frame.h"
 #include "rt_hit_sample_ref.h"
@@ -642,6 +643,9 @@ rh::FrameInput RandomFrame(Lcg& rng, bool cascades) {
   std::memcpy(in.world_axes_view, axes, sizeof(axes));
   in.tuning.ambient = rng.Range(0.5f, 1.5f);
   in.tuning.spec = rng.Range(0.5f, 1.5f);
+  // PBR 1B: two frames in three go through the physically based model, the rest are the model of old (both are compared with the twin). Taken from the bits of a number that was drawn already, so that the
+  // random stream (and with it every statistical threshold of these checks and of the lamp term's) is the one it was before.
+  in.tuning.pbr = (std::bit_cast<uint32_t>(in.light.sun[1]) >> 3) % 3 != 0;
   if (cascades) {
     in.camera_known = true;
     for (int c = 0; c < 3; ++c) in.camera_world[c] = rng.Range(-500, 500);
@@ -1135,6 +1139,173 @@ void ResolveChecks(const City& city, Lcg& rng, int rounds, int* sources_seen) {
         Num("ground resolve uses raster colour at full or partial coverage and skips model lighting and calibration (%.0f wrong)", wrong_ground));
 }
 
+
+// ---------------------------------------------------------------------------
+// PBR level 1 (task PBR-1B): the library's physically based surface (the frame's flag) against the twin, and against the model of old
+// ---------------------------------------------------------------------------
+
+// A random unit vector.
+cs::V3 RandomUnitV(Lcg& rng) {
+  for (;;) {
+    const cs::V3 v{rng.Range(-1, 1), rng.Range(-1, 1), rng.Range(-1, 1)};
+    const float l2 = cs::Dot(v, v);
+    if (l2 > 0.01f && l2 <= 1.0f) return cs::Normalize(v);
+  }
+}
+
+void PbrLampPrecisionCheck() {
+  Case k;
+  k.frame.light.valid = true;
+  k.frame.tuning.pbr = true;
+  k.frame.tuning.spec = 0.0f;
+  k.p.mode = cs::kModeReflect;
+  k.p.flags = cs::kPLamps;
+  k.p.lamp_factor = 1.0f;
+  k.p.lamp_count = 1;
+  k.ray.direction = {0.0f, -1.0f, 0.0f};
+  cs::WorldLamp lamp;
+  lamp.position[1] = 1.0f;
+  lamp.intensity = 1.0f;
+  lamp.colour[0] = 0.25f;
+  lamp.colour[1] = 0.5f;
+  lamp.colour[2] = 0.75f;
+  uint32_t lamp_words[3][4];
+  cs::MakeGpuLamp(lamp, k.frame.camera_world, k.frame.world_axes_view, lamp_words);
+  k.lamp_rows.resize(12);
+  std::memcpy(k.lamp_rows.data(), lamp_words, sizeof(lamp_words));
+  std::vector<hlsl_shim::uint4> lamp_rows, frame_rows;
+  BindLamps(k, &lamp_rows);
+
+  // Chrome has no diffuse response. Bright ambient must leave the dim lamp's specular response intact.
+  HitMaterial chrome;
+  chrome.word = PackMaterialWord(128, uint32_t(gb::SurfaceClass::kChrome), 0, 255, 0);
+  uint32_t words[8];
+  chrome.Pack(words);
+  const hlsl_shim::uint4 rows[] = {{words[0], words[1], words[2], words[3]}, {words[4], words[5], words[6], words[7]}};
+  const auto materials = hlsl_shim::gCityMaterials;
+  hlsl_shim::gCityMaterials.data = rows;
+  hlsl_shim::gCityMaterials.count = 2;
+  auto hit = hlsl_shim::CityHitEmpty();
+  hit.valid = 1;
+  const auto shade = [&] {
+    BindFrame(k.frame, &frame_rows);
+    return hlsl_shim::CityHitShadeHit(ShaderParams(k), hlsl_shim::RtHitLoadFrame(), ShaderRay(k), ShaderInstance(k), hit);
+  };
+  const auto dim = shade();
+  for (float& channel : k.frame.light.ambient) channel = 16777216.0f;
+  const auto bright = shade();
+  hlsl_shim::gCityMaterials = materials;
+  CHECK(dim.valid == 1 && bright.valid == 1 && dim.colour.x > 0.1f && Close(bright.colour, V(dim.colour), 1e-5));
+}
+
+void PbrChecks(const City& city, Lcg& rng, const std::string& src) {
+  (void)src;
+  // the numbers of the physically based surface: the shader's tables, its two functions, the frame's flag
+  bool tables = true;
+  for (uint32_t c = 0; c < cs::kClassCount; ++c) {
+    tables = tables && Near(hlsl_shim::kCityHitClassMetalness[c], cs::kClassMetalness[c]) && Near(hlsl_shim::kCityHitClassBody[c], cs::kClassBody[c]);
+  }
+  CHECK(tables);
+  CHECK(Near(hlsl_shim::kCityHitWaterF0, cs::kWaterF0) && Near(hlsl_shim::kCityHitSkinF0, cs::kSkinF0) && CITY_HIT_CLASS_WATER == cs::kClassWater && CITY_HIT_CLASS_SKIN == cs::kClassSkin && RT_HIT_FRAME_PBR == rh::kFramePbr);
+  bool functions = true;
+  for (uint32_t c = 0; c < cs::kClassCount; ++c) {
+    for (const float byte : {0.0f, 0.3f, 0.5f, 0.86f, 1.0f}) functions = functions && Near(hlsl_shim::CityHitPbrMetalness(c, byte), cs::PbrMetalness(c, byte)) && Near(hlsl_shim::CityHitPbrF0(c), cs::PbrF0(c));
+  }
+  CHECK(functions);
+  // what the classes mean (PBR-1's numbers, perf\PBR.md 1.4): chrome a metal, the metal class 0.85 of one, a table row's metal byte wins where it is higher, water and skin the low F0s, glass and water let most of the
+  // body's light through, the rest all of it
+  CHECK(cs::kClassMetalness[uint32_t(gb::SurfaceClass::kChrome)] == 1.0f && cs::kClassMetalness[uint32_t(gb::SurfaceClass::kMetal)] == 0.85f && cs::kClassMetalness[uint32_t(gb::SurfaceClass::kWorld)] == 0.0f);
+  CHECK(Near(cs::PbrMetalness(uint32_t(gb::SurfaceClass::kMetal), 0.95f), 0.95) && Near(cs::PbrMetalness(uint32_t(gb::SurfaceClass::kMetal), 0.1f), 0.85) && Near(cs::PbrMetalness(uint32_t(gb::SurfaceClass::kWorld), 0.0f), 0.0));
+  CHECK(Near(cs::PbrF0(uint32_t(gb::SurfaceClass::kWater)), 0.02) && Near(cs::PbrF0(uint32_t(gb::SurfaceClass::kSkin)), 0.028) && Near(cs::PbrF0(uint32_t(gb::SurfaceClass::kRoad)), 0.04));
+  CHECK(Near(cs::kClassBody[uint32_t(gb::SurfaceClass::kGlass)], cs::kDiffuseGain[uint32_t(gb::SurfaceClass::kGlass)]) && Near(cs::kClassBody[uint32_t(gb::SurfaceClass::kWater)], cs::kDiffuseGain[uint32_t(gb::SurfaceClass::kWater)]));
+  for (uint32_t c = 0; c < cs::kClassCount; ++c) {
+    if (c != uint32_t(gb::SurfaceClass::kGlass) && c != uint32_t(gb::SurfaceClass::kWater)) CHECK(cs::kClassBody[c] == 1.0f);
+  }
+
+  // the lamps' direction (the shader's gCityHitLampDirection, the twin's LampsSum / LampPick direction) on the flat list: with the shadow flag and without
+  int wrong_direction = 0, wrong_light = 0, directions = 0, chosen = 0;
+  std::vector<hlsl_shim::uint4> lamp_rows;
+  for (int round = 0; round < 3000; ++round) {
+    Case k = RandomCase(rng, uint32_t(city.sectors.size()));
+    k.p.lamp_factor = rng.Below(5) == 0 ? 0.0f : rng.Range(0.2f, 1.0f);
+    k.p.flags |= cs::kPLamps;
+    const bool shadow = rng.Below(2) != 0;
+    k.p.flags = shadow ? (k.p.flags | cs::kPLampShadow) : (k.p.flags & ~cs::kPLampShadow);
+    BindLamps(k, &lamp_rows);
+    hlsl_shim::gLampCalls.clear();
+    gTwinLamp.clear();
+    const cs::V3 hit = k.ray.origin + k.ray.direction * k.ray.t, normal = RandomUnitV(rng);
+    const hlsl_shim::float3 light = hlsl_shim::CityHitLamps(ShaderParams(k), F3(hit), F3(normal), k.ray.footprint);
+    const cs::V3 got_direction = V(hlsl_shim::gCityHitLampDirection);
+    cs::V3 want_direction;
+    const cs::V3 want_light = shadow ? cs::LampPick(k.p.lamp_factor, k.lamps.data() + k.p.lamp_first, k.p.lamp_count, hit, normal, k.p.noise[2], hit.z, MakeReads(k).lamp_blocked, &want_direction)
+                                     : cs::LampsSum(k.p.lamp_factor, k.lamps.data() + k.p.lamp_first, k.p.lamp_count, hit, normal, &want_direction);
+    if (!Close(light, want_light, 3e-4)) ++wrong_light;
+    if (!Close(F3(got_direction), want_direction, 1e-4)) ++wrong_direction;
+    if (cs::Dot(want_direction, want_direction) > 0.5f) ++directions;
+    chosen += shadow && cs::Dot(want_direction, want_direction) > 0.5f;
+    // a unit vector where there is light, nothing where there is none
+    const float length = cs::Length(want_direction);
+    if (!(length == 0.0f || Near(length, 1.0, 1e-4))) ++wrong_direction;
+    if (cs::Luma(want_light) > 0.0f && length == 0.0f) ++wrong_direction;
+  }
+  Check(wrong_light == 0, Num("CityHitLamps is still the twin's lamp light (%.0f of 3000 differ)", wrong_light));
+  Check(wrong_direction == 0, Num("the direction toward the lamps' brightness weighted mean (the chosen lamp's with the shadow flag) is the twin's, a unit vector or 0 (%.0f differ)", wrong_direction));
+  Check(directions > 800 && chosen > 300, Num2("the lamp direction was exercised (%.0f with light, %.0f chosen by the estimator)", directions, chosen));
+
+  // the physically based surface through the library, and what it changed (the model of old with the frame's flag off, the same rays and parameters): walls and roads keep today's brightness, hit by hit
+  struct Sample {
+    double wall_sum = 0.0;
+    int wall_n = 0;
+    std::vector<double> road;
+  } sample;
+  int pbr_cases = 0, sun_direct_cases = 0, env_cases = 0;
+  std::vector<hlsl_shim::uint4> frame_rows;
+  for (int round = 0; round < 6000; ++round) {
+    Case k = RandomCase(rng, uint32_t(city.sectors.size()));
+    k.frame.tuning.pbr = false;
+    k.frame.light.valid = true;
+    k.frame.tuning.enabled = true;
+    k.p.mode = cs::kModeReflect;
+    k.p.flags &= ~(cs::kPLamps | cs::kPEmissive | cs::kPLampShadow);
+    k.p.units = 1.0f;
+    k.p.wet = 0.0f;
+    k.ray.t = rng.Range(1.0f, 8.0f);   // near: the test's haze (the fog colour added by the distance) barely touches the colour
+    k.ray.footprint = rng.Range(0.001f, 0.05f);
+    k.frame.light.env_sharp = 0;       // no environment map: the sky reflection is the ambient's
+    const Decoded d = DecodeCase(city, k);
+    if (!d.hit.valid) continue;
+    BindFrame(k.frame, &frame_rows);
+    const hlsl_shim::CityHitShaded old_model = hlsl_shim::CityHitShade(ShaderParams(k), hlsl_shim::RtHitLoadFrame(), ShaderRay(k), ShaderInstance(k));
+    k.frame.tuning.pbr = true;
+    BindFrame(k.frame, &frame_rows);
+    const hlsl_shim::CityHitShaded pbr = hlsl_shim::CityHitShade(ShaderParams(k), hlsl_shim::RtHitLoadFrame(), ShaderRay(k), ShaderInstance(k));
+    if (old_model.valid == 0 || pbr.valid == 0) continue;
+    ++pbr_cases;
+    sun_direct_cases += pbr.ndl > 0.0f ? 1 : 0;
+    env_cases += cs::kSpecGain[pbr.cls] > 0.0f ? 1 : 0;
+    const uint32_t cls = old_model.cls;
+    const double before = cs::Luma(V(old_model.colour)), after = cs::Luma(V(pbr.colour));
+    if (before < 0.05) continue;
+    // the world and the sidewalk, no sheen of their own: the same brightness to a few per cent; the road: the diffuse is the old one, the highlight is the model's
+    const float smoothness = float(WordSmoothness(d.material.word)) / 255.0f;
+    if ((cls == 1 || cls == 4) && smoothness < 0.4f && WordMetal(d.material.word) == 0) {
+      sample.wall_sum += after / before;
+      ++sample.wall_n;
+    } else if (cls == 2 && WordMetal(d.material.word) == 0) {
+      sample.road.push_back(after / before);
+    }
+  }
+  std::sort(sample.road.begin(), sample.road.end());
+  const double wall_mean = sample.wall_n > 0 ? sample.wall_sum / double(sample.wall_n) : 0.0;
+  const double road_median = sample.road.empty() ? 0.0 : sample.road[sample.road.size() / 2];
+  std::printf("PBR through the library: %d hits, walls %d (mean %.3f over the old model), roads %zu (median %.3f)\n", pbr_cases, sample.wall_n, wall_mean, sample.road.size(), road_median);
+  Check(pbr_cases > 4000 && sample.wall_n > 200 && sample.road.size() > 100, Num2("the physically based cases were exercised (%.0f hits, %.0f of them walls)", pbr_cases, sample.wall_n));
+  Check(wall_mean > 0.93 && wall_mean < 1.08, Num("a reflected wall keeps about today's brightness through the library (the mean ratio %.3f)", wall_mean));
+  Check(road_median > 0.93 && road_median < 1.12, Num("a reflected road keeps about today's brightness through the library (the median ratio %.3f)", road_median));
+  Check(sun_direct_cases > 2000 && env_cases > 2000, Num2("the sun's direct term and the sky's reflection were exercised (%.0f, %.0f)", sun_direct_cases, env_cases));
+}
+
 // the text of the library: what the host and the other passes rely on
 void TextChecks(const std::string& src) {
   const std::string lib = ReadFile(src + "/gpu/hlsl/city_hit_shade.hlsli");
@@ -1193,6 +1364,8 @@ int main(int argc, char** argv) {
         Num2("the resolve ended in the picture, the model, both and nothing (picture %.0f, model %.0f)", sources[cs::kSourceScreen], sources[cs::kSourceShaded]));
   LampTermChecks(city, rng, src);
   EmitterChecks(city, rng, src);
+  PbrChecks(city, rng, src);
+  PbrLampPrecisionCheck();
   TextChecks(src);
   std::printf("%d checks, %d failed\n", g_checks, g_failed);
   return g_failed == 0 ? 0 : 1;

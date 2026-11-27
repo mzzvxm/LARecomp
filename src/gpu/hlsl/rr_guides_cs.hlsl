@@ -36,7 +36,7 @@ struct RrGuidesPush
     float4 right;
     // xyz the up axis, w tan of half the vertical field of view
     float4 up;
-    // xyz the forward axis
+    // xyz the forward axis, w the pass's flags as bits (RR_FLAG_PBR: the shared physically based model, mcla_gpu_pbr; PBR level 1C)
     float4 forward;
     // the projection's depth rows P22 P23 P32 P33
     float4 lin;
@@ -148,7 +148,7 @@ void main(uint3 id : SV_DispatchThreadID)
         const float3 view_dir = RrViewDir(float(p.x) + 0.5f, float(p.y) + 0.5f, float(size.x), float(size.y), g_push.right.w, g_push.up.w, right, up, forward);
         const float2 rt1 = LoadPlane(g_push.slots.x, p).xy;
         const float4 rt2 = LoadPlane(g_push.slots.y, p);
-        const float2 rt3 = LoadPlane(g_push.slots.z, p).xy;
+        const float3 rt3 = LoadPlane(g_push.slots.z, p).xyz;
         float3 depth_normal = float3(0.0f, 0.0f, 0.0f);
         if (!GbRt1Valid(rt1))
         {
@@ -163,7 +163,14 @@ void main(uint3 id : SV_DispatchThreadID)
             const float3 view_normal = RrNormalOfTangents(tx, ty);
             depth_normal = RrWorldOfView(view_normal, right, up, forward);
         }
-        px = RrSurfacePixel(rt1, rt2, rt3, depth_normal, view_dir);
+        if ((asuint(g_push.forward.w) & RR_FLAG_PBR) != 0u)
+        {
+            px = RrSurfacePixelPbr(rt1, rt2, rt3, depth_normal, view_dir);
+        }
+        else
+        {
+            px = RrSurfacePixel(rt1, rt2, rt3.xy, depth_normal, view_dir);
+        }
     }
     g_diffuse[p] = float4(px.diffuse, 1.0f);
     g_specular[p] = float4(px.specular, 1.0f);

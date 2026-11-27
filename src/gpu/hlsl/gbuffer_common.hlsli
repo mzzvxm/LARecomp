@@ -8,7 +8,7 @@
 // component, no intrinsics but abs, sqrt, saturate, dot, cross, normalize, min, max, no `static const` arrays.
 //
 // The layout (gbuffer_types.h): RT1 R16G16_UNORM octahedral WORLD normal, 0 = no data; RT2 R8G8B8A8_UNORM sqrt(albedo) + lit weight;
-// RT3 R8G8_UNORM smoothness + (class | flags << 5).
+// RT3 RGBA8_UNORM smoothness, class | flags << 5, metalness, zero.
 //
 // The pasted text must not use the names of the game's registers (r0..r31, c0..c255, p0, ps, a0, aL), nor those of its constants (`smoothness`, `metallic`, `baseColor` ...: in the SPIR-V text each is a
 // `#define` that would expand a parameter of that name, which broke 13 shaders of the car stage): every name here starts with Gb or GB_, parameters included.
@@ -132,9 +132,11 @@ uint GbMaterialWord(float gbSmoothness, uint cls, uint flags, float lit) {
          (l << uint(GB_MATERIAL_LIT_SHIFT));
 }
 
-// RT3 of a word: r = smoothness, g = class | flags << 5, both as unorm8.
-float2 GbMaterialRt3(uint word) {
-  return float2(float(word & 255u), float((word >> uint(GB_MATERIAL_CLASS_SHIFT)) & 255u)) * (1.0f / 255.0f);
+// The first two bytes retain their original meaning. The third holds the material table's metalness byte.
+float4 GbMaterialRt3(uint word) {
+  const float byte_scale = 1.0f / 255.0f;
+  return float4(float(word & 255u) * byte_scale, float((word >> uint(GB_MATERIAL_CLASS_SHIFT)) & 255u) * byte_scale,
+                float((word >> uint(GB_MATERIAL_METAL_SHIFT)) & 255u) * byte_scale, 0.0f);
 }
 
 // RT2.a of a word.
@@ -151,6 +153,10 @@ uint GbRt3Class(float2 rt3) {
 }
 uint GbRt3Flags(float2 rt3) {
   return (uint(rt3.y * 255.0f + 0.5f) >> 5u) & 7u;
+}
+// Screen PBR keeps its binary material rule: bytes 128 through 255 select metal.
+bool GbRt3MetalFlag(float3 rt3) {
+  return rt3.z >= 0.5f;
 }
 
 // ---- the gloss: smoothness, the GGX alpha, the game's Blinn-Phong power (the twin: gbuffer_rules.h part 3) --------------------------------------

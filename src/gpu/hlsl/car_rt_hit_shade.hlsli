@@ -19,6 +19,11 @@
 // CarHitShade returns false where there is nothing to shade with (hit shading off, no frame light, the instance's class is 0: the shader of that draw is not one the table
 // knows) and the caller keeps today's stand-in colour. The colour it makes is in the paint's units times `units` (2^exp_bias): the history's.
 //
+// PBR LEVEL 1 (task PBR-1B; the frame's RT_HIT_FRAME_PBR, the debug switch mcla_gpu_pbr): with the flag the hit is lit by the SHARED physically based model (hlsl/pbr_brdf.hlsli through hlsl/pbr_rt_hit.hlsli): a PbrSurface from
+// the class (chrome a metal, the other classes' roughness, F0 from the draw's fresnel minimum), the ambient through PbrEnvDiffuseWeight, the sun and the street lamp through PbrDirect (their highlights are the BRDF's:
+// the clear coat's fake lobes below are not used), the environment through PbrEnvSpecularWeight. The frame's detail (0: the shading as it was) still gates the sun's and the lamp's PbrDirect (off: their diffuse alone as irradiance), the
+// openness, the contact and the class's ambient are the car's own and stay. Without the flag every line that is not marked PBR is the model of old. car_rt_material_rules.h ShadeReference is the twin of both.
+//
 // The numbers of the classes, the flags and the rows are car_rt_material_rules.h's (car_rt_material_rules_test.cpp checks that this file holds them).
 //
 // CHECK (nothing here was run): the units of the environment map against the paint's (it is read unscaled and the result times 2^exp_bias); the paraboloid's sign and axis (decoded
@@ -29,6 +34,7 @@
 
 #include "car_rt_hit_material.hlsli"
 #include "nan_guard.hlsli"
+#include "pbr_rt_hit.hlsli"
 
 static const float kCarHitMaxColour = 60000.0;   // a hit's colour in the history's units: what a half float keeps with room
 
@@ -60,6 +66,14 @@ static float gCarHitGlow = 0.0;
 // RT-HIT-SHADING-5 (car_rt_material_rules.h kClassAmbient, kClassGlint)
 static const float kClassAmbient[8] = {1.0, 1.0, 1.0, 0.8, 1.0, 1.0, 0.45, 0.85};
 static const float kClassGlint[8] = {0.5, 1.0, 1.0, 0.0, 1.0, 0.8, 0.0, 0.3};
+// PBR 1B (car_rt_material_rules.h kClassBody, kClassRoughness, kLampRoughness, kF0Min, kF0Max): by class (none, paint, glass, tyre, chrome, light, interior, other). The body's share of the albedo's light (a lamp's lens keeps its old
+// diffuse share; chrome is a metal, the model takes its diffuse away), the perceptual roughness (the coat, glass, chrome and a lens take the roughness of the sun's old glint lobe, Blinn-Phong power 160: PbrRoughnessFromBlinnPower
+// = 1/3, so the highlight keeps its old width and brightness; a tyre, the interior and the rest are matt), the street lamp's wider lobe (power 14), the range the draw's fresnel minimum is taken as the dielectric F0 in.
+static const float kClassBody[8] = {1.0, 1.0, 1.0, 1.0, 1.0, 0.3, 1.0, 1.0};
+static const float kClassRoughness[8] = {0.6, 0.3333333, 0.3333333, 0.85, 0.3333333, 0.3333333, 0.8, 0.6};
+static const float kLampRoughness = 0.5946036;
+static const float kF0Min = 0.02;
+static const float kF0Max = 0.1;
 
 
 // RT-HIT-SHADING-5: a small integer hash (PCG; car_rt_material_rules.h Pcg) and the two numbers in [0, 1) the sky ray's jitter takes from the hit's place (OpenHash).
@@ -196,15 +210,43 @@ bool CarHitShade(uint instance, uint primitive, float2 barycentrics, float3 norm
     const float fresnel = CarMatFresnel(m, nv);
     const float3 tint = m.cls == CAR_MAT_CLASS_CHROME ? albedo : float3(1.0, 1.0, 1.0);
 
-    float3 result = albedo * light * kClassDiffuseGain[m.cls] + env * (fresnel * kClassSpecGain[m.cls] * f.specGain) * tint * ground;
-    // the clear coat's image of the sun (by day) and of a lamp high over the street (at night): a lobe where the reflected ray points at the light, by the coat's fresnel at the ray's own view
+    float3 result;
     [branch]
-    if (detail > 0.0 && kClassGlint[m.cls] > 0.0)
+    if ((f.flags & RT_HIT_FRAME_PBR) != 0u)
     {
-        const float coat = m.cls == CAR_MAT_CLASS_CHROME ? fresnel : kCoatF0 + (1.0 - kCoatF0) * pow(saturate(1.0 - nv), kCoatPower);
-        const float sunLobe = ndl > 0.0 ? pow(saturate(dot(reflected, toSun)), kSunGlintPower) : 0.0;
-        const float lampLobe = night > 0.0 ? pow(saturate(dot(reflected, up)), kLampGlintPower) : 0.0;
-        result += f.sun * (kSunRadiance * sunLobe * visible * daySun + kLampRadiance * lampLobe * night * openness) * (coat * kClassGlint[m.cls] * detail) * tint;
+        // CHECK: Compare PBR on/off in car reflections and inspect the lower body panels for a colour cast.
+        // PBR 1B: the hit through the shared model. The surface: the albedo by the body's share, the class's roughness, chrome a metal, the draw's fresnel minimum as the dielectric F0.
+        const PbrSurface surface = PbrMakeSurface(normal, albedo * kClassBody[m.cls], kClassRoughness[m.cls], m.cls == CAR_MAT_CLASS_CHROME ? 1.0 : 0.0, clamp(m.fresnelMin, kF0Min, kF0Max));
+        const float3 toViewer = -direction;
+        const float3 ambientLight = fill * (f.ambientGain * hemisphere * classAmbient * ground);
+        const bool direct = detail > 0.0;   // the frame's detail 0 is the shading as it was: the sun and the lamp light the surface diffusely only
+        result = PbrRtDiffuse(surface, nv, direct ? ambientLight : ambientLight + f.sun * (ndl * visible * daySun + lampLight));
+        [branch]
+        if (direct && ndl > 0.0 && daySun > 0.0)
+        {
+            result += PbrRtDirect(surface, toViewer, toSun, f.sun * (visible * daySun));
+        }
+        [branch]
+        if (direct && lampLight > 0.0)
+        {
+            PbrSurface lampSurface = surface;
+            lampSurface.roughness = max(surface.roughness, kLampRoughness);   // a lamp over the street is a wider light than the sun's disc
+            result += PbrRtDirectIrradiance(lampSurface, toViewer, up, f.sun * lampLight);
+        }
+        result += PbrRtReflection(surface, nv, env) * (kClassSpecGain[m.cls] * f.specGain * ground);
+    }
+    else
+    {
+        result = albedo * light * kClassDiffuseGain[m.cls] + env * (fresnel * kClassSpecGain[m.cls] * f.specGain) * tint * ground;
+        // the clear coat's image of the sun (by day) and of a lamp high over the street (at night): a lobe where the reflected ray points at the light, by the coat's fresnel at the ray's own view
+        [branch]
+        if (detail > 0.0 && kClassGlint[m.cls] > 0.0)
+        {
+            const float coat = m.cls == CAR_MAT_CLASS_CHROME ? fresnel : kCoatF0 + (1.0 - kCoatF0) * pow(saturate(1.0 - nv), kCoatPower);
+            const float sunLobe = ndl > 0.0 ? pow(saturate(dot(reflected, toSun)), kSunGlintPower) : 0.0;
+            const float lampLobe = night > 0.0 ? pow(saturate(dot(reflected, up)), kLampGlintPower) : 0.0;
+            result += f.sun * (kSunRadiance * sunLobe * visible * daySun + kLampRadiance * lampLobe * night * openness) * (coat * kClassGlint[m.cls] * detail) * tint;
+        }
     }
     if ((m.flags & CAR_MAT_FLAG_EMISSIVE) != 0u)
     {

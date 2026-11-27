@@ -30,6 +30,7 @@
 #include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
+#include <rex/platform/file.h>
 
 #include "larecomp_log.h"
 #include "spdlog_console.h"  // LarecompLogFolder()
@@ -38,7 +39,10 @@
 #include "bootprogress/pack_progress_rules.h"
 #include "citypack/builder.h"
 #include "citypack/hit_data.h"
+#include "gpu/gbuffer_materials.h"
+#include "mc_engine/modloader/modloader.h"
 #include "mc_engine/modloader/xcompress.h"
+#include "os/environment.h"
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/gpu.h"
@@ -87,11 +91,15 @@ cp::BuildResult BuildGuarded(const cp::BuildRequest& request, cp::ProgressSink* 
   return result;
 }
 
-// The hit data's request for the same files: the default rules and zstd level and no GB-F2 rows, which is what citypack_tool build-hit gives with no options, so a file the tool made is
-// current for the game and the other way round (the stamp has the rules and the rows' hash; the app version is information only).
+// The hit pack bakes the local table into its material words. Its stamp tracks the source files for both setup and the background build.
 cp::HitDataRequest MakeHitRequest(const cp::BuildRequest& base) {
+  namespace gb = mcla::gpu::gbuffer;
   cp::HitDataRequest request;
   request.base = base;
+  const auto environment = larecomp::os::ReadEnvironment(gb::kTextureTableEnvironment);
+  const auto mods_folder = mc::modloader::ModRootDir(rex::platform::GetExecutableFolder());
+  request.texture_rows = gb::TextureTableSources(base.out_dir.parent_path(), mods_folder, environment.value_or(""));
+  // CHECK: verify a local table changes the hit stamp and applies rows when setup rebuilds it.
   return request;
 }
 

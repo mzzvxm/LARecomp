@@ -104,6 +104,9 @@
 // (alpha: the share of its samples above the cap of ao_color_ps: a source of light, not a surface) the pixel
 // receives nothing. Replace, not add: a flat surface has B near 0 and its factor stays the occlusion's, a crease
 // beside a lit wall gets the wall's colour back where the occlusion took the ambient away.
+// PBR LEVEL 1C (perf\PBR.md; mcla_gpu_pbr): the bounce is multiplied by the DIFFUSE SHARE of the pixel in the shared model (pbr_screen_common.hlsli PbrScreenDiffuseShare: 0 for a metal, 1 - the
+// reflection's weight for a dielectric: what the specular layer lets through), read from RT3 where the frame has the plane at the picture's size: slots.y or the car-sun lookup holds
+// its bindless slot + 1 (0: none, the share is 1 as it was). The estimate of the albedo (colour / T) is unchanged: the share is the part of it that takes incoming diffuse light.
 // Push fields of this variant (the apply's others as above): slots.z the image of the visibility and the bounce
 // (RGBA16F, at the passes' size: the a-trous filter's output), slots2.y the colour chain's level 0 (RGBA16F: rgb
 // the cleaned colour, a the share of capped samples), shape.y the strength, flags bits 8-15 the limit in units
@@ -135,6 +138,7 @@
 #include "nan_guard.hlsli"
 #if AO_GI
 #include "ssgi_common.hlsli"
+#include "pbr_screen_common.hlsli"
 #endif
 
 static const float kViewScale = 0.3f;
@@ -186,6 +190,21 @@ bool AoPaintOn() { return AoPaintCode() != 15u; }
 // apply has no use for the slices and steps the main pass keeps there). The cap multiple of the ceiling: bits 26-31 in
 // units of 0.25.
 float GiLimit() { return float((g_push.slots2.z >> 8) & 0xFFu) * 0.04f; }
+// slots.y bit 15 (ao_gbuffer::kApplyMaterialFlag) admits RT3. With car sun on,
+// the same lookup already resident for that frame carries the RT3 slot + 1.
+uint GiMaterialCode() {
+  if ((g_push.slots.y & (1u << 15)) == 0u) return 0u;
+  const uint slot = g_push.slots.y >> 16u;
+  return (g_push.slots.y & 0x100u) != 0u ? uint(g_textures[slot].Load(int3(2, 0, 0)).x) : slot;
+}
+// RT3 at the pixel (the guest's sample 0 where the planes are multisampled: the host sample the depth is read at).
+float3 GiLoadMaterial(int2 p, uint slot) {
+#if AO_DEPTH_MS
+  return g_textures_ms[slot].Load(p, g_push.slots.y & 0xFFu).xyz;
+#else
+  return g_textures[slot].Load(int3(p, 0)).xyz;
+#endif
+}
 float GiCap() { return float((g_push.slots2.z >> 26) & 0x3Fu) * 0.25f; }
 #endif
 
@@ -359,8 +378,9 @@ void QuarterGiAt(int2 pixel, float tc, float3 pc, float3 normal, uint vehicle,
 // pixel of the picture: as they are, or, from the half resolution ones, one bilinear upsample whose weights fall
 // with the difference of linear depth (VisibilityAt's), the two images by the same weights. `vehicle` is the share
 // of the same neighbourhood that the depth pass marked as a vehicle (the depth image's lowest bit), 0 to 1.
-void GiAt(uint gi_slot, uint colour_slot, int2 pixel, float tc, out float4 gi, out float4 colour,
+void GiAt(uint gi_word, uint colour_slot, int2 pixel, float tc, out float4 gi, out float4 colour,
           out float vehicle) {
+  const uint gi_slot = gi_word;
   if (!AoLow()) {
     gi = g_textures[gi_slot].Load(int3(pixel, 0));
     colour = g_textures[colour_slot].Load(int3(pixel, 0));
@@ -564,7 +584,17 @@ float4 main(float4 position : SV_Position) : SV_Target {
   const float luma_c = dot(gi_colour.rgb, kLuma);
   const float surface = 1.0f - saturate(gi_colour.a);
   const float gi_strength = SsgiStrengthFor(g_push.shape.y, gi_vehicle);
-  float3 bounce = (gi_strength * fade * surface / max(light_t, luma_c)) * gi_image.yzw;
+  float diffuse_share = 1.0f;   // PBR level 1C: the share of the pixel's colour that takes incoming diffuse light (a metal none, a dielectric 1 minus the reflection's weight)
+  const uint material_code = GiMaterialCode();
+  if (material_code != 0u) {
+    const float3 material = GiLoadMaterial(pixel, material_code - 1u);
+    const uint cls = GbRt3Class(material.xy);
+    if (cls != GB_CLASS_NONE) {
+      diffuse_share = PbrScreenDiffuseShare(cls, GbRt3MetalFlag(material), GbRt3Smoothness(material.xy),
+                                           saturate(dot(normal, pc * (-1.0f / max(length(pc), 1.0e-6f)))));
+    }
+  }
+  float3 bounce = (gi_strength * fade * surface * diffuse_share / max(light_t, luma_c)) * gi_image.yzw;
   // The gain limit: the largest channel through the soft clip, the hue kept.
   const float bounce_peak = max(max(bounce.x, bounce.y), bounce.z);
   if (bounce_peak > 0.0f) {

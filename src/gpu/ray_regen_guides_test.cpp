@@ -570,13 +570,19 @@ void CheckSources(const std::string& dir) {
   Check(Has(cs, "#define SSR_REGEN_EXTRA 1\n#include \"ssr_pass.hlsli\"\n#include \"ray_regen_common.hlsli\"") && Has(cs, "[numthreads(8, 8, 1)]") && gd::Groups(960) == 120 && gd::Groups(961) == 121,
         "the shader takes the extra words, runs 8 x 8 threads, and the host's groups round up");
   Check(Has(cs, "RgSignalTexel(trace.xyz, SsrHitDistance(trace.w), true)") && Has(cs, "RgDepthTexel(true, z_block, depth_sign)") && Has(cs, "RgNormalsTexel(n_world, roughness, 0u)") &&
-            Has(cs, "RgSpecularAlbedo(f0, ab)") && Has(cs, "RgMotionTexel(cur, previous.u, previous.v, previous.z, t_texel, previous.z > 1.0e-3f, depth_sign)"),
+            Has(cs, "SsrFresnel(surface.cls, surface.metal, albedo, have_albedo, smoothness, nov, pbr)") && Has(cs, "RgMotionTexel(cur, previous.u, previous.v, previous.z, t_texel, previous.z > 1.0e-3f, depth_sign)"),
         "the shader writes each image through its function of the common file");
   Check(Has(cs, "const bool traced = trace.w != 0.0f && z_block < kSsrSky * 0.5f;"), "a texel is traced where the trace's alpha is not 0 (the trace's own class gate is the answer)");
   Check(Has(cs, "RgDepthTexel(false, 0.0f, depth_sign)") && Has(cs, "g_signal[pix] = float4(0.0f, 0.0f, 0.0f, 0.0f);"), "a texel that is not traced is passed through: all 0 and a depth outside the bounds");
   Check(Has(cs, "SsrPickInBlock(SsrLinearAt(t0), SsrLinearAt(t1), SsrLinearAt(t2), SsrLinearAt(t3), z_block)"), "the receiver is the one the trace picks (the pixel of the 2x2 block whose depth is the Hi-Z's)");
-  Check(Has(cs, "1.0f - smoothness") && Has(cs, "SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET))"), "the roughness is the one the trace used: the wet road's smoothness");
-  Check(Has(cs, "SsrEnvBrdf(roughness, nov)") && Has(cs, "GB_CLASS_METAL"), "the specular albedo is the resolve's Fresnel: the environment BRDF at the roughness and N.V, a metal's F0 its albedo");
+  Check(Has(cs, "SsrRoughness(smoothness, pbr)") && Has(cs, "const bool pbr = SsrPbr();") && Has(cs, "SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET))"), "the roughness is the one the trace used: the wet road's smoothness, through the PBR switch (PBR 1C)");
+  Check(Has(cs, "SsrFresnel(surface.cls, surface.metal, albedo, have_albedo, smoothness, nov, pbr)") && Has(cs, "PbrScreenMetalness(surface.cls, surface.metal) > 0.0f") && Has(cs, "SsrRt2At(texel)"),
+        "the specular albedo is the resolve's Fresnel (ssr_common.hlsli SsrFresnel, the apply's own function): the metal's albedo is read for a metal only");
+  {
+    const std::string common = Read(dir, "hlsl/ssr_common.hlsli");
+    Check(Has(common, "SsrEnvBrdf(1.0f - smoothness, nov)") && Has(common, "cls == uint(GB_CLASS_METAL)") && Has(common, "return PbrScreenReflectionWeight(cls, metal_flag, smoothness, albedo, have_albedo, nov);"),
+          "SsrFresnel: off, the environment BRDF at 1 - smoothness with F0 0.04 and a metal's albedo; on, the shared model's reflection weight");
+  }
   Check(Has(cs, "pos = float2(texel) + 0.5f - jitter"), "the motion starts from the texel's unjittered place (the jitter taken out)");
   // the registration of the shader
   Check(Has(cmake, "\nlarecomp_gpu_host_shader(ray_regen_ssr_cs cs_6_0)\n"), "the CMake line makes the shader (plain Shader Model 6.0: the model AMD needs is for its own runtime)");
@@ -627,10 +633,19 @@ void CheckBounce(const std::string& dir) {
   const std::string apply = Read(dir, "gi_apply.cpp");
   const std::string runtime = Read(dir, "ray_regen.cpp");
   const std::string ssr = Read(dir, "ssr.cpp");
+  const std::string ao = Read(dir, "hlsl/ray_regen_ao_cs.hlsl");
+  const std::string ao_host = Read(dir, "ray_regen_ao.cpp");
+  Check(Has(ao_host, "(table ? in.vehicle_ids : 0u) | (pbr_screen::Enabled() ? 1u << 31 : 0u)") &&
+            Has(ao, "(g_push.vehicle_ids & (1u << vehicle)) == 0u") &&
+            Has(ao, "(g_push.vehicle_ids & (1u << 31)) != 0u && cls != GB_CLASS_NONE") &&
+            Has(ao, "PbrRoughnessFromSmoothness(smoothness)") &&
+            Has(ao, "PbrMetalOfScreen(cls, GbRt3MetalFlag(material))"),
+        "Ray Regeneration AO uses RT3 PBR guides without changing the vehicle motion mask");
   Check(Has(shader, "traced = hit.y > 0.0f && t > 0.0f && t < kRgNoDepth") &&
             Has(shader, "g_depth[id.xy] = RgDepthTexel(traced, t, g_push.depth_sign)") && Has(shader, "g_signal[id.xy] = 0.0f"),
         "untraced bounce texels carry a zero signal and an out-of-range signed depth");
-  Check(Has(shader, "Load(tap).xyz, hit.x, true") && Has(shader, "cls == GB_CLASS_METAL ? float3(0.0f, 0.0f, 0.0f) : albedo"),
+  Check(Has(shader, "Load(tap).xyz, hit.x, true") && Has(shader, "cls == GB_CLASS_METAL ? float3(0.0f, 0.0f, 0.0f) : albedo") &&
+            Has(shader, "1.0f - PbrMetalOfScreen(cls, GbRt3MetalFlag(material))") && Has(Read(dir, "gi_pixel.cpp"), "push.pbr = pbr_screen::Enabled();"),
         "irradiance carries hit distance in alpha, with diffuse albedo zero on metal");
   Check(Has(shader, "min(id.xy * g_push.render_step.z, render - 1u)") && Has(shader, "float2(pixel) + 0.5f - g_push.jitter") &&
             Has(shader, "RgMotionTexel(uv, prev_uv.x, prev_uv.y, prev.z, t, true, g_push.depth_sign)"),

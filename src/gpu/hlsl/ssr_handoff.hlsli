@@ -56,7 +56,7 @@ SsrFallback SsrSurfaceFallback(uint cls, int2 texel, float3 pc, float3 normal, f
       const float3 dir = reflect(normalize(pc), normal);
       const bool correct_ground = ground && g_handoff.Load(164u) != 0u;
       const float3 probe_to_receiver = correct_ground ? SsrViewToWorld(pc) + asfloat(g_handoff.Load3(152u)) : 0.0f;
-      result.env = clamp(NgFinite3(EnvFallbackSample(env_word, probe_to_receiver, normalize(SsrViewToWorld(dir)), 1.0f - smoothness, correct_ground) *
+      result.env = clamp(NgFinite3(EnvFallbackSample(env_word, probe_to_receiver, normalize(SsrViewToWorld(dir)), (SsrPbr() ? SsrRoughness(smoothness, true) : 1.0f - smoothness), correct_ground) *
                                     asfloat(g_handoff.Load(8u))), 0.0f, cap);
       // CHECK: compare glass energy against the guest view in both day and night.
       // Glass already shows the guest environment. Use the same probe as
@@ -71,7 +71,7 @@ SsrFallback SsrSurfaceFallback(uint cls, int2 texel, float3 pc, float3 normal, f
   if (SsrHasSlot(ao_slot) && (result.has_planar || result.has_env)) {
     const int2 ao_texel = texel >> int(SsrHi(ao_word));
     const float ao = g_textures[ao_slot].Load(int3(ao_texel, 0)).x;
-    result.visibility = SpecularOcclusion(dot(normal, to_camera), ao, SsrAlphaOfSmooth(smoothness));
+    result.visibility = SpecularOcclusion(dot(normal, to_camera), ao, SsrAlpha(smoothness, SsrPbr()));
     // Subtract the original guest contribution even when the replacement is darker.
     result.planar *= result.visibility;
     result.env *= result.visibility;

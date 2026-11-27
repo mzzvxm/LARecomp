@@ -21,10 +21,12 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 #include "dlss_rr_rules.h"
 #include "gbuffer_rules.h"
 #include "gbuffer_types.h"
+#include "pbr_screen_rules.h"
 
 namespace mcla::gpu::rr_guides {
 
@@ -128,10 +130,19 @@ struct GuidesPush {
   uint32_t info[4];    // x the width, y the height of the render size, z the host sample that is the guest's sample 0, w the bounce light's hit image's slot (kNoSlot: none; CITY-RT G6)
   float right[4];      // xyz the camera's right axis in world space, w tan of half the horizontal field of view
   float up[4];         // xyz the up axis, w tan of half the vertical field of view
-  float forward[4];    // xyz the forward axis, w unused
+  float forward[4];    // xyz the forward axis, w the pass's flags as BITS (FlagsWord: kFlagPbr, PBR level 1C)
   float lin[4];        // the projection's depth rows P22 P23 P32 P33 (ao.cpp FillPush)
 };
 static_assert(sizeof(GuidesPush) == 112, "seven rows of 16 bytes: under the 128 bytes Vulkan guarantees");
+// PBR level 1C: forward.w carries the pass's flags as bits (hlsl/rr_guides_common.hlsli RR_FLAG_PBR): the guides through the shared physically based model (mcla_gpu_pbr).
+inline constexpr uint32_t kFlagPbr = 1u;
+inline float FlagsWord(bool pbr) {
+  const uint32_t bits = pbr ? kFlagPbr : 0u;
+  float word;
+  static_assert(sizeof(word) == sizeof(bits));
+  std::memcpy(&word, &bits, sizeof(word));
+  return word;
+}
 
 struct ViewPush {
   uint32_t slots[4];   // x the diffuse albedo's bindless slot, y the normal + roughness image's, z the specular albedo's, w the hit distance's
@@ -258,6 +269,8 @@ inline Vec3 DiffuseAlbedo(const float rt2[4]) {
 
 // RT3's class of a texel's green (unorm): GbRt3Class.
 inline uint32_t Rt3Class(float green) { return uint32_t(green * 255.0f + 0.5f) & uint32_t(gbuffer::kClassMask); }
+// RT3.b carries the material table's metalness.
+inline bool Rt3MetalFlag(float blue) { return blue >= 0.5f; }
 
 struct Pixel {
   Vec3 diffuse;
@@ -295,6 +308,31 @@ inline Pixel SurfacePixel(const float rt1[2], const float rt2[4], const float rt
   px.normal = n;
   px.roughness = roughness;
   px.specular = SpecularAlbedo(f0, roughness * roughness, gbuffer::Dot(n, Mul(view_dir, -1.0f)));
+  px.hit = 0.0f;
+  return px;
+}
+
+// RrSurfaceNormal and RrSurfacePixelPbr (PBR level 1C; the header's paragraph in hlsl/rr_guides_common.hlsli): the same pixel through the shared model. The diffuse albedo is the base colour (0.5 where RT2 holds none)
+// times (1 - metalness), never under the floor; the specular albedo the contract's split sum with N.V as an absolute value; the roughness the contract's.
+inline Pixel SurfacePixelPbr(const float rt1[2], const float rt2[4], const float rt3[3], Vec3 depth_normal, Vec3 view_dir) {
+  Pixel px;
+  Vec3 n = Mul(view_dir, -1.0f);
+  if (rt1[0] > 0.0f || rt1[1] > 0.0f) {
+    n = gbuffer::OctDecode({rt1[0], rt1[1]});
+  } else if (gbuffer::Dot(depth_normal, depth_normal) > 0.5f) {
+    n = Facing(depth_normal, view_dir);
+  }
+  const bool have_albedo = HasAlbedo(rt2);
+  const Vec3 albedo = {gbuffer::AlbedoDecode(rt2[0]), gbuffer::AlbedoDecode(rt2[1]), gbuffer::AlbedoDecode(rt2[2])};
+  const uint32_t cls = Rt3Class(rt3[1]);
+  const bool metal_flag = Rt3MetalFlag(rt3[2]);
+  const Vec3 base = have_albedo ? albedo : Vec3{kUnknownAlbedo, kUnknownAlbedo, kUnknownAlbedo};
+  const pbr_screen::Vec3 d = pbr_screen::DiffuseGuide(cls, metal_flag, {base.x, base.y, base.z}, kMinAlbedo);
+  const pbr_screen::Vec3 s = pbr_screen::ReflectionWeight(cls, metal_flag, rt3[0], {albedo.x, albedo.y, albedo.z}, have_albedo, std::fabs(gbuffer::Dot(n, Mul(view_dir, -1.0f))));
+  px.diffuse = {d.x, d.y, d.z};
+  px.normal = n;
+  px.roughness = pbr_screen::pbr::RoughnessFromSmoothness(rt3[0]);
+  px.specular = {s.x, s.y, s.z};
   px.hit = 0.0f;
   return px;
 }

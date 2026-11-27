@@ -2067,7 +2067,7 @@ void TestShaderText(const std::string& src) {
     // The shader is split in LpOneLight (the term, the neon contact term) and LpShadowed (the shadows and the ray's visibility; GB-NEON-CONTACT made the split so that the capped tube path calls it too). The order is
     // the same: the term, then the ray's visibility, then the lamp branch, then the atlas, then the product. The term is now the argument `add` that LpOneLight and LpCappedLights pass in.
     const size_t one_at = ps.find("float4 LpOneLight(");
-    const size_t term_at = ps.find("float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));", one_at);
+    const size_t term_at = ps.find("float3 add = NgFinite3(LpLightAt(l, g, world, normal, albedo, lit, mat));", one_at);
     const size_t call_at = ps.find("return LpShadowed(l, g, flags, p, world, normal, add);", term_at);
     const size_t capped_at = ps.find("LpShadowed(l[j], g, flags, p, world, normal, one);");
     const size_t shadowed_at = ps.find("float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {");

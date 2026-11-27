@@ -25,7 +25,7 @@
 //   it (kGBufferCarsPlanes below: gbuffer_rules.h kStagePlanes; RT1, RT2 and RT3 since GB-W2 is merged).
 //
 // WHAT THE STAGE EDITS (each anchor must be found the number of times said or the variant is not built: the HLSL is not the one it was written for):
-//   1. the outputs: `, out float2 oC1 : SV_Target1` (+ `oC2 : SV_Target2` float4 and `oC3 : SV_Target3` float2 as the planes say), after `out float4 oC0 : SV_Target0`
+//   1. the outputs: `, out float2 oC1 : SV_Target1` (+ `oC2 : SV_Target2` float4 and `oC3 : SV_Target3` float4 as the planes say), after `out float4 oC0 : SV_Target0`
 //   2. the 48 byte block of GBufferConstants (DeclareConstants), the helper (gbuffer_common.hlsli) before main
 //   3. a captured copy where a value must outlive its register: the diffuse texel (GB-W1's capture) or the paint (one line after the game's vinyl statement: `float3 gbAlbedo = r3.xyz;`)
 //   4. for the shaders with no exported normal: the fragment's world point and its derivatives at the top of main (GB-D's text)
@@ -67,7 +67,7 @@ namespace larecomp::shaderpack {
 // Hand bumped: the table, the edits or the checks of the car stage (a change also bumps gbuffer.h's kGBufferVariantVersion, the pixel stage's stamp line).
 // 1 was the GB-G0 spike's prototype, which never was in a pack. 2: the stage in the pack: the albedo of 51 + 4 + 2 shaders, the back face flip, the draw's word, the xBumpSpec smoothness.
 // 3 (GB-G2): the traffic paint's albedo from the vertex stage (kVertex), the traffic black matte's black albedo (kBlack), the pedestrian's normal from the vertex stage (kVertexOrDerivative).
-inline constexpr uint32_t kGBufferCarsVersion = 3;
+inline constexpr uint32_t kGBufferCarsVersion = 4;
 // The car stage's rows of the G-buffer's vertex stage (GBufferCarVsShaders). The vertex stage's definition (MakeGBufferVsVariantAll) has the version kGBufferVsVersion + this, so a bump of either rebuilds its
 // pack entries.
 inline constexpr uint32_t kGBufferCarsVsVersion = 1;

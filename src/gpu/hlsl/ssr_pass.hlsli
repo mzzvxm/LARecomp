@@ -60,7 +60,9 @@ uint SsrSample0() { return SsrW(SSR_W_FLAGS) & 15u; }
 uint SsrHizLevels() { return (SsrW(SSR_W_FLAGS) >> 4u) & 15u; }
 uint SsrColourLevels() { return (SsrW(SSR_W_FLAGS) >> 8u) & 15u; }
 bool SsrFlag(uint flag) { return ((SsrW(SSR_W_FLAGS) >> SSR_FLAG_SHIFT) & flag) != 0u; }
-uint SsrRays() { return ((SsrW(SSR_W_FLAGS) >> SSR_RAYS_SHIFT) & 3u) + 1u; }
+uint SsrRays() { return ((SsrW(SSR_W_FLAGS) >> SSR_RAYS_SHIFT) & 1u) + 1u; }
+// PBR level 1C: the shared physically based model is on (mcla_gpu_pbr; ssr_common.hlsli SsrRoughness, SsrFresnel)
+bool SsrPbr() { return ((SsrW(SSR_W_FLAGS) >> SSR_PBR_SHIFT) & 1u) != 0u; }
 uint SsrView() { return (SsrW(SSR_W_FLAGS) >> SSR_VIEW_SHIFT) & 15u; }
 bool SsrStableTrace() { return (SsrW(SSR_W_FLAGS) & SSR_TRACE_STABLE) != 0u; }
 uint SsrMaxIter() { return SsrW(SSR_W_FLAGS) >> SSR_ITER_SHIFT; }
@@ -86,9 +88,9 @@ float SsrLinearAt(int2 p) {
 float2 SsrRt1At(int2 p) {
   const uint slot = SsrHi(SsrW(SSR_W_DEPTH_RT1));
 #if SSR_MS
-  return g_textures_ms[slot].Load(p, SsrSample0()).xy;
+  return g_textures_ms[slot].Load(p, SsrSample0()).xyz;
 #else
-  return g_textures[slot].Load(int3(p, 0)).xy;
+  return g_textures[slot].Load(int3(p, 0)).xyz;
 #endif
 }
 float4 SsrRt2At(int2 p) {
@@ -102,12 +104,12 @@ float4 SsrRt2At(int2 p) {
   return g_textures[slot].Load(int3(p, 0));
 #endif
 }
-float2 SsrRt3At(int2 p) {
+float3 SsrRt3At(int2 p) {
   const uint slot = SsrHi(SsrW(SSR_W_RT2_RT3));
 #if SSR_MS
-  return g_textures_ms[slot].Load(p, SsrSample0()).xy;
+  return g_textures_ms[slot].Load(p, SsrSample0()).xyz;
 #else
-  return g_textures[slot].Load(int3(p, 0)).xy;
+  return g_textures[slot].Load(int3(p, 0)).xyz;
 #endif
 }
 
@@ -231,6 +233,7 @@ struct SsrSurface {
   uint cls;
   uint flags;
   float smoothness;   // before the wetness
+  bool metal;         // RT3's metal flag (the material table says metal; PBR level 1C)
   float world_up;     // the world normal's y where RT1 holds one (-2 where not)
 };
 // The class, flags and smoothness of the pixel `p` (the picture's): RT3's, or the stub's (no RT3 in the frame: a road wherever the world normal points up and the depth chain's mark is no vehicle;
@@ -240,6 +243,7 @@ SsrSurface SsrSurfaceAt(int2 p, bool vehicle) {
   s.cls = uint(GB_CLASS_NONE);
   s.flags = 0u;
   s.smoothness = 0.0f;
+  s.metal = false;
   s.world_up = -2.0f;
   if (SsrFlag(SSR_FLAG_STUB)) {
     const float2 rt1 = SsrRt1At(p);
@@ -252,10 +256,11 @@ SsrSurface SsrSurfaceAt(int2 p, bool vehicle) {
     }
     return s;
   }
-  const float2 rt3 = SsrRt3At(p);
-  s.cls = GbRt3Class(rt3);
-  s.flags = GbRt3Flags(rt3);
-  s.smoothness = GbRt3Smoothness(rt3);
+  const float3 rt3 = SsrRt3At(p);
+  s.cls = GbRt3Class(rt3.xy);
+  s.flags = GbRt3Flags(rt3.xy);
+  s.smoothness = GbRt3Smoothness(rt3.xy);
+  s.metal = GbRt3MetalFlag(rt3);
   return s;
 }
 

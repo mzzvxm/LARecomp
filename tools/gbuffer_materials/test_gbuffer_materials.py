@@ -26,8 +26,8 @@ def word(smooth, cls, flags, lit, metal=0):
 
 class Common(unittest.TestCase):
     def test_class_defaults_are_the_headers(self):
-        self.assertEqual(SMOOTH, [0, 38, 77, 230, 51, 13, 0, 26, 217, 242, 179, 242, 51, 0, 51, 242])
-        self.assertEqual(LIT, [255] * 13 + [0, 255, 255])
+        self.assertEqual(SMOOTH, [0, 38, 77, 230, 51, 13, 0, 26, 217, 242, 179, 242, 51, 0, 51, 242, 184])
+        self.assertEqual(LIT, [255] * 13 + [0, 255, 255, 255])
 
     def test_bytes_are_the_renderers(self):
         self.assertEqual(g.to_byte(0.95), 242)
@@ -40,12 +40,12 @@ class Common(unittest.TestCase):
         self.assertEqual(g.parse_fields(["smooth=0.4"])["smooth"], 102)
 
     def test_class_names(self):
-        self.assertEqual(len(g.CLASS_NAMES), 16)
+        self.assertEqual(len(g.CLASS_NAMES), 17)
         for i, name in enumerate(g.CLASS_NAMES):
             self.assertEqual(g.parse_class(name), i)
             self.assertEqual(g.parse_class(str(i)), i)
         self.assertEqual(g.parse_class("GLASS"), 11)
-        for bad in ("16", "", "glas", "-1"):
+        for bad in ("17", "", "glas", "-1"):
             self.assertIsNone(g.parse_class(bad))
 
     def test_census_lines(self):
