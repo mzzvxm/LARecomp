@@ -11,17 +11,20 @@ Several files in one run are one game build: they must carry the same optional m
 the value of launcher-recipe.json, the one place it is edited, when the recipe is among the files). A malformed min_launcher is an error.
 
 Output: one line per finding, `ERROR|WARN|INFO <file>: <where>: <what>`; exit 0 when there is no ERROR (with --strict, no WARN either).
-As a module: validate(doc, kind=None, dictionary=None, strict=False, manifest=None) -> Report(errors, warnings, infos). Pure Python 3, no packages (the JSON Schema
+As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to certify the checkout recipe against its codegen manifest.
+Pure Python 3, no packages (the JSON Schema
 subset it needs is built in: see SUPPORTED_KEYWORDS; the selftest fails if a schema uses another keyword).
 """
 import argparse
 import copy
 import json
 import os
+from pathlib import Path
 import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+REPO_ROOT = Path(HERE).resolve().parents[1]
 sys.dont_write_bytecode = True
 
 KINDS = {
@@ -1337,6 +1340,51 @@ def lint_recipe(doc, rep, facts, strict=False):
                 rep.error(where, 'expected a relative file path in the source checkout')
 
 
+def lint_codegen_placement(doc, rep, checkout):
+    codegen = doc.get('codegen', {})
+    args = codegen.get('args', [])
+    if codegen.get('tool') != 'rexglue' or len(args) < 2 or args[0] != 'codegen':
+        rep.error('codegen', 'expected rexglue codegen with an explicit manifest argument')
+        return
+    manifest_arg = args[1]
+    if manifest_arg.startswith('-') or not is_relative_file(manifest_arg):
+        rep.error('codegen.args[1]', 'expected a checkout-relative TOML manifest path')
+        return
+    if 'default.xex' not in codegen.get('inputs', []):
+        rep.error('codegen.inputs', 'expected the default.xex entrypoint input')
+        return
+
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        rep.error('codegen.args[1]', 'checking the checkout manifest requires Python 3.11 or newer')
+        return
+    try:
+        manifest_path = (checkout / manifest_arg).resolve(strict=True)
+        if manifest_path.relative_to(checkout).as_posix() != manifest_arg:
+            raise ValueError('use the exact checkout path and case')
+        with manifest_path.open('rb') as stream:
+            manifest = tomllib.load(stream)
+    except (OSError, RuntimeError, ValueError) as error:
+        rep.error('codegen.args[1]', f'cannot read manifest {manifest_arg!r}: {error}')
+        return
+
+    entrypoint = manifest.get('entrypoint')
+    file_path = entrypoint.get('file_path') if isinstance(entrypoint, dict) else None
+    if not isinstance(file_path, str) or not is_relative_file(file_path):
+        rep.error('codegen.args[1]', f'{manifest_arg!r} needs a relative [entrypoint].file_path')
+        return
+    # The manifest's paths start at its directory. Compare checkout-relative strings for Linux case.
+    expected = (manifest_path.parent / file_path).relative_to(checkout).as_posix()
+    if 'place' in codegen:
+        destination = codegen['place'].get('default.xex')
+    else:
+        destination = 'out/build/win-amd64-release/assets/default.xex'
+    if destination != expected:
+        rep.error("codegen.place['default.xex']",
+                  f'{destination!r} must match {manifest_arg!r} [entrypoint].file_path ({expected!r} from checkout)')
+
+
 def lint_describe(doc, rep, facts, strict=False):
     pass
 
@@ -1398,7 +1446,7 @@ def min_launcher_findings(named_docs):
     return out
 
 
-def validate(doc, kind=None, dictionary_doc=None, strict=False):
+def validate(doc, kind=None, dictionary_doc=None, strict=False, *, recipe_root=None):
     """Schema + rules for one parsed document. Returns a Report."""
     rep = Report()
     if kind is None:
@@ -1416,6 +1464,8 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False):
     facts = FactTypes(dictionary_doc or dictionary())
     used = LINTS[kind](doc, rep, facts, strict)
     rep.used = used
+    if kind == 'launcher-recipe' and recipe_root is not None and not rep.errors:
+        lint_codegen_placement(doc, rep, recipe_root)
     return rep
 
 
@@ -1428,6 +1478,68 @@ def facts_used_of(doc):
 
 
 # ---- selftest ------------------------------------------------------------------------------------------------------------------------------
+
+def selftest_codegen_placement(check):
+    from tempfile import TemporaryDirectory
+
+    recipe = load_json(REPO_ROOT / 'launcher-recipe.json')
+    rep = validate(recipe, strict=True, recipe_root=REPO_ROOT)
+    check(not rep.errors and not rep.warnings, f'checkout recipe: {rep.errors + rep.warnings}')
+
+    with TemporaryDirectory(prefix='lfg-codegen-') as temp:
+        checkout = Path(temp).resolve()
+        (checkout / 'setup').mkdir()
+        (checkout / 'setup/fixture.toml').write_text(
+            '[project]\nname = "fixture"\n'
+            '[entrypoint]\nfile_path = "build/assets/fixture.xex"\nout_directory_path = "fixture-generated"\n'
+            '[[modules]]\nfile_path = "other/assets/fixture.xex"\nout_directory_path = "fixture-module"\n', encoding='utf-8')
+        (checkout / 'fixture-other.toml').write_text(
+            '[project]\nname = "fixture"\n'
+            '[entrypoint]\nfile_path = "other/assets/fixture.xex"\nout_directory_path = "fixture-generated"\n', encoding='utf-8')
+        (checkout / 'fixture-invalid.toml').write_text('[entrypoint\n', encoding='utf-8')
+        (checkout / 'fixture-unsafe.toml').write_text(
+            '[entrypoint]\nfile_path = "../other/fixture.xex"\n', encoding='utf-8')
+        (checkout / 'fixture-no-entrypoint.toml').write_text(
+            '[[modules]]\nfile_path = "other/assets/fixture.xex"\n', encoding='utf-8')
+        codegen = {'tool': 'rexglue', 'args': ['codegen', 'setup/fixture.toml'], 'inputs': ['default.xex'],
+                   'place': {'default.xex': 'setup/build/assets/fixture.xex'}}
+        for changes, expected_error in (
+            ({}, ''),
+            ({'place': {'default.xex': 'setup/other/assets/fixture.xex'}}, 'must match'),
+            ({'place': {'default.xex': 'setup/build/Assets/fixture.xex'}}, 'must match'),
+            ({'place': {'default.xex': 'build/assets/fixture.xex'}}, 'must match'),
+            ({'place': {'default.xex': 'setup/../build/assets/fixture.xex'}}, 'relative file path'),
+            ({'place': {}, 'inputs': ['fixture.xex']}, 'entrypoint input'),
+            ({'args': ['codegen', 'fixture-other.toml']}, 'must match'),
+            ({'args': ['codegen', 'setup/Fixture.toml']}, 'cannot read manifest'),
+            ({'args': ['codegen', 'fixture-missing.toml']}, 'cannot read manifest'),
+            ({'args': ['codegen', '../fixture.toml']}, 'checkout-relative TOML'),
+            ({'args': ['codegen', '--fixture.toml']}, 'checkout-relative TOML'),
+            ({'args': ['codegen', 'fixture-invalid.toml']}, 'cannot read manifest'),
+            ({'args': ['codegen', 'fixture-unsafe.toml']}, 'relative [entrypoint].file_path'),
+            ({'args': ['codegen', 'fixture-no-entrypoint.toml']}, 'relative [entrypoint].file_path'),
+            ({'args': ['codegen']}, 'explicit manifest argument'),
+            ({'args': ['fixture-command', 'setup/fixture.toml']}, 'explicit manifest argument'),
+            ({'tool': 'fixture-tool'}, 'expected rexglue codegen'),
+        ):
+            candidate = {**recipe, 'codegen': {**codegen, **changes}}
+            rep = validate(candidate, strict=True, recipe_root=checkout)
+            check(any(expected_error in error for error in rep.errors) if expected_error
+                  else not rep.errors and not rep.warnings, f'codegen placement {changes}: {rep.errors + rep.warnings}')
+
+        (checkout / 'fixture-legacy.toml').write_text(
+            '[entrypoint]\nfile_path = "out/build/win-amd64-release/assets/default.xex"\n', encoding='utf-8')
+        legacy = {'tool': 'rexglue', 'args': ['codegen', 'fixture-legacy.toml'], 'inputs': ['default.xex']}
+        rep = validate({**recipe, 'codegen': legacy}, strict=True, recipe_root=checkout)
+        check(not rep.errors and not rep.warnings, f'legacy codegen placement: {rep.errors + rep.warnings}')
+        rep = validate({**recipe, 'codegen': {**legacy, 'place': {}}}, strict=True, recipe_root=checkout)
+        check(any('must match' in error for error in rep.errors), 'an explicit place map must include the entrypoint')
+        legacy['args'] = ['codegen', 'fixture-other.toml']
+        rep = validate({**recipe, 'codegen': legacy}, strict=True, recipe_root=checkout)
+        check(any('must match' in error for error in rep.errors), 'legacy placement must also match the manifest')
+        rep = validate({**recipe, 'codegen': legacy}, strict=True)
+        check(not rep.errors and not rep.warnings, f'generic recipe validation: {rep.errors + rep.warnings}')
+
 
 def selftest():
     failures = []
@@ -1671,6 +1783,7 @@ def selftest():
         check(not rep.errors and not rep.warnings, f'older {d["schema"]} without optional fields: {rep.errors + rep.warnings}')
     rep = mutate(lambda d: row(d, 'PM_RxFpsCap')['states'][0].update(when="live.city_data == 'ready'", live_only=True))
     check(not any('needs a ?? fallback' in m for m in rep.errors), 'live_only on a rule must silence lint 3')
+    selftest_codegen_placement(check)
     if failures:
         print('SELFTEST FAILED')
         for f in failures:
@@ -1710,7 +1823,9 @@ def main(argv=None):
             bad += 1
             continue
         loaded.append((path, doc))
-        rep = validate(doc, args.kind, dct, args.strict)
+        candidate = Path(path)
+        recipe_root = REPO_ROOT if candidate.parent.resolve() / candidate.name == REPO_ROOT / 'launcher-recipe.json' else None
+        rep = validate(doc, args.kind, dct, args.strict, recipe_root=recipe_root)
         for m in rep.errors:
             print(f'ERROR {path}: {m}')
         for m in rep.warnings:

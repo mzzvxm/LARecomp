@@ -556,10 +556,6 @@ def main():
     args = parser.parse_args()
     deps = check_deps()
     run([sys.executable, '-I', str(VALIDATOR), '--strict', str(ROOT / 'launcher-recipe.json')])
-    recipe = read(ROOT / 'launcher-recipe.json')
-    codegen_manifest = (ROOT / 'larecomp_manifest.toml').read_text(encoding='utf-8')
-    codegen_xex, = re.findall(r'(?m)^file_path = "([^"]+)"$', codegen_manifest)
-    assert recipe['codegen']['place']['default.xex'] == codegen_xex, 'codegen placement must match the entrypoint file_path'
     cases = (
         dict(windows=True, full=True, exports=True),
         dict(windows=True, mingw=True),
