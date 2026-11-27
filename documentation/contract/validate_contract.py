@@ -1216,10 +1216,46 @@ def lint_machine(doc, rep, facts, strict=False):
 # ---- install-manifest.json ----------------------------------------------------------------------------------------------------------------
 
 _PLACEHOLDER = re.compile(r'\{([^{}]*)\}')
+_STAGE_WINDOWS_CASE = str.maketrans('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz')
 
 
 def is_relative_file(path):
     return not re.search(r'[:\\\x00-\x1f]', path) and all(part not in ('', '.', '..') for part in path.split('/'))
+
+
+def lint_stage_destinations(stage, rep):
+    platforms = ('windows', 'linux', 'macos')
+    conflicts = {}
+    for platform in platforms:
+        destinations = {}
+        for index, entry in stage:
+            if platform not in entry.get('os', platforms):
+                continue
+            path = entry['to']
+            if platform == 'windows':
+                # ASCII case aliases are stable across Windows filesystem case tables.
+                path = path.replace('\\', '/').translate(_STAGE_WINDOWS_CASE)
+            parts = tuple(part for part in path.split('/') if part not in ('', '.'))
+            is_directory = path.endswith(('/', '/.')) or path == '.'
+            if parts in destinations:
+                other, _ = destinations[parts]
+                conflicts.setdefault((index, other, 'duplicate staging destination'), []).append(platform)
+            else:
+                destinations[parts] = (index, is_directory)
+
+        # A directory can provide a parent path. Its source contents are not listed in the manifest.
+        for parts, (index, _) in destinations.items():
+            for depth in range(1, len(parts)):
+                parent = destinations.get(parts[:depth])
+                if parent is not None and not parent[1]:
+                    conflicts.setdefault((index, parent[0], 'file blocks a staging directory'), []).append(platform)
+
+    entries = dict(stage)
+    for (index, other, reason), affected in conflicts.items():
+        entry = entries[index]
+        rep.error(f'stage[{index}:{entry["from"]}]',
+                  f'{reason} between {entry["to"]!r} and stage[{other}] destination {entries[other]["to"]!r}'
+                  f' on {", ".join(affected)}')
 
 
 def lint_manifest(doc, rep, facts, strict=False):
@@ -1279,17 +1315,22 @@ def lint_manifest(doc, rep, facts, strict=False):
     for name in doc.get('facts', {}):
         if not name.startswith('install.'):
             rep.error(f'facts.{name}', 'a file probe defines an install.* fact')
-    for i, s in enumerate(doc.get('stage', [])):
+    stage = doc.get('stage', [])
+    valid_destinations = []
+    for i, s in enumerate(stage):
         w = f'stage[{i}:{s["from"]}]'
         for field in ('from', 'to'):
             v = s[field]
             if re.match(r'^([A-Za-z]:|/|\\)', v) or '..' in re.split(r'[\\/]', v):
                 rep.error(w, f'{field} {v!r} is a relative path inside the folder (no drive, no ..)')
+            elif field == 'to':
+                valid_destinations.append((i, s))
         if s['kind'] == 'licence' and not s.get('licence_for'):
             rep.warn(w, 'a licence file says which file it is for (licence_for)')
         if s['to'].endswith('/') != s['from'].endswith('/**') and s['from'].endswith('/**'):
             rep.error(w, 'a folder "from" (ending /**) goes to a folder "to" (ending /)')
-    froms = [s['from'] for s in doc.get('stage', [])]
+    lint_stage_destinations(valid_destinations, rep)
+    froms = [s['from'] for s in stage]
     for f in set(froms):
         if froms.count(f) > 1:
             rep.warn('stage', f'{f!r} is staged twice')
@@ -2078,6 +2119,51 @@ def facts_used_of(doc):
 
 # ---- selftest ------------------------------------------------------------------------------------------------------------------------------
 
+def selftest_manifest_stage(check, manifest):
+    duplicate = 'duplicate staging destination'
+    blocked = 'file blocks a staging directory'
+    all_platforms = 'windows, linux, macos'
+    windows, linux, macos = ['windows'], ['linux'], ['macos']
+    cases = (
+        ('two files', 'pack/item', 'pack/item', {}, {}, (duplicate, all_platforms)),
+        ('file and its descendant', 'pack/item', 'pack/item/sub/file', {}, {}, (blocked, all_platforms)),
+        ('file above a folder', 'pack/item', 'pack/item/sub/', {}, {}, (blocked, all_platforms)),
+        ('file and matching folder', 'pack/item', 'pack/item/', {}, {}, (duplicate, all_platforms)),
+        ('two folder roots', 'pack/item/', 'pack/item/', {}, {}, (duplicate, all_platforms)),
+        ('optional Windows case alias', 'Pack/Item', 'pack/item', {}, {'os': windows, 'required': False},
+         (duplicate, 'windows')),
+        ('Windows separator alias', r'pack\item', 'pack/item', {}, {}, (duplicate, 'windows')),
+        ('Windows file ancestor', 'Pack/Item', r'pack\item\sub', {}, {'os': windows}, (blocked, 'windows')),
+        ('repeated separators', 'pack/item', 'pack//item', {}, {}, (duplicate, all_platforms)),
+        ('dot components', 'pack/item', './pack/./item', {}, {}, (duplicate, all_platforms)),
+        ('disjoint platforms', 'pack/item', 'pack/item', {'os': windows}, {'os': linux}, None),
+        ('partially overlapping platforms', 'pack/item', 'pack/item',
+         {'os': windows + linux}, {'os': linux + macos}, (duplicate, 'linux')),
+        ('Linux case distinction', 'Pack/Item', 'pack/item', {}, {'os': linux}, None),
+        ('Linux literal backslash', r'pack\item', 'pack/item', {}, {'os': linux}, None),
+        ('component boundary', 'pack/item', 'pack/item-extra/sub', {}, {}, None),
+        ('shared implicit parent', 'pack/item', 'pack/other', {}, {}, None),
+        ('declared directory parent', 'pack/item/', 'pack/item/file', {}, {}, None),
+        ('terminal dot needs a directory', 'pack/item/.', 'pack/item/file', {}, {}, None),
+        ('no expanding Windows case fold', 'pack/stra\u00dfe', 'pack/STRASSE', {'os': windows}, {'os': windows}, None),
+    )
+    for label, first, second, first_fields, second_fields, expected in cases:
+        entries = []
+        for i, (path, fields) in enumerate(((first, first_fields), (second, second_fields))):
+            suffix = '/**' if path.endswith('/') else '.bin'
+            entries.append({'from': f'fixture/stage-source-{i}{suffix}', 'to': path, 'kind': 'data', **fields})
+        for order in (entries, entries[::-1]):
+            report = validate({**manifest, 'stage': [*manifest['stage'], *order]}, strict=True)
+            if expected is None:
+                valid = not report.errors
+            else:
+                reason, platforms = expected
+                valid = (len(report.errors) == 1 and reason in report.errors[0]
+                         and report.errors[0].endswith(f' on {platforms}'))
+            check(valid and not report.warnings,
+                  f'manifest stage {label} with {order[0]["to"]!r} first: {report.errors + report.warnings}')
+
+
 def copy_recipe_kit_fixtures(checkout):
     for name in (CMAKE_DEPS_FILE, DXC_HOST_SOURCE):
         path = checkout / name
@@ -2679,6 +2765,7 @@ def selftest():
         rep = validate(d)
         check(any(fragment in m for m in rep.errors), f'mutation "{name}" not reported: {rep.errors[:2]}')
     idoc = load_json(os.path.join(ex_dir, 'install-manifest.example.json'))
+    selftest_manifest_stage(check, idoc)
     legacy = copy.deepcopy(idoc)
     legacy.pop('pipeline_key_settings')
     for action in legacy['actions']:
