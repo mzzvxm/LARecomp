@@ -1,0 +1,12 @@
+# CHECK: Inside the Sixth Street viaduct at the rtld0-bridge.scene camera. Confirm the deck and headlight pool read together.
+scene showcase-07-covered-underpass fps 30 step 1/30
+world hour 23 hold weather nice traffic off peds off parked off police off timescale 0.01
+hud off
+car player at 2132,-10.14,400.2 heading 90
+cam 0 pos 2150.00 -7.70 398.00 look 2095.00 -7.00 398.50 fov 60 ease inout
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+cam 5 pos 2148.20 -8.00 398.50 look 2095.00 -7.00 399.00 fov 57
+end 5

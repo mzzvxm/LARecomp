@@ -1,0 +1,11 @@
+# CHECK: Cabin pose from rtao-cockpit-night.scene. Director camera.rig=1 holds the stock cockpit view across preset restarts.
+scene showcase-03-cockpit-night fps 30 step 1/30
+world hour 23 hold weather nice traffic off peds off parked off police off timescale 0.01
+hud off
+car player at 1023.50,15.03,-568.77 heading 87.6
+cam 0 off
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+end 5

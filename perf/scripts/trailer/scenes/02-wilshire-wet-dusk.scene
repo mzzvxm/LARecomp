@@ -1,0 +1,13 @@
+# CHECK: Wilshire positions from showcase3-wilshire-rain.scene. Confirm the dusk sky and that the road wets before capture.
+scene showcase-02-wilshire-wet-dusk fps 30 step 1/30
+world hour 18.75 hold weather stormy traffic off peds off parked off police off timescale 0.01
+hud off
+car player at 810.00,-4.76,115.10 heading 259.2
+car hero spawn vp_lam_murcielago_06 at 800.00,-4.66,113.20 heading 93
+cam 0 pos 790.50 -3.29 118.90 look 860.00 3.10 112.00 fov 52 ease inout
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+cam 6 pos 792.25 -3.38 118.10 look 860.00 2.90 112.00 fov 50
+end 6

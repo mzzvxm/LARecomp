@@ -1,0 +1,13 @@
+# CHECK: Broadway composition from showcase3-broadway-rain.scene. Confirm the hero and lit storefronts stay in frame.
+scene showcase-01-broadway-night fps 30 step 1/30
+world hour 23 hold weather nice traffic off peds off parked off police off timescale 0.01
+hud off
+car player at 2278.04,-2.75,-232.44 heading 139.8
+car hero spawn vp_lam_murcielago_06 at 2284.60,-2.70,-240.20 heading 333
+cam 0 pos 2284.15 -1.20 -251.43 look 2256.33 5.35 -187.24 fov 52 ease inout
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+cam 6 pos 2282.85 -0.70 -248.70 look 2256.33 5.35 -187.24 fov 50
+end 6
