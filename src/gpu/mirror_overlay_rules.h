@@ -122,6 +122,10 @@ inline Why Decide(const Facts& f) {
 // the camera and the pose of the view
 // ---------------------------------------------------------------------------
 
+constexpr bool CanFinishViewPose(bool field_known, bool pose_known, bool camera_known, uint64_t picture_frame, uint64_t frame) {
+  return field_known && !pose_known && camera_known && picture_frame == frame;
+}
+
 // The main camera's axes in the world: the columns of the view matrix's rotation (row vectors: view = (p, 1) * V, so the view's x axis is the world direction (V00, V10, V20)), and its eye (the point
 // whose view coordinates are 0: p = -t R^T). False where the matrix is not a rigid motion (the axes must be unit and at right angles).
 struct CameraAxes {

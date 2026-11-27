@@ -45,7 +45,8 @@ void MirrorGlass::Initialize(CarFrame& car_frame) {
   pair_logged_ = false;
   first_need_logged_ = false;
   cabin_key_ = 0;
-  cabin_scanned_ = false;
+  cabin_why_ = mg::CabinWhy::kOutsideCockpit;
+  cabin_requested_ = false;
   ready_ = true;
 }
 
@@ -135,13 +136,15 @@ void MirrorGlass::Evaluate(const car_frame::Frame& frame) {
   evaluated_valid_ = frame.valid;
   result_ = mg::Result{};
   result_.guest_frame = frame_;
+  const bool cockpit = mirror_view::CurrentGuest().rig == cabin_mirror::kCockpitRig;
+  const bool cabin_enabled = cockpit && larecomp::settings::rearview_interior.Get();
   if (!active_ || !frame.valid || frame.draws.empty()) {
     result_.why = mg::Why::kNoCar;
+    if (cockpit) result_.cabin_why = cabin_enabled ? mg::CabinWhy::kNoCar : mg::CabinWhy::kDisabled;
     return;
   }
-  const bool cockpit = mirror_view::CurrentGuest().rig == cabin_mirror::kCockpitRig && larecomp::settings::rearview_interior.Get();
   temporal::Mat4 world_to_vehicle;
-  const bool vehicle_axes = cockpit && temporal::Inverse(frame.vehicle_to_world, &world_to_vehicle);
+  const bool vehicle_axes = cabin_enabled && temporal::Inverse(frame.vehicle_to_world, &world_to_vehicle);
   mg::ci::ViewBox body;
   finder_.BeginEvaluation();
   for (uint32_t i = 0; i < frame.draws.size(); ++i) {
@@ -169,6 +172,10 @@ void MirrorGlass::Evaluate(const car_frame::Frame& frame) {
   camera.view_projection = frame.view_projection;
   camera.flip_z = false;  // Frame::view is the occlusion's view space (z forward) by construction (mirror_glass_rules.h Camera)
   result_ = finder_.Choose(frame_, camera, world_to_vehicle, body);
+  if (cockpit && !body.valid) {
+    result_.cabin_why = !cabin_enabled ? mg::CabinWhy::kDisabled :
+        vehicle_axes ? mg::CabinWhy::kNoBodyBounds : mg::CabinWhy::kNoVehicleAxes;
+  }
 }
 
 const mg::Result& MirrorGlass::Current() {
@@ -212,15 +219,26 @@ void MirrorGlass::OnPresent() {
   // picture with nothing to compose it (the sky patch of the 11-24 front shots). No car frame: the old hold.
   const car_frame::Frame* frame = car_frame_ ? &car_frame_->Current() : nullptr;
   const mg::NeedState published = frame ? mirror_overlay::UpdateSideNeed(hold_, r.need, frame->valid, frame->view, frame->view_projection) : hold_.Update(r.need);
-  // CHECK: census the winning patch on 12-16 cars, including roof states and a bike.
   const auto& cabin = r.glass[cabin_mirror::kGlassIndex];
-  if (r.cabin_scanned && (!cabin_scanned_ || cabin.mesh_key != cabin_key_)) {
-    cabin_scanned_ = true;
-    REXLOG_INFO("[cabin mirror] frame {}: key {:016x}, draw {}, area {:.4f} m2, width {} px, requested {}",
-                frame_, cabin.mesh_key, cabin.draw, cabin.area, cabin.px_wide, cabin.needed);
-    cabin_key_ = cabin.mesh_key;
+  const bool requested = r.cabin_offset != 0 && (published.mask & cabin_mirror::kReader);
+  if (cabin.mesh_key != cabin_key_ || r.cabin_why != cabin_why_ || requested != cabin_requested_) {
+    if (r.cabin_found) {
+      const auto& rect = cabin.rect;
+      const int width = int(std::floor(mg::kReferenceHeight * r.tan_x / r.tan_y + 0.5));
+      REXLOG_INFO("[cabin mirror] frame {}: glass found key {:016x}, draw {}, area {:.4f} m2, normal ({:.3f}, {:.3f}, {:.3f}), "
+                  "rect [{},{},{},{}] at {}x1080, requested {}: {}",
+                  frame_, cabin.mesh_key, cabin.draw, cabin.area, cabin.normal_world[0], cabin.normal_world[1], cabin.normal_world[2],
+                  rect.x0, rect.y0, rect.x1, rect.y1, width, requested,
+                  cabin.needed && !requested ? "projection cannot be replayed" : mg::CabinWhyName(r.cabin_why));
+    } else {
+      REXLOG_INFO("[cabin mirror] frame {}: no glass: {} ({} shaped patches, {} car draws)",
+                  frame_, mg::CabinWhyName(r.cabin_why), r.cabin_shapes, evaluated_draws_);
+    }
   }
-  mirror_view::PublishCabinOffset((published.mask & cabin_mirror::kReader) ? r.cabin_offset : 0);
+  cabin_key_ = cabin.mesh_key;
+  cabin_why_ = r.cabin_why;
+  cabin_requested_ = requested;
+  mirror_view::PublishCabinOffset(requested ? r.cabin_offset : 0);
   mg::PublishNeed(published);
   published_ = true;
   if (published.need() && !first_need_logged_) {

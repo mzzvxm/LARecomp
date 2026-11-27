@@ -18,8 +18,12 @@ class PassTiming;
 class CabinMask {
  public:
   void Shutdown();
-  uint32_t Record(plume::RenderCommandList& list, Device& device, HostPasses& passes, PassTiming& timing,
-                  const car_frame::Frame& frame, const car_frame::Draw& mirror, const mirror_glass::Result& glass);
+  struct Result {
+    uint32_t slot;
+    const char* reason;
+  };
+  Result Record(plume::RenderCommandList& list, Device& device, HostPasses& passes, PassTiming& timing,
+                const car_frame::Frame& frame, const car_frame::Draw& mirror, const mirror_glass::Result& glass);
 
  private:
   struct Part {

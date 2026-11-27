@@ -27,15 +27,18 @@ void Tests() {
   const cab::V3 body_min{-0.975, -0.98, -2.3}, body_max{0.975, 0.34, 2.3};
   const cab::V3 centre{0, 0.20, -0.30};
   const cab::V3 normal{-0.18, -0.14, 0.97};
-  Check(cab::Score(centre, normal, body_min, body_max) > 0, "R34 golden: on centre line, 14 cm below roof");
-  Check(cab::Score({0.89, -0.05, -0.40}, normal, body_min, body_max) < 0, "side glass is outboard");
-  Check(cab::Score({0.10, 0.19, -0.30}, normal, body_min, body_max) < 0, "outboard badge rejected");
-  Check(cab::Score({0, -0.20, -0.30}, normal, body_min, body_max) < 0, "low centre trim rejected");
-  Check(cab::Score(centre, {0, -0.95, 0.31}, body_min, body_max) < 0, "downward visor rejected");
-  Check(cab::Score(centre, {0.55, 0, 0.84}, body_min, body_max) < 0, "oblique patch rejected");
-  Check(cab::Score(centre, {0, 0.51, 0.86}, body_min, body_max) < 0, "steep patch rejected");
-  Check(cab::Score(centre, {0, 0, -1}, body_min, body_max) < 0, "forward-facing patch rejected");
-  Check(cab::Score(centre, normal, {-0.45, -0.98, -1.4}, {0.45, 0.34, 1.4}) < 0, "bike body is narrow");
+  Check(cab::Score(centre, normal, {}) > 0, "R34 golden: on centre line, above and ahead of the eye");
+  Check(cab::Score({0.89, 0.20, -0.40}, normal, {}) < 0, "side glass is outboard");
+  Check(cab::Score({0.10, 0.19, -0.30}, normal, {}) < 0, "outboard badge rejected");
+  Check(cab::Score({0, -0.20, -0.30}, normal, {}) < 0, "low centre trim rejected");
+  Check(cab::Score({0, 0.80, -0.30}, normal, {}) < 0, "high body trim rejected");
+  Check(cab::Score({0, 0.20, 0.30}, normal, {}) < 0, "trim behind the driver rejected");
+  Check(cab::Score({0, 0.20, -1.60}, normal, {}) < 0, "distant nose trim rejected");
+  Check(cab::Score(centre, {0, -0.95, 0.31}, {}) < 0, "downward visor rejected");
+  Check(cab::Score(centre, {0.55, 0, 0.84}, {}) < 0, "oblique patch rejected");
+  Check(cab::Score(centre, {0, 0.51, 0.86}, {}) < 0, "steep patch rejected");
+  Check(cab::Score(centre, {0, 0, -1}, {}) < 0, "forward-facing patch rejected");
+  Check(!cab::BodyCanHaveMirror(0.90), "bike body is narrow");
 
   constexpr uint64_t kChrome = 0x2D8CA0430FF88ED7ull;
   mg::Finder finder;
@@ -67,7 +70,7 @@ void Tests() {
   Check(!cab::IsCabinCandidate(entry->stats, a, g::car_mirror::kClassLight), "lamps cannot become mirrors");
   const auto shape = [&](const cm& s) { return cab::IsCabinCandidate(s, a, g::car_mirror::kClassChrome); };
   cm bad = entry->stats;
-  bad.triangles = 7;
+  bad.triangles = 1;
   Check(!shape(bad), "too few triangles");
   bad.triangles = 61;
   Check(!shape(bad), "too many triangles");
@@ -85,6 +88,11 @@ void Tests() {
   auto almost_square = a;
   almost_square.top += 0.08;
   Check(!cab::IsCabinCandidate(entry->stats, almost_square, g::car_mirror::kClassOther), "near-square patch rejected");
+  const std::vector<float> quad{-0.10f, -0.025f, 0, 0.10f, -0.025f, 0, 0.10f, 0.025f, 0, -0.10f, 0.025f, 0};
+  const std::vector<uint32_t> quad_indices{0, 1, 2, 0, 2, 3};
+  const auto quad_stats = g::car_mirror::MeasurePatch(quad, quad_indices, {});
+  Check(cab::IsCabinCandidate(quad_stats, cab::Measure(quad_stats, quad, quad_indices), g::car_mirror::kClassChrome),
+        "two triangles suffice for a mirror quad");
 
   auto body_from_world = tp::Identity();
   body_from_world.m[0][0] = body_from_world.m[2][2] = -1;
@@ -114,6 +122,43 @@ void Tests() {
   for (uint32_t i = 0; i < 20; ++i) Check(hold.Update({}).mask == cab::kReader, "cabin demand is held");
   Check(hold.Update({}).mask == 0, "cabin demand expires");
   Check(!finder.Choose(1, camera).cabin_found, "a non-cockpit caller supplies no body bounds");
+  bounds.max[0] += 0.35f;
+  bounds.max[1] += 0.65f;
+  Check(finder.Choose(1, camera, body_from_world, bounds).cabin_why == mg::CabinWhy::kRequested,
+        "mirror follows cockpit and centre line with tall or asymmetric body bounds");
+  auto hidden = model;
+  hidden.m[3][1] = 0.65;
+  hidden.m[3][2] = 0.31;
+  finder.BeginEvaluation();
+  finder.Consider(14, true, 7, 48, kChrome, hidden, true);
+  const auto off_picture = finder.Choose(1, camera, body_from_world, bounds);
+  Check(off_picture.cabin_found && off_picture.cabin_why == mg::CabinWhy::kOffPicture && !off_picture.cabin_offset,
+        "an off-picture patch explains why it has no request");
+  model.m[3][0] = 0.05;
+  finder.Consider(13, true, 7, 48, kChrome, model, true);
+  const auto with_trim = finder.Choose(1, camera, body_from_world, bounds);
+  Check(with_trim.glass[2].draw == 13 && with_trim.cabin_why == mg::CabinWhy::kRequested,
+        "visible mirror wins even when off-screen trim scores higher");
+  auto glance = camera;
+  glance.view.m[3][0] = 0.62;
+  glance.view_projection = tp::Mul(glance.view, camera.view_projection);
+  model.m[3][0] = 0;
+  finder.BeginEvaluation();
+  finder.Consider(13, true, 7, 48, kChrome, model, true);
+  const auto clipped = finder.Choose(1, glance, body_from_world, bounds);
+  Check(clipped.glass[2].px_wide > 0 && clipped.glass[2].px_wide < mg::kMinNeedWidth && (clipped.need.mask & cab::kReader),
+        "visible sliver of cabin glass is worth a view");
+  bounds.min[0] = -0.45f;
+  bounds.max[0] = 0.45f;
+  Check(finder.Choose(1, camera, body_from_world, bounds).cabin_why == mg::CabinWhy::kNarrowBody,
+        "narrow vehicles publish no cabin reader");
+
+  using g::mirror_overlay::CanFinishViewPose;
+  Check(CanFinishViewPose(true, false, true, 5, 5), "late vehicle draws can complete this picture's pose");
+  Check(!CanFinishViewPose(true, false, true, 5, 6), "a held picture cannot borrow a later camera");
+  Check(!CanFinishViewPose(true, true, true, 5, 5), "do not replace an established pose");
+  Check(!CanFinishViewPose(false, false, true, 5, 5), "picture must carry its lens");
+  Check(!CanFinishViewPose(true, false, false, 5, 5), "vehicle main-view camera is required");
 
   const cab::V3 eye{0.07, -0.10, -0.55}, plane{0, 0, 0}, n{0, 0, -1};
   const auto shift = cab::VirtualOffset(eye, plane, n);

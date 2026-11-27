@@ -118,7 +118,8 @@ class MirrorGlass final : public car_frame::Listener {
   bool pair_logged_ = false;
   bool first_need_logged_ = false;
   uint64_t cabin_key_ = 0;
-  bool cabin_scanned_ = false;
+  mirror_glass::CabinWhy cabin_why_ = mirror_glass::CabinWhy::kOutsideCockpit;
+  bool cabin_requested_ = false;
 };
 
 }  // namespace mcla::gpu

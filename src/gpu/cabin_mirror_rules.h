@@ -39,7 +39,8 @@ struct Aperture {
 };
 
 inline bool ShapeMayBeCabin(const cm::PatchStats& stats) {
-  return stats.valid && stats.triangles >= 8 && stats.triangles <= 60 && stats.area >= 0.004f && stats.area <= 0.06f &&
+  // A flat mirror can be a quad. Use its area and aperture to reject trim.
+  return stats.valid && stats.triangles >= 2 && stats.triangles <= 60 && stats.area >= 0.004f && stats.area <= 0.06f &&
          stats.flat >= 0.95f && stats.extent <= 0.40f;
 }
 
@@ -84,15 +85,21 @@ inline bool IsCabinCandidate(const cm::PatchStats& stats, const Aperture& a, uin
   return ShapeMayBeCabin(stats) && height > 0.0 && width >= 2.0 * height && width <= 0.40 && ClassMayBeCabin(cls);
 }
 
-// Vehicle axes are right, up and back. The best rear-facing patch is high
-// and near the centre line. The width gate excludes narrow vehicles.
-inline double Score(V3 centre, V3 normal, V3 body_min, V3 body_max) {
-  const double width = body_max.x - body_min.x, height = body_max.y - body_min.y;
-  const double lateral = std::abs(centre.x - (body_min.x + body_max.x) * 0.5);
-  const double elevation = centre.y - body_min.y;
-  if (width < 1.15 || !(height > 0.0) || lateral > 0.08 || elevation < 0.80 * height ||
+// Vehicle axes are right, up and back. Use the vehicle's centre line and
+// the driver's eye: body bounds can change with the roof, doors and spoilers.
+// CHECK: verify the aperture and eye-relative bounds on the full car census.
+inline bool BodyCanHaveMirror(double width) { return width >= 1.15; }
+
+inline double Score(V3 centre, V3 normal, V3 eye) {
+  const double lateral = std::abs(centre.x);
+  const double above = centre.y - eye.y, ahead = eye.z - centre.z;
+  if (lateral > 0.08 || above < 0.015 || above > 0.75 || ahead < 0.04 || ahead > 1.5 ||
       normal.z < 0.85 || std::abs(normal.y) > 0.50) return -1.0;
-  return (1.0 - lateral / 0.08) + elevation / height + normal.z;
+  return (1.0 - lateral / 0.08) + normal.z;
+}
+
+inline bool PreferPatch(bool needed, double score, bool previous_needed, double previous_score) {
+  return needed != previous_needed ? needed : score > previous_score;
 }
 
 inline V3 VirtualOffset(V3 eye, V3 centre, V3 normal) { return normal * (2.0 * Dot(centre - eye, normal)); }
