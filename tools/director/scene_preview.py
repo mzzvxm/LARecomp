@@ -481,7 +481,13 @@ def preview_text(res):
 # ------------------------------------------------------------------------------------------------------------------------------- the command
 @contextmanager
 def preview_scene(ch, staged, prior_transport, warnings):
-    before = ch.call("scene.get")
+    try:
+        before = ch.call("scene.get")
+    except ST.ToolError as e:
+        # A game that has no scene loaded yet (a fresh start) answers not_ready: there is nothing to give back.
+        if e.code != "not_ready":
+            raise
+        before = {}
     was_scene = before.get("path")
     try:
         # CHECK: confirm a staged scene, one still and restoration in a local game.
@@ -975,7 +981,9 @@ class MockGame(ST.director_client_module().MockServer):
             self.t, self.load_time = self.clock_advance, time.time()
             return True, {"path": str(p), "state": "running"}
         if cmd == "scene.get":
-            return True, self._scene_info(self.model.path if self.model else "")
+            if not self.model:
+                return e("not_ready", "no scene is loaded: scene.load first")
+            return True, self._scene_info(self.model.path)
         if cmd == "scene.unload":
             self.model = None
             return True, {}
