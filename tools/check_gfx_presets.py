@@ -11,7 +11,7 @@ needs no source reading (the cells against the old `auto` tables and the audit's
   3. every cell is a value its setting takes (the setting's own Allowed(...) list, its Range{...}, true or false for a bool), and never `auto`;
   4. every row of the table is a setting that exists (mcla_gpu_preset and mcla_gpu_preset_from too: the first live and not debug-only, the second debug-only, the words of both are the table's);
   5. the pause row (kGfxHubItems) is there, native only, with the words of kIds and kLabels in the order of the enum; ui_rules.toml's row lists the same ids and labels, and its
-     recommended_preset def is kClassToPreset;
+     recommended_preset def is kClassToPreset; the export advertises that first-start policy and the legacy keys that imply CUSTOM;
   6. the three generated settings files (settings_gpu.h, manifest.json, settings_meta.inc) all have both settings.
 
 Exit 0 when everything agrees, 1 when something differs, 2 for a usage error. --selftest breaks the table on purpose, one way at a time, and fails when a break is not reported.
@@ -78,7 +78,24 @@ def parse_header(text):
     return {"rows": rows, "exempt": notes("kExempt"), "below": notes("kBelowMax"), "never": never, "rules": rules, "ids": ids, "labels": labels}
 
 
+def check_first_start(header, exporter):
+    legacy_keys = re.findall(r'"(\w+)"', array_text(header, "kLegacyCoveredKeys"))
+    if sorted(legacy_keys) != ["mcla_gpu_aa", "mcla_gpu_car_mirror_rt", "mcla_gpu_msaa"]:
+        yield "kLegacyCoveredKeys must recognize old MSAA, post AA and RT mirror keys"
+    fields = {
+        "first_start_by": r'"class_to_preset"',
+        "legacy_file_preset": r'std::string\s*\(\s*gp::Id\s*\(\s*gp::Preset::kCustom\s*\)\s*\)',
+        "legacy_file_keys": r'std::move\s*\(\s*legacy_keys\s*\)',
+    }
+    for field, value in fields.items():
+        if not re.search(r'\bpresets\.insert\s*\(\s*"' + field + r'"\s*,\s*' + value + r'\s*\);', exporter):
+            yield f"settings_ui/export.cpp must export presets.{field} with its first-start policy value"
+    if not re.search(r'\bfor\s*\(\s*const auto key\s*:\s*gp::kLegacyCoveredKeys\s*\)\s*legacy_keys\.push_back\s*\(', exporter):
+        yield "settings_ui/export.cpp must export the keys from kLegacyCoveredKeys"
+
+
 # ---- the menu -----------------------------------------------------------------------------------------------------------------------------------------------
+
 
 def table_rows(text, name, rules=None):
     """(the table's text, the settings its rows name): each row's own setting, and the settings its rules write (a compound row such as CAR SELF-REFLECTIONS writes two)."""
@@ -135,10 +152,12 @@ def display_settings(src):
 
 # ---- the checks ---------------------------------------------------------------------------------------------------------------------------------------------
 
-def check(src, data=None, menu_text=None, settings=None, rules_text=None):
+def check(src, data=None, menu_text=None, settings=None, rules_text=None, header_text=None, export_text=None):
     problems = []
     add = problems.append
-    header = data if data is not None else parse_header(read_stripped(os.path.join(src, "gpu", "gfx_preset.h")))
+    header_source = CSE.strip_comments(header_text) if header_text is not None else read_stripped(os.path.join(src, "gpu", "gfx_preset.h"))
+    exporter = CSE.strip_comments(export_text) if export_text is not None else read_stripped(os.path.join(src, "settings_ui", "export.cpp"))
+    header = data if data is not None else parse_header(header_source)
     menu = menu_text if menu_text is not None else read_stripped(os.path.join(src, "mc_engine", "menus", "pause_menu.cpp"))
     settings = settings if settings is not None else settings_of(src)
     rows = header["rows"]
@@ -288,6 +307,7 @@ def check(src, data=None, menu_text=None, settings=None, rules_text=None):
     # the header's last rule is `true`; the def's last case has no `when`
     if got_rules != want_rules:
         add(f"ui_rules.toml defs.recommended_preset is {got_rules}, kClassToPreset is {want_rules}")
+    problems.extend(check_first_start(header_source, exporter))
 
     # 6. the generated files
     gen = os.path.join(src, "settings", "generated")
