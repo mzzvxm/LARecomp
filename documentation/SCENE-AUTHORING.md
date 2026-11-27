@@ -1,26 +1,29 @@
 # Writing a scene: for agents, alone or live with a human
 
-A scene is a text file: what the world, the cars and the camera do on a timeline. A trailer shot, a visual test and a before/after clip are all scenes. This file is
-everything an agent needs to write one, check it, look at it and render it. The reference for the grammar is the top of `src\mc_engine\cinematic\scene.h`,
-`camera.h`, `car_verbs.h` and `spots.h`; the wire of the live channel is `documentation\DIRECTOR-PROTOCOL.md`; the design is `feature-parity\DIRECTOR-DESIGN.md`.
+A scene describes the world, cars and camera on a timeline. See
+[the Director quick start](../tools/director/README.md) to connect an agent to
+your game. The syntax is in `src/mc_engine/cinematic/scene.h`, `camera.h`,
+`car_verbs.h` and `spots.h`. See the [Director protocol](DIRECTOR-PROTOCOL.md)
+for the live commands.
 
-Everything below is one command line, `python C:\mcv\larecomp\ports\scripts\scene_tool.py` (written `st` here). Every command takes `--json` (one JSON object on stdout) and exits
-**0** done, **1** the content is wrong (lint error, a failed preview check, two things differ), **2** bad arguments, **3** the environment (no atlas, no game,
-the game said no). `lint`, `query`, `route`, `new` and `diff` of files need no game and run under `python -I`; `preview` needs a game and Pillow (plain `python`).
+`st` below stands for `python -I -B tools/director/scene_tool.py` from the
+checkout. Use `--json` for machine-readable results from the scene commands.
+They exit **0** on success, **1** for a finding, **2** for invalid arguments
+and **3** when the game or its environment prevents the operation.
 
 ## The loop
 
-```
-st new  my-shot --recipe chase        # a lint-clean scene to start from (scenes\recipes; `st new --list`)
-   ... edit ports\scripts\scenes\my-shot.scene (the places and numbers) ...
-st lint my-shot                       # errors with the line and the line's text; run it after every edit
-st preview my-shot --slot auto --exe-dir ports\exe\<build>     # or --attach <running game>: contact sheet + map + preview.json
-   ... read contact.png, map.png, preview.json (below), fix, lint, preview again ...
-st render my-shot --attach slot:0 --sink ffmpeg                 # the take; or --exe-dir <build> (scene_run.py)
-```
+~~~
+st launch --exe path/to/larecomp.exe
+st new my-shot --recipe chase --dir path/to/director-work
+st lint path/to/director-work/my-shot.scene
+st preview path/to/director-work/my-shot.scene --game-dir path/to
+st render path/to/director-work/my-shot.scene --game-dir path/to --sink ffmpeg
+~~~
 
-Rules of the PC: one game at a time, slot runs side by side (`--slot auto` takes a free one through lockrun). If you may not start a game, print what would run
-with `--plan` and ask the main session. `st slots` lists the games that run with the channel; `st preview --plan` prints the shots and the command.
+Enter free roam before previewing or rendering. Edit the new scene and lint
+it again before each preview. Use `st slots --game-dir path/to` to find
+`director.json` or give `--attach` the exact file or its directory.
 
 ## A scene in a minute
 
@@ -66,8 +69,8 @@ behind); `orbit car:<id> r <m> az <deg> el <deg>` (az 0 behind, 90 right); `yaw 
 
 ## Places, headings, spots: no raw coordinates when a spot exists
 
-World metres: x east, y up, z south. A **heading/yaw** is degrees: 0 faces +Z (south), 90 faces +X (east), 180 north, 270 west. `spots.txt` (scenes\, or beside the scene) names places:
-`hw-street 832.19 16.5 -787.53 62  # the street outside the Hollywood gate`. In a `cam`, `car` or `start` statement:
+World metres: x east, y up, z south. A **heading/yaw** is degrees: 0 faces +Z (south), 90 faces +X (east), 180 north, 270 west. `spots.txt` beside the scene names places:
+`hw-street 832 16.5 -788 62  # the street outside the Hollywood gate`. In a `cam`, `car` or `start` statement:
 
 | Word | Means |
 |---|---|
@@ -81,36 +84,42 @@ from). Heights are the height a car stands at on the road there.
 
 ## Roads, lights, routes: ask, don't guess
 
-The atlas (`ports\atlas\<hash>\`, built from the game's files: `st atlas build`) knows the roads (lanes with direction, speed and street name), the street lamps (6,298, decoded from the city's props and their light templates, so the offline atlas has them too), the garages
-and the car models. Offline answers have the shape of the game's `query.*` commands:
+Build the local atlas with `st atlas build --game GAME_DATA_DIR`, where
+`GAME_DATA_DIR` contains `xarchive_cache.rpf`. It writes under
+`~/.larecomp/director/atlas` and provides lanes, directions, speeds and lights.
+For garage and car lists, use `query --live` or open an atlas from the game's
+`atlas.dump`. Offline answers use the same format as `query.*` replies.
 
 ```
 st query road   --near spot:hw-street          # the nearest lanes: name, speed, direction, distance
 st query lights --near spot:hw-street --r 60   # lamps: position, colour, reach (a night shot wants some); `--arg src=lamp` the street lamps only, `--arg src=file` the file's own lights
 st query route  --from spot:hw-lane1@0,0,-25 --to spot:hw-lane1@0,0,25      # a dry run
-st route --from spot:hw-lane1@0,0,-25 --to spot:hw-lane1@0,0,25 --name my-run --scene my-shot --speed 12   # writes scenes\routes\my-run.route
-st query route --file scenes\routes\my-run.route     # length, time, speeds, how far from a road, and from a lane that runs the route's way
+st route --from spot:hw-lane1@0,0,-25 --to spot:hw-lane1@0,0,25 --name my-run --scene path/to/my-shot.scene --speed 12
+st query route --file path/to/routes/my-run.route     # length, time, speeds, how far from a road, and from a lane that runs the route's way
 ```
 
-A hand-written route is usually off: `m4c-a.route` and `street-lane1.route` ran in the oncoming lane (13 m from a lane that runs their way) until 2026-11-21, and the spot `hw-street` itself
-stands on that oncoming lane (the street is four lanes: the heading-62 ones are `hw-lane1` and 4.5 m beyond it). Ask the atlas before you trust one. The street lamps answer by day too (the
-game keeps the list from the city's load on; `on` is the lamp's own switch, the lamp pass lights them at night).
+Use `query road` to check the direction of a lane and `query route --file`
+to check a route against it. The game keeps the lamp list in daylight too.
+The `on` field is the lamp's switch, and the lighting pass uses it at night.
 
 `route` follows the lanes (the start's heading picks the lane; a start more than 6 m from a lane is warned about), then writes `x,z,speed,y` lines about 2 m apart with the speed from
 the roads' limits and the curves (`--speed` caps it). Without an atlas it makes a smooth line through the stops and says so. Use it as `car p1 path my-run.route [speed x1.2]`.
-`query ground|pick|streaming|visible` need a running game (`--live`).
+Use `--live` for the game's ground height, picking, streaming state and visibility. The atlas can also estimate ground height from roads.
 
 ## Recipes
 
-`st new --list` shows what exists (scenes\recipes): `chase` (follow a car down the street), `flyby` (a camera along a route past a parked car), `orbit-reveal` (a parked car, a
+`st new --list` shows the examples in `tools/director/scenes/recipes`: `chase` (follow a car down the street), `flyby` (a camera along a route past a parked car), `orbit-reveal` (a parked car, a
 camera circling it), `night-street` (real lamps, a tripod on a car driving through), `two-car-pass` (opposite lanes, a camera each side), `test-fixed-camera` (a visual test: spawned cars,
-a fixed camera, a fixed step), `all-rigs`. A recipe uses spots and a route, no coordinates; copy, then change the spot, the car and the numbers.
+a fixed camera, a fixed step), `all-rigs`. Edit the copied scene, its spots and any routes for your shot.
 
 ## Preview: what to read
 
-`st preview <scene> --slot auto --exe-dir <build> [--every 2] [--size 1280x720] [--out DIR] [--subject p1] [--json]`. It lints, starts (or attaches to) a game, loads a copy of the scene
-with its `capture` keys commented out (a preview never makes a take), sets the take's fixed step, waits until every car is ready and the world is streamed, and takes a clean engine
-picture at: every `cam` key, every `cut` and one update before it, the start, the middle of each long stretch, every `--every` seconds inside the take, and the last update.
+`st preview SCENE --attach INFO` lints and loads a copy with its capture keys
+commented out. It sets a fixed step, waits for cars and streaming, and takes
+stills at camera keys, cuts and intervals. Set `--from`, `--to` and
+`--max-shots` to narrow the storyboard. Preview reloads the prior scene, if
+one was open. Stills and `preview.json` use the standard library. Pillow
+adds the contact sheet and map when it is visible to Python.
 
 - **`contact.png`** (`contact-2.png` ...): the pictures in a grid under 1600 px wide, each numbered `#n`, with its time, kind (KEY, CUT, PRECUT, MID, EVERY, END), the key's line and
   text, and a verdict (green ok, red `x check`, yellow `?` could not be checked). A yellow ring is where the game says the subject is.
@@ -132,25 +141,31 @@ scrubbed still). The lint and the preview warn about brain cars.
 
 ## The take
 
-`st render <scene> --attach slot:0 --sink ffmpeg [--fps 60] [--name x] [--from t --to t]` makes the take through the running game (`take.render`), waits for `take.done` and checks `take.json`
-(complete, one picture per update, none dropped or repeated, the files). Without `--attach` and `--channel`, `st render <scene> --exe-dir <build> --run-args --scale 3 --window 1920x1080` runs
-`scene_run.py` (the scene needs its own `capture fps` key). The last line is `take folder: <path>`. Never edit the scene file while a take renders. `st diff A B` compares two state logs
-(`take_diff.py`), two takes or two previews (a picture diff at the same scene times: IDENTICAL, EXACT, CLOSE, LOOSE; `--out DIR` writes a sheet).
+`st render SCENE --attach INFO --from 7 --to 8 --fps 60 --sink ffmpeg`
+renders one second through `take.render`. It waits for `take.done` and checks
+the reported `take.json` and its files. The game uses FFmpeg from PATH by
+default, or the program set at launch. The `raw` and `none` sinks work
+without FFmpeg. Avoid editing the scene while a take renders.
+
+`st diff A B` compares state logs, takes or previews. Picture diffs require
+Pillow, and `--out DIR` writes a comparison sheet.
 
 ## Working live with a human
 
-The game runs with `mcla_director` (opt_run `--director`): `director.json` in the run folder says port and token. `st slots` finds it; `--attach slot:N` (or the run's name) uses it; a
-game you attach to gets its own scene back after a preview.
+The running game publishes its loopback port and token in `director.json`.
+Use `--attach INFO` for a specific instance. Examples below use automatic
+discovery, so run them from the directory containing `director.json` or
+add `--game-dir DIR`.
 
-- **Human leads** (the Director panel: Ctrl+F12, the DEBUG menu's DIRECTOR PANEL row, or `st cmd slot:0 ui.open panel=director`; `documentation\DEBUG.md` says what it does): every change the human makes writes the scene file; you see the event `scene.reloaded {by:"panel", changed}` and can refine. Read the file again
+- **Human leads** (the Director panel: Ctrl+F12, the DEBUG menu's DIRECTOR PANEL row, or `st cmd ui.open panel=director`; `documentation\DEBUG.md` says what it does): every change the human makes writes the scene file; you see the event `scene.reloaded {by:"panel", changed}` and can refine. Read the file again
   before you edit; edit with line-addressed ops so you keep their comments and layout:
-  `st cmd slot:0 '{"cmd":"scene.edit","args":{"base_rev":12,"ops":[{"op":"param","line":14,"expect":"cam 5 rig chase car:p1 dist 7 fov 50","key":"fov","value":"40"}]}}'`
+  `st cmd '{"cmd":"scene.edit","args":{"base_rev":12,"ops":[{"op":"param","line":14,"expect":"cam 5 rig chase car:p1 dist 7 fov 50","key":"fov","value":"40"}]}}'`
   (`expect` is the old text of the line: if it moved, the answer is `stale`: read `scene.get` again). Ops: `insert`, `replace`, `delete`, `move` (the time word), `param` (one word pair).
 - **Agent leads**: edit the file directly (the game reloads it softly and keeps the clock and cars) or send a proposal (`scene.propose`): the human sees what changed, previews, accepts or
   rejects; every revision is undoable (`scene.undo`).
 - **Alone**: the loop above, no panel. A scene an agent built opens in the panel unchanged and a scene made in the panel lints and previews without a human.
 
-Other commands, all one line: `st cmd slot:0 help` (every command with its arguments), `camera.get`, `camera.set pos=819.6,19,-800 yaw=80 pitch=-4 fov=40`, `cars.list`,
+Other commands, all one line: `st cmd help` (every command with its arguments), `camera.get`, `camera.set pos=819.6,19,-800 yaw=80 pitch=-4 fov=40`, `cars.list`,
 `transport.seek t=7 --settle`, `shot path=shots/a.png t=7`, `log.tail n=40 filter=scene`.
 
 ## Do and don't
@@ -163,4 +178,3 @@ Other commands, all one line: `st cmd slot:0 help` (every command with its argum
 - Do give `expect` text with every edit made through the channel; on `stale` re-read.
 - Don't edit the scene while a take renders. Don't put paths, programs or `mcla_capture_*`, `mcla_scene*`, `mcla_director*` in a `set`.
 - Don't trust a brain-mode preview picture to repeat; use kinematic routes for anything that must match.
-- Don't start a second game without the lock (`--slot auto`); don't leave a game you started running (`--keep-game` keeps it on purpose).

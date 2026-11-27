@@ -1,0 +1,15 @@
+# Planted: spot words the parser refuses (spots.h; the game's parser says the same), each on its own line. The table is scenes\spots.txt with this folder's spots.txt on top.
+scene bad-spots
+at 1 car a spawn vp_x at spot:hw-stret     #! expect error unknown spot 'hw-stret' (did you mean hw-street?)
+at 2 car b spawn vp_x at spot:nowhere-at-all     #! expect error unknown spot 'nowhere-at-all'
+at 3 car c spawn vp_x at spot:hw-street@1,2     #! expect error @ needs right,up,forward
+at 4 car d spawn vp_x at spot:hw-street@1,2,x     #! expect error after @ come the right, up and forward metres
+at 5 car e spawn vp_x at spot:     #! expect error a spot name is letters, digits and _ - .
+at 6 car f spawn vp_x at spot:no-heading@1,0,0     #! expect error spot no-heading has no heading
+at 7 car g spawn vp_x at 1,2,3 heading spot:no-heading     #! expect error spot no-heading has no heading: write one
+cam 8 pos spot:hw-street@0,0,10,1,2 look 0 0 0     #! expect error after @ come the right, up and forward metres
+cam 9 orbit car:g r 8 at spot:hw-street     #! expect error after an orbit, `at` is an offset
+at 10 set mcla_director true     #! expect error a scene does not set mcla_director
+at 11 set mcla_director_info C:/x/director.json     #! expect error a scene does not set mcla_director_info
+at 12 car h spawn vp_x at spot:hw-street@-1.5,0,0 heading spot:hw-street     # fine: nothing is planted here
+end 20

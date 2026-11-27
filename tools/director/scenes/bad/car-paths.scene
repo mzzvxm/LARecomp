@@ -1,0 +1,10 @@
+# Planted: path and stop lines the parser refuses, each on its own line (car_verbs.h; the game's parser says the same).
+scene bad-paths
+at 1 car a spawn vp_x at 1,2,3
+at 2 car a path ../secret.route     #! expect error not a route file name
+at 3 car a path a.route speed fast     #! expect error speed needs metres a second
+at 4 car a path a.route mode flying     #! expect error brain (the game's own AI drives) or kinematic
+at 5 car a path     #! expect error path needs a route file
+at 6 car a stop now     #! expect error takes nothing after it
+at 7 car player path a.route     #! expect error 'player' is the player's own car
+end 12

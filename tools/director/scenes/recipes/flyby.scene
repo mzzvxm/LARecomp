@@ -1,0 +1,23 @@
+# RECIPE flyby: the camera flies along a route past a parked car, always looking at it. Copy it, point `path` at your own route file, change the car.
+#
+# What it uses: a spot for the car (hw-lane1, lane 1 of the street outside the Hollywood garage gate: @0,0,6 is 6 m along it), a route file for the
+# CAMERA (routes\street-fly.route, beside this scene: x,z,speed,y waypoints 3 m to the right of lane 1, 50 m, 9 m/s) and `rig flyby` (camera.h): the camera starts
+# at the route's first point when the key's time comes, flies at the route's own speeds (`speed 7` = 7 m/s, `speed x0.8` = 0.8 of them), holds at its last
+# point, and looks at `track car:p1 <dx> <dy> <dz>` (the point in the car's frame, here the middle of the body 0.7 m up). `up 2.5` is the height above the
+# route's own heights; a route with no heights (x,z,speed only) needs `y <metres>` in the world instead.
+# A flyby that passes close to a car looks quick: lengthen the route, lower `speed`, or give `aimlag 0.2` so the aim trails a little.
+#
+# Timeline: the car is ready at about 5 s; the camera starts at 6 and flies 50 m at 8 m/s: 6.3 s; it holds at the end; the game's camera is back at 15.
+#   6     the flyby starts at the route's first point, 2.5 m above the road, fov 42
+#   10    the lens has zoomed to fov 28 (fov is interpolated in focal length: a zoom looks even); the flyby goes on, a key that names no position leaves it alone
+# The camera's position is the route's closed form of the scene time: a scrub and a take give the same place.
+scene recipe-flyby fps 60 step 1/60
+world hour 17.3 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0.5 car p1 spawn vp_lam_murcielago_06 at spot:hw-lane1@0,0,6 heading spot:hw-lane1
+cam 6 rig flyby path street-fly.route speed 8 up 2.5 track car:p1 0 0.7 0 fov 42
+cam 10 fov 28
+at 15 mark game-camera
+cam 15 off
+at 15.5 car p1 delete
+end 16.5

@@ -1,0 +1,22 @@
+# RECIPE orbit-reveal: a parked car, a camera that circles it half way round while rising, and the light moving on. Copy it and change the car,
+# the spot and the numbers.
+#
+# What it uses: a spot for where the car stands (hw-street, the middle of the street outside the Hollywood garage gate; its heading is the street's), and
+# `rig orbit` for the camera: r metres from the car, az = where round it (0 behind, 90 on its right, 180 in front), el = how high (degrees);
+# `az 20..200 over 8` sweeps from 20 to 200 degrees in 8 seconds (two orbit keys: an arc round the car, not a chord through it).
+# The aim is the car (a point `at <dx> <dy> <dz>` in its heading frame moves it: `at 0 0.6 0` aims at the middle of the body).
+#
+# Timeline: the car spawns at 0.5 and is ready at about 5 s; the camera takes over at 6. The hour runs from 16.8 to 17.8 over the shot.
+#   6 - 14   the orbit: az 20 -> 200, el 6 -> 24, radius 8 m, fov 40 (ease inout on the sweep)
+#   14       the sweep ends and holds; the game's camera is back at 17
+# Not exact in a take: nothing (a parked car and the camera are functions of the scene time).
+scene recipe-orbit-reveal fps 60 step 1/60
+world hour 16.8 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0.5 car p1 spawn vp_aud_r8_08 at spot:hw-street heading spot:hw-street
+at 6 hour 16.8..17.8 over 8 ease inout
+cam 6 rig orbit car:p1 r 8 az 20..200 over 8 el 6..24 at 0 0.6 0 fov 40 ease inout
+at 17 mark game-camera
+cam 17 off
+at 17.5 car p1 delete
+end 18.5

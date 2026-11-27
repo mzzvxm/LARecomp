@@ -1,0 +1,9 @@
+# Planted: the camera looks at a car two seconds before it exists, a car is given a path before its spawn, and car p9 never exists.
+scene bad-car
+start save slot1 warp 819.6 17.5 -808.4 heading 90
+cam 2 look car:p1 pos 800 5 -800 fov 40     #! expect error car p1 is used at t=2.00 before it is spawned at t=5.00
+at 3 car p1 path sunset.route speed 1.0     #! expect error car p1 is used at t=3.00 before it is spawned at t=5.00
+at 5 car p1 spawn garage:5 at 900 17 -850 heading 270
+cam 6 look car:p9 fov 35     #! expect error car 'p9' is used at t=6.00 but is never spawned
+cam 8 look car:p1 fov 30
+end 12

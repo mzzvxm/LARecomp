@@ -1,0 +1,12 @@
+# Planted: a weather that does not exist, a setting that does not exist, a value a setting does not take, a restart-only
+# setting, a setting a scene may not touch.
+scene bad-names
+at 1 weather sunny     #! expect error unknown weather 'sunny'
+at 2 set mcla_gpu_ambient off     #! expect error no setting called 'mcla_gpu_ambient' (did you mean mcla_gpu_ao
+at 3 set mcla_gpu_ao purple     #! expect error 'purple' is not one of auto, off, high, ultra
+at 4 set mcla_scene other.scene     #! expect error a scene does not set mcla_scene
+at 5 set mcla_fixture_restart true     #! expect error read only at start
+at 6 set mcla_gpu_ao_fade_end 5000     #! expect error out of range (20 to 1000)
+at 7 set mcla_gpu_ao_view 2.5     #! expect error not a whole number
+at 8 set mcla_gpu_ao ultra
+end 10

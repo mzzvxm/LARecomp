@@ -1,0 +1,4 @@
+# Planted: no end (a warning: a tour's scene_wait would wait for ever) and a step that does not match the rate.
+#! expect-file warning no 'end'
+scene bad-no-end fps 60 step 1/50     #! expect warning does not match fps
+at 1 hour 12

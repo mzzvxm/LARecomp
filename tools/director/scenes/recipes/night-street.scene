@@ -1,0 +1,23 @@
+# RECIPE night-street: a street at night with real lamps, a car driving through the frame and a fixed camera. Copy it and change the spot.
+#
+# Hold the clock at 22.5 for the street lamps. The first tripod shot looks
+# from behind the lot toward the eastbound route. The second follows the car
+# from a lower angle beside the street.
+# Use query lights or a night still to check the lighting at a new spot.
+#
+#   6 - 11    shot 1, from the lot, tracks the car driving the eastbound route at 7 m/s.
+#   11        cut: shot 2, low on the far kerb, looking along the street at the car as it stops at the end of its route (about 13 s)
+#   15        the game's camera is back
+# Not exact in a take: a car's headlights are the game's own script's (Racer_SetHeadlights): whether a spawned car has them on at night is for the first picture.
+scene recipe-night-street fps 60 step 1/60
+world hour 22.5 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0.5 car p1 spawn vp_lam_murcielago_06 at spot:hw-lane1@0,0,-25 heading spot:hw-lane1
+at 6 car p1 path street-lane1.route speed 7
+cam 6 rig tripod at spot:hw-lot@0,1.4,-6 track car:p1 0 0.8 0 aimlag 0.25 fov 55
+cut 11
+cam 11 rig tripod at spot:hw-lane1@7.5,1.2,-8 track car:p1 0 0.8 0 aimlag 0.2 fov 38
+at 15 mark game-camera
+cam 15 off
+at 15.5 car p1 delete
+end 16.5

@@ -1,0 +1,2 @@
+# The spots of the planted-error scenes in this folder (spots.txt beside a scene: spots.h). bad-spots uses the shared hw-street, and this one that has no heading.
+no-heading   100 5 200     # a place with no heading: an offset in its frame, or a heading, means nothing

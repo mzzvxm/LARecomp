@@ -1,0 +1,10 @@
+# Named framing points for the example scenes: name x y z heading.
+# x is east, y is height, z is south. Heading 0 faces south and 90 faces east.
+# Use spot:name@right,up,forward to offset in the spot's own heading frame.
+hw-lot          820   17.6 -808   332    # Inside the Hollywood Auto lot.
+hw-street       832   16.5 -788    62    # The near side of the street outside the lot.
+hw-lane1        826   16.8 -779    58    # Eastbound shot line across the street.
+sunset-w       -609   18   -645   272    # Sunset Boulevard looking west.
+sunset-e       -589   18.5 -646    92    # Sunset Boulevard looking east.
+fairfax-n       271   18   -653   175    # Fairfax Avenue looking north.
+selma-s        1178   17   -887     7    # Selma Avenue looking south.

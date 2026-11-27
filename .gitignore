@@ -15,6 +15,7 @@ race_line_twin_gen.h
 # (check_rt_hit_identity.py), and the G-buffer's per-texture material tools (census, authoring script, rules, their tests).
 tools/*
 !tools/backup/
+!tools/director/
 !tools/gbuffer_materials/
 !tools/pipelines/
 !tools/shaderpack_tool/
@@ -64,6 +65,16 @@ stdout.txt
 timing_*.log
 effective_config*.txt
 *.log
+
+# Director output and connection files
+director.json
+director-work/
+director-preview/
+captures/
+atlas/
+__pycache__/
+.director/
+/routes/
 
 # Local runtime data & caches
 user_data/

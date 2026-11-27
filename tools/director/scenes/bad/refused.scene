@@ -1,0 +1,18 @@
+# Planted: settings a scene may not set. A scene file is data that gets sent around, so `set` must not start a program or write a file:
+# the capture settings (the program, its arguments, the sink, the folder), the settings that name a path, a folder or a server, and the
+# ones that make the game write a file of its own. The game refuses the whole scene at the first of them.
+scene bad-refused
+at 1 set mcla_capture_ffmpeg C:/tools/prog.exe     #! expect error a scene does not set mcla_capture_ffmpeg
+at 2 set mcla_capture_ffmpeg_args -f lavfi -i x     #! expect error a scene does not set mcla_capture_ffmpeg_args
+at 3 set mcla_capture_sink ffmpeg     #! expect error a scene does not set mcla_capture_sink
+at 4 set MCLA_CAPTURE_OUT C:/Users/x/out     #! expect error a scene does not set MCLA_CAPTURE_OUT
+at 5 set mcla_capture_ring 8     #! expect error it names a program, a path, a server or arguments
+at 6 set log_file C:/x/log.txt     #! expect error a scene does not set log_file
+at 7 set cache_root C:/x     #! expect error a scene does not set cache_root
+at 8 set dump_shaders C:/x     #! expect error a scene does not set dump_shaders
+at 9 set mcla_gpu_texture_dump true     #! expect error makes the game write a file of its own
+at 10 set cam_trace true     #! expect error a scene does not set cam_trace
+at 11 set rmr_server host:1     #! expect error a scene does not set rmr_server
+at 12 set mcla_native_gfx_ab_cvar cam_trace     #! expect error a scene does not set mcla_native_gfx_ab_cvar
+at 13 set mcla_gpu_ao ultra
+end 14

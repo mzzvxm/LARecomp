@@ -1,0 +1,30 @@
+# RECIPE two-car-pass: two cars drive the street in opposite directions and pass each other; one fixed camera on each side follows one of them.
+# Copy it, change the models, the speeds and where the cameras stand.
+#
+# What it uses: a route file for each car (routes\street-lane1.route: lane 1, heading 58 to 62 (hw-lane1); routes\street-lane2.route: lane 2, the oncoming one, heading
+# 242, hw-street): both 50 m on the street outside the Hollywood garage gate, spots.txt), spots for where the cars and the cameras stand, and `rig tripod`.
+# The two lanes are hw-lane1's line (the forward lane nearest the lot) and @1.5,0,0,180 of hw-street (the nearest oncoming one; the two are 10 m apart, with the other oncoming lane between): the same word with a turn of 180 degrees faces the other way, so a car on the oncoming
+# lane is `at spot:hw-street@1.5,0,24 heading spot:hw-street@1.5,0,24,180` (a heading ignores the offset, so one word places and turns the car).
+# Both cars are KINEMATIC (the default of `path`): they are put on their routes at every update, so every run passes at the same moment and place.
+#
+# Timeline: both are spawned at 0, so the ready gate holds the clock until they are made (a still at any time, a preview and a take all have them).
+#   6         both start, from the two ends of the stretch: p1 at 9 m/s, p2 at 8 m/s; they pass each other at about 9 s, in the middle of the street
+#   6 - 11    shot 1: a tripod on the lot's side of the street, 5 m left of the street's middle, 1.3 m up, follows p1 (a quarter second of aim lag)
+#   11        cut: shot 2: a tripod on the other side, follows p2 away
+#   12 - 17   both have stopped at the ends of their routes (11.6 s and 12.3 s) and stand there; they are deleted at 17 and the game's camera is back at 17.5
+# Preview the tripod positions for clearance before recording.
+scene recipe-two-car-pass fps 60 step 1/60
+world hour 15 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0 car p1 spawn vp_lam_murcielago_06 at spot:hw-lane1@0,0,-25 heading spot:hw-lane1
+at 0 car p2 spawn vp_aud_r8_08 at spot:hw-street@1.5,0,24 heading spot:hw-street@1.5,0,24,180
+at 6 car p1 path street-lane1.route speed 9
+at 6 car p2 path street-lane2.route speed 8
+cam 6 rig tripod at spot:hw-lane1@-3.5,1.3,-6 track car:p1 0 0.6 0 aimlag 0.25 fov 45
+cut 11
+cam 11 rig tripod at spot:hw-street@5,1.5,10 track car:p2 0 0.6 0 aimlag 0.25 fov 38
+at 17 car p1 delete
+at 17 car p2 delete
+at 17.5 mark game-camera
+cam 17.5 off
+end 18.5

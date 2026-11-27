@@ -1,0 +1,9 @@
+# Planted: a ramp that runs past the end, a label that does too, a key after the end, and a ramp cut off by the next key.
+scene bad-duration
+at 0 hour 10
+at 4 hour 10..12 over 10     #! expect error past the scene's end (t=10.00)
+at 8 label "late" for 3     #! expect error past the scene's end
+at 12 hour 14     #! expect error after the scene's end
+at 1 timescale 1..0.5 over 4     #! expect warning is cut off by the key at t=3.00
+at 3 timescale 1
+end 10

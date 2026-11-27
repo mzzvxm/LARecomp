@@ -1,0 +1,28 @@
+# RECIPE test-fixed-camera: a visual test. Spawned cars, a fixed camera and a fixed step: every run draws the same picture at the same scene time, so
+# two builds (or one build with a setting on and off) can be compared picture against picture. Copy it, put the cars and the camera where your
+# change shows, and switch the setting at the marks.
+#
+# What it uses: two spots for the cars (the two lanes of hw-street, the street outside the Hollywood garage gate: @-1.5,0,0 and @1.5,0,0,180), `rig
+# tripod` for a camera that stands still (the aim is a place: `track <x> <y> <z>`, here `track spot:hw-street@0,0.8,4`, 4 m ahead of the middle of the
+# street and 0.8 m up), `world ... hold` so that the sky does not move, and a `mark` for the time of the picture.
+# Nothing in it moves but the sun's shadows (held: hour 12). The cars are parked: they are put at their spawn heights and settle on the road in the first
+# seconds, so take the picture after 7 s (a spawn takes about 4 s). For a moving car use a route (recipes\chase.scene).
+#
+# The step is the scene's: `fps 60 step 1/60` runs the game at exactly 1/60 s an update (mcla_fixed_step_fps) so the same update is the same scene time.
+# To compare a setting: add `at 8 set <setting> <value>` lines at the marks (a scene may not set a setting that names a path or a program: scene.h
+# CvarRefusal), keep the camera as it is, and take one picture a mark.
+#   7   shot a (settings as they are)   -->  at 7 mark shot-a
+#   11  shot b (after the `set` at 8)   -->  at 11 mark shot-b
+scene recipe-test-fixed-camera fps 60 step 1/60
+world hour 12 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+cam 0 rig tripod at spot:hw-street@-6,1.5,-8 track spot:hw-street@0,0.8,4 fov 45
+at 0.5 car t1 spawn vp_aud_r8_08 at spot:hw-street@-1.5,0,0 heading spot:hw-street
+at 0.5 car t2 spawn vp_lam_murcielago_06 at spot:hw-street@1.5,0,9 heading spot:hw-street@1.5,0,9,180
+at 7 mark shot-a
+# at 8 set mcla_gpu_ao high
+at 11 mark shot-b
+at 12 car t1 delete
+at 12 car t2 delete
+cam 12.5 off
+end 13

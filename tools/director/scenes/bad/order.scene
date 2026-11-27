@@ -1,0 +1,8 @@
+# Planted: the hour keys are out of order, and a weather key sits after a later key in the file.
+# The markers at the ends of the lines are what scene_check.py selftest expects the lint to say about that line.
+scene bad-order
+world hour 16 weather nice
+at 6 hour 18
+at 2 hour 17     #! expect error hour key at t=2.00 comes after line
+at 3 weather cloudy     #! expect warning comes after line
+end 10

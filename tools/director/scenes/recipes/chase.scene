@@ -1,0 +1,22 @@
+# RECIPE chase: a camera that follows a car down the street, then swings in low beside it. Copy this file, change the cars, the route and the numbers.
+#
+# What it uses: a spot for where the car starts (spots.txt: hw-lane1, lane 1 of the street outside the Hollywood garage gate), a route file for where it
+# drives (routes\street-lane1.route, beside this scene), and `rig chase` for the camera (camera.h: dist behind, height up, side to the right, lag in
+# seconds). No coordinates are written here: change the spot name to move the shot (a spot with a straight road ahead: spots.txt notes say which).
+#
+# Timeline (scene seconds from the moment a car is on the road): a spawn takes about 4 s, so the car is ready at about 5 s and the camera
+# takes over at 6; the car drives 50 m at 7 m/s (7 s); it stops at its route's end; the game's camera is back at 13.
+#   6    chase from behind: 7 m back, 1.9 up, a third of a second of lag, fov 50
+#   9    the camera moves to 3.5 m back, 1.1 up, 1.6 m to the right and a tighter lens (ease inout: the segment that starts here is eased)
+# To record it: add `at 6 capture fps 60 name my-chase sink png` and `at 13 capture off` (one take a scene).
+scene recipe-chase fps 60 step 1/60
+world hour 16.5 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0.5 car p1 spawn vp_lam_murcielago_06 at spot:hw-lane1@0,0,-25 heading spot:hw-lane1
+at 6 car p1 path street-lane1.route speed 7
+cam 6 rig chase car:p1 dist 7 height 1.9 lag 0.35 fov 50
+cam 9 rig chase car:p1 dist 3.5 height 1.1 side 1.6 lag 0.2 fov 42 ease inout
+at 13 mark game-camera
+cam 13 off
+at 13.5 car p1 delete
+end 14.5

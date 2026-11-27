@@ -1,0 +1,23 @@
+# Planted: camera rigs the parser refuses (camera.h `rig`; the game's camera parser says the same), each on its own line. The keys come after the cars they follow.
+scene bad-rigs
+at 0 car p1 spawn vp_x at spot:hw-street heading spot:hw-street
+cam 1 rig     #! expect error rig needs a kind
+cam 2 rig dolly car:p1     #! expect error unknown rig 'dolly' (chase, orbit, tripod, flyby, hood, bumper or roof)
+cam 3 rig chase     #! expect error rig chase: needs a car
+cam 4 rig chase car:p1 dist 0     #! expect error rig chase: dist 0.00 (0.50 to 200.00 metres)
+cam 5 rig chase car:p1 speed 3     #! expect error rig chase: unknown word 'speed'
+cam 6 rig chase car:p1 fov 500     #! expect error cam: fov 500.00 (1 to 170 degrees, vertical)
+cam 7 rig orbit car:p1 az 20..200     #! expect error a sweep (az a..b) needs its length: over <seconds>
+cam 8 rig orbit car:p1 over 4     #! expect error over is the length of an az or el sweep
+cam 9 rig tripod track car:p1     #! expect error rig tripod: needs a place: at <x> <y> <z>
+cam 10 rig tripod at 1 2 3     #! expect error rig tripod: needs an aim: track car:<id>
+cam 11 rig tripod at 1 2 3 car:p1     #! expect error goes after track (track car:p1)
+cam 12 rig tripod at 1 2 3 track car:p1 yaw 5     #! expect error two ways to aim
+cam 13 rig flyby y 3 track car:p1     #! expect error rig flyby: needs a route: path <route file>
+cam 14 rig flyby path ../x.route y 3 track car:p1     #! expect error is not a route file name
+cam 15 rig flyby path r.route up 2 y 3 track car:p1     #! expect error up (above the route's own height) and y (in the world) are two ways
+cam 16 rig hood     #! expect error rig hood: needs a car
+cam 17 rig roof car:p1 ahead 0     #! expect error rig roof: ahead 0.00 (1.00 to 1000.00 metres)
+cam 18 rig hood car:p1 height 3     #! expect error rig hood: unknown word 'height'
+cam 19 rig chase car:p9 dist 5     #! expect error car 'p9' is used at t=19.00 but is never spawned
+end 30

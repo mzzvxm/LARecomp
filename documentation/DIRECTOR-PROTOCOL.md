@@ -1,9 +1,9 @@
 # Director protocol (proto 1)
 
 The Director is the trailer toolkit's command layer: a panel button, a scene-file line and an agent's request are the same thing, a **named command**
-with JSON arguments. This file is the wire's reference. The design is `feature-parity\DIRECTOR-DESIGN.md`; the C++ interface is
+with JSON arguments. This file is the wire reference. The C++ interface is
 `src\mc_engine\cinematic\director\director.h` (frozen: names and shapes only grow). `{"cmd":"help"}` on a live game returns the same command list with
-every argument, so an agent needs no other document.
+every argument.
 
 ## Turning it on
 
@@ -12,12 +12,15 @@ Everything is debug-only and off by default; a scene may not set any of these (`
 | Setting | What |
 |---|---|
 | `mcla_director` | on: the game listens on `127.0.0.1` (loopback only) and runs the commands. Live: switching it on starts the listener, off stops it. |
-| `mcla_director_info` | a file name: the game writes `director.json` there when the listener is up (and removes it at exit). `opt_run.py --director` passes it. |
-| `mcla_director_root` | the folder commands may write to (shots, takes, routes, proposals). Empty: the game's working folder. A scene's own folder is always allowed too. |
+| `mcla_director_info` | a file name: the game writes `director.json` there when the listener is up (and removes it at exit). |
+| `mcla_director_root` | the folder for relative Director outputs such as stills and atlas dumps. An empty setting uses the game's working folder. Take folders follow the game's capture settings. |
 
 `director.json`: `{"proto":1,"pid":1234,"port":51234,"token":"<32 hex>","slot":"d1","exe":"larecomp.exe","version":"0.11","scene":"scenes\\x.scene","started":"2026-11-19T20:00:00Z"}`.
-The port is chosen by the OS (port 0): two game instances (two slots) never clash, and `ports\run\<slot>\director.json` says which is which.
-`slot` is the name of the info file's folder. A listener on 127.0.0.1 raises no firewall prompt (the Director binds nothing else).
+The OS chooses the port. `slot` is the name of the info file's folder.
+Each instance needs its own info file. The
+[Director tools](../tools/director/README.md) can start a local game and
+discover its `director.json`. Keep this file local because it contains the
+authentication token.
 
 ## The channel
 
@@ -143,7 +146,7 @@ The file is written atomically, the Director recognises its own write (no reload
 | `path.list` | `{}` -> `{routes:[{name, points, length_m}]}` |
 | `path.get` | `{route}` -> `{route, points:[[x,y,z,speed]], length_m}` |
 
-### query (package C: DIRECTOR-ATLAS-NOTES.md has the arguments)
+### query
 `atlas.dump`, `query.spots`, `query.lights`, `query.road`, `query.route`, `query.ground`, `query.pick`, `query.garages`, `query.streaming`, `query.visible`.
 Always `{ok, result|error}`; `query.ground` says `not streamed` where the world is not loaded there.
 
@@ -196,10 +199,9 @@ ffmpeg -framerate 60 -i showcase-vanilla/frames/f%06d.png -framerate 60 -i showc
 | `agent` | `client, name, connected`: an agent came or left (the one that connects does not hear about itself) |
 | `ui.geometry` | the Director panel (mcla_director_panel) says where its things are, in ImGui's units (`display` = ImGui's DisplaySize; the window's client area in pixels over it is the scale): `hidden, collapsed, size ("small"|"normal"|"tall"), font, tab, tabs:{first,last,overflow}, picture:[x,y,w], axis:{t0,t1,x0,x1}, lanes:[{title,y,h,collapsed}], markers:[{line,t,x,y,label}], widgets:{"PLAY":[x,y,w,h], "DOCK":[...], "TAB CARS":[...], "TAB >":[...], "LANES":[...], "TIMELINE":[...]}` (a tab scrolled out of view has no widget until the strip scrolls to it: `"TAB <"` and `"TAB >"` are the arrows). At most four a second, when something moved; `ui.open` asks for one at once. A test that clicks and drags with the real mouse reads it. |
 
-## The pure parts' tests
-`larecomp_director_test` (JSON, the command engine, the console grammar, the paths rule, the PNG writer, the route reducer, the projection, a loopback
-round trip of the server) and `larecomp_scene_edit_test` (the ops, comments and layout kept, the stale rule, the diff) need no game. The Python side is
-`ports\scripts\director_client.py` (`python -I director_client.py selftest` runs its client against its own mock server, which answers every command above with
-plausible data so a tool can be built and tested with no game).
-`ports\scripts\director_smoke.py --info <director.json>` runs the checks of the core against a live game (hello, camera, transport, shot, reload, take); with `--mock`
-it runs them against the mock, which tests the script itself.
+## Offline tests
+
+`larecomp_director_test` covers the wire protocol and command engine.
+`larecomp_scene_edit_test` covers revision checks and scene edits.
+`python -I -B tools/director/scene_tool.py selftest` runs the Python checks,
+including protocol exchanges with `MockServer` in `director_client.py`.

@@ -1,0 +1,5 @@
+# Planted: lines the expander should have turned into plain statements.
+scene bad-template
+@foreach {SETTINGS}: at {I} set mcla_gpu_ao {ITEM}     #! expect error a template line
+at 1 set mcla_gpu_ao {AO}     #! expect error left in the text
+end 4

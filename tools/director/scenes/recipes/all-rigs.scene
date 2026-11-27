@@ -1,0 +1,57 @@
+# RECIPE all-rigs: every camera rig and the spot words in one scene, a car that drives the street and a still at the middle of every shot. This is the
+# scene to run after a change to the camera or to the spots (the run R-B1 of DIRECTOR-DESIGN.md): look at the eight pictures, each should show the car
+# the way its line says. Copy a line from it for the rig you want.
+#
+# The car is p1 (a Murcielago), driving lane 1 (the eastbound shot line at hw-lane1) of the street outside the Hollywood garage gate from its spawn at 0 along routes\street-lane1.route at 5 m/s:
+# 10 s, from 6 s to 16 s. Every place is a spot (hw-lane1, hw-lot) or the car's own frame; no coordinate is written.
+#   6  - 9.5    chase   behind the car, 6 m back and 1.6 up, a third of a second of lag                          mark chase    at 8
+#   9.5 - 12    tripod  on the lot's side of the street, follows the car with its aim (0.2 s late)                mark tripod   at 11
+#   12 - 14     hood    on the bonnet, rigid to the body, looking 30 m ahead                                       mark hood     at 13
+#   14 - 16     bumper  low at the front                                                                            mark bumper   at 15
+#   16 - 17.5   roof    above the roof (the car stopped at 16)                                                      mark roof     at 17
+#   17.5 - 21.5 orbit   az 0 -> 180 and el 8 -> 20 round the standing car, 7 m                                      mark orbit    at 19.5
+#   22 - 28.3   flyby   along routes\street-fly.route, 2.5 m above the road, looking at the car                    mark flyby    at 25
+#   29 - 31     by hand a camera key with a spot's place and heading (cam pos .. yaw spot:..): looks along the lot's heading  mark hand  at 30
+# Preview the tripod and manual camera positions before recording.
+
+scene recipe-all-rigs fps 60 step 1/60
+world hour 16 hold weather nice traffic off peds off parked off police off
+at 0 hud off
+at 0 car p1 spawn vp_lam_murcielago_06 at spot:hw-lane1@0,0,-25 heading spot:hw-lane1   # at 0: the ready gate holds the clock until the car is made, so every still (a seek) has it
+at 6 car p1 path street-lane1.route speed 5
+
+cam 6 rig chase car:p1 dist 6 height 1.6 lag 0.3 fov 50
+at 8 mark chase
+
+cut 9.5
+cam 9.5 rig tripod at spot:hw-lane1@-3.5,1.3,-4 track car:p1 0 0.7 0 aimlag 0.2 fov 40
+at 11 mark tripod
+
+cut 12
+cam 12 rig hood car:p1 lag 0.1 fov 70
+at 13 mark hood
+
+cut 14
+cam 14 rig bumper car:p1 fov 80
+at 15 mark bumper
+
+cut 16
+cam 16 rig roof car:p1 fov 60
+at 17 mark roof
+
+cut 17.5
+cam 17.5 rig orbit car:p1 r 7 az 0..180 over 4 el 8..20 at 0 0.6 0 fov 40 ease inout
+at 19.5 mark orbit
+
+cut 22
+cam 22 rig flyby path street-fly.route speed 8 up 2.5 track car:p1 0 0.7 0 fov 42
+at 25 mark flyby
+
+cut 29
+cam 29 pos spot:hw-lot@0,1.6,-6 yaw spot:hw-lot pitch -3 fov 50
+at 30 mark hand
+
+at 31 car p1 delete
+at 31.5 mark game-camera
+cam 31.5 off
+end 32.5

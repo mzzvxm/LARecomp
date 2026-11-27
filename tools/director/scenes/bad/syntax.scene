@@ -1,0 +1,7 @@
+# Planted: a time that is not a time, a quote that is not closed, an hour out of range, a statement that does not exist.
+scene bad-syntax
+at 1:99 mark one     #! expect error bad time '1:99'
+at 2 label "no end quote     #! expect error a double quote is not closed
+at 3 hour 60     #! expect error bad hour '60'
+at 4 dance     #! expect error unknown statement 'dance'
+end 6
