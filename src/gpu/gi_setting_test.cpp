@@ -289,9 +289,15 @@ void SceneChecks(const std::string& dir) {
   Check(Before(scene, ao, "gi_apply_->OnTrigger(summary, list, gbuffer_published, slot_, raw_gi,"), "ORDER: ... and the apply still follows the occlusion's apply");
   // after the structures' build (the car scene's top level holds the city), which the probe update traces against
   Check(Before(scene, "car_rt_->OnResolve(record, summary, list, slot_);", "gi_integration_->OnResolve(summary, list, slot_, view, has_planes);"), "ORDER: the field's trigger work comes after the ray tracing structures' (the top level the update traces)");
-  Check(Count(scene, "gi_integration_->") == 3 && Has(scene, "void SetGiIntegration") == false, "scene.cpp calls the integration at the frame's start, at the trigger and (the game's camera cut) at the anchor, once each");
+  const size_t preset_begin = At(scene, "if (preset_generation != preset_generation_) {");
+  const size_t preset_end = At(scene, "\n  }", preset_begin);
+  const size_t preset_cut = At(scene, "if (gi_integration_) gi_integration_->NoteRequestedCut();", preset_begin);
+  const size_t begin_frame = At(scene, "gi_integration_->BeginFrame(frame_serial_);");
+  Check(Count(scene, "gi_integration_->") == 4 && !Has(scene, "void SetGiIntegration") &&
+            preset_cut < preset_end && preset_end < begin_frame && begin_frame != std::string::npos,
+        "scene.cpp notifies GI of a preset switch before starting the frame, calls GI at the trigger, and reports a cut at the anchor");
   // THE ANCHOR: a camera cut the game asked for (Scene::NoteAnchorCut sets anchor_cut_ first) goes to the field as a teleport at the next frame's start (CITY-RT-REVIEW M4)
-  Check(Before(scene, "NoteAnchorCut(banks);", "gi_integration_->NoteRequestedCut();") && Has(scene, "if (gi_integration_ && anchor_cut_) {"),
+  Check(Before(scene, "NoteAnchorCut(banks);", "if (gi_integration_ && anchor_cut_) {\n      gi_integration_->NoteRequestedCut();"),
         "ORDER: the anchor's requested cut is read (NoteAnchorCut) before the integration is told, and only when there is one");
   const std::string header = ReadFile(dir + "/scene.h");
   Check(Has(header, "void SetGiIntegration(GiIntegration* gi_integration)") && Has(header, "GiIntegration* gi_integration_ = nullptr;") && Has(header, "class GiIntegration;"), "scene.h has the setter, the member and the forward declaration");

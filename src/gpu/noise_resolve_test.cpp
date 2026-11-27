@@ -1260,9 +1260,9 @@ void TestSources(const std::string& dir) {
           "shafts.cpp (review F1): EnsureImages compares the history images' textures before and after making them and clears the history's counters; RecordTemporal's gate is the twin's and never reads an image that has no layout yet");
   // the cone
   g_check(nc::Has(cone, "const bool resolve_history = denoise_passes > 0 && (one_ray || !info.upscaler) && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get()) && EnsureStableImages(history.width, history.height);") &&
-              nc::Has(cone, "const uint32_t pattern_phase = (one_ray || noise_resolve::Varies(info.upscaler, resolve_history)) ? info.pattern_phase : 0u;") &&
+              nc::Has(cone, "const uint32_t pattern_phase = (v2_paint || one_ray || noise_resolve::Varies(info.upscaler, resolve_history)) ? info.pattern_phase : 0u;") &&
               nc::Has(selfrefl, "info.pattern_phase = uint32_t(scene_noise::NoiseIndex(frame_) & 1023u);"),
-          "the cone advances with one ray, an upscaler or its own history; one-ray paint can keep its history while an upscaler runs");
+          "the cone advances for V2 paint, one ray, an upscaler or legacy history. One-ray paint can keep its legacy history while an upscaler runs");
   // NOISE-FOLLOW, CHECK 2: the three histories' images stay over the frames a temporal upscaler takes (HistoryLifetime, asked once a frame in the place that makes the images), and what they hold is stale across the gap
   g_check(nc::Has(ao, "plan.contact_history_gap = contact && upscaler_running && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_contact.Get()) &&\n                             larecomp::settings::mcla_gpu_ao_history.Get() >= 2 &&") &&
               nc::Has(ao, "plan.contact_history_keep = ContactHistoryKeep(plan);") && nc::Has(ao, "} else if (!plan.contact_history_keep) {") &&
@@ -1273,9 +1273,10 @@ void TestSources(const std::string& dir) {
               nc::Has(shafts, "const noise_resolve::HistoryImages hist_keep = hist_life_.Frame(plan.history, plan.history_gap, hist_held, hist_size_ok);") && nc::Has(shafts, "} else if (hist_held && hist_keep != noise_resolve::HistoryImages::kKeep) {") &&
               nc::Has(shafts, "hist_valid_ && hist_frame_ + 1 == frame_"),
           "shafts.cpp: the history's images are kept over an upscaler's frames (hist_frame_ + 1 == frame_ says they are stale) and given back by the lifetime rule");
-  g_check(nc::Has(cone, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get());") &&
-              nc::Has(cone, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);"),
-          "car_rt_refl.cpp (city line): the cone history's images stay over frames DLSS Ray Reconstruction takes too (the denoise passes are 0 there because it is the denoiser; the gap asks the setting's own count)");
+  g_check(nc::Has(cone, "const bool stable_gap = !v2_paint && car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler && noise_resolve::ResolveOn(larecomp::settings::mcla_gpu_noise_resolve_no_upscaler.Get(), larecomp::settings::mcla_gpu_noise_resolve_cone.Get());") &&
+              nc::Has(cone, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);") &&
+              nc::Has(cone, "const bool v2_enabled = !info.raw && RtDenoise::V2Enabled();") && nc::Has(cone, "if (v2_paint) denoise_passes = 0;"),
+          "V2 paint bypasses legacy history and denoise. DLSS Ray Reconstruction keeps legacy history images using the setting's own pass count");
   g_check(nc::Has(cone, "const noise_resolve::HistoryImages stable_keep = stable_life_.Frame(resolve_history, stable_gap, stable_held, stable_size_ok);") &&
               nc::Has(cone, "if (!resolve_history && stable_held && stable_keep != noise_resolve::HistoryImages::kKeep) {") &&
               nc::Has(cone, "const bool have_last = (!one_ray || !info.reset_history) && stable_valid_ && stable_resolve_paint_ == resolve_paint && stable_one_ray_ == one_ray &&") &&

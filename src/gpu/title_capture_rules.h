@@ -21,8 +21,9 @@ inline std::string_view Trim(std::string_view text) {
 inline std::optional<uint32_t> Number(std::string_view text) {
   if (text.empty()) return std::nullopt;
   uint32_t value = 0;
-  const auto end = text.data() + text.size();
-  const auto result = std::from_chars(text.data(), end, value);
+  const char* const begin = text.data();
+  const char* const end = begin + text.size();
+  const auto result = std::from_chars(begin, end, value);
   if (result.ec != std::errc{} || result.ptr != end) return std::nullopt;
   return value;
 }

@@ -630,7 +630,7 @@ void TestPlanWithPool() {
   }
   CHECK(worst_held < 150.0);
 
-  // 4. The pool's use is counted in the plan's result
+  // 4. Count the held pool blocks independently of how the resident BLASes are charged.
   city_rt::PlanInput in;
   in.camera[0] = 0.0;
   in.camera[2] = 0.0;
@@ -642,8 +642,11 @@ void TestPlanWithPool() {
     st.hi_bytes = 1000;
     st.hi_pool_held = 4096;
   }
-  const city_rt::Plan counted = city_rt::PlanStreaming(in, sectors, states);
-  CHECK(counted.resident_pool_bytes == 4096u * 16u && counted.resident_bytes == 16000u);
+  const city_rt::Plan fixed = city_rt::PlanStreaming(in, sectors, states);
+  CHECK(fixed.resident_pool_bytes == 4096u * 16u && fixed.resident_bytes == 16u * 20000u * 96u);
+  in.fixed_selection = false;
+  const city_rt::Plan legacy = city_rt::PlanStreaming(in, sectors, states);
+  CHECK(legacy.resident_pool_bytes == 4096u * 16u && legacy.resident_bytes == 16000u);
   in.budget.pool_cap = 0;  // without the cap the pool is not counted at all
   CHECK(city_rt::PlanStreaming(in, sectors, states).resident_pool_bytes == 0);
 }

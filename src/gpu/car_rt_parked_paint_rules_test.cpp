@@ -388,7 +388,7 @@ void WiringTests(const std::string& src) {
         "the trace's three reads of the history's distance (the hit's colour, the surface's mean, another car's seen colour) read the distance of either kind");
   Check(Has(trace, "if (own.a > 0.0 && own.a < 60000.0)"), "the player's own pass still asks a > 0: a mark is not the player's pixel");
   Check(Has(opp, "const float texelDistance = HistoryDistance(own.a);") && Has(opp, "if (!(texelDistance > 0.0 && texelDistance < 60000.0))") &&
-            Has(opp, "TraceOpponentTexel(history, texel, float4(own.rgb, texelDistance), aux)"),
+            Has(opp, "TraceOpponentTexel(history, texel, float4(own.rgb, texelDistance), aux, guide)"),
         "the opponents' pass finds another car's paint at a texel of either kind and traces it from the distance");
   Check(Has(denoise, "const float t = HistoryDistance(history.Load(int3(centre, 0)).a);") && Has(denoise, "const float tapT = HistoryDistance(history.Load(int3(at, 0)).a);"),
         "the denoise judges the taps by the distance of either kind");

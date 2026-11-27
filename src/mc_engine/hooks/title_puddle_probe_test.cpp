@@ -12,7 +12,8 @@ void Check(bool value) {
     ++checks;
     if (value) return;
     std::fprintf(stderr, "title_puddle_probe: check %d failed\n", checks);
-    std::exit(1);
+    std::fflush(stderr);
+    std::_Exit(1);
 }
 }  // namespace
 
@@ -70,6 +71,7 @@ int main() {
   auto tile_zero = capture::Parse("rt:0", "30");
   Check(tile_zero && tile_zero->targets[0].Matches(0, "", ""));
   Check(tile_zero && !tile_zero->targets[0].Matches(1, "", ""));
+  Check(capture::Number(std::string_view("1299").substr(0, 2)) == 12u);
   for (auto invalid : {"", " ", "rt:", "rt:-1", "rt:abc", "rt:4294967296", "scene,", ",rt:0"}) {
     Check(!capture::Parse(invalid, "0"));
   }
