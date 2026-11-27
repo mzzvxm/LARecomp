@@ -167,7 +167,7 @@ void Page(const std::string& dir) {
   const auto light = Rows(TableBody(code, "kLightItems"));
   const auto reflections = Rows(TableBody(code, "kReflectionItems"));
   const std::vector<std::string> light_expected = {
-      "PM_RxNoShadows", "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxFoliage",
+      "PM_RxGpuPbr", "PM_RxNoShadows", "PM_RxGpuShadowDetail", "PM_RxGpuShadowFilter", "PM_RxFoliage",
       "PM_RxGpuTrafficShadows", "PM_RxGpuCarShadowMap", "PM_RxGpuContact", "PM_RxGpuRtShadows",
       "PM_RxGpuAo", "PM_RxGpuCarAoRt", "PM_RxGpuAoLevel", "PM_RxGpuSsgi", "PM_RxGpuRtGi",
       "PM_RxGpuSsgiLevel", "PM_RxGpuHeadlights", "PM_RxGpuLightShadows", "PM_RxGpuRtLights",
@@ -181,7 +181,7 @@ void Page(const std::string& dir) {
   const std::vector<std::string> image_expected = {"PM_RxGpuAniso", "PM_RxXeAniso", "PM_RxDof", "PM_RxBlur"};
   const std::vector<std::string> world_expected = {
       "PM_RxUnspawn", "PM_RxPedDensity", "PM_RxParkedCars", "PM_RxFragDist", "PM_RxLodTraffic", "PM_RxLodCity"};
-  Check(Keys(light) == light_expected, "Lighting and Shadows groups shadows, occlusion, bounce and local lights");
+  Check(Keys(light) == light_expected, "Lighting and Shadows starts with PBR, then groups shadows, occlusion, bounce and local lights");
   Check(Keys(reflections) == reflections_expected, "Reflections keeps each RT row beside its base effect");
   Check(Keys(Rows(TableBody(code, "kVideoItems"))) == display_expected, "Display owns both AA rows");
   Check(Keys(Rows(TableBody(code, "kImageQualityItems"))) == image_expected, "Image Quality holds filtering and blur");
@@ -198,6 +198,7 @@ void Page(const std::string& dir) {
   Check(Has(code, "Bool(\"PM_RxFoliage\", \"disable_imposter_shadows\", \"FOLIAGE SHADOWS: \", true)"),
         "FOLIAGE SHADOWS keeps its key, its cvar and its inverted checkbox");
   for (const Row& row : light) {
+    if (row.key == "PM_RxGpuPbr") Check(row.native_only, row.key + " is native only");
     if (row.key == "PM_RxFoliage" || row.key == "PM_RxNoShadows")
       Check(!row.native_only, row.key + " is on both renderers");
   }
