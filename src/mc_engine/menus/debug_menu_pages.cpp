@@ -204,6 +204,7 @@ const ItemDef kDebugFixesItems[] = {
     Bool("PM_RxDbgSteerRamp",  "kb_steer_ramp",             "KEYBOARD STEER RAMP: "),
     Bool("PM_RxDbgGuestDensity", "mcla_fix_guest_density_work", "DENSITY LOOKUP: "),
     Bool("PM_RxDbgGuestMirror", "mcla_fix_guest_mirror_work", "MIRROR CAR LOOKUP: "),
+    NativeOnly(Bool("PM_RxDbgUiSharpBackground", "mcla_gpu_ui_sharp_background", "UI PIPELINE FALLBACK: ")),
     Action("PM_RxDbgFixReset", kActionDebugReset),
 };
 

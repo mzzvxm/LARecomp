@@ -1901,11 +1901,19 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
     // thread never makes them (variant_wait.h: the ladder of keys below). Only the game's own key at the end of the ladder keeps the game's rule. A take still waits (sync_builds.h).
     // A variant whose build FAILS takes the same way down, for good (the failed key is remembered: pipelines.h, Deferral::has_fallback); only the game's own key failing drops the draw.
     const Deferral waits{&Scene::AlwaysMaySkip, nullptr, sync_builds::Kind::kGuestDraw, true};
+    ReadyFallback ui_fallback;
+    const Deferral ui_deferral{nullptr, nullptr, sync_builds::Kind::kGuestDraw, false, &ui_fallback};
     const auto extras_of = [&](const PipelineKey& key) {
       return variant_wait::Extras{d.gbuffer_attached, variant_wait::HasHeadlight(key.ps_variant),
                                   variant_wait::RoadFeature(key.ps_variant) != chain::kNoFeature};
     };
     const auto ask_for = [&](const PipelineKey& key) -> const Deferral* {
+      if (variant_wait::CanUseUiSharpFallback(key.ps_variant, d.gbuffer_attached) &&
+          larecomp::settings::mcla_gpu_ui_sharp_background.Get()) {
+        ui_fallback.key = key;
+        ui_fallback.key.ps_variant = chain::SpecOf(key.ps_variant);
+        return &ui_deferral;
+      }
       return variant_wait::AskFor(extras_of(key)) == variant_wait::Ask::kAlways ? &waits : &deferral;
     };
     // What the lookup just made says to do (variant_wait::NextStep): no pipeline, being made or failed, and a key with a fallback.
@@ -1957,12 +1965,18 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       }
       d.pipeline = pipelines_->Get(pipeline_key, inputs, ask_for(pipeline_key), &pending);
     }
-    if (d.pipeline) {
+    if (ui_fallback.used) {
+      // CHECK: on D3D12 and Vulkan, compare consecutive cold UI frames as the
+      // sharpening takes over. The same draw still writes colour and stencil.
+      // Leave the original key out of the memo so the next frame can take it.
+      pipeline_key = ui_fallback.key;
+    } else if (d.pipeline) {
       pipeline_memo_key_ = pipeline_key;
       pipeline_memo_ = d.pipeline;
     } else if (pending) {
       // Not memoized: the next draw with the key asks again, and takes the
       // pipeline once it is ready. (Only the game's own key is left here: variant_wait::Next::kWait.)
+      pipelines_->NoteSkippedDraw(pipeline_key);
       NoteTargetsDrawn(d);
       return Skip::kPipelinePending;
     }
@@ -2121,10 +2135,14 @@ EdramKey Scene::DepthKey(const PreparedDraw& d) const {
   return DrawDepthKey(*edram_, d.state, d.key.color_count, d.target_size_bits);
 }
 
-bool Scene::MaySkipForPipeline(const void* context) {
-  const SkipAsk& ask = *static_cast<const SkipAsk*>(context);
-  const Scene& scene = *ask.scene;
-  const PreparedDraw& d = *ask.draw;
+sync_build_log::Background Scene::MaySkipForPipeline(const void* context) {
+  using Background = sync_build_log::Background;
+  const auto* ask = static_cast<const SkipAsk*>(context);
+  if (!ask || !ask->scene || !ask->draw || !ask->scene->edram_) {
+    return Background::kRequired;
+  }
+  const Scene& scene = *ask->scene;
+  const PreparedDraw& d = *ask->draw;
   const XenosState& s = d.state;
   // Multisampled targets only. A target is known by its EDRAM identity (base,
   // pitch, format, samples), and a one-off render to texture (a car's paint and
@@ -2133,29 +2151,29 @@ bool Scene::MaySkipForPipeline(const void* context) {
   // is for (the scene, 2x; the sun's shadow map, 4x; the reflections, 4x) are
   // not. A skipped draw into a target that is not redrawn would stay wrong.
   if (MsaaSampleCount(s.msaa) < 2) {
-    return false;
+    return Background::kSingleSample;
   }
   // Nor a draw that writes the stencil: later draws in the frame test what it
   // leaves, so without it they go unclipped far beyond the draw itself (the
   // radar's circle: the whole map over the screen for a frame as the map closes).
   if (d.key.depth_format != 0 && s.depth_control.stencil_enable && StencilWrites(s)) {
-    return false;
+    return Background::kStencilWrite;
   }
   bool any = false;
   for (uint32_t i = 0; i < d.key.color_count; ++i) {
     if (!scene.edram_->DrawnEveryFrame(ColorEdramKey(s, i), scene.frame_serial_,
                                        kPipelineSkipFrames)) {
-      return false;
+      return Background::kTargetHistory;
     }
     any = true;
   }
   if (d.key.depth_format != 0) {
     if (!scene.edram_->DrawnEveryFrame(scene.DepthKey(d), scene.frame_serial_, kPipelineSkipFrames)) {
-      return false;
+      return Background::kTargetHistory;
     }
     any = true;
   }
-  return any;
+  return any ? Background::kAllowed : Background::kNoTarget;
 }
 
 void Scene::NoteTargetsDrawn(const PreparedDraw& d) {

@@ -86,6 +86,9 @@
 // it has the game's own pipeline to draw with, so the Scene asks with a Deferral that always says yes and walks a ladder of keys (the full key, the key without the
 // planes, the key without the headlight) while the build runs. The lit world draws all write the stencil, which the rule refuses, so before this every variant of
 // them was made on the render thread: 41 to 52 pipelines in one frame at the first night, 211 to 276 at the G-buffer's first frames (3 to 17 s, the freeze watchdog).
+// UI sharpening can use the already adopted guest pipeline with the same
+// blend, stencil, targets and alpha specialization through the end of the
+// guest frame. If the guest pipeline is absent, the lookup needs the exact key.
 //
 // While a capture runs (sync_builds.h: the debug cvar mcla_gpu_sync_builds, or capture mode's
 // SetCaptureActive) no draw may be left out: MaySkip says no whatever the Deferral answers, so every
@@ -331,21 +334,28 @@ enum class KeyResult : uint8_t {
   kColorGap,       // colour targets with a gap below a bound one (reported)
 };
 
-// What Get asks when a pipeline is not there yet: may the draw be left out
-// until a builder thread has made it? A plain function and a context, so that
-// a lookup that hits has nothing to prepare for it. While a capture runs
-// (sync_builds.h) the answer is never used: the lookup waits for the build, and
-// `kind` says which path waited, for the count of waits.
+// An already adopted fallback may stand in for the requested key. `used`
+// tells Scene to bind the guest shader's constants for the draw.
+struct ReadyFallback {
+  PipelineKey key;
+  bool used = false;
+};
+
+// What Get asks on a miss: may the frame continue while a builder makes the
+// pipeline? `check` returns the draw rule's decision for the sync-build log.
+// A capture requires the exact pipeline, and `kind` identifies the lookup
+// when its time is counted in the capture log.
 //
 // `has_fallback`: the draw has another pipeline to draw with when this one cannot be made (a key that adds the headlight's word or the G-buffer's planes to the
 // game's own shader: variant_wait.h). Then a build that FAILED is final for the key: it is not made again on the render thread (a precache entry that failed on a
 // worker would otherwise be tried once more here, for a pipeline that fails the same), and it is logged once, with its error, whatever the cap on the other
 // failures' lines. Get then answers null and not pending, and the caller takes the fallback.
 struct Deferral {
-  bool (*may_skip)(const void* context) = nullptr;
+  sync_build_log::Background (*check)(const void* context) = nullptr;
   const void* context = nullptr;
   sync_builds::Kind kind = sync_builds::Kind::kGuestDraw;
   bool has_fallback = false;
+  ReadyFallback* ready_fallback = nullptr;  // optional UI PSO, used only if already available
 };
 
 class Pipelines {
@@ -406,6 +416,7 @@ class Pipelines {
   // never returns pending.
   plume::RenderPipeline* Get(const PipelineKey& key, const PipelineInputs& inputs,
                              const Deferral* deferral = nullptr, bool* pending = nullptr);
+  void NoteSkippedDraw(const PipelineKey& key) { skipped_draws_[key].Note(frame_); }
 
   // The host MSAA level is about to become `level` (1, 2, 4 or 8): hands the builder threads one copy,
   // at the sample count `level` gives it, of every pipeline Get was asked for with
@@ -609,10 +620,17 @@ class Pipelines {
     // The draw could have been left out but a capture is running (sync_builds.h): the lookup is
     // waited out and counted (MaySkip sets it, Resolve counts it).
     bool held = false;
+    bool ready_fallback = false;
+    sync_build_log::Background background = sync_build_log::Background::kRequired;
+
+    bool HasFallback() const { return ready_fallback || (deferral && deferral->has_fallback); }
   };
   // Whether the draw that missed may be left out for now: the deferral's rule, and no capture
   // running (a draw the rule would leave out is `miss.held` then).
   bool MaySkip(Miss& miss);
+  plume::RenderPipeline* FindReadyFallback(const Deferral* deferral) const;
+  void NoteReadyFallback(const PipelineKey& key, ReadyFallback& fallback, bool pending);
+  void LogAndClearDrawUses();
   // A ready precached pipeline for `key` (moved into pipelines_), or null: none,
   // being made while the draw may wait, being claimed now for the render thread
   // to make, or failed (`miss.take` says which).
@@ -660,6 +678,10 @@ class Pipelines {
   uint32_t depth24_bias_shift_ = 0;
   Stats stats_;
   sync_build_log::Counters sync_log_;  // the session's, render thread only; Stats above restarts every report
+  std::unordered_map<PipelineKey, sync_build_log::DrawUse, PipelineKeyHash> skipped_draws_;
+  std::unordered_map<PipelineKey, sync_build_log::DrawUse, PipelineKeyHash> pending_ui_fallbacks_;
+  std::unordered_map<PipelineKey, sync_build_log::DrawUse, PipelineKeyHash> failed_ui_fallbacks_;
+  std::optional<uint64_t> ui_fallback_frame_;
   uint32_t reported_kinds_ = 0;
   bool dynamic_depth_bias_ = false;
 

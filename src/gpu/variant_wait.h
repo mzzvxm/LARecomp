@@ -113,6 +113,13 @@ constexpr uint32_t RoadFeature(uint32_t ps_word) {
   return sp::chain::kNoFeature;
 }
 
+// UI sharpening changes bitmap sampling. Its exact guest PSO keeps the same
+// shaders' specialization, layout, blend, stencil and targets.
+constexpr bool CanUseUiSharpFallback(uint32_t ps_word, bool planes) {
+  namespace sp = larecomp::shaderpack;
+  return !planes && sp::chain::FeaturesOf(ps_word) == sp::chain::FeatureBit(sp::kFeatureUiSharp);
+}
+
 // The bloom variant's unit-scale tap is the guest tap. Keep its alpha-test
 // specialization and any word composed with other features.
 constexpr uint32_t BloomWord(uint32_t word, bool unit_scale, bool skip_identity) {
