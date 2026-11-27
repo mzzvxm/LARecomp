@@ -77,6 +77,39 @@ Json OverrideJson(const WorldState& o) {
 
 void RegisterScene() {
     RegisterCommand(
+        "scene.unload",
+        [](const Request&, const Responder& r) {
+            if (!larecomp::cvar::SetFlagByName("mcla_scene", "")) return r.Fail(ErrorCode::kFailed, "could not clear mcla_scene");
+            r.Defer([](const Responder& d) {
+                if (CurrentSceneState() == SceneState::kOff) d.Done(Json::Object());
+            });
+        },
+        MakeSchema("scene", "unload the scene and restore its settings", {}, "{}"));
+
+    RegisterCommand(
+        "scene.setting",
+        [](const Request& req, const Responder& r) {
+            if (!internal::NeedRunningScene(r)) return;
+            const std::string name = req.args.StringOr("name", "");
+            if (name.empty() || name.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_") != std::string::npos) {
+                return r.Fail(ErrorCode::kBadArgs, "scene.setting: expected a lowercase setting name");
+            }
+            if (const auto why = CvarRefusal(name); !why.empty()) return r.Fail(ErrorCode::kRefused, why);
+            const auto* info = larecomp::cvar::GetFlagInfo(name);
+            if (!info || info->type == larecomp::cvar::FlagType::Command || info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
+                return r.Fail(ErrorCode::kBadArgs, "scene.setting: no live setting called '" + name + "'");
+            }
+            if (req.args.Has("value") && !SceneSetLiveSetting(name, req.args.StringOr("value", ""))) {
+                return r.Fail(ErrorCode::kBadArgs, "scene.setting: the setting rejected its value");
+            }
+            Json out = Json::Object();
+            out.Set("value", larecomp::cvar::GetFlagByName(name));
+            r.Done(std::move(out));
+        },
+        MakeSchema("scene", "read or temporarily set a live setting for the current scene",
+                   {Arg("name", ArgType::kString, true), Arg("value", ArgType::kString, false)}, "{value}"));
+
+    RegisterCommand(
         "scene.load",
         [](const Request& req, const Responder& r) {
             const std::string path = req.args.StringOr("path", "");

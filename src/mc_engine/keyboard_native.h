@@ -145,3 +145,7 @@ class KeySteerScope {
 };
 
 }  // namespace larecomp::keyboard
+// Game thread. Uses the same camera control as the direct-selection keys.
+namespace larecomp::keyboard {
+void RequestCameraRig(int rig);
+}

@@ -17,7 +17,12 @@
 #include "director_internal.h"
 #include "director_math.h"
 #include "larecomp_log.h"
+#include "session_settle.h"
 #include "settings/larecomp_settings.h"
+
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/scene_noise.h"
+#endif
 
 namespace mc::cinematic::director {
 
@@ -40,6 +45,77 @@ void ReplyWhenSettled(const Request& req, const Responder& r, Json result, int f
 }
 
 void RegisterTransport() {
+    RegisterCommand(
+        "scene.freeze",
+        [](const Request& req, const Responder& r) {
+            const Scene* scene = LoadedScene();
+            if (!scene || CurrentSceneState() != SceneState::kRunning) {
+                return r.Fail(ErrorCode::kNotReady, "scene.freeze requires a running scene");
+            }
+            const double t = req.args.NumberOr("t", -1.0);
+            if (!(t >= 0.0) || (scene->Duration() >= 0.0 && t >= scene->Duration())) {
+                return r.Fail(ErrorCode::kBadArgs, "scene.freeze: 't' must precede the end of the scene");
+            }
+            const WorldState initial = EvaluateWorld(*scene, 0.0);
+            const WorldState pinned = EvaluateWorld(*scene, t);
+            bool override_on = false;
+            SceneWorldOverride(&override_on);
+            if (override_on || initial.traffic != 0 || initial.peds != 0 || pinned.peds != 0 ||
+                !pinned.hour_set || pinned.weather < 0 || !ScrubbableAt(*scene, t).scrubbable) {
+                return r.Fail(ErrorCode::kRefused,
+                              "scene.freeze needs traffic and peds off from the start and at the pin, a fixed hour and weather at the pin, and no brain vehicles or world override");
+            }
+            if (larecomp::settings::mcla_scene_t.Get() >= 0.0 || larecomp::settings::mcla_scene_seed.Get() <= 0 ||
+                !larecomp::settings::mcla_scene_seed_each_frame.Get()) {
+                return r.Fail(ErrorCode::kRefused, "scene.freeze needs Director-owned time and per-update scene seeding");
+            }
+            // CHECK: The engine's existing held-world time floor can still advance
+            // some particles or cars. Repeat captures establish the residual floor.
+            SceneSeekTo(t);
+            r.Done(internal::TransportJson());
+        },
+        MakeSchema("scene", "pin a scene for repeat captures with ambient spawning disabled and deterministic scene seeds",
+                   {Arg("t", ArgType::kNumber, true, "scene seconds")}, "the fields of transport.get"));
+
+    RegisterCommand(
+        "scene.settle",
+        [](const Request& req, const Responder& r) {
+            const int64_t frames = req.args.IntOr("frames", 120);
+            if (frames < 1 || frames > 600) return r.Fail(ErrorCode::kBadArgs, "scene.settle: 'frames' must be 1 to 600");
+#if defined(LARECOMP_HAS_GPU)
+            const SceneTransport initial = GetSceneTransport();
+            if (initial.state != SceneState::kRunning || !initial.held || initial.pending_steps) {
+                return r.Fail(ErrorCode::kNotReady, "scene.settle needs a held scene");
+            }
+            const std::string scene = SceneFilePath();
+            const uint64_t since = internal::TickCount();
+            r.Defer([scene, t = initial.t, since, frames, gate = SessionSettle{}](const Responder& d) mutable {
+                const SceneTransport now = GetSceneTransport();
+                if (now.state != SceneState::kRunning || !now.held || now.pending_steps ||
+                    now.t != t || SceneFilePath() != scene) {
+                    return d.Fail(ErrorCode::kStale, "scene.settle: the scene or its held time changed");
+                }
+                bool stream_known = false;
+                const bool streamed = StreamingDone(&stream_known);
+                GameStateSample state;
+                const bool ready = SampleGameState(&state) && state.world_ready && !state.paused &&
+                                   stream_known && streamed && internal::WorldSettled(since, 3, nullptr);
+                const uint64_t present = mcla::gpu::scene_noise::Get().presents.load(std::memory_order_relaxed);
+                // CHECK: Validate present counting and a warm history with the first D3D12 and Vulkan captures.
+                if (!gate.Observe(ready, present, static_cast<uint64_t>(frames))) return;
+                Json result = Json::Object();
+                result.Set("t", t);
+                result.Set("frames", frames);
+                result.Set("present", present);
+                d.Done(std::move(result));
+            });
+#else
+            r.Fail(ErrorCode::kNotReady, "scene.settle requires the LARecomp renderer");
+#endif
+        },
+        MakeSchema("scene", "wait for known streaming and car readiness, then count rendered guest frames at the held scene time",
+                   {Arg("frames", ArgType::kInt, false, "1 to 600, default 120")}, "{t, frames, present}"));
+
     RegisterCommand(
         "transport.get", [](const Request&, const Responder& r) { r.Done(internal::TransportJson()); },
         MakeSchema("transport", "the scene's clock", {}, "{state, t, duration, fps, step, paused, frozen, frame, mode, scrubbable, scrub_hint, holding_for_ready}"));

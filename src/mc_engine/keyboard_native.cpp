@@ -1993,6 +1993,12 @@ void Hook_KeyboardFeed() {
 
 namespace larecomp::keyboard {
 
+void RequestCameraRig(int rig) {
+    g_cam.target = rig;
+    g_cam.phase = 0;
+    g_cam.presses = 0;
+}
+
 bool MenuScreenUp() { return g_screen_menu.load(std::memory_order_relaxed); }
 bool PhoneScreenUp() { return g_screen_phone.load(std::memory_order_relaxed); }
 bool MouseDragButtonHeld() { return g_keys.Held(0x01) || g_keys.Held(0x02); }  // LMB, RMB (kbm_input.h kMouseKeys)
