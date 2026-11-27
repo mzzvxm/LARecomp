@@ -14,6 +14,7 @@
 #if defined(_WIN32)
 #include "restart_handoff_win.h"
 
+#include <memory>
 #include <shellapi.h>
 #else
 #include "restart_handoff_linux.h"
@@ -104,60 +105,78 @@ void WaitForRestartedGame() {
 }
 
 bool RelaunchGame() {
-  int argc = 0;
-  LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-  if (!argv) {
+  const auto spawn_failed = [](DWORD error) {
+    MC_ERROR("[restart] could not start the game again (error {})", error);
     return false;
+  };
+  int argc = 0;
+  std::unique_ptr<LPWSTR, decltype(&LocalFree)> argv(
+      CommandLineToArgvW(GetCommandLineW(), &argc), &LocalFree);
+  if (!argv) {
+    return spawn_failed(GetLastError());
   }
   std::wstring command;
   for (int i = 0; i < argc; ++i) {
-    if (i > 0 && std::wstring_view(argv[i]).starts_with(kRestartFlag)) {
+    const std::wstring_view argument(argv.get()[i]);
+    if (i > 0 && argument.starts_with(kRestartFlag)) {
       continue;
     }
-    command += (command.empty() ? L"" : L" ") + QuoteArgument(argv[i]);
+    command += (command.empty() ? L"" : L" ") + QuoteArgument(argument);
   }
-  LocalFree(argv);
+  argv.reset();
 
   HANDLE self = nullptr;
   if (!DuplicateHandle(GetCurrentProcess(), GetCurrentProcess(), GetCurrentProcess(), &self,
                        SYNCHRONIZE, TRUE, 0)) {
-    MC_ERROR("[restart] no handle for the new game to wait on (error {})", GetLastError());
+    const DWORD error = GetLastError();
+    MC_ERROR("[restart] no handle for the new game to wait on (error {})", error);
     return false;
   }
+  const std::unique_ptr<void, decltype(&CloseHandle)> self_handle(self, &CloseHandle);
   wchar_t handle_text[32];
   std::swprintf(handle_text, 32, L"%llx",
                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(self)));
   command += L" " + std::wstring(kRestartFlag) + handle_text;
 
   SIZE_T list_size = 0;
+  // A null-list probe is expected to fail and return the required buffer size.
   InitializeProcThreadAttributeList(nullptr, 1, 0, &list_size);
+  const DWORD sizing_error = GetLastError();
+  if (sizing_error != ERROR_INSUFFICIENT_BUFFER || list_size == 0) {
+    return spawn_failed(sizing_error);
+  }
+  std::wstring exe(32768, L'\0');
+  const DWORD exe_length = GetModuleFileNameW(nullptr, exe.data(), static_cast<DWORD>(exe.size()));
+  if (exe_length == 0 || exe_length >= exe.size()) {
+    return spawn_failed(GetLastError());
+  }
+  exe.resize(exe_length);
+
   std::vector<uint8_t> list_storage(list_size);
   auto* list = reinterpret_cast<LPPROC_THREAD_ATTRIBUTE_LIST>(list_storage.data());
-  std::wstring exe(32768, L'\0');
-  exe.resize(GetModuleFileNameW(nullptr, exe.data(), DWORD(exe.size())));
+  if (!InitializeProcThreadAttributeList(list, 1, 0, &list_size)) {
+    return spawn_failed(GetLastError());
+  }
+
   STARTUPINFOEXW startup{};
   startup.StartupInfo.cb = sizeof(startup);
+  startup.lpAttributeList = list;
   PROCESS_INFORMATION process{};
+  // CHECK: verify native update failure and retry in the disposable Windows restart rehearsal.
   const bool started =
-      !exe.empty() && InitializeProcThreadAttributeList(list, 1, 0, &list_size) &&
       UpdateProcThreadAttribute(list, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &self, sizeof(self),
                                 nullptr, nullptr) &&
-      (startup.lpAttributeList = list,
-       CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE,
-                      EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo,
-                      &process));
-  const DWORD error = GetLastError();
-  if (startup.lpAttributeList) {
-    DeleteProcThreadAttributeList(list);
-  }
-  CloseHandle(self);
+      CreateProcessW(exe.c_str(), command.data(), nullptr, nullptr, TRUE,
+                     EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, &startup.StartupInfo, &process);
+  const DWORD error = started ? ERROR_SUCCESS : GetLastError();
+  // An initialized list must be deleted even if its update failed.
+  DeleteProcThreadAttributeList(list);
   if (!started) {
-    MC_ERROR("[restart] could not start the game again (error {})", error);
-    return false;
+    return spawn_failed(error);
   }
-  MC_INFO("[restart] started again as process {}", process.dwProcessId);
   CloseHandle(process.hThread);
   CloseHandle(process.hProcess);
+  MC_INFO("[restart] started again as process {}", process.dwProcessId);
   return true;
 }
 #else
