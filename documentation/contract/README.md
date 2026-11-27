@@ -76,8 +76,10 @@ recipe's options. Update the pin file, recipe and recipe example together.
 ## Code generation and setup actions
 
 - `launcher-recipe.json` can supply `codegen.place`, a map from a name in `codegen.inputs` to a path relative to the source checkout.
-  Place each mapped input at its destination before invoking codegen. The current `default.xex` destination is the entrypoint
-  `file_path` in `larecomp_manifest.toml` on both platforms.
+  Place each mapped input at its destination before invoking codegen. For the checkout's own recipe, the validator (Python 3.11 or
+  newer) reads the explicit TOML argument to `rexglue codegen` and checks that `default.xex` goes to the exact `[entrypoint].file_path`
+  relative to that manifest's directory, including case. Both platforms currently use `out/build/win-amd64-release/assets/default.xex`.
+  A legacy recipe that omits `codegen.place` uses that same destination.
 - An install-manifest action's `stdout` describes its progress and result records. `prefix` identifies lines belonging to that
   action. Grammar 1 ends with `<prefix>result|<status>|<detail>`. When supplied, `ok_results` lists the successful status tokens
   in that record. The process exit codes are declared separately in `exit`.
