@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <type_traits>  // global scope: pbr_screen_shim.h needs it and is included inside namespace hlsl_shim
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
