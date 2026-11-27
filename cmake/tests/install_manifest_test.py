@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[2]
 CONTRACT = ROOT / 'documentation/contract'
 VALIDATOR = CONTRACT / 'validate_contract.py'
 PIPELINE_PREBUILD = 'src/gpu/pipeline_prebuild.cpp'
+MSPACK_SIDECARS = ('larecomp_mspack_license.txt', 'larecomp_mspack_notice.txt')
 CONSTANT_SOURCES = (
     'larecomp_manifest.toml', 'src/cpu_level.cpp', 'src/larecomp_version.h',
     'src/settings/larecomp_app_settings.h',
@@ -41,15 +42,14 @@ set(CMAKE_CXX_LINK_EXECUTABLE "${CMAKE_COMMAND} -E touch <TARGET>")
 set(CMAKE_CXX_CREATE_SHARED_LIBRARY "${CMAKE_COMMAND} -E touch <TARGET>")
 set(WIN32 ${fixture_windows})
 set(CMAKE_EXECUTABLE_SUFFIX "${fixture_suffix}")
+set(CMAKE_SHARED_LIBRARY_PREFIX "${fixture_lib_prefix}")
 set(CMAKE_SHARED_LIBRARY_SUFFIX "${fixture_lib_suffix}")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/runtime")
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}")
 add_executable(larecomp dummy.cpp)
 add_executable(larecomp_online_tool dummy.cpp)
-add_library(larecomp_mspack SHARED dummy.cpp)
-set_target_properties(larecomp larecomp_online_tool larecomp_mspack PROPERTIES LINKER_LANGUAGE CXX)
+set_target_properties(larecomp larecomp_online_tool PROPERTIES LINKER_LANGUAGE CXX)
 set_target_properties(larecomp larecomp_online_tool PROPERTIES SUFFIX "${fixture_suffix}")
-set_target_properties(larecomp_mspack PROPERTIES PREFIX "" SUFFIX "${fixture_lib_suffix}")
 if(fixture_gpu)
     add_custom_target(larecomp_gpu)
 endif()
@@ -64,7 +64,6 @@ endfunction()
 function(add_custom_command)
     file(APPEND "${CMAKE_CURRENT_BINARY_DIR}/copies.txt" "${ARGV}\n")
 endfunction()
-set(LARECOMP_MSPACK_NOTICES larecomp_mspack_notice.txt larecomp_mspack_license.txt)
 if(fixture_windows AND fixture_gpu)
     set(LARECOMP_FFX_KIT "${CMAKE_CURRENT_SOURCE_DIR}/kit/Kits/FidelityFX")
     set(LARECOMP_STREAMLINE_KIT "${CMAKE_CURRENT_SOURCE_DIR}/kit")
@@ -79,7 +78,9 @@ if(fixture_windows AND fixture_gpu)
 else()
     set(LARECOMP_DXC_LINUX_DIR "${CMAKE_CURRENT_SOURCE_DIR}/dxc-kit" CACHE PATH "")
 endif()
+set_source_files_properties(thirdparty/libmspack/libmspack/mspack/lzxd.c PROPERTIES HEADER_FILE_ONLY ON)
 include(setup-stage.cmake)
+set_target_properties(larecomp_mspack PROPERTIES LINKER_LANGUAGE CXX)
 include(game-stage.cmake)
 include(exe-wiring.cmake)
 set_source_files_properties("${CMAKE_CURRENT_BINARY_DIR}/lfg/describe_json.cpp" PROPERTIES HEADER_FILE_ONLY ON)
@@ -175,15 +176,18 @@ def prepare_tree(source, deps):
         'dummy.cpp', 'src/assets/fake.own', 'assets/gamecontrollerdb.txt', 'assets/mcla_pipelines.bin',
         'assets/D3D12/LICENCE-MIT.txt', 'src/achievements.toml', 'src/keycaps/key.png',
         'dxc-kit/lib/libdxcompiler.so', 'dxc-kit/LICENSE-LLVM.txt',
-        'LICENSES/larecomp_mspack_notice.txt', 'LICENSES/larecomp_mspack_license.txt',
+        'thirdparty/libmspack/libmspack/mspack/lzxd.c',
     ):
         write(source / filename)
+    (source / 'LICENSES').mkdir()
+    for name in MSPACK_SIDECARS:
+        shutil.copyfile(ROOT / 'LICENSES' / name, source / 'LICENSES' / name)
     for kit in deps['kits'].values():
         for item in kit['files']:
             write(source / 'kit' / item['path'])
     cmakelists = (ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
     setup = cmakelists.split('    # BS-G: Record the SDK', 1)[1].split('    # Third-party code', 1)[0]
-    mspack = cmakelists.split('    # BS-G: The library', 1)[1].split('    target_link_libraries(larecomp PRIVATE larecomp_mspack)', 1)[0]
+    mspack = cmakelists.split('    # libmspack (LGPL-2.1', 1)[1].split('    target_link_libraries(larecomp PRIVATE larecomp_mspack)', 1)[0]
     stage = cmakelists.split('    # BS-G game runtime staging.', 1)[1].split('    # Floating-point contraction', 1)[0]
     write(source / 'setup-stage.cmake', '#' + setup + '#' + mspack)
     write(source / 'game-stage.cmake', '#' + stage)
@@ -197,13 +201,14 @@ def prepare_tree(source, deps):
     write(source / 'CMakeLists.txt', FIXTURE)
 
 
-def configure(cmake, source, output, *, windows, gpu=True, full=False, exports=False, error=None):
+def configure(cmake, source, output, *, windows, mingw=False, gpu=True, full=False, exports=False, error=None):
     write(output / 'runtime/assets/default.xex', 'synthetic codegen input')
     write(output / 'copies.txt', '')
     run([cmake, '-S', str(source), '-B', str(output), '-G', 'Ninja',
          f'-Dfixture_windows={int(windows)}', f'-Dfixture_gpu={int(gpu)}',
          f'-Dfixture_full={int(full)}', f'-Dfixture_exports={int(exports)}',
          '-Dfixture_suffix=' + ('.exe' if windows else ''),
+         '-Dfixture_lib_prefix=' + ('lib' if mingw or not windows else ''),
          '-Dfixture_lib_suffix=' + ('.dll' if windows else '.so')], error=error)
     if error is not None:
         return None
@@ -256,8 +261,8 @@ def check_min_launcher(cmake, source, out):
         write(path, original)
 
 
-def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=False):
-    manifest, describe = configure(cmake, source, out, windows=windows, gpu=gpu, full=full, exports=exports)
+def check_runtime(cmake, source, out, *, windows, mingw=False, gpu=True, full=False, exports=False):
+    manifest, describe = configure(cmake, source, out, windows=windows, mingw=mingw, gpu=gpu, full=full, exports=exports)
     # The recipe at the repo root is the one place min_launcher is edited: every file of the build carries its value.
     check_min_launcher_outputs(out, manifest, describe, read(ROOT / 'launcher-recipe.json').get('min_launcher'))
     stage = {entry['from']: entry for entry in manifest['stage']}
@@ -311,7 +316,10 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
         assert action[step]['stdout'] == {'prefix': f'@{prefix}|', 'grammar': 1, 'ok_results': statuses}
     extension = '.dll' if windows else '.so'
     assert stage['sdk_module' + extension]['kind'] == 'module'
-    assert stage['larecomp_mspack_license.txt']['licence_for'] == 'larecomp_mspack' + extension
+    library = ('lib' if mingw or not windows else '') + 'larecomp_mspack' + extension
+    assert stage[library] == {'from': library, 'to': library, 'kind': 'dll', 'required': True}
+    for name in MSPACK_SIDECARS:
+        assert stage[name] == {'from': name, 'to': name, 'kind': 'licence', 'required': True, 'licence_for': library}
     assert stage['assets/fake.own']['to'] == 'assets/fake.own'
     assert 'assets/**' not in stage and 'assets/default.xex' not in stage
     assert stage['gamecontrollerdb.txt']['required']
@@ -348,6 +356,20 @@ def check_runtime(cmake, source, out, *, windows, gpu=True, full=False, exports=
     assert action['build_city_hit']['outputs'][-1] == '{shader_pack_dir}/city/mcla_city_hit.stamp'
     copies = (out / 'copies.txt').read_text(encoding='utf-8')
     assert re.search(r'copy_if_different;[^;]+/src/assets/fake\.own;\$<TARGET_FILE_DIR:larecomp>/assets/fake\.own;', copies)
+    for name in MSPACK_SIDECARS:
+        command = f'copy_if_different;{(source / "LICENSES" / name).as_posix()};$<TARGET_FILE_DIR:larecomp_mspack>/{name};'
+        assert sum(line.startswith('TARGET;larecomp_mspack;POST_BUILD;') and command in line
+                   for line in copies.splitlines()) == 1, command
+
+
+def check_mspack_sidecars(cmake, source, out):
+    for name in MSPACK_SIDECARS:
+        path = source / 'LICENSES' / name
+        path.unlink()
+        try:
+            configure(cmake, source, out / name, windows=False, error=f'LICENSES/{name} is missing')
+        finally:
+            shutil.copyfile(ROOT / 'LICENSES' / name, path)
 
 
 def check_pipeline_key_export(cmake, source, out):
@@ -475,6 +497,14 @@ def check_dxc_host(cmake, source, out, deps):
 
 MUTATIONS = (
     ('setup-stage.cmake', 'larecomp_stage_sdk_runtime(larecomp)', ''),
+    ('setup-stage.cmake', 'larecomp_stage(larecomp_mspack "$<TARGET_FILE_NAME:larecomp_mspack>" dll)', ''),
+    ('setup-stage.cmake', '$<TARGET_FILE_NAME:larecomp_mspack>" dll', 'larecomp_mspack.dll" dll'),
+    ('setup-stage.cmake', 'larecomp_mspack_notice.txt larecomp_mspack_license.txt)', 'larecomp_mspack_notice.txt)'),
+    ('setup-stage.cmake', 'larecomp_mspack_notice.txt larecomp_mspack_license.txt)', 'larecomp_mspack_license.txt)'),
+    ('setup-stage.cmake', 'if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}")', 'if(FALSE)'),
+    ('setup-stage.cmake', '"${_larecomp_mspack_notice}" licence', '"${_larecomp_mspack_notice}" licence OPTIONAL'),
+    ('setup-stage.cmake', 'SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/LICENSES/${_larecomp_mspack_notice}"', ''),
+    ('setup-stage.cmake', 'LICENCE_FOR "$<TARGET_FILE_NAME:larecomp_mspack>"', 'LICENCE_FOR "larecomp_mspack.dll"'),
     ('cmake/InstallManifest.cmake', 'set(dest "$<TARGET_FILE_DIR:${target}>/${path}")',
      'set(dest "$<TARGET_FILE_DIR:${target}>/wrong/${path}")'),
     ('cmake/InstallManifest.cmake', 'set(required true)', 'set(required false)'),
@@ -532,7 +562,7 @@ def main():
     assert recipe['codegen']['place']['default.xex'] == codegen_xex, 'codegen placement must match the entrypoint file_path'
     cases = (
         dict(windows=True, full=True, exports=True),
-        dict(windows=True),
+        dict(windows=True, mingw=True),
         dict(windows=False),
         dict(windows=True, gpu=False),
     )
@@ -548,6 +578,8 @@ def main():
         for i, case in enumerate(cases):
             check_runtime(args.cmake, source, temp / f'build-{i}', **case)
         print(f'{len(cases)} runtime configurations and their describe output validated')
+        check_mspack_sidecars(args.cmake, source, temp / 'mspack-missing')
+        print(f'{len(MSPACK_SIDECARS)} missing libmspack sidecars stop the configure')
         check_pipeline_key_export(args.cmake, source, temp / 'pipeline-key-changed')
         print('pipeline key additions and deduplication checked')
         check_min_launcher(args.cmake, source, temp / 'min-launcher')
@@ -564,6 +596,7 @@ def main():
                         check_runtime(args.cmake, source, temp / f'mutant-{i}-{j}', **case)
                     check_pipeline_key_export(args.cmake, source, temp / f'mutant-{i}-changed')
                     check_min_launcher(args.cmake, source, temp / f'mutant-{i}-min-launcher')
+                    check_mspack_sidecars(args.cmake, source, temp / f'mutant-{i}-mspack-missing')
                 except (AssertionError, KeyError, FileNotFoundError):
                     pass
                 else:

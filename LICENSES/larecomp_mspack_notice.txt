@@ -10,8 +10,9 @@ What it is
   Library:   libmspack 1.12 (git tag v1.12,
              commit 3434c093c6d5b4ab0c95ad1247e7449271bd03d3)
   Part used: mspack/lzxd.c with the library's own headers, built unchanged
-  The file:  larecomp_mspack.dll on Windows, liblarecomp_mspack.so on Linux, in the same
-             folder as the LARecomp executable (larecomp.exe, larecomp)
+  The file:  larecomp_mspack.dll or liblarecomp_mspack.dll on Windows and
+             liblarecomp_mspack.so on Linux, beside the LARecomp executable.
+             The install manifest names the file for that build.
 
 Where the source is
   https://github.com/kyz/libmspack (the commit above)
