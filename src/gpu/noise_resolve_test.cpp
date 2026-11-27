@@ -624,6 +624,7 @@ struct ShaftsHost {
   bool valid = false;        // hist_valid_
   uint64_t frame_of = 0;     // hist_frame_
   bool pause_of = false;     // hist_pause_
+  uint32_t legacy_steps_of = 0;  // hist_legacy_steps_
   float sun_of[2] = {};      // hist_sun_
   uint32_t frames = 0;       // hist_frames_
   uint32_t image[2] = {0, 0};  // the size of the history images
@@ -631,7 +632,7 @@ struct ShaftsHost {
   float weight_last = -1.0f;
   bool keep_last = false;
   // One frame at `w` x `h` with the sun at (sun_u, sun_v). `ensure_invalidates` is the fix: EnsureImages tells the history that it made the images again.
-  void Frame(uint32_t w, uint32_t h, float sun_u, float sun_v, bool ensure_invalidates, bool pause = false, uint64_t skip = 0) {
+  void Frame(uint32_t w, uint32_t h, float sun_u, float sun_v, bool ensure_invalidates, bool pause = false, uint64_t skip = 0, uint32_t legacy_steps = 0) {
     frame += 1 + skip;
     if (image[0] != w || image[1] != h) {
       image[0] = w;
@@ -644,12 +645,14 @@ struct ShaftsHost {
     const float shift_u = sun_of[0] - sun_u;
     const float shift_v = sun_of[1] - sun_v;
     const float aspect = float(w) / float(h);
-    const bool keep = valid && frame_of + 1 == frame && pause_of == pause && std::isfinite(shift_u) && std::isfinite(shift_v) && nr::ShaftsKeepsHistory(shift_u, shift_v, aspect);
+    const bool keep = valid && frame_of + 1 == frame && pause_of == pause && legacy_steps_of == legacy_steps &&
+                      std::isfinite(shift_u) && std::isfinite(shift_v) && nr::ShaftsKeepsHistory(shift_u, shift_v, aspect);
     keep_last = keep;
     weight_last = keep ? nr::ShaftsHistoryWeight(frames) : 0.0f;  // push.sun[2]
     valid = true;
     frame_of = frame;
     pause_of = pause;
+    legacy_steps_of = legacy_steps;
     sun_of[0] = sun_u;
     sun_of[1] = sun_v;
     frames = keep ? std::min(frames + 1u, 64u) : 1u;
@@ -713,6 +716,12 @@ void TestShaftsHistoryGate() {
   reasons.Frame(960, 540, std::nanf(""), 0.2f, true, true);
   const bool not_a_number = !reasons.keep_last && reasons.weight_last == 0.0f;
   g_check(gap && pause && jump && steady_again && not_a_number, "the history is not kept over a gap of a frame, a change of the kind of view, a jump of the sun or a sun that is no number");
+  ShaftsHost steps;
+  steps.Frame(960, 540, 0.5f, 0.2f, true);
+  steps.Frame(960, 540, 0.5f, 0.2f, true, false, 0, 32);
+  const bool reset_steps = !steps.keep_last && steps.weight_last == 0.0f;
+  steps.Frame(960, 540, 0.5f, 0.2f, true, false, 0, 32);
+  g_check(reset_steps && steps.keep_last && steps.weight_last == 0.5f, "a change of shafts march steps restarts history at the same image size");
   ShaftsHost capped;
   for (int f = 0; f < 100; ++f) {
     capped.Frame(960, 540, 0.5f, 0.2f, true);
@@ -1243,8 +1252,10 @@ void TestSources(const std::string& dir) {
   const size_t record_at = shafts.find("const HostImage* SunShafts::RecordTemporal(");
   g_check(nc::Has(shafts, "const plume::RenderTexture* hist_before[2] = {hist_[0].texture.get(), hist_[1].texture.get()};") && ensure_at != std::string::npos && invalidate_at != std::string::npos &&
               record_at != std::string::npos && ensure_at < invalidate_at && invalidate_at < record_at &&
-              nc::Has(shafts, "const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause && std::isfinite(shift_u) && std::isfinite(shift_v) &&\n"
+              nc::Has(shafts, "const bool keep = hist_valid_ && hist_frame_ + 1 == frame_ && hist_pause_ == pause &&\n"
+                              "                    hist_legacy_steps_ == plan.legacy_steps && std::isfinite(shift_u) && std::isfinite(shift_v) &&\n"
                               "                    noise_resolve::ShaftsKeepsHistory(shift_u, shift_v, aspect) && history_in.layout != plume::RenderTextureLayout::UNKNOWN;") &&
+              nc::Has(shafts, "hist_legacy_steps_ = plan.legacy_steps;") &&
               nc::Has(shafts, "push.sun[2] = keep ? noise_resolve::ShaftsHistoryWeight(hist_frames_) : 0.0f;") && nc::Has(shafts, "hist_frames_ = keep ? std::min(hist_frames_ + 1u, 64u) : 1u;"),
           "shafts.cpp (review F1): EnsureImages compares the history images' textures before and after making them and clears the history's counters; RecordTemporal's gate is the twin's and never reads an image that has no layout yet");
   // the cone

@@ -332,6 +332,8 @@ target_include_directories(larecomp_volumetrics_inputs_test PRIVATE ${CMAKE_SOUR
 #   cmake --build <dir> --target larecomp_volumetrics_stable_test, then run src/gpu/larecomp_volumetrics_stable_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_stable_test EXCLUDE_FROM_ALL volumetrics_stable_test.cpp)
 target_include_directories(larecomp_volumetrics_stable_test PRIVATE ${CMAKE_SOURCE_DIR}/src)  # settings/immortal.h (vol_lamp_list.h, cut_request.cpp)
+# The parity, culling and integration test also checks the shader wiring in the supplied source tree.
+#   cmake --build <dir> --target larecomp_volumetrics_amortize_test, then run src/gpu/larecomp_volumetrics_amortize_test <src/gpu dir> (exit 0 = passed).
 add_executable(larecomp_volumetrics_amortize_test EXCLUDE_FROM_ALL volumetrics_amortize_test.cpp)
 # The sun shafts' image size rule (shafts_image.h: half the picture, capped at a 960x540 box; the sky pass's taps; given the hlsl folder it
 # also checks that the shaders say what the header says) likewise:
