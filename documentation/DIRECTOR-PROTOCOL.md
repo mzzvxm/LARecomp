@@ -90,6 +90,10 @@ clock and the cars are kept, only a car whose statement changed is made again). 
 | Command | Args -> result |
 |---|---|
 | `scene.load` | `{path}` -> `{path, state}`. Arms that scene file (a path, or a name looked up next to the game and in `scenes`). With `wait:"settled"` the reply comes when it runs. |
+| `scene.unload` | `{}` -> `{}`. Unloads the scene and restores the settings it held before replying. |
+| `scene.freeze` | `{t}` -> transport fields. Pins an authored scene with traffic and pedestrians off, a held hour and weather, and repeatable seeds. Uses the transport's held-world time floor. |
+| `scene.setting` | `{name, value?}` -> `{value}`. Reads a live setting, or applies and reads it back. Uses the scene's setting restrictions and restores the original value and its save provenance on unload. |
+| `scene.settle` | `{frames?:120}` -> `{t, frames, present}`. Waits for a held scene's cars and known city streaming, then counts rendered guest frames for temporal history. A readiness interruption starts the count again. |
 | `scene.get` | `{text?:false}` -> `{path, name, rev, hash, events:[{line, t, track, text, kind, car?}], diagnostics:[{line, severity, message}], car_ids, duration, fps, text?}` |
 | `scene.edit` | `{base_rev, ops:[...], allow_errors?:false}` -> `{rev, hash, lines, changed, errors}`. See below. |
 | `scene.propose` | `{note, path?, text?}` -> `{path, errors, diagnostics}`. A proposal is another file beside the scene (`text` writes one into `<scene folder>\proposals\`); the panel offers Preview / Accept / Reject. |
@@ -115,7 +119,8 @@ The file is written atomically, the Director recognises its own write (no reload
 ### camera
 | Command | Args -> result |
 |---|---|
-| `camera.get` | `{}` -> `{mode, pose:{pos, yaw, pitch, roll, fov}, rows:{right, up, back}, near, far, aspect, valid}`. `mode`: `scene` (the scene's camera is the picture's), `freecam`, `game`. |
+| `camera.get` | `{}` -> `{mode, rig, pose:{pos, yaw, pitch, roll, fov}, rows:{right, up, back}, near, far, aspect, valid}`. `mode`: `scene` (the scene's camera is the picture's), `freecam`, `game`. |
+| `camera.rig` | `{rig}` -> `{rig}`. Selects a gameplay camera and replies after the camera system reports it. 0 is bumper, 1 is cockpit, and 2 to 4 are chase cameras. |
 | `camera.set` | `{pos?, yaw?, pitch?, roll?, fov?}` (or the same inside `pose`) -> `{mode:"freecam", pose}`. The free camera is placed there (no key is written); fields left out stay. `no_world` when no city is loaded (the title screen, a menu, a loading screen): the pose would never be applied. |
 | `camera.look_at` | `{target, from?, fov?}` -> same. `target`: a target; `from`: where to stand (default: where the camera is). |
 | `camera.mode` | `{mode:"scene"\|"freecam"\|"game"}` -> `{mode}`. `game` leaves the picture to the game's own camera. |

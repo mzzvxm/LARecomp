@@ -109,7 +109,9 @@ void ApplierApply(const Scene&, double t) {
     // not a count, so that every frame of a still gets the same generators and the same renderer noise, and a still taken again after the clock ran on gets them again.
     uint64_t take_frame = 0;
     const bool taking = CapturePinnedSceneTime(&take_frame) >= 0.0;
-    const bool still = !taking && larecomp::settings::mcla_scene_t.Get() >= 0.0;
+    const SceneTransport transport = GetSceneTransport();
+    const bool still = !taking && (larecomp::settings::mcla_scene_t.Get() >= 0.0 ||
+                                  (transport.held && transport.pending_steps == 0));
     const uint64_t update = taking ? g.counter.Pin(take_frame) : g.counter.Take(still, t);
     ++g.ticks;
     if (still) ++g.still_ticks;

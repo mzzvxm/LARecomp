@@ -488,8 +488,8 @@ bool HoldCvar(const char* name, const std::string& value, const char* why) {
         LARECOMP_APP_WARN("[scene] {}: no setting called '{}' in this build: only the switch applies", why, name);
         return false;
     }
-    if (info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
-        LARECOMP_APP_WARN("[scene] {}: '{}' is read only at start; the scene cannot hold it", why, name);
+    if (info->type == larecomp::cvar::FlagType::Command || info->lifecycle != larecomp::cvar::Lifecycle::kHotReload) {
+        LARECOMP_APP_WARN("[scene] {}: '{}' is not a live setting", why, name);
         return false;
     }
     const std::string before = larecomp::cvar::GetFlagByName(name);
@@ -1150,6 +1150,10 @@ void SceneRestartAt(double t) {
     if (t > 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(t, g.scene.Duration());
 }
 
+bool SceneSetLiveSetting(const std::string& name, const std::string& value) {
+    return g.state == SceneState::kRunning && CvarRefusal(name).empty() && HoldCvar(name.c_str(), value, "Director");
+}
+
 SceneTextResult SceneLoadText(const std::string& text, const char* by) {
     SceneTextResult res;
     if (!g.armed) return res;
@@ -1233,6 +1237,7 @@ void SceneHold(bool) {}
 void SceneSeekTo(double) {}
 void SceneStepUpdates(int) {}
 void SceneRestartAt(double) {}
+bool SceneSetLiveSetting(const std::string&, const std::string&) { return false; }
 SceneTextResult SceneLoadText(const std::string&, const char*) { return SceneTextResult{}; }
 void SetSceneSoftReload(bool) {}
 void SceneSetWorldOverride(const WorldState&) {}

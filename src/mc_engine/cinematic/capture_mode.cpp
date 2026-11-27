@@ -1375,7 +1375,9 @@ void BeginStill(uint64_t u0) {
     t.lag = 0;
     t.ring = 2;
     t.scene_running = CurrentSceneState() == SceneState::kRunning;
-    t.scene_clock.t0 = SceneTime() + t.step_ms / 1000.0;
+    const SceneTransport transport = GetSceneTransport();
+    const bool held = transport.held && transport.pending_steps == 0;
+    t.scene_clock.t0 = SceneTime() + (held ? 0.0 : t.step_ms / 1000.0);
     t.cap_bytes = static_cast<uint64_t>(std::max(64, larecomp::settings::mcla_capture_memory_mb.Get())) << 20;
     t.floor_bytes = 0;
     t.book.Begin(u0);

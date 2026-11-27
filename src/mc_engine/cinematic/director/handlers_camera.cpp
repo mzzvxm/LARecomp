@@ -17,6 +17,8 @@
 #include "director_internal.h"
 #include "director_math.h"
 #include "larecomp_log.h"
+#include "mc_engine/camera/camera_look.h"
+#include "mc_engine/keyboard_native.h"
 #include "settings/larecomp_settings.h"
 
 namespace mc::cinematic::director {
@@ -113,6 +115,7 @@ void RegisterCamera() {
             const internal::CameraView v = internal::CurrentCamera();
             Json res = Json::Object();
             res.Set("mode", v.mode);
+            res.Set("rig", CurrentCameraRig());
             res.Set("pose", PoseJson(v.pose));
             Json rows = Json::Object();
             rows.Set("right", Vec(v.rows[0]));
@@ -125,7 +128,30 @@ void RegisterCamera() {
             res.Set("valid", v.valid);
             r.Done(std::move(res));
         },
-        MakeSchema("camera", "the final camera: whose it is, its pose, its axes, the planes, the picture's aspect", {}, "{mode, pose, rows:{right, up, back}, near, far, aspect, valid}"));
+        MakeSchema("camera", "the final camera: whose it is, its pose, its axes, the planes, the picture's aspect", {}, "{mode, rig, pose, rows:{right, up, back}, near, far, aspect, valid}"));
+
+    RegisterCommand(
+        "camera.rig",
+        [](const Request& req, const Responder& r) {
+            const int64_t rig = req.args.IntOr("rig", -1);
+            if (rig < 0 || rig > 4) return r.Fail(ErrorCode::kBadArgs, "camera.rig: 'rig' must be 0 to 4");
+            if (!larecomp::settings::keyboard_native.Get()) {
+                return r.Fail(ErrorCode::kNotReady, "camera.rig requires the native input mapper");
+            }
+            GameStateSample state;
+            if (!SampleGameState(&state) || !state.world_ready || state.paused) {
+                return r.Fail(ErrorCode::kNoWorld, "camera.rig requires an unpaused car on the road");
+            }
+            // CHECK: Direct selection still reaches the game rig while Director transport is held.
+            larecomp::keyboard::RequestCameraRig(static_cast<int>(rig));
+            r.Defer([rig](const Responder& d) {
+                if (CurrentCameraRig() != rig) return;
+                Json out = Json::Object();
+                out.Set("rig", rig);
+                d.Done(std::move(out));
+            });
+        },
+        MakeSchema("camera", "select and verify a gameplay camera rig", {Arg("rig", ArgType::kInt, true, "0 bumper, 1 cockpit, 2 to 4 chase")}, "{rig}"));
 
     RegisterCommand(
         "camera.set",

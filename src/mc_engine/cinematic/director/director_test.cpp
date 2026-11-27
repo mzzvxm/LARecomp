@@ -44,6 +44,7 @@
 #include "png_writer.h"
 #include "scene.h"
 #include "scene_edit.h"
+#include "session_settle.h"
 
 using namespace mc::cinematic;
 using namespace mc::cinematic::director;
@@ -977,6 +978,15 @@ int main() {
     TestMath();
     TestPng();
     TestServer();
+    mc::cinematic::director::SessionSettle settle;
+    Check(!settle.Observe(false, 100, 8), "unready frames do not start settling");
+    Check(!settle.Observe(true, 110, 8), "the first ready present is the baseline");
+    Check(!settle.Observe(true, 119, 8), "settle includes the two draining presents");
+    Check(settle.Observe(true, 120, 8), "the requested rendered frames are sufficient");
+    Check(!settle.Observe(false, 125, 8), "a readiness interruption cancels previous progress");
+    Check(!settle.Observe(true, 130, 8), "settling starts again after interruption");
+    Check(!settle.Observe(true, 1, 8), "a renderer counter reset does not underflow");
+    Check(settle.Observe(true, 11, 8), "settling completes on the new counter");
     std::printf("%d checks, %d failed\n", g_checks, g_failed);
     return g_failed == 0 ? 0 : 1;
 }

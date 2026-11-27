@@ -111,6 +111,9 @@ void SceneStepUpdates(int updates);
 // Runs the scene again from the start (the cars are made again) and, for t > 0, seeks there.
 void SceneRestartAt(double t);
 
+// A live Director override owned by the scene, with its value and save provenance restored on unload.
+bool SceneSetLiveSetting(const std::string& name, const std::string& value);
+
 // The scene is this text now (an edit by the Director, an undo): parsed, and, when a scene runs and the Director asked for it (SetSceneSoftReload), loaded in
 // place. A text with an error changes nothing.
 struct SceneTextResult {
