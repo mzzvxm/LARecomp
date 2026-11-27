@@ -91,6 +91,7 @@ inline float asfloat(uint u) {
   return f;
 }
 #include "hlsl/gbuffer_common.hlsli"
+#include "pbr_screen_shim.h"   // what the contract (hlsl/pbr_brdf.hlsli, included by ssr_common.hlsli) needs and this shim does not have (PBR level 1C)
 #include "hlsl/ao_gbuffer_normal.hlsli"
 #include "hlsl/ssr_common.hlsli"
 #include "hlsl/rt_denoise_common.hlsli"

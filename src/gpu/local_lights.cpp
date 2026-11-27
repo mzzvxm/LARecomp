@@ -321,6 +321,12 @@ void LocalLights::BeginFrame(gbuffer::PauseFxView pause_fx) {
     contact_on_ = contact_on;
     REXLOG_INFO("{} neon contact term {} (mcla_gpu_neon_contact; live): a neon light {} shut out of the car's own panels on a vehicle pixel", kPrefix, contact_on_ ? "on" : "off", contact_on_ ? "is" : "is not");
   }
+  // PBR level 1 (perf/PBR.md): the light model of the lights the pass owns, on by default; mcla_gpu_pbr off is the first model (albedo x colour x scale, no highlight). Live.
+  const bool pbr_on = st::mcla_gpu_pbr.Get();
+  if (pbr_on != pbr_on_) {
+    pbr_on_ = pbr_on;
+    REXLOG_INFO("{} physically based light model {} (mcla_gpu_pbr; live): the lights the pass owns {}", kPrefix, pbr_on_ ? "on" : "off", pbr_on_ ? "get a GGX highlight, metals take no diffuse light" : "are the first model's: diffuse only");
+  }
   tier_ = on ? TierNow() : ll::Tier::kMedium;  // (`on` is the pass running at all: its own setting, the headlight route's, or NEON LIGHT's)
   ++frame_;
   if (on != enabled_) {
@@ -670,6 +676,7 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   // GB-NEON-CONTACT: and whether the contact term runs at all (mcla_gpu_neon_contact), and whether it marches for every light of a tube (its cap off).
   const uint32_t draw_flags = ((cost_off_ & ll::kCostOffReachFirst) != 0 ? ll::kPushLateReach : 0u) |
                               ((cost_off_ & ll::kCostOffContactCap) != 0 ? ll::kPushFullContact : 0u) | (contact_on_ ? 0u : ll::kPushNoContact) |
+                              (pbr_on_ ? 0u : ll::kPushNoPbr) |
                               (larecomp::settings::mcla_gpu_local_lights_reach_mask.Get() ? ll::kPushReachMask : 0u);
   // CHECK: compare coverage and pass time for full-screen neon tubes in chase view.
   const bool use_far_depth = (draw_flags & ll::kPushLateReach) == 0 && larecomp::settings::mcla_gpu_local_lights_depth_bound.Get();
@@ -677,7 +684,9 @@ bool LocalLights::OnResolve(const ResolveRecord& record, const ResolveCache::Sum
   bool combined = false;
   if (composite && composite->composite_enabled()) {
     VirtualBounce::Direct direct;
-    if (gb.Has(gbuffer::kPlaneMaterial)) {
+    // CHECK: measure the full-size PBR light draws alongside the GI/VPL composite.
+    // The half-size direct composite stores irradiance before it knows the receiver material.
+    if (!pbr_on_ && gb.Has(gbuffer::kPlaneMaterial)) {
       static_assert(vpl::kMaxDraws == ll::kMaxPassLights);
       direct.buffer = slot.buffer.get();
       direct.size = ll::kBufferAlloc;

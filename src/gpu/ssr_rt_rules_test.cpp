@@ -90,6 +90,7 @@ inline float asfloat(uint u) {
   return f;
 }
 #include "hlsl/gbuffer_common.hlsli"
+#include "pbr_screen_shim.h"   // what the contract (hlsl/pbr_brdf.hlsli, included by ssr_common.hlsli) needs and this shim does not have (PBR level 1C)
 #include "hlsl/ao_gbuffer_normal.hlsli"
 #include "hlsl/ssr_common.hlsli"
 #include "hlsl/ssr_rt_common.hlsli"
@@ -924,8 +925,10 @@ void TestHostSources(const std::string& dir) {
   // the identity: the effect without the fallback
   Check(Has(rt_cpp, "if (!ready_) {\n    resolved_ = ssr_rt::Resolved{};") && Has(rt_cpp, "CarRtSupported(device.capabilities()"), "a device that cannot trace makes none of it and the effect asks for nothing");
   Check(Has(ssr_cpp, "if (!garage && rt_.wanted() && !decision.stub) {") && Has(ssr_cpp, "rt = trace_rt_pipeline != nullptr && rt_.PipelinesReady(ms);") && Has(ssr_cpp, "EnsureImages(width, height, rt, raw, sf.render[0], sf.render[1])") &&
-            Has(ssr_cpp, "rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") && Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push, classify);\n  }"),
-        "without the fallback the images are the old ones (default flags, no confidence) and the pass is the plain one");
+            Has(ssr_cpp, "(rt || keep_rt) ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET") &&
+            Has(ssr_cpp, "DrawTraceMrt(list, capture_pipeline ? capture_pipeline : trace_rt_pipeline, trace_push, true, capture_pipeline != nullptr);") &&
+            Has(ssr_cpp, "} else {\n    DrawPass(list, trace_, trace_pipeline, trace_push, classify);\n  }"),
+        "the RT path uses MRT, the raster path uses its plain draw, and reusable RT images retain their allocation flags");
   Check(Has(ssr_cpp, "rt_.BeginFrame(garage ? ssr::Level::kOff : level_, classify_enabled_);") && Has(ssr_cpp, "rt_.OnPresent();") && Has(ssr_cpp, "rt_.Shutdown();") &&
             Has(ssr_cpp, "return bytes + classifier_.HeldBytes() + rt_.HeldBytes() + denoise_.HeldBytes();"),
         "the effect's frame start, present, shutdown and memory call the fallback");

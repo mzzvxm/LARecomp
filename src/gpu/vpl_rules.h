@@ -56,7 +56,7 @@ struct alignas(16) Beam {
 };
 
 struct alignas(16) Frame {
-  std::array<float, 4> right;
+  std::array<float, 4> right;  // xyz camera axis, w material slot + 1 (0 disables PBR).
   std::array<float, 4> up;
   std::array<float, 4> forward;
   std::array<float, 4> eye;   // xyz camera position, w scene exposure

@@ -249,6 +249,17 @@ void ApplyChecks() {
     Check(fresh.r <= in.limit + 1e-5f, "... and never over the level's gain limit");
     Check(Near(fresh.r, 2.0 * 0.20 / 0.30, 1e-4), Num("below the knees the factor is strength x B / T = 1.333 (got %.4f)", fresh.r));
   }
+  // PBR level 1C: the pixel's diffuse share (pbr_screen_rules.h DiffuseShare: 0 for a metal, 1 minus the reflection's weight for a dielectric) scales the bounce before the clips: 1 is the first version's (the field's default)
+  {
+    ApplyIn in = Shaded(ssgi_level::PresetOf(ssgi_level::Level::kDefault));
+    const Rgb full = BounceFactor(in);
+    in.diffuse_share = 0.5f;
+    const Rgb half = BounceFactor(in);
+    in.diffuse_share = 0.0f;
+    const Rgb none = BounceFactor(in);
+    Check(Near(half.r, 0.5 * full.r, 1e-5) && none.r == 0.0f && none.g == 0.0f && none.b == 0.0f && ApplyIn{}.diffuse_share == 1.0f,
+          Num("PBR 1C: the bounce follows the diffuse share below the knees (%.4f, %.4f), a metal's share 0 gives no bounce, the default share is 1", full.r, half.r));
+  }
   // every level, a shaded pixel: the gain grows with the level (the order of the row)
   {
     float last = -1.0f;
@@ -620,6 +631,12 @@ void ShaderConstantsMatch(const std::string& dir) {
   Check(apply.find("max(GiCap() * (ambient + g_push.extra.x), kSsgiCapFloor)") != std::string::npos,
         "the apply's ceiling is the header's RadianceCap");
   Check(apply.find("dot(gi_colour.rgb * bounce, kLuma)") != std::string::npos, "the apply's added light is the colour times the bounce, in luma");
+  Check(apply.find("float3 bounce = (gi_strength * fade * surface * diffuse_share / max(light_t, luma_c)) * gi_image.yzw;") != std::string::npos &&
+            apply.find("diffuse_share = PbrScreenDiffuseShare(cls, GbRt3MetalFlag(material), GbRt3Smoothness(material.xy),") != std::string::npos &&
+            apply.find("uint(g_textures[slot].Load(int3(2, 0, 0)).x) : slot") != std::string::npos &&
+            apply.find("const uint gi_slot = g_push.slots.z >> 16;") != std::string::npos &&
+            apply.find("float diffuse_share = 1.0f;") != std::string::npos && apply.find("if (material_code != 0u)") != std::string::npos,
+        "PBR shares the material slot through the car-sun lookup when present and preserves the separate quarter GI slot");
   // the vehicles' strength
   Check(Near(ConstOf(common, "kSsgiVehicleShare"), kVehicleShare, 1e-6), "ssgi_common.hlsli kSsgiVehicleShare is the header's kVehicleShare");
   Check(Near(ConstOf(common, "kSsgiVehicleStrengthMax"), kVehicleStrengthMax, 1e-6), "kSsgiVehicleStrengthMax is the header's");

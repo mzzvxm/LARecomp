@@ -57,6 +57,7 @@
 #include "lamp_shadow_frame.h"
 #include "lamp_shadow_lookup.h"
 #include "light_shadow_lookup.h"
+#include "pbr_brdf_rules.h"
 #include "rt_lights_rules.h"
 
 namespace larecomp::gpu::local_lights {
@@ -186,9 +187,11 @@ inline constexpr uint32_t kPushLateReach = 1u << 0;
 // term as it was before the cap), bit 2 the term itself (mcla_gpu_neon_contact off: no neon light is shut out of the car it lights).
 inline constexpr uint32_t kPushFullContact = 1u << 1;
 inline constexpr uint32_t kPushNoContact = 1u << 2;
-inline constexpr uint32_t kPushFarDepthShift = 3;
+inline constexpr uint32_t kPushFarDepthShift = 4;
 inline constexpr uint32_t kPushReachMask = 1u << 31;
 static_assert((uint32_t(kSky * 16.0f) << kPushFarDepthShift) < kPushReachMask);
+// PBR level 1 (hlsl LP_PUSH_NO_PBR, perf/PBR.md): bit 3 puts the first model's light back (mcla_gpu_pbr off): albedo x colour x scale, no highlight.
+inline constexpr uint32_t kPushNoPbr = 1u << 3;
 // mcla_gpu_local_lights_cost_off, a sum of the savings to switch OFF (0, the default: every one on; the picture is the same either way, so the setting is the A/B of the cost, except the third,
 // which trades a little of the contact term's accuracy for its reads: ContactDonors): the reach test before the planes are read (the pixel shader's order), one draw for a car's neon tube (its
 // lights are summed in the shader), the cap of the contact term's marches (two a pixel, not one for each light of the tube).
@@ -343,6 +346,75 @@ inline void PixelLight(const Light& l, const Units& u, const float world[3], con
   for (int i = 0; i < 3; ++i) {
     out[i] = albedo[i] * l.color[i] * factor;
   }
+}
+
+// ---------------------------------------------------------------------------
+// PBR level 1: the model's light (the twin of hlsl/local_light.hlsli LpMaterial .. LpLightAt; the model is hlsl/pbr_brdf.hlsli / pbr_brdf_rules.h, perf/PBR.md)
+// ---------------------------------------------------------------------------
+
+inline constexpr float kDefaultSmoothness = 0.15f;  // a frame with no RT3: a world surface (gbuffer_material.h DefaultSmoothness(kWorld))
+inline constexpr uint32_t kDefaultClass = 1;        // SurfaceClass::kWorld
+
+// What the G-buffer says a surface is made of, as the model's numbers (LpMakeMaterial); `on` is false for the first model (kPushNoPbr).
+struct Material {
+  float roughness = 1.0f;
+  float metalness = 0.0f;
+  float f0 = pbr::kDefaultF0;
+  bool on = false;
+};
+inline Material MakeMaterial(float smoothness, uint32_t surface_class, bool metal_flag, bool pbr_on) {
+  Material m;
+  m.roughness = pbr::RoughnessFromSmoothness(smoothness);
+  m.metalness = pbr::MetalOfScreen(surface_class, metal_flag);
+  m.f0 = pbr::F0OfClass(surface_class);
+  m.on = pbr_on;
+  return m;
+}
+// Whether the model shades the light: not for the first model, and not for a lamp the GAME lights (its grid has added its own diffuse and highlight: the pass only takes the shadowed share of the
+// diffuse term away, which must be the first model's).
+inline bool UsesPbr(const Light& l, const Material& m) { return m.on && (l.flags & kLightFlagGameLit) == 0; }
+
+// How the law faces the surface: saturate(N.L), or the headlight's wrap (LpFacing).
+inline float Facing(const Light& l, const float normal[3], const float to_light[3], float len2) {
+  const float nd = (normal[0] * to_light[0] + normal[1] * to_light[1] + normal[2] * to_light[2]) / std::sqrt(len2);
+  if (l.law == LightLaw::kHeadlight) return std::clamp(light_laws::kSurfaceWrap + (1.0f - light_laws::kSurfaceWrap) * nd, 0.0f, 1.0f);
+  return std::clamp(nd, 0.0f, 1.0f);
+}
+
+// The light one light adds to one pixel under the model (LpPixelLightPbr): the law's scale with its facing divided out is the irradiance the lobes take; pi x colour x irradiance x the units is the
+// radiance (a Lambert surface then returns albedo x colour x scale: the first model); the diffuse lobe keeps the law's own facing, the highlight takes the lobe's N.L and the light's size.
+inline void PixelLightPbr(const Light& l, const Units& u, const float camera[3], const float world[3], const float normal[3], const float albedo[3], float lit, const Material& mat, float out[3]) {
+  out[0] = out[1] = out[2] = 0.0f;
+  light_laws::LightSurface s;
+  for (int i = 0; i < 3; ++i) {
+    s.position[i] = world[i];
+    s.normal[i] = normal[i];
+  }
+  const float scale = light_laws::LightScale(l, s, 1.0f);
+  const float to_light[3] = {l.pos[0] - world[0], l.pos[1] - world[1], l.pos[2] - world[2]};
+  const float len2 = to_light[0] * to_light[0] + to_light[1] * to_light[1] + to_light[2] * to_light[2];
+  const float to_eye[3] = {camera[0] - world[0], camera[1] - world[1], camera[2] - world[2]};
+  const float eye2 = to_eye[0] * to_eye[0] + to_eye[1] * to_eye[1] + to_eye[2] * to_eye[2];
+  if (!(scale > 0.0f) || !(len2 > 1.0e-6f) || !(eye2 > 1.0e-8f)) return;
+  const float facing = Facing(l, normal, to_light, len2);
+  const float irradiance = scale / std::max(facing, 1.0e-4f);
+  const float night = l.law == LightLaw::kHeadlight ? 1.0f : u.night;
+  const float k = irradiance * lit * night * u.gain * u.exposure * OcclusionFactor(u.occ, world[1]);
+  const pbr::Surface surface = pbr::MakeSurface({normal[0], normal[1], normal[2]}, {albedo[0], albedo[1], albedo[2]}, mat.roughness, mat.metalness, mat.f0);
+  const float inv_eye = 1.0f / std::sqrt(eye2);
+  const pbr::SphereLobes o = pbr::SphereLightLobes(surface, {to_eye[0] * inv_eye, to_eye[1] * inv_eye, to_eye[2] * inv_eye}, {to_light[0], to_light[1], to_light[2]},
+                                                   pbr::LightRadius(uint32_t(l.source)));
+  const float w[3] = {l.color[0] * (pbr::kPi * k), l.color[1] * (pbr::kPi * k), l.color[2] * (pbr::kPi * k)};
+  const float d[3] = {o.diffuse.x * facing + o.specular.x, o.diffuse.y * facing + o.specular.y, o.diffuse.z * facing + o.specular.z};
+  for (int i = 0; i < 3; ++i) out[i] = d[i] * w[i];
+}
+// What one light adds at a pixel: the model's, or the first model's where the model does not shade the light (LpLightAt).
+inline void LightAt(const Light& l, const Units& u, const float camera[3], const float world[3], const float normal[3], const float albedo[3], float lit, const Material& mat, float out[3]) {
+  if (UsesPbr(l, mat)) {
+    PixelLightPbr(l, u, camera, world, normal, albedo, lit, mat, out);
+    return;
+  }
+  PixelLight(l, u, world, normal, albedo, lit, out);
 }
 
 // The surface's GEOMETRIC unit normal at a pixel for the shadow lookup, turned to the camera: the lit shaders' rule (headlight.cpp HeadlightLight: cross(ddy(world), ddx(world)) over the pixel's

@@ -269,6 +269,27 @@ void ApplyChecks() {
   Check(gb::MaterialClassOf(word) == gb::SurfaceClass::kChrome && gb::MaterialRt3Smoothness(word) == 240 && gb::MaterialMetalByte(word) == 255 && gb::MaterialLitByte(word) == 255 &&
             gb::MaterialFlagsOf(word) == (gb::kMaterialFlagSsr | gb::kMaterialFlagVehicle | gb::kMaterialFlagAlphaCovered),
         "a full row");
+  // PBR-2: a row with a class and no metal= takes the class's metalness (chrome 1, glass 0), whatever the draw had; metal= beats it
+  {
+    const uint32_t shiny = gb::MaterialWordWithMetalByte(base, 255);
+    gb::TextureRow to_glass;
+    to_glass.fields = gb::kRowClass;
+    to_glass.cls = uint8_t(gb::SurfaceClass::kGlass);
+    Check(gb::MaterialMetalByte(gb::ApplyTextureRow(shiny, to_glass)) == 0, "class=glass with no metal= takes the glass's metalness 0, not the draw's");
+    gb::TextureRow to_chrome;
+    to_chrome.fields = gb::kRowClass;
+    to_chrome.cls = uint8_t(gb::SurfaceClass::kChrome);
+    Check(gb::MaterialMetalByte(gb::ApplyTextureRow(base, to_chrome)) == 255, "class=chrome with no metal= takes the chrome's metalness 1");
+    gb::TextureRow to_metal_half;
+    to_metal_half.fields = gb::kRowClass | gb::kRowMetal;
+    to_metal_half.cls = uint8_t(gb::SurfaceClass::kMetal);
+    to_metal_half.metal = 100;
+    Check(gb::MaterialMetalByte(gb::ApplyTextureRow(base, to_metal_half)) == 100, "metal= beats the class's metalness");
+    gb::TextureRow smooth_only;
+    smooth_only.fields = gb::kRowSmooth;
+    smooth_only.smooth = 9;
+    Check(gb::MaterialMetalByte(gb::ApplyTextureRow(shiny, smooth_only)) == 255, "a row without a class keeps the draw's metalness");
+  }
   // a draw the family does not write is not written because of a texture
   const uint32_t no_data = gb::MaterialWord(0.0f, gb::SurfaceClass::kNone, 0u, 1.0f);
   Check(gb::ApplyTextureRow(no_data, row) == no_data, "a class 0 draw is left alone");
@@ -435,11 +456,11 @@ void ShaderNamesChecks() {
   const std::string tsv = gb::FormatShaderNamesTsv(shaders);
   const std::vector<std::string> lines = Split(tsv, '\n');
   Check(lines.size() == 6, "a header and five shaders (the second with identity AA is dropped)");
-  Check(lines[0] == "key\tstage\tgroup\tentry\tclass\tflags\tsmooth\tlit\tgloss_bank\tgloss_reg", "the header line");
+  Check(lines[0] == "key\tstage\tgroup\tentry\tclass\tflags\tsmooth\tlit\tgloss_bank\tgloss_reg\tmetal", "the header line");
   Check(lines[1].rfind("00000000000000AA\tp\txCarPaint\tPSCarPaint\tpaint\t4\t", 0) == 0, "sorted by identity, the first of a duplicate wins, class and flags");
   Check(lines[2].rfind("00000000000000BB\tp\txCityRoad\tPSMultiLight\troad\t1\t", 0) == 0, "a road shader");
-  Check(lines[3] == "00000000000000CC\tv\txCityDefault\tVSCityDefaultDay\t-\t-\t-\t-\tvertex\t73", "a vertex shader: no class, its gloss register");
-  Check(lines[4] == "00000000000000DD\tp\tunnamed_00000000000000DD\t-\t-\t-\t-\t-\t-\t-", "an unnamed shader: no group, no entry, no class");
+  Check(lines[3] == "00000000000000CC\tv\txCityDefault\tVSCityDefaultDay\t-\t-\t-\t-\tvertex\t73\t-", "a vertex shader: no class, its gloss register, no metalness");
+  Check(lines[4] == "00000000000000DD\tp\tunnamed_00000000000000DD\t-\t-\t-\t-\t-\t-\t-\t-", "an unnamed shader: no group, no entry, no class");
   Check(lines[5].find("\tinterior\t") != std::string::npos && lines[5].find("\tpixel\t101") != std::string::npos, "the interior entry makes a wall an interior one, its gloss register is the pixel shader's");
   Check(!tsv.empty() && tsv.back() == '\n', "the file ends with a newline");
 }

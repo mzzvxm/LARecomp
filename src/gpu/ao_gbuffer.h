@@ -28,6 +28,8 @@
 
 namespace mcla::gpu::ao_gbuffer {
 
+inline constexpr uint32_t kApplyMaterialFlag = 1u << 15;
+
 namespace gb = mcla::gpu::gbuffer;
 
 // ---------------------------------------------------------------------------

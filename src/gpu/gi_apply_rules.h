@@ -219,6 +219,7 @@ constexpr bool UseQuarterLookup(bool enabled, bool half_traced, uint32_t render_
   return enabled && half_traced && render_height >= 2160u && field_only && !special_view;
 }
 constexpr uint32_t QuarterLookupExtent(uint32_t n) { return n / 4u + (n % 4u != 0u); }
+inline constexpr uint32_t kFlagPbr = 16u;  // Diffuse weight from RT3, whose slot is shared with cabin suppression.
 inline constexpr uint32_t kViewShift = 8;
 inline constexpr uint32_t kViewMask = 0xFFu << kViewShift;
 constexpr uint32_t PackInfoW(uint32_t flags, uint32_t view) { return (flags & 0xFFu) | ((view << kViewShift) & kViewMask); }

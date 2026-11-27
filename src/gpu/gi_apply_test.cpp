@@ -713,6 +713,8 @@ void LayoutChecks() {
   Check(hlsl_shim::GiaQuarterBlend(0.0f) == 0.0f && hlsl_shim::GiaQuarterBlend(0.125f) == 0.5f &&
             hlsl_shim::GiaQuarterBlend(0.25f) == 1.0f,
         "quarter lookup blends smoothly into the direct field answer");
+  Check(ga::kFlagPbr == 16u && ga::PackInfoW(ga::kFlagLowTraced | ga::kFlagVisibility | ga::kFlagQuarterLookup | ga::kFlagFastLookupApply | ga::kFlagPbr, ga::kViewBounce) == (31u | (9u << 8)),
+        "PUSH: PBR, visibility and both lookup modes have independent flags");
   // the views
   Check(ga::IsApplyView(1) && ga::IsApplyView(6) && ga::IsApplyView(11) && !ga::IsApplyView(0) && !ga::IsApplyView(12), "VIEWS: this pass draws 1, 2, 3, 5, 6, 9, 10 and 11");
   bool disjoint = true;
@@ -914,6 +916,7 @@ void TextChecks(const std::string& dir) {
       {"GIA_PAINT_FROM", double(ga::kPaintFrom)},        {"GIA_VIEW_SCALE", double(ga::kViewScale)},
       {"GIA_FLAG_LOW_TRACED", double(ga::kFlagLowTraced)}, {"GIA_FLAG_VISIBILITY", double(ga::kFlagVisibility)},
       {"GIA_FLAG_QUARTER_LOOKUP", double(ga::kFlagQuarterLookup)}, {"GIA_FLAG_FAST_LOOKUP_APPLY", double(ga::kFlagFastLookupApply)},
+      {"GIA_FLAG_PBR", double(ga::kFlagPbr)},
       {"GIA_NO_SLOT", double(0xFFFFFFFFu)}};
   int defined = 0, wrong = 0;
   std::istringstream lines(common);
@@ -948,6 +951,11 @@ void TextChecks(const std::string& dir) {
   Check(push_at != std::string::npos && push_end != std::string::npos && Count(ps.substr(push_at, push_end - push_at), "uint4 ") == 2, "the push block is two uint4 (32 bytes, as Push)");
   Check(Has(ps, "#include \"gi_common.hlsli\"") && Has(ps, "#include \"gi_apply_common.hlsli\"") && Has(ps, "#include \"gbuffer_common.hlsli\""), "the shader reads the field's decode, the apply's maths and the G-buffer's decode");
   Check(Has(ps, "#define GI_FRAME_ROW(i) g_rows.Load4((i) * 16u)"), "the rows are read from the buffer, 16 bytes a row");
+  // PBR level 1C
+  Check(Has(ps, "#include \"pbr_screen_common.hlsli\"") && Has(ps, "GiaLoadPlane(g_push.slots.z, pixel)") &&
+            Has(ps, "(g_push.info.w & GIA_FLAG_PBR) != 0u && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT") &&
+            Has(ps, "if (cabinActive || pbr)") && Has(ps, "albedo = PbrScreenDiffuseWeight(GbRt3Class(rt3.xy), GbRt3MetalFlag(rt3), GbRt3Smoothness(rt3.xy), albedo, nv);"),
+        "PBR uses the material slot shared with cabin suppression and keeps the original albedo load when off");
   Check(Has(ps, "GIA_PASS == 0") && Has(ps, "#if GIA_UP") && Has(ps, "#if GIA_MS"), "the three switches: the pass, the upsample, MSAA");
   // the CMake: six shaders from the one source, the test, the source file
   for (const char* line : {"larecomp_gpu_host_shader(gi_apply_lookup_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=0 GIA_UP=0)", "larecomp_gpu_host_shader(gi_apply_lookup_ms_ps ps_6_0 SOURCE gi_apply_ps DEFINES GIA_PASS=0 GIA_MS=1 GIA_UP=0)",

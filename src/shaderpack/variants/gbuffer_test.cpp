@@ -84,7 +84,7 @@ std::string WithoutVariant(std::string text, std::string helper, const sp::Night
   for (const char c : helper) {
     if (c != '\r') no_cr += c;
   }
-  cut("the second, third and fourth outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3");
+  cut("the second, third and fourth outputs", "\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float4 oC3 : SV_Target3");
   // the SPIR-V rows: a comment line and three #defines after the game's g_InvResolutionScale define
   constexpr std::string_view kCamRow = "#define g_GBufferCam vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 640, 0x10)";
   const size_t begin = text.find("\n// G-buffer variant (src/gpu/gbuffer_types.h GBufferConstants)");
@@ -164,7 +164,7 @@ constexpr const char* kHelper =
     "float2 GbRt1Encode(float3 n) { return GbOctEncode(n); }\n"
     "float3 GbAlbedoEncode(float3 albedo) { return albedo; }\n"
     "float GbMaterialLit(uint word) { return 1.0f; }\n"
-    "float2 GbMaterialRt3(uint word) { return float2(0.0f, 0.0f); }\n"
+    "float4 GbMaterialRt3(uint word) { return float4(0.0f, 0.0f, 0.0f, 0.0f); }\n"
     "#define GB_MODE_WRITE_NORMAL 1\n"
     "#define GB_MODE_WRITE_ALBEDO 2\n"
     "#define GB_MODE_WRITE_MATERIAL 4\n";
@@ -186,11 +186,11 @@ void CheckFixture() {
     const sp::VariantTransformResult r = sp::TransformGBufferHlsl(shader, kFixture, kHelper);
     Check(r.ok && !r.skip && r.error.empty(), std::string(shader.name) + ": the fixture transforms: " + r.error);
     if (!r.ok) continue;
-    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float2 oC3 : SV_Target3") == 1,
+    Check(Count(r.hlsl, "out float4 oC0 : SV_Target0\n\t, out float2 oC1 : SV_Target1\n\t, out float4 oC2 : SV_Target2\n\t, out float4 oC3 : SV_Target3") == 1,
           "the second, third and fourth outputs follow the colour output");
     Check(Count(r.hlsl, "oC0 = applyBlendPremult(oC0);\n\toC1 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_NORMAL)) != 0u) {\n\t\toC1 = GbRt1Encode(iTexCoord0.xyz);\n\t}"
                         "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_ALBEDO)) != 0u) {\n\t\toC2 = float4(GbAlbedoEncode(r6.xzw), GbMaterialLit(g_GBufferMode.y) * saturate(iColor1.w));\n\t}"
-                        "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
+                        "\n\toC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}\n\treturn;") == 1,
           "the writes follow the game's last colour statement: the normal, then the albedo (the fixture's diffuse fetch is at r6.xyzw = tex.xwyz: its lanes r6.xzw, nothing writes them later) and the draw's lit weight times the shader's baked occlusion (xCityDefault has a row: iColor1.w), then the material word's two bytes");
     Check(Count(r.hlsl, "#define g_GBufferMode vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 608, 0x10)") == 1 &&
               Count(r.hlsl, "#define g_GBufferRay vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 624, 0x10)") == 1 &&
@@ -275,8 +275,8 @@ void CheckVariantDef() {
     Check(std::adjacent_find(sorted.begin(), sorted.end()) == sorted.end(), "no name is in the definition twice");
   }
   // The version is the pixel stage's stamp line: 10 = RT3, the car family, the traffic and the pedestrians, the night stage's albedo recipes and its baked occlusion (a pack stamped with 1 to 9 is built again); the day stage's own number is 3, the car stage's 3.
-  Check(sp::kGBufferVariantVersion == 11, "the variant's version is 11: the night family (2), the day families (3), RT2, the albedo and the lit weight (4), the car family (5), RT3 (6), both (7), the traffic and the pedestrians on top (8), the night albedo recipes (9), the night baked occlusion (10), the road's reflection mix (11)");
-  Check(sp::kGBufferDayVersion == 3 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 3, "the day stage's own version is 3 (RT3), the day vertex stage's is untouched, the car stage's is 3");
+  Check(sp::kGBufferVariantVersion == 12, "the variant's version is 12 (RT3 metalness): the night family (2), the day families (3), RT2, the albedo and the lit weight (4), the car family (5), RT3 (6), both (7), the traffic and the pedestrians on top (8), the night albedo recipes (9), the night baked occlusion (10), the road's reflection mix (11)");
+  Check(sp::kGBufferDayVersion == 4 && sp::kGBufferVsVersion == 1 && sp::kGBufferCarsVersion == 4, "day and car pixel writers carry the RT3 metalness byte, and the vertex version is still 1");
   Check(def.input_xxh3 != 0, "the helper is in the fingerprint");
   {
     // the night stage's tables are in it too: the fingerprint is not the helper's alone, and the text it adds names every table's rows (an edit of a row changes it)
@@ -457,9 +457,9 @@ void CheckAlbedoAnchors() {
     Check(sp::GBufferAlbedoWriteText(none) == "\n\toC2 = float4(0.0f, 0.0f, 0.0f, 0.0f);", "no albedo: the no data code only");
     // RT3's write: the same for every shader, whether or not it has an albedo; a card writes the no data code only
     Check(sp::GBufferMaterialWriteText() ==
-              "\n\toC3 = float2(0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}",
+              "\n\toC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);\n\tif ((g_GBufferMode.x & uint(GB_MODE_WRITE_MATERIAL)) != 0u) {\n\t\toC3 = GbMaterialRt3(g_GBufferMode.y);\n\t}",
           "the material write: the word's bytes under the mode bit, the no data code else");
-    Check(sp::GBufferMaterialWriteText(true) == "\n\toC3 = float2(0.0f, 0.0f);" && std::string(sp::kGBufferMaterialOutput) == "\n\t, out float2 oC3 : SV_Target3",
+    Check(sp::GBufferMaterialWriteText(true) == "\n\toC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);" && std::string(sp::kGBufferMaterialOutput) == "\n\t, out float4 oC3 : SV_Target3",
           "a card writes the no data code in RT3; the output is the fourth, a float2");
     const sp::GBufferAlbedo a = sp::AnalyseGBufferAlbedo(MainOf(FetchLine("r6.xyzw", kCentre, "xwyz")));
     Check(sp::GBufferAlbedoWriteText(a) ==

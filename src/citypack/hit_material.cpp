@@ -9,6 +9,7 @@
 
 #include "citypack/hit_params.h"
 #include "citypack/material_class.h"
+#include "gpu/gbuffer_texture_rows.h"
 
 namespace larecomp::citypack {
 
@@ -96,6 +97,12 @@ MaterialDef MaterialFromShader(const ShaderNames* names, MaterialClass base_clas
   if (base_class == MaterialClass::kInterior && cls == gb::SurfaceClass::kWorld) cls = gb::SurfaceClass::kInterior;
   float smoothness = gb::DefaultSmoothness(cls);
   const float lit = gb::DefaultLit(cls);
+  float metal = gb::DefaultMetal(cls);
+  // PBR-2: the group's own numbers where the class's do not fit it (the same FamilyRow the raster side's record has: gbuffer_material.h kFamilyRows)
+  if (const gb::FamilyRow* family = gb::FindFamilyRow("x" + names->group); family != nullptr) {
+    if (family->smoothness >= 0.0f) smoothness = family->smoothness;
+    if (family->metal >= 0.0f) metal = family->metal;
+  }
 
   const ShaderParam* exponent_param = FindFloat(params, kParamSpecularExponent);
   if (exponent_param && std::isfinite(exponent_param->value[0]) && exponent_param->value[0] >= 0.0f) {
@@ -113,7 +120,7 @@ MaterialDef MaterialFromShader(const ShaderNames* names, MaterialClass base_clas
   }
   uint32_t flags = m.flags & 7u;
   if (base_class == MaterialClass::kAlphaTested) flags |= kWordFlagAlphaCovered;
-  def.word = PackMaterialWord(gb::ToByte(smoothness), uint32_t(cls), flags, gb::ToByte(lit), 0);
+  def.word = PackMaterialWord(gb::ToByte(smoothness), uint32_t(cls), flags, gb::ToByte(lit), gb::ToByte(metal));
 
   if (params) {
     const ShaderParam* texture = params->Find(kParamDiffuseSampler);
@@ -187,6 +194,7 @@ bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures,
         resolved = true;
         m.texture = uint16_t(def.picture);
         m.key = def.texture_key;
+        if (def.texture_key != 0) stats->texture_keys.emplace_back(def.texture_key, TextureStem(def.texture));
         float mean[3];
         if (textures != nullptr && textures->Average(def.picture, mean)) {
           // a packed road diffuse is (grey, specular mask, nothing): its colour is the red mean as a grey (the mean of the three channels is a green or orange road)
@@ -196,8 +204,11 @@ bool FinalizeMaterials(const MaterialSet& set, const HitTextureSource* textures,
         ++stats->materials_unresolved;
         if (stats->unresolved_names.size() < 12) stats->unresolved_names.push_back(def.texture);
       }
-      if (rows != nullptr) {
-        const gb::TextureRow* row = rows->Find(std::string_view(), TextureStem(def.texture), m.key);
+      {
+        // PBR-2: the row of the texture through the layers the raster side reads: the files' (the generated table, the player's own) beat the compiled-in table (gpu/gbuffer_texture_rows.h).
+        // The hit data knows a texture by its file name stem (no dictionary) and by the entry's key (the content hash).
+        const gb::TextureTable no_files;
+        const gb::TextureRow* row = gb::FindTextureRow(rows != nullptr ? *rows : no_files, gb::kRowLayersAll, std::string_view(), TextureStem(def.texture), m.key);
         if (row != nullptr) {
           const uint32_t changed = gb::ApplyTextureRow(m.word, *row);
           if (changed != m.word) {

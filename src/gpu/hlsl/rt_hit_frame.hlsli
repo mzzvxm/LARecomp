@@ -20,6 +20,7 @@
 #define RT_HIT_FRAME_ENV 4
 #define RT_HIT_FRAME_SUN 8
 #define RT_HIT_FRAME_CASCADE 16
+#define RT_HIT_FRAME_PBR 32   // PBR level 1 (1B): the hit shading uses the shared physically based light model (pbr_rt_hit.hlsli); not set: the model of old
 
 static const uint kRtHitFrameRows = 32;
 static const uint kRtHitCascadeHeaderRow = 8;

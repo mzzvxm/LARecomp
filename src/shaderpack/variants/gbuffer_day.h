@@ -29,7 +29,7 @@
 // after the fetch when the shader writes its register again. The shaders with no such fetch (the lamp lens and the traffic signal quads, ...) and the cards (kMasked) write the "no data" code. The edits
 // only add lines, so the colour path is still the game's.
 //
-// RT3, THE SMOOTHNESS, THE CLASS AND THE FLAGS (package GB-W2, gbuffer_material_plane.h): every shader of the table declares a fourth output `out float2 oC3 : SV_Target3` and writes after RT2
+// RT3, THE SMOOTHNESS, THE CLASS AND THE FLAGS (package GB-W2, gbuffer_material_plane.h): every shader of the table declares a fourth output `out float4 oC3 : SV_Target3` and writes after RT2
 // `oC3 = GbMaterialRt3(<the draw's material word>)` under GB_MODE_WRITE_MATERIAL, else the "no data" code. The word is the host's (the class table, the gloss, the per-texture row), so the
 // shaders with no albedo write it too; the cards (kMasked) write the "no data" code in RT3 as in the other planes.
 //
@@ -80,7 +80,7 @@ namespace larecomp::shaderpack {
 // Hand bumped: the edits, the table or the checks of the day pixel stage / of the vertex stage (a change to the first also bumps gbuffer.h's kGBufferVariantVersion, the second is its own stamp line).
 // 2: RT2 (the albedo and the lit weight: the third output, gbuffer_albedo.h); every pack stamped with 1 is built again.
 // 3: RT3 (the smoothness, the class and the flags: the fourth output, gbuffer_material_plane.h, GB-W2).
-inline constexpr uint32_t kGBufferDayVersion = 3;
+inline constexpr uint32_t kGBufferDayVersion = 4;
 inline constexpr uint32_t kGBufferVsVersion = 1;
 
 // The interpolant the vertex stage writes and the kVertexOrDerivative pixel shaders read: no pixel shader of the game reads TEXCOORD15 and no vertex shader of the families writes it.

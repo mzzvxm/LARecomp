@@ -267,7 +267,7 @@ GBufferCarEdits PlanGBufferCarEdits(const GBufferCarShader& row, std::string_vie
 std::string GBufferCarsOutputText(uint32_t planes) {
   std::string text = "\n\t, out float2 oC1 : SV_Target1";
   if (planes >= 2) text += std::string(kGBufferAlbedoOutput);
-  if (planes >= 3) text += "\n\t, out float2 oC3 : SV_Target3";
+  if (planes >= 3) text += "\n\t, out float4 oC3 : SV_Target3";
   return text;
 }
 
@@ -275,7 +275,7 @@ std::string GBufferCarsWriteText(const GBufferCarShader& row, const GBufferCarEd
   // Every plane is "no data" (0) unless the draw writes it (the mode bits): a draw of the variant always overwrites what the sidecar held at its pixels.
   std::string text = "\n\toC1 = float2(0.0f, 0.0f);";
   if (planes >= 2) text += std::string(kGBufferAlbedoNoData);
-  if (planes >= 3) text += "\n\toC3 = float2(0.0f, 0.0f);";
+  if (planes >= 3) text += "\n\toC3 = float4(0.0f, 0.0f, 0.0f, 0.0f);";
   // The draw's material word (GB-F1, the host's per draw word: row 0 of the block, `y`); the xBumpSpec family's own smoothness replaces its smoothness byte.
   const bool albedo = planes >= 2 && edits.found;
   if (albedo || planes >= 3) {

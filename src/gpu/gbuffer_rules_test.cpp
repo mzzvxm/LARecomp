@@ -215,17 +215,17 @@ void AlbedoAndMaterialChecks() {
   Check(words == uint32_t(gb::SurfaceClass::kCount) * 8 * 4 * 2, "every class, flag set, smoothness and lit weight was checked");
   Check(gb::MaterialRt3ClassAndFlags(gb::MaterialWord(0.5f, gb::SurfaceClass::kPaint, gb::kMaterialFlagVehicle | gb::kMaterialFlagSsr, 1.0f)) ==
             (uint32_t(gb::SurfaceClass::kPaint) | ((gb::kMaterialFlagVehicle | gb::kMaterialFlagSsr) << 5)),
-        "RT3.g is the class in the low 5 bits and the flags above them");
+        "RT3.g is the class in the low five bits and the flags above them");
   Check((gb::kMaterialFlagSsr << gb::kMaterialFlagsShift) == 0x2000u && (gb::kMaterialFlagVehicle << gb::kMaterialFlagsShift) == 0x8000u,
         "the flags are bits 13 to 15 of the word");
-  Check(gb::kClassMask == 31 && uint32_t(gb::SurfaceClass::kCount) <= 32, "the class fits 5 bits");
-  Check(gb::kClassBits + 3 == 8, "the class and the three flags fill one byte");
+  Check(gb::kClassMask == 31 && uint32_t(gb::SurfaceClass::kCount) == 17, "all 17 classes use the five-bit field");
+  Check(gb::kClassBits == 5 && gb::kClassBits + 3 == 8, "the class and the three flags fill one byte");
   // class 0 is "no data" and the cleared plane says so
   Check(gb::ClassOfByte(0) == gb::SurfaceClass::kNone && gb::FlagsOfByte(0) == 0, "a cleared RT3 is class none, no flags");
-  // the planes' formats and bytes (the survey's 10 bytes a sample for the full set)
+  // the planes' formats and bytes (the survey's 12 bytes a sample for the full set)
   uint32_t bytes = 0;
   for (uint32_t p = 0; p < gb::kPlaneCount; ++p) bytes += gb::BytesPerSample(gb::kPlaneFormats[p]);
-  Check(bytes == 10, "the three planes are 10 bytes a sample");
+  Check(bytes == 12, "the three planes are 12 bytes a sample");
   Check(gb::BytesPerSample(gb::kPlaneFormats[gb::kPlaneNormal]) == 4, "the normal plane is 4 bytes a sample");
   Check(gb::kAllPlanes == 7 && gb::PlaneBit(gb::kPlaneMaterial) == 4, "the plane bits");
 }
@@ -589,9 +589,9 @@ void RuleChecks() {
               gb::PlanesFor(gb::Setting::kAuto, 0) == 0 && gb::PlanesFor(gb::Setting::kAuto, 5) == 5 && gb::PlanesFor(gb::Setting::kAuto, 0xFF) == 7,
           "the planes each setting makes (auto is what the consumers ask for)");
     Check(gb::ViewOf(0) == gb::View::kOff && gb::ViewOf(1) == gb::View::kNormal && gb::ViewOf(6) == gb::View::kLitWeight && gb::ViewOf(7) == gb::View::kMissing &&
-              gb::ViewOf(8) == gb::View::kOff && gb::ViewOf(-1) == gb::View::kOff,
+              gb::ViewOf(8) == gb::View::kMetal && gb::ViewOf(9) == gb::View::kRoughness && gb::ViewOf(10) == gb::View::kOff && gb::ViewOf(-1) == gb::View::kOff,
           "the debug view's number (7 is the missing pixels view, above it off)");
-    Check(int(gb::View::kCount) == 8, "eight views: off and seven");
+    Check(int(gb::View::kCount) == 10, "ten views: off and nine (8 the metals and 9 the roughness are PBR-2's)");
   }
 }
 
@@ -622,8 +622,8 @@ void PlaneChecks() {
   // channels: a draw whose RT0 write mask is the sidecar's too (one blend state) has to write all the channels the planes have
   Check(gb::ChannelMaskOf(gb::PlaneFormat::kRg16Unorm) == 3 && gb::ChannelMaskOf(gb::PlaneFormat::kRgba8Unorm) == 0xF && gb::ChannelMaskOf(gb::PlaneFormat::kRg8Unorm) == 3,
         "the formats' channels");
-  Check(gb::ChannelsNeeded(1) == 3 && gb::ChannelsNeeded(3) == 0xF && gb::ChannelsNeeded(7) == 0xF && gb::ChannelsNeeded(4) == 3 && gb::ChannelsNeeded(0) == 0,
-        "the channels a set of planes needs written (the albedo plane has all four)");
+  Check(gb::ChannelsNeeded(1) == 3 && gb::ChannelsNeeded(3) == 0xF && gb::ChannelsNeeded(7) == 0xF && gb::ChannelsNeeded(4) == 0xF && gb::ChannelsNeeded(0) == 0,
+        "the normal needs RG and either albedo or material needs RGBA");
   // the frame's plan from the setting and the consumers
   {
     gb::Wants wants;
@@ -704,9 +704,9 @@ void MsaaChecks() {
   constexpr uint32_t k4kW = 3840, k4kH = 2160;
   Check(gb::SidecarBytes(1, k4kW, k4kH, 1) == 33177600ull && gb::SidecarBytes(1, k4kW, k4kH, 2) == 66355200ull && gb::SidecarBytes(1, k4kW, k4kH, 4) == 132710400ull,
         "the normal plane at 4K takes 33 / 66 / 133 MB at 1x / 2x / 4x");
-  Check(gb::SidecarBytes(7, k4kW, k4kH, 1) == 82944000ull && gb::SidecarBytes(7, k4kW, k4kH, 4) == 331776000ull, "all three planes at 4K take 83 MB at 1x and 332 MB at 4x");
-  Check(gb::SidecarBytes(7, 1920, 1080, 1) == 20736000ull && gb::SidecarBytes(1, 1920, 1080, 2) == 16588800ull, "1080p: 20.7 MB for all three, 16.6 MB for the normal at 2x");
-  Check(gb::PlaneBytes(gb::kPlaneMaterial, 1000, 1000, 2) == 4000000ull && gb::PlaneBytes(gb::kPlaneAlbedo, 1000, 1000, 1) == 4000000ull && gb::PlaneBytes(gb::kPlaneNormal, 1000, 1000, 1) == 4000000ull,
+  Check(gb::SidecarBytes(7, k4kW, k4kH, 1) == 99532800ull && gb::SidecarBytes(7, k4kW, k4kH, 4) == 398131200ull, "all three planes at 4K take 100 MB at 1x and 398 MB at 4x");
+  Check(gb::SidecarBytes(7, 1920, 1080, 1) == 24883200ull && gb::SidecarBytes(1, 1920, 1080, 2) == 16588800ull, "1080p: 24.9 MB for all three, 16.6 MB for the normal at 2x");
+  Check(gb::PlaneBytes(gb::kPlaneMaterial, 1000, 1000, 2) == 8000000ull && gb::PlaneBytes(gb::kPlaneAlbedo, 1000, 1000, 1) == 4000000ull && gb::PlaneBytes(gb::kPlaneNormal, 1000, 1000, 1) == 4000000ull,
         "a plane's bytes: the albedo 4 a sample, the material 2, the normal 4");
   Check(gb::SidecarBytes(0, k4kW, k4kH, 8) == 0, "no planes, no bytes");
   Check(gb::SidecarAffordable(1, k4kW, k4kH, 8) && gb::SidecarAffordable(7, k4kW, k4kH, 4) && !gb::SidecarAffordable(7, k4kW, k4kH, 8) && gb::SidecarAffordable(7, 1920, 1080, 8),
@@ -1041,18 +1041,26 @@ void MaterialPlaneChecks() {
     Check(ssr.written == 5 && (gb::ModeBits(ssr.written, false, false) & gb::kModeWriteMaterial) != 0 && (gb::ModeBits(ssr.written, false, false) & gb::kModeWriteAlbedo) == 0,
           "a consumer of the normal and the material (the reflections) gets RT3 written and RT2 not");
   }
-  // RT3 is the word's two bytes: the smoothness, then the class and the flags (the shader's GbMaterialRt3)
+  // RT3's first two channels: the smoothness, then the class and the flags (the shader's GbMaterialRt3)
   {
     const uint32_t word = gb::MaterialWord(0.75f, gb::SurfaceClass::kMetal, gb::kMaterialFlagSsr | gb::kMaterialFlagAlphaCovered, 0.0f);
     Check(gb::MaterialRt3Smoothness(word) == uint32_t(0.75f * 255.0f + 0.5f) &&
               gb::MaterialRt3ClassAndFlags(word) == (uint32_t(gb::SurfaceClass::kMetal) | ((gb::kMaterialFlagSsr | gb::kMaterialFlagAlphaCovered) << 5)),
           "RT3 of a word: the smoothness byte, and the class with the flags above it");
     const uint32_t with_metal = gb::MaterialWordWithMetal(word, 1.0f);
-    Check(gb::MaterialRt3Smoothness(with_metal) == gb::MaterialRt3Smoothness(word) && gb::MaterialRt3ClassAndFlags(with_metal) == gb::MaterialRt3ClassAndFlags(word) && gb::MaterialMetalByte(with_metal) == 255,
-          "the metalness byte (bits 24 to 31) does not reach RT3: no plane carries it, kMetal and kChrome mean F0 = albedo");
+    Check(gb::MaterialRt3Smoothness(with_metal) == gb::MaterialRt3Smoothness(word) &&
+              gb::MaterialRt3ClassAndFlags(with_metal) == gb::MaterialRt3ClassAndFlags(word) &&
+              gb::MaterialLitByte(with_metal) == gb::MaterialLitByte(word) && gb::MaterialMetalByte(with_metal) == 255,
+          "metalness has its own byte and leaves all legacy channels alone");
+    for (uint32_t c = 0; c < uint32_t(gb::SurfaceClass::kCount); ++c) {
+      const uint32_t w = gb::MaterialWordWithMetal(gb::MaterialWord(0.5f, c, 7, 1.0f), 1.0f);
+      Check(uint32_t(gb::MaterialClassOf(w)) == c && uint32_t(gb::ClassOfByte(gb::MaterialRt3ClassAndFlags(w))) == c &&
+                gb::FlagsOfByte(gb::MaterialRt3ClassAndFlags(w)) == 7,
+            Num("metalness preserves class %.0f and all three flags", c));
+    }
   }
-  // the channels: RT3 (R and G) adds nothing to what RT1 (R and G) and RT2 (R, G, B, A) need, so the D3D12 writers' rule on RT0's mask is the one GB-W1 made
-  Check(gb::ChannelsNeeded(gb::kStagePlanes) == 0xF && gb::ChannelsNeeded(gb::kStagePlanes) == gb::ChannelsNeeded(3) && gb::ChannelsNeeded(gb::PlaneBit(gb::kPlaneMaterial)) == 3,
+  // the channels: RT3 (RGBA) adds nothing to what RT1 (R and G) and RT2 (R, G, B, A) need, so the D3D12 writers' rule on RT0's mask is the one GB-W1 made
+  Check(gb::ChannelsNeeded(gb::kStagePlanes) == 0xF && gb::ChannelsNeeded(gb::kStagePlanes) == gb::ChannelsNeeded(3) && gb::ChannelsNeeded(gb::PlaneBit(gb::kPlaneMaterial)) == 0xF,
         "all three planes need the channels the first two did (the lit weight's alpha makes it 0xF)");
   {
     gb::DrawFacts f = GoodDraw();
@@ -1070,7 +1078,7 @@ void MaterialPlaneChecks() {
   // the per target masks: each plane's slot has its own channels (what Vulkan uses today and D3D12 will with Plume #15); the one blend state back ends ignore them
   {
     for (const PlaneMode mode : {PlaneMode::kWrite, PlaneMode::kClear}) {
-      Check(gb::BlendFor(mode, gb::kPlaneNormal).write_mask == 0x3 && gb::BlendFor(mode, gb::kPlaneAlbedo).write_mask == 0xF && gb::BlendFor(mode, gb::kPlaneMaterial).write_mask == 0x3,
+      Check(gb::BlendFor(mode, gb::kPlaneNormal).write_mask == 0x3 && gb::BlendFor(mode, gb::kPlaneAlbedo).write_mask == 0xF && gb::BlendFor(mode, gb::kPlaneMaterial).write_mask == 0xF,
             "a writer's and a clear's masks: the normal and the material R and G, the albedo and the lit weight all four");
     }
     Check(gb::BlendFor(PlaneMode::kClear, gb::kPlaneMaterial).zero && !gb::BlendFor(PlaneMode::kWrite, gb::kPlaneMaterial).zero, "only the clear blends (ZERO / ZERO), RT3 too");
@@ -1080,14 +1088,14 @@ void MaterialPlaneChecks() {
     }
     Check(gb::BlendFor(PlaneMode::kWrite).write_mask == 0xF && gb::BlendFor(PlaneMode::kMask).write_mask == 0, "the mode's own blend (no plane) is as it was");
   }
-  // the cost: RT3 is 2 bytes a sample on every draw that carries the sidecar, whatever the consumers want (the stage declares the output)
+  // the cost: RT3 is 4 bytes a sample on every draw that carries the sidecar, whatever the consumers want (the stage declares the output)
   {
     constexpr uint32_t k4kW = 3840, k4kH = 2160;
-    Check(gb::PlaneBytes(gb::kPlaneMaterial, 1920, 1080, 1) == 4147200ull && gb::SidecarBytes(gb::kStagePlanes, 1920, 1080, 1) - gb::SidecarBytes(3, 1920, 1080, 1) == 4147200ull,
-          "1080p, 1x: RT3 adds 4.1 MB (20.7 MB for the three planes, 16.6 before)");
-    Check(gb::SidecarBytes(gb::kStagePlanes, k4kW, k4kH, 2) == 165888000ull && gb::SidecarBytes(3, k4kW, k4kH, 2) == 132710400ull, "4K, 2x: 166 MB for the three planes (133 MB for two)");
+    Check(gb::PlaneBytes(gb::kPlaneMaterial, 1920, 1080, 1) == 8294400ull && gb::SidecarBytes(gb::kStagePlanes, 1920, 1080, 1) - gb::SidecarBytes(3, 1920, 1080, 1) == 8294400ull,
+          "1080p, 1x: RT3 adds 8.3 MB (24.9 MB for the three planes, 16.6 before)");
+    Check(gb::SidecarBytes(gb::kStagePlanes, k4kW, k4kH, 2) == 199065600ull && gb::SidecarBytes(3, k4kW, k4kH, 2) == 132710400ull, "4K, 2x: 199 MB for the three planes (133 MB for two)");
     Check(gb::SidecarAffordable(3, k4kW, k4kH, 8) && !gb::SidecarAffordable(gb::kStagePlanes, k4kW, k4kH, 8) && gb::SidecarAffordable(gb::kStagePlanes, k4kW, k4kH, 4),
-          "4K at 8x: two planes fitted the 512 MiB cap (531 MB), three (664 MB) do not: no sidecar there, the consumers use the depth; 4K at 4x fits (332 MB)");
+          "4K at 8x: two planes fitted the 512 MiB cap (531 MB), three (796 MB) do not: no sidecar there, the consumers use the depth; 4K at 4x fits (398 MB)");
   }
 }
 
@@ -1240,12 +1248,13 @@ void HlslAgainstTwinChecks() {
     if (MaxAbs(dec.x, g::AlbedoDecode(a)) > 1e-6f) ++albedo_mismatch;
     const float s = rng.Next();
     const float lit = rng.Next();
-    const uint32_t cls = uint32_t(rng.Range(0.0f, 31.99f));
+    const uint32_t cls = uint32_t(rng.Range(0.0f, 16.99f));  // Includes the garage floor.
     const uint32_t flags = uint32_t(rng.Range(0.0f, 7.99f));
     const uint32_t hw = GbMaterialWord(s, cls, flags, lit);
     const uint32_t tw = g::MaterialWord(s, cls, flags, lit);
     if (hw != tw) ++word_mismatch;
-    const float2 rt3 = GbMaterialRt3(tw);
+    const float4 packed = GbMaterialRt3(tw);
+    const float2 rt3(packed.x, packed.y);
     if (MaxAbs(rt3.x, float(g::MaterialRt3Smoothness(tw)) / 255.0f) > 1e-6f || MaxAbs(rt3.y, float(g::MaterialRt3ClassAndFlags(tw)) / 255.0f) > 1e-6f ||
         GbRt3Class(rt3) != cls || GbRt3Flags(rt3) != flags || MaxAbs(GbMaterialLit(tw), float(g::MaterialLitByte(tw)) / 255.0f) > 1e-6f) {
       ++rt3_mismatch;
@@ -1254,6 +1263,12 @@ void HlslAgainstTwinChecks() {
   Check(albedo_mismatch == 0, "GbAlbedoEncode and GbAlbedoDecode equal the twin");
   Check(word_mismatch == 0, "GbMaterialWord equals the twin");
   Check(rt3_mismatch == 0, "GbMaterialRt3, GbMaterialLit and the RT3 readers equal the twin and decode what was packed");
+  const uint32_t floor = g::MaterialWord(0.7f, g::SurfaceClass::kGarageFloor, 7, 1.0f);
+  const float4 lo = GbMaterialRt3(g::MaterialWordWithMetal(floor, 127.0f / 255.0f));
+  const float4 hi = GbMaterialRt3(g::MaterialWordWithMetal(floor, 128.0f / 255.0f));
+  Check(!GbRt3MetalFlag(float3(lo.x, lo.y, lo.z)) && GbRt3MetalFlag(float3(hi.x, hi.y, hi.z)) && lo.y == hi.y && lo.w == 0.0f && hi.w == 0.0f &&
+            GbRt3Class(float2(hi.x, hi.y)) == GB_CLASS_GARAGE_FLOOR && GbRt3Flags(float2(hi.x, hi.y)) == 7u,
+        "RT3.b independently crosses the metal threshold while RT3.g keeps garage floor and all its flags");
   // the gloss functions and the metalness byte (GB-F2): the .hlsli against the twin, and the formulas against their definitions
   {
     double worst_alpha = 0.0, worst_smooth = 0.0, worst_back = 0.0, worst_power = 0.0;
@@ -1274,6 +1289,9 @@ void HlslAgainstTwinChecks() {
       const uint32_t with_h = GbMaterialWithMetal(word, metal);
       const uint32_t with_t = g::MaterialWordWithMetal(word, metal);
       if (with_h != with_t || MaxAbs(GbMaterialMetal(with_t), float(g::MaterialMetalByte(with_t)) / 255.0f) > 1e-6f) ++metal_mismatch;
+      const float4 metal_rt3 = GbMaterialRt3(with_t);
+      if (MaxAbs(metal_rt3.z, float(g::MaterialMetalByte(with_t)) / 255.0f) > 1e-6f || metal_rt3.w != 0.0f ||
+          GbRt3MetalFlag(float3(metal_rt3.x, metal_rt3.y, metal_rt3.z)) != (g::MaterialMetalByte(with_t) >= 128u)) ++metal_mismatch;
       if ((with_t & 0x00FFFFFFu) != (word & 0x00FFFFFFu) || GbMaterialLit(with_t) != GbMaterialLit(word) || GbMaterialRt3(with_t).x != GbMaterialRt3(word).x ||
           GbMaterialRt3(with_t).y != GbMaterialRt3(word).y) {
         ++metal_keeps;

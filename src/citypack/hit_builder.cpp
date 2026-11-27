@@ -15,6 +15,8 @@
 #include "citypack/hit_params.h"
 #include "citypack/material_class.h"
 #include "citypack/stamp.h"
+#include "gpu/gbuffer_texture_rows.h"
+#include "os/environment.h"
 #include "settings/immortal.h"
 #include "mc_engine/modloader/rpf3.h"
 
@@ -29,6 +31,28 @@ double SecondsSince(Clock::time_point t) { return std::chrono::duration<double>(
 
 constexpr const char* kBodySuffix = ".body";
 constexpr uint32_t kAnyOpaque = 0xFFFFFFFFu;  // HitMesh::Finish: the opaque count is not compared (the lod's record has none)
+
+// PBR-2, the census's name list (a debug switch: LARECOMP_CITY_TEXTURE_NAMES=1 in the environment of the hit build): the retail game's console builds strip the runtime names of the city's
+// textures, but the city's shader instances name their diffuse files, and the builder knows each one's content hash (HitMaterial::key). One line per (hash, name), sorted, tab separated, with a
+// header line, beside the hit file: tools/gbuffer_materials/census_merge.py --names reads it, so that the census can classify the city's textures by name. Built on the machine that has the
+// game's files, never committed. Best effort: the build does not fail when the list cannot be written.
+constexpr const char* kTextureNamesFileName = "city_texture_names.tsv";
+bool WantTextureNames() {
+  const auto value = larecomp::os::ReadEnvironment("LARECOMP_CITY_TEXTURE_NAMES");
+  return value && !value->empty() && *value != "0";
+}
+void WriteTextureNameList(const std::filesystem::path& file, std::vector<std::pair<uint64_t, std::string>> keys) {
+  std::sort(keys.begin(), keys.end());
+  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  std::ofstream out(file, std::ios::binary | std::ios::trunc);
+  if (!out) return;
+  out << "hash\tname\n";
+  char line[32];
+  for (const auto& [key, name] : keys) {
+    std::snprintf(line, sizeof(line), "%016llX\t", static_cast<unsigned long long>(key));
+    out << line << name << "\n";
+  }
+}
 
 // The archives, searched the way the game does: the mod overlay first, then the shipped one (builder.cpp has the same).
 struct Archives {
@@ -237,6 +261,7 @@ Stamp MakeHitStamp(const HitStampInputs& in) {
   stamp.Set("corner_stream_version", uint64_t(kIndexedCornersVersion));
   stamp.Set("rules", in.rules);
   stamp.Set("material_rules_version", uint64_t(gb::kMaterialRulesVersion));
+  stamp.SetHex("compiled_rows", gb::kCompiledRowsStamp);  // PBR-2: the compiled-in texture rows (gpu/gbuffer_texture_rows.inc) change the words the hit data holds
   stamp.SetHex("base_pack_hash", in.base_pack_hash);
   stamp.Set("base_pack_size", in.base_pack_size);
   stamp.Set("source_size", in.base_inputs.source.exists ? in.base_inputs.source.size : 0);
@@ -287,6 +312,8 @@ StampCheck CheckCityHitPack(const HitBuildRequest& request) {
   if (!number("builder_revision", kHitBuilderRevision) || !number("corner_stream_version", kIndexedCornersVersion)) return no("the hit data was built by another revision of the hit builder");
   if (!number("rules", request.rules.Pack())) return no("the hit data was built with other precision rules (texture coordinate step, colour bits)");
   if (!number("material_rules_version", gb::kMaterialRulesVersion)) return no("the hit data was built from other G-buffer material rules");
+  uint64_t compiled_rows = 0;
+  if (!stamp.GetHex("compiled_rows", &compiled_rows) || compiled_rows != gb::kCompiledRowsStamp) return no("the compiled-in per-texture material rows are not the ones the hit data was built with");
 
   PackReader base;
   if (!base.Open(out_dir / kPackFileName, &error)) return no("the city pack is not there or is damaged: " + error);
@@ -638,6 +665,9 @@ HitBuildResult BuildCityHitPack(const HitBuildRequest& request, ProgressSink* si
     discard_body();
     return fail("the texture set stopped the build: " + error);
   }
+  if (WantTextureNames()) WriteTextureNameList(base_request.out_dir / kTextureNamesFileName, census.finalize.texture_keys);
+  census.finalize.texture_keys.clear();
+  census.finalize.texture_keys.shrink_to_fit();
   census.materials = uint32_t(materials.size());
   census.textures = uint32_t(textures.size());
   for (size_t m = 0; m < materials.size(); ++m) {

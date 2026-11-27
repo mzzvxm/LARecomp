@@ -947,9 +947,15 @@ class GPUSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gpu_gbuffer_view, 0, "Diagnostic (G-buffer): draws one plane of the G-buffer over the main view at the mid-scene depth copy, where the ambient "
     "occlusion runs (only while mcla_gpu_gbuffer makes the plane): 1 the normal as a colour (0.5 + 0.5 n), 2 the albedo, 3 the smoothness, 4 the class "
     "of each pixel as a colour, 5 which pixels hold data (white) and which do not (black), 6 the lit weight, 7 the missing pixels (green: data; red: the depth "
-    "holds geometry and the planes hold no data; black: the sky). The planes no shader writes yet show as no data. The rest of the frame (particles, tone map, "
+    "holds geometry and the planes hold no data; black: the sky), 8 the metals (white: the class chrome or metal, or the metal flag), 9 the roughness (1 - the smoothness) as a grey. The planes no shader writes yet show as no data. The rest of the frame (particles, tone map, "
     "glow) is drawn over it as usual, so the colours are the game's after the tone map. 0: off. Live.",
-    rex::kDebugOnly, rex::Range{0, 7});
+    rex::kDebugOnly, rex::Range{0, 9});
+
+  REX_SETTING(i32, mcla_gpu_gbuffer_texture_rows, 1, "Diagnostic (G-buffer, PBR level 2): which per-texture material rows change what the G-buffer's draws carry. 1: the compiled-in table (our "
+    "classification of the game's textures, tools/gbuffer_materials), then the files (the generated table beside the shader pack, the mods folder's "
+    "gbuffer_texture_materials.txt, MCLA_GBUFFER_TEXTURE_MATERIALS). 0: no row at all, every draw has its shader family's own material (the A/B switch, and "
+    "what a census run sees). 2: the compiled-in table only. 3: the files only. Live: the next frame reads the rows again.",
+    rex::kDebugOnly, rex::Range{0, 3});
 
   REX_SETTING(bool, mcla_gpu_screen_extract, true, "Diagnostic (shared screen products): where the depth chain, the normal image and the bounce light's colour chain are recorded. true (the default): by the shared screen "
     "products, once a frame, into images they own (the ambient occlusion, the bounce light, the contact shadows and the reflections read them). false: by the ambient "
@@ -1844,6 +1850,8 @@ class GPUSettings final : public rex::SettingOwner {
 
   REX_SETTING(bool, mcla_gpu_local_lights_sphere_scissor, true, "Debug: use tighter screen bounds for deferred local lights. Live.", rex::kDebugOnly);
 
+  REX_SETTING(bool, mcla_gpu_pbr, true, "Use physically based shading for added lights, reflections and indirect lighting. Applies live.");
+
   REX_SETTING(bool, mcla_gpu_neon_contact, true, "Diagnostic (a car's neon underglow in the deferred local light pass, GB-NEON-BLEED, the A/B): on (the default) a neon light is shut out of the car's own panels on a vehicle pixel: the light's way to the pixel is looked up in the picture's own depth for 0.8 m and a point behind a visible surface by a shell's thickness is inside something, so the vents, the lip, the cabin and the wheels' dish that face the light through a body get none of it. "
     "Off: the law's N.L alone (the neon shows through the other car's panels). Live.", rex::kDebugOnly);
   REX_SETTING(i32, mcla_gpu_lamp_shadows, -1, "Diagnostic (the street lamps' shadows, LAMP-SHADOWS-4): the nearest street lamps get a shadow from the shadow atlas (cars, poles and people on the road under them), drawn by the deferred local light pass "
@@ -2311,6 +2319,7 @@ inline auto& mcla_gpu_fsr_sharpness = g_gpu.mcla_gpu_fsr_sharpness;
 inline auto& mcla_gpu_fsr_velocity_factor = g_gpu.mcla_gpu_fsr_velocity_factor;
 inline auto& mcla_gpu_gbuffer = g_gpu.mcla_gpu_gbuffer;
 inline auto& mcla_gpu_gbuffer_attach = g_gpu.mcla_gpu_gbuffer_attach;
+inline auto& mcla_gpu_gbuffer_texture_rows = g_gpu.mcla_gpu_gbuffer_texture_rows;
 inline auto& mcla_gpu_gbuffer_view = g_gpu.mcla_gpu_gbuffer_view;
 inline auto& mcla_gpu_screen_extract = g_gpu.mcla_gpu_screen_extract;
 inline auto& mcla_gpu_screen_hiz_fused = g_gpu.mcla_gpu_screen_hiz_fused;
@@ -2559,6 +2568,7 @@ inline auto& mcla_gpu_light_composite = g_gpu.mcla_gpu_light_composite;
 inline auto& mcla_gpu_local_lights_depth_bound = g_gpu.mcla_gpu_local_lights_depth_bound;
 inline auto& mcla_gpu_local_lights_reach_mask = g_gpu.mcla_gpu_local_lights_reach_mask;
 inline auto& mcla_gpu_local_lights_sphere_scissor = g_gpu.mcla_gpu_local_lights_sphere_scissor;
+inline auto& mcla_gpu_pbr = g_gpu.mcla_gpu_pbr;
 inline auto& mcla_gpu_neon_contact = g_gpu.mcla_gpu_neon_contact;
 inline auto& mcla_gpu_gi_bounce_headlights = g_gpu.mcla_gpu_gi_bounce_headlights;
 inline auto& mcla_gpu_gi_bounce_neon = g_gpu.mcla_gpu_gi_bounce_neon;

@@ -1030,7 +1030,7 @@ class AmbientOcclusion {
   // The bindless slot of that image if this frame's resolve made it (as FindMaskSlot: a frame without one has no image and a vehicle's pixel takes a
   // sun visibility of 1).
   uint32_t FindCarSunSlot();
-  // The 12 floats of the lookup image's three columns (contact_trace.h CarSunLookup: texel 0 ax, ox; texel 1 az, oz; the third unused): the
+  // The 12 floats of the lookup image's three columns (contact_trace.h CarSunLookup: texel 0 ax, ox; texel 1 az, oz; texel 2 carries the PBR material slot when used by the apply): the
   // pose of the frame's own camera when the main view's vertex constants are trusted for it, else the last frame's. False when no sane pose exists.
   bool CarSunLookupColumns(float columns[12]) const;
   // Draws those 12 floats into the 4x1 image car_sun_lookup_ with the vehicle table's pass (outside a render pass); returns its slot, kNoSlot where it

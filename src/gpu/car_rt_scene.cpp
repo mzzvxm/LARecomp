@@ -28,6 +28,7 @@
 #include "host_shaders.h"
 #include "menu_world.h"
 #include "pass_timing.h"
+#include "pbr_rt_hit_switch.h"
 #include "temporal_identities.h"
 #include "textures.h"
 #include "upload.h"
@@ -1094,6 +1095,7 @@ void CarRtScene::BuildMaterialRows(const car_frame::Frame& frame, bool flip_z, c
   in.tuning.spec = float(larecomp::settings::mcla_gpu_car_rt_hit_spec.Get());
   in.tuning.cascade = larecomp::settings::mcla_gpu_car_rt_hit_cascade.Get();
   in.tuning.detail = float(larecomp::settings::mcla_gpu_car_rt_hit_detail.Get());  // RT-HIT-SHADING-5: the hit's own detail (the sky's openness, the contact, the coat's glints)
+  in.tuning.pbr = pbr_rt::HitShadingEnabled();  // PBR 1B: the hit shading through the shared physically based model (the frame's kFramePbr; pbr_rt_hit_switch.h)
   in.cascades = sun_cascades_;
   {
     double camera[3];

@@ -129,7 +129,7 @@ inline constexpr uint32_t kVariantPackVersion = 3;
 // v8), and for the variants that have extra constants the bytes after them, laid out by the chain
 // (variant_chain.h LayoutConstants: 1 had one block at byte 608 per variant, 2 allocates the blocks of the
 // features of a composed shader one after the other in chain order; a variant alone is at 608 in both).
-inline constexpr uint32_t kVariantContract = 2;
+inline constexpr uint32_t kVariantContract = 3;  // RT3 G-buffer variants write RGBA8.
 inline constexpr uint32_t kVariantPackHeaderBytes = 32;
 inline constexpr uint32_t kVariantPackEntryBytes = 88;
 inline constexpr uint32_t kVariantVertexShaders = 4;

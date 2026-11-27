@@ -16,6 +16,7 @@
 //                 frame has them and/or one ray toward a place on the sun's disc against the whole top level), the frame's lamps (the game's laws, below), the GI field's feedback, and, last, the air between the camera and the hit (a hook: the game's distance fog)
 //   surface       colour = albedo x light x (the class's diffuse share x (1 - metal)); in REFLECT mode the sky: the environment map at the reflected direction x Schlick's fresnel x the
 //                 smoothness's weight x the class's share, the diffuse taking the rest (1 - weight x fresnel); then the glow of what glows (albedo x emissive scale x the gain x the lamp schedule)
+//   PBR 1B        with the frame's kFramePbr (the debug switch mcla_gpu_pbr) the surface is lit by the shared physically based model (pbr_rt_hit_rules.h, hlsl/pbr_brdf.hlsli): see "the physically based surface" in Shade
 //   resolve       ResolveHit (M2 section 4): the picture's colour where the hit's point is seen (in front of the camera, inside the picture away from its edge, the picture's depth agreeing,
 //                 the surface facing the camera: each fades, the weight is the product), the model's colour x the class's gain where it is not, both by the weight between; GI caps the picture's luminance
 //   calibration   a hit the picture speaks for in full adds the log of its luminance and of the ungained model's to the class's counters (rt_hit_calibration.h), the host turns the windows
@@ -46,6 +47,7 @@
 #include <functional>
 
 #include "citypack/city_hit_format.h"
+#include "pbr_rt_hit_rules.h"
 #include "rt_hit_calibration.h"
 #include "rt_hit_frame.h"
 
@@ -78,6 +80,9 @@ inline constexpr float kHitMaxColour = 60000.0f;
 inline float Held(float v, float hi) { return std::isnan(v) ? 0.0f : std::min(std::max(v, 0.0f), hi); }
 inline V3 Held3(V3 a, float hi) { return {Held(a.x, hi), Held(a.y, hi), Held(a.z, hi)}; }
 inline V3 Lerp(V3 a, V3 b, float t) { return a + (b - a) * t; }
+// to and from the physically based layer's vector (pbr_rt_hit_rules.h)
+inline pbr_rt::V3 ToPbr(V3 a) { return {a.x, a.y, a.z}; }
+inline V3 FromPbr(pbr_rt::V3 a) { return {a.x, a.y, a.z}; }
 inline float Smoothstep(float lo, float hi, float x) {
   const float t = Saturate((x - lo) / (hi - lo));
   return t * t * (3.0f - 2.0f * t);
@@ -92,7 +97,7 @@ inline constexpr uint32_t kModeGi = 1;
 inline constexpr uint32_t kPSunRay = 1, kPSunCascade = 2, kPLamps = 4, kPLampShadow = 8, kPEmissive = 16, kPCalibrate = 32, kPScreen = 64;
 inline constexpr uint32_t kPEmitters = 128, kPEmitterShadow = 256;   // GI-BOUNCE-RT
 inline constexpr uint32_t kSourceNone = 0, kSourceScreen = 1, kSourceShaded = 2, kSourceBlend = 3;
-inline constexpr uint32_t kClassCount = 16;  // gbuffer_types.h SurfaceClass: none, world, road, wet road, sidewalk, terrain, lod, foliage, paint, chrome, metal, glass, skin, emissive, interior, water
+inline constexpr uint32_t kClassCount = 17;  // gbuffer_types.h SurfaceClass: none, world, road, wet road, sidewalk, terrain, lod, foliage, paint, chrome, metal, glass, skin, emissive, interior, water, garage floor
 inline constexpr uint32_t kClassRoad = 2, kClassWetRoad = 3, kClassSidewalk = 4;
 
 inline constexpr float kGrazingMin = 0.35f;
@@ -124,8 +129,18 @@ inline constexpr uint32_t kGlowNight = ch::kGlowNight, kGlowLens = ch::kGlowLens
 inline constexpr uint32_t kCensusLookups = 0, kCensusExamined = 1, kCensusLit = 2, kCensusCapCount = 3, kCensusCapSum = 4, kCensusGlowNight = 5, kCensusWords = 8;
 
 // Per class: the diffuse's share (glass and chrome let most of the light go through or off) and the sky reflection's share.
-inline constexpr float kDiffuseGain[kClassCount] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.1f, 0.5f, 0.25f, 1.0f, 1.0f, 1.0f, 0.15f};
-inline constexpr float kSpecGain[kClassCount] = {0.0f, 0.5f, 1.0f, 1.0f, 1.0f, 0.5f, 0.5f, 0.3f, 1.0f, 1.0f, 1.0f, 1.0f, 0.5f, 0.0f, 0.5f, 1.0f};
+inline constexpr float kDiffuseGain[kClassCount] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.1f, 0.5f, 0.25f, 1.0f, 1.0f, 1.0f, 0.15f, 1.0f};
+inline constexpr float kSpecGain[kClassCount] = {0.0f, 0.5f, 1.0f, 1.0f, 1.0f, 0.5f, 0.5f, 0.3f, 1.0f, 1.0f, 1.0f, 1.0f, 0.5f, 0.0f, 0.5f, 1.0f, 1.0f};
+// PBR 1B (the shader's kCityHitClassMetalness, kCityHitClassBody, kCityHitWaterF0): what the physically based model needs of a class besides the material's own smoothness and metal byte. The one place PBR-1
+// (the metalness from the class) and PBR-2 (the material table) rewire: PbrMetalness and PbrF0 (PBR-1's PbrMetalOfWord and PbrF0OfClass are the same two functions: the numbers here are theirs, perf\PBR.md 1.4). The metalness
+// of the class (chrome 1, the metal class 0.85), the share of the albedo's light a surface keeps (glass and water pass most of it: level 1 has no transmission), the dielectric F0 (water 0.02, skin 0.028, the rest 0.04).
+inline constexpr float kClassMetalness[kClassCount] = {0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.85f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f};
+inline constexpr float kClassBody[kClassCount] = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.25f, 1.0f, 1.0f, 1.0f, 0.15f, 1.0f};
+inline constexpr float kWaterF0 = 0.02f;
+inline constexpr float kSkinF0 = 0.028f;
+inline constexpr uint32_t kClassWater = 15, kClassSkin = 12;
+inline float PbrMetalness(uint32_t cls, float metal_byte) { return std::max(kClassMetalness[cls], metal_byte); }
+inline float PbrF0(uint32_t cls) { return cls == kClassWater ? kWaterF0 : (cls == kClassSkin ? kSkinF0 : kDielectricF0); }
 
 // ---------------------------------------------------------------------------
 // the albedo
@@ -242,23 +257,37 @@ inline LampEval LampAt(float lamp_factor, const Lamp& l, V3 position, V3 normal)
   }
   return e;
 }
-// The sum of the lamps' light (no rays).
-inline V3 LampsSum(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal) {
-  V3 sum;
+// PBR 1B (hlsl CityHitLampDirectionOf): the unit direction toward a brightness weighted sum of directions; 0 where there is none.
+inline V3 DirectionOf(V3 weighted_sum) {
+  const float l2 = Dot(weighted_sum, weighted_sum);
+  return l2 > 1e-12f ? weighted_sum * (1.0f / std::sqrt(l2)) : V3{};
+}
+// The sum of the lamps' light (no rays). `direction` (PBR 1B): the unit direction toward the lamps' brightness weighted mean (the shader's gCityHitLampDirection), 0 where no lamp lit the point.
+inline V3 LampsSum(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal, V3* direction = nullptr) {
+  V3 sum, direction_sum;
   for (uint32_t i = 0; i < count; ++i) {
-    sum = sum + LampAt(lamp_factor, lamps[i], position, normal).radiance;
+    const LampEval e = LampAt(lamp_factor, lamps[i], position, normal);
+    sum = sum + e.radiance;
+    direction_sum = direction_sum + e.to_lamp * Luma(e.radiance);
+  }
+  if (direction) {
+    *direction = DirectionOf(direction_sum);
   }
   return sum;
 }
 // ONE lamp chosen by its unshadowed brightness (`noise` over the sum of them), `blocked(origin direction reach)` the shadow ray toward it, its light times sum / its own; the estimate's expectation over
 // the noise is the sum of the lamps' light that is not blocked.
-inline V3 LampPick(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal, float noise, float view_z, const std::function<bool(V3, V3, float)>& blocked) {
+inline V3 LampPick(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal, float noise, float view_z, const std::function<bool(V3, V3, float)>& blocked, V3* direction = nullptr) {
   float weight_sum = 0.0f;
-  V3 sum;
+  V3 sum, direction_sum;
   for (uint32_t i = 0; i < count; ++i) {
     const LampEval e = LampAt(lamp_factor, lamps[i], position, normal);
     sum = sum + e.radiance;
+    direction_sum = direction_sum + e.to_lamp * Luma(e.radiance);
     weight_sum += Luma(e.radiance);
+  }
+  if (direction) {
+    *direction = DirectionOf(direction_sum);
   }
   if (!(weight_sum > 0.0f)) {
     return sum;
@@ -278,6 +307,9 @@ inline V3 LampPick(float lamp_factor, const Lamp* lamps, uint32_t count, V3 posi
       weight = w;
     }
   }
+  if (direction) {
+    *direction = weight > 0.0f ? to_chosen : V3{};
+  }
   if (!(weight > 0.0f)) {
     return V3{};
   }
@@ -290,6 +322,7 @@ inline V3 LampPick(float lamp_factor, const Lamp* lamps, uint32_t count, V3 posi
 // kLampSumCap. `count` is the lookup's whole list: the walk that stopped with lamps left is a hit that hit the cap. `examined` is the lamps that reach (the census' word), `walked` the lamps passed.
 struct LampLight {
   V3 light;
+  V3 direction;   // PBR 1B: toward the walk's lamps' brightness weighted mean (the chosen lamp with the shadow flag); 0 where no lamp lit the point
   uint32_t examined = 0, lit = 0, walked = 0;
   bool cap_count = false, cap_sum = false;
 };
@@ -297,11 +330,12 @@ inline float LampKeep(float weight_sum) { return weight_sum > kLampSumCap ? kLam
 inline LampLight LampsCapped(float lamp_factor, const Lamp* lamps, uint32_t count, V3 position, V3 normal) {
   LampLight t;
   float weight_sum = 0.0f;
-  V3 sum;
+  V3 sum, direction_sum;
   while (t.walked < count && t.examined < kLampMax && t.walked < kLampWalkMax) {
     const LampEval e = LampAt(lamp_factor, lamps[t.walked], position, normal);
     const float luma = Luma(e.radiance);
     sum = sum + e.radiance;
+    direction_sum = direction_sum + e.to_lamp * luma;
     weight_sum += luma;
     t.lit += luma > 0.0f ? 1u : 0u;
     t.examined += e.reaches ? 1u : 0u;
@@ -310,6 +344,7 @@ inline LampLight LampsCapped(float lamp_factor, const Lamp* lamps, uint32_t coun
   t.cap_count = t.walked < count;
   t.cap_sum = weight_sum > kLampSumCap;
   t.light = sum * LampKeep(weight_sum);
+  t.direction = DirectionOf(direction_sum);
   return t;
 }
 // The same with one lamp chosen by its unshadowed brightness and a shadow ray (as LampPick), times the cap's factor; the counters are LampsCapped's.
@@ -340,8 +375,10 @@ inline LampLight LampPickCapped(float lamp_factor, const Lamp* lamps, uint32_t c
   }
   if (!(weight > 0.0f)) {
     t.light = V3{};
+    t.direction = V3{};
     return t;
   }
+  t.direction = to_chosen;
   const V3 origin = position + normal * Lift(view_z);
   t.light = blocked(origin, to_chosen, std::max(distance - kLampEnd, 0.0f)) ? V3{} : chosen * (keep * weight_sum / weight);
   return t;
@@ -497,6 +534,8 @@ struct Reads {
   std::function<V3(V3, float)> haze;
   // R7: the world frame's lamp light at a hit (view-space point, unit normal, the lamp shadow flag, the choice noise): the shader's CITY_HIT_LAMP_GRID path. Null: Shade's flat list.
   std::function<V3(V3, V3, bool, float)> lamps_at;
+  // PBR 1B: the same lookup's direction (the shader's gCityHitLampDirection): toward the lamps' brightness weighted mean, the chosen lamp's with the shadow flag. Null: no direction (the lamps' highlight is 0).
+  std::function<V3(V3, V3, bool, float)> lamps_dir_at;
   // R7: what a glow kind (kGlow*) glows by, 0..1 (the world rows' row 47). Null: GlowFactorDefault.
   std::function<float(uint32_t)> glow_factor;
   // R7: the counters (the census words kCensus*) of the pass: called with (word, value); null: not counted
@@ -607,14 +646,34 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
       visible = std::min(visible, reads.sun_blocked(origin, direction, reach) ? 0.0f : 1.0f);
     }
   }
-  light = light + sun * (ndl * visible);
+  // PBR 1B: a REFLECT hit's sun and lamps go through the model's direct term below (their own response, the highlight in it), not into `light` (the irradiance the diffuse weight takes)
+  const bool pbr = frame.tuning.pbr;
+  const bool pbr_direct = pbr && p.mode == kModeReflect;
+  V3 lamp_light, lamp_direction;
+  if (!pbr_direct) {
+    light = light + sun * (ndl * visible);
+  }
   if (reads.lamps_at) {
     if ((p.flags & kPLamps) != 0 && p.lamp_factor > 0.0f) {
-      light = light + reads.lamps_at(hit, normal, (p.flags & kPLampShadow) != 0, p.noise[2]);
+      const bool shadow = (p.flags & kPLampShadow) != 0;
+      const V3 lamps_light = reads.lamps_at(hit, normal, shadow, p.noise[2]);
+      if (pbr_direct) {
+        lamp_light = lamps_light;
+        lamp_direction = reads.lamps_dir_at ? reads.lamps_dir_at(hit, normal, shadow, p.noise[2]) : V3{};
+      } else {
+        light = light + lamps_light;
+      }
     }
   } else if (lamps && (p.flags & kPLamps) != 0 && p.lamp_count != 0 && p.lamp_factor > 0.0f) {
-    light = light + ((p.flags & kPLampShadow) != 0 ? LampPick(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal, p.noise[2], hit.z, reads.lamp_blocked)
-                                                    : LampsSum(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal));
+    V3 direction;
+    const V3 lamps_light = (p.flags & kPLampShadow) != 0 ? LampPick(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal, p.noise[2], hit.z, reads.lamp_blocked, &direction)
+                                                          : LampsSum(p.lamp_factor, lamps + p.lamp_first, p.lamp_count, hit, normal, &direction);
+    if (pbr_direct) {
+      lamp_light = lamps_light;
+      lamp_direction = direction;
+    } else {
+      light = light + lamps_light;
+    }
   }
   if (reads.emitters_at && (p.flags & kPEmitters) != 0) {
     light = light + reads.emitters_at(hit, normal, (p.flags & kPEmitterShadow) != 0, p.noise[1], p.noise[2], ray.footprint);
@@ -625,7 +684,31 @@ inline Shaded Shade(const Params& p, const rt_hit::FrameInput& frame, const Ray&
 
   // the surface
   V3 result = albedo * light * (kDiffuseGain[cls] * (1.0f - metal));
-  if (p.mode == kModeReflect) {
+  if (pbr) {
+    // the physically based surface (PBR 1B): the material's smoothness as roughness, the metalness of the class or of the material's byte, the class's F0, the albedo by the body's share; the ambient (and the
+    // emitters', the field's feedback) through the diffuse weight, in GI mode the sun and the lamps too; in REFLECT mode the sun and the lamps through the direct term and the sky through the reflection weight
+    const pbr_rt::Surface surface = pbr_rt::contract::MakeSurface(ToPbr(normal), ToPbr(albedo * kClassBody[cls]), pbr_rt::contract::RoughnessFromSmoothness(smoothness), PbrMetalness(cls, metal), PbrF0(cls));
+    const pbr_rt::V3 to_viewer = ToPbr(-ray.direction);
+    result = FromPbr(pbr_rt::Diffuse(surface, nv, ToPbr(light)));
+    if (pbr_direct) {
+      if (ndl > 0.0f) {
+        result = result + FromPbr(pbr_rt::Direct(surface, to_viewer, ToPbr(to_sun), ToPbr(sun * visible)));
+      }
+      if (Dot(lamp_light, lamp_light) > 0.0f) {
+        result = result + FromPbr(pbr_rt::DirectIrradiance(surface, to_viewer, ToPbr(lamp_direction), ToPbr(lamp_light)));
+      }
+      const float share = kSpecGain[cls];
+      if (share > 0.0f) {
+        const V3 reflected = ray.direction - normal * (2.0f * Dot(normal, ray.direction));
+        const float lod = surface.roughness * kEnvLodSmooth + std::log2(1.0f + rt_hit::kConeLodScale * ray.footprint / std::max(2.0f * ray.t, 1e-3f));
+        V3 env = ambient_colour * (0.6f + 0.4f * Dot(reflected, up));
+        if (frame.light.env_sharp != 0) {
+          env = reads.environment(reflected, lod);
+        }
+        result = result + FromPbr(pbr_rt::Reflection(surface, nv, ToPbr(env))) * (share * frame.tuning.spec);
+      }
+    }
+  } else if (p.mode == kModeReflect) {
     const float weight = SpecWeight(smoothness) * kSpecGain[cls];
     if (weight > 0.0f) {
       const V3 reflected = ray.direction - normal * (2.0f * Dot(normal, ray.direction));

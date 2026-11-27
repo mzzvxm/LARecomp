@@ -109,6 +109,7 @@
 
 #include "car_dump_rules.h"
 #include "car_model_walk_rules.h"
+#include "pbr_rt_hit_rules.h"
 #include "rt_hit_frame.h"
 
 namespace mcla::gpu::car_rt_material {
@@ -222,6 +223,22 @@ inline const ClassDefaults& DefaultsOf(Class c) { return kDefaults[std::min<uint
 inline constexpr std::array<float, kClassCount> kClassAmbient = {1.0f, 1.0f, 1.0f, 0.8f, 1.0f, 1.0f, 0.45f, 0.85f};
 inline constexpr std::array<float, kClassCount> kClassGlint = {0.5f, 1.0f, 1.0f, 0.0f, 1.0f, 0.8f, 0.0f, 0.3f};
 inline float ClassAmbient(Class c) { return kClassAmbient[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
+
+// PBR LEVEL 1 (task PBR-1B; the frame's kFramePbr, the debug switch mcla_gpu_pbr; the shader keeps its own copy, hlsl/car_rt_hit_shade.hlsli kClassBody, kClassRoughness, kLampRoughness, kF0Min, kF0Max), by class (none, paint,
+// glass, tyre, chrome, light, interior, other): the shared physically based model (pbr_rt_hit_rules.h) lights the hit instead of the diffuse gain, the fresnel and the clear coat's fake lobes.
+//   body       the share of the albedo's light the surface keeps: a lamp's lens keeps the diffuse share it had (0.3); chrome is a metal (below), the model takes its diffuse away
+//   roughness  perceptual: the coat, glass, chrome and a lens take the roughness of the sun's old glint lobe (Blinn-Phong power kSunGlintPower: PbrRoughnessFromBlinnPower = 1/3), so a sun highlight keeps its old width
+//              and brightness (about: kSunRadiance x the coat's fresnel against the GGX peak at the same width, pbr_rt_hit_rules_test.cpp); a tyre, the interior and the rest are matt
+//   the street lamp's lobe is wider (power kLampGlintPower: roughness 0.5946), and the dielectric F0 is the draw's fresnel minimum clamped to kF0Min..kF0Max (the class's default where the draw gives none)
+//   metalness  chrome 1 (F0 = the albedo), every other class 0
+inline constexpr std::array<float, kClassCount> kClassBody = {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 0.3f, 1.0f, 1.0f};
+inline constexpr std::array<float, kClassCount> kClassRoughness = {0.6f, 0.3333333f, 0.3333333f, 0.85f, 0.3333333f, 0.3333333f, 0.8f, 0.6f};
+inline constexpr float kLampRoughness = 0.5946036f;
+inline constexpr float kF0Min = 0.02f;
+inline constexpr float kF0Max = 0.1f;
+inline float ClassBody(Class c) { return kClassBody[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
+inline float ClassRoughness(Class c) { return kClassRoughness[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
+inline float ClassMetalness(Class c) { return c == Class::kChrome ? 1.0f : 0.0f; }
 inline float ClassGlint(Class c) { return kClassGlint[std::min<uint32_t>(uint32_t(c), kClassCount - 1)]; }
 
 // The gamma a customisation record's colour is raised to for a walked car's paint (the paint's units; car_model_rt_rules.h kPaintGamma is the same number: the record's colour is
@@ -968,7 +985,6 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const float night = in.sun_known ? in.night : 0.0f;  // the sun's end, the night fill and the lamps' images need the hour from the sun's height
   const float day_sun = 1.0f - night;
   const float glow_night = GlowNight(in.glow_driven, in.sun_known, in.night);  // the shader's glowNight
-  const float ndl = std::clamp(Dot3(in.normal, in.to_sun), 0.0f, 1.0f);
   float reflected[3];
   const float twice = 2.0f * Dot3(in.normal, in.ray);
   for (int c = 0; c < 3; ++c) {
@@ -980,7 +996,41 @@ inline void ShadeReference(const ShadeInput& in, float out[3]) {
   const float ground = (1.0f + (OpenMultiplier(in.open) - 1.0f) * strength) * (1.0f + (ContactMultiplier(in.height) - 1.0f) * strength);
   const float fill_share = kFillShare + (kNightFillShare - kFillShare) * night;
   // RT-HIT-SHADING-6: the lamp's light on the hit (the sun's colour times this), only at night, only facing up, by the sky's openness, scaled by the detail (0: as it was)
-  const float lamp_light = kLampDiffuse * night * std::max(Dot3(in.normal, in.up), 0.0f) * in.open * strength;
+  const float lamp_light = kLampDiffuse * night * std::clamp(Dot3(in.normal, in.up), 0.0f, 1.0f) * in.open * strength;
+  if (in.tuning.pbr) {
+    // PBR 1B (hlsl/car_rt_hit_shade.hlsli, the branch under RT_HIT_FRAME_PBR): the same hit through the shared model
+    using pbr_rt::V3;
+    const V3 albedo_v{albedo[0], albedo[1], albedo[2]}, normal_v{in.normal[0], in.normal[1], in.normal[2]}, to_viewer{-in.ray[0], -in.ray[1], -in.ray[2]};
+    const float* to_sun = in.sun_known ? in.to_sun : in.up;
+    const V3 to_sun_v{to_sun[0], to_sun[1], to_sun[2]}, up_v{in.up[0], in.up[1], in.up[2]}, sun_v{in.light.sun[0], in.light.sun[1], in.light.sun[2]};
+    const float ndl = std::clamp(Dot3(in.normal, to_sun), 0.0f, 1.0f);
+    const pbr_rt::Surface surface = pbr_rt::contract::MakeSurface(normal_v, albedo_v * ClassBody(in.cls), ClassRoughness(in.cls), ClassMetalness(in.cls), std::clamp(in.fresnel[0], kF0Min, kF0Max));
+    float ambient_of[3], env_of[3];
+    for (int c = 0; c < 3; ++c) {
+      const float fill = std::max(in.light.ambient[c], in.light.sun[c] * fill_share);
+      ambient_of[c] = fill * (in.tuning.ambient * hemisphere * class_ambient * ground);
+      env_of[c] = in.env_known ? in.env[c] : in.light.ambient[c] * (0.6f + 0.4f * Dot3(reflected, in.up));
+    }
+    const V3 ambient_light{ambient_of[0], ambient_of[1], ambient_of[2]}, env_v{env_of[0], env_of[1], env_of[2]};
+    const bool direct = detail > 0.0f;  // the frame's detail 0 is the shading as it was: the sun and the lamp light the surface diffusely only
+    V3 result = pbr_rt::Diffuse(surface, nv, direct ? ambient_light : ambient_light + sun_v * (ndl * in.sun_visible * day_sun + lamp_light));
+    if (direct && ndl > 0.0f && day_sun > 0.0f) {
+      result = result + pbr_rt::Direct(surface, to_viewer, to_sun_v, sun_v * (in.sun_visible * day_sun));
+    }
+    if (direct && lamp_light > 0.0f) {
+      pbr_rt::Surface lamp_surface = surface;
+      lamp_surface.roughness = std::max(surface.roughness, kLampRoughness);  // a lamp over the street is a wider light than the sun's disc
+      result = result + pbr_rt::DirectIrradiance(lamp_surface, to_viewer, up_v, sun_v * lamp_light);
+    }
+    result = result + pbr_rt::Reflection(surface, nv, env_v) * (d.spec_gain * in.tuning.spec * ground);
+    const float result_of[3] = {result.x, result.y, result.z};
+    for (int c = 0; c < 3; ++c) {
+      const float colour = result_of[c] + albedo[c] * (in.emissive * kEmissiveGain * glow_night);
+      out[c] = std::max(colour * in.tuning.gain, 0.0f);
+    }
+    return;
+  }
+  const float ndl = std::clamp(Dot3(in.normal, in.to_sun), 0.0f, 1.0f);
   const float glint_gain = detail > 0.0f ? ClassGlint(in.cls) * detail * (in.cls == Class::kChrome ? fresnel : CoatFresnel(nv)) : 0.0f;
   const float sun_lobe = glint_gain > 0.0f && ndl > 0.0f ? GlintLobe(Dot3(reflected, in.to_sun), kSunGlintPower) : 0.0f;
   const float lamp_lobe = glint_gain > 0.0f && night > 0.0f ? GlintLobe(Dot3(reflected, in.up), kLampGlintPower) : 0.0f;

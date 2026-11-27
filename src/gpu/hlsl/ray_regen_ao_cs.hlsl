@@ -1,4 +1,5 @@
 #include "host_pass_common.hlsli"
+#include "pbr_screen_common.hlsli"
 #include "gbuffer_common.hlsli"
 #include "ray_regen_common.hlsli"
 
@@ -10,7 +11,7 @@ struct RayRegenAoPush {
   float4 motion[3];
   float2 jitter;
   float depth_sign;
-  uint vehicle_ids;
+  uint vehicle_ids;  // IDs 1-23, bit 31 selects PBR guides.
 };
 #ifdef __spirv__
 [[vk::push_constant]] ConstantBuffer<RayRegenAoPush> g_push;
@@ -75,11 +76,18 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float2 uv = (float2(p) + 0.5f) / float2(g_push.sizes.xy);
   const int3 gb = int3(min(int2(uv * float2(g_push.sizes.zw)), int2(g_push.sizes.zw) - 1), 0);
   const float2 normal = g_textures[g_push.gbuffer.x].Load(gb).xy;
-  const float2 material = g_textures[g_push.gbuffer.z].Load(gb).xy;
-  const float roughness = GbRt3Class(material) == GB_CLASS_NONE ? guide.w : 1.0f - GbRt3Smoothness(material);
+  const float3 material = g_textures[g_push.gbuffer.z].Load(gb).xyz;
+  const uint cls = GbRt3Class(material.xy);
+  const float smoothness = GbRt3Smoothness(material.xy);
+  const bool pbr = (g_push.vehicle_ids & (1u << 31)) != 0u && cls != GB_CLASS_NONE;
+  const float roughness = cls == GB_CLASS_NONE ? guide.w : (pbr ? PbrRoughnessFromSmoothness(smoothness) : 1.0f - smoothness);
   const float3 world_normal = GbRt1Valid(normal) ? GbRt1Decode(normal) : float3(0.0f, 1.0f, 0.0f);
   const float3 stored_albedo = g_textures[g_push.gbuffer.y].Load(gb).xyz;
-  const float3 specular = GbRt3Class(material) == GB_CLASS_METAL ? GbAlbedoDecode(stored_albedo) : float3(0.04f, 0.04f, 0.04f);
+  float3 specular = cls == GB_CLASS_METAL ? GbAlbedoDecode(stored_albedo) : float3(0.04f, 0.04f, 0.04f);
+  if (pbr) {
+    const float f0 = PbrF0OfClass(cls);
+    specular = lerp(f0.xxx, GbAlbedoDecode(stored_albedo), PbrMetalOfScreen(cls, GbRt3MetalFlag(material)));
+  }
   g_normals[p] = RgNormalsTexel(world_normal, roughness, 0u);
   g_specular[p] = float4(specular, 1.0f);
   g_motion[p] = Motion(uv - g_push.jitter / float2(g_push.sizes.xy), depth, uint(vehicle_share.x), (asuint(depth) & 1u) != 0u);

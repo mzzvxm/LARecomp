@@ -22,6 +22,7 @@
 // buffer of rows (t0: the field's 20 rows, the apply's 9, then the cabin's 2), push constants (b0, space4), 32 bytes.
 
 #include "gbuffer_common.hlsli"
+#include "pbr_screen_common.hlsli"
 
 #ifndef GIA_PASS
 #define GIA_PASS 1
@@ -44,7 +45,7 @@ ByteAddressBuffer g_rows : register(t4, space4);
 
 struct GiaPush
 {
-    uint4 slots;  // x the main depth plane's slot, y RT1's, z RT2's, w the occlusion's linear depth (level 0, traced size)
+    uint4 slots;  // x the main depth plane's slot, y RT1's, z RT2's | RT3's << 16 (0xFFFF: none), w the occlusion's linear depth (level 0, traced size)
     uint4 info;   // x the visibility image's slot (GIA_NO_SLOT: none), y the lookup image's slot, z the host sample that is the guest's sample 0, w flags | view << 8
 };
 
@@ -170,6 +171,11 @@ float4 GiaCabinRow(uint i)
 uint GiaMaterialSlot()
 {
     return g_push.info.w >> GIC_MATERIAL_SLOT_SHIFT;
+}
+
+bool GiaPbr()
+{
+    return (g_push.info.w & GIA_FLAG_PBR) != 0u && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT;
 }
 
 bool GiaHasVisibility()
@@ -495,16 +501,26 @@ float4 main(float4 position : SV_Position) : SV_Target
     float nDotL = saturate(dot(n, fr.sunDir));
     float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
 
-    // The player's cabin shields its inside from the street the probes cannot see the car's roof of: the field's share on the cabin's own surfaces (a vehicle's part that is not paint, chrome or glass,
-    // inside the car's box) is the cabin's, with the glass's share left. A frame with no rule (the camera is not in a roofed car, the setting is off: share 1) reads nothing here.
     float cabin = 1.0f;
-    float4 cabinA = GiaCabinRow(0u);
-    if (cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT)
+    const float4 cabinA = GiaCabinRow(0u);
+    const bool cabinActive = cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT;
+    const bool pbr = GiaPbr();
+    if (cabinActive || pbr)
     {
-        float2 rt3 = GiaLoadPlane(GiaMaterialSlot(), pixel).xy;
-        cabin = GicShare(cabinA, GiaCabinRow(1u), GiaReceiverPosition(pixel, t, fr), GbRt3Class(rt3), GbRt3Flags(rt3));
+        const float3 rt3 = GiaLoadPlane(GiaMaterialSlot(), pixel).xyz;
+        const float3 receiver = GiaReceiverPosition(pixel, t, fr);
+        if (cabinActive)
+        {
+            cabin = GicShare(cabinA, GiaCabinRow(1u), receiver, GbRt3Class(rt3.xy), GbRt3Flags(rt3.xy));
+        }
+        if (pbr && GbRt3Class(rt3.xy) != GB_CLASS_NONE)
+        {
+            const float3 toView = fr.position - receiver;
+            const float nv = saturate(dot(n, toView / max(length(toView), 1.0e-6f)));
+            albedo = PbrScreenDiffuseWeight(GbRt3Class(rt3.xy), GbRt3MetalFlag(rt3), GbRt3Smoothness(rt3.xy), albedo, nv);
+        }
     }
-    float3 add = NgFinite3(GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare * cabin, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
+    float3 add = NgFinite3(GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare * cabin, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap));
 
     if (view == 9u)
     {

@@ -428,6 +428,13 @@ add_executable(larecomp_car_rt_parked_paint_rules_test EXCLUDE_FROM_ALL car_rt_p
 # hlsl/car_rt_hit_shade.hlsli, hlsl/car_rt_refl_cs.hlsl, the host and the settings hold the header's numbers) likewise:
 #   cmake --build <dir> --target larecomp_car_rt_material_rules_test, then run src/gpu/larecomp_car_rt_material_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_material_rules_test EXCLUDE_FROM_ALL car_rt_material_rules_test.cpp)
+# The ray traced hit shading's physically based layer (PBR level 1, task PBR-1B; pbr_rt_hit_rules.h: the contract's arithmetic in float and the layer over it, the shim the shader-as-C++ test compiles against, the
+# switch, the calibration against the model of old for walls, roads and cars, the car hit shading's PBR branch, and that hlsl/pbr_brdf.hlsli, hlsl/pbr_rt_hit.hlsli, hlsl/car_rt_hit_shade.hlsli, hlsl/city_hit_shade.hlsli,
+# hlsl/rt_hit_frame.hlsli and the two hosts that write the frame's rows hold the header's numbers):
+#   cmake --build <dir> --target larecomp_pbr_rt_hit_rules_test, then run src/gpu/larecomp_pbr_rt_hit_rules_test <src dir> (exit 0 = passed).
+add_executable(larecomp_pbr_rt_hit_rules_test EXCLUDE_FROM_ALL pbr_rt_hit_rules_test.cpp)
+target_include_directories(larecomp_pbr_rt_hit_rules_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/..")
+target_compile_features(larecomp_pbr_rt_hit_rules_test PRIVATE cxx_std_23)
 # RT-HIT-SHADING part two (car_rt_hit_rules.h: the level table by class and its overrides, the reach to another car and the weight of a hit by it, the scene's radius against the reach, the clear
 # coat's share by the paint's fresnel, the two lobes added (exact for the paint's blend), the aux image's word and the denoise's scale, the push block's packed word; and that
 # hlsl/car_rt_hit_shade.hlsli, the trace, the opponents' variant, the denoise, the host and the settings hold the header's numbers) likewise:
@@ -555,6 +562,11 @@ add_executable(larecomp_gbuffer_material_test EXCLUDE_FROM_ALL gbuffer_material_
 # deliberate difference found) likewise:
 #   cmake --build <dir> --target larecomp_light_manager_test, then run src/gpu/larecomp_light_manager_test (exit 0 = passed).
 add_executable(larecomp_light_manager_test EXCLUDE_FROM_ALL light_manager_test.cpp)
+# The shared physically based light model (hlsl/pbr_brdf.hlsli and its twin pbr_brdf_rules.h, PBR level 1, perf/PBR.md: GGX, height-correlated Smith, Schlick, Lambert with the (1 - F) split, metals, the multi-scatter
+# factor and the fitted directional albedo, a spherical light's representative point, the roughness the G-buffer's byte means; it compiles the .hlsli as C++ and compares it with the twin, holds the twin to the
+# white furnace, reciprocity, the GGX normalisation and the exact directional albedo, and to the first model's brightness, and reads the .hlsli's text) likewise:
+#   cmake --build <dir> --target larecomp_pbr_brdf_test, then run src/gpu/larecomp_pbr_brdf_test [<src/gpu dir>] (exit 0 = passed; the folder defaults to the test's own).
+add_executable(larecomp_pbr_brdf_test EXCLUDE_FROM_ALL pbr_brdf_test.cpp)
 # The deferred local light pass's rules (local_lights_rules.h: which lights the pass takes from the frame and from the lamp A/B, the camera's rows and a pixel's world position, the game's night
 # light intensity and height factor, the votes that pick them from the draws' constants, the scissor of a light, the buffer and the push block the shader reads; it compiles
 # hlsl/local_light.hlsli as C++ and compares it with the twin, and reads the sources it is given: the shaders' CMake lines, the settings, the A/B's hook in mod_lights.cpp) likewise:
@@ -625,6 +637,10 @@ add_executable(larecomp_gbuffer_materials_test EXCLUDE_FROM_ALL gbuffer_material
 # with the src folder or from there:
 #   cmake --build <dir> --target larecomp_car_rt_lights_rules_test, then run src/gpu/larecomp_car_rt_lights_rules_test [<src dir>] (exit 0 = passed).
 add_executable(larecomp_car_rt_lights_rules_test EXCLUDE_FROM_ALL car_rt_lights_rules_test.cpp)
+# The compiled-in texture rows (gbuffer_texture_rows.h and gbuffer_texture_rows.inc, PBR-2: the sorted arrays and their binary search, the keys' order, the layers, the fingerprint, the shipped data)
+# with the sample the Python tools make (tools/gbuffer_materials/sample_rows.inc, from sample_table.txt and sample_overrides.txt): every row of it is found with the parsed fields:
+#   cmake --build <dir> --target larecomp_gbuffer_texture_rows_test, then run src/gpu/larecomp_gbuffer_texture_rows_test [<tools/gbuffer_materials/sample_table.txt>] (exit 0 = passed).
+add_executable(larecomp_gbuffer_texture_rows_test EXCLUDE_FROM_ALL gbuffer_texture_rows_test.cpp)
 # The car frame's rules (car_frame_rules.h: the mesh key, which draw is the player's, the matrix and the camera out of a draw's bank, the
 # normals, the boxes) likewise:
 #   cmake --build <dir> --target larecomp_car_frame_rules_test, then run src/gpu/larecomp_car_frame_rules_test (exit 0 = passed).
@@ -843,6 +859,9 @@ add_executable(larecomp_dlss_card_table_test EXCLUDE_FROM_ALL dlss_card_table_te
 # DLSS Ray Reconstruction's guide images (rr_guides_rules.h: the images, the views, who runs the pass, the push blocks, and the C++ twin of hlsl/rr_guides_common.hlsli, which the test also
 # compiles as C++): cmake --build <dir> --target larecomp_rr_guides_test, then run src/gpu/larecomp_rr_guides_test [<src/gpu dir>] (exit 0 = passed).
 add_executable(larecomp_rr_guides_test EXCLUDE_FROM_ALL rr_guides_test.cpp)
+# The screen passes' side of the shared physically based model (PBR level 1C: pbr_screen_rules.h, hlsl/pbr_screen_common.hlsli, the switch, the contract's pins; the test compiles the .hlsli as C++):
+# cmake --build <dir> --target larecomp_pbr_screen_test, then run src/gpu/larecomp_pbr_screen_test [<src/gpu dir>] (exit 0 = passed).
+add_executable(larecomp_pbr_screen_test EXCLUDE_FROM_ALL pbr_screen_test.cpp)
 # The DENOISER setting (denoiser_setting.h, RR-5: the words, the gate that greys the row and what it says, AUTO's label, the consumers' rule, the launcher's text, and the text of the wiring: the row in
 # upscaling_menu.cpp, the plan in temporal.cpp, the plugin request in temporal_dlss.cpp, the three settings files, the CMake lines): cmake --build <dir> --target larecomp_denoiser_setting_test, then run
 # src/gpu/larecomp_denoiser_setting_test [-v] [<src/gpu dir>] (exit 0 = passed).

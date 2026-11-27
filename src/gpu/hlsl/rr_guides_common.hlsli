@@ -8,6 +8,9 @@
 //                       alpha (RT3 cleared to 0 is smoothness 0: roughness 1, a chalk, which is what a surface with no material is); (0, 0, 0, 0) in the sky
 //   specular albedo     the average reflectance of the surface seen from here: NVIDIA's EnvBRDFApprox2 (the integration guide's 4.2.1) of F0, alpha = roughness^2 and N.V. F0 is
 //                       the class table: a dielectric 0.04, a metal or chrome its albedo (0.6 where the frame has none), an emissive surface 0 (nothing reflects off a lamp)
+//   PBR LEVEL 1C (perf\PBR.md; the pass's switch, RR_FLAG_PBR in the push's forward.w, mcla_gpu_pbr): RrSurfacePixelPbr makes the three material guides through the shared model instead: the diffuse albedo is the base
+//                       colour times (1 - metalness) (a metal is the floor), the specular albedo the contract's split sum F0 * A + B (PbrScreenReflectionWeight: F0 the dielectric's or the metal's albedo, water 0.02,
+//                       an emissive surface 0), the roughness the contract's PBR roughness; the normal is the same. The text above is the first version's (RrSurfacePixel), which the switch off keeps.
 //   hit distance        0 on every surface (the reflection is taken to be at the surface: no virtual parallax, the primary motion is the reflection's), 65504 in the sky; a writer's
 //                       distance (a bindless image of the reflection effects, RR-4) wins where it holds a positive value
 //   responsivity        the larger of the upscaler's reactive mask and its transparency mask, 0..1: where the new frame is to be followed faster
@@ -22,7 +25,11 @@
 #define MCLA_GPU_RR_GUIDES_COMMON_HLSLI
 
 #include "gbuffer_common.hlsli"
+#include "pbr_screen_common.hlsli"
 #include "nan_guard.hlsli"
+
+// the push's forward.w, read as bits: bit 0 the shared physically based model (PBR level 1C)
+#define RR_FLAG_PBR 1u
 
 // ---- the views (mcla_gpu_dlss_rr_view; rr_guides_rules.h View) --------------------------------------------------------------------------------------------------------------------------
 #define RR_VIEW_OFF 0
@@ -191,14 +198,19 @@ RrPixel RrSkyPixel() {
 // A pixel with a surface. `depth_normal` is the world normal of the depth's tangents (zero: none); `view_dir` the unit direction from the camera to the pixel. The normal is RT1's where it holds
 // one (as the writer drew it: a back face's was turned to the viewer there), else the depth's turned to face the camera, else the one that faces the camera. N.V is taken as an absolute value
 // (the guide's rule), so a normal that points away from the camera still gives a sensible specular albedo.
-RrPixel RrSurfacePixel(float2 rt1, float4 rt2, float2 rt3, float3 depth_normal, float3 view_dir) {
-  RrPixel px;
+float3 RrSurfaceNormal(float2 rt1, float3 depth_normal, float3 view_dir) {
   float3 n = view_dir * -1.0f;
   if (GbRt1Valid(rt1)) {
     n = GbRt1Decode(rt1);
   } else if (dot(depth_normal, depth_normal) > 0.5f) {
     n = RrFacing(depth_normal, view_dir);
   }
+  return n;
+}
+
+RrPixel RrSurfacePixel(float2 rt1, float4 rt2, float2 rt3, float3 depth_normal, float3 view_dir) {
+  RrPixel px;
+  const float3 n = RrSurfaceNormal(rt1, depth_normal, view_dir);
   const bool have_albedo = RrHasAlbedo(rt2);
   const float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
   const float roughness = RrLinearRoughness(GbRt3Smoothness(rt3));
@@ -207,6 +219,26 @@ RrPixel RrSurfacePixel(float2 rt1, float4 rt2, float2 rt3, float3 depth_normal, 
   px.normal = n;
   px.roughness = roughness;
   px.specular = RrSpecularAlbedo(f0, roughness * roughness, dot(n, view_dir * -1.0f));
+  px.hit = 0.0f;
+  return px;
+}
+
+// PBR level 1C: the same pixel through the shared model (pbr_screen_common.hlsli; the header's PBR LEVEL 1C paragraph). The diffuse albedo is the base colour (0.5 where RT2 holds none) times (1 - metalness),
+// never under the floor; the specular albedo is the contract's split sum, N.V as an absolute value (the guide's rule); the roughness is the contract's PBR roughness of the smoothness byte.
+RrPixel RrSurfacePixelPbr(float2 rt1, float4 rt2, float3 rt3, float3 depth_normal, float3 view_dir) {
+  RrPixel px;
+  const float3 n = RrSurfaceNormal(rt1, depth_normal, view_dir);
+  const bool have_albedo = RrHasAlbedo(rt2);
+  const float3 albedo = GbAlbedoDecode(float3(rt2.x, rt2.y, rt2.z));
+  const float2 material = float2(rt3.x, rt3.y);
+  const uint cls = GbRt3Class(material);
+  const bool metal_flag = GbRt3MetalFlag(rt3);
+  const float smoothness = GbRt3Smoothness(material);
+  const float3 base = have_albedo ? albedo : float3(kRrUnknownAlbedo, kRrUnknownAlbedo, kRrUnknownAlbedo);
+  px.diffuse = PbrScreenDiffuseGuide(cls, metal_flag, base, kRrMinAlbedo);
+  px.normal = n;
+  px.roughness = PbrRoughnessFromSmoothness(smoothness);
+  px.specular = PbrScreenReflectionWeight(cls, metal_flag, smoothness, albedo, have_albedo, abs(dot(n, view_dir * -1.0f)));
   px.hit = 0.0f;
   return px;
 }

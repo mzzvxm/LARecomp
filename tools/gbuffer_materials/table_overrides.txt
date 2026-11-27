@@ -1,0 +1,10 @@
+# Template for local, reviewed rows (PBR-2, perf/PBR.md section 2). Copy to <mods>/gbuffer_texture_materials.txt and edit that copy.
+#
+# A local override replaces the matching generated row whole, so provide every field you want.
+# Keys: hash:<16 hex> (from your local census), dictionary/name, */name. Use the hash for an unnamed texture.
+#
+# What belongs here: the result of a review (a texture the rules left to the family, or got low confidence: the review list <table>.review.tsv, the contact sheet, the owner's eye), one row a
+# line, with the reason after a # on the line. Rows that are only a guess do not: the review list is for those.
+#
+#   hash:0123456789ABCDEF  class=metal rough=0.45 metal=1 ssr=1   # the manhole covers of the main streets (a template: no texture has this hash)
+@version 1

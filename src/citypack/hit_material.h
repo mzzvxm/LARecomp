@@ -10,7 +10,7 @@
 //   word        the G-buffer's material word + the metal byte (city_hit_format.h): the CLASS and the SSR flag from the group's row (kGroupRows: "x" + the group's name), the smoothness
 //               from SpecularExponent through the same formula and the same bank (the day city shaders are lit per vertex: the vertex shader's exponent, c73 ...; the others by their
 //               PSMultiLight's: GlossBank, GlossSmoothness), the class default where there is no exponent, the lit weight from the class (0 for what glows), kWordFlagAlphaCovered
-//               for the alpha tested ones (the pack's class), the metal byte 0 (only a texture row gives one)
+//               for the alpha tested ones (the pack's class), the metal byte of the group's family (PBR-2: kFamilyRows, else the class's DefaultMetal; a texture row may change it)
 //   texture     the DIFFUSE texture's file name: DiffuseSampler, or DiffuseSamplerA (the terrain and the grass have no DiffuseSampler); resolved, seen from the dictionary of the sector
 //               the shader is in, to a picture (an index in the texture table) and the guest KEY of the dictionary entry it came from, by the HitTextureSource (below), which package
 //               H2's texture set implements (texture_set.h; hit_texture_adapter.h joins them). The key is per ENTRY (the same picture sits in several sectors' dictionaries under
@@ -159,6 +159,9 @@ struct FinalizeStats {
   uint32_t rows_glow_on = 0;         // ... that a row made glow (class emissive, or a lit weight under 1): the lit windows
   uint32_t rows_glow_off = 0;        // ... whose glow a row took away
   std::vector<std::string> unresolved_names;  // the first few
+  // PBR-2: (the entry key = the XXH3-64 content hash, the diffuse file's stem) of every textured material whose texture resolved, in material order, for the census tool's name list (the retail
+  // game's console builds strip the runtime names of the city's textures, but the city's shader instances name them: gbuffer_materials/census_merge.py --names). Repeats are not removed here.
+  std::vector<std::pair<uint64_t, std::string>> texture_keys;
 };
 
 // The records: `set`'s defs turned into HitMaterial (texture index, key and average from the defs' resolved pictures and the source's means; the rows applied when `rows` is given) and

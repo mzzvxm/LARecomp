@@ -86,7 +86,8 @@ void main(uint3 id : SV_DispatchThreadID) {
   const int2 texel = pick == 0u ? t0 : (pick == 1u ? t1 : (pick == 2u ? t2 : t3));
   const SsrSurface surface = SsrSurfaceAt(texel, false);
   const float smoothness = SsrWetSmooth(surface.cls, surface.smoothness, SsrF(SSR_W_WET));
-  const float roughness = 1.0f - smoothness;
+  const bool pbr = SsrPbr();   // PBR level 1C: the shared model's roughness and reflection weight (ssr_common.hlsli SsrRoughness, SsrFresnel); mcla_gpu_pbr 0 the first version's
+  const float roughness = SsrRoughness(smoothness, pbr);
 
   // the normal and the Fresnel term, as the reflection's resolve has them: RT1's world normal turned into the view space for N.V
   const float tan_x = SsrF(SSR_W_TAN_X);
@@ -96,12 +97,13 @@ void main(uint3 id : SV_DispatchThreadID) {
   const float3 n_world = GbRt1Valid(rt1) ? GbRt1Decode(rt1) : float3(0.0f, 1.0f, 0.0f);
   const float4 g_normal = SsrViewNormalAt(texel, pc);
   const float nov = g_normal.w < 0.5f ? 0.0f : saturate(dot(g_normal.xyz, pc * (-1.0f / length(pc))));
-  float3 f0 = float3(0.04f, 0.04f, 0.04f);
-  if (surface.cls == uint(GB_CLASS_METAL)) {
+  float3 albedo = float3(0.0f, 0.0f, 0.0f);   // RT2's albedo, read for a metal only (its F0)
+  bool have_albedo = false;
+  if (PbrScreenMetalness(surface.cls, surface.metal) > 0.0f) {
     const float4 rt2 = SsrRt2At(texel);
-    f0 = (rt2.x + rt2.y + rt2.z) > 0.0f ? GbAlbedoDecode(rt2.xyz) : float3(0.6f, 0.6f, 0.6f);
+    have_albedo = (rt2.x + rt2.y + rt2.z) > 0.0f;
+    albedo = GbAlbedoDecode(rt2.xyz);
   }
-  const float2 ab = SsrEnvBrdf(roughness, nov);
 
   // the motion of the receiver: its unjittered place, moved into the last frame by the camera's own motion (the class gate keeps vehicles out of the receivers)
   const float2 jitter = float2(SsrXF(RG_X_JITTER_X), SsrXF(RG_X_JITTER_Y));
@@ -126,5 +128,5 @@ void main(uint3 id : SV_DispatchThreadID) {
   g_depth[pix] = RgDepthTexel(true, z_block, depth_sign);
   g_motion[pix] = motion;
   g_normals[pix] = RgNormalsTexel(n_world, roughness, 0u);
-  g_specular[pix] = float4(RgSpecularAlbedo(f0, ab), 1.0f);
+  g_specular[pix] = float4(SsrFresnel(surface.cls, surface.metal, albedo, have_albedo, smoothness, nov, pbr), 1.0f);   // the resolve's Fresnel without the class gain (ssr_apply_ps.hlsl: the same function)
 }

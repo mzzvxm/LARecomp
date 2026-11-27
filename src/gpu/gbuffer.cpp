@@ -653,7 +653,7 @@ const HostImage* GBuffer::DrawCaptureClass(plume::RenderCommandList* list, const
   };
   ViewPush push{};
   push.slots[2] = frame_.slot[gbuffer::kPlaneMaterial];
-  push.slots[3] = 8;
+  push.slots[3] = 0x100u;  // Internal class capture, outside the debug view range.
   push.info[0] = frame_.sample0;
   push.info[1] = ui_gap;
   push.info[2] = slot(depth);

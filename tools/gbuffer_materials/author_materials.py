@@ -14,6 +14,7 @@ THE RULES FILE, one rule per line (blank lines and # comments are free):
 
   conditions (all must hold; the word after ~ or = is a list separated by commas, text compared in lower case)
     name~a,b      the texture's name contains a or b          name!~a,b   contains none of them         name=a,b  is exactly one of them (a texture with no name matches only name!~)
+                  an item w:rim is a WHOLE WORD: the name split at every character that is not a letter or a digit has the word rim ("rim_front" and "front-rim", not "trim_d" or "primary")
     dict~a,b      the dictionary's name contains ...          dict=a,b    is one of them
     group~a,b     the shader group of the family (xCityRoad ...) contains ...    group=a,b  is one of them          group!~a,b  contains none
     class=a,b     the class the family gave it (world road paint ...)            class!=a,b  is none of them
@@ -22,6 +23,10 @@ THE RULES FILE, one rule per line (blank lines and # comments are free):
     draws>=N  indices>=N  size>=N  size<=N  smooth>=N  smooth<=N    how often it was drawn, the geometry it covered, its larger side in texels, the family's smoothness byte
   fields (the same as the table's): class=<name> rough=<0..1> smooth=<0..1> metal=<0..1> ssr=<0|1> lit=<0..1>, or the word skip, which gives up every field the earlier rules gave
   this texture (a later rule may give new ones).
+  conf=<high|medium|low>   how far the rule's evidence is to be trusted (PBR-2; default medium): a name that says "chrome" and a reviewed list of hashes are high, a keyword that could mean
+  something else ("light", "paint") is low. A row's confidence is the LOWEST of the rules that gave it a field. A row below --min-confidence (default medium) is NOT written to the table: it is
+  listed in <out>.review.tsv for a person to look at (a contact sheet of the textures, the census numbers beside it), and goes into the table only when a rule of high confidence, a hash list
+  of the review, or a row of tools/gbuffer_materials/table_overrides.txt (our hand rows, which this tool only reads) says so. Low confidence rows are listed, never guessed.
 
 A row is only written for a texture that has a key (a name, or a content hash: the census says '-' for an unnamed texture whose hash was never known) and only when it changes the
 word (apply_row). The overrides file (the owner's own rows, read AFTER the generated table at run time) is only checked here: its rows are parsed with the renderer's rules and the
@@ -52,8 +57,12 @@ class RulesError(Exception):
     pass
 
 
+CONF_LEVELS = {"low": 0, "medium": 1, "high": 2}
+
+
 class Rule:
-    def __init__(self, ident, conditions, fields, skip, line):
+    def __init__(self, ident, conditions, fields, skip, line, conf="medium"):
+        self.conf = conf
         self.ident = ident
         self.conditions = conditions  # [(field, op, value)] value: set of lower case strings, an int, or None for the flag words
         self.fields = fields
@@ -112,6 +121,17 @@ def parse_rules(text):
                 except ValueError:
                     fail("'%s' is not a number" % value)
         toks = tail.split()
+        conf = "medium"
+        rest = []
+        for tok in toks:
+            if tok.lower().startswith("conf="):
+                level = tok.split("=", 1)[1].lower()
+                if level not in CONF_LEVELS:
+                    fail("'%s' is not a confidence (high medium low)" % tok)
+                conf = level
+            else:
+                rest.append(tok)
+        toks = rest
         skip = False
         if "skip" in toks:
             skip = True
@@ -122,8 +142,25 @@ def parse_rules(text):
             fail(str(e))
         if not fields and not skip:
             fail("a rule gives at least one field, or skip")
-        rules.append(Rule(ident, conditions, fields, skip, number))
+        rules.append(Rule(ident, conditions, fields, skip, number, conf))
     return rules
+
+
+WORD_SPLIT = re.compile(r"[^a-z0-9]+")
+
+
+def name_has(name, items):
+    """Whether a lower case texture name contains one of the items: a plain item as a substring, an item that starts with w: as a whole word."""
+    words = None
+    for k in items:
+        if k.startswith("w:"):
+            if words is None:
+                words = set(WORD_SPLIT.split(name))
+            if k[2:] in words:
+                return True
+        elif k in name:
+            return True
+    return False
 
 
 def row_hash(row):
@@ -146,9 +183,9 @@ def matches(rule, row):
             ok = (row["flags"] & g.FLAG_VEHICLE) == 0
         elif field == "name":
             if op == "~":
-                ok = named and any(k in name for k in value)
+                ok = named and name_has(name, value)
             elif op == "!~":
-                ok = not (named and any(k in name for k in value))
+                ok = not (named and name_has(name, value))
             else:
                 ok = named and name in value
         elif field == "dict":
@@ -172,16 +209,20 @@ def matches(rule, row):
     return True
 
 
-def author(rows, rules, smooth_defaults, lit_defaults, min_draws=1, keep_redundant=False):
-    """([(key, fields, row, rule ids)], statistics) for the census rows."""
+def author_with_review(rows, rules, smooth_defaults, lit_defaults, min_draws=1, keep_redundant=False, min_conf="medium"):
+    """([(key, fields, row, rule ids, confidence)], [review rows], statistics) for the census rows. A row whose confidence (the lowest of the rules that gave it a field) is below min_conf is not in the
+    first list: it is in the second, with the key the table would have used ('-' when the texture has none), what the rules proposed and why it was held back."""
     out = []
+    review = []
     stats = defaultdict(int)
+    floor = CONF_LEVELS[min_conf]
     for row in rows:
         if row["draws"] < min_draws:
             stats["below min-draws"] += 1
             continue
         fields = {}
         applied = []
+        given = []
         for rule in rules:
             if not matches(rule, row):
                 continue
@@ -189,23 +230,51 @@ def author(rows, rules, smooth_defaults, lit_defaults, min_draws=1, keep_redunda
             if rule.skip:
                 fields = {}
                 applied = []
+                given = []
             fields.update(rule.fields)
             if rule.fields:
                 applied.append(rule.ident)
+                given.append(rule)
         if not fields:
             stats["no rule"] += 1
-            continue
-        if row["key"] == "-":
-            stats["no key (unnamed, hash never known)"] += 1
             continue
         word = int(row["word"], 16)
         if not keep_redundant and g.apply_row(word, fields, smooth_defaults, lit_defaults) == word:
             stats["row would not change the word"] += 1
             continue
-        out.append((row["key"], fields, row, applied))
+        level = min((CONF_LEVELS[r.conf] for r in given), default=CONF_LEVELS["medium"])
+        conf = [name for name, value in CONF_LEVELS.items() if value == level][0]
+        if level < floor:
+            weakest = sorted({r.ident for r in given if CONF_LEVELS[r.conf] == level})
+            review.append((row["key"], fields, row, applied, conf, "low confidence: " + ",".join(weakest)))
+            stats["held for review (confidence below %s)" % min_conf] += 1
+            continue
+        if row["key"] == "-":
+            stats["no key (unnamed, hash never known)"] += 1
+            continue
+        out.append((row["key"], fields, row, applied, conf))
     out.sort(key=lambda item: item[0].lower())
+    review.sort(key=lambda item: (-item[2]["draws"], item[0].lower()))
     stats["rows written"] = len(out)
-    return out, stats
+    return out, review, stats
+
+
+def author(rows, rules, smooth_defaults, lit_defaults, min_draws=1, keep_redundant=False):
+    """([(key, fields, row, rule ids)], statistics) for the census rows: every row the rules give, whatever its confidence (the form the tests of the first version used)."""
+    out, _review, stats = author_with_review(rows, rules, smooth_defaults, lit_defaults, min_draws, keep_redundant, "low")
+    return [item[:4] for item in out], stats
+
+
+REVIEW_COLUMNS = ["key", "name", "dictionary", "size", "group", "family_class", "family_smooth", "draws", "indices", "proposed", "confidence", "why", "rules"]
+
+
+def review_text(review):
+    """The review list as a tab separated table (a header line, then the textures with the most draws first): what a person looks at to decide the rows that are not written."""
+    lines = ["\t".join(REVIEW_COLUMNS)]
+    for key, fields, row, applied, conf, why in review:
+        lines.append("\t".join([key, row["name"], row["dictionary"], "%dx%d" % (row["width"], row["height"]), row["group"], row["class"], str(row["smooth"]), str(row["draws"]), str(row["indices"]),
+                               g.fields_text(fields), conf, why, ",".join(applied)]))
+    return "\n".join(lines) + "\n"
 
 
 def table_text(items, census_path, rules_path, rule_count, texture_count, draws):
@@ -214,9 +283,11 @@ def table_text(items, census_path, rules_path, rule_count, texture_count, draws)
         "# census %s: %d textures, %d draws; rules %s: %d rules; %d rows" % (census_path, texture_count, draws, rules_path, rule_count, len(items)),
         "@version %d" % g.TABLE_VERSION,
     ]
-    for key, fields, row, applied in items:
+    for item in items:
+        key, fields, row, applied = item[:4]
+        conf = " conf=%s" % item[4] if len(item) > 4 else ""
         label = "%s %dx%d %s %d draws" % ("unnamed" if row["name"].lower() == "unnamed" else row["dictionary"], row["width"], row["height"], row["group"], row["draws"])
-        lines.append("%s %s  # %s [%s]" % (key, g.fields_text(fields), label, ",".join(applied)))
+        lines.append("%s %s  # %s [%s]%s" % (key, g.fields_text(fields), label, ",".join(applied), conf))
     return "\n".join(lines) + "\n"
 
 
@@ -250,6 +321,8 @@ def main(argv=None):
     ap.add_argument("--overrides", help="the owner's rows file: checked, not merged")
     ap.add_argument("--min-draws", type=int, default=1, help="ignore textures drawn fewer times than this")
     ap.add_argument("--keep-redundant", action="store_true", help="also write rows that would not change the family's word")
+    ap.add_argument("--min-confidence", choices=sorted(CONF_LEVELS, key=CONF_LEVELS.get), default="medium", help="rows whose rules are less sure than this go to the review list, not the table (default medium)")
+    ap.add_argument("--review", help="where to write the review list (default: <out>.review.tsv)")
     ap.add_argument("--class-header", help="gbuffer_material.h (default: the repository's): where the classes' default smoothness and lit weight are read")
     a = ap.parse_args(argv)
     try:
@@ -259,14 +332,16 @@ def main(argv=None):
         return 2
     rows = census_merge.read_tsv(a.census)
     smooth_defaults, lit_defaults = g.load_class_defaults(a.class_header)
-    items, stats = author(rows, rules, smooth_defaults, lit_defaults, a.min_draws, a.keep_redundant)
+    items, review, stats = author_with_review(rows, rules, smooth_defaults, lit_defaults, a.min_draws, a.keep_redundant, a.min_confidence)
     text = table_text(items, a.census, a.rules, len(rules), len(rows), sum(r["draws"] for r in rows))
     parsed, errors = g.parse_table(text)
     if errors:
         print("internal error: the generated table does not parse: %s" % errors[:3], file=sys.stderr)
         return 3
     Path(a.out).write_text(text, encoding="utf-8", newline="\n")
-    print("wrote %s: %d rows from %d textures" % (a.out, len(items), len(rows)))
+    review_path = Path(a.review) if a.review else Path(str(a.out) + ".review.tsv")
+    review_path.write_text(review_text(review), encoding="utf-8", newline="\n")
+    print("wrote %s: %d rows from %d textures; %d held for review in %s" % (a.out, len(items), len(rows), len(review), review_path))
     print("  not written: " + ", ".join("%s %d" % (k, v) for k, v in sorted(stats.items()) if k != "rows written") if len(stats) > 1 else "  every census texture got a row")
     for rule in rules:
         print("  rule %-28s matched %5d textures" % (rule.ident, rule.matched))

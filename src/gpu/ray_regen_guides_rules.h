@@ -247,7 +247,7 @@ struct BouncePush {
   float tan_x, tan_y, prev_tan_x, prev_tan_y;
   float motion[12];
   float jitter[2];
-  uint32_t have_motion, padding;
+  uint32_t have_motion, pbr;
 };
 static_assert(sizeof(BouncePush) == 128);
 

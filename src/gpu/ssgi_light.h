@@ -217,6 +217,7 @@ struct ApplyIn {
   float strength = 1.0f;
   float vehicle = 0.0f;  // the share of the pixel's depth neighbourhood that is a vehicle (0: the world)
   float fade = 1.0f;     // the distance fade, 1 near
+  float diffuse_share = 1.0f;  // PBR level 1C: the share of the pixel's colour that takes incoming diffuse light (pbr_screen::DiffuseShare: 0 for a metal; 1 without the model)
   float limit = 2.5f;    // the most the bounce may add, in multiples of the pixel's colour
   float cap = 2.0f;      // the cap multiple (the ceiling is cap times the frame's light)
 };
@@ -230,7 +231,7 @@ inline float LightT(const ApplyIn& in) {
 inline Rgb BounceFactor(const ApplyIn& in) {
   const float luma_c = Luma(in.colour);
   const float surface = 1.0f - Saturate(in.source);
-  const float scale = StrengthFor(in.strength, in.vehicle) * in.fade * surface / std::max(LightT(in), luma_c);
+  const float scale = StrengthFor(in.strength, in.vehicle) * in.fade * surface * in.diffuse_share / std::max(LightT(in), luma_c);
   Rgb bounce = Scaled(in.bounce_radiance, scale);
   // The gain limit.
   const float peak = MaxChannel(bounce);

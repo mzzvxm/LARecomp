@@ -21,6 +21,7 @@
 #include "device.h"
 #include "light_manager.h"
 #include "mc_engine/cinematic/capture_mode.h"
+#include "pbr_rt_hit_switch.h"
 #include "rt_emitters_rules.h"
 #include "rt_scene_service.h"
 #include "screen_shared.h"
@@ -402,6 +403,7 @@ bool RtWorldFrame::OnTrigger(uint32_t slot_index) {
   hit.tuning.ambient = float(larecomp::settings::mcla_gpu_car_rt_hit_ambient.Get());
   hit.tuning.spec = float(larecomp::settings::mcla_gpu_car_rt_hit_spec.Get());
   hit.tuning.gain = 1.0f;  // the city's gains are per class (the rows' gains), not this one
+  hit.tuning.pbr = pbr_rt::HitShadingEnabled();  // PBR 1B: the hit shading through the shared physically based model (the frame's kFramePbr; pbr_rt_hit_switch.h)
   hit.shadow_reach = rt_hit::kSunReach;
   hit.cascades = cascades_;
 

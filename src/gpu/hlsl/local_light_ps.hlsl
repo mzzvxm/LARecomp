@@ -374,9 +374,9 @@ float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, floa
 // What one light adds at a pixel p: the term, then (GB-NEON-BLEED) for a neon light on a pixel that takes the contact term (`contact`: a vehicle pixel, the term on) the contact term, then the shadows'
 // visibility (LpShadowed: the atlas, the ray traced channel, a street lamp's table). The w is 1 when the light adds anything (a light that does not is not in the sum: its own draw would have discarded the
 // pixel); the colour is negative for a street lamp the game lights (its shadowed share taken away).
-float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit) {
+float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit, LpMaterial mat) {
   const LlLight l = LlUnpack(LpLoadLight(index));
-  float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
+  float3 add = NgFinite3(LpLightAt(l, g, world, normal, albedo, lit, mat));   // added to the scene: a NaN or an infinity is none (nan_guard.hlsli)
   if (!any(add > 0.0f)) {
     return float4(0.0f, 0.0f, 0.0f, 0.0f);
   }
@@ -395,7 +395,7 @@ float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, flo
 // the lights marching for themselves made up to 20). Then, light by light as LpOneLight does: the term times the visibility (a light that is shut out is not in the sum), the shadow. The tube's lights
 // are neon lights, which have no views of the atlas; the shadow step is kept so that the function is right for any light of a draw. Never called with a draw of one or two lights (those march for
 // themselves, as before the cap) or with LP_PUSH_FULL_CONTACT.
-float4 LpCappedLights(uint first, uint count, uint reach_mask, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 albedo, float lit) {
+float4 LpCappedLights(uint first, uint count, uint reach_mask, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 albedo, float lit, LpMaterial mat) {
   LlLight l[4];
   float3 add[4];
   float strength[4];
@@ -405,7 +405,7 @@ float4 LpCappedLights(uint first, uint count, uint reach_mask, LpGlobals g, uint
     l[i] = (LlLight)0;
     if ((reach_mask & (1u << i)) != 0u) {
       l[i] = LlUnpack(LpLoadLight(first + i));
-      add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));   // (nan_guard.hlsli, as LpOneLight)
+      add[i] = NgFinite3(LpLightAt(l[i], g, world, normal, albedo, lit, mat));   // (nan_guard.hlsli, as LpOneLight)
       if (any(add[i] > 0.0f) && LpTakesContact(l[i], true)) {
         strength[i] = add[i].x + add[i].y + add[i].z;
       }
@@ -485,13 +485,16 @@ float4 main(float4 position : SV_Position) : SV_Target {
   }
   const uint flags = g_lights.Load(LP_OFF_COUNT + 4);
   bool vehicle = false;  // GB-NEON-BLEED: RT3's vehicle flag (a frame without RT3 says no)
+  // PBR level 1: what the surface is made of (RT3's smoothness, class and metal flag; a frame without RT3 gets a world surface of the default smoothness), and whether the model is on (LP_PUSH_NO_PBR)
+  LpMaterial mat = LpMakeMaterial(LP_DEFAULT_SMOOTHNESS, uint(LP_CLASS_DEFAULT), false, (g_push.info.w & uint(LP_PUSH_NO_PBR)) == 0u);
   if ((flags & LP_FLAG_MATERIAL) != 0u && g_push.slots.w != 0xFFFFFFFFu) {
-    const float2 rt3 = LoadPlane(g_push.slots.w, p).xy;
-    const uint surface_class = GbRt3Class(rt3);
+    const float3 rt3 = LoadPlane(g_push.slots.w, p).xyz;
+    const uint surface_class = GbRt3Class(rt3.xy);
     if (surface_class == uint(LP_CLASS_NONE) || surface_class == uint(LP_CLASS_EMISSIVE)) {
       LP_EMPTY;
     }
-    vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;
+    vehicle = (GbRt3Flags(rt3.xy) & uint(GB_FLAG_VEHICLE)) != 0u;
+    mat = LpMakeMaterial(GbRt3Smoothness(rt3.xy), surface_class, GbRt3MetalFlag(rt3), (g_push.info.w & uint(LP_PUSH_NO_PBR)) == 0u);
   }
 
   // The position, in the old order: after the planes.
@@ -510,7 +513,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
   float3 total = float3(0.0f, 0.0f, 0.0f);
   bool any_light = false;
   if (capped) {
-    const float4 tube = LpCappedLights(first, count, reach_mask, g, flags, p, world, normal, albedo, rt2.w);
+    const float4 tube = LpCappedLights(first, count, reach_mask, g, flags, p, world, normal, albedo, rt2.w, mat);
     total = tube.xyz;
     any_light = tube.w > 0.0f;
   } else {
@@ -518,7 +521,7 @@ float4 main(float4 position : SV_Position) : SV_Target {
       if ((reach_mask & (1u << i)) == 0u) {
         continue;
       }
-      const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w);
+      const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w, mat);
       if (one.w > 0.0f) {
         total += one.xyz;
         any_light = true;

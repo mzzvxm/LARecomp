@@ -19,13 +19,15 @@
 //   # a comment, also after a row
 //   @version 1                                  (optional; a file of another version is refused whole)
 //   <key> field=value field=value ...           one row per line, fields in any order, each at most once
-//   fields   class=<none|world|road|wetroad|sidewalk|terrain|lod|foliage|paint|chrome|metal|glass|skin|emissive|interior|water | 0..15>
+//   fields   class=<none|world|road|wetroad|sidewalk|terrain|lod|foliage|paint|chrome|metal|glass|skin|emissive|interior|water|garagefloor | 0..16>
 //            rough=<0..1>   perceptual roughness (1 = chalk, 0 = mirror; smoothness = 1 - rough; the word holds the smoothness, gbuffer_rules.h part 3)      smooth=<0..1> the same, as smoothness
-//            metal=<0..1>   the word's metalness byte (bits 24..31, gbuffer_rules.h kMaterialMetalShift): no plane carries it yet, so give a metal surface class=metal or class=chrome as well
+//            metal=<0..1>   the word's metalness byte (bits 24..31, gbuffer_rules.h kMaterialMetalShift). The ray traced consumers read the byte; the screen ones read the class and the metal flag
+//                           that a byte of 0.5 or more sets (perf/PBR.md 1.4), so give a metal surface class=metal or class=chrome as well, and a dielectric a class that is not one
 //            ssr=<0|1>      screen-space reflections eligible (the flag)
 //            lit=<0..1>     the lit weight (RT2.a): 0 = lights itself, the deferred lights add nothing
-// A field a row does not give keeps the draw's own value, with ONE exception: a row with class= and no rough= (or smooth=) takes the new class's default smoothness, and with no lit= its default
-// lit weight (a texture that says "this is glass" gets glass, not the shader family's number). A later row for the same key replaces the earlier (the files are read in order, the last wins).
+// A field a row does not give keeps the draw's own value, with ONE exception: a row with class= and no rough= (or smooth=) takes the new class's default smoothness, with no lit= its default
+// lit weight and with no metal= its default metalness (a texture that says "this is glass" gets glass, not the shader family's number: PBR-2, gbuffer_material.h DefaultMetal). A later row for the
+// same key replaces the earlier (the files are read in order, the last wins).
 // A draw whose family says class 0 ("no data": the groups the G-buffer never writes) is never changed by a row.
 //
 // THE FILES (TextureMaterials::Resolve): <shader pack folder>/mcla_gbuffer_texture_materials.txt (the generated table), <mods folder>/gbuffer_texture_materials.txt (the owner's overrides),
@@ -101,7 +103,7 @@ constexpr bool EqualsNoCase(std::string_view a, std::string_view b) {
   return true;
 }
 
-// A class by name (any case) or by its number 0..15.
+// A class by name (any case) or by its number 0..16.
 inline bool ParseSurfaceClass(std::string_view text, SurfaceClass* out) {
   for (size_t i = 0; i < std::size(kSurfaceClassNames); ++i) {
     if (EqualsNoCase(text, kSurfaceClassNames[i])) {
@@ -171,6 +173,7 @@ inline uint32_t ApplyTextureRow(uint32_t word, const TextureRow& row) {
     cls = row.cls & kClassMask;
     if ((row.fields & kRowSmooth) == 0) smooth = ToByte(DefaultSmoothness(SurfaceClass(cls)));
     if ((row.fields & kRowLit) == 0) lit = ToByte(DefaultLit(SurfaceClass(cls)));
+    if ((row.fields & kRowMetal) == 0) metal = ToByte(DefaultMetal(SurfaceClass(cls)));
   }
   if ((row.fields & kRowSmooth) != 0) smooth = row.smooth;
   if ((row.fields & kRowLit) != 0) lit = row.lit;
@@ -365,7 +368,7 @@ inline bool ParseRowFields(std::span<const std::string_view> tokens, TextureRow*
     if (EqualsNoCase(field, "class")) {
       SurfaceClass cls = SurfaceClass::kNone;
       if (!ParseSurfaceClass(value, &cls)) {
-        *why = "'" + std::string(value) + "' is not a class (none world road wetroad sidewalk terrain lod foliage paint chrome metal glass skin emissive interior water, or 0 to 15)";
+        *why = "'" + std::string(value) + "' is not a class (none world road wetroad sidewalk terrain lod foliage paint chrome metal glass skin emissive interior water garagefloor, or 0 to 16)";
         return false;
       }
       if (!once(kRowClass)) return false;
@@ -763,14 +766,18 @@ class TextureMaterials {
     uint64_t generation = 0;  // the registry of texture names it was worked out against (texture_names.h Generation)
     bool settled = false;     // the hash (when needed) was known: the answer stays until the table changes, and past the names' changes for kRefreshFrames
   };
+  static constexpr uint32_t kLayersUnset = 0xFFFFFFFFu;
   TextureTableFiles files_;
   TextureCensus census_;
   std::unordered_map<uint32_t, CacheEntry> cache_;
   uint64_t cache_generation_ = ~0ull;
   uint32_t cache_epoch_ = ~0u;
   uint64_t last_frame_ = ~0ull;
+  uint64_t layers_frame_ = ~0ull;
+  uint32_t layers_ = kLayersUnset;  // gbuffer_texture_rows.h kRowLayer*: where the rows are read from (the setting mcla_gpu_gbuffer_texture_rows, once a frame)
   bool initialized_ = false;
   bool census_on_ = false;
+  bool env_off_ = false;  // MCLA_GBUFFER_TEXTURE_MATERIALS=off: no row of any layer
 };
 
 // ---------------------------------------------------------------------------
@@ -778,13 +785,14 @@ class TextureMaterials {
 // ---------------------------------------------------------------------------
 
 // One line per shader, sorted by identity, the first of two with one identity winning: key (16 hex digits, the identity the census logs), stage (p or v), group, entry, the class and
-// flags and default smoothness and lit weight of the pixel shaders of known groups ('-' otherwise), and the gloss bank and register where the shader has one. Tab separated, with a header line.
+// flags and default smoothness and lit weight and metalness of the pixel shaders of known groups ('-' otherwise), and the gloss bank and register where the shader has one. Tab separated, with a
+// header line (the metal column is the last: a file of an older pack has none).
 inline std::string FormatShaderNamesTsv(std::span<const NamedShader> shaders) {
   std::vector<const NamedShader*> sorted;
   sorted.reserve(shaders.size());
   for (const NamedShader& shader : shaders) sorted.push_back(&shader);
   std::stable_sort(sorted.begin(), sorted.end(), [](const NamedShader* a, const NamedShader* b) { return a->key < b->key; });
-  std::string out = "key\tstage\tgroup\tentry\tclass\tflags\tsmooth\tlit\tgloss_bank\tgloss_reg\n";
+  std::string out = "key\tstage\tgroup\tentry\tclass\tflags\tsmooth\tlit\tgloss_bank\tgloss_reg\tmetal\n";
   uint64_t previous = 0;
   bool have_previous = false;
   for (const NamedShader* shader : sorted) {
@@ -796,6 +804,7 @@ inline std::string FormatShaderNamesTsv(std::span<const NamedShader> shaders) {
     std::string flags_text = "-";
     std::string smooth_text = "-";
     std::string lit_text = "-";
+    std::string metal_text = "-";
     if (shader->pixel) {
       const ShaderMaterial m = MaterialOfShaderName(shader->name);
       if (m.known) {
@@ -803,6 +812,7 @@ inline std::string FormatShaderNamesTsv(std::span<const NamedShader> shaders) {
         flags_text = std::to_string(m.flags & 7u);
         smooth_text = std::to_string(unsigned(ToByte(m.smoothness)));
         lit_text = std::to_string(unsigned(ToByte(m.lit)));
+        metal_text = std::to_string(unsigned(ToByte(m.metal)));
       }
     }
     std::string bank_text = "-";
@@ -812,7 +822,7 @@ inline std::string FormatShaderNamesTsv(std::span<const NamedShader> shaders) {
       reg_text = std::to_string(gloss->reg);
     }
     out += census_detail::Hex16(shader->key) + "\t" + (shader->pixel ? "p" : "v") + "\t" + std::string(split.group) + "\t" + std::string(split.entry.empty() ? std::string_view("-") : split.entry) + "\t" +
-           class_text + "\t" + flags_text + "\t" + smooth_text + "\t" + lit_text + "\t" + bank_text + "\t" + reg_text + "\n";
+           class_text + "\t" + flags_text + "\t" + smooth_text + "\t" + lit_text + "\t" + bank_text + "\t" + reg_text + "\t" + metal_text + "\n";
   }
   return out;
 }

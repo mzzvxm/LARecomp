@@ -7,19 +7,21 @@
 // shaderpack/variants/gbuffer_material_plane.h) put the word's bytes into RT3 as they are (a spec map's per-pixel factor on the smoothness is not done); the per-texture table (GB-F2) refines
 // the word per draw.
 //
-// Three tables, all keyed by the game's own names so that nothing here is game content beyond what the shader sources of this repo already name (variants/gbuffer.h):
+// The tables, all keyed by the game's own names so that nothing here is game content beyond what the shader sources of this repo already name (variants/gbuffer.h):
 //
 //   1. THE CLASS TABLE (kGroupRows): the shader group's name (the translator's `group__entry` file naming: xCityRoad, xCarPaint, xPed ...; every one of the 192 groups of
 //      the retail game has a row, none is left to a default) -> the surface class, the flags (SSR eligible, vehicle). Rules on the entry's name come on top (IsAuxiliaryEntry:
 //      the shadow, depth-prepass and occlusion passes are class 0; the interior light model's entry makes a plain world surface an interior one). Defaults per class
-//      (DefaultSmoothness, DefaultLit) give the rest of the word: the lit weight is 0 for the emissive classes and 1 elsewhere.
+//      (DefaultSmoothness, DefaultLit, DefaultMetal) give the rest of the word: the lit weight is 0 for the emissive classes and 1 elsewhere.
+//   1b. THE FAMILY TABLE (kFamilyRows, PBR-2): the groups whose smoothness or metalness is not their class's default (the tyres are rubber, the calipers painted, the rotors cast iron; a painted caliper is class paint):
+//      a group row beats the class default, the draw's own exponent beats both for the smoothness. DefaultMetal gives the metalness of a class (chrome and metal 1, the rest 0).
 //   2. THE GLOSS TABLE (kGlossRows): the 85 shaders that read the game's `SpecularExponent` as a constant, by name -> which constant bank holds it (the vertex shader's: the
 //      day city shaders are lit per vertex, so the exponent is in their VERTEX shader's bank; the pixel shader's: the night shaders and the props) and the register. The
 //      draw's own exponent (a number in the bank the draw is made with, c73 of VSCityDefaultDay, c101 of PSMultiLight ...) becomes the smoothness (gbuffer_rules.h part 3).
 //      Registers verified against the translator's HLSL by gbuffer_material_test.cpp (given the folder of translated shaders).
 //   3. THE TABLE FILE (mcla_gbuffer_materials.v1.bin): what the shader pack build writes beside the variant pack, because the runtime knows shaders by IDENTITY (a hash of the
-//      microcode) and the names are only known while the pack is built from the player's own game files: one 16 byte record per shader (class, flags, default smoothness,
-//      lit weight, gloss bank and register, the slot of the texture a per-texture row keys: gbuffer_materials.h) sorted by identity. The class and gloss tables above are compiled into the BUILDER; the renderer reads the file
+//      microcode) and the names are only known while the pack is built from the player's own game files: one 24 byte record per shader (class, flags, default smoothness,
+//      lit weight, gloss bank and register, the slot of the texture a per-texture row keys: gbuffer_materials.h, the metalness) sorted by identity. The class and gloss tables above are compiled into the BUILDER; the renderer reads the file
 //      (MaterialTable). A game build that is not the retail one (names unknown) gets few or no records, and its draws the default word: world class, smoothness 0, lit.
 //
 // Where the word is made: Scene::FillVariantBlock's G-buffer case, per draw, from the draw's pixel and vertex shader identities and its constant banks (MaterialTable::WordFor).
@@ -55,7 +57,9 @@ namespace mcla::gpu::gbuffer {
 // reader refuses a file with another number).
 // 2: the shader pack build also writes the shader names file (gbuffer_materials.h kShaderNamesFileName) beside the table, for GB-F2's census tool, and the table's records have the diffuse
 // slot (kMaterialTableVersion 2): a pack built with version 1 has neither.
-inline constexpr uint32_t kMaterialRulesVersion = 3;
+// 4 (PBR-2, perf/PBR.md section 2): every shader's record has a metalness byte (the class's DefaultMetal, or its group's FamilyRow) and the families have their own smoothness where the
+// class's does not fit them (the tyres, the brushed metals, the painted calipers ...): a pack built with version 2 has neither (kMaterialTableVersion 3).
+inline constexpr uint32_t kMaterialRulesVersion = 4;
 
 // ---------------------------------------------------------------------------
 // The defaults of a class
@@ -87,6 +91,33 @@ constexpr float DefaultSmoothness(SurfaceClass cls) {
 }
 // The lit weight (RT2.a): 0 for what lights itself (the deferred lights add nothing there), 1 elsewhere.
 constexpr float DefaultLit(SurfaceClass cls) { return cls == SurfaceClass::kEmissive ? 0.0f : 1.0f; }
+// The metalness of a pixel of a class (PBR-2: 0 dielectric .. 1 metal; the word's bits 24..31 hold it). Chrome and metal are metal, every other class a dielectric: car paint
+// is a clear coat over a dielectric base (a metallic flake's tint is PBR level 3's), glass, asphalt, concrete, rubber, skin and water are 0.04 reflectors. A class's FamilyRow (below)
+// or a texture's row (gbuffer_materials.h) says otherwise for a group or a texture that is not the class's typical surface (a grimy railing). A screen consumer reads only the class and the metal
+// flag (perf/PBR.md 1.4: the flag is the metalness byte >= 128), so a group that is not a metal has a class that is not one (the painted caliper is the paint class), not a class and a number.
+constexpr float DefaultMetal(SurfaceClass cls) {
+  switch (cls) {
+    case SurfaceClass::kNone: return 0.0f;
+    case SurfaceClass::kWorld: return 0.0f;
+    case SurfaceClass::kRoad: return 0.0f;
+    case SurfaceClass::kWetRoad: return 0.0f;
+    case SurfaceClass::kSidewalk: return 0.0f;
+    case SurfaceClass::kTerrain: return 0.0f;
+    case SurfaceClass::kLod: return 0.0f;
+    case SurfaceClass::kFoliage: return 0.0f;
+    case SurfaceClass::kPaint: return 0.0f;
+    case SurfaceClass::kChrome: return 1.0f;
+    case SurfaceClass::kMetal: return 1.0f;
+    case SurfaceClass::kGlass: return 0.0f;
+    case SurfaceClass::kSkin: return 0.0f;
+    case SurfaceClass::kEmissive: return 0.0f;
+    case SurfaceClass::kInterior: return 0.0f;
+    case SurfaceClass::kWater: return 0.0f;
+    case SurfaceClass::kGarageFloor: return 0.0f;
+    case SurfaceClass::kCount: break;
+  }
+  return 0.0f;
+}
 
 // ---------------------------------------------------------------------------
 // 1. The class table: by the shader's group name
@@ -182,17 +213,17 @@ inline constexpr GroupRow kGroupRows[] = {
     {"xCarPaintCustomizable", SurfaceClass::kPaint, kMaterialFlagVehicle},
     {"xCarPaintNormalMapped", SurfaceClass::kPaint, kMaterialFlagVehicle},
     {"xCarbonFiber", SurfaceClass::kPaint, kMaterialFlagVehicle},
+    {"xbrakecaliper", SurfaceClass::kPaint, kMaterialFlagVehicle},  // painted dielectric; CHECK: wheel close-ups on both graphics APIs
     // chrome, rims and bright trim (F0 = albedo; the game's environment reflections stay: no SSR)
     {"xBumpedAlphaChrome", SurfaceClass::kChrome, kMaterialFlagVehicle},
     {"xChrome", SurfaceClass::kChrome, kMaterialFlagVehicle},
     {"xRimBadge", SurfaceClass::kChrome, kMaterialFlagVehicle},
     {"xRimMain", SurfaceClass::kChrome, kMaterialFlagVehicle},
     {"xRimNormalMapped", SurfaceClass::kChrome, kMaterialFlagVehicle},
-    // brushed and billet metal, rotors, calipers
+    // brushed and billet metal, rotors
     {"xAnisotropicBilletMetal", SurfaceClass::kMetal, kMaterialFlagVehicle},
     {"xBrushedMetal", SurfaceClass::kMetal, kMaterialFlagVehicle},
     {"xBumpedBrushedMetal", SurfaceClass::kMetal, kMaterialFlagVehicle},
-    {"xbrakecaliper", SurfaceClass::kMetal, kMaterialFlagVehicle},
     {"xWheelBrakeRotor", SurfaceClass::kMetal, kMaterialFlagVehicle},
     // car glass and the dark glass drawn opaque
     {"xAmbientCarGlass", SurfaceClass::kGlass, kMaterialFlagVehicle},
@@ -331,6 +362,67 @@ inline const GroupRow* FindGroupRow(std::string_view group) {
   return nullptr;
 }
 
+// ---------------------------------------------------------------------------
+// 1b. The family table (PBR-2): the groups whose smoothness or metalness is not their class's default
+// ---------------------------------------------------------------------------
+
+// A class is a coarse family (kMetal holds a polished rotor and a rusty railing, kWorld a tyre and a plaster wall); the groups that the class's numbers do not suit get a row here. A group
+// with no row has its class's DefaultSmoothness / DefaultMetal (or, for the smoothness, the draw's own SpecularExponent where the gloss table has the shader). The numbers are the first
+// reading of what each part is made of, read from the shader groups' names and the car shaders' own gloss constants (car_rt_material_rules.h: chrome .9, brushed .7, rotor .5); the
+// census and the pictures refine them (CHECK). Sorted by group name (byte order). kClassDefault: take the class's number.
+inline constexpr float kClassDefault = -1.0f;
+struct FamilyRow {
+  std::string_view group;
+  float smoothness = kClassDefault;  // perceptual smoothness, gbuffer_rules.h part 3 (0.08 is a roughness of 0.92: rubber)
+  float metal = kClassDefault;       // 0 dielectric .. 1 metal
+};
+inline constexpr FamilyRow kFamilyRows[] = {
+    // cars: tyres, matte parts, plastics, trim
+    {"xAmbientBlackMatte", 0.08f, kClassDefault},       // a traffic car's matte black trim
+    {"xAmbientTire", 0.08f, kClassDefault},             // rubber
+    {"xAnisotropicBilletMetal", 0.78f, kClassDefault},  // machined billet: bright, tight
+    {"xBlackOpaqueGlass", 0.90f, kClassDefault},        // the dark glass drawn opaque: a little less sharp than a window
+    {"xBrushedMetal", 0.55f, kClassDefault},            // brushed: a stretched lobe
+    {"xBumpedBrushedMetal", 0.60f, kClassDefault},
+    {"xCarbonFiber", 0.75f, kClassDefault},             // clear-coated weave: the paint class, a dielectric
+    {"xCityGrimeMetal", 0.55f, 0.75f},                  // rails, grates: metal under dirt
+    {"xCityGrimeMetalTint", 0.55f, 0.60f},              // ... and painted ones
+    {"xCityTunnelTile", 0.55f, kClassDefault},          // glazed tile
+    {"xEngineBay", 0.20f, kClassDefault},
+    {"xGrill", 0.40f, kClassDefault},
+    {"xGrillOpaque", 0.40f, kClassDefault},
+    {"xInteriorTrim", 0.25f, kClassDefault},
+    {"xInteriorTrimAlpha", 0.25f, kClassDefault},
+    {"xLicensePlate", 0.50f, kClassDefault},
+    {"xPropBrokenGlass", 0.80f, kClassDefault},         // cracked and dirty: not a mirror
+    {"xPropMetal", kClassDefault, 0.90f},               // street furniture: mostly bare, a little rust and paint
+    {"xRimBadge", 0.80f, kClassDefault},                // the rim's emblem
+    {"xRimMain", 0.85f, kClassDefault},                 // polished alloy
+    {"xRimNormalMapped", 0.85f, kClassDefault},
+    {"xTexturedPlastic", 0.35f, kClassDefault},
+    {"xUnderbody", 0.08f, kClassDefault},               // dirt and undercoat
+    {"xWheelBrakeRotor", 0.45f, kClassDefault},         // cast iron with a polished face
+    {"xWheelRubber", 0.08f, kClassDefault},             // the tyre
+    {"xblackmatte", 0.08f, kClassDefault},
+    {"xbrakecaliper", 0.60f, kClassDefault},            // painted: the paint class's metalness (0), a little rougher than a clear coat
+};
+inline constexpr size_t kFamilyRowCount = sizeof(kFamilyRows) / sizeof(kFamilyRows[0]);
+
+// Whether the rows are in strictly increasing order of group (what FindFamilyRow's binary search needs; gbuffer_material_test.cpp asserts it).
+constexpr bool FamilyRowsSorted() {
+  for (size_t i = 1; i < kFamilyRowCount; ++i) {
+    if (!(kFamilyRows[i - 1].group < kFamilyRows[i].group)) return false;
+  }
+  return true;
+}
+static_assert(FamilyRowsSorted(), "kFamilyRows is sorted by group");
+
+inline const FamilyRow* FindFamilyRow(std::string_view group) {
+  const FamilyRow* end = kFamilyRows + kFamilyRowCount;
+  const FamilyRow* at = std::lower_bound(kFamilyRows, end, group, [](const FamilyRow& row, std::string_view key) { return row.group < key; });
+  return at != end && at->group == group ? at : nullptr;
+}
+
 // "group__entry" as the translator names a shader (the first "__": the groups have single underscores only, xCharacter_skin_arm__PS_HighQualitySkin); a name without one is
 // all group ("unnamed_<identity>", a container that carried no .updb path).
 struct ShaderName {
@@ -363,8 +455,9 @@ struct ShaderMaterial {
   bool known = false;  // the group has a row (false: another game build, a mod, an "unnamed" container)
   SurfaceClass cls = SurfaceClass::kNone;
   uint32_t flags = 0;
-  float smoothness = 0.0f;  // the class default
+  float smoothness = 0.0f;  // the group's FamilyRow, else the class default
   float lit = 1.0f;
+  float metal = 0.0f;  // the group's FamilyRow, else the class's DefaultMetal
 };
 constexpr ShaderMaterial MaterialOfShaderName(std::string_view name) {
   ShaderMaterial m;
@@ -388,6 +481,15 @@ constexpr ShaderMaterial MaterialOfShaderName(std::string_view name) {
   }
   m.smoothness = DefaultSmoothness(m.cls);
   m.lit = DefaultLit(m.cls);
+  m.metal = DefaultMetal(m.cls);
+  if (m.cls != SurfaceClass::kNone) {  // the passes the G-buffer never writes have no material to refine
+    for (const FamilyRow& family : kFamilyRows) {
+      if (family.group != split.group) continue;
+      if (family.smoothness >= 0.0f) m.smoothness = family.smoothness;
+      if (family.metal >= 0.0f) m.metal = family.metal;
+      break;
+    }
+  }
   return m;
 }
 
@@ -614,16 +716,17 @@ inline uint8_t FindDiffuseSlot(std::string_view name) {
 // ---------------------------------------------------------------------------
 
 inline constexpr char kMaterialTableMagic[4] = {'M', 'S', 'G', 'M'};
-inline constexpr uint32_t kMaterialTableVersion = 2;  // the file's layout (2: byte 15 of a record is the diffuse slot, the gloss register is one byte)
-inline constexpr const char* kMaterialTableFileName = "mcla_gbuffer_materials.v2.bin";
+inline constexpr uint32_t kMaterialTableVersion = 3;  // the file's layout (2: byte 15 of a record is the diffuse slot, the gloss register is one byte; 3: 24 byte records with the metalness byte)
+inline constexpr const char* kMaterialTableFileName = "mcla_gbuffer_materials.v3.bin";
 inline constexpr uint32_t kMaterialTableHeaderBytes = 32;
-inline constexpr uint32_t kMaterialTableEntryBytes = 16;
+inline constexpr uint32_t kMaterialTableEntryBytes = 24;
 inline constexpr uint32_t kMaterialBankRegisters = 256;  // a constant bank is 256 registers (guest::kConstantBankBytes / 16)
 
 //   header (32 bytes): magic "MSGM" | version u32 | entry count u32 | rules version u32 (kMaterialRulesVersion) | 16 reserved (0)
-//   entries (16 bytes, sorted by key, strictly increasing, little endian):
-//     key u64 | stage u8 ('p' or 'v') | class u8 | flags u8 (kMaterialFlag*, 3 bits) | smoothness u8 (the class default, unorm8) | lit u8 (unorm8) |
-//     gloss bank u8 (GlossBank) | gloss register u8 (0 with no bank) | diffuse slot u8 (0..31, kNoDiffuseSlot; 255 in a vertex shader's)
+//   entries (24 bytes, sorted by key, strictly increasing, little endian):
+//     key u64 | stage u8 ('p' or 'v') | class u8 | flags u8 (kMaterialFlag*, 3 bits) | smoothness u8 (the family's or the class default, unorm8) | lit u8 (unorm8) |
+//     gloss bank u8 (GlossBank) | gloss register u8 (0 with no bank) | diffuse slot u8 (0..31, kNoDiffuseSlot; 255 in a vertex shader's) | metalness u8 (unorm8; 0 in a vertex
+//     shader's) | 7 reserved bytes (0: a reader refuses a record that has any set, so a later layout cannot be misread as this one)
 //   A pixel shader's record is its class and defaults and, when it reads SpecularExponent, the bank and register, and the fetch slot of its primary texture; a vertex shader's has a bank and
 //   register only (class 0).
 struct MaterialRecord {
@@ -636,6 +739,7 @@ struct MaterialRecord {
   GlossBank gloss_bank = GlossBank::kNone;
   uint16_t gloss_reg = 0;
   uint8_t diffuse_slot = kNoDiffuseSlot;  // pixel shaders: the fetch slot of the texture a per-texture row is keyed by (FindDiffuseSlot)
+  uint8_t metal = 0;                      // pixel shaders: the metalness of the family (ShaderMaterial::metal), unorm8
 };
 
 // A shader of the game as the builder sees it.
@@ -666,6 +770,7 @@ inline std::vector<MaterialRecord> BuildMaterialRecords(std::span<const NamedSha
       record.smoothness = ToByte(m.smoothness);
       record.lit = ToByte(m.lit);
       record.diffuse_slot = FindDiffuseSlot(shader.name);
+      record.metal = ToByte(m.metal);
     } else if (gloss == nullptr) {
       continue;
     }
@@ -703,7 +808,7 @@ inline bool LayOutMaterialTable(std::span<const MaterialRecord> records, std::ve
       return false;
     }
     if (uint32_t(r.cls) > kClassMask || r.flags > 7 || uint32_t(r.gloss_bank) > uint32_t(GlossBank::kPixel) || r.gloss_reg >= kMaterialBankRegisters ||
-        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (r.diffuse_slot >= 32 && r.diffuse_slot != kNoDiffuseSlot)) {
+        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (r.diffuse_slot >= 32 && r.diffuse_slot != kNoDiffuseSlot) || (!r.pixel && r.metal != 0)) {
       *error = "a material record has a field out of range";
       return false;
     }
@@ -725,6 +830,8 @@ inline bool LayOutMaterialTable(std::span<const MaterialRecord> records, std::ve
     out->push_back(uint8_t(r.gloss_bank));
     out->push_back(uint8_t(r.gloss_reg));
     out->push_back(r.diffuse_slot);
+    out->push_back(r.metal);
+    for (int i = 0; i < 7; ++i) out->push_back(0);
   }
   return true;
 }
@@ -770,8 +877,12 @@ inline bool ParseMaterialTable(std::span<const uint8_t> bytes, std::vector<Mater
     r.gloss_bank = GlossBank(p[13]);
     r.gloss_reg = p[14];
     r.diffuse_slot = p[15];
+    r.metal = p[16];
+    bool reserved_clear = true;
+    for (int reserved = 17; reserved < int(kMaterialTableEntryBytes); ++reserved) reserved_clear = reserved_clear && p[reserved] == 0;
     if (uint32_t(r.cls) > kClassMask || r.flags > 7 || p[13] > uint8_t(GlossBank::kPixel) || r.gloss_reg >= kMaterialBankRegisters ||
-        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (r.diffuse_slot >= 32 && r.diffuse_slot != kNoDiffuseSlot) || (i > 0 && !(out->back().key < r.key))) {
+        (r.gloss_bank == GlossBank::kNone && r.gloss_reg != 0) || (r.diffuse_slot >= 32 && r.diffuse_slot != kNoDiffuseSlot) || (!r.pixel && r.metal != 0) || !reserved_clear ||
+        (i > 0 && !(out->back().key < r.key))) {
       *why = "an entry is out of range or out of order";
       out->clear();
       return false;
@@ -874,7 +985,7 @@ class MaterialTable {
     // depend on the road wetness ramp or a dim draw's low specular power.
     if (ps->cls == SurfaceClass::kGarageFloor) smoothness = std::max(smoothness, default_smoothness);
     if (!from_gloss) ++stats_.class_default;
-    return MaterialWord(smoothness, uint32_t(ps->cls), uint32_t(ps->flags) | alpha_flag, float(ps->lit) / 255.0f);
+    return MaterialWordWithMetalByte(MaterialWord(smoothness, uint32_t(ps->cls), uint32_t(ps->flags) | alpha_flag, float(ps->lit) / 255.0f), ps->metal);
   }
 
  private:

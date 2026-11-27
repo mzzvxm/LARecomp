@@ -735,6 +735,14 @@ void TestMaterials() {
     const ShaderNames tint = MakeNames("CityGrimeMetalTint", "CityGrimeMetalTint", {Vec("SpecularExponent", 12.0f), Vec("DiffuseColor", 0.329f, 0.5f, 5.0f, 1.0f)});
     const MaterialDef t = MaterialFromShader(&tint, MaterialClass::kSolid, nullptr);
     CHECK(t.flat_colour && t.texture.empty() && Near(t.tint[0], 0.329f, 1e-6f) && Near(t.tint[2], kHitRgb10Max, 1e-6f));  // the tint is clamped into the record's range
+    // PBR-2: the word's metal byte is the group's (the family row of gbuffer_material.h, else the class's), the family's smoothness is the fallback of the exponent
+    CHECK(WordMetal(t.word) == uint32_t(gb::ToByte(0.60f)) && WordMetal(def.word) == 0);  // painted metal; asphalt is a dielectric
+    const ShaderNames bare = MakeNames("PropMetal", "PropMetal", {Tex("DiffuseSampler", "p.dds")});
+    const MaterialDef b = MaterialFromShader(&bare, MaterialClass::kSolid, nullptr);
+    CHECK(WordClass(b.word) == uint32_t(gb::SurfaceClass::kMetal) && WordMetal(b.word) == uint32_t(gb::ToByte(0.90f)) && WordSmoothness(b.word) == uint32_t(gb::ToByte(gb::DefaultSmoothness(gb::SurfaceClass::kMetal))));
+    const ShaderNames tile = MakeNames("CityTunnelTile", "CityTunnelTile", {Tex("DiffuseSampler", "t.dds")});
+    const MaterialDef tl = MaterialFromShader(&tile, MaterialClass::kSolid, nullptr);
+    CHECK(WordSmoothness(tl.word) == uint32_t(gb::ToByte(0.55f)) && WordMetal(tl.word) == 0);  // the tile group's own smoothness where there is no exponent
   }
   // a glowing material: class emissive, lit weight 0, the group's intensity; a window has its glass colour; the terrain's texture is its A layer
   {
@@ -1335,11 +1343,14 @@ void TestBuilder() {
     c = CheckCityHitPack(changed);
     CHECK(!c.current && c.why.find("texture set") != std::string::npos);
     changed = hit;
-    const fs::path rows_file = g_scratch / "rows2.txt";
+    const fs::path pack_folder = changed.base.out_dir.parent_path();
+    const fs::path rows_file = pack_folder / gb::kTextureTableFileName;
     { std::ofstream(rows_file) << "@version 1\n*/known_road class=metal\n"; }
-    changed.texture_rows = {rows_file};
+    changed.texture_rows = gb::TextureTableSources(pack_folder, {}, "");
     c = CheckCityHitPack(changed);
     CHECK(!c.current && c.why.find("rows") != std::string::npos);
+    changed.texture_rows = gb::TextureTableSources(pack_folder, {}, "off");
+    CHECK(CheckCityHitPack(changed).current);
     Stamp stamp;
     CHECK(Stamp::Read(request.out_dir / kHitStampFileName, &stamp, &error));
     stamp.Set("hit_builder_version", uint64_t(kHitBuilderVersion + 1));

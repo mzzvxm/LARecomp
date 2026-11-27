@@ -203,7 +203,7 @@ SsrRtReceiver SsrRtReceiverAt(int2 pix) {
   r.pc = pc;
   r.n = SsrReceiverNormal(pix, texel, surface.cls, pc, to_camera);
   r.to_camera = to_camera;
-  r.alpha = SsrAlphaOfSmooth(smoothness);
+  r.alpha = SsrAlpha(smoothness, SsrPbr());
   r.smoothness = smoothness;
   r.cls = surface.cls;
   r.texel = texel;

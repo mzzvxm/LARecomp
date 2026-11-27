@@ -410,13 +410,13 @@ void TextChecks(const std::string& dir) {
 
   // the shader: the include, the rows after the apply's 9, the material slot in the last word, the term before the add and before the debug views
   Check(Has(ps, "#include \"gi_cabin_common.hlsli\"") && Has(ps, "return GiaRowFloats(GIA_ROWS + i);") && Has(ps, "return g_push.info.w >> GIC_MATERIAL_SLOT_SHIFT;"), "SHADER: the cabin's rows follow the apply's GIA_ROWS and the material slot is the push's last word's upper half");
-  const size_t at_gate = At(ps, "if (cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT)");
-  const size_t at_term = At(ps, "cabin = GicShare(cabinA, GiaCabinRow(1u), GiaReceiverPosition(pixel, t, fr), GbRt3Class(rt3), GbRt3Flags(rt3));");
+  const size_t at_gate = At(ps, "const bool cabinActive = cabinA.w < 1.0f && GiaMaterialSlot() != GIC_NO_MATERIAL_SLOT;");
+  const size_t at_term = At(ps, "cabin = GicShare(cabinA, GiaCabinRow(1u), receiver, GbRt3Class(rt3.xy), GbRt3Flags(rt3.xy));");
   const size_t at_add = At(ps, "GiaBounceAdd(albedo, rt2.w, eNet, fr.strength, fr.fieldShare * cabin, vehicle, aoTerm, fr.ambient, fr.sunLuma, nDotL, fr.cap)");
   const size_t at_view9 = At(ps, "if (view == 9u)");
   Check(at_gate != std::string::npos && at_term != std::string::npos && at_add != std::string::npos && at_view9 != std::string::npos && at_gate < at_term && at_term < at_add && at_add < at_view9 &&
-            Has(ps, "float cabin = 1.0f;") && Has(ps, "float2 rt3 = GiaLoadPlane(GiaMaterialSlot(), pixel).xy;"),
-        "SHADER: a frame with no rule reads nothing (share 1: the gate), the term multiplies the field's share in the add, and the debug view 9 shows it");
+            Has(ps, "float cabin = 1.0f;") && Has(ps, "const float3 rt3 = GiaLoadPlane(GiaMaterialSlot(), pixel).xyz;"),
+        "SHADER: a frame with no cabin rule keeps share 1 and skips GicShare; the active term scales the field before debug view 9");
   Check(Count(ps, "GicShare(") == 1, "SHADER: one place applies the term (the lookup pass, the views of the field itself and the per-pixel pass are untouched)");
 
   // the host
@@ -429,7 +429,7 @@ void TextChecks(const std::string& dir) {
             Has(cpp, "interior_camera::ApplyGiShield(cockpit_only, CurrentRenderedCameraRig())) {") && Has(cpp, "if (car.valid) {") &&
             Has(cpp, "cabin = gi_cabin::MakeRows(true, fr.position, car.bounds_valid, car.bounds_min, car.bounds_max, 1.0f);") && Has(cpp, "material_slot = gb.slot[gbuffer::kPlaneMaterial];"),
         "HOST: the rule needs the setting, the car's frame with its box and the material plane; the eye is the camera the apply uses");
-  Check(Has(cpp, "gi_cabin::PackMaterialSlot(ga::PackInfoW(") && Has(cpp, "cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot"), "HOST: the slot is in the push block only where a rule is");
+  Check(Has(cpp, "gi_cabin::PackMaterialSlot(ga::PackInfoW(flags, view_), rt3_slot)") && Has(cpp, "pbr ? gb.slot[gbuffer::kPlaneMaterial] : (cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot)"), "HOST: cabin and PBR share the material slot");
   Check(Has(hdr, "void SetCarFrame(CarFrame* car_frame) { car_frame_ = car_frame; }") && Has(hdr, "class CarFrame;") && Has(hdr, "bool cabin_on_ = true;"), "HOST: the header has the owner and the switch");
   const size_t at_car_init = At(renderer, "car_frame_.Initialize(guest_memory_);");
   const size_t at_set = At(renderer, "gi_apply_.SetCarFrame(&car_frame_);");

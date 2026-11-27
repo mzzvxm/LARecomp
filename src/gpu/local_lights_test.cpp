@@ -24,31 +24,15 @@
 #include <vector>
 
 #include "local_lights_rules.h"
+#include "gbuffer_material.h"
 #include "local_lights_sources.h"
 #include "mod_light_source.h"
 
 // ---------------------------------------------------------------------------
 // the .hlsli as C++: a shim of what the files use, in a namespace of its own so that the standard library's abs, sqrt ... are not in the way
 // ---------------------------------------------------------------------------
+#include "hlsl_cpp_shim.h"  // the shared shim (PBR level 1: hlsl/pbr_brdf.hlsli, which local_light.hlsli includes, needs normalize, reflect, lerp, exp2, float2 ...)
 namespace hlsl_shim {
-typedef unsigned int uint;
-struct float3 {
-  float x = 0, y = 0, z = 0;
-  float3() = default;
-  float3(float a, float b, float c) : x(a), y(b), z(c) {}
-};
-struct float4 {
-  float x = 0, y = 0, z = 0, w = 0;
-  float4() = default;
-  float4(float a, float b, float c, float d) : x(a), y(b), z(c), w(d) {}
-};
-inline float3 operator+(float3 a, float3 b) { return float3(a.x + b.x, a.y + b.y, a.z + b.z); }
-inline float3 operator-(float3 a, float3 b) { return float3(a.x - b.x, a.y - b.y, a.z - b.z); }
-inline float3 operator*(float3 a, float s) { return float3(a.x * s, a.y * s, a.z * s); }
-inline float3 operator*(float3 a, float3 b) { return float3(a.x * b.x, a.y * b.y, a.z * b.z); }
-inline float sqrt(float v) { return std::sqrt(v); }
-inline float saturate(float v) { return std::min(std::max(v, 0.0f), 1.0f); }
-inline float dot(float3 a, float3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
 #include "hlsl/local_light.hlsli"
 }  // namespace hlsl_shim
 
@@ -259,6 +243,11 @@ void LayoutChecks(const std::string& hlsli) {
   want("LP_PUSH_FULL_CONTACT", lp::kPushFullContact);
   want("LP_PUSH_NO_CONTACT", lp::kPushNoContact);
   want("LP_PUSH_FAR_DEPTH_SHIFT", lp::kPushFarDepthShift);
+  want("LP_PUSH_NO_PBR", lp::kPushNoPbr);  // PBR level 1: the first model's light back (mcla_gpu_pbr off)
+  want("LP_CLASS_DEFAULT", lp::kDefaultClass);
+  Check(lp::kPushNoPbr == 8u && Has(hlsli, "#define LP_DEFAULT_SMOOTHNESS 0.15f") && lp::kDefaultSmoothness == 0.15f && lp::kDefaultSmoothness == mcla::gpu::gbuffer::DefaultSmoothness(mcla::gpu::gbuffer::SurfaceClass::kWorld) &&
+            lp::kDefaultClass == uint32_t(mcla::gpu::gbuffer::SurfaceClass::kWorld),
+        "PBR: the push flag is bit 3 and a frame without RT3 gets the world class's default smoothness");
   want("LP_CONTACT_MARCHES", lp::kContactMarches);
   Check(lp::kMaxDrawLights == neon_light::kTubePoints && lp::kPushLateReach == 1u && lp::kPushFullContact == 2u && lp::kPushNoContact == 4u && lp::kCostOffMask == 7u && lp::kCostOffReachFirst == 1u &&
             lp::kCostOffMerge == 2u && lp::kCostOffContactCap == 4u && lp::kContactMarches == 2 && lp::kCostOffContactCap == (lp::kPushFullContact << 1),
@@ -1222,6 +1211,188 @@ void TwinChecks() {
 }
 
 // ---------------------------------------------------------------------------
+// PBR level 1: the model's light in the pass (hlsl LpMakeMaterial .. LpLightAt against local_lights_rules.h Material .. LightAt)
+// ---------------------------------------------------------------------------
+// The claims: the .hlsli and the twin agree on every light kind, surface and material (and on the degenerate ones: finite, no NaN); the model is off for the first model (a material with `on`
+// false) and for a lamp the game lights, which are then EXACTLY LpPixelLight; and the brightness stays near the first model's for the typical (rough, dielectric) surface, which is the calibration
+// the owner asked for: the picture changes in the highlight and the metals, not in the exposure.
+void PbrLightChecks() {
+  Lcg rng;
+  int finite_bad = 0, off_differs = 0, game_differs = 0, cases = 0, pbr_cases = 0, game_cases = 0;
+  double old_sum = 0, new_sum = 0, new_metal_sum = 0, old_metal_sum = 0;
+  for (int round = 0; round < 3000; ++round) {
+    float vi[16];
+    lp::Rows rows;
+    RandomPose(rng, vi, &rows);
+    lp::PassInputs in;
+    in.rows = rows;
+    in.tan_x = rng.Range(0.4f, 1.1f);
+    in.tan_y = in.tan_x * rng.Range(0.45f, 0.75f);
+    LinOf(0.1f, 10000.0f, in.lin);
+    in.width = rng.Below(2000) + 640;
+    in.height = rng.Below(1200) + 360;
+    in.units.night = rng.Range(0.0f, 1.0f);
+    in.units.gain = rng.Range(0.5f, 2.0f);
+    in.units.exposure = round % 2 == 0 ? 16.0f : rng.Range(0.5f, 20.0f);
+    in.units.occ[0] = rng.Range(-20.0f, 20.0f);
+    in.units.occ[1] = rng.Range(0.01f, 0.5f);
+    in.units.occ[2] = rng.Range(0.4f, 1.6f);
+    in.units.occ[3] = (round % 3) != 0 ? 1.0f : 0.0f;
+
+    // a light of each law and source, near the pixel so that most cases are lit
+    Light l;
+    const uint32_t kind = rng.Below(4);
+    if (kind == 0) {
+      l = HeadlightOf(1, 0.0f);
+      l.color[0] = rng.Range(0.2f, 1.5f); l.color[1] = rng.Range(0.2f, 1.5f); l.color[2] = rng.Range(0.2f, 1.5f);
+    } else {
+      const float pp[3] = {0.0f, 0.0f, 0.0f};
+      l = GameLamp(pp, rng.Range(15.0f, 100.0f), kind == 1);
+      l.source = kind == 3 ? LightSource::kNeon : (kind == 1 ? LightSource::kLamp : LightSource::kPolice);
+    }
+    // GameLamp() makes a light the GAME lights (kLightFlagGameLit); the lights the pass owns (a police bar, a neon point, a mod's lamp the grid does not light) are the same law without the flag
+    const bool game_lit = kind == 1 && rng.Next() < 0.5f;
+    if (game_lit) l.flags |= kLightFlagGameLit;
+    else if (kind != 0) l.flags &= ~kLightFlagGameLit;
+    const float t = rng.Range(1.0f, 60.0f);
+    float dir[3];
+    rng.Direction(dir);
+    const float px = float(rng.Below(in.width)) + 0.5f, py = float(rng.Below(in.height)) + 0.5f;
+    float wc[3];
+    lp::WorldPosition(rows, in.tan_x, in.tan_y, px, py, float(in.width), float(in.height), t, wc);
+    const float away = round % 23 == 0 ? 0.0f : rng.Range(0.5f, 14.0f);  // a light ON the pixel now and then
+    for (int i = 0; i < 3; ++i) l.pos[i] = wc[i] + dir[i] * away;
+    rng.Direction(l.dir);
+    if (kind == 1 || kind == 0) {  // aim the cone at the pixel half of the time so that it is lit
+      for (int i = 0; i < 3; ++i) l.dir[i] = (away > 0.0f && rng.Next() < 0.7f) ? -dir[i] : l.dir[i];
+    }
+    float n[3];
+    rng.Direction(n);
+    const float albedo[3] = {rng.Range(0.02f, 0.9f), rng.Range(0.02f, 0.9f), rng.Range(0.02f, 0.9f)};
+    const float lit = rng.Next() < 0.1f ? 0.0f : rng.Range(0.3f, 1.0f);
+    const float smoothness = rng.Next(), roughness_class = rng.Next();
+    const uint32_t surface_class = rng.Below(16);
+    const bool metal_flag = roughness_class < 0.15f;
+    const bool on = round % 7 != 0;
+
+    std::vector<uint8_t> bytes(lp::kBufferAlloc, 0);
+    lp::Selection s;
+    s.lights[0] = l;
+    s.count = 1;
+    lp::BuildBuffer(in, s, bytes.data());
+    const hlsl_shim::LpGlobals g = ShimGlobals(bytes.data());
+    const hlsl_shim::LlLight ul = hlsl_shim::LlUnpack(ShimRow(l));
+    const hlsl_shim::LpMaterial hm = hlsl_shim::LpMakeMaterial(smoothness, surface_class, metal_flag, on);
+    const lp::Material tm = lp::MakeMaterial(smoothness, surface_class, metal_flag, on);
+    CheckNear(hm.roughness, tm.roughness, 1e-6, "the material's roughness");
+    CheckNear(hm.metalness, tm.metalness, 1e-6, "the material's metalness");
+    CheckNear(hm.f0, tm.f0, 1e-7, "the material's F0");
+    Check((hm.on > 0.5f) == tm.on, "the material's switch");
+    const hlsl_shim::float3 hw(wc[0], wc[1], wc[2]), hn(n[0], n[1], n[2]), ha(albedo[0], albedo[1], albedo[2]);
+    const hlsl_shim::float3 got = hlsl_shim::LpLightAt(ul, g, hw, hn, ha, lit, hm);
+    float want[3];
+    lp::LightAt(l, in.units, rows.position, wc, n, albedo, lit, tm, want);
+    CheckRel(got.x, want[0], 2.0e-4, 1.0e-6, Num("the model's light, red (round %.0f)", round));
+    CheckRel(got.y, want[1], 2.0e-4, 1.0e-6, "the model's light, green");
+    CheckRel(got.z, want[2], 2.0e-4, 1.0e-6, "the model's light, blue");
+    if (!(std::isfinite(got.x) && std::isfinite(got.y) && std::isfinite(got.z)) || got.x < 0 || got.y < 0 || got.z < 0) ++finite_bad;
+    // the first model where the model is off, and for a lamp the game lights
+    const hlsl_shim::float3 old_light = hlsl_shim::LpPixelLight(ul, g, hw, hn, ha, lit);
+    if (on && !game_lit) ++pbr_cases;
+    if (on && game_lit) ++game_cases;
+    if (!on || game_lit) {
+      if (got.x != old_light.x || got.y != old_light.y || got.z != old_light.z) ++(game_lit && on ? game_differs : off_differs);
+    }
+    ++cases;
+  }
+  Check(pbr_cases > 800 && game_cases > 100, Num("the random lights cover the model (%.0f lights) and the game's lamps (%.0f)", pbr_cases, game_cases));
+  Check(cases == 3000 && finite_bad == 0, Num("every light is finite and not negative, the degenerate ones too (%.0f bad)", finite_bad));
+  Check(off_differs == 0, "mcla_gpu_pbr off is exactly the first model (LpPixelLight)");
+  Check(game_differs == 0, "a lamp the game lights is exactly the first model even with the model on (the pass only takes its shadowed share away)");
+
+  // THE CALIBRATION: a rough dielectric under a lamp or a headlight is the first model's brightness up to the (1 - F) split and a faint highlight; a metal has no diffuse light
+  Lcg r2;
+  r2.state = 91u;
+  double ratio_sum = 0, ratio_weight = 0, worst_low = 9, worst_high = 0, low_weight = 0;
+  int calib_cases = 0;
+  for (int round = 0; round < 6000; ++round) {
+    const bool headlight = round % 2 == 0;
+    Light l;
+    if (headlight) {
+      l = HeadlightOf(1, 0.0f);
+      l.pos[0] = 0.0f; l.pos[1] = 0.7f; l.pos[2] = 0.0f;
+    } else {
+      const float pp[3] = {0.0f, 6.0f, 0.0f};
+      l = GameLamp(pp, 55.0f, true);
+      l.source = LightSource::kLamp;
+      l.flags &= ~kLightFlagGameLit;  // a street lamp the PASS owns (the game's own are left alone: the checks above)
+    }
+    // a camera 1.2 m up, 4 to 25 m from the pixel, the pixel on the ground or a wall within the lamp's reach
+    lp::Rows rows;
+    const float az = r2.Range(0.0f, 6.2831853f), cam_dist = r2.Range(4.0f, 25.0f);
+    const float world[3] = {r2.Range(-8.0f, 8.0f), headlight ? r2.Range(0.0f, 1.0f) : 0.0f, headlight ? r2.Range(3.0f, 30.0f) : r2.Range(-8.0f, 8.0f)};
+    rows.position[0] = world[0] + cam_dist * std::cos(az);
+    rows.position[1] = 1.2f;
+    rows.position[2] = world[2] + cam_dist * std::sin(az);
+    if (headlight) {  // the beam along +z from the origin, at the ground
+      l.dir[0] = 0.0f; l.dir[1] = -0.05f; l.dir[2] = 1.0f;
+      const float len = std::sqrt(l.dir[0] * l.dir[0] + l.dir[1] * l.dir[1] + l.dir[2] * l.dir[2]);
+      for (int i = 0; i < 3; ++i) l.dir[i] /= len;
+    }
+    const float n[3] = {0.0f, 1.0f, 0.0f};
+    const float albedo[3] = {0.3f, 0.3f, 0.3f};
+    lp::Units u;
+    u.night = 1.0f; u.gain = 1.0f; u.exposure = 1.0f;
+    float old_light[3];
+    lp::PixelLight(l, u, world, n, albedo, 1.0f, old_light);
+    if (!(old_light[0] > 1.0e-4f)) continue;
+    const float roughness = r2.Range(0.6f, 1.0f);
+    const lp::Material mat = lp::MakeMaterial(1.0f - roughness, 1u, false, true);
+    float got[3], metal_got[3];
+    lp::LightAt(l, u, rows.position, world, n, albedo, 1.0f, mat, got);
+    const lp::Material metal = lp::MakeMaterial(1.0f - roughness, 10u, true, true);
+    lp::LightAt(l, u, rows.position, world, n, albedo, 1.0f, metal, metal_got);
+    const double ratio = double(got[0]) / old_light[0];
+    ratio_sum += ratio * old_light[0];
+    ratio_weight += old_light[0];
+    if (ratio < 0.85) low_weight += old_light[0];
+    worst_low = std::min(worst_low, ratio);
+    worst_high = std::max(worst_high, ratio);
+    old_sum += old_light[0];
+    new_sum += got[0];
+    old_metal_sum += old_light[0];
+    new_metal_sum += metal_got[0];
+    ++calib_cases;
+  }
+  std::printf("  calibration (rough dielectric, roughness 0.6 .. 1, lamp and headlight): new / old %.3f over %d pixels (single pixels %.2f .. %.2f; %.1f %% of the light is on pixels that lose over 15 %%); the same surface as a metal %.3f\n",
+              new_sum / old_sum, calib_cases, worst_low, worst_high, 100.0 * low_weight / ratio_weight, new_metal_sum / old_metal_sum);
+  Check(calib_cases > 1000, "enough lit pixels for the calibration");
+  Check(new_sum / old_sum > 0.95 && new_sum / old_sum < 1.20, "a rough dielectric keeps the first model's brightness (0.95 .. 1.20 over the lamp's and the headlight's pool)");
+  Check(low_weight / ratio_weight < 0.10, "... and under a tenth of the light is on pixels that lose more than 15 per cent of it (the (1 - F) split of a back-lit surface seen at a grazing angle)");
+  Check(new_metal_sum / old_metal_sum < new_sum / old_sum, "the same surface as a metal is darker off its highlight: no diffuse light");
+
+  // the headlight's wrap: a pixel that faces slightly away from the lamp still takes the wrapped diffuse light and no highlight (the highlight's N.L is the true one)
+  {
+    Light l = HeadlightOf(1, 0.0f);
+    l.pos[0] = 0.0f; l.pos[1] = 0.7f; l.pos[2] = 0.0f;
+    l.dir[0] = 0.0f; l.dir[1] = 0.0f; l.dir[2] = 1.0f;
+    const float world[3] = {0.0f, 0.7f, 8.0f};
+    const float n_away[3] = {0.0f, 0.0f, 1.0f};  // facing the same way as the beam: the light is behind the surface (N.L = -1): the wrap's 0.45 - 0.55 is 0
+    const float n_side[3] = {std::sqrt(1.0f - 0.25f), 0.0f, 0.5f};  // N.L = -0.5: wrap 0.175
+    lp::Units u;
+    const float albedo[3] = {0.5f, 0.5f, 0.5f};
+    const float cam[3] = {0.0f, 1.2f, -6.0f};
+    const lp::Material mat = lp::MakeMaterial(0.2f, 1u, false, true);
+    float a[3], b[3], oldb[3];
+    lp::LightAt(l, u, cam, world, n_away, albedo, 1.0f, mat, a);
+    lp::LightAt(l, u, cam, world, n_side, albedo, 1.0f, mat, b);
+    lp::PixelLight(l, u, world, n_side, albedo, 1.0f, oldb);
+    Check(a[0] == 0.0f, "a surface with the headlight behind it (wrap 0) takes nothing, as the first model");
+    Check(b[0] > 0.0f && oldb[0] > 0.0f && b[0] < oldb[0] * 1.001f && b[0] > oldb[0] * 0.8f, "a surface turned a little away keeps the headlight's wrapped diffuse light (the first model's, less the split), with no highlight");
+  }
+}
+
+// ---------------------------------------------------------------------------
 // GB-NEON-COST: the reach test before the planes, and one draw for a car's tube
 // ---------------------------------------------------------------------------
 // The claims, each held here to numbers:
@@ -1908,7 +2079,7 @@ void SourceChecks(const std::string& src) {
   Check(Has(ps, "uint4 slots;") && Has(ps, "uint4 info;") && Has(ps, "#include \"local_light.hlsli\""), "the shader's push block is two uint4 and it includes the twin");
   Check(Has(cpp, "push.slots[0] = summary.sample_slot;") && Has(cpp, "push.info[2] = gb.sample0;") && Has(cpp, "push.info[0] = draw.first;") && Has(cpp, "push.info[1] = draw.count;") &&
             Has(cpp, "push.info[3] = draw_flags | (use_far_depth ? ll::FarDepthBits(selection, draw, rows) : 0u);") &&
-            Has(cpp, "ll::kPushLateReach : 0u") && Has(cpp, "ll::kPushFullContact : 0u") && Has(cpp, "0u : ll::kPushNoContact"),
+            Has(cpp, "ll::kPushLateReach : 0u") && Has(cpp, "ll::kPushFullContact : 0u") && Has(cpp, "0u : ll::kPushNoContact") && Has(cpp, "pbr_on_ ? 0u : ll::kPushNoPbr"),
         "the push carries the draw's light range, host sample, reach and contact flags, and the optional far depth");
   Check(Has(ps, "float((g_push.info.w & ~LP_PUSH_REACH_MASK) >> LP_PUSH_FAR_DEPTH_SHIFT) * (1.0f / 16.0f)") && Has(ps, "far_depth > 0.0f && t > far_depth") &&
             Has(ps, "LpWorldAtDepth(g, p, 0.0f, world)"),
@@ -1917,6 +2088,14 @@ void SourceChecks(const std::string& src) {
             Has(ps, "mask |= LpReachBit(i, row0.xyz, row0.w, world);") &&
             Has(ps, "if ((reach_mask & (1u << i)) != 0u)") && Has(ps, "if ((reach_mask & (1u << i)) == 0u)"),
         "the grouped reach test drives both lighting paths, in original light order");
+  const std::string vpl = ReadFile(src + "/gpu/vpl.cpp");
+  const std::string vpl_shader = ReadFile(src + "/gpu/hlsl/vpl.hlsl");
+  Check(Has(cpp, "if (!pbr_on_ && gb.Has(gbuffer::kPlaneMaterial))") &&
+            Has(cpp, "composite->OnTrigger(summary, list, gbuffer_published, frame_slot, field_share, gi, &direct)") &&
+            Has(vpl, "in.right[3] = float(gb.slot[gbuffer::kPlaneMaterial] + 1u);") &&
+            Has(vpl_shader, "if (v.material_code != 0u)") &&
+            Has(vpl_shader, "albedo *= PbrScreenDiffuseShare(cls, GbRt3MetalFlag(material), GbRt3Smoothness(material.xy), nv);"),
+        "PBR preserves the indirect composite while its direct draws shade the full-size material");
   // GB-NEON-CONTACT: the setting is read live, with its A/B
   Check(Has(cpp, "const bool contact_on = st::mcla_gpu_neon_contact.Get();") && Has(cpp, "contact_on_ = contact_on;"), "the pass reads mcla_gpu_neon_contact live (the A/B of the contact term)");
   // GB-NEON-COST: the pass makes its draws from the plan (a car's tube is one) and reads the A/B's setting live
@@ -1933,7 +2112,7 @@ void SourceChecks(const std::string& src) {
     const size_t early = At(ps, "if (!LpAnyReaches(first, count, world)) {");
     const size_t planes = At(ps, "const float2 rt1 = LoadPlane(g_push.slots.y, p).xy;");
     const size_t late = At(ps, "if (!reach_first) {");
-    const size_t sum_at = At(ps, "const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w);");
+    const size_t sum_at = At(ps, "const float4 one = LpOneLight(first + i, g, flags, p, contact, world, normal, albedo, rt2.w, mat);");
     Check(main_at != std::string::npos && early != std::string::npos && planes != std::string::npos && late != std::string::npos && sum_at != std::string::npos && main_at < early && early < planes && planes < late &&
               late < sum_at,
           "main: the reach test (when first) comes before the planes' reads, the position after them in the old order, and the lights' sum after both");
@@ -2019,7 +2198,7 @@ void SourceChecks(const std::string& src) {
             Has(ps, "return g_textures[g_push.slots.x].Load(int3(px, py, 0)).r;"),
         "the quad's pixels are read at the guest's sample, as the pixel's own depth is (one reader: LpStoredDepth, which the contact term uses too)");
   const size_t one_light_at = At(ps, "float4 LpOneLight(");
-  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));");
+  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpLightAt(l, g, world, normal, albedo, lit, mat));");
   const size_t shadow_at = At(ps, "return LpShadowed(l, g, flags, p, world, normal, add);");
   Check(one_light_at != std::string::npos && lit_at != std::string::npos && shadow_at != std::string::npos && one_light_at < lit_at && lit_at < shadow_at && Has(ps, "float4 LpShadowed(LlLight l, LpGlobals g, uint flags, int2 p, float3 world, float3 normal, float3 add) {") &&
             Has(ps, "add *= LslLightLit("),
@@ -2318,10 +2497,10 @@ void ContactChecks(const std::string& src) {
   const std::string ps = ReadFile(src + "/gpu/hlsl/local_light_ps.hlsl");
   Check(Has(ps, "float LpStoredDepth(int px, int py)") && Has(ps, "g_textures[g_push.slots.x].Load(int3(px, py, 0)).r") && Has(ps, "g_textures_ms[g_push.slots.x].Load(int2(px, py), g_push.info.z).r"),
         "the shader defines the contact term's seam: the main depth plane at the guest's sample 0");
-  Check(Has(ps, "vehicle = (GbRt3Flags(rt3) & uint(GB_FLAG_VEHICLE)) != 0u;") && Has(ps, "bool vehicle = false;"), "the vehicle flag is RT3's, false where the frame has no RT3");
+  Check(Has(ps, "vehicle = (GbRt3Flags(rt3.xy) & uint(GB_FLAG_VEHICLE)) != 0u;") && Has(ps, "bool vehicle = false;"), "the vehicle flag is RT3's, false where the frame has no RT3");
   // (GB-NEON-COST: the lights' sum is LpOneLight; the contact term is its own step of one light, so a pixel the reach test discarded, and a light that adds nothing, take no read)
-  const size_t one_at = At(ps, "float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit) {");
-  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpPixelLight(l, g, world, normal, albedo, lit));");
+  const size_t one_at = At(ps, "float4 LpOneLight(uint index, LpGlobals g, uint flags, int2 p, bool contact, float3 world, float3 normal, float3 albedo, float lit, LpMaterial mat) {");
+  const size_t lit_at = At(ps, "float3 add = NgFinite3(LpLightAt(l, g, world, normal, albedo, lit, mat));");
   const size_t contact_at = At(ps, "if (LpTakesContact(l, contact)) {");
   const size_t shadow_at = At(ps, "return LpShadowed(l, g, flags, p, world, normal, add);");
   const size_t capped_at = At(ps, "float4 LpCappedLights(");
@@ -2330,10 +2509,10 @@ void ContactChecks(const std::string& src) {
   // GB-NEON-CONTACT: the term's switch and its cap in the shader: the push flags, the draw of three or four lights takes the capped path, every term is known before the first march, the marches are the
   // donors' (a light that is its own donor), the others copy, and the shadow runs after the visibility as in the single light's turn
   Check(Has(ps, "const bool contact = vehicle && (g_push.info.w & uint(LP_PUSH_NO_CONTACT)) == 0u;") &&
-            Has(ps, "const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;") && Has(ps, "if (capped) {\n    const float4 tube = LpCappedLights(first, count, reach_mask, g, flags, p, world, normal, albedo, rt2.w);"),
+            Has(ps, "const bool capped = contact && count > uint(LP_CONTACT_MARCHES) && (g_push.info.w & uint(LP_PUSH_FULL_CONTACT)) == 0u;") && Has(ps, "if (capped) {\n    const float4 tube = LpCappedLights(first, count, reach_mask, g, flags, p, world, normal, albedo, rt2.w, mat);"),
         "the shader: the contact term is the vehicle pixel's unless LP_PUSH_NO_CONTACT, and a draw of more than two lights takes the capped path unless LP_PUSH_FULL_CONTACT");
   {
-    const size_t terms = At(ps, "add[i] = NgFinite3(LpPixelLight(l[i], g, world, normal, albedo, lit));");
+    const size_t terms = At(ps, "add[i] = NgFinite3(LpLightAt(l[i], g, world, normal, albedo, lit, mat));");
     const size_t donors = At(ps, "const uint donors = LpContactDonors(strength[0], strength[1], strength[2], strength[3], count);");
     const size_t march = At(ps, "visibility[m] = LpContactVisibility(g, world, normal, l[m].pos);");
     const size_t copy = At(ps, "visibility[k] = visibility[(donors >> (4u * k)) & 3u];");
@@ -2855,6 +3034,7 @@ int main(int argc, char** argv) {
   ShadowPixelChecks();
   QuadNormalChecks();
   TwinChecks();
+  PbrLightChecks();
   CostChecks();
   SourceChecks(src);
   ContactChecks(src);

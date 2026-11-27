@@ -50,6 +50,7 @@
 #include "host_shaders.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "pbr_screen_switch.h"
 #include "split.h"
 #include "ssgi_level.h"
 #include "ssgi_light.h"
@@ -1253,7 +1254,9 @@ void AmbientOcclusion::BeginFrame(gbuffer::PauseFxView pause_fx) {
     // run. The setting is the A/B: off asks for nothing and the passes take the depth's normals, to the bit. Sticky in the G-buffer (it reads the wants at its next frame boundary).
     const bool normals_setting = larecomp::settings::mcla_gpu_ao_gbuffer_normals.Get();
     gbuffer_->Want(gbuffer::Consumer::kAmbientOcclusion, ao_gbuffer::PlanesWanted(normals_setting, mode_ != Mode::kOff || contact_mode_ != Mode::kOff));
-    gbuffer_->Want(gbuffer::Consumer::kBounceLight, ao_gbuffer::BouncePlanesWanted(normals_setting, gi_active_));
+    uint32_t bounce_planes = ao_gbuffer::BouncePlanesWanted(normals_setting, gi_active_);
+    if (gi_active_ && pbr_screen::Enabled()) bounce_planes |= gbuffer::PlaneBit(gbuffer::kPlaneMaterial);
+    gbuffer_->Want(gbuffer::Consumer::kBounceLight, bounce_planes);
     gbuffer_->WantPauseNormals(mode_ != Mode::kOff || contact_mode_ != Mode::kOff);
   }
   screen_wants_ = false;
@@ -3599,6 +3602,15 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
   // The game's car sun image, for the apply's vehicle pixels (contact_trace.h "a car's own sun visibility"): the image's slot and the lookup that takes a
   // view-space point to its place in it. A frame without the image (night, rain, 6 h, 18 h), without a pose or with the setting at 0 leaves
   // kNoSlot, and a vehicle's pixel takes a sun visibility of 1.
+  uint32_t material_code = 0;
+  if (plan.apply && plan.gi.apply && gi_bounce && gbuffer_ != nullptr && pbr_screen::Enabled()) {
+    const auto& frame = gbuffer_->frame();
+    if (frame.Has(gbuffer::kPlaneMaterial) && frame.width == plan.render[0] && frame.height == plan.render[1] &&
+        summary.source != nullptr && frame.host_samples == summary.source->host_samples && frame.sample0 == summary.host_sample &&
+        frame.slot[gbuffer::kPlaneMaterial] < kBindlessTextureCount) {
+      material_code = frame.slot[gbuffer::kPlaneMaterial] + 1u;
+    }
+  }
   uint32_t car_sun_slot = kNoSlot;
   uint32_t car_sun_lookup_slot = kNoSlot;
   if (plan.apply && (contact_applied || plan.gi.apply) && !menu_world::GarageFxRuns(trigger_world_, pause_fx_) &&
@@ -3606,6 +3618,8 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     car_sun_slot = FindCarSunSlot();
     float lookup_columns[12];
     if (car_sun_slot != kNoSlot && CarSunLookupColumns(lookup_columns)) {
+      // CHECK: validate quarter/full GI with and without the car-sun texture on both APIs.
+      lookup_columns[8] = float(material_code);  // The third RGBA32F texel is free.
       car_sun_lookup_slot = RecordCarSunLookup(list, lookup_columns);
     }
     if (car_sun_lookup_slot == kNoSlot) {
@@ -3625,6 +3639,10 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (car_sun_slot != kNoSlot) {
       push.slots[0] |= car_sun_slot << kCarSunSlotShift;
       push.slots[1] |= kCarSunOnFlag | (car_sun_lookup_slot << kCarSunSlotShift);
+    }
+    if (material_code != 0u) {
+      push.slots[1] |= ao_gbuffer::kApplyMaterialFlag;
+      if (car_sun_slot == kNoSlot) push.slots[1] = ao_gbuffer::PackHigh(push.slots[1], material_code);
     }
     push.sizes[0] = float(plan.render[0]);
     push.sizes[1] = float(plan.render[1]);

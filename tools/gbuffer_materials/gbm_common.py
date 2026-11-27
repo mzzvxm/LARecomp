@@ -20,7 +20,7 @@ REPO = HERE.parents[1]
 # ---------------------------------------------------------------------------
 
 CLASS_NAMES = ["none", "world", "road", "wetroad", "sidewalk", "terrain", "lod", "foliage",
-               "paint", "chrome", "metal", "glass", "skin", "emissive", "interior", "water"]
+               "paint", "chrome", "metal", "glass", "skin", "emissive", "interior", "water", "garagefloor"]
 FLAG_SSR, FLAG_ALPHA, FLAG_VEHICLE = 1, 2, 4
 
 ROW_FIELDS = ("class", "rough", "smooth", "metal", "ssr", "lit")
@@ -46,7 +46,7 @@ def class_name(number):
 
 
 def parse_class(text):
-    """A class number from a name (any case) or a number 0..15; None when it is neither."""
+    """A class number from a name (any case) or a number 0..16; None when it is neither."""
     t = text.strip().lower()
     if t in CLASS_NAMES:
         return CLASS_NAMES.index(t)
@@ -67,7 +67,7 @@ def join_word(w):
 
 
 def load_class_defaults(header=None):
-    """(DefaultSmoothness, DefaultLit) of every class as unorm8 lists, read from src/gpu/gbuffer_material.h so that the tool and the renderer have one table."""
+    """(DefaultSmoothness, DefaultLit) of every class as unorm8 lists, read from src/gpu/gbuffer_material.h so that the tool and the renderer have one table (DefaultMetal: load_class_metal)."""
     path = Path(header) if header else REPO / "src" / "gpu" / "gbuffer_material.h"
     text = path.read_text(encoding="utf-8", errors="replace")
     start = text.index("constexpr float DefaultSmoothness")
@@ -87,6 +87,37 @@ def load_class_defaults(header=None):
         smooth_list.append(smooth[name])
         lit_list.append(lit_special if name == special else lit_other)
     return smooth_list, lit_list
+
+
+def load_class_metal(header=None):
+    """DefaultMetal of every class as an unorm8 list (PBR-2), read from src/gpu/gbuffer_material.h like the smoothness: a row with a class and no metal= takes it."""
+    path = Path(header) if header else REPO / "src" / "gpu" / "gbuffer_material.h"
+    text = path.read_text(encoding="utf-8", errors="replace")
+    start = text.index("constexpr float DefaultMetal")
+    body = text[start:text.index("\n}\n", start)]
+    metal = {}
+    for m in re.finditer(r"case SurfaceClass::k(\w+):\s*return\s*([0-9.]+)f;", body):
+        metal[m.group(1).lower()] = to_byte(float(m.group(2)))
+    out = []
+    for name in CLASS_NAMES:
+        if name not in metal:
+            raise ValueError("DefaultMetal has no row for class " + name)
+        out.append(metal[name])
+    return out
+
+
+def load_family_rows(header=None):
+    """{group: (smoothness or None, metal or None)} from kFamilyRows of src/gpu/gbuffer_material.h (None: the class's number): the family defaults the tool shows next to a census row."""
+    path = Path(header) if header else REPO / "src" / "gpu" / "gbuffer_material.h"
+    text = path.read_text(encoding="utf-8", errors="replace")
+    start = text.index("inline constexpr FamilyRow kFamilyRows[]")
+    body = text[start:text.index("\n};", start)]
+    rows = {}
+    for m in re.finditer(r'\{"(\w+)",\s*([0-9.]+f|kClassDefault),\s*([0-9.]+f|kClassDefault)\}', body):
+        def num(t):
+            return None if t == "kClassDefault" else float(t.rstrip("f"))
+        rows[m.group(1)] = (num(m.group(2)), num(m.group(3)))
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -149,7 +180,7 @@ def parse_fields(tokens):
         if f == "class":
             c = parse_class(value)
             if c is None:
-                raise ValueError("'%s' is not a class (%s, or 0 to 15)" % (value, " ".join(CLASS_NAMES)))
+                raise ValueError("'%s' is not a class (%s, or 0 to %d)" % (value, " ".join(CLASS_NAMES), len(CLASS_NAMES) - 1))
             key, val = "class", c
         elif f in ("rough", "smooth"):
             u = _unit(value)
@@ -224,8 +255,15 @@ def fields_text(fields, rough_decimals=2):
     return " ".join(out)
 
 
-def apply_row(word, fields, smooth_defaults, lit_defaults):
-    """gbuffer_materials.h ApplyTextureRow on a word (an int)."""
+_METAL_DEFAULTS = []
+
+
+def apply_row(word, fields, smooth_defaults, lit_defaults, metal_defaults=None):
+    """gbuffer_materials.h ApplyTextureRow on a word (an int). A row with a class and no metal= takes the class's metalness (PBR-2): metal_defaults, else the header's."""
+    if metal_defaults is None:
+        if not _METAL_DEFAULTS:
+            _METAL_DEFAULTS.extend(load_class_metal())
+        metal_defaults = _METAL_DEFAULTS
     if not fields:
         return word
     w = split_word(word)
@@ -238,6 +276,8 @@ def apply_row(word, fields, smooth_defaults, lit_defaults):
             smooth = smooth_defaults[cls] if cls < len(smooth_defaults) else 0
         if "lit" not in fields:
             lit = lit_defaults[cls] if cls < len(lit_defaults) else 255
+        if "metal" not in fields:
+            metal = metal_defaults[cls] if cls < len(metal_defaults) else 0
     if "smooth" in fields:
         smooth = fields["smooth"]
     if "lit" in fields:
@@ -276,7 +316,7 @@ def parse_census_line(text):
     return None
 
 
-ShaderInfo = namedtuple("ShaderInfo", "stage group entry cls flags smooth lit")
+ShaderInfo = namedtuple("ShaderInfo", "stage group entry cls flags smooth lit metal")
 
 
 def load_shader_names(path):
@@ -290,7 +330,24 @@ def load_shader_names(path):
             c = line.rstrip("\r\n").split("\t")
             if len(c) < 8:
                 continue
-            names[int(c[0], 16)] = ShaderInfo(c[1], c[2], c[3], c[4], c[5], c[6], c[7])
+            names[int(c[0], 16)] = ShaderInfo(c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[10] if len(c) > 10 else "-")  # the metal column is the newest: a file of an older pack has none
+    return names
+
+
+def load_name_list(path):
+    """{content hash: name} from the city name list the hit data's build writes with LARECOMP_CITY_TEXTURE_NAMES=1 (city_texture_names.tsv: hash<TAB>name, a header line, '#' comments). The names are the
+    diffuse files' stems of the city's shader instances; the hash is the number the census prints for a texture, HitMaterial::key's XXH3-64 of the base level (CHECK: it equals the renderer's content hash
+    for the textures that matter: census_merge says how many of the census's hashes the list names). A hash with two names keeps the first (the list is sorted)."""
+    names = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as f:
+        for line in f:
+            line = line.rstrip("\r\n")
+            if not line or line.startswith("#"):
+                continue
+            cells = line.split("\t")
+            if len(cells) < 2 or not HEX_RE.match(cells[0]):
+                continue  # the header line, or something that is not a row
+            names.setdefault(int(cells[0], 16), cells[1])
     return names
 
 

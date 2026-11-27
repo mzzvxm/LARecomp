@@ -577,12 +577,13 @@ int main(int argc, char** argv) {
               "the shader's sky fill is ShadeReference's");
         Check(Has(host, "output_builder_.addReadWriteByteAddressBuffer(2);") && Has(host, "bool CarRtRefl::MakeStatsBuffers(Device& device) {") &&
                   Has(host, "car_rt_hit::census::PackWithStats(car_rt_hit::PackPhaseRays(pattern_phase, cone_rays), stats_frame) |") &&
-                  Has(host, "out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);") && Has(host, "stats ? 3u : (second ? 2u : 1u)") &&
-                  Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get())") &&
+                  Has(host, "out.set->setBuffer(2, stats, car_rt_hit::census::kBytes);") && Has(host, "guide ? 4u : (stats ? 3u : (second ? 2u : 1u))") &&
+                  Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get(), &v2_.Guide())") &&
+                  Has(host, "EnsureSet(trace_set_, output_builder_, image_, &aux_, \"car rt refl output set\", stats_.get(), &unused_guide_)") &&
                   Has(host, "frames_->RetireAction([this, frame = info.frame, generation = stats_generation_] { ProcessStats(frame, generation); });") &&
                   Has(host, "hit_stops_ = census::NextStops(hit_stops_, residual);") && Has(host, "scene_->SetHitStops(HitStops());") &&
                   Has(host, "census::Text(window_, window_frames_, hit_stops_, calibrating)") && Has(host_h, "float HitStops() const;"),
-              "the host makes the counters' buffers and binds them at u2, zeroes them before a stats frame, reads them back, moves the gain and logs the line");
+              "the host makes the counters' buffers and binds them at u2 alongside the V2 guide's u3, zeroes them before a stats frame, reads them back, moves the gain and logs the line");
         Check(Has(scene_cpp, "float(larecomp::settings::mcla_gpu_car_rt_hit_gain.Get()) * car_rt_hit::census::GainOf(hit_stops_)") && Has(scene_h, "void SetHitStops(float stops) { hit_stops_ = stops; }"),
               "the scene's frame gain is the setting's times the measured exposure");
         const std::string name = "mcla_gpu_car_rt_hit_calibrate";

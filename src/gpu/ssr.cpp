@@ -29,6 +29,7 @@
 #include "rt_denoise_v2_rules.h"
 #include "live_text.h"
 #include "pass_timing.h"
+#include "pbr_screen_switch.h"
 #include "ray_regen.h"
 #include "ray_regen_plan.h"
 #include "records.h"
@@ -1031,6 +1032,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   flags.rays = numbers.rays;
   flags.max_iterations = numbers.max_iterations;
   flags.view = uint32_t(view_);
+  flags.pbr = pbr_screen::Enabled();   // PBR level 1C: every pass of the effect (the trace, the accumulation, the resolve, the denoise, the Ray Regeneration guides) reads the bit
   push.Set(pk::kFlags, ssr::PackFlags(flags));
   push.Set(pk::kFrame, pk::PackFrame(uint32_t(frames_), larecomp::settings::mcla_gpu_ssr_blue_noise.Get(), garage));
   push.Set(pk::kLin0, ssr::PackSlots(sf.lin_depth_slot[0], stencil_slot));   // the low half the depth chain's level 0, the high half (pk::kStencil) the depth target's stencil plane, for the vehicle a hit is on (GB-I2)

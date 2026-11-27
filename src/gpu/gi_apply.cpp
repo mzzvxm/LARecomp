@@ -29,6 +29,7 @@
 #include "mc_engine/camera/menu_camera.h"
 #include "pass_timing.h"
 #include "ray_regen_plan.h"
+#include "pbr_screen_switch.h"
 #include "records.h"
 #include "screen_shared.h"
 #include "ssgi_level.h"
@@ -279,6 +280,7 @@ void GiApply::BeginFrame() {
   denoiser::NoteConsumer(rr::Consumer::kRtGi, pixel_wanted_);
   if (gbuffer_ != nullptr) {
     uint32_t planes = enabled_ ? gbuffer::ConsumerPlanes(gbuffer::Consumer::kRtBounce) : 0u;
+    if (enabled_ && pbr_screen::Enabled()) planes |= gbuffer::PlaneBit(gbuffer::kPlaneMaterial);
     if (pixel_wanted_ && view_ == 0 && rayregen::BuildHas() && rayregen::RowListed() && ActiveBackend() == Backend::kD3D12 &&
         rayregen::SiteSignals(rayregen::Site::kBounce, denoiser::Setting(), rayregen::ReadDebugSwitch(), rr::ConsumerBit(rr::Consumer::kRtGi)) != 0) {
       const rayregen::Facts facts = rayregen::MenuFacts();
@@ -550,6 +552,8 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   std::memcpy(static_cast<uint8_t*>(mapped) + gi_cabin::kOffsetBytes, cabin.data(), gi_cabin::kBytes);
   slot.buffer->unmap();
 
+  // RT3 supplies the PBR diffuse weight and the cabin class lookup.
+  const bool pbr = pbr_screen::Enabled() && gb.Has(gbuffer::kPlaneMaterial) && gb.slot[gbuffer::kPlaneMaterial] < gi_cabin::kNoMaterialSlot;
   ga::Push push = {};
   push.slots[0] = summary.sample_slot;
   push.slots[1] = gb.slot[gbuffer::kPlaneNormal];
@@ -559,8 +563,9 @@ bool GiApply::OnTriggerImpl(const ResolveCache::Summary& summary, plume::RenderC
   push.info[1] = up ? lookup_.slot : ga::kNoSlot;
   push.info[2] = gb.sample0;
   const uint32_t flags = (up ? ga::kFlagLowTraced : 0u) | (has_visibility ? ga::kFlagVisibility : 0u) |
-                         (quarter ? ga::kFlagQuarterLookup : 0u) | (fast_lookup_apply ? ga::kFlagFastLookupApply : 0u);
-  push.info[3] = gi_cabin::PackMaterialSlot(ga::PackInfoW(flags, view_), cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot);
+                         (quarter ? ga::kFlagQuarterLookup : 0u) | (fast_lookup_apply ? ga::kFlagFastLookupApply : 0u) | (pbr ? ga::kFlagPbr : 0u);
+  const uint32_t rt3_slot = pbr ? gb.slot[gbuffer::kPlaneMaterial] : (cabin[3] < 1.0f ? material_slot : gi_cabin::kNoMaterialSlot);
+  push.info[3] = gi_cabin::PackMaterialSlot(ga::PackInfoW(flags, view_), rt3_slot);
 
   if (up) {
     // The lookup, at the traced size, into the image (cleared on its first use: a new render target is initialised before it is drawn into, D3D12 debug layer id 1422).

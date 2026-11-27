@@ -423,7 +423,7 @@ void FileChecks() {
   std::vector<uint8_t> bytes;
   std::string error;
   Check(gb::LayOutMaterialTable(records, &bytes, &error), "the file lays out: " + error);
-  Check(bytes.size() == gb::kMaterialTableHeaderBytes + records.size() * gb::kMaterialTableEntryBytes, "the file's size is the header and 16 bytes a record");
+  Check(bytes.size() == gb::kMaterialTableHeaderBytes + records.size() * gb::kMaterialTableEntryBytes, "the file's size is the header and 24 bytes a record");
   Check(std::memcmp(bytes.data(), "MSGM", 4) == 0, "the magic");
   std::vector<gb::MaterialRecord> parsed;
   std::string why;
@@ -433,7 +433,7 @@ void FileChecks() {
     const gb::MaterialRecord& a = records[i];
     const gb::MaterialRecord& b = parsed[i];
     equal = a.key == b.key && a.pixel == b.pixel && a.cls == b.cls && a.flags == b.flags && a.smoothness == b.smoothness && a.lit == b.lit && a.gloss_bank == b.gloss_bank &&
-            a.gloss_reg == b.gloss_reg && a.diffuse_slot == b.diffuse_slot;
+            a.gloss_reg == b.gloss_reg && a.diffuse_slot == b.diffuse_slot && a.metal == b.metal;
   }
   Check(equal, "every record survives the file");
   // an empty table is a file too
@@ -461,6 +461,9 @@ void FileChecks() {
   broken[4] = 1;
   refuses(broken, "the first layout version (a pack built before the diffuse slot)");
   broken = bytes;
+  broken[4] = 2;
+  refuses(broken, "the second layout version (16 byte records, a pack built before the metalness)");
+  broken = bytes;
   broken[12] = uint8_t(gb::kMaterialRulesVersion + 1);
   refuses(broken, "another rules version");
   broken = bytes;
@@ -487,6 +490,12 @@ void FileChecks() {
   broken[gb::kMaterialTableHeaderBytes + 15] = 32;
   refuses(broken, "a diffuse slot above 31 that is not 'none'");
   broken = bytes;
+  broken[gb::kMaterialTableHeaderBytes + 17] = 1;
+  refuses(broken, "a reserved byte that is set");
+  broken = bytes;
+  broken[gb::kMaterialTableHeaderBytes + 23] = 0x80;
+  refuses(broken, "the last reserved byte set");
+  broken = bytes;
   // swap the first two records' keys: out of order
   for (uint32_t i = 0; i < 8; ++i) std::swap(broken[gb::kMaterialTableHeaderBytes + i], broken[gb::kMaterialTableHeaderBytes + gb::kMaterialTableEntryBytes + i]);
   refuses(broken, "records out of order");
@@ -504,6 +513,21 @@ void FileChecks() {
   Check(!gb::LayOutMaterialTable(bad, &bytes, &error), "the writer refuses a register with no bank");
   bad = {records[0], records[0]};
   Check(!gb::LayOutMaterialTable(bad, &bytes, &error), "the writer refuses a repeated identity");
+  {
+    std::vector<gb::MaterialRecord> with_metal = records;
+    size_t vertex_at = with_metal.size();
+    for (size_t i = 0; i < with_metal.size(); ++i) {
+      if (!with_metal[i].pixel) vertex_at = i;
+    }
+    if (vertex_at < with_metal.size()) {
+      with_metal[vertex_at].metal = 7;
+      Check(!gb::LayOutMaterialTable(with_metal, &bytes, &error), "the writer refuses a metalness on a vertex shader's record");
+      std::vector<uint8_t> good;
+      gb::LayOutMaterialTable(records, &good, &error);
+      good[gb::kMaterialTableHeaderBytes + vertex_at * gb::kMaterialTableEntryBytes + 16] = 7;
+      refuses(good, "a metalness on a vertex shader's record");
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -518,6 +542,191 @@ gb::MaterialTable TableOf(std::vector<gb::NamedShader> shaders) {
   std::string why;
   Check(table.Load(bytes, &why), "the table loads from its file's bytes: " + why);
   return table;
+}
+
+// ---------------------------------------------------------------------------
+// PBR-2: the metalness, the family table, the car families' own defaults
+// ---------------------------------------------------------------------------
+void MetalDefaultChecks() {
+  using gb::SurfaceClass;
+  int metals = 0;
+  for (uint32_t c = 0; c < uint32_t(SurfaceClass::kCount); ++c) {
+    const float m = gb::DefaultMetal(SurfaceClass(c));
+    Check(m >= 0.0f && m <= 1.0f, "the default metalness of class " + std::to_string(c) + " is in 0..1");
+    const bool metal_class = c == uint32_t(SurfaceClass::kChrome) || c == uint32_t(SurfaceClass::kMetal);
+    Check((m > 0.0f) == metal_class, "only chrome and metal are metals: class " + std::to_string(c));
+    metals += m > 0.0f ? 1 : 0;
+  }
+  Check(metals == 2, "two metal classes");
+  Check(gb::DefaultMetal(SurfaceClass::kChrome) == 1.0f && gb::DefaultMetal(SurfaceClass::kMetal) == 1.0f, "chrome and metal are metal 1");
+  Check(gb::DefaultMetal(SurfaceClass::kPaint) == 0.0f && gb::DefaultMetal(SurfaceClass::kGlass) == 0.0f && gb::DefaultMetal(SurfaceClass::kRoad) == 0.0f &&
+            gb::DefaultMetal(SurfaceClass::kWater) == 0.0f && gb::DefaultMetal(SurfaceClass::kEmissive) == 0.0f && gb::DefaultMetal(SurfaceClass::kWorld) == 0.0f,
+        "paint, glass, asphalt, water, emissive and the world are dielectrics");
+}
+
+void FamilyTableChecks() {
+  Check(gb::FamilyRowsSorted(), "the family table is sorted by group, strictly");
+  std::set<std::string_view> seen;
+  bool valid = true;
+  bool refines = true;
+  bool known = true;
+  bool written = true;
+  for (const gb::FamilyRow& row : gb::kFamilyRows) {
+    valid = valid && seen.insert(row.group).second && (row.smoothness == gb::kClassDefault || (row.smoothness >= 0.0f && row.smoothness <= 1.0f)) &&
+            (row.metal == gb::kClassDefault || (row.metal >= 0.0f && row.metal <= 1.0f));
+    refines = refines && (row.smoothness != gb::kClassDefault || row.metal != gb::kClassDefault);  // a row that changes nothing is a mistake
+    const gb::GroupRow* group = gb::FindGroupRow(row.group);
+    known = known && group != nullptr;
+    written = written && group != nullptr && group->cls != gb::SurfaceClass::kNone;  // a class 0 group has no material to refine
+  }
+  Check(valid, "every family row is once in the table, its numbers 0..1 or the class's");
+  Check(refines, "every family row changes the smoothness or the metalness");
+  Check(known, "every family row names a group of the class table");
+  Check(written, "no family row is for a group the G-buffer never writes");
+  Check(gb::FindFamilyRow("xWheelRubber") != nullptr && gb::FindFamilyRow("xCityRoad") == nullptr && gb::FindFamilyRow("") == nullptr && gb::FindFamilyRow("xZzz") == nullptr,
+        "FindFamilyRow: a hit, a group without a row, an empty name, a name past the end");
+  for (const gb::FamilyRow& row : gb::kFamilyRows) {
+    Check(gb::FindFamilyRow(row.group) == &row, "FindFamilyRow finds " + std::string(row.group));
+  }
+}
+
+// What the tables say of a shader by its name, as numbers a test reads.
+struct Said {
+  gb::SurfaceClass cls;
+  float smoothness;
+  float metal;
+};
+Said SaidOf(const char* name) {
+  const gb::ShaderMaterial m = gb::MaterialOfShaderName(name);
+  Check(m.known, std::string("the shader ") + name + " is known");
+  return {m.cls, m.smoothness, m.metal};
+}
+
+void FamilyDefaultChecks() {
+  using gb::SurfaceClass;
+  // the cars, from the family alone (before any census): chrome is a mirror metal, paint a clear coat over a dielectric, glass a dielectric, a tyre rough rubber, lamps emissive
+  Said s = SaidOf("xChrome__PS_Chrome");
+  Check(s.cls == SurfaceClass::kChrome && s.metal == 1.0f && Near(s.smoothness, 0.95f, 1e-6f), "car chrome: class chrome, metal 1, near a mirror");
+  s = SaidOf("xBumpedAlphaChrome__PS_Chrome");
+  Check(s.cls == SurfaceClass::kChrome && s.metal == 1.0f, "bumped chrome: metal 1");
+  s = SaidOf("xCarPaintCustomizable__PS_CarPaint");
+  Check(s.cls == SurfaceClass::kPaint && s.metal == 0.0f && Near(s.smoothness, 0.85f, 1e-6f), "customisable paint: clear coat, a dielectric");
+  s = SaidOf("xCarPaint__PS_CarPaint");
+  Check(s.cls == SurfaceClass::kPaint && s.metal == 0.0f, "plain paint: a dielectric");
+  s = SaidOf("xAmbientCarPaint__PSAmbientCarPaint");
+  Check(s.cls == SurfaceClass::kPaint && s.metal == 0.0f, "a traffic car's paint: a dielectric");
+  s = SaidOf("xCarGlass__PS_GlassFront");
+  Check(s.cls == SurfaceClass::kGlass && s.metal == 0.0f && s.smoothness >= 0.9f, "car glass: a smooth dielectric");
+  s = SaidOf("xBlackOpaqueGlass__PS_Glass");
+  Check(s.cls == SurfaceClass::kGlass && s.metal == 0.0f && s.smoothness >= 0.85f && s.smoothness < gb::DefaultSmoothness(SurfaceClass::kGlass),
+        "the dark glass: a dielectric, a little rougher than a window");
+  s = SaidOf("xWheelRubber__PS_ParallaxRubber2_true");
+  Check(s.cls == SurfaceClass::kWorld && s.metal == 0.0f && s.smoothness <= 0.12f, "a tyre: a dielectric with a roughness of 0.88 or more");
+  s = SaidOf("xAmbientTire__PSAmbientTire");
+  Check(s.cls == SurfaceClass::kWorld && s.metal == 0.0f && s.smoothness <= 0.12f, "a traffic car's tyre: rubber too");
+  s = SaidOf("xRimMain__PS_Multi");
+  Check(s.cls == SurfaceClass::kChrome && s.metal == 1.0f && Near(s.smoothness, 0.85f, 1e-6f), "a rim: polished alloy");
+  s = SaidOf("xWheelBrakeRotor__PS_BrakeRotor");
+  Check(s.cls == SurfaceClass::kMetal && s.metal == 1.0f && s.smoothness < 0.6f, "a brake rotor: metal, rough");
+  s = SaidOf("xbrakecaliper__PS_BrakeCaliper");
+  Check(s.cls == SurfaceClass::kPaint && s.metal == 0.0f && Near(s.smoothness, 0.60f, 1e-6f), "a brake caliper is painted: the paint class, a dielectric, a little rougher than a clear coat");
+  s = SaidOf("xBrushedMetal__PS_BrushedMetal");
+  Check(s.cls == SurfaceClass::kMetal && s.metal == 1.0f && s.smoothness < gb::DefaultSmoothness(SurfaceClass::kMetal), "brushed metal: metal, rougher than the class's default");
+  s = SaidOf("xAnisotropicBilletMetal__PS_Billet");
+  Check(s.cls == SurfaceClass::kMetal && s.metal == 1.0f, "billet: metal");
+  s = SaidOf("xCarbonFiber__PS_CarbonFiber");
+  Check(s.cls == SurfaceClass::kPaint && s.metal == 0.0f, "carbon fibre: the paint class, a dielectric");
+  s = SaidOf("xCarLight__PS_Light");
+  Check(s.cls == SurfaceClass::kEmissive && s.metal == 0.0f, "a lamp lens: emissive, a dielectric");
+  // the city
+  s = SaidOf("xCityGrimeMetal__PSMultiLight");
+  Check(s.cls == SurfaceClass::kMetal && s.metal > 0.5f && s.metal < 1.0f, "grimy metal: metal under dirt");
+  s = SaidOf("xPropMetal__PSPropMetal");
+  Check(s.cls == SurfaceClass::kMetal && Near(s.metal, 0.9f, 1e-6f) && Near(s.smoothness, gb::DefaultSmoothness(SurfaceClass::kMetal), 1e-6f),
+        "a metal prop: the metal class's smoothness, a little rust in the metalness");
+  s = SaidOf("xCityRoad__PSMultiLight");
+  Check(s.cls == SurfaceClass::kRoad && s.metal == 0.0f && Near(s.smoothness, gb::DefaultSmoothness(SurfaceClass::kRoad), 1e-6f), "asphalt: a rough dielectric, the class's numbers");
+  s = SaidOf("xCityDefault__PSMultiLight");
+  Check(s.cls == SurfaceClass::kWorld && s.metal == 0.0f, "a plain wall: a dielectric");
+  s = SaidOf("xCityWindowLower__PSMultiLight");
+  Check(s.cls == SurfaceClass::kGlass && s.metal == 0.0f && s.smoothness >= 0.9f, "a window: a smooth dielectric");
+  s = SaidOf("xCityOceanWater__PSCityOceanWater");
+  Check(s.cls == SurfaceClass::kWater && s.metal == 0.0f, "water: a dielectric");
+  s = SaidOf("xCityNeon__PSMultiLight");
+  Check(s.cls == SurfaceClass::kEmissive && s.metal == 0.0f, "neon: emissive");
+  // an auxiliary entry of a group with a family row is class 0 and carries nothing of the row
+  const gb::ShaderMaterial shadow = gb::MaterialOfShaderName("xWheelRubber__PS_ShadowDepth");
+  Check(shadow.known && shadow.cls == SurfaceClass::kNone && shadow.smoothness == 0.0f && shadow.metal == 0.0f, "a shadow pass of the tyre group: no data, nothing of the family");
+  // the interior entry turns a wall into an interior surface and keeps the group's own numbers
+  const gb::ShaderMaterial interior = gb::MaterialOfShaderName("xCityTunnelTile__PSMultiLightInterior");
+  Check(interior.cls == SurfaceClass::kInterior && Near(interior.smoothness, 0.55f, 1e-6f), "the tile group keeps its family smoothness on its interior entry (the class turns interior)");
+  // a group the tables do not have: nothing is known
+  const gb::ShaderMaterial unknown = gb::MaterialOfShaderName("xNotAGroup__PS");
+  Check(!unknown.known && unknown.metal == 0.0f, "an unknown group has no material");
+
+  // the invariants over every group, so that a new row cannot break the families' sense: every group of a metal class has a metalness (the screen consumers read the class and the metal flag, so a
+  // dielectric is never filed under a metal class), no group of another class is a metal, and every tyre and rubber group is a rough dielectric
+  bool chrome_ok = true;
+  bool dielectric_ok = true;
+  bool rubber_ok = true;
+  for (const gb::GroupRow& row : gb::kGroupRows) {
+    if (row.cls == SurfaceClass::kNone) continue;
+    const std::string name = std::string(row.group) + "__PSMultiLight";
+    const gb::ShaderMaterial m = gb::MaterialOfShaderName(name);
+    const bool is_metal_class = row.cls == SurfaceClass::kChrome || row.cls == SurfaceClass::kMetal;
+    if (is_metal_class && m.metal == 0.0f) chrome_ok = false;
+    if (!is_metal_class && m.metal != 0.0f) dielectric_ok = false;
+    if ((row.group.find("Tire") != std::string_view::npos || row.group.find("Rubber") != std::string_view::npos) && (m.metal != 0.0f || m.smoothness > 0.15f)) rubber_ok = false;
+  }
+  Check(chrome_ok, "every chrome or metal group has a metalness");
+  Check(dielectric_ok, "no group of another class is a metal");
+  Check(rubber_ok, "every tyre and rubber group is a rough dielectric");
+}
+
+void MetalWordChecks() {
+  using gb::SurfaceClass;
+  const uint64_t kChromePs = 0x1, kRimPs = 0x2, kPaintPs = 0x3, kWallPs = 0x4, kCaliperPs = 0x5, kUnknownPs = 0x6, kRoadPs = 0x7;
+  gb::MaterialTable table = TableOf({
+      {kChromePs, true, "xChrome__PS_Chrome"},
+      {kRimPs, true, "xRimMain__PS_Multi"},
+      {kPaintPs, true, "xCarPaint__PS_CarPaint"},
+      {kWallPs, true, "xCityDefault__PSMultiLight"},
+      {kCaliperPs, true, "xbrakecaliper__PS_BrakeCaliper"},
+      {kRoadPs, true, "xCityRoad__PSMultiLight"},
+  });
+  Bank ps_bank;
+  Bank vs_bank;
+  const std::span<const uint8_t> ps = ps_bank.bytes;
+  const std::span<const uint8_t> vs = vs_bank.bytes;
+  Check(gb::MaterialMetalByte(table.WordFor(kChromePs, 0, ps, vs, false)) == 255, "a chrome draw's word has metalness 1");
+  Check(gb::MaterialMetalByte(table.WordFor(kRimPs, 0, ps, vs, false)) == 255 && gb::MaterialRt3Smoothness(table.WordFor(kRimPs, 0, ps, vs, false)) == gb::ToByte(0.85f),
+        "a rim: metal 1 and the rim's smoothness");
+  Check(gb::MaterialMetalByte(table.WordFor(kPaintPs, 0, ps, vs, false)) == 0, "a paint draw's word has metalness 0");
+  Check(gb::MaterialMetalByte(table.WordFor(kWallPs, 0, ps, vs, false)) == 0 && gb::MaterialMetalByte(table.WordFor(kRoadPs, 0, ps, vs, false)) == 0, "a wall's and a road's words have metalness 0");
+  const uint32_t caliper = table.WordFor(kCaliperPs, 0, ps, vs, false);
+  Check(gb::MaterialClassOf(caliper) == SurfaceClass::kPaint, "a painted caliper writes the paint class to RT3");
+  Check(gb::MaterialMetalByte(caliper) == 0, "a painted caliper writes a zero metalness byte");
+  Check(gb::MaterialRt3Smoothness(caliper) == 153, "a painted caliper writes perceptual roughness 0.40");
+  Check(gb::MaterialFlagsOf(caliper) == gb::kMaterialFlagVehicle, "a painted caliper writes the vehicle flag");
+  Check(gb::MaterialMetalByte(table.WordFor(kUnknownPs, 0, ps, vs, false)) == 0 && gb::MaterialMetalByte(table.WordFor(0, 0, ps, vs, false)) == 0, "an unknown shader's word has metalness 0");
+  // the metal byte does not disturb the other fields, with or without the alpha twin
+  const uint32_t plain = table.WordFor(kChromePs, 0, ps, vs, false);
+  const uint32_t twin = table.WordFor(kChromePs, 0, ps, vs, true);
+  Check((plain & 0x00FFFFFFu) == gb::MaterialWord(gb::DefaultSmoothness(SurfaceClass::kChrome), SurfaceClass::kChrome, gb::kMaterialFlagVehicle, 1.0f) && (twin & 0xFF000000u) == 0xFF000000u &&
+            gb::MaterialFlagsOf(twin) == (gb::kMaterialFlagVehicle | gb::kMaterialFlagAlphaCovered),
+        "chrome's word: smoothness, class, flags and lit as before, metal in the top byte, the twin's flag on top");
+  // the draw's own exponent still beats the family's smoothness but not the family's metalness
+  gb::MaterialTable gloss = TableOf({{0x20, true, "xCityGrimeMetal__PSMultiLight"}});
+  ps_bank.SetX(100, 30.0f);
+  const uint32_t grimy = gloss.WordFor(0x20, 0, ps, vs, false);
+  Check(gb::MaterialRt3Smoothness(grimy) == uint32_t(gb::SmoothnessOfPower(60.0f) * 255.0f + 0.5f) && gb::MaterialMetalByte(grimy) == gb::ToByte(0.75f),
+        "grimy metal: the smoothness from the exponent, the metalness from the family");
+  // the helper
+  Check(gb::MaterialWordWithMetalByte(0x00112233u, 0xAB) == 0xAB112233u && gb::MaterialWordWithMetalByte(0xFF112233u, 0) == 0x00112233u, "MaterialWordWithMetalByte sets the top byte only");
+  // the pack's records carry the family's metalness
+  const std::vector<gb::MaterialRecord> records =
+      gb::BuildMaterialRecords(std::vector<gb::NamedShader>{{0x1, true, "xChrome__PS_Chrome"}, {0x2, true, "xCarPaint__PS_CarPaint"}, {0x3, false, "xCityDefault__VSCityDefaultDay"}});
+  Check(records.size() == 3 && records[0].metal == 255 && records[1].metal == 0 && !records[2].pixel && records[2].metal == 0, "the records have the metalness: chrome 255, paint 0, a vertex shader 0");
 }
 
 void WordForChecks() {
@@ -860,6 +1069,10 @@ int main(int argc, char** argv) {
   WordChecks();
   BuilderChecks();
   FileChecks();
+  MetalDefaultChecks();
+  FamilyTableChecks();
+  FamilyDefaultChecks();
+  MetalWordChecks();
   WordForChecks();
   PassLightsChecks();
   if (argc > 1) BaselineChecks(argv[1]);

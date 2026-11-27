@@ -1,5 +1,7 @@
 #include "vpl.h"
 
+#include "pbr_screen_switch.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstring>
@@ -609,8 +611,12 @@ bool VirtualBounce::Record(const ResolveCache::Summary& summary, plume::RenderCo
   uint32_t albedo = kNoSlot;
   if (planes && gbuffer_) {
     const auto& gb = gbuffer_->frame();
-    if (gb.Has(gbuffer::kPlaneAlbedo) && gb.width == sf.render[0] && gb.height == sf.render[1] &&
-        gb.host_samples == samples) albedo = gb.slot[gbuffer::kPlaneAlbedo];
+    if (gb.width == sf.render[0] && gb.height == sf.render[1] && gb.host_samples == samples) {
+      if (gb.Has(gbuffer::kPlaneAlbedo)) albedo = gb.slot[gbuffer::kPlaneAlbedo];
+      if (pbr_screen::Enabled() && gb.Has(gbuffer::kPlaneMaterial)) {
+        in.right[3] = float(gb.slot[gbuffer::kPlaneMaterial] + 1u);
+      }
+    }
   }
   in.guides = {albedo, main_sample, ao ? ov.visibility_slot : kNoSlot, summary.stencil_slot};
   const Slot& slot = slots_[index];

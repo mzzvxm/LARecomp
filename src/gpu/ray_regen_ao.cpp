@@ -1,4 +1,6 @@
 #include "ray_regen_ao.h"
+
+#include "pbr_screen_switch.h"
 #include "gfx_preset_apply.h"
 
 #include <algorithm>
@@ -133,7 +135,7 @@ bool RayRegenAoPass::Record(const Frame& in) {
   Push push{{in.signal->slot, in.depth->slot, in.normal->slot, in.id_share->slot},
             {in.gbuffer[0], in.gbuffer[1], in.gbuffer[2]}, table,
             {width, height}, {in.render[0], in.render[1]}, {in.tan_x, in.tan_y, in.prev_tan_x, in.prev_tan_y}, {},
-            {in.jitter[0], in.jitter[1]}, rayregen::kLinearDepthPositiveAhead ? 1.0f : -1.0f, table ? in.vehicle_ids : 0u};
+            {in.jitter[0], in.jitter[1]}, rayregen::kLinearDepthPositiveAhead ? 1.0f : -1.0f, (table ? in.vehicle_ids : 0u) | (pbr_screen::Enabled() ? 1u << 31 : 0u)};
   std::copy_n(in.motion, 12, push.motion);
   // CHECK: the AO/SSR dispatch sites and the G-buffer's compute-read
   // handoff need runtime validation on a Radeon RX 9000.

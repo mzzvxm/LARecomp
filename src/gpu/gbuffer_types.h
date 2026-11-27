@@ -22,7 +22,7 @@
 //                                 lights, 0: emissive or unlit; the deferred lights add nothing where it is 0). Cleared to 0. The night stage multiplies the draw's weight
 //                                 by the shader's own baked occlusion where the game multiplies its lights by it (the vertex alpha iColor1.w: shaderpack/variants/
 //                                 gbuffer_night_albedo.h, GB-H2-COVER), so the weight is "the share of the forward lights that reach the pixel": 0 still means no light.
-//   RT3  material  R8G8_UNORM     r = smoothness, g = the class (5 bits) and three flags (kMaterialFlag*), see MaterialWord. Cleared to 0.
+//   RT3  material  R8G8B8A8_UNORM r = smoothness, g = five class bits and three flags, b = metalness, a = reserved. Cleared to 0.
 //
 // Phase 1 has RT1 only; RT2 and RT3 are in the interface so the encodings are settled once.
 //
@@ -46,7 +46,7 @@ enum Plane : uint32_t { kPlaneNormal = 0, kPlaneAlbedo = 1, kPlaneMaterial = 2, 
 // rules' tests build alone).
 enum class PlaneFormat : uint8_t { kRg16Unorm, kRgba8Unorm, kRg8Unorm };
 inline constexpr std::array<PlaneFormat, kPlaneCount> kPlaneFormats = {PlaneFormat::kRg16Unorm, PlaneFormat::kRgba8Unorm,
-                                                                       PlaneFormat::kRg8Unorm};
+                                                                       PlaneFormat::kRgba8Unorm};
 constexpr uint32_t BytesPerSample(PlaneFormat format) {
   switch (format) {
     case PlaneFormat::kRg16Unorm: return 4;
@@ -76,8 +76,8 @@ struct GBufferFrame {
 
 // --- the class, the flags, the material word ---------------------------------------------------------------------------------------------
 
-// What a pixel is made of, for the consumers' choices (reflections, wetness, the specular lobe, the light's albedo term). 5 bits. Appended
-// values are allowed; 0 is "no data" and stays so (a plane that was not written has class 0 in every pixel).
+// What a pixel is made of, for the consumers' choices (reflections, wetness, the specular lobe, the light's albedo term). 4 bits (the fifth is the metal flag, below). 0 is "no data" and stays so
+// (a plane that was not written has class 0 in every pixel).
 enum class SurfaceClass : uint8_t {
   kNone = 0,       // nothing written here: the consumer falls back (depth normals, estimated albedo)
   kWorld = 1,      // the city's opaque surfaces by default: walls, props
@@ -99,7 +99,7 @@ enum class SurfaceClass : uint8_t {
   kCount = 17,
 };
 inline constexpr uint32_t kClassBits = 5;
-inline constexpr uint32_t kClassMask = (1u << kClassBits) - 1;  // 31: the largest class value there will ever be
+inline constexpr uint32_t kClassMask = (1u << kClassBits) - 1;
 
 // The three flags that ride with the class in RT3.g (bits 5, 6 and 7 of the byte) and in the material word (bits 13, 14 and 15).
 inline constexpr uint32_t kMaterialFlagSsr = 1u;           // eligible for screen-space reflections
@@ -113,8 +113,8 @@ inline constexpr uint32_t kMaterialFlagVehicle = 4u;       // part of a vehicle 
 //   bits  8..12   class (SurfaceClass)
 //   bits 13..15   flags (kMaterialFlag* << 13)
 //   bits 16..23   lit weight (unorm8): 255 lit by the forward lights, 0 emissive; written to RT2.a
-//   bits 24..31   reserved, 0 (a metalness byte may take them)
-// RT3 = (word & 0xFF, (word >> 8) & 0xFF) as unorm8: the class and the flags are in the one byte.
+//   bits 24..31   metalness (unorm8), written to RT3.b
+// RT3 preserves the original smoothness and class/flags bytes in its first two channels.
 inline constexpr uint32_t kMaterialSmoothnessShift = 0;
 inline constexpr uint32_t kMaterialClassShift = 8;
 inline constexpr uint32_t kMaterialFlagsShift = 13;
@@ -176,7 +176,9 @@ enum class View : uint8_t {
   kLitWeight = 6,    // RT2.a as grey
   kMissing = 7,      // the picture of what no family covers yet: green where RT1 holds a normal, RED where the main depth holds geometry and RT1 does not (a shader with no
                      // variant, a mirror, a masked draw), black where there is neither (the sky); the survey's R2 "missing pixels" view
-  kCount = 8,
+  kMetal = 8,        // white where the screen consumers see a metal (the class chrome or metal, or the metal flag of perf/PBR.md 1.4 that the material table's metalness byte sets), black elsewhere
+  kRoughness = 9,    // 1 - RT3.r, the perceptual roughness the light model shades with, as a grey: white chalk, black mirror (view 3 is the same plane's smoothness)
+  kCount = 10,
 };
 
 }  // namespace mcla::gpu::gbuffer
