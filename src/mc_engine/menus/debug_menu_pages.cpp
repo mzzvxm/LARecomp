@@ -213,6 +213,7 @@ constexpr const char* kRtAoDenoiseNames[] = {"TEMPORAL", "LEGACY", "OFF"};
 
 // CHECK: open Renderer Fixes and toggle a reflection switch in the live menu.
 const ItemDef kDebugRendererFixesItems[] = {
+    NativeOnly(Bool("PM_RxDbgCityRtFixed", "mcla_gpu_city_rt_fixed_selection", "CITY RT FIXED SELECTION: ")),
     NativeOnly(Bool("PM_RxSharpUi", "mcla_ui_sharp", "SHARP UI: ")),
     NativeOnly(Bool("PM_RxSharpMinimap", "mcla_ui_minimap_scale", "SHARP MINIMAP: ")),
     NativeOnly(Bool("PM_RxDbgSpecularOcclusion", "mcla_gpu_specular_occlusion", "REFLECTION FALLBACK OCCLUSION: ")),

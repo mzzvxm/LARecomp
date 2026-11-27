@@ -319,6 +319,7 @@ class GPUSettings final : public rex::SettingOwner {
     "levels read. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_city_rt_build_budget, true, "Spread city ray tracing builds across frames and keep sectors longer near the streaming boundaries. Live.", rex::kDebugOnly);
+  REX_SETTING(bool, mcla_gpu_city_rt_fixed_selection, true, "Use fixed city ray tracing build limits and charge sectors by their triangle count. Changing this refills the city streaming ring. Live.", rex::kDebugOnly);
 
   REX_SETTING(bool, mcla_gpu_city_rt_car_coverage, true, "Trace city sun shadows on vehicles and include cars within 150 metres of the camera in the ray tracing scene. Live.", rex::kDebugOnly);
 
@@ -2184,6 +2185,7 @@ inline auto& mcla_gpu_city_rt_alpha = g_gpu.mcla_gpu_city_rt_alpha;
 inline auto& mcla_gpu_city_rt_alpha_ref = g_gpu.mcla_gpu_city_rt_alpha_ref;
 inline auto& mcla_gpu_city_rt_alpha_view = g_gpu.mcla_gpu_city_rt_alpha_view;
 inline auto& mcla_gpu_city_rt_build_budget = g_gpu.mcla_gpu_city_rt_build_budget;
+inline auto& mcla_gpu_city_rt_fixed_selection = g_gpu.mcla_gpu_city_rt_fixed_selection;
 inline auto& mcla_gpu_city_rt_car_coverage = g_gpu.mcla_gpu_city_rt_car_coverage;
 inline auto& mcla_gpu_city_rt_compaction = g_gpu.mcla_gpu_city_rt_compaction;
 inline auto& mcla_gpu_rt_tlas_reuse = g_gpu.mcla_gpu_rt_tlas_reuse;

@@ -19,6 +19,7 @@
 #include "city_hit_scene.h"
 #include "city_refl_setting.h"
 #include "device.h"
+#include "gfx_preset.h"
 #include "hitch.h"
 #include "pass_timing.h"
 #include "rt_tier.h"
@@ -84,6 +85,7 @@ void CityRtScene::Shutdown() {
   pass_timing_ = nullptr;
   timing_ = nullptr;
   build_cost_ = {};
+  fixed_selection_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -284,6 +286,12 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
   recorded_ = false;
   instances_this_frame_ = 0;
   level_ = device_ ? level : city_rt::Level::kOff;
+  const bool fixed = larecomp::settings::mcla_gpu_city_rt_fixed_selection.Get();
+  if (fixed != fixed_selection_) {
+    // CHECK: a live switch should refill the ring under the new charge on both APIs.
+    ReleaseAll("city RT selection changed");
+    fixed_selection_ = fixed;
+  }
   budget_ = city_rt::WithRadius(city_rt::BudgetFor(class_, level_), radius_override);
   if (hit_ != nullptr) {
     budget_ = hit_->Adjust(budget_);  // the pool's cap and staging, when the pool is there
@@ -299,7 +307,7 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
   if (level_ != city_rt::Level::kOff) {
     if (larecomp::settings::mcla_gpu_city_rt_build_budget.Get()) {
       // CHECK: compare build peaks, sector churn and LOD transitions with a driving A/B.
-      budget_ = build_cost_.Limit(budget_);
+      budget_ = build_cost_.Limit(budget_, fixed_selection_);
     }
     last_wanted_frame_ = frame_;
     return;
@@ -560,7 +568,21 @@ void CityRtScene::Plan(const double camera[3]) {
   in.frame = frame_;
   in.budget = budget_;
   in.loading = reads_in_flight_.load();
+  in.fixed_selection = fixed_selection_;
   const city_rt::Plan plan = city_rt::PlanStreaming(in, sectors_, states_);
+  // CHECK: verify the refusal line and counter on a route that reaches either cap.
+  for (const city_rt::CapChange& change : plan.cap_changes) {
+    city_rt::SectorState& state = states_[change.sector];
+    city_rt::CapRefusal& active = change.detail == city_rt::Detail::kHi ? state.hi_refusal : state.lod_refusal;
+    const bool new_blas = change.refused.blas && !active.blas;
+    const bool new_pool = change.refused.pool && !active.pool;
+    active = change.refused;
+    if (!new_blas && !new_pool) continue;
+    ++counts_.cap_refusals;
+    REXLOG_INFO("{} cap refused sector {} {}: blas={} pool={} logical_charge_bytes={} blas_cap_bytes={} pool_charge_bytes={} pool_cap_bytes={} level={} preset={} fixed_selection={}",
+                kPrefix, change.sector, change.detail == city_rt::Detail::kHi ? "hi" : "lod", active.blas, active.pool, change.blas_charge, budget_.memory_cap, change.pool_charge,
+                budget_.pool_cap, city_rt::LevelName(level_), larecomp::cvar::GetFlagByName(gfx_preset::kPresetSetting), fixed_selection_);
+  }
   for (const city_rt::Request& e : plan.evictions) {
     Release(e.sector, e.detail);
     // a mesh of that sector waiting for its build is no longer wanted either
@@ -578,6 +600,7 @@ void CityRtScene::Plan(const double camera[3]) {
       for (const city_rt::Request& r : plan.loads) {
         city_rt::SectorState& st = states_[r.sector];
         (r.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kLoading;
+        (r.detail == city_rt::Detail::kHi ? st.hi_refusal : st.lod_refusal) = {};
         (r.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) =
             city_rt::EstimateStructureBytes(r.detail == city_rt::Detail::kHi ? sectors_[r.sector].hi_triangles : sectors_[r.sector].lod_triangles);
         // With the pool made, the read brings the hit blob too and the sector's block is counted at its estimate until the real one is placed.
@@ -646,7 +669,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     std::unique_ptr<plume::RenderBuffer> buffer;
     std::unique_ptr<plume::RenderAccelerationStructure> structure;
     uint64_t size = 0;
-    uint64_t admission_bytes = 0;
+    uint64_t uncompacted_bytes = 0;
     bool pooled = false;
     CityHitScene::Reservation block;
   };
@@ -734,7 +757,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     }
     auto* dev = device_->device();
     dev->setBottomLevelASBuildInfo(job.info, geometry, geometries, /*preferFastBuild=*/false, /*preferFastTrace=*/true);
-    job.admission_bytes = AlignUp(job.info.accelerationStructureSize, rr::kStructureAlignment);
+    job.uncompacted_bytes = AlignUp(job.info.accelerationStructureSize, rr::kStructureAlignment);
     const auto allocate_structure = [&](uint64_t bytes) {
       if (bytes == 0) return false;
       job.buffer = device_->CreateBuffer(plume::RenderBufferDesc::AccelerationStructureBuffer(bytes), std::format("city rt structure {}", s.sector).c_str());
@@ -748,9 +771,8 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
       job.size = bytes;
       return true;
     };
-    // Allowing compaction can change the prebuild size. Use the ordinary
-    // prebuild charge for streaming admission in both arms.
-    if (allow_compaction && rt_as::CanReserve(0, job.admission_bytes)) {
+    // Keep ordinary prebuild bytes for legacy admission, including when compaction changes the allocation size.
+    if (allow_compaction && rt_as::CanReserve(0, job.uncompacted_bytes)) {
       plume::RenderBottomLevelASBuildInfo compactable;
       dev->setBottomLevelASBuildInfo(compactable, geometry, geometries, /*preferFastBuild=*/false, /*preferFastTrace=*/true, /*allowCompaction=*/true);
       const uint64_t bytes = AlignUp(compactable.accelerationStructureSize, rr::kStructureAlignment);
@@ -759,9 +781,14 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
         else ++counts_.compact_failures;
       }
     }
-    if (!job.structure) allocate_structure(job.admission_bytes);
+    if (!job.structure) allocate_structure(job.uncompacted_bytes);
     if (!job.structure) {
       // No room (or no object): the mesh is tried again after a while. Its block was copied: the range comes back when the GPU is done.
+      // CHECK: confirm a physical allocation failure is reported after logical admission.
+      ++counts_.blas_allocation_failures;
+      REXLOG_WARN("{} BLAS allocation failed for sector {} {}: physical_bytes={} logical_charge_bytes={} blas_cap_bytes={} level={} fixed_selection={}",
+                  kPrefix, s.sector, s.detail == city_rt::Detail::kHi ? "hi" : "lod", job.uncompacted_bytes, city_rt::EstimateStructureBytes(m.triangle_count()),
+                  budget_.memory_cap, city_rt::LevelName(level_), fixed_selection_);
       if (job.pooled) {
         hit_->Discard(job.block);
       }
@@ -836,7 +863,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     counts_.build_triangles += target.triangles;
     city_rt::SectorState& st = states_[s.sector];
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kResident;
-    (s.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = j.admission_bytes;
+    (s.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = j.uncompacted_bytes;
     // The hit data's row becomes valid (the sector table the GPU reads is copied at the descriptor writes that follow this call).
     const bool committed = j.pooled && hit_->Commit(j.block, s.mesh.triangle_count(), s.mesh.opaque_triangles, 0, s.distance);  // the distance is the sector's textures' priority
     (s.detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = committed ? city_hit::PoolAllocator::Round(j.block.plan.total_bytes) : 0;
@@ -1037,10 +1064,21 @@ std::string CityRtScene::CensusText() const {
     return {};
   }
   const Stats s = stats();
+  uint64_t resident_charge = 0;
+  for (size_t i = 0; i < states_.size(); ++i) {
+    const city_rt::SectorState& st = states_[i];
+    const city_rt::SectorInfo& sector = sectors_[i];
+    if (st.hi == city_rt::Residency::kResident) resident_charge += city_rt::StructureCharge(fixed_selection_, sector.hi_triangles, st.hi_bytes);
+    if (st.lod == city_rt::Residency::kResident) resident_charge += city_rt::StructureCharge(fixed_selection_, sector.lod_triangles, st.lod_bytes);
+  }
   return std::format("; city ray tracing: {} hi and {} lod sectors, {:.1f} MiB, {} builds, {} evictions, {} failures; compaction {} query batches, {} copies, {} published, "
-                     "{} bytes saved, {} no gain, {} failures, {} cancelled, {} peak extra bytes{}", s.hi_resident, s.lod_resident,
+                     "{} bytes saved, {} no gain, {} failures, {} cancelled, {} peak extra bytes; city selection: fixed={} level={} "
+                     "resident_triangles={} build_triangles={} pending={} resident_charge_bytes={} blas_cap_bytes={} cap_refusals={} blas_allocation_failures={}{}",
+                     s.hi_resident, s.lod_resident,
                      double(s.structure_bytes) / (1024.0 * 1024.0), s.builds, s.evictions, s.failures, s.query_batches, s.compact_copies, s.compacted,
-                     s.compact_saved_bytes, s.compact_no_gain, s.compact_failures, s.compact_cancelled, s.compact_peak_extra_bytes, hit_ != nullptr ? hit_->CensusText() : std::string());
+                     s.compact_saved_bytes, s.compact_no_gain, s.compact_failures, s.compact_cancelled, s.compact_peak_extra_bytes,
+                     fixed_selection_, city_rt::LevelName(level_), s.triangles, s.build_triangles, s.loading, resident_charge, budget_.memory_cap, s.cap_refusals,
+                     s.blas_allocation_failures, hit_ != nullptr ? hit_->CensusText() : std::string());
 }
 
 void CityRtScene::LogState(const char* why) {

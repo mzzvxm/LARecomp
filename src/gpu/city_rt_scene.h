@@ -148,6 +148,8 @@ class CityRtScene {
     uint64_t build_triangles = 0;
     uint64_t evictions = 0;
     uint64_t failures = 0;
+    uint64_t cap_refusals = 0;   // sector-detail refusal episodes since the start
+    uint64_t blas_allocation_failures = 0;
     uint64_t query_batches = 0;
     uint64_t compact_copies = 0;
     uint64_t compacted = 0;
@@ -278,6 +280,7 @@ class CityRtScene {
   city_rt::Level level_ = city_rt::Level::kOff;
   city_rt::Budget budget_;
   city_rt::BuildCost build_cost_;
+  bool fixed_selection_ = true;
   uint64_t frame_ = 0;
   uint64_t last_wanted_frame_ = 0;
   uint64_t pack_probe_frame_ = 0;

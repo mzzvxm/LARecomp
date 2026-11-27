@@ -132,6 +132,7 @@ constexpr Budget WithRadius(Budget budget, float radius) {
 class BuildCost {
  public:
   static constexpr uint64_t kTargetNs = 1'000'000;
+  static constexpr uint32_t kFixedTriangles = 40'000;
   static constexpr uint64_t kUploadCap = 2 * kMiB;
 
   void Observe(uint64_t ns, uint64_t triangles) {
@@ -141,8 +142,9 @@ class BuildCost {
     ns_per_triangle_ = std::max(cost, 0.875 * ns_per_triangle_ + 0.125 * cost);
   }
 
-  Budget Limit(Budget budget) const {
-    budget.build_triangles = std::min(budget.build_triangles, uint32_t(kTargetNs / ns_per_triangle_));
+  Budget Limit(Budget budget, bool fixed_selection) const {
+    const uint32_t triangles = fixed_selection ? kFixedTriangles : uint32_t(kTargetNs / ns_per_triangle_);
+    budget.build_triangles = std::min(budget.build_triangles, triangles);
     budget.upload_bytes = std::min(budget.upload_bytes, kUploadCap);
     budget.trade_margin = std::max(25.0f, budget.hi_radius * 0.1f);
     return budget;
@@ -197,15 +199,23 @@ enum class Residency : uint8_t {
   kFailed,    // a read or a build failed: not tried again before `retry_frame`
 };
 
+struct CapRefusal {
+  bool blas = false;
+  bool pool = false;
+  bool operator==(const CapRefusal&) const = default;
+};
+
 struct SectorState {
   Residency hi = Residency::kNone;
   Residency lod = Residency::kNone;
-  uint64_t hi_bytes = 0;         // what the structure holds (the device's size once built, the estimate while loading)
+  uint64_t hi_bytes = 0;         // legacy admission charge (uncompacted prebuild bytes, or the estimate while loading)
   uint64_t lod_bytes = 0;
   uint64_t hi_retry_frame = 0;   // for kFailed
   uint64_t lod_retry_frame = 0;
   uint64_t hi_pool_held = 0;     // what the sector detail's pool block holds (the estimate while loading, the block's real size once built); 0 with no hit data
   uint64_t lod_pool_held = 0;
+  CapRefusal hi_refusal;
+  CapRefusal lod_refusal;
 };
 
 // The distance from a point to a box (0 inside): the same measure the game's own sector cull uses (sub_822D7D00: the box's distance), so the ring is the one the
@@ -228,9 +238,18 @@ struct Request {
   bool operator==(const Request& o) const { return sector == o.sector && detail == o.detail; }
 };
 
+struct CapChange {
+  uint32_t sector;
+  Detail detail;
+  CapRefusal refused;
+  uint64_t blas_charge = 0;
+  uint64_t pool_charge = 0;
+};
+
 struct Plan {
   std::vector<Request> loads;      // to read next, in the order to read them
   std::vector<Request> evictions;  // to give back now
+  std::vector<CapChange> cap_changes; // start or end of a refusal for a sector detail
   // what the plan saw, for the log and the tests
   uint32_t wanted_hi = 0;
   uint32_t wanted_lod = 0;
@@ -245,7 +264,12 @@ struct PlanInput {
   uint64_t frame = 0;
   Budget budget;
   uint32_t loading = 0;            // reads in flight now (they count against loads_in_flight and their estimated bytes against the cap)
+  bool fixed_selection = true;
 };
+
+constexpr uint64_t StructureCharge(bool fixed_selection, uint32_t triangles, uint64_t legacy_bytes) {
+  return fixed_selection ? EstimateStructureBytes(triangles) : legacy_bytes;
+}
 
 // Which sectors to read and give back. Pure: the same inputs give the same plan.
 //   - hi detail is wanted within hi_radius (within hi_radius + hysteresis once it is built or loading), the lod within far_radius (+ hysteresis);
@@ -310,6 +334,7 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
     uint64_t pool;  // the pool block's bytes (0 without a pool cap)
     bool resident;  // built (false: still loading)
     bool wanted;
+    CapRefusal refusal;
   };
   const bool pooled = b.pool_cap != 0;
   std::vector<Candidate> load_hi, load_lod;
@@ -320,13 +345,16 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
     const SectorInfo& s = sectors[i];
     const SectorState& st = states[i];
     const float d = DistanceToBox(in.camera, s.box_min, s.box_max);
-    const auto consider = [&](Detail detail, bool has, Residency residency, uint64_t bytes, uint64_t pool_held, uint64_t retry, uint32_t triangles, uint64_t pool_estimate, float radius) {
+    const auto consider = [&](Detail detail, Residency residency, uint64_t legacy_bytes, uint64_t pool_held, uint64_t retry, uint32_t triangles,
+                              uint64_t pool_estimate, float radius, CapRefusal refusal) {
       const bool present = residency == Residency::kResident || residency == Residency::kLoading;
-      const bool wanted = has && d <= (present ? RetentionRadius(b, radius) : radius);
+      const bool wanted = triangles != 0 && d <= (present ? RetentionRadius(b, radius) : radius);
       if (wanted) (detail == Detail::kHi ? plan.wanted_hi : plan.wanted_lod) += 1;
+      if (!wanted && refusal != CapRefusal{}) plan.cap_changes.push_back({i, detail, {}});
       if (present) {
+        const uint64_t bytes = StructureCharge(in.fixed_selection, triangles, legacy_bytes);
         const uint64_t pool = pooled ? pool_held : 0;
-        held.push_back({i, detail, d, bytes, pool, residency == Residency::kResident, wanted});
+        held.push_back({i, detail, d, bytes, pool, residency == Residency::kResident, wanted, {}});
         held_bytes += bytes;
         held_pool += pool;
         if (residency == Residency::kResident) {
@@ -334,11 +362,11 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
           plan.resident_pool_bytes += pool;
         }
       } else if (wanted && (residency == Residency::kNone || (residency == Residency::kFailed && in.frame >= retry))) {
-        (detail == Detail::kHi ? load_hi : load_lod).push_back({i, detail, d, EstimateStructureBytes(triangles), pooled ? pool_estimate : 0, false, true});
+        (detail == Detail::kHi ? load_hi : load_lod).push_back({i, detail, d, EstimateStructureBytes(triangles), pooled ? pool_estimate : 0, false, true, refusal});
       }
     };
-    consider(Detail::kHi, s.has_hi(), st.hi, st.hi_bytes, st.hi_pool_held, st.hi_retry_frame, s.hi_triangles, s.hi_pool, b.hi_radius);
-    consider(Detail::kLod, s.has_lod(), st.lod, st.lod_bytes, st.lod_pool_held, st.lod_retry_frame, s.lod_triangles, s.lod_pool, b.far_radius);
+    consider(Detail::kHi, st.hi, st.hi_bytes, st.hi_pool_held, st.hi_retry_frame, s.hi_triangles, s.hi_pool, b.hi_radius, st.hi_refusal);
+    consider(Detail::kLod, st.lod, st.lod_bytes, st.lod_pool_held, st.lod_retry_frame, s.lod_triangles, s.lod_pool, b.far_radius, st.lod_refusal);
   }
   const auto nearest_first = [](const Candidate& a, const Candidate& c) { return a.distance != c.distance ? a.distance < c.distance : a.sector < c.sector; };
   std::sort(load_hi.begin(), load_hi.end(), nearest_first);
@@ -378,7 +406,8 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
         bytes -= std::min(bytes, victim.bytes);
         pool -= std::min(pool, victim.pool);
       }
-      const bool shortfall = short_of_room();
+      const CapRefusal refused{bytes + c.bytes > b.memory_cap, pooled && pool + c.pool > b.pool_cap};
+      const bool shortfall = refused.blas || refused.pool;
       // With a trade margin, keep the residents if the replacement still would not fit.
       if (!shortfall || b.trade_margin == 0.0f) {
         for (; next_tradable < end; ++next_tradable) {
@@ -390,7 +419,8 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
       }
       if (shortfall) {
         plan.over_cap = true;
-        plan.over_pool_cap = plan.over_pool_cap || (pooled && pool + c.pool > b.pool_cap);
+        plan.over_pool_cap = plan.over_pool_cap || refused.pool;
+        if (refused != c.refusal) plan.cap_changes.push_back({c.sector, c.detail, refused, c.bytes, c.pool});
         continue;  // no room for this one; a smaller or nearer one behind it may still fit
       }
       plan.loads.push_back({c.sector, c.detail, c.distance});

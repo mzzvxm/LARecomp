@@ -1498,6 +1498,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_city_rt_fixed_selection": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use fixed city ray tracing build limits and charge sectors by their triangle count. Changing this refills the city streaming ring. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_city_rt_car_coverage": {
   "type": "bool",
   "default": "true",
