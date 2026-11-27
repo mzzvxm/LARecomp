@@ -22,6 +22,7 @@ namespace larecomp {
 namespace {
 
 namespace pf = larecomp::profiles;
+namespace gp = mcla::gpu::gfx_preset;
 
 bool IsDigits(std::string_view s) {
   return !s.empty() && std::all_of(s.begin(), s.end(),
@@ -310,13 +311,18 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
   // nobody has changed since: it is not the player's choice. A line the file has
   // already still follows the value, so a cvar the player changed, saved and then
   // put back is not left at the changed value.
-  // A cvar tagged .debug_only() that was changed while the game ran is not written at all, and
-  // its line in the file, if any, is not touched: debug settings last one session, and a
-  // tester's hand-written line keeps its value. That covers the DEBUG menu, the settings panel
-  // and the console with no per-cvar call. (`held`, below, is not affected.)
+  // Debug settings normally last one session and a tester's hand-written line keeps its value.
+  // The preset origin uses the debug tag to keep it out of player controls, and is saved as
+  // bookkeeping alongside CUSTOM. (`held`, below, is also unaffected by the debug tag.)
+  // CHECK: save and reload an edit made through the pause menu in the full game.
   // A cvar a scene holds (the trailer toolkit's `set` key) is judged by what it was before the scene took it: the scene's value is not
   // the player's choice, so it is never written, and a value the player had changed earlier is written as the player left it.
   const std::unordered_map<std::string, SceneHold> scene_holds = SceneHoldsNow();
+  const auto from_hold = scene_holds.find(std::string(gp::kFromSetting));
+  const std::string from = from_hold == scene_holds.end() ? larecomp::cvar::GetFlagByName(gp::kFromSetting)
+                                                        : from_hold->second.value;
+  gp::Preset custom_base = gp::Preset::kCustom;
+  gp::Parse(gp::MigrateId(from), &custom_base);
   for (const std::string& name : larecomp::cvar::ListFlags()) {
     const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
     if (!info) {
@@ -327,7 +333,7 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
     facts.is_command = info->type == larecomp::cvar::FlagType::Command;
     facts.session_only = IsSessionOnly(name);
     facts.changed_this_session = info->source == larecomp::cvar::Source::kRuntime;
-    facts.debug_only = info->is_debug_only;
+    facts.debug_only = info->is_debug_only && name != gp::kFromSetting;
     facts.held_by_scene = hold != scene_holds.end();
     facts.changed_before_scene = facts.held_by_scene && hold->second.source == larecomp::cvar::Source::kRuntime;
     const CvarSaveAction action = DecideCvarSave(facts);
@@ -345,7 +351,10 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
     // line can still supply the startup value until the file contains the new key.
     // Save an explicit preset even when it equals the registered default. The first-start preset can differ.
     // CHECK: choose VANILLA on a machine that starts in ENHANCED and verify it survives a restart.
-    const bool unchanged = name != "mcla_gpu_vendor_denoiser" && name != mcla::gpu::gfx_preset::kPresetSetting &&
+    // A covered row changed back to its registered default can still override CUSTOM's base.
+    const std::string_view inherited = gp::CellOf(name, custom_base);
+    const bool overrides_base = !inherited.empty() && value != inherited;
+    const bool unchanged = name != "mcla_gpu_vendor_denoiser" && name != gp::kPresetSetting && !overrides_base &&
                            (value == info->default_value || AtStartupValue(name, value));
     Put(edits, name, CvarTomlValue(name, value), unchanged);
   }

@@ -106,11 +106,10 @@ bool ReleaseCvarFromScene(std::string_view name);
 // as it is: other lines, comments, keys of cvars this build does not have. Values
 // from the command line or the environment are not written. A changed value that
 // is back at its default, or at its startup value (NoteStartupCvar), only rewrites
-// a line the file already has, except the vendor denoiser toggle, whose explicit OFF
-// takes precedence over a legacy ON. A cvar tagged .debug_only() is never written for a
-// change made while the game runs (the DEBUG menu, the settings panel, the console),
-// and a line the file already has for it is left exactly as it is, so a tester's
-// hand-written value stays. A cvar a scene holds (SetCvarForScene) counts as what it was
+// an existing line unless it overrides a legacy value, the first-start preset, or a
+// row inherited from CUSTOM's origin. Debug-only cvars leave their file lines alone,
+// except for the CUSTOM origin, which is saved as preset bookkeeping. A cvar a scene
+// holds (SetCvarForScene) counts as what it was
 // before the scene took it: the scene's value is never written. `held` is the exception: a
 // value a menu holds for the next launch is written whatever the cvar is. The file is replaced in one step (see
 // profiles::EditConfig). False, with the file as it was, when it cannot be written.
