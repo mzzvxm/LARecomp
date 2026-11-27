@@ -189,8 +189,8 @@ void Page(const std::string& dir) {
   for (const Row& row : reflections) Check(row.native_only, row.key + " is native only");
   std::string debug;
   Check(ReadFile(dir + "debug_menu_pages.cpp", &debug), "debug menu source is available");
-  const auto fixes = TableBody(StripLineComments(debug), "kDebugFixesItems");
-  Check(Has(fixes, "PM_RxSharpUi") && Has(fixes, "PM_RxSharpMinimap"), "both sharpening switches are under Debug Fixes");
+  const auto fixes = TableBody(StripLineComments(debug), "kDebugRendererFixesItems");
+  Check(Has(fixes, "PM_RxSharpUi") && Has(fixes, "PM_RxSharpMinimap"), "both sharpening switches are under Debug Renderer Fixes");
   CheckWidth("Lighting and Shadows", {"SUN SHADOW FILTER (SUN OFF)", "BOUNCE LIGHT RT (NO RT GPU)", "CAR AO RT (NO RT GPU)"}, "RT (NO RT GPU)");
   CheckWidth("Reflections", {"CAR SELF-REFLECTIONS RT (NO RT GPU)", "SURFACE REFLECTIONS RT (NO RT GPU)", "RT CITY (BUILDING DATA)"}, "ULTRA");
 
