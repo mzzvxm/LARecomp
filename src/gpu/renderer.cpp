@@ -428,6 +428,8 @@ bool Renderer::Initialize(const rex::NativeWindow& window, const Options& option
     vram_.Initialize(device_, textures_, resolve_, resolve_memory_, edram_);
     scene_.Initialize(upload_, pipelines_, samplers_, geometry_, edram_, textures_, resolve_,
                       guest_layout_, heap_, pass_timing_, post_);
+    title_puddle_capture_.Initialize(device_, frames_, heap_);
+    if (title_puddle_capture_.enabled()) scene_.SetTitlePuddleCapture(&title_puddle_capture_);
     // The guest's occlusion queries (the sun's glare): never fails the renderer.
     occlusion_.Initialize(device_);
     scene_.SetOcclusion(&occlusion_);
@@ -773,6 +775,7 @@ void Renderer::Shutdown(bool fast_exit) {
   clock.Stage("the vendor calls, the captures, the timers and the frame generation");
   latency::Shutdown();  // the vendor's calls name the swap chain
   capture_.Shutdown();
+  title_puddle_capture_.Shutdown();
   occlusion_.Shutdown();
   pass_timing_.Shutdown();
   timing_.Shutdown();

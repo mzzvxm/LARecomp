@@ -141,11 +141,21 @@ class ResolveCache {
     // would give back the guest's density, and for a product with mip levels no texture at all) and
     // no enlarged one. The fetches of these views are UV lookups, which need nothing else; the
     // sampler is the guest's.
-    bool own_scale = false;
+    SideView source_view = SideView::kNone;
+    bool own_scale() const { return source_view != SideView::kNone; }
     // The log has said the size of this product as a side view's (once for each time it is made: a
     // product made again at another scale is a new one).
     bool own_scale_logged = false;
     bool sun_atlas = false;
+  };
+
+  struct CaptureWrite {
+    const Product* product = nullptr;
+    EdramKey source;
+    uint32_t level = 0;
+    uint32_t width = 0, height = 0;
+    int32_t x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    bool pre_tone_scene = false;
   };
 
   ResolveCache() = default;
@@ -194,7 +204,7 @@ class ResolveCache {
   // float scene (HdrToneMap::FloatSceneLikely), which wants the range of a 7e3 colour above the
   // console's, so a 7e3 source is not clamped to it (kFlagSourceCeiling7e3).
   Summary Execute(const ResolveRecord& record, plume::RenderCommandList* list,
-                  bool float_scene, bool capture_hdr = false);
+                  bool float_scene, bool capture_hdr = false, CaptureWrite* capture = nullptr);
 
   // Takes the write notifications (TextureCache::Sync calls it once per draw).
   void Sync() { DrainInvalidations(); }

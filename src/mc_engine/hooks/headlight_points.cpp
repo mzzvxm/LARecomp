@@ -34,6 +34,9 @@
 #include "gpu/light_points.h"
 #include "hooks_internal.h"
 #include "guest_timing.h"
+#include "run_ready.h"
+#include "title_puddle_probe.h"
+#include "larecomp_log.h"
 
 namespace {
 
@@ -82,7 +85,22 @@ void MCLAHeadlightPoint(PPCRegister& r17, PPCRegister& r20, PPCRegister& r26, PP
     if (for_rig) hp::Global().Note(lp::ToHeadlightPoint<hp::Point>(point));
 }
 
+// CHECK: Verify each arm skips its branch in the title on both renderers.
+// 0x8237B0C0 is immediately before the branch that selects AddGlow or the
+// call to sub_822FB508. 0x8237B170 advances the point index on both routes.
+bool Hook_ProbeTitleVehicleLight(PPCRegister& r14) {
+    namespace probe = mc::title_puddles;
+    if (!probe::SkipVehiclePoint(probe::ConfiguredArm(), r14.u32) ||
+        mc::run_ready::Entered() || !mc::run_ready::Pending(mc::run_ready::Event::Roam)) return false;
+    static std::atomic_flag logged;
+    if (!logged.test_and_set(std::memory_order_relaxed)) {
+        LARECOMP_APP_INFO("[title puddles] skipping guest vehicle {}", r14.u32 ? "projected light" : "glow");
+    }
+    return true;
+}
+
 #else  // REXGLUE_HAS_XEO3_TARGET
 #include <rex/ppc/context.h>
 void MCLAHeadlightPoint(PPCRegister& r17, PPCRegister& r20, PPCRegister& r26, PPCRegister& r29, PPCRegister& r30, PPCRegister& r31) {}
+bool Hook_ProbeTitleVehicleLight(PPCRegister&) { return false; }
 #endif  // REXGLUE_HAS_XEO3_TARGET

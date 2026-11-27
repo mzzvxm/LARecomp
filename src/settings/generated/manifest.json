@@ -1,4 +1,28 @@
 {
+ "mcla_dbg_capture_at": {
+  "type": "std::string",
+  "default": "\"0,30\"",
+  "category": "MCLA/Debug",
+  "help": "\"Title DDS capture times in whole seconds after the title is ready. \"\n      \"Separate times with commas. Read at start.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
+ "mcla_dbg_capture_pass": {
+  "type": "std::string",
+  "default": "\"\"",
+  "category": "MCLA/Debug",
+  "help": "\"Title DDS capture. Comma-separated side-view names, \"\n      \"EDRAM labels (pitch samples format@tile), or rt:tile IDs. Use scene for pre-tone-map colour alone. \"\n      \"Empty disables capture. Read at start.\"",
+  "traits": [
+   "rex::kDebugOnly",
+   "rex::kRequiresRestart"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_test_crash": {
   "type": "std::string",
   "default": "\"\"",

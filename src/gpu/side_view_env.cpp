@@ -145,7 +145,7 @@ uint32_t env_fallback::MapWord(ResolveCache& resolves, const EdramTargets& edram
   // during cuts, live scale changes and menu transitions, on both APIs.
   resolves.Sync();
   const ResolveCache::Product* found = resolves.FindOverlap(kMapBase, 1);
-  if (!found || !found->active || !found->texture || !found->own_scale || found->depth_source ||
+  if (!found || !found->active || !found->texture || !found->own_scale() || found->depth_source ||
       found->layout != plume::RenderTextureLayout::SHADER_READ ||
       found->format != plume::RenderFormat::R16G16B16A16_FLOAT || found->scale != edram.side_scales()[SideView::kEnv] ||
       found->key.base_page != (kMapBase >> 12) ||

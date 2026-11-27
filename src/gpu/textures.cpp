@@ -705,10 +705,10 @@ TextureCache::Binding TextureCache::Bind2D(const TextureFetch& fetch, Scale read
     // CHECK: an own-scale product with more than one level (the environment map, once its class takes
     // the three downsample passes) binds all its levels as it is, at any reader scale.
     const bool reduce =
-        !product->own_scale && product->scale > reader_scale && product->scale > Scale{};
-    const bool enlarge = !product->own_scale && product->scale < reader_scale &&
+        !product->own_scale() && product->scale > reader_scale && product->scale > Scale{};
+    const bool enlarge = !product->own_scale() && product->scale < reader_scale &&
                          product->scale < Scale{} && product->depth_source;
-    if (product->own_scale && !reader_scale.none() && product->scale != reader_scale) {
+    if (product->own_scale() && !reader_scale.none() && product->scale != reader_scale) {
       ++stats_.product_own_scale;
     }
     if (!reader_scale.none() && (reduce || enlarge)) {

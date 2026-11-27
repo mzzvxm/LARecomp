@@ -38,6 +38,8 @@
 #include "larecomp_log.h"
 #include "mc_engine/camera/final_camera.h"
 #include "title_road_plane.h"
+#include "run_ready.h"
+#include "title_puddle_probe.h"
 
 namespace {
 
@@ -216,6 +218,20 @@ void Hook_TitlePlaneW(PPCRegister& f31) {
   if (!s.pending) return;
   s.pending = false;
   f31.f64 = double(s.saved_f31);
+}
+
+// CHECK: Confirm the wetness override reaches the title's road materials.
+// sub_822F3918 stores f3 to c43.x at 0x822F3AA8.
+void Hook_ProbeTitleRoad(PPCRegister& f3) {
+  namespace probe = mc::title_puddles;
+  const auto arm = probe::ConfiguredArm();
+  if (arm != probe::Arm::DryResponse ||
+      mc::run_ready::Entered() || !mc::run_ready::Pending(mc::run_ready::Event::Roam)) return;
+  static std::atomic_flag logged;
+  if (!logged.test_and_set(std::memory_order_relaxed)) {
+    LARECOMP_APP_INFO("[title puddles] overriding guest c43.x (wetness {:.3f})", f3.f64);
+  }
+  probe::RoadParams(arm, f3.f64);
 }
 
 #endif  // REXGLUE_HAS_XEO3_TARGET

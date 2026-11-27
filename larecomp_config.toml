@@ -25617,6 +25617,13 @@ name = "MCLAHeadlightPoint"
 registers = ["r17", "r20", "r26", "r29", "r30", "r31"]
 after_instruction = false
 
+[[midasm_hook]]
+address = 0x8237B0C0
+name = "Hook_ProbeTitleVehicleLight"
+registers = ["r14"]
+after_instruction = false
+jump_address_on_true = 0x8237B170
+
 # 0x823126A4: `bl sub_8230D988` in the sun-cascade shadow phase of sub_823120C8.
 #
 # sub_8230D988 hunts for the next impostor to refresh with two nested loops that
@@ -28037,6 +28044,12 @@ registers = ["f31"]
 address = 0x822F3AF8
 name = "Hook_TitlePlaneW"
 registers = ["f31"]
+
+[[midasm_hook]]
+address = 0x822F3AA8
+name = "Hook_ProbeTitleRoad"
+registers = ["f3"]
+after_instruction = false
 
 # Owned cars past 30 (owned_cars.cpp, owned_cars_sites.inc; owned_cars_limit = 30 makes every
 # hook below do nothing). Each site moves the register the instruction at `address` just wrote

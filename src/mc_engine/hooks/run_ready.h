@@ -1,6 +1,7 @@
 #pragma once
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 
 namespace mc::run_ready {
@@ -70,5 +71,8 @@ void NoteTitleDraw();
 void NotePadPoll();
 void NoteEntered();
 bool Entered();
+void RequestTitleClock();
+// Process-local monotonic time of the title-ready marker, while on the title.
+std::chrono::steady_clock::time_point TitleStart();
 
 }  // namespace mc::run_ready

@@ -614,7 +614,7 @@ ResolveCache::EnvProducts ResolveCache::CheckEnvProducts(Scale map_scale, bool r
   };
   // CHECK: capture a drawn and a held frame on both APIs. The held frame must
   // have the same four map levels and specular copy, with no clears or resolves.
-  if (!map || !map->own_scale || map->scale != map_scale || map->key.mip_page != env_hold::kMipPage ||
+  if (!map || !map->own_scale() || map->scale != map_scale || map->key.mip_page != env_hold::kMipPage ||
       map->coverage.empty()) return {};
   const uint64_t written = map->coverage.front().last_write_frame;
   if ((written == frame_) != refreshed ||
@@ -667,7 +667,7 @@ uint64_t ResolveCache::HudMapWritten(const HudMapCopy& copy) {
   const auto it = products_.find(copy.key);
   if (it == products_.end()) return 0;
   const Product& p = *it->second;
-  if (!p.active || !p.own_scale || p.depth_source || p.coverage.size() != 1 ||
+  if (!p.active || !p.own_scale() || p.depth_source || p.coverage.size() != 1 ||
       !p.coverage[0].complete() || p.coverage[0].last_write_frame != frame_) return 0;
   ++stats_.hud_map_drawn;
   return frame_;
@@ -680,7 +680,7 @@ bool ResolveCache::ReplayHudMap(const HudMapCopy& copy, uint64_t written,
   const auto it = products_.find(copy.key);
   if (it == products_.end()) return false;
   Product& p = *it->second;
-  if (!p.texture || !p.own_scale || p.depth_source || p.coverage.size() != 1 ||
+  if (!p.texture || !p.own_scale() || p.depth_source || p.coverage.size() != 1 ||
       !p.coverage[0].complete() || p.coverage[0].last_write_frame != written ||
       p.layout != plume::RenderTextureLayout::SHADER_READ ||
       p.scale != edram_->side_scales()[SideView::kUiMap]) return false;
@@ -1183,7 +1183,7 @@ uint32_t ResolveCache::ReducedSlot(Product& product, Scale scale, uint32_t level
 
 ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
                                             plume::RenderCommandList* list, bool float_scene,
-                                            bool capture_hdr) {
+                                            bool capture_hdr, CaptureWrite* capture) {
   const cpu_timing::Scope cpu_scope(cpu_timing::Section::kResolveCall);
   Summary summary;
   ++stats_.resolves;
@@ -1591,8 +1591,8 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
         cascade_schedule::atlas_ready_scale.store(0, std::memory_order_release);
       }
       p->sun_atlas |= sun_atlas;
-      p->own_scale = src->side_view != SideView::kNone;
-      if (p->own_scale && !p->own_scale_logged) {
+      p->source_view = src->side_view;
+      if (p->own_scale() && !p->own_scale_logged) {
         // What a side view's product costs (the sun shadows' atlas: 25 MiB at 2x, 56 MiB at 3x).
         p->own_scale_logged = true;
         REXLOG_INFO("[gpu] resolve: {} is a product of the {} side view: {}x{} host texels ({}x the "
@@ -1891,11 +1891,17 @@ ResolveCache::Summary ResolveCache::Execute(const ResolveRecord& r,
       ++stats_.modes[mode & 0xFF];
       stats_.pixels += uint64_t(tx1 - tx0) * uint64_t(ty1 - ty0);
       stats_.host_pixels += host_pixels;
-      if (capture_hdr && !depth_source && level == 0 && tx0 == 0 && uint32_t(tx1) == level_width &&
+      const bool pre_tone_scene = (capture_hdr || capture) && !depth_source &&
+          level == 0 && tx0 == 0 && uint32_t(tx1) == level_width &&
           temporal::MainColorSamples(src_key) != 0 &&
           temporal::ViewOfSamples(src_key.samples) == temporal::View::kPlay &&
           (key.base_page == 0x07FE0 || key.base_page == 0x07C48) &&
-          p->format == plume::RenderFormat::R16G16B16A16_FLOAT) {
+          p->format == plume::RenderFormat::R16G16B16A16_FLOAT;
+      if (capture) {
+        *capture = {p, src_key, level, std::max(p->scale.Edge(key.width) >> level, 1u),
+                    std::max(p->scale.Edge(key.height) >> level, 1u), tx0, ty0, tx1, ty1, pre_tone_scene};
+      }
+      if (capture_hdr && pre_tone_scene) {
         summary.visual_scene = p;
         summary.visual_y0 = uint32_t(ty0);
         summary.visual_y1 = uint32_t(ty1);

@@ -44,6 +44,7 @@ add_library(larecomp_gpu OBJECT
     city_refl.cpp
     city_refl_setting.cpp
     capture_readback.cpp
+    title_puddle_capture.cpp
     choice_box.cpp
     constants.cpp
     cut_request.cpp

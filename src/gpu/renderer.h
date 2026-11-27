@@ -57,6 +57,7 @@
 #include "ao.h"
 #include "capture.h"
 #include "capture_readback.h"
+#include "title_puddle_capture.h"
 #include "car_dump.h"
 #include "car_frame.h"
 #include "headlight_rig.h"
@@ -413,6 +414,7 @@ class Renderer final : public RenderThread::Executor {
   PassTiming pass_timing_;  // per-pass GPU time, mcla_gpu_pass_timing
   PerfMarkers markers_;     // profiler labels, mcla_gpu_perf_markers
   FrameCapture capture_;
+  TitlePuddleCapture title_puddle_capture_;
   RenderThread thread_;
 
   std::shared_ptr<OverlayHost> overlay_host_;
