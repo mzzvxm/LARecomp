@@ -411,6 +411,28 @@ void FrameGenerationAndLatency(Fixture& f) {
             }
 }
 
+void CityCoverageWarning(Fixture& f) {
+    namespace rt = mcla::gpu::city_rt;
+    using enum rt::CoveragePressure;
+    constexpr auto row = "PM_RxGpuPreset";
+    constexpr auto fact = "live.city_rt_coverage";
+    f.F("gpu.rt_tier", "strong");
+    f.S("mcla_gpu_preset", "custom");
+    f.State(row, true);
+    f.F(fact, rt::CoveragePressureName(kBlasCap));
+    f.State(row, true, "", "PRESET (CITY RT CAP)");
+    f.F(fact, rt::CoveragePressureName(kHitPool));
+    f.State(row, true, "", "PRESET (CITY RT POOL)");
+    f.F("gpu.vram_warning", "SCL/MSAA");
+    f.State(row, true, "", "PRESET (VRAM! {gpu.vram_warning})");
+    f.F(fact, rt::CoveragePressureName(kAllocation));
+    f.State(row, true, "", "PRESET (CITY RT ALLOC)");
+    f.facts.erase("gpu.vram_warning");
+    f.State(row, true, "", "PRESET (CITY RT ALLOC)");
+    f.facts.erase(fact);
+    f.State(row, true);
+}
+
 void Denoiser(Fixture& f) {
     namespace rr = mcla::gpu::denoiser;
     namespace rg = mcla::gpu::rayregen;
@@ -506,6 +528,7 @@ int main(int argc, char** argv) {
     Upscaling(fixture);
     FrameGenerationAndLatency(fixture);
     Denoiser(fixture);
+    CityCoverageWarning(fixture);
     std::printf("pause menu parity: %d checks, %d failed\n", checks, failures);
     return failures != 0;
 }

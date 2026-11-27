@@ -35,6 +35,15 @@ namespace {
 constexpr const char* kPrefix = "[city rt]";
 namespace rr = car_rt_rules;
 
+std::atomic<city_rt::CoveragePressure> g_coverage_warning{city_rt::CoveragePressure::kNone};
+
+void PublishCoverageWarning(city_rt::CoveragePressure pressure) {
+  if (g_coverage_warning.load(std::memory_order_relaxed) == pressure) return;
+  g_coverage_warning.store(pressure, std::memory_order_relaxed);
+  const auto reason = city_rt::CoveragePressureName(pressure);
+  REXLOG_INFO("{} coverage warning: {}", kPrefix, reason.empty() ? "clear" : reason);
+}
+
 uint64_t AlignUp(uint64_t value, uint64_t alignment) { return (value + alignment - 1) / alignment * alignment; }
 
 // A mesh's bytes in its input buffer: the positions (float3) and the indices (uint32), each at 16.
@@ -42,6 +51,10 @@ uint64_t PositionBytes(const citypack::MeshData& m) { return AlignUp(uint64_t(m.
 uint64_t IndexBytes(const citypack::MeshData& m) { return AlignUp(uint64_t(m.indices.size()) * 4, 16); }
 
 }  // namespace
+
+std::string_view city_rt::CoverageWarningFact() {
+  return CoveragePressureName(g_coverage_warning.load(std::memory_order_relaxed));
+}
 
 CityRtScene::~CityRtScene() { StopWorker(); }
 
@@ -251,6 +264,7 @@ void CityRtScene::PollLoads() {
     if (!r.ok) {
       residency = city_rt::Residency::kFailed;
       retry = frame_ + kRetryFrames;
+      st.BuildPressure(r.request.detail) = city_rt::CoveragePressure::kNone;
       ++counts_.failures;
       REXLOG_WARN("{} sector {} ({}) {}: {}", kPrefix, r.request.sector, pack_.name(r.request.sector), r.request.detail == city_rt::Detail::kHi ? "hi detail" : "lod", r.error);
       continue;
@@ -286,6 +300,8 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
   ++frame_;
   recorded_ = false;
   instances_this_frame_ = 0;
+  const city_rt::Level previous_level = level_;
+  const city_rt::Budget previous_budget = budget_;
   level_ = device_ ? level : city_rt::Level::kOff;
   const bool fixed = larecomp::settings::mcla_gpu_city_rt_fixed_selection.Get();
   if (fixed != fixed_selection_) {
@@ -310,9 +326,20 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
       // CHECK: compare build peaks, sector churn and LOD transitions with a driving A/B.
       budget_ = build_cost_.Limit(budget_, fixed_selection_);
     }
+    if (level_ != previous_level || budget_.hi_radius != previous_budget.hi_radius ||
+        budget_.far_radius != previous_budget.far_radius || budget_.pool_cap != previous_budget.pool_cap ||
+        budget_.trade_margin != previous_budget.trade_margin) {
+      ResetCoverageWarning();
+    } else if (const auto sample = std::exchange(coverage_sample_, std::nullopt)) {
+      // CHECK: read the PRESET row during the cap hold and after restoring the normal radius.
+      PublishCoverageWarning(coverage_warning_.Observe(*sample));
+    } else {
+      coverage_warning_.Interrupt();
+    }
     last_wanted_frame_ = frame_;
     return;
   }
+  if (previous_level != city_rt::Level::kOff) ResetCoverageWarning();
   CheckBuilds();
   FinishCompaction(false);
   // The structures go back after a while without a request (the setting was switched off, or the pass is gated).
@@ -346,6 +373,7 @@ void CityRtScene::Release(uint32_t sector, city_rt::Detail detail) {
   (detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kNone;
   (detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = 0;
   (detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = 0;
+  st.BuildPressure(detail) = city_rt::CoveragePressure::kNone;
 }
 
 void CityRtScene::GiveBackForReread(uint32_t sector, city_rt::Detail detail) {
@@ -353,9 +381,17 @@ void CityRtScene::GiveBackForReread(uint32_t sector, city_rt::Detail detail) {
   (detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kNone;
   (detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = 0;
   (detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = 0;
+  st.BuildPressure(detail) = city_rt::CoveragePressure::kNone;
+}
+
+void CityRtScene::ResetCoverageWarning() {
+  coverage_warning_.Reset();
+  coverage_sample_.reset();
+  PublishCoverageWarning(city_rt::CoveragePressure::kNone);
 }
 
 void CityRtScene::ReleaseAll(const char* why) {
+  ResetCoverageWarning();
   if (built_.empty()) {
     return;
   }
@@ -571,6 +607,7 @@ void CityRtScene::Plan(const double camera[3]) {
   in.loading = reads_in_flight_.load();
   in.fixed_selection = fixed_selection_;
   const city_rt::Plan plan = city_rt::PlanStreaming(in, sectors_, states_);
+  coverage_sample_ = plan.coverage_pressure;
   // CHECK: verify the refusal line and counter on a route that reaches either cap.
   for (const city_rt::CapChange& change : plan.cap_changes) {
     city_rt::SectorState& state = states_[change.sector];
@@ -680,11 +717,12 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
   const bool allow_compaction = larecomp::settings::mcla_gpu_city_rt_compaction.Get();
   if (pass_timing_) pass_timing_->Mark(list, "city rt upload");
   // A mesh that cannot be built now is tried again after `retry` frames.
-  const auto give_up = [&](Staged& s, uint64_t retry) {
+  const auto give_up = [&](Staged& s, uint64_t retry, city_rt::CoveragePressure pressure) {
     city_rt::SectorState& st = states_[s.sector];
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kFailed;
     (s.detail == city_rt::Detail::kHi ? st.hi_retry_frame : st.lod_retry_frame) = frame_ + retry;
     (s.detail == city_rt::Detail::kHi ? st.hi_pool_held : st.lod_pool_held) = 0;
+    st.BuildPressure(s.detail) = pressure;
     ++counts_.failures;
   };
   for (size_t i = 0; i < staged_.size(); ++i) {
@@ -711,7 +749,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
         break;  // no staging room this frame: the rest next frame
       } else if (job.block.why == CityHitScene::Reservation::Why::kNoRoom) {
         // The plan counts the pool's bytes, a range that long may still be missing (a hole too small, or the ranges eviction gave back are free a frame later): soon again.
-        give_up(s, city_hit::kPoolRetryFrames);
+        give_up(s, city_hit::kPoolRetryFrames, city_rt::CoveragePressure::kHitPool);
         job.staged_index = size_t(-1);
         jobs.push_back(std::move(job));
         continue;
@@ -793,7 +831,8 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
       if (job.pooled) {
         hit_->Discard(job.block);
       }
-      give_up(s, kRetryFrames);
+      give_up(s, kRetryFrames,
+              job.uncompacted_bytes != 0 ? city_rt::CoveragePressure::kAllocation : city_rt::CoveragePressure::kNone);
       frames_->Retire(std::move(job.input));
       job.staged_index = size_t(-1);
       jobs.push_back(std::move(job));
@@ -864,6 +903,7 @@ bool CityRtScene::BuildStaged(plume::RenderCommandList* list, uint32_t slot_inde
     counts_.build_triangles += target.triangles;
     city_rt::SectorState& st = states_[s.sector];
     (s.detail == city_rt::Detail::kHi ? st.hi : st.lod) = city_rt::Residency::kResident;
+    st.BuildPressure(s.detail) = city_rt::CoveragePressure::kNone;
     (s.detail == city_rt::Detail::kHi ? st.hi_bytes : st.lod_bytes) = j.uncompacted_bytes;
     // The hit data's row becomes valid (the sector table the GPU reads is copied at the descriptor writes that follow this call).
     const bool committed = j.pooled && hit_->Commit(j.block, s.mesh.triangle_count(), s.mesh.opaque_triangles, 0, s.distance);  // the distance is the sector's textures' priority

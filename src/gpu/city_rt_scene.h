@@ -44,6 +44,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <unordered_map>
@@ -244,6 +245,7 @@ class CityRtScene {
   void StartWorker();
   void StopWorker();
   void WorkerMain();
+  void ResetCoverageWarning();
   void ReleaseAll(const char* why);
   void Release(uint32_t sector, city_rt::Detail detail);
   void NoteSectorChange(uint32_t sector, bool evicted);
@@ -280,6 +282,8 @@ class CityRtScene {
   city_rt::Level level_ = city_rt::Level::kOff;
   city_rt::Budget budget_;
   city_rt::BuildCost build_cost_;
+  city_rt::CoverageWarning coverage_warning_;
+  std::optional<city_rt::CoveragePressure> coverage_sample_;
   bool fixed_selection_ = true;
   uint64_t frame_ = 0;
   uint64_t last_wanted_frame_ = 0;
