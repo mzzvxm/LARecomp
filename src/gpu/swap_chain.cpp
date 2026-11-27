@@ -2,6 +2,7 @@
 
 #include "swap_chain.h"
 
+#include <algorithm>
 #include <format>
 
 #include <rex/logging/log_category.h>
@@ -19,7 +20,62 @@
 #include <wrl/client.h>
 #endif
 
+#if defined(LARECOMP_GPU_HAS_D3D12)
+#include <plume_d3d12.h>
+#endif
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+#include <plume_vulkan.h>
+#endif
+
 namespace mcla::gpu {
+
+namespace {
+
+bool CanResizeInPlace(const plume::RenderSwapChain& chain) {
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    // The pinned Plume resize unconditionally releases every native buffer.
+    const auto& dxgi = static_cast<const plume::D3D12SwapChain&>(chain);
+    return dxgi.d3d && dxgi.textures.size() == dxgi.getTextureCount() &&
+           std::all_of(dxgi.textures.begin(), dxgi.textures.end(),
+                       [](const auto& texture) { return texture.d3d != nullptr; });
+  }
+#else
+  (void)chain;
+#endif
+  return true;
+}
+
+bool HasBackBuffer(const plume::RenderTexture* texture) {
+  if (backend::IsNullBacked(texture)) {
+    return false;
+  }
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+  if (ActiveBackend() == Backend::kVulkan) {
+    // The framebuffer constructor consumes the view even if its creation failed.
+    return static_cast<const plume::VulkanTexture*>(texture)->imageView != VK_NULL_HANDLE;
+  }
+#endif
+  return true;
+}
+
+bool HasRenderSemaphore(const plume::RenderCommandSemaphore* semaphore) {
+  if (!semaphore) {
+    return false;
+  }
+#if defined(LARECOMP_GPU_HAS_D3D12)
+  if (ActiveBackend() == Backend::kD3D12) {
+    return static_cast<const plume::D3D12CommandSemaphore*>(semaphore)->d3d != nullptr;
+  }
+#endif
+#if defined(LARECOMP_GPU_HAS_VULKAN)
+  return static_cast<const plume::VulkanCommandSemaphore*>(semaphore)->vk != VK_NULL_HANDLE;
+#else
+  return false;
+#endif
+}
+
+}  // namespace
 
 #if defined(_WIN32)
 namespace {
@@ -279,20 +335,26 @@ bool SwapChain::Rebuild() {
   // reference them.
   framebuffers_.clear();
   render_semaphores_.clear();
-  if (!swap_chain_->resize()) {
-    // Zero-sized (minimised) windows land here every frame; only a real size
-    // that the backend refused is worth a line.
-    if (swap_chain_->getWidth() != 0 && swap_chain_->getHeight() != 0) {
+  if (CanResizeInPlace(*swap_chain_)) {
+    const bool resized = swap_chain_->resize();
+    if (resized && BuildPerImageObjects()) {
+      REXLOG_INFO("[gpu] swap chain rebuilt at {}x{}", width(), height());
+      return true;
+    }
+    if (!resized && width() && height()) {
+      // A zero-area window keeps its native chain for restore.
       REXLOG_ERROR("[gpu] swap chain resize to {}x{} failed", swap_chain_->getWidth(),
                    swap_chain_->getHeight());
     }
-    return false;
   }
-  if (!BuildPerImageObjects()) {
-    return false;
+  if (!CanResizeInPlace(*swap_chain_)) {
+    // A failed ResizeBuffers or GetBuffer can leave DXGI's wrappers with no resources.
+    // Use the renderer's lost-chain retry. The Vulkan reducer keeps its chain wrapper.
+    // CHECK: verify live recreation after a native DXGI buffer failure.
+    REXLOG_ERROR("[gpu] swap chain cannot resize in place; recreating");
+    swap_chain_.reset();
   }
-  REXLOG_INFO("[gpu] swap chain rebuilt at {}x{}", width(), height());
-  return true;
+  return false;
 }
 
 bool SwapChain::empty() const {
@@ -386,27 +448,45 @@ uint32_t SwapChain::height() const {
 }
 
 bool SwapChain::BuildPerImageObjects() {
-  framebuffers_.clear();
-  render_semaphores_.clear();
+  auto* device = device_ ? device_->device() : nullptr;
+  if (!device || !swap_chain_ || swap_chain_->isEmpty()) {
+    return false;
+  }
   const uint32_t count = swap_chain_->getTextureCount();
-  framebuffers_.reserve(count);
-  render_semaphores_.reserve(count);
+  if (!count) {
+    REXLOG_ERROR("[gpu] the swap chain reported no back buffers");
+    return false;
+  }
+  // The caller has already released the previous set. Publish the next set only
+  // after every back buffer and both of its dependent objects are usable.
+  // CHECK: confirm live Vulkan recovery after an image-view or allocation failure.
+  decltype(render_semaphores_) render_semaphores;
+  decltype(framebuffers_) framebuffers;
+  framebuffers.reserve(count);
+  render_semaphores.reserve(count);
   for (uint32_t i = 0; i < count; ++i) {
     plume::RenderTexture* back = swap_chain_->getTexture(i);
-    back->setName(std::format("swap chain image {}", i));
-    const plume::RenderTexture* colors[] = {back};
-    auto fb = device_->device()->createFramebuffer(plume::RenderFramebufferDesc(colors, 1));
-    auto sem = device_->device()->createCommandSemaphore();
-    if (!fb || !sem) {
-      REXLOG_ERROR("[gpu] could not create the framebuffer/semaphore of back buffer {}", i);
-      // All or nothing: a partial set would make empty() lie.
-      framebuffers_.clear();
-      render_semaphores_.clear();
+    if (!HasBackBuffer(back)) {
+      REXLOG_ERROR("[gpu] swap chain back buffer {} is unavailable", i);
       return false;
     }
-    framebuffers_.push_back(std::move(fb));
-    render_semaphores_.push_back(std::move(sem));
+    back->setName(std::format("swap chain image {}", i));
+    const plume::RenderTexture* colors[] = {back};
+    auto fb = device->createFramebuffer(plume::RenderFramebufferDesc(colors, 1));
+    if (backend::IsNullBacked(fb.get())) {
+      REXLOG_ERROR("[gpu] could not create the framebuffer of back buffer {}", i);
+      return false;
+    }
+    auto sem = device->createCommandSemaphore();
+    if (!HasRenderSemaphore(sem.get())) {
+      REXLOG_ERROR("[gpu] could not create the semaphore of back buffer {}", i);
+      return false;
+    }
+    framebuffers.push_back(std::move(fb));
+    render_semaphores.push_back(std::move(sem));
   }
+  framebuffers_ = std::move(framebuffers);
+  render_semaphores_ = std::move(render_semaphores);
   return true;
 }
 

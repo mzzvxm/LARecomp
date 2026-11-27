@@ -120,7 +120,8 @@ class SwapChain {
   bool recovery_requested() const { return recovery_requested_.load(std::memory_order_acquire); }
   // Resizes to the window. The caller has waited the GPU idle. Returns false
   // when the window has no area (minimised) or the backend refused; the chain
-  // is then empty() until a later rebuild succeeds.
+  // is then empty() until a later rebuild succeeds. If DXGI lost its native
+  // buffers and cannot resize again, lost() sends the renderer to Recreate.
   bool Rebuild();
   bool empty() const;
 
