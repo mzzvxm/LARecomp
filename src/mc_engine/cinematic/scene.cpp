@@ -951,7 +951,8 @@ class Parser {
         }
         std::stable_sort(events_.begin(), events_.end(), [](const Event& x, const Event& y) { return x.t < y.t; });
 
-        std::array<const Event*, 16> last{};
+        // One slot per track: sized from the enum's last value (kPreset/kPresetLabel at 16/17 wrote past a fixed 16, which crashed on Linux).
+        std::array<const Event*, static_cast<size_t>(Track::kCapture) + 1> last{};
         for (const Event& e : events_) {
             if (!IsWorldTrack(e.track) && e.track != Track::kSplit && e.track != Track::kPreset && e.track != Track::kPresetLabel) continue;
             const size_t k = static_cast<size_t>(e.track);
