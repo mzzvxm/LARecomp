@@ -235,8 +235,10 @@ bool CarRtOppRefl::Record(const Frame& f) {
   push.opp[3] = city_refl::OppRays(plan.rays, f.city->on ? cell : city_refl::Cell{});
 
   plume::RenderCommandList* list = f.list;
-  plume::RenderTextureBarrier barriers[2] = {plume::RenderTextureBarrier(f.image->texture.get(), plume::RenderTextureLayout::GENERAL),
+  plume::RenderTextureBarrier barriers[3] = {plume::RenderTextureBarrier(f.image->texture.get(), plume::RenderTextureLayout::GENERAL),
                                              plume::RenderTextureBarrier(f.aux->texture.get(), plume::RenderTextureLayout::GENERAL)};
+  const bool guide = f.guide && f.guide->texture;
+  if (guide) barriers[2] = plume::RenderTextureBarrier(f.guide->texture.get(), plume::RenderTextureLayout::GENERAL);
   pass_timing_->Mark(list, "car rt refl opp");
   list->setComputePipelineLayout(layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
@@ -248,7 +250,7 @@ bool CarRtOppRefl::Record(const Frame& f) {
     const opp::TexelRect& r = plan.dispatches[i];
     // The player's dispatch wrote the images (and each of ours may touch the texels the group grid of another reaches over): a barrier before every dispatch. Same layout:
     // a UAV barrier on D3D12, a memory barrier on Vulkan.
-    list->barriers(plume::RenderBarrierStage::COMPUTE, nullptr, 0, barriers, 2);
+    list->barriers(plume::RenderBarrierStage::COMPUTE, nullptr, 0, barriers, guide ? 3u : 2u);
     push.opp[0] = uint32_t(r.x0);
     push.opp[1] = uint32_t(r.y0);
     list->setComputePushConstants(0, &push, 0, sizeof(push));

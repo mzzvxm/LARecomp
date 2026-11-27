@@ -51,9 +51,10 @@ float PlayerCarColour(Texture2D<float4> history, out float3 colour)
     return OtherCarColour(history, CarRtLoadCar(named), colour);
 }
 
-float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux)
+float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux, out float4 guide)
 {
     aux = float4(0.0, 0.0, 0.0, 0.0);
+    guide = 0.0;
     gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
     gCityHits = 0u;
     const float t = own.a;
@@ -96,6 +97,7 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
         return float4(0.0, 0.0, 0.0, kNoData);  // a surface of that car, but not the one the picture shows here
     }
     aux = float4(0.0, EncodeOppInstance(primaryInstance), saturate(nv), 1.0);
+    if ((g_push.slots.w & kCarDnTraceGuide) != 0u) guide = CarDnGuide(hitT, normal, primaryInstance);
     if (nv < kMinNv)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // grazing: the paint does not trace it either (a miss: nothing changes)
@@ -137,7 +139,9 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
                 return float4(0.0, 0.0, 0.0, 1.0);
             }
         }
-        return PaintSampleResult(fade, visible, seen, hidden, car, distance, aux);
+        const float4 value = PaintSampleResult(fade, visible, seen, hidden, car, distance, aux);
+        guide.z = abs(value.a) > 1.0 ? distance : 0.0;
+        return value;
     }
     const float reach = g_push.lens.w;
     const float tanHalf = maxRays >= 2u ? g_push.tune.w : 0.0;
@@ -303,7 +307,8 @@ float4 TraceOpponentTexel(Texture2D<float4> history, uint2 texel, float4 own, ou
         distanceSum = coatDistance;
         hitCount = 1.0;
     }
-    aux.x = EncodeHitDistance(distanceSum / max(hitCount, 1.0), reach);
+    guide.z = distanceSum / max(hitCount, 1.0);
+    aux.x = EncodeHitDistance(guide.z, reach);
     aux.w = 1.0 - kAuxSharpScale * sharp;  // the denoise leaves the mirror's part of the texel alone
     return float4(colour, mixedCar >= 0.5 * weight ? -(1.0 + min(weight, 1.0)) : 1.0 + min(weight, 1.0));  // the sign: mostly on another car
 }
@@ -326,13 +331,15 @@ void main(uint3 id : SV_DispatchThreadID)
         return;  // no vehicle here: the first dispatch's texel stands
     }
     float4 aux = float4(0.0, 0.0, 0.0, 0.0);
-    const float4 result = TraceOpponentTexel(history, texel, float4(own.rgb, texelDistance), aux);
+    float4 guide;
+    const float4 result = TraceOpponentTexel(history, texel, float4(own.rgb, texelDistance), aux, guide);
     if (result.a == kNoData)
     {
         return;  // not another car's paint (or no surface of it at this distance): the first dispatch's texel stands
     }
     g_output[texel] = result;
     g_aux[texel] = aux;
+    if ((g_push.slots.w & kCarDnTraceGuide) != 0u) g_denoiseGuide[texel] = guide;
 }
 
 #endif  // CAR_RT_REFL_OPP_HLSLI

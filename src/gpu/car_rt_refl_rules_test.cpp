@@ -377,7 +377,8 @@ void RawChecks(const std::string& dir) {
                     meta = Read(dir, "../settings/generated/settings_meta.inc"), opp = Read(dir, "car_rt_opp_refl.cpp");
   const std::string trace = Read(dir, "hlsl/car_rt_refl_cs.hlsl");
   Check(Has(settings, std::string("REX_") + "SETTING(bool, mcla_gpu_car_selfrefl_rt_resolve, false,") &&
-            Has(cpp, "denoise_passes > 0 && larecomp::settings::mcla_gpu_car_selfrefl_rt_resolve.Get()") &&
+            Has(cpp, "const bool paint_resolve_setting = larecomp::settings::mcla_gpu_car_selfrefl_rt_resolve.Get();") &&
+            Has(cpp, "(v2_paint || denoise_passes > 0) && paint_resolve_setting") &&
             Has(cpp, "resolve_paint ? car_rt_refl::kFullConeFlag : 0u") &&
             Has(trace, "kFullConeFlag = 1u << 28") && Has(trace, "(g_push.slots.w & kFullConeFlag) != 0u") &&
             Has(trace, "if (!fullCone && slot == 2 && !found)"),
@@ -392,8 +393,10 @@ void RawChecks(const std::string& dir) {
   Check(Count(sample, "TraceRay(") == 1 && Has(sample, "(phase + spatial) & 3u") &&
             Has(sample, "phase >> 2") && Has(sample, "noise < coatShare"),
         "player and opponent use one reflection query and share it across the cone and coat");
-  Check(Has(trace, "return PaintSampleResult(") &&
-            Has(Read(dir, "hlsl/car_rt_refl_opp.hlsli"), "return PaintSampleResult(") &&
+  const std::string one_ray_output = "guide.z = abs(value.a) > 1.0 ? distance : 0.0;\n        return value;";
+  Check(Has(trace, "const float4 value = PaintSampleResult(") && Has(trace, one_ray_output) &&
+            Has(Read(dir, "hlsl/car_rt_refl_opp.hlsli"), "const float4 value = PaintSampleResult(") &&
+            Has(Read(dir, "hlsl/car_rt_refl_opp.hlsli"), one_ray_output) &&
             Has(trace, "aux.x = EncodeHitDistance(distance, g_push.lens.w);"),
         "one-ray receivers retain the hit distance and sign contract");
   // the shader: what the C++ twin says
@@ -421,10 +424,14 @@ void RawChecks(const std::string& dir) {
   // The filter's own count is DenoisePassesFor's. The setting-only DenoisePassCount is called in ONE place, on purpose: `stable_gap` (NOISE-FOLLOW), which asks whether the setting wants the history
   // although the passes are 0 in a Ray Reconstruction frame; any other call would run the filter in a raw frame (or drift the two counts apart).
   Check(Has(cpp, "int denoise_passes = car_rt_refl::DenoisePassesFor(raw, int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half);") && Count(cpp, "car_rt_refl::DenoisePassCount(") == 1 &&
-            Has(cpp, "const bool stable_gap = car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler"),
+            Has(cpp, "const bool stable_gap = !v2_paint && car_rt_refl::DenoisePassCount(int(larecomp::settings::mcla_gpu_car_selfrefl_rt_denoise.Get()), tan_half) > 0 && info.upscaler"),
         "RR-4b: the filter's passes go through the rules' DenoisePassesFor (the setting's, none when raw); the setting-only DenoisePassCount is read once, by the history's stable_gap");
   Check(Has(cpp, "raw = HitPipeline() != nullptr && info.render_width != 0 && info.render_height != 0 && EnsureHitImage(info.render_width, info.render_height);"),
         "RR-4b: a frame is raw only with the pipeline made and the image made (else it is a plain frame with its filter)");
+  Check(Has(cpp, "const bool v2_enabled = !info.raw && RtDenoise::V2Enabled();") &&
+            Has(cpp, "const bool v2_ready = v2_enabled &&") && Has(cpp, "bool v2_paint = v2_ready &&") &&
+            Has(cpp, "windows.denoiser = v2_ready ? &v2_ : nullptr;"),
+        "both V2 car filters defer to the existing RR request");
   const size_t trace_at = cpp.find("for (const paint::PaintRect& rect : trace_regions)");
   const size_t opp_at = cpp.find("opp_.Record(opponents);");
   const size_t hit_at = cpp.find("  if (raw) {\n    // RR-4b: how far each reflection went");
@@ -448,7 +455,8 @@ void RawChecks(const std::string& dir) {
     CollectKeyRuns(cpp, "car_rt_refl.cpp", apply_variants, &runs);
     CollectKeyRuns(opp, "car_rt_opp_refl.cpp", apply_variants, &runs);
     CollectKeyRuns(glass, "car_rt_glass_refl.cpp", apply_variants, &runs);
-    Check(runs.size() == 6, "the owner's keys are read from the three files: the trace, the denoise and the hit pass (car_rt_refl.cpp), the opponents' trace, the glass trace and the glass apply (6 in all): " + std::to_string(runs.size()));
+    CollectKeyRuns(Read(dir, "car_rt_denoise_v2.cpp"), "car_rt_denoise_v2.cpp", apply_variants, &runs);
+    Check(runs.size() == 7, "all seven car RT precache entries are covered: " + std::to_string(runs.size()));
     bool distinct = true;
     for (size_t i = 0; i < runs.size(); ++i) {
       for (size_t j = i + 1; j < runs.size(); ++j) {

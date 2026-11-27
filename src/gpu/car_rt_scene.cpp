@@ -893,6 +893,8 @@ bool CarRtScene::OnResolve(const ResolveRecord& record, const ResolveCache::Summ
     view_.player_box = cars.player_box;
     view_.camera_view = frame.view;
     view_.player_world = frame.player_world;
+    view_.denoise_instances = cars.items;
+    view_.camera_flip_z = flip_z;
     for (uint32_t i = 0; i < cars.stats.player_instances; ++i) {
       const auto& item = cars.items[i];
       const uint64_t part = item.mesh_key ^ (uint64_t(item.mask) << 56);

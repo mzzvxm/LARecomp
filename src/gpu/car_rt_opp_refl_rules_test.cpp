@@ -408,7 +408,9 @@ int main(int argc, char** argv) {
             "a hit on the player's car is decided as ResolvePlayerHit says: the record's colour where known, the shown colour in shade where partly shown, else a miss");
       Check(Has(hlsli, "if (result.a == kNoData)") && Has(hlsli, "g_output[texel] = result;") && Has(hlsli, "g_aux[texel] = aux;"),
             "a texel with no data is not written (the player's dispatch's stands), the others are, with their aux");
-      Check(Has(hlsli, "aux = float4(0.0, EncodeOppInstance(primaryInstance), saturate(nv), 1.0);") && Has(hlsli, "aux.x = EncodeHitDistance(distanceSum / max(hitCount, 1.0), reach);"),
+      Check(Has(hlsli, "aux = float4(0.0, EncodeOppInstance(primaryInstance), saturate(nv), 1.0);") &&
+                Has(hlsli, "guide.z = distanceSum / max(hitCount, 1.0);") &&
+                Has(hlsli, "aux.x = EncodeHitDistance(guide.z, reach);"),
             "the aux image's texel is the player's kind (hit distance, instance code, N.V, 1) with the opponents' instance code");
       Check(Has(hlsli, "const uint maxRays = min(g_push.opp.w, LevelRays(g_push.slots.w));") && Has(hlsli, "const float tanHalf = maxRays >= 2u ? g_push.tune.w : 0.0;") && Has(hlsli, "if (slot >= int(maxRays))"),
             "1 ray is the mirror (no cone), 2 the outer pair, at most the level's rays");

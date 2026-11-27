@@ -366,7 +366,9 @@ int main(int argc, char** argv) {
             "hlsl/car_rt_refl_cs.hlsl: the glass variant (CAR_RT_REFL_GLASS) has its push member and its entry point, the player's main renamed away");
       // the host
       Check(Has(host, "HostPrecache::Key(HostPrecache::kCarRtRefl, 3)") && Has(host, "HostPrecache::Key(HostPrecache::kCarRtRefl, 4 + index)"), "car_rt_glass_refl.cpp: the keys beside the trace's (0), the denoise's (1) and the opponents' (2): 3 and 4 to 7");
-      Check(Has(host_h, "static_assert(sizeof(Push) == 112);") && Has(host_h, "uint32_t glass[4];") && Has(host, "push.slots[2] = glass::kPrimaryParts;") && Has(host, "push.slots[3] &= ~car_rt_hit::census::kStatsFlag;"),
+      Check(Has(host_h, "static_assert(sizeof(Push) == 112);") && Has(host_h, "uint32_t glass[4];") && Has(host, "push.slots[2] = glass::kPrimaryParts;") &&
+                Has(host, "push.slots[3] &= ~(car_rt_hit::census::kStatsFlag | car_rt_denoise_v2::kTraceGuide);") &&
+                Has(host, "if (filtered) push.slots[3] |= car_rt_denoise_v2::kTraceGuide;"),
             "car_rt_glass_refl: the push block is the opponents' size (112), the primary ray's parts are the glass, the paint's counters are not touched");
       Check(Has(host, "blend.srcBlend = plume::RenderBlend::ONE;") && Has(host, "blend.dstBlend = plume::RenderBlend::ONE;") && Has(host, "blend.renderTargetWriteMask = kWriteRgb;") &&
                 Has(host, "passes_->CreatePipeline(passes_->layout(), *apply_shader_, kApplyFormat, blend, 1u << index, ApplyName(index))"),
@@ -375,10 +377,15 @@ int main(int argc, char** argv) {
             "car_rt_glass_refl.cpp: Trace asks Decide() with HostFacts (every fact of the frame, the box included), not a Facts it fills by hand (CITY-M2-PICS: the pass never ran)");
       Check(Has(host, "glass::RectFor(view.player_box,") && Has(host, "car_rt_opp_refl::GroupsX(rect, kGroup)") && Has(host, "pass_timing_->Mark(list, \"car glass refl\")") && Has(host, "pass_timing_->Mark(list, \"car glass apply\")"),
             "car_rt_glass_refl.cpp: the dispatch covers the player's box, the passes are timed");
-      Check(Has(player, "glass_.Trace(windows);") && Has(player, "windows.wanted = city_.glass_wanted();") && Has(player, "glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(),") &&
+      Check(Has(player, "glass_.Trace(windows);") && Has(player, "const bool glass_wanted = city_.glass_wanted();") && Has(player, "windows.wanted = glass_wanted;") &&
+                Has(player, "glass_.Initialize(device, passes, heap, frames, pass_timing, *scene, output_builder_, city_.Builder(),") &&
                 Has(player, "glass_.NewFrame();") && Has(player, "glass_.ReleaseImage();") && Has(player_h, "bool ApplyGlass(") && Has(player_h, "uint32_t colour_samples = 1;"),
             "car_rt_refl: the glass trace is recorded after the opponents' dispatch, with the city's wish, and the image goes back with the others");
-      Check(Has(player, "opp_.Record(opponents);\n  }\n  // The player's windows") && player.find("glass_.Trace(windows);") < player.find("city_.StatsEnd(list, info.frame);"), "car_rt_refl: the glass trace is in the same stats frame, before the city's counters are copied");
+      Check(Has(player, "opp_.Record(opponents);") && Has(player, "v2_.RecordPaint(list, image_, aux_, trace_regions);") &&
+                player.find("opp_.Record(opponents);") < player.find("v2_.RecordPaint(") &&
+                player.find("v2_.RecordPaint(") < player.find("glass_.Trace(windows);") &&
+                player.find("glass_.Trace(windows);") < player.find("city_.StatsEnd(list, info.frame);"),
+            "car_rt_refl: glass follows paint's use of the shared guide and precedes the city's stats copy");
       Check(Has(selfrefl, "rt_->ApplyGlass(list, *edram_, *colour, render_w, render_h);") && Has(selfrefl, "info.colour_samples = depth.host_samples;") && selfrefl.find("rt_->OnHistory(list, info);") < selfrefl.find("rt_->ApplyGlass("),
             "car_selfrefl.cpp: the additive pass follows the history and the trace, with the main colour target");
       Check(Has(city_host, "glass_wanted_ = cr::Serves(cell_.level, cr::kClassGlass) && larecomp::settings::mcla_gpu_city_refl_glass.Get();") &&

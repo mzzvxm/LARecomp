@@ -49,6 +49,8 @@ class Device;
 class FrameRing;
 class PassTiming;
 
+class CarRtDenoiseV2;
+
 class CarRtGlassRefl {
  public:
   CarRtGlassRefl() = default;
@@ -73,6 +75,8 @@ class CarRtGlassRefl {
     const void* base_push = nullptr;           // the player's dispatch's push block (CarRtRefl::Push), copied
     uint32_t base_push_bytes = 0;
     const HostImage* aux = nullptr;            // the player's aux image (bound at u1, not written)
+    HostImage* unused_guide = nullptr;
+    CarRtDenoiseV2* denoiser = nullptr;
     const plume::RenderBuffer* stats = nullptr;  // the player's counters (bound at u2, not written: the stats flag is cleared)
     const CityRefl::Frame* city = nullptr;     // the city's set (bound at set 3) and cell this frame; null: no pass
     bool wanted = false;                       // CityRefl::glass_wanted()
@@ -123,7 +127,7 @@ class CarRtGlassRefl {
   plume::RenderPipeline* Pipeline();
   plume::RenderPipeline* ApplyPipeline(uint32_t index);
   bool EnsureImage(uint32_t width, uint32_t height);
-  bool EnsureSet(const HostImage& aux, const plume::RenderBuffer* stats);
+  bool EnsureSet(const HostImage& aux, const plume::RenderBuffer* stats, const HostImage& guide);
   void RetireSet();
   void NoteNotRun(car_glass::Why why, uint64_t frame);
   void LogWindow(uint64_t frame);
@@ -149,6 +153,7 @@ class CarRtGlassRefl {
   std::unique_ptr<plume::RenderDescriptorSet> set_;
   const plume::RenderTexture* set_image_ = nullptr;
   const plume::RenderTexture* set_aux_ = nullptr;
+  const plume::RenderTexture* set_guide_ = nullptr;
 
   // The frame the trace recorded last and what the apply draws from it.
   bool traced_ = false;

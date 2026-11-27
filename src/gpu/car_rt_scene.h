@@ -90,6 +90,7 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -168,6 +169,8 @@ struct CarRtView {
   car_rt_instances::ViewBox player_box;
   temporal::Mat4 camera_view{};
   temporal::Mat4 player_world{};
+  std::span<const car_rt_instances::Item> denoise_instances;  // in TLAS order, borrowed like boxes
+  bool camera_flip_z = false;
   uint64_t player_mesh_key = 0;  // unordered fingerprint of the listed player meshes and masks
   // The WORLD's up (+y) in the frame's view space, a unit vector: the sky's direction for a ray that wants the sky (the chrome's sky probe in
   // car_rt_refl_cs.hlsl; the camera pitches, so the view's own y is not it). (0, 1, 0) where the frame's camera gave none.

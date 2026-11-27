@@ -12,6 +12,7 @@
 #include <rex/logging/log_category.h>
 
 #include "car_rt_hit_rules.h"
+#include "car_rt_denoise_v2.h"
 #include "car_rt_scene.h"
 #include "descriptors.h"
 #include "device.h"
@@ -116,6 +117,7 @@ void CarRtGlassRefl::Shutdown() {
   set_.reset();
   set_image_ = nullptr;
   set_aux_ = nullptr;
+  set_guide_ = nullptr;
   image_ = HostImage{};  // the GPU is idle and the heap goes later: the slot is not handed back (CarRtRefl::Shutdown)
   shader_.reset();
   apply_shader_.reset();
@@ -221,6 +223,7 @@ void CarRtGlassRefl::RetireSet() {
   set_.reset();
   set_image_ = nullptr;
   set_aux_ = nullptr;
+  set_guide_ = nullptr;
 }
 
 bool CarRtGlassRefl::EnsureImage(uint32_t width, uint32_t height) {
@@ -239,13 +242,13 @@ bool CarRtGlassRefl::EnsureImage(uint32_t width, uint32_t height) {
   return true;
 }
 
-// u0 the glass image, u1 the player's aux image (bound, not written: the layout's), u2 the counters (the same). A set per pair of textures.
-bool CarRtGlassRefl::EnsureSet(const HostImage& aux, const plume::RenderBuffer* stats) {
-  if (set_ && set_image_ == image_.texture.get() && set_aux_ == aux.texture.get()) {
+bool CarRtGlassRefl::EnsureSet(const HostImage& aux, const plume::RenderBuffer* stats, const HostImage& guide) {
+  if (set_ && set_image_ == image_.texture.get() && set_aux_ == aux.texture.get() && set_guide_ == guide.texture.get()) {
     return true;
   }
   RetireSet();
-  set_ = device_->CreateDescriptorSet(*output_builder_, 3, 0, "car glass refl output set");
+  if (!device_ || !output_builder_) return false;
+  set_ = device_->CreateDescriptorSet(*output_builder_, 4, 0, "car glass refl output set");
   if (!set_) {
     return false;
   }
@@ -254,8 +257,10 @@ bool CarRtGlassRefl::EnsureSet(const HostImage& aux, const plume::RenderBuffer* 
   if (stats) {
     set_->setBuffer(2, stats, car_rt_hit::census::kBytes);
   }
+  set_->setTexture(3, guide.texture.get(), plume::RenderTextureLayout::GENERAL, guide.view.get());
   set_image_ = image_.texture.get();
   set_aux_ = aux.texture.get();
+  set_guide_ = guide.texture.get();
   return true;
 }
 
@@ -291,7 +296,8 @@ void CarRtGlassRefl::LogWindow(uint64_t frame) {
 
 bool CarRtGlassRefl::Trace(const Frame& f) {
   traced_ = false;
-  if (!ready_ || !f.list || !f.view || !f.base_push || !f.aux || !f.aux->texture || !f.city) {
+  if (!ready_ || !f.list || !f.view || !f.base_push || !f.aux || !f.aux->texture || !f.city ||
+      !f.unused_guide || !f.unused_guide->texture) {
     return false;
   }
   if (f.base_push_bytes != kBasePushBytes) {
@@ -332,7 +338,14 @@ bool CarRtGlassRefl::Trace(const Frame& f) {
     NoteNotRun(glass::Why::kNotReady, f.frame);
     return false;
   }
-  if (!EnsureImage(f.image_width, f.image_height) || !EnsureSet(*f.aux, f.stats)) {
+  if (!EnsureImage(f.image_width, f.image_height)) {
+    NoteNotRun(glass::Why::kNoImage, f.frame);
+    return false;
+  }
+  bool filtered = f.denoiser && f.denoiser->PrepareGlass(image_, rect);
+  if (filtered && !EnsureSet(*f.aux, f.stats, f.denoiser->Guide())) filtered = false;
+  HostImage& guide = filtered ? f.denoiser->Guide() : *f.unused_guide;
+  if (!EnsureSet(*f.aux, f.stats, guide)) {
     NoteNotRun(glass::Why::kNoImage, f.frame);
     return false;
   }
@@ -340,7 +353,8 @@ bool CarRtGlassRefl::Trace(const Frame& f) {
   Push push = {};
   std::memcpy(&push, f.base_push, kBasePushBytes);
   push.slots[2] = glass::kPrimaryParts;
-  push.slots[3] &= ~car_rt_hit::census::kStatsFlag;  // the counters are the paint's: this pass does not count
+  push.slots[3] &= ~(car_rt_hit::census::kStatsFlag | car_rt_denoise_v2::kTraceGuide);
+  if (filtered) push.slots[3] |= car_rt_denoise_v2::kTraceGuide;
   const float strength = glass::kStrength;
   std::memcpy(&push.glass[2], &strength, sizeof(strength));
   push.glass[0] = uint32_t(rect.x0);
@@ -351,6 +365,11 @@ bool CarRtGlassRefl::Trace(const Frame& f) {
   pass_timing_->Mark(list, "car glass refl");
   list->barriers(plume::RenderBarrierStage::COMPUTE, nullptr, 0, &barrier, 1);
   image_.layout = plume::RenderTextureLayout::GENERAL;
+  if (filtered || guide.layout != plume::RenderTextureLayout::GENERAL) {
+    list->barriers(plume::RenderBarrierStage::COMPUTE,
+                   plume::RenderTextureBarrier(guide.texture.get(), plume::RenderTextureLayout::GENERAL));
+    guide.layout = plume::RenderTextureLayout::GENERAL;
+  }
   list->setComputePipelineLayout(layout_.get());
   list->setComputeDescriptorSet(heap_->texture_set(), kTextureSet);
   list->setComputeDescriptorSet(set_.get(), kOutputSet);
@@ -359,6 +378,10 @@ bool CarRtGlassRefl::Trace(const Frame& f) {
   list->setPipeline(pipeline);
   list->setComputePushConstants(0, &push, 0, sizeof(push));
   list->dispatch(car_rt_opp_refl::GroupsX(rect, kGroup), car_rt_opp_refl::GroupsY(rect, kGroup), 1);
+  if (filtered) {
+    pass_timing_->Mark(list, "car rt glass denoise v2");
+    f.denoiser->RecordGlass(list, image_, rect);
+  }
 
   traced_ = true;
   traced_frame_ = f.frame;

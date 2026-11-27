@@ -37,6 +37,7 @@ add_library(larecomp_gpu OBJECT
     mirror_overlay.cpp
     local_shadow.cpp
     car_rt_refl.cpp
+    car_rt_denoise_v2.cpp
     car_rt_glass_refl.cpp
     car_rt_opp_refl.cpp
     mirror_glass.cpp
@@ -521,6 +522,7 @@ add_executable(larecomp_spec_occlusion_test EXCLUDE_FROM_ALL spec_occlusion_test
 #   cmake --build <dir> --target larecomp_rt_denoise_test, then run src/gpu/larecomp_rt_denoise_test <src/gpu dir> [--print] (exit 0 = passed).
 add_executable(larecomp_rt_denoise_test EXCLUDE_FROM_ALL rt_denoise_test.cpp)
 add_executable(larecomp_rt_denoise_v2_test EXCLUDE_FROM_ALL rt_denoise_v2_test.cpp)
+add_executable(larecomp_car_rt_denoise_v2_test EXCLUDE_FROM_ALL car_rt_denoise_v2_test.cpp)
 # The NaN guard (hlsl/nan_guard.hlsli: a NaN decided by its bits, the same on D3D12 and on Vulkan, whose max / min / clamp / saturate disagree about a NaN; it compiles the .hlsli as C++ and compares it with the
 # standard library on every kind of NaN, the infinities and random bit patterns) and the places that use it (the reflections', the occlusion's, the volume's and the lights' shaders: the text of each place) likewise:
 #   cmake --build <dir> --target larecomp_nan_guard_test, then run src/gpu/larecomp_nan_guard_test [<src/gpu dir>] (exit 0 = passed).
@@ -1464,6 +1466,7 @@ larecomp_gpu_host_shader(car_glass_apply_ps ps_6_0)
 # Its denoise (car_rt_refl.h DENOISE): two a-trous passes over the image the trace made, plain Shader Model 6.0 compute (no rays), built for
 # both backends like any host shader (the pass runs only where the trace does).
 larecomp_gpu_host_shader(car_rt_refl_denoise_cs cs_6_0)
+larecomp_gpu_host_shader(car_rt_denoise_v2_cs cs_6_0)
 # RR-4b: the hit distance pass of the raw mode (a frame DLSS Ray Reconstruction takes: the denoise above does not run): one compute pass writing an R16_FLOAT image of the picture's size from the aux
 # image, on the denoise's layout.
 larecomp_gpu_host_shader(car_rt_refl_hit_cs cs_6_0)

@@ -172,6 +172,7 @@
 
 #include <plume_render_interface.h>
 
+#include "car_rt_denoise_v2.h"
 #include "car_rt_glass_refl.h"
 #include "car_rt_hit_rules.h"
 #include "car_rt_opp_refl.h"
@@ -319,6 +320,7 @@ class CarRtRefl {
     std::unique_ptr<plume::RenderDescriptorSet> set;
     const plume::RenderTexture* first = nullptr;
     const plume::RenderTexture* second = nullptr;
+    const plume::RenderTexture* guide = nullptr;
   };
 
   bool MakeLayoutAndShader(Device& device, HostPasses& passes, CarRtScene& scene);
@@ -341,7 +343,7 @@ class CarRtRefl {
   // The scratch image of the denoise and the sets of its two passes; false: no denoise this frame (the images are released).
   bool EnsureDenoiseImages(uint32_t width, uint32_t height);
   bool EnsureSet(OutputSet& out, plume::RenderDescriptorSetBuilder& builder, const HostImage& first, const HostImage* second, const char* name,
-                 const plume::RenderBuffer* stats = nullptr);
+                 const plume::RenderBuffer* stats = nullptr, const HostImage* guide = nullptr);
   void RetireSet(OutputSet& out);
   // The census's three buffers (the counters, 32 zero words to copy into them, the readback): made with the layout.
   bool MakeStatsBuffers(Device& device);
@@ -411,6 +413,8 @@ class CarRtRefl {
   car_rt_refl::PaintCoverage scratch_coverage_;
   car_rt_refl::PaintCoverage stable_coverage_[2];
   HostImage stable_[2];
+  HostImage unused_guide_;
+  CarRtDenoiseV2 v2_;
   OutputSet stable_set_[2];       // u0 stable_[i]
   noise_resolve::HistoryLifetime stable_life_;   // NOISE-FOLLOW: how long the two images stay while an upscaler runs (noise_resolve::kHistoryKeepFrames)
   uint32_t stable_index_ = 0;
