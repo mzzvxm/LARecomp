@@ -14,9 +14,11 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iterator>
 #include <memory>
 #include <set>
+#include <sstream>
 #include <string>
 #include <system_error>
 #include <unordered_map>
@@ -759,10 +761,23 @@ void TestSpirvBuild(const std::string& folder) {
   Check(plain_fn != std::string::npos, "CMake has larecomp_gpu_host_shader");
   if (plain_fn != std::string::npos) {
     const std::string body = cmake.substr(plain_fn, cmake.find("endfunction()", plain_fn) - plain_fn);
+    const size_t dxil_branch = body.find("set(ext dxil)\n            set(format_args \"\")\n        else()");
     const size_t spirv_branch = body.find("set(ext spirv)");
-    Check(spirv_branch != std::string::npos && body.find("-spirv -fvk-use-dx-layout ${ARG_SPIRV_ARGS}") > spirv_branch,
+    const size_t spirv_args = body.find("set(format_args -spirv -fvk-use-dx-layout ${ARG_SPIRV_ARGS})");
+    const size_t dxc = body.find("COMMAND ${LARECOMP_GPU_DXC}");
+    const size_t dxc_args = body.find("${format_args} ${define_args}", dxc);
+    Check(dxc_args != std::string::npos && dxil_branch < spirv_branch && spirv_branch < spirv_args && spirv_args < dxc && dxc < dxc_args,
           "the extra arguments are for the SPIR-V blob only, not the DXIL one");
-    Check(has(body, "\"DEFINES;SPIRV_ARGS\""), "the host shader function takes SPIRV_ARGS");
+    const std::string parse_prefix = "cmake_parse_arguments(ARG ";
+    const size_t parse = body.find(parse_prefix);
+    bool parses_spirv_args = false;
+    if (parse != std::string::npos) {
+      std::istringstream args(body.substr(parse + parse_prefix.size()));
+      std::string options, single, multi;
+      parses_spirv_args = bool(args >> std::quoted(options) >> std::quoted(single) >> std::quoted(multi)) &&
+                          has(";" + multi + ";", ";SPIRV_ARGS;");
+    }
+    Check(parses_spirv_args, "the host shader function takes SPIRV_ARGS as a multi-value keyword");
   }
   const auto rt_calls = HostShaderCalls(cmake, "larecomp_gpu_host_shader_rt");
   const auto plain_calls = HostShaderCalls(cmake, "larecomp_gpu_host_shader");

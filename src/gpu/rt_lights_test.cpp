@@ -2261,7 +2261,7 @@ void TestSources(const std::string& src) {
     {
       const std::string scene = ReadFile(gpu + "scene.cpp"), temporal = ReadFile(gpu + "temporal.cpp");
       const size_t ask = At(scene, "local_lights_->SetRtRawMode(local_lights_->rt_lights_wanted() && temporal_ && temporal_->RawModes().RtLights());");
-      const size_t run = At(scene, "const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_);");
+      const size_t run = At(scene, "const bool local_lights_ran = local_lights_->OnResolve(record, summary, list, gbuffer_published, slot_,");
       CHECK(ask != std::string::npos && run != std::string::npos && ask < run);
       CHECK(Has(temporal, "rr::RawSwitchOn(int(larecomp::settings::mcla_gpu_dlss_rr_rt_lights.Get()))") && Has(temporal, "window_.rr_raw_frames[size_t(rr::RawEffect::kRtLights)] += modes.RtLights() ? 1 : 0;") &&
             Has(temporal, "modes.RtGi() || modes.RtLights();"));
