@@ -42,6 +42,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <unordered_set>
 
 #include <plume_render_interface.h>
@@ -82,7 +83,8 @@ class PostAa {
 
   // The composed scene in `target`, `width` x `height` guest pixels from its
   // origin: `mode`'s passes into `list` (outside a render pass; `slot` the
-  // frame's upload slot). True when anything was recorded.
+  // frame's upload slot). True only after the final draw is recorded. False
+  // leaves the scene target's layout and the caller's graphics bindings alone.
   bool Apply(plume::RenderCommandList* list, uint32_t slot, Mode mode,
              EdramTargets::Target& target, uint32_t width, uint32_t height);
 
@@ -107,10 +109,11 @@ class PostAa {
   };
   static_assert(sizeof(SmaaPush) <= HostPasses::kPushConstantBytes);
 
-  // The final pass into `target`, RGB only.
-  void DrawIntoTarget(plume::RenderCommandList* list, EdramTargets::Target& target,
-                      uint32_t width, uint32_t height, const plume::RenderPipeline* pipeline,
-                      const void* push, uint32_t push_size);
+  // The final pass into `target`, RGB only, using the framebuffer admitted by Apply.
+  void DrawIntoTarget(plume::RenderCommandList& list, EdramTargets::Target& target,
+                      plume::RenderFramebuffer& framebuffer, uint32_t width, uint32_t height,
+                      const plume::RenderPipeline& pipeline, const void* push, uint32_t push_size,
+                      std::string_view label);
   // AreaTex and SearchTex into their textures, once. False when the upload
   // memory or the textures are missing.
   bool UploadLookups(plume::RenderCommandList* list, uint32_t slot);
@@ -184,7 +187,7 @@ class PostAa {
     uint64_t fxaa = 0;
     uint64_t smaa = 0;
     uint64_t skipped_target = 0;  // not single-sampled R8G8B8A8_UNORM
-    uint64_t failed = 0;          // an image, a slot or the lookups could not be had
+    uint64_t failed = 0;          // destination, framebuffer, image, slot or lookup unavailable
     uint64_t pending = 0;         // asked for before the background build made the pipelines
   };
   Stats stats_;
