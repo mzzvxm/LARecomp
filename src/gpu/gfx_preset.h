@@ -113,7 +113,7 @@ constexpr int Col(Preset p) { return static_cast<int>(p); }
 
 // Concrete settings in menu order.
 inline constexpr Row kRows[] = {
-    {"mcla_gpu_anisotropy", Page::kImageQuality, {"game", "game", "16"}},
+    {"mcla_gpu_anisotropy", Page::kImageQuality, {"game", "16", "16"}},  // owner 11-27: 16x on both ENHANCED presets (integrated GPUs start on VANILLA)
     {"disable_dof", Page::kImageQuality, {"false", "true", "true"}},
     {"disable_motion_blur", Page::kImageQuality, {"false", "false", "false"}},
 
