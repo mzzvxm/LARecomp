@@ -812,6 +812,10 @@ class GPUSettings final : public rex::SettingOwner {
     "1024x512 environment map. Off uses the game's 512x256 map. Live.",
     rex::Allowed("on", "off", "auto", "game", "high", "ultra"));
 
+  REX_SETTING(bool, mcla_gpu_env_fallback, true,
+    "Use the environment map where screen reflections have no usable result. Turn off for comparison. Live.",
+    rex::kDebugOnly);
+
   REX_SETTING(bool, mcla_gpu_env_hold, true, "Reuse the car environment map until the view or lighting changes. "
     "Turn off to draw it every frame for comparison. Live.", rex::kDebugOnly);
 
@@ -2281,6 +2285,7 @@ inline auto& mcla_gpu_dlss_rr_rt_ao = g_gpu.mcla_gpu_dlss_rr_rt_ao;
 inline auto& mcla_gpu_edram_aliasing = g_gpu.mcla_gpu_edram_aliasing;
 inline auto& mcla_gpu_edram_capture = g_gpu.mcla_gpu_edram_capture;
 inline auto& mcla_gpu_env_resolution = g_gpu.mcla_gpu_env_resolution;
+inline auto& mcla_gpu_env_fallback = g_gpu.mcla_gpu_env_fallback;
 inline auto& mcla_gpu_env_hold = g_gpu.mcla_gpu_env_hold;
 inline auto& mcla_gpu_hud_map_hold = g_gpu.mcla_gpu_hud_map_hold;
 inline auto& mcla_gpu_flicker_probe = g_gpu.mcla_gpu_flicker_probe;

@@ -65,7 +65,6 @@
 #include <cstdint>
 #include <string>
 
-#include "settings/immortal.h"
 #include "settings/larecomp_settings.h"
 #include <rex/xenos/format.h>
 
@@ -89,17 +88,6 @@ constexpr uint32_t kDeclaredWidth = 512;  // the surface's declared size
 constexpr uint32_t kDeclaredHeight = 256;
 constexpr uint32_t kMapBase = 0x032E2000;
 constexpr uint32_t kMapMips = 0x033E2000;
-
-class EnvFallbackSettings final : public rex::SettingOwner {
- public:
-  EnvFallbackSettings() : SettingOwner("larecomp") { larecomp::settings::RegisterExtraOwner(*this); }
-
-  REX_SETTING(bool, mcla_gpu_env_fallback, true,
-              "Use the environment map where screen reflections have no usable result. Turn off for comparison. Live.",
-              rex::kDebugOnly);
-};
-
-EnvFallbackSettings& g_env_fallback_settings = larecomp::Leak<EnvFallbackSettings>();
 
 bool Matches(const EdramKey& key, uint32_t size_bits) {
   if (key.pitch != kPitch || key.samples != kSamples || key.reserved != 0) {
@@ -146,7 +134,7 @@ const SideViewRule kEnvRule = {
     .host_samples = HostSamples,
 };
 
-bool env_fallback::Enabled() { return g_env_fallback_settings.mcla_gpu_env_fallback.Get(); }
+bool env_fallback::Enabled() { return larecomp::settings::mcla_gpu_env_fallback.Get(); }
 
 uint32_t env_fallback::MapWord(ResolveCache& resolves, const EdramTargets& edram, Device& device,
                               BindlessHeap& heap, uint64_t written) {

@@ -398,6 +398,7 @@
 {"mcla_gpu_edram_aliasing", "MCLA/GPU"},
 {"mcla_gpu_edram_capture", "MCLA/GPU"},
 {"mcla_gpu_env_resolution", "MCLA/GPU"},
+{"mcla_gpu_env_fallback", "MCLA/GPU"},
 {"mcla_gpu_env_hold", "MCLA/GPU"},
 {"mcla_gpu_hud_map_hold", "MCLA/GPU"},
 {"mcla_gpu_flicker_probe", "MCLA/GPU"},

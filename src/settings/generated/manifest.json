@@ -3956,6 +3956,17 @@
   "comments": [],
   "pp_depth": 0
  },
+ "mcla_gpu_env_fallback": {
+  "type": "bool",
+  "default": "true",
+  "category": "MCLA/GPU",
+  "help": "\"Use the environment map where screen reflections have no usable result. Turn off for comparison. Live.\"",
+  "traits": [
+   "rex::kDebugOnly"
+  ],
+  "comments": [],
+  "pp_depth": 0
+ },
  "mcla_gpu_env_hold": {
   "type": "bool",
   "default": "true",
