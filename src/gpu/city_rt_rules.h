@@ -205,6 +205,52 @@ struct CapRefusal {
   bool operator==(const CapRefusal&) const = default;
 };
 
+// Status only. A limit may refuse a sector even when the device can still allocate memory.
+enum class CoveragePressure : uint8_t { kNone, kBlasCap, kHitPool, kAllocation };
+
+constexpr std::string_view CoveragePressureName(CoveragePressure pressure) {
+  switch (pressure) {
+    case CoveragePressure::kBlasCap: return "cap";
+    case CoveragePressure::kHitPool: return "pool";
+    case CoveragePressure::kAllocation: return "allocation";
+    default: return {};
+  }
+}
+
+// The graphics menu reads the published reason on the guest thread.
+std::string_view CoverageWarningFact();
+
+class CoverageWarning {
+ public:
+  // Half a second at 60 FPS, like the process-wide memory sampler. Brief load
+  // churn and hit-pool retries can resolve within this window.
+  static constexpr uint32_t kSettleFrames = 30;
+
+  CoveragePressure Observe(CoveragePressure pressure) {
+    if (pressure != pending_) {
+      pending_ = pressure;
+      frames_ = 0;
+    }
+    if (pressure != visible_ && (pressure == CoveragePressure::kAllocation || ++frames_ >= kSettleFrames)) {
+      visible_ = pressure;
+    }
+    return visible_;
+  }
+
+  // A frame without a city plan supplies neither pressure nor recovery.
+  void Interrupt() {
+    pending_ = visible_;
+    frames_ = 0;
+  }
+
+  void Reset() { *this = {}; }
+
+ private:
+  CoveragePressure pending_ = CoveragePressure::kNone;
+  CoveragePressure visible_ = CoveragePressure::kNone;
+  uint32_t frames_ = 0;
+};
+
 struct SectorState {
   Residency hi = Residency::kNone;
   Residency lod = Residency::kNone;
@@ -216,6 +262,10 @@ struct SectorState {
   uint64_t lod_pool_held = 0;
   CapRefusal hi_refusal;
   CapRefusal lod_refusal;
+  CoveragePressure hi_build_pressure = CoveragePressure::kNone;
+  CoveragePressure lod_build_pressure = CoveragePressure::kNone;
+
+  CoveragePressure& BuildPressure(Detail detail) { return detail == Detail::kHi ? hi_build_pressure : lod_build_pressure; }
 };
 
 // The distance from a point to a box (0 inside): the same measure the game's own sector cull uses (sub_822D7D00: the box's distance), so the ring is the one the
@@ -257,6 +307,7 @@ struct Plan {
   uint64_t resident_pool_bytes = 0;  // the pool blocks of what is built (0 with no pool cap)
   bool over_cap = false;           // something wanted could not be had for the cap
   bool over_pool_cap = false;      // ... and the pool's cap was the one in the way (it can also be both)
+  CoveragePressure coverage_pressure = CoveragePressure::kNone;
 };
 
 struct PlanInput {
@@ -341,15 +392,28 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
   std::vector<Candidate> held;  // resident or loading, wanted or not
   uint64_t held_bytes = 0;
   uint64_t held_pool = 0;
+  // A resident Hi mesh already supplies the sector's geometry when its LOD is missing.
+  const auto note_pressure = [&](uint32_t sector, Detail detail, CoveragePressure pressure) {
+    if (detail == Detail::kHi || states[sector].hi != Residency::kResident) {
+      // A failed allocation takes precedence over the two capacity limits.
+      plan.coverage_pressure = std::max(plan.coverage_pressure, pressure);
+    }
+  };
   for (uint32_t i = 0; i < sectors.size(); ++i) {
     const SectorInfo& s = sectors[i];
     const SectorState& st = states[i];
     const float d = DistanceToBox(in.camera, s.box_min, s.box_max);
     const auto consider = [&](Detail detail, Residency residency, uint64_t legacy_bytes, uint64_t pool_held, uint64_t retry, uint32_t triangles,
-                              uint64_t pool_estimate, float radius, CapRefusal refusal) {
+                              uint64_t pool_estimate, float radius, CapRefusal refusal, CoveragePressure build_pressure) {
       const bool present = residency == Residency::kResident || residency == Residency::kLoading;
       const bool wanted = triangles != 0 && d <= (present ? RetentionRadius(b, radius) : radius);
       if (wanted) (detail == Detail::kHi ? plan.wanted_hi : plan.wanted_lod) += 1;
+      // Keep the observed build cause through its retry, while the requested
+      // detail is still missing within the nominal ring.
+      if (build_pressure != CoveragePressure::kNone && (pooled || build_pressure != CoveragePressure::kHitPool) &&
+          triangles != 0 && d <= radius && residency != Residency::kResident) {
+        note_pressure(i, detail, build_pressure);
+      }
       if (!wanted && refusal != CapRefusal{}) plan.cap_changes.push_back({i, detail, {}});
       if (present) {
         const uint64_t bytes = StructureCharge(in.fixed_selection, triangles, legacy_bytes);
@@ -365,8 +429,8 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
         (detail == Detail::kHi ? load_hi : load_lod).push_back({i, detail, d, EstimateStructureBytes(triangles), pooled ? pool_estimate : 0, false, true, refusal});
       }
     };
-    consider(Detail::kHi, st.hi, st.hi_bytes, st.hi_pool_held, st.hi_retry_frame, s.hi_triangles, s.hi_pool, b.hi_radius, st.hi_refusal);
-    consider(Detail::kLod, st.lod, st.lod_bytes, st.lod_pool_held, st.lod_retry_frame, s.lod_triangles, s.lod_pool, b.far_radius, st.lod_refusal);
+    consider(Detail::kHi, st.hi, st.hi_bytes, st.hi_pool_held, st.hi_retry_frame, s.hi_triangles, s.hi_pool, b.hi_radius, st.hi_refusal, st.hi_build_pressure);
+    consider(Detail::kLod, st.lod, st.lod_bytes, st.lod_pool_held, st.lod_retry_frame, s.lod_triangles, s.lod_pool, b.far_radius, st.lod_refusal, st.lod_build_pressure);
   }
   const auto nearest_first = [](const Candidate& a, const Candidate& c) { return a.distance != c.distance ? a.distance < c.distance : a.sector < c.sector; };
   std::sort(load_hi.begin(), load_hi.end(), nearest_first);
@@ -420,6 +484,7 @@ inline Plan PlanStreaming(const PlanInput& in, const std::vector<SectorInfo>& se
       if (shortfall) {
         plan.over_cap = true;
         plan.over_pool_cap = plan.over_pool_cap || refused.pool;
+        note_pressure(c.sector, c.detail, refused.pool ? CoveragePressure::kHitPool : CoveragePressure::kBlasCap);
         if (refused != c.refusal) plan.cap_changes.push_back({c.sector, c.detail, refused, c.bytes, c.pool});
         continue;  // no room for this one; a smaller or nearer one behind it may still fit
       }

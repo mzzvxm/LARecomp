@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include "car_rt_scene_rules.h"
@@ -735,8 +736,166 @@ void TestFixedResidency() {
   in.camera[0] = 0;
   in.budget.memory_cap = 240 * kMiB;
   const Plan both = PlanStreaming(in, sectors, states);
+  CHECK(both.coverage_pressure == CoveragePressure::kHitPool);
   CHECK(both.cap_changes.size() == 1);
   if (both.cap_changes.size() == 1) CHECK(both.cap_changes[0].refused.blas && both.cap_changes[0].refused.pool);
+}
+
+void TestCoveragePressure() {
+  using enum CoveragePressure;
+  PlanInput in;
+  in.budget = WithRadius(BudgetFor(GpuClass::kHigh, Level::kHigh), 1500.0f);
+  in.budget = BuildCost{}.Limit(in.budget, true);
+  in.budget.pool_cap = 120795952;
+  std::vector<SectorInfo> sectors(13);
+  std::vector<SectorState> states(sectors.size());
+  // Round-two cap hold: 2,795,700 triangles at 96 B each. The missing
+  // detail costs 5,281,920 logical bytes, as in one of the logged refusals.
+  for (uint32_t i = 0; i < 11; ++i) {
+    sectors[i].hi_triangles = i < 10 ? 262144 : 174260;
+    states[i].hi = Residency::kResident;
+    states[i].hi_bytes = 49 * kMiB / 11;  // physical bytes no longer select residency
+  }
+  constexpr uint32_t kNear = 11;
+  constexpr uint32_t kFar = 12;
+  sectors[kNear].hi_triangles = 55020;
+  sectors[kNear].hi_pool = 2506816;
+  sectors[kNear].box_min[0] = sectors[kNear].box_max[0] = 666;
+  sectors[kFar].box_min[0] = sectors[kFar].box_max[0] = -7100;
+  sectors[kFar].lod_triangles = 128;
+  states[kFar].lod = Residency::kResident;
+  const auto repeat = [&](CoveragePressure expected, const std::vector<Request>& loads,
+                          uint64_t charged, float safe, size_t evicted = 1) {
+    auto control = states;
+    for (auto& state : control) state.hi_build_pressure = state.lod_build_pressure = kNone;
+    const Plan reference = PlanStreaming(in, sectors, control);
+    const auto finish = [&](std::vector<SectorState> next, const Plan& plan) {
+      std::vector<BuildItem> items{{26000, kMiB, 10}, {26000, kMiB, 20}};
+      for (const auto& load : plan.loads) {
+        const auto& sector = sectors[load.sector];
+        const auto triangles = load.detail == Detail::kHi ? sector.hi_triangles : sector.lod_triangles;
+        items.push_back({triangles, 2 * kMiB, load.distance});
+      }
+      for (const auto& eviction : plan.evictions) {
+        (eviction.detail == Detail::kHi ? next[eviction.sector].hi : next[eviction.sector].lod) = Residency::kNone;
+      }
+      const auto build = PlanBuilds(items, in.budget.build_triangles, in.budget.upload_bytes);
+      for (size_t i = 0; i < plan.loads.size(); ++i) {
+        const auto& load = plan.loads[i];
+        (load.detail == Detail::kHi ? next[load.sector].hi : next[load.sector].lod) =
+            build[i + 2] ? Residency::kResident : Residency::kLoading;
+      }
+      std::vector<int> instances;
+      for (size_t i = 0; i < next.size(); ++i) {
+        Detail detail;
+        instances.push_back(PickInstance(next[i], &detail) ? int(detail) : -1);
+      }
+      return std::tuple{build, instances, SafeReceiverRange(in, sectors, next, 1500)};
+    };
+    const auto outcome = finish(control, reference);
+    for (int repetition = 0; repetition < 2; ++repetition) {
+      const Plan plan = PlanStreaming(in, sectors, states);
+      CHECK(plan.coverage_pressure == expected);
+      CHECK(plan.loads == loads && plan.loads == reference.loads);
+      CHECK(plan.evictions.size() == evicted && plan.evictions == reference.evictions);
+      CHECK(plan.resident_bytes == charged && plan.resident_bytes == reference.resident_bytes);
+      CHECK(plan.resident_pool_bytes == reference.resident_pool_bytes);
+      CHECK(finish(states, plan) == outcome);
+      CHECK(std::get<2>(outcome) == safe);
+    }
+  };
+
+  constexpr uint64_t kHoldCharge = 268387200;
+  repeat(kBlasCap, {}, kHoldCharge + EstimateStructureBytes(128), 666);
+  states[kNear].hi_refusal = {true, false};
+  CHECK(PlanStreaming(in, sectors, states).cap_changes.empty());
+  repeat(kBlasCap, {}, kHoldCharge + EstimateStructureBytes(128), 666);
+
+  // Normal turnover evicts an old LOD and admits the new Hi. A full read
+  // queue also delays a request without proving a cap refusal.
+  states[0].hi = Residency::kNone;
+  sectors[0].hi_triangles = 0;
+  const uint64_t smaller_charge = kHoldCharge + EstimateStructureBytes(128) - 24 * kMiB;
+  const std::vector<Request> load_hi{{kNear, Detail::kHi, 666}};
+  repeat(kNone, load_hi, smaller_charge, 666);
+  in.loading = in.budget.loads_in_flight;
+  repeat(kNone, {}, smaller_charge, 666);
+  in.loading = 0;
+  sectors.push_back(SectorInfo{});
+  states.push_back(SectorState{});
+  sectors.back().box_min[0] = sectors.back().box_max[0] = 5900;
+  sectors.back().lod_triangles = 128;
+  repeat(kNone, {{13, Detail::kLod, 5900}, {kNear, Detail::kHi, 666}}, smaller_charge, 666);
+  sectors.pop_back();
+  states.pop_back();
+
+  states[1].hi_pool_held = in.budget.pool_cap;
+  repeat(kHitPool, {}, smaller_charge, 666);
+  states[1].hi_pool_held = 0;
+  states[kNear].hi = Residency::kFailed;
+  states[kNear].hi_retry_frame = 8;
+  states[kNear].hi_build_pressure = kHitPool;  // the hit pool had no suitable free range
+  repeat(kHitPool, {}, smaller_charge, 666);
+  const auto pool_cap = in.budget.pool_cap;
+  in.budget.pool_cap = 0;
+  repeat(kNone, {}, smaller_charge, 666);
+  in.budget.pool_cap = pool_cap;
+  in.frame = 8;
+  repeat(kHitPool, load_hi, smaller_charge, 666);
+  states[kNear].hi = Residency::kLoading;
+  repeat(kHitPool, {}, smaller_charge, 666);
+  states[kNear].hi = Residency::kFailed;
+  states[kNear].hi_build_pressure = kAllocation;
+  repeat(kAllocation, load_hi, smaller_charge, 666);
+  sectors[kNear].box_min[0] = sectors[kNear].box_max[0] = 1501;
+  repeat(kNone, {}, smaller_charge, 1500);
+  sectors[kNear].box_min[0] = sectors[kNear].box_max[0] = 666;
+  states[kNear].hi = Residency::kResident;
+  repeat(kNone, {}, smaller_charge + 5281920, 1500);
+  states[kNear].hi = Residency::kFailed;
+  states[kNear].hi_build_pressure = kNone;  // a failed read alone proves no memory pressure
+  repeat(kNone, load_hi, smaller_charge, 666);
+  states[kNear].hi = Residency::kResident;
+  repeat(kNone, {}, smaller_charge + 5281920, 1500);
+
+  // A refused LOD is redundant while this sector has Hi, and otherwise
+  // leaves a gap in the requested geometry.
+  sectors[kNear].lod_triangles = 128;
+  sectors[kNear].lod_pool = in.budget.pool_cap + 1;
+  CHECK(PlanStreaming(in, sectors, states).over_pool_cap);
+  repeat(kNone, {}, smaller_charge + 5281920, 1500);
+  sectors[kNear].hi_triangles = 0;
+  states[kNear].hi = Residency::kNone;
+  repeat(kHitPool, {}, smaller_charge, 1500);
+
+  in.budget = {};
+  repeat(kNone, {}, 0, 0, 11);
+}
+
+void TestCoverageWarning() {
+  using enum CoveragePressure;
+  CoverageWarning warning;
+  for (const auto reason : {kBlasCap, kHitPool}) {
+    for (uint32_t frame = 1; frame < 30; ++frame) CHECK(warning.Observe(reason) == kNone);
+    warning.Interrupt();
+    for (uint32_t frame = 1; frame < 30; ++frame) CHECK(warning.Observe(reason) == kNone);
+    CHECK(warning.Observe(reason) == reason);
+    for (uint32_t frame = 1; frame < 30; ++frame) CHECK(warning.Observe(kNone) == reason);
+    CHECK(warning.Observe(reason) == reason);
+    for (uint32_t frame = 1; frame < 30; ++frame) CHECK(warning.Observe(kNone) == reason);
+    CHECK(warning.Observe(kNone) == kNone);
+  }
+  CHECK(warning.Observe(kAllocation) == kAllocation);
+  warning.Reset();  // scene reset or effective city settings change
+  CHECK(warning.Observe(kNone) == kNone);
+  CHECK(warning.Observe(kHitPool) == kNone);
+  for (uint32_t frame = 1; frame < 8; ++frame) CHECK(warning.Observe(kHitPool) == kNone);
+  CHECK(warning.Observe(kNone) == kNone);  // brief pool retry recovered
+  CHECK(warning.Observe(kAllocation) == kAllocation);
+  for (uint32_t frame = 1; frame < 30; ++frame) CHECK(warning.Observe(kNone) == kAllocation);
+  warning.Interrupt();  // menu frames without a city plan cannot clear the warning
+  for (uint32_t frame = 1; frame < 30; ++frame) CHECK(warning.Observe(kNone) == kAllocation);
+  CHECK(warning.Observe(kNone) == kNone);
 }
 
 int main() {
@@ -754,6 +913,8 @@ int main() {
   TestHitchBudget();
   TestFixedResidency();
   TestSafeRange();
+  TestCoveragePressure();
+  TestCoverageWarning();
   if (g_failures != 0) {
     std::fprintf(stderr, "city_rt_rules_test: %d of %d checks FAILED\n", g_failures, g_checks);
     return 1;

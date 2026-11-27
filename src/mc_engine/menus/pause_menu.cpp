@@ -2260,6 +2260,10 @@ class PauseRuleEnv final : public expr::Env {
             const auto hint = gpu::vram_warning::CurrentHint();
             return hint.empty() ? Value{} : text(hint);
         }
+        if (path == "live.city_rt_coverage") {
+            const auto warning = gpu::city_rt::CoverageWarningFact();
+            return warning.empty() ? Value{} : text(warning);
+        }
         if (path == "live.hdr_active") return Value::Bool(gpu::HdrOutputActive());
         if (path == "features.hdr.auto_paper_white_nits")
             return Value::Number(std::nearbyint(gpu::HdrAutoPaperWhiteNits()));
