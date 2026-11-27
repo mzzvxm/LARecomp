@@ -82,6 +82,7 @@
 #define CAR_RT_SPACE 2
 #include "car_rt_common.hlsli"
 #include "car_rt_refl_common.hlsli"
+#include "car_rt_denoise_v2_guides.hlsli"
 #include "blue_noise.hlsli"
 
 Texture2D<float4> g_textures[] : register(t0, space0);
@@ -98,6 +99,10 @@ RWTexture2D<float4> g_aux : register(u1, space1);
 // The census's counters (car_rt_hit_rules.h census::, RT-HIT-SHADING-3): 32 words, counted only in a stats frame (the push's slots.w bit 16); the host zeroes them before such a frame and
 // reads them back after it.
 RWByteAddressBuffer g_stats : register(u2, space1);
+#ifdef __spirv__
+[[vk::image_format("rgba32f")]]
+#endif
+RWTexture2D<float4> g_denoiseGuide : register(u3, space1);
 
 struct CarRtReflPush
 {
@@ -851,9 +856,10 @@ float4 PaintSampleResult(float fade, float visible, float3 seen, float3 hidden, 
     return float4(colour, car ? -(1.0 + weight) : 1.0 + weight);
 }
 
-float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux)
+float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4 aux, out float4 guide)
 {
     aux = float4(0.0, 0.0, 0.0, 0.0);
+    guide = 0.0;
     gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
     gCityHits = 0u;
     const float t = own.a;
@@ -905,6 +911,7 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
     }
     // the texel has data from here on: what the denoise needs to know about it (its hit distance below, where a ray hit)
     aux = float4(0.0, EncodeInstance(primaryInstance), saturate(nv), 1.0);
+    if ((g_push.slots.w & kCarDnTraceGuide) != 0u) guide = CarDnGuide(hitT, normal, primaryInstance);
     if (nv < kMinNv)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // grazing: the paint does not trace it either (a miss: nothing changes)
@@ -936,7 +943,9 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
         {
             hidden = SurfaceMean(history, texel, t, nv) * g_push.tune.x;
         }
-        return PaintSampleResult(fade, visible, seen, hidden, car, distance, aux);
+        const float4 value = PaintSampleResult(fade, visible, seen, hidden, car, distance, aux);
+        guide.z = abs(value.a) > 1.0 ? distance : 0.0;
+        return value;
     }
     const float reach = g_push.lens.w;
     const float tanHalf = g_push.tune.w;
@@ -1077,7 +1086,8 @@ float4 TraceTexel(Texture2D<float4> history, uint2 texel, float4 own, out float4
         distanceSum = coatDistance;
         hitCount = 1.0;
     }
-    aux.x = EncodeHitDistance(distanceSum / max(hitCount, 1.0), reach);
+    guide.z = distanceSum / max(hitCount, 1.0);
+    aux.x = EncodeHitDistance(guide.z, reach);
     aux.w = 1.0 - kAuxSharpScale * sharp;  // the denoise leaves the mirror's part of the texel alone (car_rt_hit_rules.h EncodeAuxSharp)
     return float4(colour, mixedCar >= 0.5 * weight ? -(1.0 + min(weight, 1.0)) : 1.0 + min(weight, 1.0));  // the sign: mostly on another car (RT-HIT-SHADING-4)
 }
@@ -1109,6 +1119,7 @@ void main(uint3 id : SV_DispatchThreadID)
     }
     float4 result = float4(0.0, 0.0, 0.0, kNoData);
     float4 aux = float4(0.0, 0.0, 0.0, 0.0);
+    float4 guide = 0.0;
 #if !defined(CAR_RT_REFL_OPPONENTS) && !defined(CAR_RT_REFL_GLASS)
     if (StencilTileCovered(id.xy, g_push.region.z))
 #endif
@@ -1117,12 +1128,13 @@ void main(uint3 id : SV_DispatchThreadID)
         const float4 own = history.Load(int3(id.xy, 0));
         if (own.a > 0.0 && own.a < 60000.0)
         {
-            result = TraceTexel(history, id.xy, own, aux);
+            result = TraceTexel(history, id.xy, own, aux, guide);
         }
     }
     // Vacated trace regions still receive the empty value.
     g_output[id.xy] = result;
     g_aux[id.xy] = aux;
+    if ((g_push.slots.w & kCarDnTraceGuide) != 0u) g_denoiseGuide[id.xy] = guide;
 }
 #ifdef CAR_RT_REFL_OPPONENTS
 #undef main

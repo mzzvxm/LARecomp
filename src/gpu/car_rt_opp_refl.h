@@ -91,6 +91,7 @@ class CarRtOppRefl {
     plume::RenderDescriptorSet* output_set = nullptr;  // u0 the image, u1 the aux image: the player's trace set
     HostImage* image = nullptr;                // both are in GENERAL, written by the player's dispatch
     HostImage* aux = nullptr;
+    HostImage* guide = nullptr;               // u3 is written only when V2 paint is active
     const CityRefl::Frame* city = nullptr;     // the city's set (bound at set 3) and cell this frame (CITY-RT M2); null: no set, no pass
     uint32_t image_width = 0;                  // the history image's size in texels
     uint32_t image_height = 0;

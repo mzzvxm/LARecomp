@@ -39,8 +39,9 @@ float GlassFresnel(float nv)
 }
 
 // The texel: rgb the colour to add, alpha 1 for a texel of glass (0: not glass, or the frame has no picture depth to test against).
-float4 TraceGlassTexel(Texture2D<float4> history, uint2 texel)
+float4 TraceGlassTexel(Texture2D<float4> history, uint2 texel, out float4 guide)
 {
+    guide = 0.0;
     gCityTexel = texel;  // the noise of the city hits' sun rays (city_refl.hlsli)
     gCityHits = 0u;
     const CityReflFrame c = CityReflFrameNow();
@@ -85,6 +86,7 @@ float4 TraceGlassTexel(Texture2D<float4> history, uint2 texel)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // grazing: a glass texel with nothing to add (as the paint's pass does not trace it)
     }
+    if ((g_push.slots.w & kCarDnTraceGuide) != 0u) guide = CarDnGuide(hitT, normal, primaryInstance);
     if (CityReflStatsOn())
     {
         CityStat(kCityStatTexels, 1u);
@@ -104,6 +106,7 @@ float4 TraceGlassTexel(Texture2D<float4> history, uint2 texel)
     {
         return float4(0.0, 0.0, 0.0, 1.0);  // nothing of the cars or the city in the way: the game's own reflection stays
     }
+    guide.z = hitDistance;
 
     // 3. what the hit shows, by the glass's Fresnel. Another car: its colour where the history shows it, its stand-in where not (the paint's blend); the rest: the history's colour where the camera sees it.
     float3 colour = seen;
@@ -129,7 +132,9 @@ void main(uint3 id : SV_DispatchThreadID)
         return;
     }
     Texture2D<float4> history = g_textures[g_push.slots.x];
-    g_output[texel] = TraceGlassTexel(history, texel);
+    float4 guide;
+    g_output[texel] = TraceGlassTexel(history, texel, guide);
+    if ((g_push.slots.w & kCarDnTraceGuide) != 0u) g_denoiseGuide[texel] = guide;
 }
 
 #endif  // CAR_RT_REFL_GLASS_HLSLI

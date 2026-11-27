@@ -67,6 +67,7 @@
 #include "car_rt_check_cs.hlsl.dxil.h"
 #include "car_rt_refl_cs.hlsl.dxil.h"
 #include "car_rt_refl_denoise_cs.hlsl.dxil.h"
+#include "car_rt_denoise_v2_cs.hlsl.dxil.h"
 #include "car_rt_refl_glass_cs.hlsl.dxil.h"
 #include "car_glass_apply_ps.hlsl.dxil.h"
 #include "car_rt_refl_hit_cs.hlsl.dxil.h"
@@ -271,6 +272,7 @@
 #include "car_rt_check_cs.hlsl.spirv.h"
 #include "car_rt_refl_cs.hlsl.spirv.h"
 #include "car_rt_refl_denoise_cs.hlsl.spirv.h"
+#include "car_rt_denoise_v2_cs.hlsl.spirv.h"
 #include "car_rt_refl_glass_cs.hlsl.spirv.h"
 #include "car_glass_apply_ps.hlsl.spirv.h"
 #include "car_rt_refl_hit_cs.hlsl.spirv.h"
@@ -972,6 +974,8 @@ inline HostShaderBlob CarRtReflShader() {
 inline HostShaderBlob CarRtReflDenoiseShader() {
   return MCLA_GPU_HOST_SHADER_BLOB(car_rt_refl_denoise_cs);
 }
+
+inline HostShaderBlob CarRtDenoiseV2Shader() { return MCLA_GPU_HOST_SHADER_BLOB(car_rt_denoise_v2_cs); }
 
 // RR-4b: the raw mode's hit distance pass (hlsl/car_rt_refl_hit_cs.hlsl), on the denoise's layout.
 inline HostShaderBlob CarRtReflHitShader() {
