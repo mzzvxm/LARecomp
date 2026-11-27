@@ -57,6 +57,11 @@ constexpr Choice quality[] = {{"off", "OFF"}, {"high", "HIGH"}, {"ultra", "ULTRA
 constexpr Choice strength[] = {{"light", "1"}, {"default", "2"}, {"strong", "3"}, {"stronger", "4"}, {"strongest", "5"}};
 constexpr Choice on_off[] = {{"off", "OFF"}, {"on", "ON"}};
 constexpr std::string_view named_presets[] = {"vanilla", "enhanced", "enhanced_rt"};
+constexpr std::string_view pbr_id = "PM_RxGpuPbr";
+constexpr std::string_view pbr_setting = "mcla_gpu_pbr";
+constexpr std::string_view pbr_preset_cells[] = {"false", "true", "true"};
+constexpr std::string_view pbr_diagnostics[] = {"mcla_gpu_gbuffer_view", "mcla_gpu_gbuffer_texture_rows"};
+
 struct BounceRow {
     const char* id;
     const char* setting;
@@ -329,10 +334,165 @@ int CheckBounceDump(const std::filesystem::path& dump, const std::filesystem::pa
     return !mutations.failures.empty();
 }
 
+Checks CheckPbrExport(const Contract& doc) {
+    Checks check;
+    check(Field(doc, "schema_version").n == 1, "PBR uses version 1");
+    const auto& settings = Field(doc, "settings");
+    const auto& setting = Field(settings, pbr_setting);
+    check(Field(setting, "type").s == "bool" && Field(setting, "default").s == "true" &&
+          !setting.BoolOr("no_save", true) && !setting.BoolOr("debug", true), "PBR saved player toggle defaults on");
+    check(Field(setting, "life").s == "live", "PBR setting lifecycle");
+    std::array<bool, std::size(pbr_diagnostics)> diagnostic_controls{};
+    int occurrences = 0;
+    for (const auto& tab : Field(doc, "tabs").a) {
+        for (const auto& section : Field(tab, "sections").a) {
+            for (const auto& row : Field(section, "rows").a) {
+                const auto& key = Field(row, "setting").s;
+                for (size_t i = 0; i < std::size(pbr_diagnostics); ++i) {
+                    const auto diagnostic = pbr_diagnostics[i];
+                    diagnostic_controls[i] |= key == diagnostic ||
+                        std::ranges::any_of(Field(row, "variants").a, [diagnostic](const Contract& variant) {
+                            return Field(variant, "setting").s == diagnostic;
+                        });
+                }
+                const auto& id = Field(row, "id").s;
+                if (id != pbr_id && key != pbr_setting) continue;
+                ++occurrences;
+                check(Field(tab, "id").s == "gfx" && Field(tab, "label").s == "GRAPHICS" &&
+                      Field(section, "id").s == "lighting" && Field(section, "source_menu").s == "RxLightingMenu" &&
+                      Field(section, "label").s == "LIGHTING AND SHADOWS", "PBR page");
+                check(id == pbr_id && key == pbr_setting && Field(row, "kind").s == "bool" &&
+                      Field(row, "label").s == "PHYSICALLY BASED LIGHTING" && Field(row, "default").s == "true" &&
+                      !row.BoolOr("inverted", false), "PBR toggle binding");
+                check(!Field(row, "help").s.empty(), "PBR player help");
+                check(Field(row, "apply").s == "live", "PBR row lifecycle");
+                const auto& renderers = Field(row, "renderers").a;
+                check(renderers.size() == 1 && renderers.front().s == "native", "PBR native renderer");
+                const auto* surfaces = row.Find("surfaces");
+                check(!surfaces || (surfaces->a.size() == 2 &&
+                      std::ranges::count(surfaces->a, "game", &Contract::s) == 1 &&
+                      std::ranges::count(surfaces->a, "launcher", &Contract::s) == 1), "PBR game and launcher surfaces");
+                check(!tab.BoolOr("debug", false) && !section.BoolOr("debug", false) && !row.BoolOr("debug", false) &&
+                      !row.Find("hidden_unless") && !row.Find("states") && !row.Find("variants"), "PBR player visibility");
+            }
+        }
+    }
+    check(occurrences == 1, "PBR occurs once");
+    for (size_t i = 0; i < std::size(pbr_diagnostics); ++i) {
+        const auto key = pbr_diagnostics[i];
+        check(Field(settings, key).BoolOr("debug", false), std::string(key) + " is diagnostic");
+        check(!diagnostic_controls[i], std::string(key) + " has no control");
+    }
+
+    const auto& presets = Field(doc, "presets");
+    const auto& items = Field(presets, "items");
+    check(std::ranges::count(Field(presets, "covers").a, pbr_setting, &Contract::s) == 1, "PBR covered by presets");
+    for (size_t p = 0; p < std::size(named_presets); ++p) {
+        const auto& cells = Field(Field(items, named_presets[p]), "values");
+        check(Field(cells, pbr_setting).s == pbr_preset_cells[p], "PBR " + std::string(named_presets[p]) + " cell");
+    }
+    const auto& custom = Field(items, "custom");
+    check(custom.IsObject() && !custom.Find("values"), "PBR CUSTOM has no fixed values");
+    const auto& flip = Field(presets, "flip");
+    const auto& writes = Field(flip, "writes").a;
+    check(Field(flip, "to").s == "custom" && writes.size() == 1 &&
+          Field(writes.front(), "setting").s == "mcla_gpu_preset_from" && Field(writes.front(), "value").s == "$previous",
+          "PBR edit preserves preset origin");
+    return check;
+}
+
+Checks CheckPbrMutations(const Contract& doc) {
+    Checks check;
+    const auto rows = [](Contract& copy, std::string_view page) -> Contract& {
+        auto& gfx = NamedEntry(MutableField(copy, "tabs"), "gfx");
+        return MutableField(NamedEntry(MutableField(gfx, "sections"), page), "rows");
+    };
+    const auto rejects = [&](std::string_view mutation, std::string_view expected, auto change) {
+        auto copy = doc;
+        change(copy);
+        const auto result = CheckPbrExport(copy);
+        check(std::ranges::find(result.failures, expected) != result.failures.end(), mutation);
+    };
+    for (size_t p = 0; p < std::size(named_presets); ++p) {
+        const std::string cell = "PBR " + std::string(named_presets[p]) + " cell";
+        rejects("flip " + cell, cell, [&](Contract& copy) {
+            auto& items = MutableField(MutableField(copy, "presets"), "items");
+            auto& values = MutableField(MutableField(items, named_presets[p]), "values");
+            MutableField(values, pbr_setting).s = pbr_preset_cells[p] == "true" ? "false" : "true";
+        });
+    }
+    rejects("assign CUSTOM fixed values", "PBR CUSTOM has no fixed values", [](Contract& copy) {
+        auto& items = MutableField(MutableField(copy, "presets"), "items");
+        auto& custom = MutableField(items, "custom");
+        custom.o.emplace_back("values", Field(Field(items, "vanilla"), "values"));
+    });
+    rejects("require restart for the PBR setting", "PBR setting lifecycle", [](Contract& copy) {
+        auto& setting = MutableField(MutableField(copy, "settings"), pbr_setting);
+        MutableField(setting, "life").s = "restart";
+    });
+    rejects("require restart for the PBR row", "PBR row lifecycle", [&](Contract& copy) {
+        MutableField(NamedEntry(rows(copy, "lighting"), pbr_id), "apply").s = "restart";
+    });
+    rejects("move PBR to Display", "PBR page", [&](Contract& copy) {
+        auto& lighting = rows(copy, "lighting");
+        rows(copy, "display").a.push_back(NamedEntry(lighting, pbr_id));
+        std::erase_if(lighting.a, [](const auto& row) { return Field(row, "id").s == pbr_id; });
+    });
+    for (const auto key : pbr_diagnostics) {
+        rejects("expose " + std::string(key), std::string(key) + " has no control", [&](Contract& copy) {
+            auto& lighting = rows(copy, "lighting");
+            auto leaked = NamedEntry(lighting, pbr_id);
+            MutableField(leaked, "id").s = "PM_UnexpectedPbrDiagnostic";
+            MutableField(leaked, "setting").s = key;
+            lighting.a.push_back(std::move(leaked));
+        });
+    }
+    rejects("remove the native renderer filter", "PBR native renderer", [&](Contract& copy) {
+        auto& row = NamedEntry(rows(copy, "lighting"), pbr_id);
+        std::erase_if(row.o, [](const auto& entry) { return entry.first == "renderers"; });
+    });
+    rejects("hide PBR from the launcher", "PBR game and launcher surfaces", [&](Contract& copy) {
+        auto& row = NamedEntry(rows(copy, "lighting"), pbr_id);
+        Contract surface;
+        surface.type = Contract::Type::kString;
+        surface.s = "game";
+        Contract game_only;
+        game_only.type = Contract::Type::kArray;
+        game_only.a.push_back(std::move(surface));
+        row.o.emplace_back("surfaces", std::move(game_only));
+    });
+    return check;
+}
+
+int CheckPbrDump(const std::filesystem::path& dump) {
+    // CHECK: compare the staged executable's version-1 export and the launcher's exact-pin UI readback.
+    const auto doc = ReadContract(dump);
+    const auto check = CheckPbrExport(doc);
+    for (const auto& failure : check.failures) std::cerr << "FAIL " << failure << '\n';
+    std::cout << check.count << " PBR checks, " << check.failures.size() << " failed\n";
+    if (!check.failures.empty()) return 1;
+    const auto mutations = CheckPbrMutations(doc);
+    for (const auto& escaped : mutations.failures) std::cerr << "FAIL mutation escaped: " << escaped << '\n';
+    std::cout << mutations.count - mutations.failures.size() << '/' << mutations.count << " PBR mutations caught\n";
+    return !mutations.failures.empty();
+}
+
 }  // namespace
 
 // CHECK: compare the installed executable's dump with the source harness dump.
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string_view(argv[1]) == "--pbr-export") {
+        if (argc != 3) {
+            std::cerr << "usage: larecomp_settings_ui_test --pbr-export <settings-ui.json>\n";
+            return 2;
+        }
+        try {
+            return CheckPbrDump(argv[2]);
+        } catch (const std::exception& error) {
+            std::cerr << "FAIL " << error.what() << '\n';
+            return 2;
+        }
+    }
     if (argc > 1 && std::string_view(argv[1]) == "--bounce-export") {
         if (argc < 3 || argc > 4) {
             std::cerr << "usage: larecomp_settings_ui_test --bounce-export <settings-ui.json> [contract examples dir]\n";
@@ -541,7 +701,7 @@ fallback_values = [{id = "1", label = "100%"}]
           !presets["items"]["enhanced"]["needs"], "only the RT presets need a ray tracing tier, and say why");
     check(!presets["items"]["custom"]["values"], "CUSTOM has no values of its own");
     const auto* covers = presets["covers"].as_array();
-    check(covers && covers->size() == 38, "38 covered settings");
+    check(covers && covers->size() == 39, "39 covered settings");
     const auto covered = [covers](std::string_view key) {
         return covers && std::ranges::any_of(*covers, [key](const toml::node& node) {
             return node.value_or(std::string_view{}) == key;
@@ -562,6 +722,12 @@ fallback_values = [{id = "1", label = "100%"}]
             check(cells[row.setting].value_or(std::string_view{}) == row.preset_cells[p],
                   std::string(row.setting) + " " + std::string(named_presets[p]) + " preset cell");
         }
+    }
+    check(covered(pbr_setting), "PBR is preset-covered");
+    for (size_t p = 0; p < std::size(named_presets); ++p) {
+        const auto cells = presets["items"][named_presets[p]]["values"];
+        check(cells[pbr_setting].value_or(std::string_view{}) == pbr_preset_cells[p],
+              "PBR " + std::string(named_presets[p]) + " preset cell");
     }
     check(!presets["items"]["vanilla"]["values"]["fps_limit"] && !presets["items"]["vanilla"]["values"]["mcla_gpu_upscaler"], "a preset names no DISPLAY or UPSCALING setting");
     const auto rules = presets["class_to_preset"];
