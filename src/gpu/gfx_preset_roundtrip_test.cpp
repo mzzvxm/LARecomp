@@ -183,7 +183,7 @@ int main(int argc, char** argv) {
   const auto facts = ls::ApplyPlayerConfig(registry, path);
   Check(static_cast<bool>(registry.Load(path, rex::SettingLayer::kFile)), "SDK file load accepts the config");
   ls::MigrateGraphicsPresetIds();
-  gp::Start(facts);
+  gp::Start(facts, path);
   const std::string_view edit = FilteringEdit(origin);
   if (save) Save(path, origin, edit, phase == "save-held");
   else Read(origin, edit);
