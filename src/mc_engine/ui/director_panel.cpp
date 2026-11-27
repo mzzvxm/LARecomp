@@ -27,6 +27,10 @@
 #include "larecomp_log.h"
 #include "mc_engine/cinematic/director/director.h"
 #include "mc_engine/cinematic/freecam_runtime.h"
+#include "mc_engine/cinematic/scene_runtime.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gfx_preset_apply.h"
+#endif
 #include "overlay_support.h"
 #include "settings/larecomp_settings.h"
 
@@ -52,8 +56,8 @@ namespace fc = mc::cinematic::freecam;
 constexpr float kFontSize = 17.0f;
 constexpr int kWaypointBase = 1000;  // a gizmo dot with an id of this or more is waypoint (id - this); a smaller one is a car's index
 
-enum Tab { kTabCamera, kTabRigs, kTabCars, kTabPaths, kTabTake, kTabAgent, kTabCount };
-const char* const kTabNames[kTabCount] = {"CAMERA", "RIGS", "CARS", "PATHS", "TAKE", "AGENT"};
+enum Tab { kTabCamera, kTabRigs, kTabCars, kTabPaths, kTabTake, kTabAgent, kTabWorld, kTabCount };
+const char* const kTabNames[kTabCount] = {"CAMERA", "RIGS", "CARS", "PATHS", "TAKE", "AGENT", "WORLD"};
 
 constexpr ImU32 kYellow = IM_COL32(242, 227, 5, 255);
 constexpr ImU32 kCyan = IM_COL32(51, 214, 214, 255);
@@ -142,10 +146,11 @@ class DirectorPanel final : public rex::ui::DialogBase {
         dir::RemoveEventListener(listener_);
     }
 
-    bool NeedsContinuousPaint() const override { return open_; }
+    bool NeedsContinuousPaint() const override { return open_ || mc::cinematic::ScenePresetLabelVisible(); }
 
     bool Draw(ImGuiIO& io) override {
         EnsureMclaTheme();
+        DrawPresetLabel();
         now_ = ImGui::GetTime();
         snap_ = dir::GetSnapshot();
         const bool want = larecomp::settings::mcla_director_panel.Get();
@@ -177,6 +182,26 @@ class DirectorPanel final : public rex::ui::DialogBase {
     }
 
   private:
+    static void DrawPresetLabel() {
+#if defined(LARECOMP_HAS_GPU)
+        if (!mc::cinematic::ScenePresetLabelVisible()) return;
+        namespace gfx = mcla::gpu::gfx_preset;
+        const auto text = gfx::Label(gfx::Current());
+        const ImGuiViewport* view = ImGui::GetMainViewport();
+        if (!view) return;
+        const float margin = std::max(16.0f, view->Size.x * 0.025f);
+        const ImVec2 lo(view->Pos.x + margin, view->Pos.y + margin);
+        auto* draw = ImGui::GetForegroundDrawList();
+        if (!draw) return;
+        ImGui::PushFont(nullptr, std::max(kFontSize, view->Size.y * 0.028f));
+        const ImVec2 size = ImGui::CalcTextSize(text.data(), text.data() + text.size());
+        const ImVec2 pos(lo.x + 9.0f, lo.y + 5.0f);
+        draw->AddRectFilled(lo, ImVec2(pos.x + size.x + 9.0f, pos.y + size.y + 5.0f), IM_COL32(13, 16, 20, 224), 3.0f);
+        draw->AddText(pos, kWhite, text.data(), text.data() + text.size());
+        ImGui::PopFont();
+#endif
+    }
+
     // ------------------------------------------------------------------------------------------------------------ lifecycle
 
     // ui.open's `panel`: a tab's name opens the panel on it; the panel's own words set how it looks (a script or an agent can bring the dock into the shape a picture or a test wants):
@@ -1215,6 +1240,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
             case kTabPaths: TabPaths(s); break;
             case kTabTake: TabTake(s); break;
             case kTabAgent: TabAgent(s); break;
+            case kTabWorld: TabWorld(s); break;
             default: break;
         }
         ImGui::EndChild();
@@ -1608,6 +1634,55 @@ class DirectorPanel final : public rex::ui::DialogBase {
         (void)s;
     }
 
+    void TabWorld(const dir::Snapshot& s) {
+        namespace gfx = mcla::gpu::gfx_preset;
+        if (s.preset.empty()) {
+            ImGui::TextUnformatted("PRESETS REQUIRE THE LARECOMP RENDERER");
+            return;
+        }
+        ImGui::Text("ACTIVE PRESET  %s", s.preset_warming ? "WARMING" : s.preset.c_str());
+        ImGui::BeginDisabled(s.preset_warming || s.take_active);
+        const bool can_key = !s.scene_path.empty() && (s.transport.duration < 0.0 || s.transport.t < s.transport.duration);
+        ImGui::SetNextItemWidth(S(170.0f));
+        if (ImGui::BeginCombo("PRESET", gfx::kLabels[preset_pick_])) {
+            for (int i = 0; i < gfx::kPresetCount; ++i) {
+                const bool enabled = s.preset_rt || !gfx::NeedsRt(static_cast<gfx::Preset>(i));
+                ImGui::BeginDisabled(!enabled);
+                if (ImGui::Selectable(gfx::kLabels[i], preset_pick_ == i)) preset_pick_ = i;
+                ImGui::EndDisabled();
+            }
+            ImGui::EndCombo();
+        }
+        Geo("PRESET");
+        const bool available = s.preset_rt || !gfx::NeedsRt(static_cast<gfx::Preset>(preset_pick_));
+        if (Btn("SET NOW", available)) {
+            auto args = dir::Json::Object();
+            args.Set("name", gfx::kIds[preset_pick_]);
+            Send(dp::Cmd{"preset.set", std::move(args)});
+        }
+        if (FlowBtn("ADD PRESET KEY", available && can_key)) {
+            auto args = dir::Json::Object();
+            args.Set("name", gfx::kIds[preset_pick_]);
+            args.Set("commit", true);
+            args.Set("t", s.transport.t);
+            Send(dp::Cmd{"preset.set", std::move(args)});
+        }
+        bool label = s.preset_label;
+        if (ImGui::Checkbox("ON-SCREEN PRESET LABEL", &label)) {
+            auto args = dir::Json::Object();
+            args.Set("on", label);
+            Send(dp::Cmd{"preset.label", std::move(args)});
+        }
+        if (Btn("ADD LABEL KEY", can_key)) {
+            auto args = dir::Json::Object();
+            args.Set("on", s.preset_label);
+            args.Set("commit", true);
+            args.Set("t", s.transport.t);
+            Send(dp::Cmd{"preset.label", std::move(args)});
+        }
+        ImGui::EndDisabled();
+    }
+
     void TabTake(const dir::Snapshot& s) {
         ImGui::SetNextItemWidth(S(70.0f));
         if (ImGui::BeginCombo("FPS", std::to_string(take_.fps).c_str())) {
@@ -1775,6 +1850,7 @@ class DirectorPanel final : public rex::ui::DialogBase {
     int wp_drag_ = -1;
 
     // take and console
+    int preset_pick_ = 0;
     dp::TakeForm take_;
     char take_name_[48];
     std::string take_folder_;
@@ -1797,6 +1873,11 @@ void DirectorKeyPressed() {
 }
 
 }  // namespace
+
+rex::ui::OverlayConfig DirectorPresetOverlayConfig() {
+    // CHECK: Exercise the SDK's Ctrl+F1 chord and rebinding in a developer build.
+    return {"mcla_director_preset", rex::KeyChord{rex::VirtualKey::kF1, rex::KeyModifiers::kCtrl}, &MakeHotkey<&mc::cinematic::SceneRequestPresetCycle>};
+}
 
 rex::ui::OverlayConfig DirectorOverlayConfig() {
     return {"mcla_director", rex::KeyChord{rex::VirtualKey::kF12, rex::KeyModifiers::kCtrl}, &MakeHotkey<&DirectorKeyPressed>};

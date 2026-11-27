@@ -187,19 +187,11 @@ bool AtStartupValue(const std::string& name, const std::string& value) {
 }
 
 // The cvars a scene holds right now (SetCvarForScene): the value each had before the scene took it and where that value came from.
-struct SceneHold {
-  std::string value;
-  larecomp::cvar::Source source = larecomp::cvar::Source::kDefault;
-};
-std::mutex g_scene_mutex;
+using SceneHold = CvarHold;
+std::recursive_mutex g_scene_mutex;
 std::unordered_map<std::string, SceneHold>& SceneHolds() {
   static std::unordered_map<std::string, SceneHold>& holds = larecomp::Leak<std::unordered_map<std::string, SceneHold>>();
   return holds;
-}
-
-std::unordered_map<std::string, SceneHold> SceneHoldsNow() {
-  std::lock_guard<std::mutex> lock(g_scene_mutex);
-  return SceneHolds();
 }
 
 // Adds the edit for `name`, or replaces the one already there.
@@ -253,53 +245,67 @@ bool IsAtStartupValue(std::string_view name) {
   return AtStartupValue(std::string(name), larecomp::cvar::GetFlagByName(name));
 }
 
-bool SetCvarForScene(std::string_view name, std::string_view value) {
-  const larecomp::cvar::FlagEntry* info = larecomp::cvar::GetFlagInfo(name);
-  if (!info) {
-    return false;
-  }
+namespace {
+
+using HoldLayer = CvarHold::Layer;
+
+bool SetHold(std::string_view name, std::string_view value, HoldLayer layer) {
+  const rex::SettingsBatch batch;
+  const std::lock_guard lock(g_scene_mutex);
+  const auto* info = larecomp::cvar::GetFlagInfo(name);
+  if (!info) return false;
   const std::string key(name);
-  // The hold goes in before the value changes, so a save on another thread never sees the scene's value unheld.
-  bool first = false;
-  {
-    SceneHold before{larecomp::cvar::GetFlagByName(name), info->source};
-    std::lock_guard<std::mutex> lock(g_scene_mutex);
-    first = SceneHolds().try_emplace(key, std::move(before)).second;  // a second `set` of the same cvar keeps the first hold
-  }
-  if (!larecomp::cvar::SetFlagByName(name, value)) {
-    if (first) {
-      std::lock_guard<std::mutex> lock(g_scene_mutex);
-      SceneHolds().erase(key);
-    }
+  auto& holds = SceneHolds();
+  auto it = holds.find(key);
+  const bool first = it == holds.end();
+  if (first) it = holds.emplace(key, SceneHold{info->getter(), info->source, {}, {}}).first;
+  SceneHold& hold = it->second;
+  // A lower-layer change must leave the scene's effective value alone.
+  if (hold.Visible(layer) && !larecomp::cvar::SetFlagByName(name, value)) {
+    if (first) holds.erase(it);
     return false;
   }
+  hold.*layer = std::string(value);
   return true;
 }
 
-bool RestoreCvarForScene(std::string_view name) {
-  const std::string key(name);
-  SceneHold hold;
-  {
-    std::lock_guard<std::mutex> lock(g_scene_mutex);
-    const auto it = SceneHolds().find(key);
-    if (it == SceneHolds().end()) {
-      return false;
-    }
-    hold = it->second;
-  }
-  // Still held while it is put back, so a save in between writes the old value, not the scene's. The value goes back at the
-  // layer it came from (RestoreValue: the registry only raises a layer, so it is reset first and stored again; the 0.10 code
-  // wrote entry.source of the registry's own vector, which no longer exists).
+bool RestoreHold(std::string_view name, HoldLayer layer, bool keep) {
+  const rex::SettingsBatch batch;
+  const std::lock_guard lock(g_scene_mutex);
+  auto& holds = SceneHolds();
+  const auto it = holds.find(std::string(name));
+  if (it == holds.end() || !(it->second.*layer)) return false;
+  SceneHold& hold = it->second;
+  hold.Remove(layer, keep ? std::optional{cvar::Source::kRuntime} : std::nullopt);
+  if (hold.scene) return true;
+  if (hold.preset) return larecomp::cvar::SetFlagByName(name, *hold.preset);
   const bool ok = larecomp::cvar::RestoreValue(name, hold.value, hold.source);
-  std::lock_guard<std::mutex> lock(g_scene_mutex);
-  SceneHolds().erase(key);
+  holds.erase(it);
   return ok;
 }
 
-bool ReleaseCvarFromScene(std::string_view name) {
-  const std::string key(name);
-  std::lock_guard<std::mutex> lock(g_scene_mutex);
-  return SceneHolds().erase(key) != 0;
+}  // namespace
+
+bool SetCvarForScene(std::string_view name, std::string_view value) {
+  return SetHold(name, value, &SceneHold::scene);
+}
+
+bool RestoreCvarForScene(std::string_view name) {
+  return RestoreHold(name, &SceneHold::scene, false);
+}
+
+cvar::Source CvarSourceUnderHolds(std::string_view name) {
+  const std::lock_guard lock(g_scene_mutex);
+  const auto it = SceneHolds().find(std::string(name));
+  return it == SceneHolds().end() ? cvar::GetFlagSource(name) : it->second.source;
+}
+
+bool SetCvarForPreset(std::string_view name, std::string_view value) {
+  return SetHold(name, value, &SceneHold::preset);
+}
+
+bool RestoreCvarForPreset(std::string_view name, bool keep) {
+  return RestoreHold(name, &SceneHold::preset, keep);
 }
 
 bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held) {
@@ -317,7 +323,8 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
   // CHECK: save and reload an edit made through the pause menu in the full game.
   // A cvar a scene holds (the trailer toolkit's `set` key) is judged by what it was before the scene took it: the scene's value is not
   // the player's choice, so it is never written, and a value the player had changed earlier is written as the player left it.
-  const std::unordered_map<std::string, SceneHold> scene_holds = SceneHoldsNow();
+  std::unique_lock hold_lock(g_scene_mutex);
+  const auto& scene_holds = SceneHolds();
   const auto from_hold = scene_holds.find(std::string(gp::kFromSetting));
   const std::string from = from_hold == scene_holds.end() ? larecomp::cvar::GetFlagByName(gp::kFromSetting)
                                                         : from_hold->second.value;
@@ -358,6 +365,7 @@ bool SaveCvarsToConfig(const std::filesystem::path& path, const HeldCvars& held)
                            (value == info->default_value || AtStartupValue(name, value));
     Put(edits, name, CvarTomlValue(name, value), unchanged);
   }
+  hold_lock.unlock();
   for (const auto& [name, value] : held) {
     Put(edits, name, CvarTomlValue(name, value), false);
   }

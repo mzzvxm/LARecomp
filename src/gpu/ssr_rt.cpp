@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the ray traced fallback of the screen-space reflections. See ssr_rt.h and ssr_rt_rules.h.
 
 #include "ssr_rt.h"
+#include "gfx_preset_apply.h"
 
 #include <algorithm>
 #include <cmath>
@@ -567,7 +568,7 @@ void ScreenReflectionsRt::ProcessReadback(uint64_t generation, uint32_t rt_frame
 void ScreenReflectionsRt::OnPresent() {
   if (ran_) {
     idle_frames_ = 0;
-  } else if (set_ && ++idle_frames_ >= kReleaseAfterFrames) {
+  } else if (set_ && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= kReleaseAfterFrames) {
     RetireSet();   // the trace image may be gone by now (ScreenReflections gives its images back after a pause): the set is made again when it is wanted
     idle_frames_ = 0;
   }

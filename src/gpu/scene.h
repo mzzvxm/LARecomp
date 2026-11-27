@@ -1,4 +1,6 @@
 #pragma once
+
+#include "gfx_preset.h"
 // ===========================================================================
 // MCLA GPU renderer -- the replay of the guest's frames
 // ===========================================================================
@@ -265,6 +267,9 @@ class Scene {
 
   // A guest present: the frame boundary of the statistics.
   void OnPresent();
+  uint64_t PresetGeneration() const { return preset_generation_; }
+  bool SawPresetAnchor() const { return preset_anchor_; }
+  gfx_preset::Preset RenderedPreset() const { return rendered_preset_; }
   // The last guest frame that presented had a 3D scene in it: the end of the post chain (the
   // composite marker) came in it. False for a movie, a loading screen or a menu on a flat background,
   // which draw no scene. The present shows such a frame as it is (mc_engine/display/ultrawide.h).
@@ -932,6 +937,10 @@ class Scene {
   void ReportProfile(const char* why, double frames, const ThreadLoad::Sample& load);
   bool profile_ = false;
   bool scale_depth_bias_ = true;  // mcla_gpu_scale_depth_bias, read each frame
+  uint64_t preset_generation_ = 0;
+  gfx_preset::Preset rendered_preset_ = gfx_preset::Preset::kCustom;
+  bool preset_cut_ = false;
+  bool preset_anchor_ = false;
   bool gate_unused_rt_scene_ = true;
   bool skip_identity_bloom_ = true;
   // The rear view mirror's rectangle in guest pixels (mirror_draws.h, published by the guest every frame the mirror is up) and mcla_gpu_mirror_class, read each frame;

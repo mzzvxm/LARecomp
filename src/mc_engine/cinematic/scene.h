@@ -34,6 +34,8 @@
 //   at T timescale <a>..<b> over <s> [ease <e>]
 //   at T set <cvar> <value...>                            a setting (the old value comes back when the scene ends); not one that names a
 //                                                         program, a path or arguments, or writes a file (CvarRefusal below)
+//   at T preset vanilla|enhanced|enhanced_rt|custom      live graphics preset until the next key or unload
+//   at T preset_label on|off                              show the preset in the Director overlay
 //   at T label "<text>" [side <s>] [fade <s>] [for <s>]   an on-screen label: DATA for the compositor, never drawn in game
 //   at T mark <name>                                      a named instant, logged
 //   at T capture fps <n> [step 1/<n>] [name <take>] [sink <s>] [statelog on|off]
@@ -62,6 +64,8 @@
 // Everything a runner needs to know to run a scene reads as data here. A parse never throws: it returns the scene and
 // a list of diagnostics, each with its line number; a scene with an error is not run.
 //
+
+#include "gpu/gfx_preset.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -113,6 +117,8 @@ enum class Track : uint8_t {
     kCar,     // `car`  (M4)
     kStart,   // `start`: the preamble (save, seed, warp, car slot)
     // capture mode (M2a)
+    kPreset,
+    kPresetLabel,
     kCapture,  // `capture fps <n>` (state 1, fps in `to`) and `capture off` (state 0)
 };
 const char* TrackName(Track track);
@@ -265,6 +271,13 @@ struct SplitState {
     bool operator==(const SplitState&) const = default;
 };
 SplitState EvaluateSplit(const Scene& scene, double t);
+
+struct PresetTrackState {
+    std::optional<mcla::gpu::gfx_preset::Preset> preset;
+    bool label = false;
+    int line = 0;
+};
+PresetTrackState EvaluatePreset(const Scene& scene, double t);
 
 // Walks the events once in time order: Take() hands over every event whose time has come (<= t) and was not given before.
 // Reset() to start again from the first. The runtime acts on the discrete ones (cvar, label, mark, and the other

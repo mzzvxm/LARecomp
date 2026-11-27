@@ -135,6 +135,8 @@ class ScreenShared {
   void OnAnchor(const ConstantBanks::Banks& banks);
   // The scene is composed: the UI starts (no trigger after this).
   void OnComposite() { composite_seen_ = true; }
+  void ResetPresetHistory() { cameras_.Reset(); last_capture_ = {}; }
+
   // A guest present: the frame boundary. Counts the frame, trades colour_post with its history, forgets the frame's draws.
   void OnPresent();
   // The frame number the camera history is kept by: the count of guest presents seen (every consumer counts the same ones).

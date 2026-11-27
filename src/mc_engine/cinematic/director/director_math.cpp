@@ -310,7 +310,9 @@ EventKind KindOfTrack(Track track) {
         case Track::kPeds:
         case Track::kParked:
         case Track::kPolice:
-        case Track::kTimeScale: return EventKind::kWorld;
+        case Track::kTimeScale:
+        case Track::kPreset:
+        case Track::kPresetLabel: return EventKind::kWorld;
         case Track::kCvar: return EventKind::kSetting;
         case Track::kLabel: return EventKind::kLabel;
         case Track::kMark: return EventKind::kMark;

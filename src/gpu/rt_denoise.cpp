@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- RtDenoise, the shared host. See rt_denoise.h and rt_denoise_rules.h.
 
 #include "rt_denoise.h"
+#include "gfx_preset_apply.h"
 
 #include <algorithm>
 #include <bit>
@@ -500,7 +501,7 @@ const HostImage* RtDenoise::RecordVisibility(plume::RenderCommandList* list, Hos
 void RtDenoise::OnPresent() {
   if (!v2_ran_) {
     v2_history_valid_ = false;
-    if ((features_[0].texture || features_[1].texture) && ++v2_idle_frames_ >= kReleaseAfterFrames) {
+    if ((features_[0].texture || features_[1].texture) && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++v2_idle_frames_ >= kReleaseAfterFrames) {
       ReleaseV2();
       v2_idle_frames_ = 0;
     }
@@ -510,7 +511,7 @@ void RtDenoise::OnPresent() {
     idle_frames_ = 0;
   } else {
     history_valid_ = false;   // a frame without a stage breaks the history: the next temporal frame reads none
-    if (ready_ && passes_ && (images_[kSpatialA].texture || images_[kSpatialB].texture || images_[kHistoryA].texture || images_[kHistoryB].texture) && ++idle_frames_ >= kReleaseAfterFrames) {
+    if (ready_ && passes_ && (images_[kSpatialA].texture || images_[kSpatialB].texture || images_[kHistoryA].texture || images_[kHistoryB].texture) && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= kReleaseAfterFrames) {
       ReleaseAll();
       idle_frames_ = 0;
     }

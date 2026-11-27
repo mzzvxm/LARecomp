@@ -17,9 +17,17 @@
 #include "../capture_mode.h"
 #include "settings/immortal.h"
 #include "../scene_runtime.h"
+#include "../take_folder.h"
 #include "director_internal.h"
 #include "director_math.h"
 #include "larecomp_log.h"
+#include "preset_command.h"
+#include "session_settle.h"
+#include "settings/larecomp_settings.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gfx_preset_apply.h"
+#include "gpu/scene_noise.h"
+#endif
 
 namespace mc::cinematic::director {
 
@@ -27,6 +35,7 @@ namespace {
 
 using internal::Arg;
 using internal::MakeSchema;
+namespace gfx = mcla::gpu::gfx_preset;
 
 uint64_t g_still_ids = 0;
 
@@ -66,8 +75,57 @@ struct TakeJob {
     uint64_t finished_seen = 0;
     uint64_t last_progress = 0;
     std::string name;
+    std::string scene_path;
+    int64_t scene_rev = 0;
+    std::vector<gfx::Preset> presets;
+    unsigned preset_mask = 0;
+    size_t pass = 0;
+    Json outputs = Json::Array();
+    SessionSettle settle;
 };
 TakeJob& g_take = larecomp::Leak<TakeJob>();
+
+bool CaptureSettled(uint64_t since, uint64_t frames, SessionSettle& settle) {
+    const bool world = internal::WorldSettled(since, 3, nullptr);
+#if defined(LARECOMP_HAS_GPU)
+    return settle.Observe(world, mcla::gpu::scene_noise::Get().presents.load(std::memory_order_relaxed), frames, gfx::Generation());
+#else
+    return settle.Observe(world, internal::TickCount(), frames);
+#endif
+}
+
+void StartTakePass(TakeJob& j) {
+    // CHECK: Compare the first and last rows of each rendered plate against the same scene's timeline take.
+    if (!j.presets.empty()) {
+        const auto preset = j.presets[j.pass];
+        const std::string suffix = "-" + std::string(gfx::Id(preset));
+        j.spec.name = capture::SanitizeTakeName(j.name, "preset-take").substr(0, capture::kMaxTakeNameLength - suffix.size()) + suffix;
+        SceneSetTakePreset(preset, j.preset_mask);
+    }
+    j.phase = TakePhase::kWaitReady;
+    j.since = internal::TickCount();
+    j.finished_seen = CaptureGetStatus().finished;
+    j.last_progress = 0;
+    j.settle = {};
+    SceneRestartAt(0.0);
+    if (CurrentSceneState() == SceneState::kRunning) SceneHold(true);
+}
+
+void FinishTakeJob(Json result) {
+    if (!g_take.presets.empty()) result.Set("outputs", std::move(g_take.outputs));
+    SceneSetTakePreset(std::nullopt);
+    PublishEvent("take.done", std::move(result));
+    g_take = TakeJob{};
+}
+
+void FailTakeJob(const std::string& why) {
+    CaptureDirectorRequest(0.0, CaptureSpec{});
+    Json f = Json::Object();
+    f.Set("name", g_take.name);
+    f.Set("state", "failed");
+    f.Set("error", why);
+    FinishTakeJob(std::move(f));
+}
 
 void PublishShotDone(const std::string& path, double t, bool ok, const std::string& error, int index, int total) {
     Json f = Json::Object();
@@ -95,6 +153,7 @@ void RegisterCapture() {
             double t = 0.0;
             if (has_t) {
                 if (!internal::NeedRunningScene(r)) return;
+                if (ScenePresetWarming()) return r.Fail(ErrorCode::kNotReady, "graphics presets are warming");
                 const Scene* scene = LoadedScene();
                 t = req.args.NumberOr("t", 0.0);
                 if (!(t >= 0.0) || (scene && scene->Duration() >= 0.0 && t > scene->Duration() + 1e-9)) return r.Fail(ErrorCode::kBadArgs, "shot: 't' is outside the scene");
@@ -106,15 +165,15 @@ void RegisterCapture() {
                 uint64_t since = 0;
                 std::string path;
                 bool settle = false;
+                SessionSettle gate;
             };
             auto job = std::make_shared<Job>();
             job->since = internal::TickCount();
             job->path = internal::Utf8(file);
-            job->settle = has_t || req.wait_settled;
+            job->settle = has_t || req.wait_settled || (GetSceneTransport().held && ScenePresetActive());
             r.Defer([job](const Responder& d) {
                 if (job->stage == 0) {
-                    std::string why;
-                    if (job->settle && !internal::WorldSettled(job->since, 20, &why)) return;
+                    if (job->settle && !CaptureSettled(job->since, 20, job->gate)) return;
                     job->stage = 1;
                 }
                 if (job->stage == 1) {
@@ -204,15 +263,48 @@ void RegisterCapture() {
             const Scene* scene = LoadedScene();
             const double fps = req.args.NumberOr("fps", 0.0);
             if (!(fps >= 1.0 && fps <= 960.0)) return r.Fail(ErrorCode::kBadArgs, "take.render: 'fps' must be 1 to 960");
-            const std::string sink = req.args.StringOr("sink", "");
+            std::string sink = req.args.StringOr("sink", "");
             if (!sink.empty() && sink != "none" && sink != "ffmpeg" && sink != "png" && sink != "raw") return r.Fail(ErrorCode::kBadArgs, "take.render: 'sink' must be none, ffmpeg, png or raw");
             const double from = req.args.NumberOr("from", 0.0);
             double to = req.args.NumberOr("to", scene ? scene->Duration() : -1.0);
             if (!std::isfinite(from) || from < 0.0) return r.Fail(ErrorCode::kBadArgs, "take.render: 'from' must be a finite time of 0 or more");
             if (!std::isfinite(to) || to <= from) return r.Fail(ErrorCode::kBadArgs, to < 0.0 ? "take.render: the scene has no `end`: give 'to'" : "take.render: 'to' must be a finite time after 'from'");
             if (scene && scene->Duration() >= 0.0 && to > scene->Duration() + 1e-9) return r.Fail(ErrorCode::kBadArgs, "take.render: 'to' is past the scene's end");
+            const auto presets = ParseTakePresets(req.args.Get("presets"));
+            if (!presets.error.empty()) return r.Fail(ErrorCode::kBadArgs, presets.error);
+            if (!presets.values.empty()) {
+#if defined(LARECOMP_HAS_GPU)
+                for (const auto preset : presets.values) {
+                    if (!gfx::Available(preset)) return r.Fail(ErrorCode::kRefused, std::string(gfx::kNeedsRtReason));
+                }
+                if (!sink.empty() && sink != "png") return r.Fail(ErrorCode::kBadArgs, "preset passes require the png sink");
+                sink = "png";
+                if (!larecomp::settings::mcla_capture_out.Get().empty()) {
+                    return r.Fail(ErrorCode::kRefused, "preset passes need mcla_capture_dir instead of a fixed mcla_capture_out");
+                }
+                bool live_world = false;
+                SceneWorldOverride(&live_world);
+                if (!scene || scene->capture_fps > 0.0 || live_world || !ScrubbableAt(*scene, to).scrubbable ||
+                    larecomp::settings::mcla_scene_t.Get() >= 0.0 || larecomp::settings::mcla_scene_seed.Get() <= 0 ||
+                    !larecomp::settings::mcla_scene_seed_each_frame.Get()) {
+                    return r.Fail(ErrorCode::kRefused, "preset passes need Director-owned time, scene seeding, kinematic cars and no authored capture or live world override");
+                }
+                const auto initial = EvaluateWorld(*scene, 0.0);
+                if (initial.traffic != 0 || initial.peds != 0 || !initial.hour_set || initial.weather < 0) {
+                    return r.Fail(ErrorCode::kRefused, "preset passes need traffic and peds off and an authored hour and weather from the start");
+                }
+                for (const Event& key : scene->events) {
+                    if (key.t >= to) break;
+                    if (((key.track == Track::kTraffic || key.track == Track::kPeds) && key.state != 0) ||
+                        ((key.track == Track::kHour || key.track == Track::kWeather) && key.release)) {
+                        return r.Fail(ErrorCode::kRefused, "preset passes need the authored world to stay deterministic");
+                    }
+                }
+#else
+                return r.Fail(ErrorCode::kNotReady, "preset passes require the LARecomp renderer");
+#endif
+            }
             g_take = TakeJob{};
-            g_take.phase = TakePhase::kWaitReady;
             g_take.fps = fps;
             g_take.from = from;
             g_take.spec.name = req.args.StringOr("name", "");
@@ -220,22 +312,24 @@ void RegisterCapture() {
             g_take.spec.t0 = from;
             g_take.spec.end_scene_t = to;
             g_take.name = g_take.spec.name;
-            g_take.since = internal::TickCount();
-            g_take.finished_seen = CaptureGetStatus().finished;
-            SceneRestartAt(0.0);
-            // The clock stands at 0 until the take begins: left running, the scene was already 0.15 to 0.27 s in when the take started (run 1, 11-20: a 2 s take had 54 frames, a
-            // 10 s take 297). Not when the restart went to "waiting" (no world just now): a held clock would never start it.
-            if (CurrentSceneState() == SceneState::kRunning) SceneHold(true);
+            g_take.scene_path = SceneFilePath();
+            g_take.scene_rev = internal::Doc().rev;
+            g_take.presets = presets.values;
+            g_take.preset_mask = presets.mask;
+            if (!g_take.presets.empty() && g_take.name.empty()) g_take.name = "preset-take";
+            StartTakePass(g_take);
             Json res = Json::Object();
             res.Set("name", g_take.name);
             res.Set("fps", fps);
             res.Set("sink", sink);
             res.Set("from", from);
             res.Set("to", to);
+            if (!g_take.presets.empty()) res.Set("presets", req.args.Get("presets"));
             r.Done(std::move(res));
         },
         MakeSchema("capture", "render a take over a stretch of the scene: the scene restarts, settles, runs from `from` to `to`; events take.progress and take.done",
                    {Arg("fps", ArgType::kNumber, true), Arg("sink", ArgType::kString, false, "none, ffmpeg, png or raw (default the capture setting's)"), Arg("name", ArgType::kString, false),
+                    Arg("presets", ArgType::kArray, false, "render one separate PNG take per preset"),
                     Arg("from", ArgType::kNumber, false, "first frame's exact scene time, default 0"), Arg("to", ArgType::kNumber, false, "exclusive end, default the scene's end")},
                    "{name, fps, sink, from, to}"));
 
@@ -245,7 +339,11 @@ void RegisterCapture() {
             const CaptureStatus st = CaptureGetStatus();
             Json res = Json::Object();
             res.Set("active", st.active || g_take.phase != TakePhase::kIdle);
-            res.Set("name", st.active ? st.name : g_take.name);
+            res.Set("name", st.active ? st.name : g_take.spec.name);
+            if (!g_take.presets.empty()) {
+                res.Set("preset", std::string(gfx::Id(g_take.presets[g_take.pass])));
+                res.Set("outputs", g_take.outputs);
+            }
             res.Set("folder", st.folder);
             res.Set("fps", st.active ? st.fps : g_take.fps);
             res.Set("frames", st.frames);
@@ -273,6 +371,13 @@ const bool kRegistered = (RegisterCapture(), true);
 }  // namespace
 
 namespace internal {
+
+bool DirectorTakeBusy() { return g_take.phase != TakePhase::kIdle; }
+
+void StopCaptureHandlers() {
+    if (DirectorTakeBusy()) FailTakeJob("the Director stopped");
+    g_sched = Schedule{};
+}
 
 // Once an update: the schedule of stills and the take that take.render drives.
 void TickCaptureHandlers() {
@@ -321,24 +426,20 @@ void TickCaptureHandlers() {
     // ---- take.render
     TakeJob& j = g_take;
     if (j.phase == TakePhase::kIdle) return;
+    if (j.scene_path != SceneFilePath() || j.scene_rev != Doc().rev) return FailTakeJob("the scene changed during the take");
     const CaptureStatus st = CaptureGetStatus();
     const SceneTransport tr = GetSceneTransport();
     switch (j.phase) {
         case TakePhase::kWaitReady: {
             if (tr.state == SceneState::kFailed || tr.state == SceneState::kOff) {
-                Json f = Json::Object();
-                f.Set("name", j.name);
-                f.Set("state", "failed");
-                f.Set("error", "the scene stopped before the take could start");
-                PublishEvent("take.done", std::move(f));
-                j = TakeJob{};
-                return;
+                return FailTakeJob("the scene stopped before the take could start");
             }
-            std::string why;
-            if (!WorldSettled(j.since, 10, &why) || tr.holding_for_ready) return;
+            if (tr.state == SceneState::kRunning && !tr.held) SceneHold(true);
+            if (!CaptureSettled(j.since, 20, j.settle) || tr.holding_for_ready) return;
             if (j.from > 0.0) {
                 SceneSeekTo(j.from);
                 j.since = TickCount();
+                j.settle = {};
                 j.phase = TakePhase::kSeeking;
             } else {
                 SceneHold(false);
@@ -348,8 +449,8 @@ void TickCaptureHandlers() {
             return;
         }
         case TakePhase::kSeeking: {
-            std::string why;
-            if (!WorldSettled(j.since, 20, &why)) return;
+            if (tr.state != SceneState::kRunning) return FailTakeJob("the scene stopped while seeking");
+            if (!CaptureSettled(j.since, 20, j.settle)) return;
             SceneHold(false);
             CaptureDirectorRequest(j.fps, j.spec);
             j.phase = TakePhase::kRecording;
@@ -377,9 +478,20 @@ void TickCaptureHandlers() {
             f.Set("state", st.last_state);
             f.Set("frames", st.last_frames);
             if (!st.last_error.empty()) f.Set("error", st.last_error);
-            PublishEvent("take.done", std::move(f));
-            j = TakeJob{};
-            return;
+            if (j.presets.empty()) return FinishTakeJob(std::move(f));
+            f.Set("preset", std::string(gfx::Id(j.presets[j.pass])));
+            j.outputs.Push(f);
+            if (st.last_state != "complete") {
+                f.Set("name", j.name);
+                return FinishTakeJob(std::move(f));
+            }
+            ++j.pass;
+            if (j.pass < j.presets.size()) return StartTakePass(j);
+            Json result = Json::Object();
+            result.Set("name", j.name);
+            result.Set("state", "complete");
+            result.Set("frames", st.last_frames);
+            return FinishTakeJob(std::move(result));
         }
         case TakePhase::kIdle:
             return;

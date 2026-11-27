@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the player's car as ray tracing acceleration structures. See car_rt_scene.h.
 
 #include "car_rt_scene.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -2257,7 +2258,7 @@ void CarRtScene::OnPresent() {
     }
     if (requested_ || requested_prev_) {
       idle_frames_ = 0;
-    } else if (idle_frames_ < kIdleReleaseFrames && ++idle_frames_ == kIdleReleaseFrames) {
+    } else if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && idle_frames_ < kIdleReleaseFrames && ++idle_frames_ == kIdleReleaseFrames) {
       ReleaseAll("no effect has asked for them for a while");
     }
   }

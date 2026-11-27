@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- car self-reflections (G8b prototype). See car_selfrefl.h.
 
 #include "car_selfrefl.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -913,7 +914,7 @@ void CarSelfRefl::OnPresent() {
   // (the first trigger with a car after makes it again).
   const bool idle = mode_ == Mode::kOff || frame_paint_draws_ == 0;
   if (idle) {
-    if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
+    if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
       ReleaseImage();
     }
   } else {

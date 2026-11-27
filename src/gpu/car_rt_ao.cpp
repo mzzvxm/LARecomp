@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- ambient occlusion and contact shadows around the player's car, ray traced. See car_rt_ao.h.
 
 #include "car_rt_ao.h"
+#include "gfx_preset_apply.h"
 #include "hlsl/cabin_shadow_rules.hlsli"
 
 #include <algorithm>
@@ -223,7 +224,7 @@ void CarRtAo::BeginFrame(bool occlusion_on, bool contact_on) {
     return;
   }
   // The image goes back once the pass has not run for a while (Record resets the count).
-  if (image_.texture && ++idle_frames_ >= kReleaseAfterFrames) {
+  if (image_.texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= kReleaseAfterFrames) {
     ReleaseImage();
     idle_frames_ = 0;
   }

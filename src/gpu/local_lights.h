@@ -206,6 +206,7 @@ class LocalLights {
   void SetLightsPair(const gi_bounce::Pair* pair) { pair_ = pair; }
   // A guest present: the interval line.
   void OnPresent();
+  void ResetPresetHistory();
 
   uint64_t HeldBytes() const;
 

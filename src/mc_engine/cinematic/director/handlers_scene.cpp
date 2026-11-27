@@ -13,12 +13,17 @@
 #include <string>
 
 #include "../scene_runtime.h"
+#include "../capture_mode.h"
 #include "../spots.h"
 #include "director_internal.h"
 #include "director_math.h"
 #include "larecomp_log.h"
 #include "mc_engine/gameplay/time_of_day.h"
 #include "settings/larecomp_settings.h"
+#include "preset_command.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gfx_preset_apply.h"
+#endif
 
 namespace mc::cinematic::director {
 
@@ -35,6 +40,8 @@ const char* ByOf(const Request& req) {
 void FailFrom(const Responder& r, const EditOutcome& o) {
     r.Fail(o.code, o.message, o.details);
 }
+
+void RegisterPresets();
 
 std::string Stamp() {
     const std::time_t t = std::time(nullptr);
@@ -76,12 +83,16 @@ Json OverrideJson(const WorldState& o) {
 }
 
 void RegisterScene() {
+    RegisterPresets();
     RegisterCommand(
         "scene.unload",
         [](const Request&, const Responder& r) {
             if (!larecomp::cvar::SetFlagByName("mcla_scene", "")) return r.Fail(ErrorCode::kFailed, "could not clear mcla_scene");
             r.Defer([](const Responder& d) {
-                if (CurrentSceneState() == SceneState::kOff) d.Done(Json::Object());
+                if (CurrentSceneState() != SceneState::kOff) return;
+                SceneSetPresetPreview(std::nullopt);
+                SceneSetPresetLabel(std::nullopt);
+                d.Done(Json::Object());
             });
         },
         MakeSchema("scene", "unload the scene and restore its settings", {}, "{}"));
@@ -163,6 +174,7 @@ void RegisterScene() {
                 events.Push(std::move(j));
             }
             res.Set("events", std::move(events));
+            res.Set("preset", internal::PresetJson());
             res.Set("diagnostics", DiagnosticsJson(d.diagnostics));
             Json ids = Json::Array();
             for (const std::string& id : d.car_ids) ids.Push(id);
@@ -433,6 +445,67 @@ void RegisterScene() {
                     Arg("commit", ArgType::kBool, false, "write `at <t> ...` keys instead of a live preview"), Arg("t", ArgType::kNumber, false, "the keys' time, default now"),
                     Arg("clear", ArgType::kBool, false, "drop the live preview")},
                    "{committed, override, rev?, lines?}", true));
+}
+
+void RegisterPresets() {
+    RegisterCommand("preset.get", [](const Request&, const Responder& r) {
+        r.Done(internal::PresetJson());
+    }, MakeSchema("preset", "the active graphics preset, timeline key and label", {}, "{name, scene, label, warming, rt_available}"));
+
+    RegisterCommand("preset.set", [](const Request& req, const Responder& r) {
+        const auto edit = ParsePresetEdit(req.args, SceneTime(), false);
+        if (!edit.error.empty()) return r.Fail(ErrorCode::kBadArgs, edit.error);
+#if defined(LARECOMP_HAS_GPU)
+        namespace gfx = mcla::gpu::gfx_preset;
+        if (edit.preset && !gfx::Available(*edit.preset)) return r.Fail(ErrorCode::kRefused, std::string(gfx::kNeedsRtReason));
+        if (internal::DirectorTakeBusy() || CaptureTakeActive()) return r.Fail(ErrorCode::kNotReady, "a take is running");
+        if (edit.commit) {
+            if (const Scene* scene = LoadedScene(); scene && scene->Duration() >= 0.0 && edit.t >= scene->Duration()) {
+                return r.Fail(ErrorCode::kBadArgs, "the preset key must precede the scene's end");
+            }
+            const EditOutcome out = internal::InsertSceneLine(edit.Line(false), ByOf(req));
+            if (!out.ok) return FailFrom(r, out);
+            SceneSetPresetPreview(std::nullopt);
+            Json res = out.result;
+            res.Set("committed", true);
+            return r.Done(std::move(res));
+        }
+        if (ScenePresetWarming()) return r.Fail(ErrorCode::kNotReady, "graphics presets are warming");
+        if (edit.persist && !gfx::Persist(*edit.preset)) return r.Fail(ErrorCode::kFailed, "could not save the preset");
+        if (!SceneSetPresetPreview(edit.preset)) return r.Fail(ErrorCode::kNotReady, "the renderer or preset warm-up is busy");
+        Json res = internal::PresetJson();
+        res.Set("committed", false);
+        res.Set("persisted", edit.persist);
+        r.Done(std::move(res));
+#else
+        r.Fail(ErrorCode::kNotReady, "preset.set requires the LARecomp renderer");
+#endif
+    }, MakeSchema("preset", "switch live or write a preset key at the playhead",
+                  {Arg("name", ArgType::kString, false, "vanilla, enhanced, enhanced_rt or custom"), Arg("clear", ArgType::kBool, false, "clear the live preview"),
+                   Arg("t", ArgType::kNumber, false, "scene seconds"), Arg("commit", ArgType::kBool, false, "write a key"),
+                   Arg("persist", ArgType::kBool, false, "save this live selection to larecomp.toml")},
+                  "{name, committed, persisted?, rev?, lines?}", true));
+
+    RegisterCommand("preset.label", [](const Request& req, const Responder& r) {
+        const auto edit = ParsePresetEdit(req.args, SceneTime(), true);
+        if (!edit.error.empty()) return r.Fail(ErrorCode::kBadArgs, edit.error);
+        if (edit.commit) {
+            if (internal::DirectorTakeBusy() || CaptureTakeActive()) return r.Fail(ErrorCode::kNotReady, "a take is running");
+            if (const Scene* scene = LoadedScene(); scene && scene->Duration() >= 0.0 && edit.t >= scene->Duration()) {
+                return r.Fail(ErrorCode::kBadArgs, "the label key must precede the scene's end");
+            }
+            const EditOutcome out = internal::InsertSceneLine(edit.Line(true), ByOf(req));
+            if (!out.ok) return FailFrom(r, out);
+            SceneSetPresetLabel(std::nullopt);
+            Json res = out.result;
+            res.Set("committed", true);
+            return r.Done(std::move(res));
+        }
+        SceneSetPresetLabel(edit.label);
+        r.Done(internal::PresetJson());
+    }, MakeSchema("preset", "show or hide the preset label live or as a scene key",
+                  {Arg("on", ArgType::kBool, false), Arg("clear", ArgType::kBool, false), Arg("t", ArgType::kNumber, false),
+                   Arg("commit", ArgType::kBool, false)}, "{label, committed?, rev?, lines?}", true));
 }
 
 const bool kRegistered = (RegisterScene(), true);

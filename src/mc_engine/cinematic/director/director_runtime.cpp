@@ -47,6 +47,9 @@
 #include "command.h"
 #include "director_game.h"
 #include "director_internal.h"
+#if defined(LARECOMP_HAS_GPU)
+#include "gpu/gfx_preset_apply.h"
+#endif
 #include "director_math.h"
 #include "larecomp_log.h"
 #include "larecomp_version.h"
@@ -130,6 +133,7 @@ struct State {
     std::mutex hello_mutex;
     std::string hello_scene;
 
+    Json prev_preset;
     SceneState prev_state = SceneState::kOff;
     std::map<std::string, bool> car_ready;
     struct PoseAt {
@@ -647,11 +651,31 @@ bool WorldSettled(uint64_t since_tick, int frames, std::string* waiting_for) {
         return false;
     };
     if (S().tick < since_tick + static_cast<uint64_t>(std::max(0, frames))) return wait("frames are still being rendered");
+    if (ScenePresetWarming()) return wait("graphics presets are warming");
     if (CurrentSceneState() != SceneState::kRunning) return wait(std::string("the scene is ") + SceneStateName(CurrentSceneState()));
     std::string cars;
     if (!SceneCarsSettled(&cars)) return wait(cars);
     if (!StreamingDone(nullptr)) return wait("the world's streaming is not done");
     return true;
+}
+
+Json PresetJson() {
+    Json j = Json::Object();
+#if defined(LARECOMP_HAS_GPU)
+    namespace gfx = mcla::gpu::gfx_preset;
+    j.Set("name", std::string(gfx::Id(gfx::Current())));
+    j.Set("rt_available", gfx::Available(gfx::Preset::kEnhancedRt));
+#else
+    j.Set("name", Json());
+    j.Set("rt_available", false);
+#endif
+    const Scene* scene = LoadedScene();
+    const PresetTrackState track = scene ? EvaluatePreset(*scene, SceneTime()) : PresetTrackState{};
+    j.Set("scene", track.preset ? Json(std::string(mcla::gpu::gfx_preset::Id(*track.preset))) : Json());
+    j.Set("line", track.line);
+    j.Set("label", ScenePresetLabelVisible());
+    j.Set("warming", ScenePresetWarming());
+    return j;
 }
 
 Json TransportJson() {
@@ -795,6 +819,9 @@ void Stop(State& s) {
     SetSceneReadyGate(nullptr);
     SetSceneSoftReload(false);
     SceneClearWorldOverride();
+    internal::StopCaptureHandlers();
+    SceneSetPresetPreview(std::nullopt);
+    SceneSetPresetLabel(std::nullopt);
     SceneHold(false);
     FreecamSetOverride(CameraOverride::kNone);
     CaptureDirectorRequest(0.0, CaptureSpec{});
@@ -833,6 +860,11 @@ std::shared_ptr<const Snapshot> BuildSnapshot(State& s, const std::vector<SceneC
     sn->transport.scrubbable = si.scrubbable;
     sn->transport.scrub_hint = si.hint;
     sn->transport.holding_for_ready = t.holding_for_ready;
+    const Json preset = internal::PresetJson();
+    sn->preset = preset.StringOr("name", "");
+    sn->preset_rt = preset.BoolOr("rt_available", false);
+    sn->preset_label = preset.BoolOr("label", false);
+    sn->preset_warming = preset.BoolOr("warming", false);
     sn->events = d.events;
     sn->diagnostics = d.diagnostics;
 
@@ -913,7 +945,7 @@ std::shared_ptr<const Snapshot> BuildSnapshot(State& s, const std::vector<SceneC
     sn->ui_request = s.ui_request;
     sn->ui_request_serial = s.ui_serial;
     const CaptureStatus cs = CaptureGetStatus();
-    sn->take_active = cs.active;
+    sn->take_active = cs.active || internal::DirectorTakeBusy();
     sn->take_name = cs.name;
     sn->take_frames = cs.frames;
     sn->can_undo = !d.undo.empty();
@@ -940,12 +972,16 @@ std::shared_ptr<const Snapshot> BuildSnapshot(State& s, const std::vector<SceneC
 // The events that follow from what changed since the last update: the runner's state, a car that became ready, a take that ended.
 void DetectChanges(State& s, const std::vector<SceneCarInfo>& cars) {
     const SceneState st = CurrentSceneState();
-    if (st != s.prev_state) {
+    const Json preset = internal::PresetJson();
+    const bool preset_moved = preset != s.prev_preset;
+    if (st != s.prev_state || preset_moved) {
+        s.prev_preset = preset;
         s.prev_state = st;
         Json f = Json::Object();
         f.Set("state", SceneStateName(st));
         f.Set("t", SceneTime());
         f.Set("path", internal::Doc().path);
+        f.Set("preset", internal::PresetJson());
         PublishEvent("scene.state", std::move(f));
     }
     for (const SceneCarInfo& c : cars) {

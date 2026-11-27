@@ -1,4 +1,5 @@
 #include "ray_regen_ao.h"
+#include "gfx_preset_apply.h"
 
 #include <algorithm>
 
@@ -184,7 +185,7 @@ TemporalImage RayRegenAoPass::Tagged(Image image) const {
 }
 
 void RayRegenAoPass::OnPresent() {
-  if (!recorded_on_ && images_[0].texture && ++idle_frames_ >= rgd::kReleaseAfterFrames) ReleaseImages();
+  if (!recorded_on_ && images_[0].texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= rgd::kReleaseAfterFrames) ReleaseImages();
   recorded_on_ = nullptr;
 }
 

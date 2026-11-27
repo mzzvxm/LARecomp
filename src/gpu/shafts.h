@@ -163,6 +163,7 @@ class SunShafts {
   void OnComposite() { composite_seen_ = true; }
   // A guest present: the frame boundary.
   void OnPresent();
+  void ResetPresetHistory() { hist_valid_ = false; }
 
   // The world of the frame that is ending (menu_world.h), by the frame's own camera, and the level in force, for
   // the scene's one line per change of world. Read before OnPresent, which forgets the frame.

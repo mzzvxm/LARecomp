@@ -4,6 +4,8 @@
 
 #include "gfx_preset_apply.h"
 
+#include <algorithm>
+#include <iterator>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -11,6 +13,7 @@
 
 #include "gpu_class.h"
 #include "rt_tier.h"
+#include "settings/immortal.h"
 #include "mc_engine/core/config_save.h"
 #include "settings/larecomp_settings.h"
 #include <rex/logging/log_category.h>
@@ -25,6 +28,10 @@ namespace cv = larecomp::cvar;
 // can call a function of it back on the same thread (the preset's own callback, which the guard below answers first).
 std::recursive_mutex g_mutex;
 bool g_started = false;
+std::filesystem::path& g_config_path = larecomp::Leak<std::filesystem::path>();
+Preset g_player = Preset::kCustom;
+std::atomic<int> g_session{-1};
+std::atomic<uint64_t> g_generation{0};
 Preset g_held = Preset::kCustom;          // the named preset whose values are held over the rows now (CUSTOM: none)
 // The rows held. On the heap and never freed: no destructor runs at exit (exit_audit: the fast exit must not
 // tear down statics a late callback could still reach).
@@ -41,7 +48,7 @@ struct Writing {
 };
 
 bool SetByCommandLineOrEnvironment(const std::string& name) {
-  const cv::Source source = cv::GetFlagSource(name);
+  const cv::Source source = larecomp::CvarSourceUnderHolds(name);
   return source == cv::Source::kCommandLine || source == cv::Source::kEnvironment;
 }
 
@@ -61,10 +68,10 @@ void HoldNamedLocked(Preset p) {
         ++left;
         continue;
       }
-      const cv::Source source = cv::GetFlagSource(name);
+      const cv::Source source = larecomp::CvarSourceUnderHolds(name);
       if (source == cv::Source::kConfig || source == cv::Source::kRuntime) g_had_own = true;
     }
-    if (larecomp::SetCvarForScene(name, CellAt(i, p))) {
+    if (larecomp::SetCvarForPreset(name, CellAt(i, p))) {
       g_rows.insert(name);
       ++held;
     }
@@ -78,16 +85,18 @@ void ReleaseLocked(bool restore) {
   const rex::SettingsBatch batch;
   const Writing writing;
   for (const std::string& name : g_rows) {
-    if (restore) {
-      larecomp::RestoreCvarForScene(name);
-    } else {
-      larecomp::ReleaseCvarFromScene(name);
-    }
+    larecomp::RestoreCvarForPreset(name, !restore);
   }
   REXLOG_INFO("[preset] {} rows {}", g_rows.size(), restore ? "put back as the player had them" : "kept as the player's own");
   g_rows.clear();
   g_held = Preset::kCustom;
   g_had_own = false;
+}
+
+void ApplyEffectiveLocked(Preset preset) {
+  if (preset == g_held) return;
+  if (IsNamed(preset)) HoldNamedLocked(preset);
+  else ReleaseLocked(true);
 }
 
 // CUSTOM's base: a row the player's file does not name takes the value of the preset the rows came from, at LARecomp's own default layer (the file, the environment and the command line all
@@ -120,33 +129,41 @@ void OnPresetChanged(std::string_view value) {
   if (!Parse(MigrateId(value), &picked)) return;
   const std::lock_guard<std::recursive_mutex> lock(g_mutex);
   if (!g_started) return;
-  switch (OnPicked(g_held, picked, g_had_own)) {
-    case Action::kNone:
-      break;
-    case Action::kOverlay:
-      HoldNamedLocked(picked);
-      break;
-    case Action::kRestore:
-      ReleaseLocked(true);
-      ApplyBaseLocked();
-      break;
-    case Action::kFreeze: {
-      const Preset was = g_held;
-      ReleaseLocked(false);
-      const Writing writing;
-      cv::SetFlagByName(kFromSetting, Id(was));
-      break;
+  if (picked == g_player) return;
+  {
+    const Writing writing;
+    const rex::SettingsBatch batch;
+    const int session = g_session.load(std::memory_order_relaxed);
+    ApplyEffectiveLocked(g_player);
+    switch (OnPicked(g_player, picked, g_had_own)) {
+      case Action::kNone:
+        break;
+      case Action::kOverlay:
+        HoldNamedLocked(picked);
+        break;
+      case Action::kRestore:
+        ReleaseLocked(true);
+        ApplyBaseLocked();
+        break;
+      case Action::kFreeze:
+        ReleaseLocked(false);
+        cv::SetFlagByName(kFromSetting, Id(g_player));
+        break;
     }
+    g_player = picked;
+    if (session >= 0) ApplyEffectiveLocked(static_cast<Preset>(session));
   }
+  g_generation.fetch_add(1, std::memory_order_release);
 }
 
 }  // namespace
 
-void Start(const FileFacts& file) {
+void Start(const FileFacts& file, const std::filesystem::path& config_path) {
   namespace gc = gpu_class;
   const std::lock_guard<std::recursive_mutex> lock(g_mutex);
   if (g_started) return;
   g_started = true;
+  g_config_path = config_path;
   const auto cls = gc::Known() ? std::optional{gc::Current()} : std::nullopt;
   const auto tier = gc::CurrentRtTier();
   const Preset recommended = gc::RecommendedPreset(cls, tier);
@@ -164,6 +181,7 @@ void Start(const FileFacts& file) {
   // A change made while the game runs applies at once. The setting exists from RegisterAll on (OnConfigure); this runs in OnInit.
   cv::RegisterChangeCallback("mcla_gpu_preset", [](std::string_view, std::string_view value) { OnPresetChanged(value); });  // (a literal: tools/check_live_readers.py looks for it)
   const Preset p = PresetOfSetting();
+  g_player = p;
   REXLOG_INFO("[preset] {} (recommended for this GPU: {})", Id(p), Id(recommended));
   if (IsNamed(p)) {
     HoldNamedLocked(p);
@@ -172,17 +190,67 @@ void Start(const FileFacts& file) {
   }
 }
 
-Preset Current() { return PresetOfSetting(); }
+Preset Current() {
+  const int session = g_session.load(std::memory_order_acquire);
+  return session < 0 ? PresetOfSetting() : static_cast<Preset>(session);
+}
+
+bool Available(Preset preset) {
+  return !NeedsRt(preset) || gpu_class::CurrentRtTier() != gpu_class::RtTier::kNone;
+}
+
+uint64_t Generation() { return g_generation.load(std::memory_order_acquire); }
+
+bool SetSessionPreset(std::optional<Preset> preset) {
+  const std::lock_guard lock(g_mutex);
+  if (!g_started || (preset && !Available(*preset))) return false;
+  const int next = preset ? Col(*preset) : -1;
+  if (g_session.load(std::memory_order_relaxed) == next) return true;
+  {
+    const Writing writing;
+    const rex::SettingsBatch batch;
+    ApplyEffectiveLocked(preset.value_or(g_player));
+    g_session.store(next, std::memory_order_release);
+  }
+  g_generation.fetch_add(1, std::memory_order_release);
+  return true;
+}
+
+bool Persist(Preset preset) {
+  const std::lock_guard lock(g_mutex);
+  if (!g_started || !Available(preset)) return false;
+  larecomp::HeldCvars picks{{std::string(kPresetSetting), std::string(Id(preset))}};
+  const bool had_own = std::any_of(std::begin(kRows), std::end(kRows), [](const Row& row) {
+    const auto source = larecomp::CvarSourceUnderHolds(row.cvar);
+    return source == cv::Source::kConfig || source == cv::Source::kRuntime;
+  });
+  if (OnPicked(g_player, preset, had_own) == Action::kFreeze) {
+    picks.emplace_back(kFromSetting, Id(g_player));
+  }
+  if (!larecomp::SaveHeldCvarsToConfig(g_config_path, picks)) return false;
+  return cv::SetFlagByName(kPresetSetting, Id(preset));
+}
 
 bool NoteRowWrite(std::string_view cvar) {
   if (t_writing > 0 || !IsCovered(cvar)) return false;
   const std::lock_guard<std::recursive_mutex> lock(g_mutex);
-  if (!g_started || !IsNamed(g_held)) return false;
-  const Preset was = g_held;
-  ReleaseLocked(false);
-  const Writing writing;
-  cv::SetFlagByName(kFromSetting, Id(was));
-  cv::SetFlagByName(kPresetSetting, Id(Preset::kCustom));
+  if (!g_started) return false;
+  if (!IsNamed(g_player)) {
+    SetSessionPreset(std::nullopt);
+    return false;
+  }
+  const Preset was = g_player;
+  {
+    const Writing writing;
+    const rex::SettingsBatch batch;
+    ApplyEffectiveLocked(was);
+    ReleaseLocked(false);
+    g_player = Preset::kCustom;
+    g_session.store(-1, std::memory_order_release);
+    cv::SetFlagByName(kFromSetting, Id(was));
+    cv::SetFlagByName(kPresetSetting, Id(Preset::kCustom));
+  }
+  g_generation.fetch_add(1, std::memory_order_release);
   REXLOG_INFO("[preset] {} changed by the player: {} becomes custom, and the rows keep the values it gave them", cvar, Id(was));
   return true;
 }

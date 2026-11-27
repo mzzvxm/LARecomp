@@ -101,6 +101,14 @@
 #include "native_call.h"
 #include "state_log.h"
 
+#if defined(LARECOMP_HAS_GPU)
+#include "cars.h"
+#include "director/director.h"
+#include "director/session_settle.h"
+#include "gpu/gfx_preset_apply.h"
+#include "gpu/scene_noise.h"
+#endif
+
 #include "../hooks/hooks.h"  // MCLATimeScaleOverride, defined at the end of this file
 #include "larecomp_guest.h"
 
@@ -245,6 +253,9 @@ std::string Describe(const Event& e) {
             return out + " (data for the compositor: nothing is drawn in the game)";
         case Track::kMark:
             return out + e.name;
+        case Track::kPreset:
+        case Track::kPresetLabel:
+            return out + e.text;
         case Track::kCapture:
             if (!e.state) return out + "off (the take ends)";
             out += "fps " + Fmt(e.to, "%.6g") + " (a take: the game steps by 1/fps and every frame is read back)";
@@ -290,6 +301,24 @@ size_t g_applier_count = 0;
 // The scale the engine timer's hook hands the engine; negative = the game's own. Set on the game thread by the runner, read by the
 // hook on whichever thread calls the timer.
 std::atomic<float> g_timescale_override{-1.0f};
+
+#if defined(LARECOMP_HAS_GPU)
+namespace gfx = mcla::gpu::gfx_preset;
+std::atomic<unsigned> g_preset_cycles{0};
+std::atomic<bool> g_preset_label{false};
+
+struct PresetSession {
+    std::optional<gfx::Preset> preview, take, applied;
+    std::optional<bool> label;
+    int preview_key = 0;
+    unsigned take_mask = 0, warm = 0, warmed = 0;
+    int warming = -1;
+    int64_t deadline = 0;
+    director::SessionSettle settle;
+    bool failed = false;
+    bool active = false;
+};
+#endif
 
 struct Runner {
     bool armed = false;
@@ -345,6 +374,9 @@ struct Runner {
 
     // The scene's named places (spots.h): the table of the spots files read for the last parse and the stamps they had, so a changed spots file reloads the scene.
     LoadedSpots spots;
+#if defined(LARECOMP_HAS_GPU)
+    PresetSession preset;
+#endif
 };
 Runner& g = larecomp::Leak<Runner>();
 
@@ -354,6 +386,90 @@ const SceneObserver* g_observer = nullptr;
 bool (*g_ready_gate)() = nullptr;
 std::atomic<bool> g_soft_reload{false};
 constexpr int64_t kReadyGateMaxMs = 30000;  // the gate opens after this long whatever it says: a car that never comes must not hold a scene for ever
+
+#if defined(LARECOMP_HAS_GPU)
+
+void ApplyPreset(std::optional<gfx::Preset> preset, double t) {
+    auto& s = g.preset;
+    const bool changed = !s.active || s.applied != preset;
+    if (!gfx::SetSessionPreset(preset)) {
+        if (!s.failed) LARECOMP_APP_ERROR("[scene] preset {} unavailable at t={:.6f}", preset ? gfx::Id(*preset) : "restore", t);
+        s.failed = true;
+        return;
+    }
+    if (changed && preset) LARECOMP_APP_INFO("[scene] graphics preset {} at t={:.6f}", gfx::Id(*preset), t);
+    s.applied = preset;
+    s.active = preset.has_value();
+}
+
+void PlanPresetWarmup() {
+    auto& s = g.preset;
+    unsigned wanted = s.take_mask;
+    for (const Event& e : g.scene.events) {
+        if (e.track == Track::kPreset) wanted |= 1u << e.state;
+    }
+    gfx::retain_scene_resources.store(wanted != 0, std::memory_order_relaxed);
+    gfx::retain_scene_rt_resources.store((wanted & (1u << gfx::Col(gfx::Preset::kEnhancedRt))) != 0,
+                                         std::memory_order_relaxed);
+    s.warm = wanted & ~s.warmed;
+    s.warming = -1;
+    s.deadline = 0;
+    s.settle = {};
+    gfx::warming_scene.store(s.warm != 0, std::memory_order_release);
+}
+
+void ReleasePresets() {
+    gfx::SetSessionPreset(std::nullopt);
+    gfx::warming_scene.store(false, std::memory_order_release);
+    gfx::retain_scene_resources.store(false, std::memory_order_relaxed);
+    gfx::retain_scene_rt_resources.store(false, std::memory_order_relaxed);
+    g_preset_label.store(false, std::memory_order_release);
+    g.preset = {};
+}
+
+void RunPresetTrack(double t) {
+    auto& s = g.preset;
+    if (s.warm != 0) {
+        // CHECK: confirm the same preset drains its builders and allocates its buffers on D3D12 and Vulkan.
+        if (s.warming < 0) {
+            for (int i = 0; i < gfx::kPresetCount; ++i) {
+                if ((s.warm & (1u << i)) == 0) continue;
+                s.warming = i;
+                break;
+            }
+            s.deadline = NowMs() + 45000;
+            s.settle = {};
+            gfx::warm_frame_generation.store(0, std::memory_order_relaxed);
+            ApplyPreset(static_cast<gfx::Preset>(s.warming), t);
+            return;
+        }
+        const auto present = mcla::gpu::scene_noise::Get().presents.load(std::memory_order_relaxed);
+        const bool ready = gfx::warm_frame_generation.load(std::memory_order_acquire) == gfx::Generation() + 1 &&
+                           SceneCarsSettled() && director::StreamingDone();
+        if (!s.settle.Observe(ready, present, 20)) {
+            if (NowMs() >= s.deadline) {
+                LARECOMP_APP_ERROR("[scene] preset warm-up timed out for {}", gfx::Id(static_cast<gfx::Preset>(s.warming)));
+                s.failed = true;
+            }
+            return;
+        }
+        LARECOMP_APP_INFO("[scene] warmed graphics preset {}", gfx::Id(static_cast<gfx::Preset>(s.warming)));
+        const unsigned bit = 1u << s.warming;
+        s.warmed |= bit;
+        s.warm &= ~bit;
+        s.warming = -1;
+        if (s.warm != 0) return;
+        gfx::warming_scene.store(false, std::memory_order_release);
+    }
+    const PresetTrackState track = EvaluatePreset(g.scene, t);
+    if (s.preview && track.line != s.preview_key) s.preview.reset();
+    if (s.active || s.preview || track.preset || s.take) {
+        ApplyPreset(s.take ? s.take : s.preview ? s.preview : track.preset, t);
+    }
+    g_preset_label.store(s.label.value_or(track.label), std::memory_order_release);
+}
+
+#endif
 
 bool HandledByApplier(Track t) {
     for (size_t i = 0; i < g_applier_count; ++i) {
@@ -447,7 +563,7 @@ void ApplyTimeScale(const WorldState& w, const uint8_t* base) {
         }
     }
     // The Director's hold freezes the world: the scale goes to 0 (the engine's own floor of 1e-4 s under the scaled step is what is left). A step lets it run.
-    const bool frozen = g.dir_frozen && g.dir_steps == 0;
+    const bool frozen = (g.dir_frozen || ScenePresetWarming()) && g.dir_steps == 0;
     const double want = g.paused ? -1.0 : (frozen ? TimeScaleForEngine(0.0) : (w.timescale_set ? TimeScaleForEngine(w.timescale) : -1.0));
     g_timescale_override.store(static_cast<float>(want), std::memory_order_relaxed);
     g.ts_used = want;
@@ -629,6 +745,9 @@ void FlushState(const uint8_t* base);  // below, with the state line
 // Everything the scene changed goes back: the world, the settings, the other packages' tracks.
 void ReleaseAll(const char* why) {
     CaptureSceneInterrupted();
+#if defined(LARECOMP_HAS_GPU)
+    ReleasePresets();
+#endif
     uint8_t* base = Membase();
     if (base) FlushState(base);  // the last update's state line, before the hand-back line
     LARECOMP_APP_INFO("[scene] handing the game back ({})", why);
@@ -653,6 +772,9 @@ void ReleaseEvents() {
 
 void BeginScene(const char* why) {
     g.cursor.Reset();
+#if defined(LARECOMP_HAS_GPU)
+    PlanPresetWarmup();
+#endif
     g.next_state_log = 0.0;
     g.state_pending = false;
     g.ready_open = (g_ready_gate == nullptr);
@@ -690,6 +812,9 @@ void FlushState(const uint8_t* base) {
 // One update of a running scene (the world is there): the keys that came due, the world tracks, the other packages' tracks.
 void RunAt(double t, uint8_t* base) {
     ++g.world_tick;
+#if defined(LARECOMP_HAS_GPU)
+    RunPresetTrack(t);
+#endif
     std::vector<const Event*> due;
     g.cursor.Take(g.scene, t, &due);
     for (const Event* e : due) {
@@ -707,6 +832,8 @@ void RunAt(double t, uint8_t* base) {
             case Track::kPolice:
             case Track::kTimeScale:
             case Track::kLabel:
+            case Track::kPreset:
+            case Track::kPresetLabel:
                 break;  // the world is read from the timeline below; labels are only logged
             case Track::kMark:
                 statelog::NoteMark(e->name);  // the state log's next row carries it (a no-op when no log is open)
@@ -761,6 +888,9 @@ void SoftReload(Scene&& next, const char* by) {
     RestoreCvars();
     g.scene = std::move(next);
     g.have_scene = true;
+#if defined(LARECOMP_HAS_GPU)
+    PlanPresetWarmup();
+#endif
     for (const Event& e : g.scene.events) {
         if (e.track == Track::kCvar && e.t <= t + 1e-9) ApplyCvar(e);
     }
@@ -790,6 +920,9 @@ bool ApplyScene(ParseResult&& r, const char* by) {
         return true;
     }
     if (g.have_scene) ReleaseEvents();
+#if defined(LARECOMP_HAS_GPU)
+    if (g.have_scene) ReleasePresets();
+#endif
     g.scene = std::move(r.scene);
     g.have_scene = true;
     if (was_running) {
@@ -869,6 +1002,9 @@ void PollFile() {
 
 void Arm(const std::string& want) {
     if (g.armed) ReleaseAll("another scene was armed");
+#if defined(LARECOMP_HAS_GPU)
+    else ReleasePresets();
+#endif
     g = Runner{};
     g.armed = true;
     g.requested = want;
@@ -915,6 +1051,7 @@ void Step(uint8_t* base) {
     // The Director's hold: the clock does not move for a pause or a seek (except in the updates of a step). Before t = 0 the clock also waits until the scene's
     // cars are made and the streaming is done (the ready gate: a camera attached to a car that is still being made would hold the origin).
     const bool hold_clock = g.dir_held && g.dir_steps == 0;
+    const bool warming = g.clock.state() == SceneClock::State::kRunning && ScenePresetWarming();
     const bool was_ready = g.ready_open;
     bool gate_wait = false;
     if (!g.ready_open && g.clock.state() == SceneClock::State::kRunning && g.clock.time() <= 0.0 && g.dir_pin < 0.0) {
@@ -944,7 +1081,7 @@ void Step(uint8_t* base) {
         if (g.scene.capture_fps > 0.0) {
             scene_dt = capture::StepToTakeKey(g.clock.time(), scene_dt, g.scene.capture_from, !was_ready && g.ready_open);
         }
-        st = g.clock.Advance(ready, paused || hold_clock || gate_wait, scene_dt, duration);
+        st = g.clock.Advance(ready, paused || hold_clock || gate_wait || warming, scene_dt, duration);
         double still = larecomp::settings::mcla_scene_t.Get();
         if (still < 0.0) still = g.dir_pin;
         if (still >= 0.0 && g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(still, duration);
@@ -967,7 +1104,15 @@ void Step(uint8_t* base) {
     g.paused = paused;
     if (ready) RunAt(g.clock.time(), base);
     else StandDownTimeScale();
-    if (g.dir_steps > 0 && ready) --g.dir_steps;  // one update of a step is done
+    if (g.dir_steps > 0 && ready && !warming) --g.dir_steps;  // one update of a step is done
+#if defined(LARECOMP_HAS_GPU)
+    if (g.preset.failed) {
+        ReleaseAll("preset unavailable");
+        g.state = SceneState::kFailed;
+        g.clock.Disarm();
+        return;
+    }
+#endif
     if (st.finished) {
         LARECOMP_APP_INFO("[scene] finished at t={:.2f}", g.clock.time());
         ReleaseAll("the scene's end");
@@ -992,6 +1137,16 @@ SceneWant& g_want = larecomp::Leak<SceneWant>(SceneWant::Source{
 
 void TickScene() {
     statelog::Tick();  // the per-update state log (mcla_state_log or a scene's `statelog on`): the row is the state after the update before; one string test when off
+#if defined(LARECOMP_HAS_GPU)
+    const unsigned cycles = g_preset_cycles.exchange(0, std::memory_order_acquire);
+    if (cycles && !ScenePresetWarming() && !g.preset.take && !CaptureTakeActive()) {
+        const bool rt = gfx::Available(gfx::Preset::kEnhancedRt);
+        auto next = gfx::Current();
+        const unsigned count = 1 + (cycles - 1) % (rt ? 3u : 2u);
+        for (unsigned i = 0; i < count; ++i) next = gfx::NextNamed(next, rt);
+        SceneSetPresetPreview(next);
+    }
+#endif
     const std::string& want = g_want.Wanted();
     if (want.empty()) {
         if (g.armed) Disarm("mcla_scene was cleared");
@@ -1100,7 +1255,7 @@ SceneTransport GetSceneTransport() {
     t.frozen = g.dir_frozen;
     t.pending_steps = g.dir_steps;
     t.pinned = g.dir_pin >= 0.0;
-    t.holding_for_ready = !g.ready_open && g.clock.state() == SceneClock::State::kRunning;
+    t.holding_for_ready = (!g.ready_open || ScenePresetWarming()) && g.clock.state() == SceneClock::State::kRunning;
     t.updates = g.updates;
     return t;
 }
@@ -1129,6 +1284,9 @@ void SceneSeekTo(double t) {
     g.dir_held = true;
     g.dir_frozen = true;
     g.dir_pin = t;
+#if defined(LARECOMP_HAS_GPU)
+    g.preset.preview.reset();
+#endif
     g.dir_steps = 0;
     if (g.clock.state() == SceneClock::State::kRunning) g.clock.SetTime(t, g.scene.Duration());
 }
@@ -1143,6 +1301,9 @@ void SceneRestartAt(double t) {
     if (!g.armed || !g.have_scene) return;
     uint8_t* base = Membase();
     g.dir_steps = 0;
+#if defined(LARECOMP_HAS_GPU)
+    g.preset.preview.reset();
+#endif
     Restart("the Director", base && WorldReady(base));
     g.dir_pin = t > 0.0 ? t : -1.0;
     g.dir_held = t > 0.0;
@@ -1152,6 +1313,71 @@ void SceneRestartAt(double t) {
 
 bool SceneSetLiveSetting(const std::string& name, const std::string& value) {
     return g.state == SceneState::kRunning && CvarRefusal(name).empty() && HoldCvar(name.c_str(), value, "Director");
+}
+
+bool SceneSetPresetPreview(std::optional<mcla::gpu::gfx_preset::Preset> preset) {
+#if defined(LARECOMP_HAS_GPU)
+    if (g.preset.take || CaptureTakeActive()) return false;
+    if (ScenePresetWarming()) {
+        if (preset) return false;
+        g.preset.preview.reset();
+        return true;
+    }
+    const PresetTrackState track = g.state == SceneState::kRunning ? EvaluatePreset(g.scene, g.clock.time()) : PresetTrackState{};
+    if (!gfx::SetSessionPreset(preset ? preset : track.preset)) return false;
+    g.preset.preview = preset;
+    g.preset.preview_key = track.line;
+    g.preset.applied = preset ? preset : track.preset;
+    g.preset.active = g.preset.applied.has_value();
+    return true;
+#else
+    return false;
+#endif
+}
+
+void SceneSetPresetLabel(std::optional<bool> visible) {
+#if defined(LARECOMP_HAS_GPU)
+    g.preset.label = visible;
+    const bool authored = g.state == SceneState::kRunning && EvaluatePreset(g.scene, g.clock.time()).label;
+    g_preset_label.store(visible.value_or(authored), std::memory_order_release);
+#endif
+}
+
+bool ScenePresetLabelVisible() {
+#if defined(LARECOMP_HAS_GPU)
+    return g_preset_label.load(std::memory_order_acquire);
+#else
+    return false;
+#endif
+}
+
+bool ScenePresetActive() {
+#if defined(LARECOMP_HAS_GPU)
+    return g.preset.active;
+#else
+    return false;
+#endif
+}
+
+bool ScenePresetWarming() {
+#if defined(LARECOMP_HAS_GPU)
+    return g.preset.warm != 0;
+#else
+    return false;
+#endif
+}
+
+void SceneRequestPresetCycle() {
+#if defined(LARECOMP_HAS_GPU)
+    g_preset_cycles.fetch_add(1, std::memory_order_release);
+#endif
+}
+
+void SceneSetTakePreset(std::optional<mcla::gpu::gfx_preset::Preset> preset, unsigned warm_mask) {
+#if defined(LARECOMP_HAS_GPU)
+    g.preset.take = preset;
+    g.preset.take_mask = warm_mask;
+#endif
 }
 
 SceneTextResult SceneLoadText(const std::string& text, const char* by) {
@@ -1238,6 +1464,13 @@ void SceneSeekTo(double) {}
 void SceneStepUpdates(int) {}
 void SceneRestartAt(double) {}
 bool SceneSetLiveSetting(const std::string&, const std::string&) { return false; }
+bool SceneSetPresetPreview(std::optional<mcla::gpu::gfx_preset::Preset>) { return false; }
+void SceneSetPresetLabel(std::optional<bool>) {}
+bool ScenePresetLabelVisible() { return false; }
+bool ScenePresetWarming() { return false; }
+bool ScenePresetActive() { return false; }
+void SceneRequestPresetCycle() {}
+void SceneSetTakePreset(std::optional<mcla::gpu::gfx_preset::Preset>, unsigned) {}
 SceneTextResult SceneLoadText(const std::string&, const char*) { return SceneTextResult{}; }
 void SetSceneSoftReload(bool) {}
 void SceneSetWorldOverride(const WorldState&) {}

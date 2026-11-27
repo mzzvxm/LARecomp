@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- screen-space ambient occlusion. See ao.h.
 
 #include "ao.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -2917,7 +2918,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
         return false;
       }
     }
-  } else if (++gi_idle_frames_ >= kGiReleaseAfterFrames) {
+  } else if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++gi_idle_frames_ >= kGiReleaseAfterFrames) {
     // A frame without the bounce light (the map, a setting turned off): its images are kept for a while, so
     // that a visit to the map does not make them again.
     ReleaseGiImages();
@@ -2944,7 +2945,7 @@ bool AmbientOcclusion::Run(const ResolveCache::Summary& summary, plume::RenderCo
     if (normals_.on) {
       normal_idle_frames_ = 0;
       ++normal_frames_;
-    } else if (++normal_idle_frames_ == ao_gbuffer::kReleaseAfterFrames) {
+    } else if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++normal_idle_frames_ == ao_gbuffer::kReleaseAfterFrames) {
       ReleaseNormalImages();
     }
   }
@@ -5544,7 +5545,7 @@ void AmbientOcclusion::OnPresent() {
   // the images go back (they are made again by the first trigger after).
   const bool contact_working = contact_mode_ != Mode::kOff && contact_state_ == ContactState::kActive;
   if (mode_ == Mode::kOff && !contact_working && !screen_wants_) {
-    if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames &&
+    if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames &&
         census_every_ == 0) {
       ReleaseImages();
       images_made_for_[0] = images_made_for_[1] = images_made_for_[2] = 0;

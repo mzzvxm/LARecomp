@@ -188,6 +188,7 @@ class ScreenReflections {
   void SetCaptureRoadWanted(bool wanted);
   // A guest present: the frame boundary (the history's ping-pong, the idle count).
   void OnPresent();
+  void ResetPresetHistory() { last_key_ = {}; regen_key_ = {}; classify_key_ = {}; reuse_key_ = {}; denoise_.ResetHistory(); }
 
   // The video memory the images hold now (the fallback's confidence image, list and control words included).
   uint64_t HeldBytes() const;

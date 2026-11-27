@@ -488,6 +488,7 @@ class Pipelines {
     uint64_t variant_fallback_draws = 0;
   };
   Stats TakeStats();
+  bool PendingDraws() const;
   // A draw took the game's own pipeline because the build of its variant FAILED (Get: null, not pending). Render thread.
   void NoteVariantFailedDraw() { ++stats_.variant_fallback_draws; }
   size_t size() const { return pipelines_.size(); }

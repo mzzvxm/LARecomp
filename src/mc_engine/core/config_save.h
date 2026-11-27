@@ -19,6 +19,26 @@
 #include <vector>
 
 namespace larecomp {
+namespace cvar { enum class Source; }
+
+struct CvarHold {
+  std::string value;
+  cvar::Source source{};
+  std::optional<std::string> preset;
+  std::optional<std::string> scene;
+
+  using Layer = std::optional<std::string> CvarHold::*;
+  bool Visible(Layer layer) const { return layer == &CvarHold::scene || !scene; }
+
+  void Remove(Layer layer, std::optional<cvar::Source> promote = {}) {
+    auto& held = this->*layer;
+    if (held && promote) {
+      value = *held;
+      source = *promote;
+    }
+    held.reset();
+  }
+};
 
 // A value a menu keeps for the next launch instead of applying it now: the cvar
 // name and its value text. Written whatever the cvar's live value is.
@@ -97,9 +117,11 @@ inline CvarSaveAction DecideCvarSave(const CvarSaveFacts& f) {
 // SaveCvarsToConfig leaves a held cvar's value out (DecideCvarSave).
 bool SetCvarForScene(std::string_view name, std::string_view value);
 bool RestoreCvarForScene(std::string_view name);
-// The hold is let go and the value stays: what the cvar has now is its own from here on (its source is "set at run time", so the next save writes it). The graphics presets use it when a
-// preset turns into CUSTOM (gpu/gfx_preset_apply.cpp): the values the preset gave the rows become the player's. False when nothing was held.
-bool ReleaseCvarFromScene(std::string_view name);
+// Preset rows sit below scene holds and above the value saved in the player's config.
+bool SetCvarForPreset(std::string_view name, std::string_view value);
+cvar::Source CvarSourceUnderHolds(std::string_view name);
+// With keep=true the preset's value becomes the player's runtime value.
+bool RestoreCvarForPreset(std::string_view name, bool keep);
 
 // Merges into the file what the player changed while the game ran (cvars whose
 // last writer was SetFlagByName), plus `held`. Everything else in the file stays

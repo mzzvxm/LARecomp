@@ -1,4 +1,5 @@
 #include "rtao.h"
+#include "gfx_preset_apply.h"
 
 #include <bit>
 #include <cstring>
@@ -555,7 +556,7 @@ void RtAo::OnPresent() {
                   fallback_[2], fallback_[3], fallback_[4], fallback_[5], fallback_[6], denoise_ ? denoise_->LastMeanLength() : 0.0f);
       counters_.fill(0);
     }
-  } else if (signal_.texture && ++idle_ >= rtao::kReleaseAfterFrames) {
+  } else if (signal_.texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_ >= rtao::kReleaseAfterFrames) {
     ReleaseImages();
     compose_->ReleaseImage();
   }

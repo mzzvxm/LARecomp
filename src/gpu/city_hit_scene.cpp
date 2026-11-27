@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the city's hit data in the GPU. See city_hit_scene.h.
 
 #include "city_hit_scene.h"
+#include "gfx_preset_apply.h"
 
 #include <algorithm>
 #include <cstring>
@@ -273,7 +274,7 @@ void CityHitScene::BeginFrame(city_rt::Level level, TextureScope textures) {
     if (pool_ && !texture_set_.is_open() && frame_ >= textures_retry_frame_) OpenTextures();  // open with the pool: the sectors' textures are registered as their blocks are committed
     return;
   }
-  if (pool_ && frame_ > last_wanted_frame_ + kIdleReleaseFrames) DropPool("no request for a while", true);
+  if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && pool_ && frame_ > last_wanted_frame_ + kIdleReleaseFrames) DropPool("no request for a while", true);
 }
 
 // ---------------------------------------------------------------------------

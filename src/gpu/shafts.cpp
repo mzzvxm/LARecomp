@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- sun shafts. See shafts.h.
 
 #include "shafts.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -1498,7 +1499,7 @@ void SunShafts::OnPresent() {
   }
   if (level_ == Level::kOff) {
     // Off for a second: the images go back (they are made again by the first pass after).
-    if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
+    if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
       ReleaseImages();
     }
     unused_frames_ = 0;
@@ -1507,7 +1508,7 @@ void SunShafts::OnPresent() {
     // A noon, a night or a rain gives no shafts for long: the images go back after a while.
     if (recorded_this_frame_) {
       unused_frames_ = 0;
-    } else if (unused_frames_ < kReleaseAfterFrames && ++unused_frames_ == kReleaseAfterFrames) {
+    } else if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && unused_frames_ < kReleaseAfterFrames && ++unused_frames_ == kReleaseAfterFrames) {
       ReleaseImages();
     }
   }

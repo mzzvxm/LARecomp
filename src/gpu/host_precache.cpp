@@ -3,6 +3,8 @@
 
 #include "host_precache.h"
 
+#include <algorithm>
+
 #include <format>
 
 #include <rex/logging/log_category.h>
@@ -214,6 +216,16 @@ void HostPrecache::RunLive(const std::string& pass, const std::vector<Entry*>& l
   REXLOG_INFO("[gpu] host pipelines: {}: {} made in the background in {:.1f} ms ({} failed, {} left to "
               "the render thread, which began them first)",
               pass, made, Ms(NsSince(began)), failed, left);
+}
+
+bool HostPrecache::Pending() const {
+  const auto pending = [](const auto& entry) {
+    if (!entry) return false;
+    const uint8_t state = entry->state.load(std::memory_order_acquire);
+    return state == kQueued || state == kBuilding;
+  };
+  return std::any_of(entries_.begin(), entries_.end(), pending) ||
+         std::any_of(live_entries_.begin(), live_entries_.end(), pending);
 }
 
 bool HostPrecache::Ready(uint64_t key) const {

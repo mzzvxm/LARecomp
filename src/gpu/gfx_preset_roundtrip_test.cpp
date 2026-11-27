@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -57,7 +58,7 @@ void Expect(std::string_view name, std::string_view expected) {
   Check(actual == expected, name);
 }
 
-void Save(const std::filesystem::path& path, gp::Preset origin, std::string_view edit, bool hold_origin) {
+void Save(const std::filesystem::path& path, gp::Preset origin, std::string_view edit, bool hold_overrides) {
   Check(gp::Current() == origin, "startup selects the saved named preset");
   for (const auto& row : gp::kRows) {
     Expect(row.cvar, gp::CellOf(row.cvar, origin));
@@ -65,9 +66,17 @@ void Save(const std::filesystem::path& path, gp::Preset origin, std::string_view
   Check(gp::NoteRowWrite(kFiltering), "editing a covered row selects CUSTOM");
   Check(cv::SetFlagByName(kFiltering, edit), "apply the filtering edit");
   Check(cv::SetFlagByName(kDebugSetting, "false"), "change an unrelated debug setting");
-  if (hold_origin) Check(larecomp::SetCvarForScene(gp::kFromSetting, gp::kFromNone), "temporarily hold the origin");
+  if (hold_overrides) {
+    Check(gp::SetSessionPreset(origin), "temporarily apply the Director preset");
+    Expect(kFiltering, gp::CellOf(kFiltering, origin));
+    Check(larecomp::SetCvarForScene(gp::kFromSetting, gp::kFromNone), "temporarily hold the origin");
+  }
   Check(larecomp::SaveCvarsToConfig(path), "save to TOML");
-  if (hold_origin) Check(larecomp::RestoreCvarForScene(gp::kFromSetting), "restore the origin");
+  if (hold_overrides) {
+    Check(larecomp::RestoreCvarForScene(gp::kFromSetting), "restore the origin");
+    Check(gp::SetSessionPreset(std::nullopt), "release the Director preset");
+    Expect(kFiltering, edit);
+  }
 
   const auto saved = toml::parse_file(path.string());
   Check(saved[gp::kPresetSetting].value_or("") == gp::Id(gp::Preset::kCustom), "CUSTOM was saved");
@@ -138,8 +147,8 @@ int RunFixtures(const char* self) {
     }
   }
   if (WriteFixture(path, "mcla_gpu_preset = \"enhanced\"\n")) {
-    Check(RunPhase(self, "save-held", "enhanced", path) == 0, "save while a scene holds the origin");
-    Check(RunPhase(self, "read", "enhanced", path) == 0, "reload the origin from before the scene");
+    Check(RunPhase(self, "save-held", "enhanced", path) == 0, "save while the Director holds overrides");
+    Check(RunPhase(self, "read", "enhanced", path) == 0, "reload the player values from before the overrides");
   }
   for (const char* prefix : {"", "mcla_gpu_preset = \"custom\"\n"}) {
     if (WriteFixture(path, std::string(prefix) + "mcla_gpu_anisotropy = \"4\"\n")) {

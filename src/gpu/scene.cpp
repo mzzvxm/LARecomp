@@ -43,6 +43,9 @@
 #include "mirror_overlay.h"
 #include "mirror_view.h"
 #include "cut_request.h"
+#include "gfx_preset_apply.h"
+
+#include <utility>
 #include "cpu_timing.h"
 #include "cycles.h"
 #include "descriptors.h"
@@ -825,6 +828,21 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     fetch_memo_.fill(FetchMemo{});
     last_fetch_.fill(nullptr);
   }
+  const uint64_t preset_generation = gfx_preset::Generation();
+  if (preset_generation != preset_generation_) {
+    preset_generation_ = preset_generation;
+    rendered_preset_ = gfx_preset::Current();
+    preset_cut_ = true;
+    if (screen_) screen_->ResetPresetHistory();
+    if (ao_) ao_->ResetPresetHistory();
+    if (car_refl_) car_refl_->ResetPresetHistory();
+    if (ssr_) ssr_->ResetPresetHistory();
+    if (local_lights_) local_lights_->ResetPresetHistory();
+    if (shafts_) shafts_->ResetPresetHistory();
+    if (vol_) vol_->ResetPresetHistory();
+    if (gi_integration_) gi_integration_->NoteRequestedCut();
+  }
+  if (frame_serial_ == 0) rendered_preset_ = gfx_preset::Current();
   ++frame_serial_;
   if (title_puddle_capture_) title_puddle_capture_->BeginFrame(frame_serial_);
   sample_env_light_ = false;
@@ -1400,6 +1418,7 @@ void Scene::OnDraw(const uint8_t* payload, plume::RenderCommandList* list, bool 
   // after the main view's last draw (EdramTargets::DepthLayer).
   if (r.ps_identity == temporal::kAnchorPs && r.vs_identity == temporal::kAnchorVs) {
     edram_->SetScenePhase(false);
+    preset_anchor_ = true;
     NoteAnchorCut(banks);  // a cut the scene camera asked for: before the histories look at the frame
     if (screen_ && screen_->tracking()) {
       screen_->OnAnchor(banks);  // this frame's camera into the shared camera history (screen_shared.h), before the effects that ask it for the cameras (the car self-reflection's)
@@ -2417,7 +2436,8 @@ void Scene::NoteTemporal(const DrawView& view, const ConstantBanks::Banks& banks
 }
 
 void Scene::NoteAnchorCut(const ConstantBanks::Banks& banks) {
-  anchor_cut_ = false;
+  anchor_cut_ = std::exchange(preset_cut_, false);
+  if (anchor_cut_ && temporal_ && temporal_->active()) temporal_->NoteRequestedCut();
   cut_blur_pending_ = false;
   if (!cut::Global().Pending()) {
     return;  // the usual frame: one atomic load
@@ -4960,6 +4980,7 @@ void Scene::OnPresent() {
   last_color0_height_ = 0;
   // The next list the renderer opens is the frame that the next guest swap closes (scene_noise.h: the tag is found by the present records executed, not by the
   // lists opened: an idle present has no list and a flush opens a second one).
+  preset_anchor_ = false;
   scene_noise::OnPresent();
   cpu_scope.Stop();
   if (window_.frames >= kReportInterval) {

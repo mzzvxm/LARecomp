@@ -152,14 +152,42 @@ Always `{ok, result|error}`; `query.ground` says `not streamed` where the world 
 |---|---|
 | `shot` | `{path, size?, t?}` -> `{path, width, height, t, bytes, frame}`. A clean engine frame (no overlay, no ImGui) as a PNG, at the engine's 1:1 size (`size` is a hint: the result says the real one). With `t` it seeks there first and waits for the world to settle. |
 | `shot.schedule` | `{times:[...], dir}` -> `{count, dir}`. Stills at exact scene times during one play-through (it plays the scene if it is paused; needs the fixed step, else `not_ready`); an event `shot.done` for each. `{times:[]}` cancels. |
-| `take.render` | `{fps, sink?, name?, from?, to?}` -> `{name, fps, sink, from, to}`. Starts a take (the scene runs from `from` to `to`, default the whole scene); events `take.progress`, `take.done`. |
+| `take.render` | `{fps, sink?, name?, from?, to?, presets?}` -> `{name, fps, sink, from, to, presets?}`. Starts a take from `from` to `to` (default the whole scene). Emits `take.progress` and `take.done`. See [graphics presets](#graphics-presets) for per-preset outputs. |
 | `take.status` | `{}` -> `{active, name, folder, fps, frames, state, error?, last}` |
+
+### Graphics presets
+
+| Command | Args and result |
+|---|---|
+| `preset.get` | `{}` returns `{name, scene, line, label, warming, rt_available}`. The active preset is `name`, and `scene` and `line` identify the authored key at the playhead. |
+| `preset.set` | `{name, t?, commit?, persist?}` selects `vanilla`, `enhanced`, `enhanced_rt` or `custom`. `commit:true` inserts an undoable scene key at `t` or the playhead. `persist:true` saves a live selection to `larecomp.toml` and is exclusive with `commit`. `{clear:true}` clears a live preview. |
+| `preset.label` | `{on, t?, commit?}` shows or hides the upper-left preset label. `commit:true` inserts a key and `{clear:true}` returns to the authored label. |
+
+```text
+preset vanilla
+preset_label on
+at 3 preset enhanced
+at 6 preset enhanced_rt
+at 9 preset_label off
+```
+
+The Director previews a preset until the next authored preset key, a seek, or scene hand-back. A seek evaluates the keys at the requested time. Unloading restores the player's selection and the value and source of each covered setting. Command-line and environment values for individual effect rows still take precedence over preset defaults. Explicit scene settings sit above the preset's covered rows. The label defaults to off and appears in the game window. The regular PNG capture path produces clean plates for compositing.
+
+The scene holds its clock while visiting the named presets at load. The renderer waits for live pipeline work, the RT scene and streaming where needed, then drains rendered frames. Resources used in that view stay resident through the scene where their normal lifetime allows. Travelling through the city can introduce new geometry. An RT key requires an RT-capable renderer. Use `scene.freeze {"t":6}` and `scene.settle {"frames":120}` before a held capture. Preset changes reset the settle window and the render histories. `preset.get` reports warm-up progress.
+
+For synchronized plates, call `take.render {"name":"showcase","fps":60,"from":0,"to":10,"presets":["vanilla","enhanced","enhanced_rt"]}`. Each pass restarts the scene, uses a fixed step, and holds the requested preset for the entire pass. Enable per-update scene seeding with `mcla_scene_seed` and `mcla_scene_seed_each_frame`. Author the hour and weather, turn traffic and pedestrians off from the start, and use kinematic cars. Set `mcla_capture_dir` for the take root. The job produces three PNG frame folders and reports the actual paths in `take.done.outputs`. A failed or inexact pass ends the job with any completed output paths. For world and switch-frame verification, use the take's `frames.csv` and, with `mcla_capture_statelog=true`, `state.csv`.
+
+Use these plates at their original frame rate. This FFmpeg command wipes to ENHANCED at 3 seconds and to ENHANCED RT at 6 seconds, with a half-second sweep each. Each pixel takes its input from the same timestamp in all three plates.
+
+```powershell
+ffmpeg -framerate 60 -i showcase-vanilla/frames/f%06d.png -framerate 60 -i showcase-enhanced/frames/f%06d.png -framerate 60 -i showcase-enhanced_rt/frames/f%06d.png -filter_complex "[0:v][1:v]blend=all_expr='if(lt(X,W*clip((T-3)/0.5,0,1)),B,A)':shortest=1[first];[first][2:v]blend=all_expr='if(lt(X,W*clip((T-6)/0.5,0,1)),B,A)':shortest=1[video]" -map "[video]" -c:v ffv1 showcase-wipe.mkv
+```
 
 ## Events
 | Event | Fields |
 |---|---|
 | `scene.reloaded` | `rev, by` (`agent`, `panel`, `file`, `undo`, `accept`), `changed` (new line numbers), `errors`, `soft` (loaded in place: the clock and the cars were kept) |
-| `scene.state` | `state` (`running`, `finished`, `failed`, ...), `t`, `path` |
+| `scene.state` | `state` (`running`, `finished`, `failed`, ...), `t`, `path`, `preset` (also emitted on preset or label changes) |
 | `key.reached` | `t, line, track, text`: the scene's clock passed a key |
 | `car.ready` | `id` |
 | `shot.done` | `path, t, ok, error?` (and `index, total` for a schedule) |
