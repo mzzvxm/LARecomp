@@ -16,6 +16,9 @@
 
 #include <shellapi.h>
 #else
+#include "restart_handoff_linux.h"
+
+#include <fcntl.h>
 #include <spawn.h>
 #include <unistd.h>
 
@@ -23,8 +26,6 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
-#include <fstream>
-#include <iterator>
 #include <thread>
 
 extern char** environ;
@@ -160,29 +161,53 @@ bool RelaunchGame() {
   return true;
 }
 #else
-// POSIX (Linux): the same hand-over with a process id in place of the handle, which the new game
-// polls until the old one is gone. The command line is read back from /proc/self/cmdline.
-// CHECK: not run on Linux (spawn, the wait for the old game, and under an AppImage).
 namespace {
 
-constexpr std::string_view kRestartFlag = "--larecomp_restart_wait_pid=";
+namespace handoff = restart::linux_handoff;
 
-// This process's arguments (argv[0] first), from /proc/self/cmdline: its arguments, each ended by a
-// NUL byte.
-std::vector<std::string> OwnArguments() {
-  std::ifstream in("/proc/self/cmdline", std::ios::binary);
-  const std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  std::vector<std::string> args;
-  size_t start = 0;
-  while (start < text.size()) {
-    const size_t end = text.find('\0', start);
-    args.push_back(text.substr(start, end == std::string::npos ? end : end - start));
-    if (end == std::string::npos) {
+handoff::ProcRead ReadProcFile(const std::string& path) {
+  const int fd = open(path.c_str(), O_RDONLY | O_CLOEXEC);
+  if (fd < 0) {
+    return {{}, errno};
+  }
+  handoff::ProcRead result;
+  char buffer[4096];
+  for (;;) {
+    const ssize_t count = read(fd, buffer, sizeof(buffer));
+    if (count == 0) {
       break;
     }
-    start = end + 1;
+    if (count < 0) {
+      if (errno == EINTR) {
+        continue;
+      }
+      result.error = errno;
+      break;
+    }
+    result.text.append(buffer, static_cast<std::size_t>(count));
   }
-  return args;
+  close(fd);
+  return result;
+}
+
+std::optional<std::vector<std::string>> OwnArguments() {
+  const auto cmdline = ReadProcFile("/proc/self/cmdline");
+  return cmdline.error == 0 ? handoff::DecodeArguments(cmdline.text) : std::nullopt;
+}
+
+handoff::ProcessResult ProbeProcess(handoff::ProcessIdentity expected) {
+  if (expected.pid == getpid()) {
+    return {handoff::ProcessState::IdentityMismatch};
+  }
+  return handoff::InspectProcess(
+      expected, ReadProcFile("/proc/" + std::to_string(expected.pid) + "/stat"),
+      [](int pid) { return kill(pid, 0) == 0 ? 0 : errno; });
+}
+
+[[noreturn]] void RejectRestart(const char* message) {
+  std::fputs(message, stderr);
+  std::fflush(stderr);
+  std::_Exit(1);
 }
 
 // The file to run again: the game itself. When the game is an AppImage (its own file is inside its own
@@ -209,46 +234,43 @@ std::string OwnExecutable() {
   return exe;
 }
 
-// Whether the process still runs. One that has ended but not been collected by its parent yet (a
-// zombie) does not count: it holds nothing the new game needs.
-bool ProcessRunning(pid_t pid) {
-  std::ifstream in("/proc/" + std::to_string(pid) + "/stat");
-  std::string line;
-  if (!in) {
-    // No /proc to ask (or no such process): signal 0 only asks whether the process exists.
-    return kill(pid, 0) == 0 || errno == EPERM;
-  }
-  std::getline(in, line);
-  // "pid (name) state ...": the name may hold spaces and brackets, so the state follows the last ")".
-  const size_t close = line.rfind(')');
-  if (close == std::string::npos || close + 2 >= line.size()) {
-    return true;
-  }
-  const char state = line[close + 2];
-  return state != 'Z' && state != 'X';
-}
-
 }  // namespace
 
 void WaitForRestartedGame() {
-  pid_t old_game = 0;
-  for (const std::string& arg : OwnArguments()) {
-    if (std::string_view(arg).starts_with(kRestartFlag)) {
-      old_game = pid_t(std::strtol(arg.c_str() + kRestartFlag.size(), nullptr, 10));
-    }
+  const auto args = OwnArguments();
+  if (!args) {
+    RejectRestart("LARecomp: could not read the game's command line. "
+                  "Close any running game, then start it again.\n");
   }
-  if (old_game <= 0) {
+  const auto result = handoff::WaitForHandoff(
+      *args, ProbeProcess, std::chrono::steady_clock::now,
+      [](std::chrono::steady_clock::duration delay) { std::this_thread::sleep_for(delay); });
+  // CHECK: capture native Linux and AppImage argv and prior exit ordering through Restart Game.
+  if (result.CanStart()) {
     return;
   }
-  for (int waited_ms = 0; ProcessRunning(old_game); waited_ms += 50) {
-    if (waited_ms >= 30'000) {
-      std::fputs("LARecomp: the game that was restarting is still running, so this one is not "
-                 "starting. Close it, then start the game again.\n",
-                 stderr);
-      std::_Exit(1);
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+  switch (result.status) {
+    case handoff::HandoffStatus::MalformedToken:
+      RejectRestart("LARecomp: the restart command has an invalid handoff token. "
+                    "Close any running game, then start the game normally.\n");
+    case handoff::HandoffStatus::DuplicateToken:
+      RejectRestart("LARecomp: the restart command has more than one handoff token. "
+                    "Close any running game, then start the game normally.\n");
+    case handoff::HandoffStatus::IdentityMismatch:
+      RejectRestart("LARecomp: the previous game's process identity did not match the restart "
+                    "token. Close any running game, then start the game normally.\n");
+    case handoff::HandoffStatus::TimedOut:
+      RejectRestart("LARecomp: the game that was restarting is still running, so this one is not "
+                    "starting. Close it, then start the game again.\n");
+    case handoff::HandoffStatus::CheckFailed:
+      std::fprintf(stderr, "LARecomp: could not verify the previous game's process (error %d).\n",
+                   result.error);
+      break;
+    case handoff::HandoffStatus::NoHandoff:
+    case handoff::HandoffStatus::Exited:
+      break;
   }
+  RejectRestart("LARecomp: close any running game, then start the game normally.\n");
 }
 
 bool RelaunchGame() {
@@ -257,27 +279,30 @@ bool RelaunchGame() {
     MC_ERROR("[restart] the game's own file is not known, so it cannot be started again");
     return false;
   }
-  std::vector<std::string> command{exe};
-  const std::vector<std::string> args = OwnArguments();
-  for (size_t i = 1; i < args.size(); ++i) {
-    if (!std::string_view(args[i]).starts_with(kRestartFlag)) {
-      command.push_back(args[i]);
-    }
-  }
-  command.push_back(std::string(kRestartFlag) + std::to_string(getpid()));
-  std::vector<char*> argv;
-  for (std::string& arg : command) {
-    argv.push_back(arg.data());
-  }
-  argv.push_back(nullptr);
-
-  pid_t child = 0;
-  const int error = posix_spawn(&child, exe.c_str(), nullptr, nullptr, argv.data(), environ);
-  if (error != 0) {
-    MC_ERROR("[restart] could not start the game again (error {})", error);
+  const auto args = OwnArguments();
+  if (!args) {
+    MC_ERROR("[restart] could not read the game's command line");
     return false;
   }
-  MC_INFO("[restart] started again as process {}", int(child));
+  const auto self_stat = ReadProcFile("/proc/self/stat");
+  const auto self = self_stat.error == 0 ? handoff::ParseProcessStat(self_stat.text) : std::nullopt;
+  if (!self || self->identity.pid != getpid()) {
+    MC_ERROR("[restart] could not verify the game's own process identity");
+    return false;
+  }
+
+  // CHECK: exercise posix_spawn with the native ELF and the game's own AppImage runtime.
+  const auto spawned =
+      handoff::SpawnReplacement(exe, *args, self->identity, [](const char* path, char* const* argv) {
+        pid_t child = 0;
+        const int error = posix_spawn(&child, path, nullptr, nullptr, argv, environ);
+        return handoff::SpawnResult{child, error};
+      });
+  if (!spawned) {
+    MC_ERROR("[restart] could not start the game again (error {})", spawned.error);
+    return false;
+  }
+  MC_INFO("[restart] started again as process {}", spawned.pid);
   return true;
 }
 #endif
