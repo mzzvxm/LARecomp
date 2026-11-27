@@ -3982,9 +3982,13 @@ void PauseMenuRestartGame() {
     MC_INFO("[pause-menu] restart requested");
     // CHECK: rex::app::RequestRestart() starts the process again with the same arguments (the SDK's own relaunch); until it is shown to
     // wait for this process before the new one reads the config (see the CHECK in LarecompApp's constructor), the game keeps its own.
-    ui->PostTask([] {
+    ui->PostTask([ui] {
         MclaWaitForSaves();
         if (!mcla::RelaunchGame()) {
+            // CHECK: verify the dialog and retry in the native Windows and Linux restart rehearsal.
+            ui->ShowMessage(rex::MessageType::kError, "LARecomp",
+                            "Could not restart the game. Your session is still running. "
+                            "Choose Restart Game to try again.");
             return;
         }
         rex::app::RequestShutdown(0);
