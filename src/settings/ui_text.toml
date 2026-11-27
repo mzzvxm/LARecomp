@@ -168,6 +168,9 @@ help = "Draws the game's cast shadows."
 native = "kFoliageDynamics"
 help = "Lets faraway trees cast shadows."
 
+[rows.PM_RxGpuPbr]
+help = "Use physically based shading for added lights, reflections and indirect lighting."
+
 [rows.PM_RxGpuShadowDetail]
 native = "kShadowDetailDynamics"
 help = "Increases the resolution of the sun's shadow maps."
