@@ -30,8 +30,10 @@ namespace {
 using Clock = std::chrono::steady_clock;
 using Fields = net::Fields;
 
-std::mutex g_mtx;
-std::condition_variable g_cv;
+// Made once and never destroyed (like everything else here): the detached Worker waits on g_cv for as long as the process
+// lives, and destroying a condition variable or mutex that a thread still waits on at exit crashed the Linux test (exit 139).
+std::mutex& g_mtx = larecomp::Leak<std::mutex>();
+std::condition_variable& g_cv = larecomp::Leak<std::condition_variable>();
 Status& g_status = larecomp::Leak<Status>();
 bool g_started = false;
 bool g_kick = false;
