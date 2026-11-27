@@ -653,7 +653,7 @@ add_executable(larecomp_rt_as_parity_test EXCLUDE_FROM_ALL rt_as_parity_test.cpp
 target_compile_features(larecomp_rt_as_parity_test PRIVATE cxx_std_23)
 target_link_libraries(larecomp_rt_as_parity_test PRIVATE plume)
 if(WIN32)
-  target_link_libraries(larecomp_rt_as_parity_test PRIVATE d3d12)
+  target_link_libraries(larecomp_rt_as_parity_test PRIVATE d3d12 dxgi)  # Plume D3D12 calls CreateDXGIFactory2
 endif()
 # The ray tracing scene service's rules (rt_scene_rules.h, CITY-RT M2 H3: the Want lifecycle, the merge of the consumers, the top level's plan with and without the player's car, the
 # camera predictor on made-up drives) likewise:
