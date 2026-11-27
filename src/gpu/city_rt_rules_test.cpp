@@ -604,7 +604,7 @@ void TestAutoAndPackState() {
 void TestHitchBudget() {
   const Budget base = BudgetFor(GpuClass::kHigh, Level::kHigh);
   BuildCost build;
-  const Budget cold = build.Limit(base);
+  const Budget cold = build.Limit(base, true);
   CHECK(cold.build_triangles == 40000);
   CHECK(cold.upload_bytes == 2 * kMiB);
   CHECK(cold.memory_cap == base.memory_cap && cold.loads_in_flight == base.loads_in_flight);
@@ -614,19 +614,31 @@ void TestHitchBudget() {
   CHECK(RetentionRadius(cold, 300.0f) == 360.0f);
   build.Observe(0, 40000);
   build.Observe(5000000, 0);
-  CHECK(build.Limit(base).build_triangles == 40000);
-  build.Observe(4000000, 40000);
-  CHECK(build.Limit(base).build_triangles == 10000);
-  build.Observe(500000, 10000);
-  CHECK(build.Limit(base).build_triangles > 10000 && build.Limit(base).build_triangles < 20000);
-  build.Observe(100000000, 1);
-  CHECK(build.Limit(base).build_triangles == 1000);
+  CHECK(build.Limit(base, false).build_triangles == 40000);
 
   const std::vector<BuildItem> items = {
       {1000, 3 * kMiB, 0.0f}, {6000, kMiB, 1.0f}, {6000, kMiB, 2.0f}, {2000, kMiB, 3.0f}};
+  const std::vector<BuildItem> within_upload{items[1], items[2], items[3]};
+  const auto mask = [&](bool fixed_selection) {
+    const Budget limit = build.Limit(base, fixed_selection);
+    return PlanBuilds(within_upload, limit.build_triangles, limit.upload_bytes);
+  };
   CHECK((PlanBuilds(items, cold.build_triangles, cold.upload_bytes) == std::vector<uint8_t>{1, 0, 0, 0}));
-  CHECK((PlanBuilds({items[1], items[2], items[3]}, 10000, cold.upload_bytes) == std::vector<uint8_t>{1, 0, 1}));
-  CHECK((PlanBuilds({items[1], items[2], items[3]}, cold.build_triangles, cold.upload_bytes) == std::vector<uint8_t>{1, 1, 0}));
+  build.Observe(1000000, 40000);  // 25 ns per triangle
+  const auto fast = mask(true);
+  CHECK((fast == std::vector<uint8_t>{1, 1, 0}));
+  CHECK(mask(false) == fast);
+  build.Observe(4000000, 40000);  // 100 ns per triangle
+  const auto slow = mask(true);
+  CHECK(slow == fast);
+  CHECK(build.Limit(base, true).build_triangles == 40000);
+  CHECK(build.Limit(base, true).upload_bytes == 2 * kMiB);
+  CHECK(build.Limit(base, false).build_triangles == 10000);
+  CHECK((mask(false) == std::vector<uint8_t>{1, 0, 1}));
+  build.Observe(500000, 10000);
+  CHECK(build.Limit(base, false).build_triangles > 10000 && build.Limit(base, false).build_triangles < 20000);
+  build.Observe(100000000, 1);
+  CHECK(build.Limit(base, false).build_triangles == 1000);
 
   PlanInput in;
   in.budget = cold;
@@ -657,6 +669,76 @@ void TestHitchBudget() {
   CHECK(PlanStreaming(in, sectors, states).evictions.size() == 1);  // original policy
 }
 
+void TestFixedResidency() {
+  PlanInput in;
+  in.budget = BudgetFor(GpuClass::kHigh, Level::kHigh);
+  in.budget.trade_margin = 30.0f;
+  constexpr uint32_t kRequest = 10;
+  std::vector<SectorInfo> sectors(kRequest + 1);
+  std::vector<SectorState> states(sectors.size());
+  for (uint32_t i = 0; i < kRequest; ++i) {
+    sectors[i].hi_triangles = 262144;        // 24 MiB each, or 240 MiB held
+    states[i].hi = Residency::kResident;
+    states[i].hi_bytes = 24 * kMiB;
+  }
+  sectors[kRequest].hi_triangles = 131072;  // 12 MiB requested outside the held sectors
+  sectors[kRequest].box_min[0] = sectors[kRequest].box_max[0] = 30.0f;
+  const auto check_load = [](const Plan& plan) {
+    CHECK((plan.loads == std::vector<Request>{{kRequest, Detail::kHi, 30.0f}}));
+    CHECK(plan.evictions.empty() && !plan.over_cap && plan.cap_changes.empty());
+  };
+  check_load(PlanStreaming(in, sectors, states));
+  const auto small_driver = states;
+  states[0].hi_bytes += 8 * kMiB;  // 248 MiB reported by another driver
+  const Plan fixed = PlanStreaming(in, sectors, states);
+  check_load(fixed);
+  CHECK(fixed.resident_bytes == 240 * kMiB);
+  states[0].hi = Residency::kLoading;
+  in.loading = 1;
+  check_load(PlanStreaming(in, sectors, states));
+  states[0].hi = Residency::kResident;
+  in.loading = 0;
+  in.fixed_selection = false;
+  check_load(PlanStreaming(in, sectors, small_driver));
+  const Plan legacy = PlanStreaming(in, sectors, states);
+  CHECK(legacy.loads.empty() && legacy.evictions.empty() && legacy.over_cap && !legacy.over_pool_cap);
+  CHECK(legacy.resident_bytes == 248 * kMiB);
+  CHECK(legacy.cap_changes.size() == 1);
+  if (legacy.cap_changes.size() == 1) {
+    const CapChange& change = legacy.cap_changes.front();
+    CHECK(change.sector == kRequest && change.detail == Detail::kHi && change.blas_charge == 12 * kMiB);
+    CHECK(change.refused.blas && !change.refused.pool);
+    states[kRequest].hi_refusal = change.refused;
+    CHECK(PlanStreaming(in, sectors, states).cap_changes.empty());
+  }
+
+  in.fixed_selection = true;
+  in.budget.pool_cap = 100;
+  sectors[kRequest].hi_pool = 101;
+  const Plan pool = PlanStreaming(in, sectors, states);
+  CHECK(pool.loads.empty() && pool.over_cap && pool.over_pool_cap);
+  CHECK(pool.cap_changes.size() == 1);
+  if (pool.cap_changes.size() == 1) {
+    CHECK(!pool.cap_changes[0].refused.blas && pool.cap_changes[0].refused.pool && pool.cap_changes[0].pool_charge == 101);
+    states[kRequest].hi_refusal = pool.cap_changes[0].refused;
+  }
+  in.loading = in.budget.loads_in_flight;
+  CHECK(PlanStreaming(in, sectors, states).cap_changes.empty());
+  in.loading = 0;
+  in.camera[0] = -300;
+  const Plan outside = PlanStreaming(in, sectors, states);
+  CHECK(outside.cap_changes.size() == 1);
+  if (outside.cap_changes.size() == 1) {
+    CHECK(outside.cap_changes[0].refused == CapRefusal{});
+    states[kRequest].hi_refusal = outside.cap_changes[0].refused;
+  }
+  in.camera[0] = 0;
+  in.budget.memory_cap = 240 * kMiB;
+  const Plan both = PlanStreaming(in, sectors, states);
+  CHECK(both.cap_changes.size() == 1);
+  if (both.cap_changes.size() == 1) CHECK(both.cap_changes[0].refused.blas && both.cap_changes[0].refused.pool);
+}
+
 int main() {
   TestSettingAndBudgets();
   TestAutoAndPackState();
@@ -670,6 +752,7 @@ int main() {
   TestDrive();
   TestBuildPlan();
   TestHitchBudget();
+  TestFixedResidency();
   TestSafeRange();
   if (g_failures != 0) {
     std::fprintf(stderr, "city_rt_rules_test: %d of %d checks FAILED\n", g_failures, g_checks);

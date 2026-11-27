@@ -304,6 +304,7 @@
 {"mcla_gpu_city_rt_alpha_ref", "MCLA/GPU"},
 {"mcla_gpu_city_rt_alpha_view", "MCLA/GPU"},
 {"mcla_gpu_city_rt_build_budget", "MCLA/GPU"},
+{"mcla_gpu_city_rt_fixed_selection", "MCLA/GPU"},
 {"mcla_gpu_city_rt_car_coverage", "MCLA/GPU"},
 {"mcla_gpu_city_rt_compaction", "MCLA/GPU"},
 {"mcla_gpu_rt_tlas_reuse", "MCLA/GPU"},
