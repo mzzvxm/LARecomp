@@ -86,3 +86,56 @@ recipe's options. Update the pin file, recipe and recipe example together.
   give the default output locations for `probe_machine` and `dump_settings_ui` when the target exports those contracts.
   `machine.json`'s optional `paths` object reports the locations resolved by the running game or probe, such as
   `paths.game_data_root`, `paths.config_file`, `paths.saves_root`, `paths.cache_root` and `paths.logs`.
+
+## Bounce controls
+
+The native renderer exposes these live choices under **Graphics → Lighting and Shadows**. Match launcher controls by row ID
+and write the associated setting key. The preset cells below are the saved values for the 1128 game pin `5e1f0781`.
+
+| Exported row ID and label | Setting | Choice labels in order | VANILLA / ENHANCED / ENHANCED RT |
+| --- | --- | --- | --- |
+| `PM_RxGpuSsgi` · BOUNCE LIGHT | `mcla_gpu_ssgi` | OFF / HIGH / ULTRA | `off` / `off` / `high` |
+| `PM_RxGpuRtGi` · BOUNCE LIGHT RT | `mcla_gpu_rt_gi` | OFF / HIGH / ULTRA | `off` / `off` / `high` |
+| `PM_RxGpuSsgiLevel` · BOUNCE STRENGTH | `mcla_gpu_ssgi_intensity` | 1 / 2 / 3 / 4 / 5 | `default` / `default` / `default` |
+| `PM_RxGpuLightBounce` · LIGHT BOUNCE | `mcla_gpu_light_bounce` | OFF / ON | `off` / `on` / `on` |
+
+When ambient occlusion is off, the screen-space row is disabled. BOUNCE LIGHT RT stays listed and is disabled with
+`(NO RT GPU)` at RT tier `none`, or `(NOT READY)` when the probe update is unavailable. A live `(VRAM)` warning leaves
+the RT choice editable. BOUNCE STRENGTH controls both GI paths and is editable when either can contribute. LIGHT BOUNCE
+controls moving lights such as headlights, tail lights and neon independently. The two quality settings accept legacy
+`auto` in saved config. Their player choice lists contain OFF, HIGH and ULTRA. The raw `mcla_gpu_ssgi_strength` override
+and the quarter-size bounce row carry debug metadata.
+
+### Check a tester-drop export
+
+From the public source checkout, set `$SdkInstall` to the prepared SDK kit for the pinned game, `$ReceiptDir` to an
+existing evidence directory and `$SettingsUiTest` to the standalone `larecomp_settings_ui_test` executable.
+
+```powershell
+$sourceDump = Join-Path $ReceiptDir 'source'
+python -I -B tools/check_settings_dump.py --sdk $SdkInstall --out $sourceDump
+if ($LASTEXITCODE -ne 0) { throw 'Source settings UI export failed' }
+& $SettingsUiTest --bounce-export (Join-Path $sourceDump 'settings-ui.json') documentation/contract/examples
+if ($LASTEXITCODE -ne 0) { throw 'Source bounce settings contract failed' }
+```
+
+After the tester drop, set `$GameExe` to the staged executable for the captured attempt and `$GameSha` to that
+attempt's full game commit.
+
+```powershell
+$catalog = Join-Path $ReceiptDir 'settings-ui.bounce.json'
+& $GameExe "--dump_settings_ui=$catalog"
+if ($LASTEXITCODE -ne 0) { throw 'Bounce settings export failed' }
+if ((Get-Content -Raw $catalog | ConvertFrom-Json).generated.commit -ne $GameSha) { throw 'Settings UI pin mismatch' }
+python -I -B tools/check_settings_ui.py $catalog
+if ($LASTEXITCODE -ne 0) { throw 'Settings UI validation failed' }
+& $SettingsUiTest --bounce-export $catalog documentation/contract/examples
+if ($LASTEXITCODE -ne 0) { throw 'Bounce settings contract failed' }
+```
+
+For each Fresh or forced Repair readback, match the staged executable hash and launcher hash to the rehearsal receipt.
+Compare the rows in the real Graphics captures or UI readback with the export using the attempt's selected
+renderer, `machine.json` and saved preset. Capture the ordered choices, selected values and disabled reasons if the
+existing screenshots show only the closed controls. Record missing capability or UI evidence as pending and preserve any
+exact-pin mismatch alongside its export, machine facts, screenshot or readback. The public fixtures exercise no-RT,
+D3D12, Vulkan and a Steam Deck case where the RT tier and rung differ.

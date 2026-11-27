@@ -1,18 +1,350 @@
 ﻿#include "export.h"
 #include "sha256.h"
 
+#include "../../documentation/contract/cpp/mini_json.h"
+#include "../../documentation/contract/cpp/ui_expr_ref.h"
+
 #include <algorithm>
+#include <array>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <map>
+#include <memory>
+#include <ranges>
 #include <stdexcept>
 
 using namespace larecomp::settings_ui;
 using namespace mcla_menu;
 using toml::table;
 
+namespace {
+
+using Contract = larecomp::minijson::Json;
+namespace expr = larecomp::uiexpr;
+
+struct Checks {
+    int count = 0;
+    std::vector<std::string> failures;
+
+    void operator()(bool pass, std::string_view description) {
+        ++count;
+        if (!pass) failures.emplace_back(description);
+    }
+};
+
+Contract ReadContract(const std::filesystem::path& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in) throw std::runtime_error("cannot read " + path.string());
+    const std::string bytes(std::istreambuf_iterator<char>(in), {});
+    Contract document;
+    std::string error;
+    if (!larecomp::minijson::Parse(bytes, &document, &error) || !document.IsObject()) {
+        throw std::runtime_error(path.string() + ": expected a JSON object " + error);
+    }
+    return document;
+}
+
+const Contract& Field(const Contract& node, std::string_view key) {
+    static const Contract missing;
+    const auto* field = node.Find(key);
+    return field ? *field : missing;
+}
+
+using Choice = std::pair<std::string_view, std::string_view>;
+constexpr Choice quality[] = {{"off", "OFF"}, {"high", "HIGH"}, {"ultra", "ULTRA"}};
+constexpr Choice strength[] = {{"light", "1"}, {"default", "2"}, {"strong", "3"}, {"stronger", "4"}, {"strongest", "5"}};
+constexpr Choice on_off[] = {{"off", "OFF"}, {"on", "ON"}};
+constexpr std::string_view named_presets[] = {"vanilla", "enhanced", "enhanced_rt"};
+struct BounceRow {
+    const char* id;
+    const char* setting;
+    const char* label;
+    std::span<const Choice> choices;
+    std::array<std::string_view, 3> preset_cells;
+    bool legacy_auto;
+};
+constexpr BounceRow bounce_rows[] = {
+    {"PM_RxGpuSsgi", "mcla_gpu_ssgi", "BOUNCE LIGHT", quality, {"off", "off", "high"}, true},
+    {"PM_RxGpuRtGi", "mcla_gpu_rt_gi", "BOUNCE LIGHT RT", quality, {"off", "off", "high"}, true},
+    {"PM_RxGpuSsgiLevel", "mcla_gpu_ssgi_intensity", "BOUNCE STRENGTH", strength, {"default", "default", "default"}, false},
+    {"PM_RxGpuLightBounce", "mcla_gpu_light_bounce", "LIGHT BOUNCE", on_off, {"off", "on", "on"}, false},
+};
+
+bool IsBounceSetting(std::string_view setting) {
+    return setting.starts_with("mcla_gpu_ssgi") || setting.starts_with("mcla_gpu_rt_gi") ||
+           setting.starts_with("mcla_gpu_light_bounce");
+}
+
+struct BounceEnv final : expr::Env {
+    const Contract& machine;
+    std::map<std::string, expr::Def, std::less<>> definitions;
+    std::string ao = "off", screen = "off", rt = "off";
+    bool no_update = false, replaced = false, pressure = false;
+
+    BounceEnv(const Contract& machine, const Contract& defs) : machine(machine) {
+        for (const auto* id : {"ao_on", "rt_gi_open", "bounce_on"}) {
+            definitions[id].expr = std::make_shared<expr::Program>(expr::Parse(Field(defs, id).s));
+        }
+    }
+    expr::Value Setting(std::string_view key) const override {
+        if (key == "mcla_gpu_ao") return expr::Value::String(ao);
+        if (key == "mcla_gpu_ssgi") return expr::Value::String(screen);
+        if (key == "mcla_gpu_rt_gi") return expr::Value::String(rt);
+        return {};
+    }
+    expr::Value Fact(std::string_view key) const override {
+        if (no_update && key == "build.rt_gi_update_built") return expr::Value::Bool(false);
+        if (replaced && key == "live.rt_gi_replaces_bounce") return expr::Value::Bool(true);
+        if (pressure && key == "live.rt_gi_resource_pressure") return expr::Value::Bool(true);
+        const auto* fact = machine.Path(key);
+        if (fact && fact->IsString()) return expr::Value::String(fact->s);
+        if (fact && fact->IsBool()) return expr::Value::Bool(fact->b);
+        return {};
+    }
+    expr::Value Renderer() const override { return expr::Value::String("native"); }
+    const expr::AutoDescriptor* Auto(std::string_view) const override { return nullptr; }
+    const expr::Def* DefOf(std::string_view key) const override {
+        const auto it = definitions.find(key);
+        return it == definitions.end() ? nullptr : &it->second;
+    }
+};
+
+void CheckBounceState(Checks& check, const Contract& row, const BounceEnv& env, bool enabled,
+                      std::string_view suffix, std::string_view scenario) {
+    const auto description = row.StringOr("id", "missing row") + " " + std::string(scenario);
+    const auto* hidden = row.Find("hidden_unless");
+    check(!hidden || expr::ListedUnlessFalse(expr::Evaluate(expr::Parse(hidden->s), env)), description + " listed");
+    for (const auto& state : Field(row, "states").a) {
+        const auto when = expr::Parse(Field(state, "when").s);
+        check(when.ok && !when.unsupported_call, description + " state expression");
+        if (!expr::Matches(expr::Evaluate(when, env))) continue;
+        check(state.BoolOr("enabled", true) == enabled && Field(state, "suffix").s == suffix, description + " state");
+        return;
+    }
+    check(enabled && suffix.empty(), description + " state");
+}
+
+struct BounceMachine {
+    const char* name;
+    Contract facts;
+    bool rt;
+};
+
+Checks CheckBounceExport(const Contract& doc, std::span<const BounceMachine> machines) {
+    Checks check;
+    std::array<const Contract*, std::size(bounce_rows)> rows{};
+    std::array<int, std::size(bounce_rows)> occurrences{};
+    const auto& settings = Field(doc, "settings");
+    const auto& presets = Field(doc, "presets");
+    const auto& items = Field(presets, "items");
+    bool found_quarter_size = false;
+    for (const auto& tab : Field(doc, "tabs").a) {
+        for (const auto& section : Field(tab, "sections").a) {
+            for (const auto& row : Field(section, "rows").a) {
+                const auto& id = Field(row, "id").s;
+                const auto& key = Field(row, "setting").s;
+                const auto* expected = std::ranges::find(bounce_rows, id, &BounceRow::id);
+                if (expected != std::end(bounce_rows)) {
+                    const auto index = expected - bounce_rows;
+                    rows[index] = &row;
+                    ++occurrences[index];
+                    check(Field(tab, "id").s == "gfx" && Field(tab, "label").s == "GRAPHICS" &&
+                          Field(section, "id").s == "lighting" && Field(section, "source_menu").s == "RxLightingMenu" &&
+                          Field(section, "label").s == "LIGHTING AND SHADOWS", id + " page");
+                    check(!tab.BoolOr("debug", false) && !section.BoolOr("debug", false) &&
+                          !row.BoolOr("debug", false), id + " player visibility");
+                } else if (IsBounceSetting(key)) {
+                    found_quarter_size |= id == "PM_RxDbgSsgiQuarter" && key == "mcla_gpu_ssgi_quarter";
+                    check(Field(settings, key).BoolOr("debug", false) && tab.BoolOr("debug", false) &&
+                          section.BoolOr("debug", false) && row.BoolOr("debug", false), id + " debug visibility");
+                }
+            }
+        }
+    }
+    check(found_quarter_size, "quarter-size bounce has a diagnostic row");
+    check(Field(settings, "mcla_gpu_ssgi_strength").BoolOr("debug", false), "raw SSGI strength override is diagnostic");
+
+    for (size_t i = 0; i < rows.size(); ++i) {
+        const auto& expected = bounce_rows[i];
+        const std::string id(expected.id);
+        check(occurrences[i] == 1, id + " occurs once");
+        if (!rows[i]) continue;
+        const auto& row = *rows[i];
+        const auto& setting = Field(settings, expected.setting);
+        check(Field(row, "setting").s == expected.setting && Field(row, "label").s == expected.label &&
+              Field(row, "kind").s == "choice", id + " binding and label");
+        check(Field(row, "apply").s == "live" && Field(setting, "life").s == "live" &&
+              Field(setting, "type").s == "string" && !setting.BoolOr("debug", true), id + " live player setting");
+        const auto& renderers = Field(row, "renderers").a;
+        check(renderers.size() == 1 && renderers[0].s == "native", id + " native renderer");
+        if (const auto* surfaces = row.Find("surfaces")) {
+            check(std::ranges::count(surfaces->a, "launcher", &Contract::s) == 1 &&
+                  std::ranges::count(surfaces->a, "game", &Contract::s) == 1, id + " game and launcher surfaces");
+        }
+        const auto& values = Field(row, "values").a;
+        check(std::ranges::equal(values, expected.choices, [](const Contract& value, const Choice& choice) {
+            return Field(value, "id").s == choice.first && Field(value, "label").s == choice.second && !value.Find("when");
+        }), id + " choice IDs and labels");
+        if (expected.legacy_auto) {
+            check(Field(row, "decode").s == std::string("resolved(s.") + expected.setting + ")", id + " legacy choice decoding");
+        }
+        const auto& allowed = Field(setting, "allowed").a;
+        check(allowed.size() == expected.choices.size() + expected.legacy_auto &&
+              (!expected.legacy_auto || allowed.front().s == "auto") &&
+              std::ranges::equal(std::span(allowed).subspan(expected.legacy_auto), expected.choices,
+                                 [](const Contract& value, const Choice& choice) { return value.s == choice.first; }),
+              id + " allowed setting values");
+        check(std::ranges::count(Field(presets, "covers").a, expected.setting, &Contract::s) == 1, id + " covered by presets");
+        for (size_t p = 0; p < std::size(named_presets); ++p) {
+            const auto& cells = Field(Field(items, named_presets[p]), "values");
+            check(Field(cells, expected.setting).s == expected.preset_cells[p], id + " " + std::string(named_presets[p]) + " cell");
+        }
+    }
+    if (std::ranges::find(rows, nullptr) != rows.end()) return check;
+    const auto& [screen, rt, strength_row, moving] = rows;
+    const auto& enhanced_rt = Field(items, "enhanced_rt");
+    const auto needs = expr::Parse(Field(enhanced_rt, "needs").s);
+    check(needs.ok && !Field(enhanced_rt, "needs_reason").s.empty(), "ENHANCED RT explains its capability requirement");
+
+    for (const auto& machine : machines) {
+        const std::string name(machine.name);
+        BounceEnv env(machine.facts, Field(doc, "defs"));
+        check(expr::Matches(expr::Evaluate(needs, env)) == machine.rt, name + " ENHANCED RT availability");
+        const auto state = [&](const Contract& row, bool enabled, std::string_view suffix, std::string_view scenario) {
+            CheckBounceState(check, row, env, enabled, suffix, name + " " + std::string(scenario));
+        };
+        state(*screen, false, "", "AO off");
+        state(*rt, machine.rt, machine.rt ? "" : " (NO RT GPU)", "RT capability");
+        state(*strength_row, false, "", "both GI modes off");
+        state(*moving, true, "", "AO and GI off");
+
+        env.ao = "on";
+        env.screen = "high";
+        state(*screen, true, "", "screen bounce on");
+        state(*strength_row, true, "", "screen bounce alone");
+
+        env.screen = "off";
+        env.rt = "high";
+        env.replaced = env.pressure = machine.rt;
+        state(*screen, true, machine.rt ? " (REPLACED)" : "", "RT replacement");
+        state(*rt, machine.rt, machine.rt ? " (VRAM)" : " (NO RT GPU)", "RT warning");
+        env.ao = "off";
+        state(*screen, false, machine.rt ? " (REPLACED)" : "", "RT replacement with AO off");
+        state(*strength_row, machine.rt, "", "RT bounce alone");
+
+        env.no_update = true;
+        state(*rt, false, machine.rt ? " (NOT READY)" : " (NO RT GPU)", "RT update missing");
+        state(*strength_row, false, "", "RT bounce unavailable");
+    }
+    return check;
+}
+
+Contract& MutableField(Contract& object, std::string_view key) {
+    for (auto& [name, value] : std::views::reverse(object.o)) {
+        if (name == key) return value;
+    }
+    throw std::runtime_error("mutation needs field " + std::string(key));
+}
+
+Contract& NamedEntry(Contract& array, std::string_view id) {
+    for (auto& entry : array.a) {
+        if (Field(entry, "id").s == id) return entry;
+    }
+    throw std::runtime_error("mutation needs entry " + std::string(id));
+}
+
+Checks CheckBounceMutations(const Contract& doc, std::span<const BounceMachine> machines) {
+    Checks check;
+    const auto lighting = [](Contract& copy, std::string_view page) -> Contract& {
+        auto& gfx = NamedEntry(MutableField(copy, "tabs"), "gfx");
+        return NamedEntry(MutableField(gfx, "sections"), page);
+    };
+    const auto rejects = [&](std::string_view mutation, std::string_view expected, auto change) {
+        auto copy = doc;
+        change(copy);
+        const auto result = CheckBounceExport(copy, machines);
+        check(std::ranges::find(result.failures, expected) != result.failures.end(), mutation);
+    };
+    rejects("drop screen bounce row", "PM_RxGpuSsgi occurs once", [&](Contract& copy) {
+        auto& rows = MutableField(lighting(copy, "lighting"), "rows");
+        std::erase_if(rows.a, [](const auto& row) { return Field(row, "id").s == "PM_RxGpuSsgi"; });
+    });
+    rejects("move light bounce to Display", "PM_RxGpuLightBounce page", [&](Contract& copy) {
+        auto& rows = MutableField(lighting(copy, "lighting"), "rows");
+        auto& display = MutableField(lighting(copy, "display"), "rows");
+        display.a.push_back(NamedEntry(rows, "PM_RxGpuLightBounce"));
+        std::erase_if(rows.a, [](const auto& row) { return Field(row, "id").s == "PM_RxGpuLightBounce"; });
+    });
+    rejects("use RT rung for the capability guard", "PM_RxGpuRtGi Steam Deck Vulkan RT capability state", [&](Contract& copy) {
+        auto& rows = MutableField(lighting(copy, "lighting"), "rows");
+        auto& states = MutableField(NamedEntry(rows, "PM_RxGpuRtGi"), "states");
+        const auto no_rt = std::ranges::find_if(states.a, [](const auto& state) {
+            return Field(state, "suffix").s == " (NO RT GPU)";
+        });
+        if (no_rt == states.a.end()) throw std::runtime_error("mutation needs NO RT GPU state");
+        MutableField(*no_rt, "when").s = "gpu.rt_rung == 'none'";
+    });
+    rejects("change the ENHANCED RT screen bounce cell", "PM_RxGpuSsgi enhanced_rt cell", [](Contract& copy) {
+        auto& items = MutableField(MutableField(copy, "presets"), "items");
+        auto& values = MutableField(MutableField(items, "enhanced_rt"), "values");
+        MutableField(values, "mcla_gpu_ssgi").s = "off";
+    });
+    rejects("leak quarter-size bounce into Lighting", "PM_RxDbgSsgiQuarter debug visibility", [&](Contract& copy) {
+        auto& debug = NamedEntry(MutableField(copy, "tabs"), "debug");
+        for (auto& section : MutableField(debug, "sections").a) {
+            auto& rows = MutableField(section, "rows").a;
+            const auto entry = std::ranges::find_if(rows, [](const auto& row) {
+                return Field(row, "id").s == "PM_RxDbgSsgiQuarter";
+            });
+            if (entry == rows.end()) continue;
+            auto leaked = std::move(*entry);
+            rows.erase(entry);
+            MutableField(leaked, "debug").b = false;
+            MutableField(lighting(copy, "lighting"), "rows").a.push_back(std::move(leaked));
+            return;
+        }
+        throw std::runtime_error("mutation needs quarter-size bounce row");
+    });
+    return check;
+}
+
+int CheckBounceDump(const std::filesystem::path& dump, const std::filesystem::path& examples) {
+    // CHECK: run this against the staged executable's dump and compare the launcher's exact-pin UI readback.
+    const auto doc = ReadContract(dump);
+    const BounceMachine machines[] = {
+        {"GTX 1080 probe", ReadContract(examples / "machine.probe-no-rt.example.json"), false},
+        {"RTX 5080 D3D12", ReadContract(examples / "fleet/rtx5080-d3d12.machine.json"), true},
+        {"RTX 5080 Vulkan", ReadContract(examples / "fleet/rtx5080-vulkan.machine.json"), true},
+        {"Steam Deck Vulkan", ReadContract(examples / "fleet/steam-deck.machine.json"), true},
+    };
+    const auto check = CheckBounceExport(doc, machines);
+    for (const auto& failure : check.failures) std::cerr << "FAIL " << failure << '\n';
+    std::cout << check.count << " bounce checks, " << check.failures.size() << " failed\n";
+    if (!check.failures.empty()) return 1;
+    const auto mutations = CheckBounceMutations(doc, machines);
+    for (const auto& escaped : mutations.failures) std::cerr << "FAIL mutation escaped: " << escaped << '\n';
+    std::cout << mutations.count - mutations.failures.size() << '/' << mutations.count << " bounce mutations caught\n";
+    return !mutations.failures.empty();
+}
+
+}  // namespace
+
 // CHECK: compare the installed executable's dump with the source harness dump.
 int main(int argc, char** argv) {
+    if (argc > 1 && std::string_view(argv[1]) == "--bounce-export") {
+        if (argc < 3 || argc > 4) {
+            std::cerr << "usage: larecomp_settings_ui_test --bounce-export <settings-ui.json> [contract examples dir]\n";
+            return 2;
+        }
+        try {
+            return CheckBounceDump(argv[2], argc == 4 ? argv[3] : "documentation/contract/examples");
+        } catch (const std::exception& error) {
+            std::cerr << "FAIL " << error.what() << '\n';
+            return 2;
+        }
+    }
     int checks = 0;
     int failed = 0;
     const auto check = [&](bool pass, std::string_view description) {
@@ -223,6 +555,14 @@ fallback_values = [{id = "1", label = "100%"}]
     check(covered("mcla_gpu_ssr_rt") && presets["items"]["enhanced"]["values"]["mcla_gpu_ssr_rt"].value_or("") == std::string_view("off") &&
           presets["items"]["enhanced_rt"]["values"]["mcla_gpu_ssr_rt"].value_or("") == std::string_view("high"),
           "the surface-reflection fallback is explicit and independent");
+    for (const auto& row : bounce_rows) {
+        check(covered(row.setting), std::string(row.setting) + " is preset-covered");
+        for (size_t p = 0; p < std::size(named_presets); ++p) {
+            const auto cells = presets["items"][named_presets[p]]["values"];
+            check(cells[row.setting].value_or(std::string_view{}) == row.preset_cells[p],
+                  std::string(row.setting) + " " + std::string(named_presets[p]) + " preset cell");
+        }
+    }
     check(!presets["items"]["vanilla"]["values"]["fps_limit"] && !presets["items"]["vanilla"]["values"]["mcla_gpu_upscaler"], "a preset names no DISPLAY or UPSCALING setting");
     const auto rules = presets["class_to_preset"];
     check(rules.as_array() && rules.as_array()->size() == 3 &&
