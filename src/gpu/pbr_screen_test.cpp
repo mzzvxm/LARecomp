@@ -25,6 +25,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <type_traits>  // before namespace hlsl_shim: pbr_screen_shim.h includes it, and libc++ breaks when it first appears inside a namespace
 #include <vector>
 
 #include "gbuffer_types.h"
