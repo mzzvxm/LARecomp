@@ -668,6 +668,13 @@ add_executable(larecomp_game_marker_test EXCLUDE_FROM_ALL
     src/game_marker_test.cpp)
 target_include_directories(larecomp_game_marker_test PRIVATE src)
 
+# Windows restart token parsing and Win32 wait results with standalone handles.
+#   cmake --build <build dir> --target larecomp_restart_handoff_test, then run <build dir>/larecomp_restart_handoff_test (exit 0 = passed).
+if(WIN32)
+    add_executable(larecomp_restart_handoff_test EXCLUDE_FROM_ALL
+        src/mc_engine/core/restart_handoff_test.cpp)
+endif()
+
 # The tables the game dumps for the launcher (src/mc_engine/online/online_tables_core.h: the stats views of the XVC2 resource, the session property
 # names, the JSON file) have a check that needs no game; an argument names a file to write the sample JSON to:
 #   cmake --build <build dir> --target larecomp_online_tables_test, then run <build dir>/larecomp_online_tables_test [sample.json] (exit 0 = passed).

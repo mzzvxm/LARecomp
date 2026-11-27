@@ -12,13 +12,8 @@
 #include "os/appimage_env.h"
 
 #if defined(_WIN32)
-#ifndef NOMINMAX
-#define NOMINMAX
-#endif
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-#include <Windows.h>
+#include "restart_handoff_win.h"
+
 #include <shellapi.h>
 #else
 #include <spawn.h>
@@ -40,10 +35,13 @@ namespace mcla {
 #if defined(_WIN32)
 namespace {
 
-// A handle to the old process on the new one's command line: a handle, not a process id, which could
-// be reused. Read straight from the command line, not as an option, so it is never saved to the
-// settings file.
-constexpr std::wstring_view kRestartFlag = L"--larecomp_restart_wait_handle=";
+using restart::HandoffStatus;
+using restart::kRestartFlag;
+
+[[noreturn]] void RejectRestart(const std::wstring& message) {
+  MessageBoxW(nullptr, message.c_str(), L"LARecomp", MB_OK | MB_ICONWARNING);
+  ExitProcess(1);
+}
 
 // One argument quoted as CommandLineToArgvW reads it back.
 std::wstring QuoteArgument(std::wstring_view arg) {
@@ -72,28 +70,36 @@ void WaitForRestartedGame() {
   int argc = 0;
   LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   if (!argv) {
-    return;
+    const DWORD error = GetLastError();
+    RejectRestart(L"Windows could not read the game's command line (error " +
+                  std::to_wstring(error) + L"). Close any running game, then start it again.");
   }
-  HANDLE old_game = nullptr;
-  for (int i = 1; i < argc; ++i) {
-    if (std::wstring_view(argv[i]).starts_with(kRestartFlag)) {
-      old_game = reinterpret_cast<HANDLE>(
-          static_cast<uintptr_t>(std::wcstoull(argv[i] + kRestartFlag.size(), nullptr, 16)));
-    }
-  }
+  const auto result = restart::WaitForHandoff({argv, static_cast<size_t>(argc)}, 30'000);
   LocalFree(argv);
-  if (!old_game) {
-    return;
+
+  // CHECK: verify Windows startup and parent exit ordering via native Restart Game.
+  switch (result.status) {
+    case HandoffStatus::Ready:
+      return;
+    case HandoffStatus::MalformedToken:
+      RejectRestart(L"The restart command has an invalid handoff token. "
+                    L"Close any running game, then start the game normally.");
+    case HandoffStatus::DuplicateToken:
+      RejectRestart(L"The restart command has more than one handoff token. "
+                    L"Close any running game, then start the game normally.");
+    case HandoffStatus::TimedOut:
+      RejectRestart(L"The game that was restarting is still running, so this one is not starting. "
+                    L"Close it, then start the game again.");
+    case HandoffStatus::WaitFailed:
+      RejectRestart(L"Windows could not wait for the previous game to exit (error " +
+                    std::to_wstring(result.detail) + L"). Close it, then start the game again.");
+    case HandoffStatus::UnexpectedWait:
+      RejectRestart(L"Windows returned an unexpected result while waiting for the previous game "
+                    L"to exit (result " + std::to_wstring(result.detail) +
+                    L"). Close it, then start the game again.");
   }
-  const DWORD waited = WaitForSingleObject(old_game, 30'000);
-  CloseHandle(old_game);
-  if (waited == WAIT_TIMEOUT) {
-    MessageBoxW(nullptr,
-                L"The game that was restarting is still running, so this one is not starting. "
-                L"Close it, then start the game again.",
-                L"LARecomp", MB_OK | MB_ICONWARNING);
-    ExitProcess(1);
-  }
+  RejectRestart(L"The restart handoff could not be verified. "
+                L"Close any running game, then start the game again.");
 }
 
 bool RelaunchGame() {
