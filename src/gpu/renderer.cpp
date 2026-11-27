@@ -2,6 +2,7 @@
 // renderer.h and gpu.h.
 
 #include "renderer.h"
+#include "gfx_preset_apply.h"
 #include "env_hold_link.h"
 
 #include "cpu_timing.h"
@@ -1052,6 +1053,36 @@ void Renderer::ExecuteRecord(const RecordHeader& header, const uint8_t* payload,
       if ((present_tag_ & mc::cinematic::capture::kTagCapture) && frames_.is_open() &&
           mc::cinematic::CaptureVisualConfig().Samples(present_tag_ & mc::cinematic::capture::kTagUpdateMask)) {
         scene_.CollectVisualSources(capture_readback_.visual_sources());
+      }
+      if (frames_.is_open() && gfx_preset::warming_scene.load(std::memory_order_relaxed)) {
+        const auto preset = gfx_preset::Current();
+        bool rt_ready = true;
+        if (gfx_preset::NeedsRt(preset) && rt_scene_.Needs().any()) {
+          rt_ready = car_rt_.View().scene_valid;
+          if (rt_ready && rt_scene_.CityWanted()) {
+            const auto city = city_rt_.stats();
+            rt_ready = city.instances != 0 && city.loading == 0;
+          }
+        }
+        const uint64_t generation = scene_.PresetGeneration();
+        // CHECK: confirm the held view exercises the preset's real passes on both APIs.
+        if (generation == gfx_preset::Generation() && rt_ready && scene_.SawPresetAnchor() &&
+            !passes_.precache().Pending() && !pipelines_.PendingDraws()) {
+          gfx_preset::warm_frame_generation.store(generation + 1, std::memory_order_release);
+        } else {
+          gfx_preset::warm_frame_generation.store(0, std::memory_order_release);
+        }
+      } else if (gfx_preset::warming_scene.load(std::memory_order_relaxed)) {
+        gfx_preset::warm_frame_generation.store(0, std::memory_order_release);
+      }
+      // CHECK: Match these renderer update tags against frames.csv on D3D12 and Vulkan.
+      if ((present_tag_ & mc::cinematic::capture::kTagCapture) && frames_.is_open() &&
+          capture_preset_generation_ != scene_.PresetGeneration()) {
+        capture_preset_generation_ = scene_.PresetGeneration();
+        REXLOG_INFO("[preset] capture update {} uses {}", present_tag_ & mc::cinematic::capture::kTagUpdateMask,
+                    gfx_preset::Id(scene_.RenderedPreset()));
+      } else if (!(present_tag_ & mc::cinematic::capture::kTagCapture)) {
+        capture_preset_generation_ = ~uint64_t{0};
       }
       scene_.OnPresent();
       census_.OnPresent();

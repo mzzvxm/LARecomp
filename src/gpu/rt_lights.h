@@ -130,6 +130,12 @@ class RtLights {
 
   // A guest present: the interval line, the denoisers' frame boundary and the idle count.
   void OnPresent();
+  void ResetPresetHistory() {
+    prev_pose_ = {};
+    history_ok_ = false;
+    history_frames_ = 0;
+    for (auto& pass : denoise_) pass.ResetHistory();
+  }
 
   uint64_t HeldBytes() const;
   std::string CensusText() const;

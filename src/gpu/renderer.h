@@ -321,6 +321,7 @@ class Renderer final : public RenderThread::Executor {
   void RecordPresentPass(plume::RenderCommandList* list, uint32_t slot, uint32_t image,
                          PresentSource source);
   void ReportFrameStats();
+  uint64_t capture_preset_generation_ = ~uint64_t{0};
   // CITY-RT M2 H3: the city ray tracing's census, one line every kCityCensusPresents presents (the interval of the car self-reflection's census) when any of its parts has text:
   // the structures and the hit data's pool (CityRtScene), the traced shadows (CityRtShadow) and the ray tracing scene's wants (RtSceneService). Called by ReportFrameStats.
   void ReportCityCensus();

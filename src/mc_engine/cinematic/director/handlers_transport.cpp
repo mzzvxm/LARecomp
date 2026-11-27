@@ -22,6 +22,7 @@
 
 #if defined(LARECOMP_HAS_GPU)
 #include "gpu/scene_noise.h"
+#include "gpu/gfx_preset_apply.h"
 #endif
 
 namespace mc::cinematic::director {
@@ -102,7 +103,7 @@ void RegisterTransport() {
                                    stream_known && streamed && internal::WorldSettled(since, 3, nullptr);
                 const uint64_t present = mcla::gpu::scene_noise::Get().presents.load(std::memory_order_relaxed);
                 // CHECK: Validate present counting and a warm history with the first D3D12 and Vulkan captures.
-                if (!gate.Observe(ready, present, static_cast<uint64_t>(frames))) return;
+                if (!gate.Observe(ready, present, static_cast<uint64_t>(frames), mcla::gpu::gfx_preset::Generation())) return;
                 Json result = Json::Object();
                 result.Set("t", t);
                 result.Set("frames", frames);

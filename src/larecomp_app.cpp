@@ -800,7 +800,7 @@ rex::Result<void> LarecompApp::OnInit() {
       return rex::Err(rex::ErrorCategory::kRuntime, "the Plume renderer could not start");
     }
     // Device startup and the RT benchmark have supplied the facts for the first-start preset.
-    mcla::gpu::gfx_preset::Start(preset_file_facts_);
+    mcla::gpu::gfx_preset::Start(preset_file_facts_, settings_config_path_);
   }
 #endif
 
@@ -858,6 +858,7 @@ void LarecompApp::StartOverlays() {
     overlays.push_back({"gpu_trace_next", {rex::VirtualKey::kF10}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestFrameTrace>)});
     overlays.push_back({"gpu_renderdoc_capture", {rex::VirtualKey::kF11}, static_cast<Hotkey>(&mcla::ui::MakeHotkey<&mcla::gpu::RequestRenderDocCapture>)});
 #if defined(LARECOMP_DEV_TOOLS)
+    overlays.push_back(mcla::ui::DirectorPresetOverlayConfig());                                        // Ctrl+F1: preview the next graphics preset
     overlays.push_back(mcla::compare::KeyOverlayConfig());                                             // F1: the compare key
     overlays.push_back(mcla::compare::SelectKeyOverlayConfig());                                       // F12: selects the effect it flips
 #endif

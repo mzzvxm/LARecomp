@@ -2521,6 +2521,15 @@ plume::RenderPipeline* Pipelines::ResolveMiss(const PipelineKey& key, const Pipe
   return raw;
 }
 
+bool Pipelines::PendingDraws() const {
+  return std::any_of(requests_.begin(), requests_.end(), [](const auto& item) {
+    if (!item.second) return false;
+    const Request& request = *item.second;
+    const auto state = request.state.load(std::memory_order_acquire);
+    return (!request.low || request.promoted) && (state == kQueued || state == kBuilding);
+  });
+}
+
 Pipelines::Stats Pipelines::TakeStats() {
   Stats s = stats_;
   stats_ = Stats{};

@@ -6,8 +6,8 @@
 // Reflections and World Detail. Display (including AA), upscaling and debug controls
 // are independent. GPU class and RT tier select the recommendation and the first-start preset.
 //
-// HOW A PRESET REACHES THE ROWS (gfx_preset_apply.h): the config keeps the preset's NAME. While a named preset is in force its values are held over the rows (the same hold the trailer
-// scenes use, so they are never written to larecomp.toml); the player changing any covered row in the pause menu turns the preset into CUSTOM (the rows keep the values they had, and
+// The config keeps the preset's name. Named presets hold covered rows below scene overrides and preserve the player's original
+// source for saves (gfx_preset_apply.h). Changing a covered row in the pause menu turns the preset into CUSTOM (the rows keep the values they had, and
 // mcla_gpu_preset_from remembers the preset they came from, so rows added later take that preset's value); picking CUSTOM again from a preset the player was only trying
 // brings back what they had. Command line and environment settings sit on top of a preset, are never saved and never turn it into CUSTOM.
 //
@@ -31,6 +31,12 @@ inline constexpr int kNamedCount = 3;  // the presets that hold values: every on
 
 constexpr bool IsNamed(Preset p) { return p != Preset::kCustom; }
 constexpr bool NeedsRt(Preset p) { return p == Preset::kEnhancedRt; }
+
+constexpr Preset NextNamed(Preset current, bool has_rt) {
+  if (current == Preset::kVanilla) return Preset::kEnhanced;
+  if (current == Preset::kEnhanced && has_rt) return Preset::kEnhancedRt;
+  return Preset::kVanilla;
+}
 
 // The stored word (mcla_gpu_preset in larecomp.toml, the command line and settings-ui.json).
 constexpr std::string_view Id(Preset p) {

@@ -211,6 +211,8 @@ class CarSelfRefl {
   // A prepared draw of the main view (temporal_identities.h MatchMainView): `stencil_ids` the IDs it writes into the
   // stencil (vehicle_motion.h StencilIdsWritten), for the vehicles' motion.
   void OnMainDraw(const temporal::MainMatch& match, uint32_t stencil_ids);
+  void ResetPresetHistory() { history_valid_ = false; rt_history_reset_ = true; }
+
   // The game's motion blur draw: this frame's camera and the vehicles' motion; the history made this frame is theirs.
   void OnAnchor(const ConstantBanks::Banks& banks, bool requested_cut);
   // A resolve, after ResolveCache::Execute (and after the ambient occlusion's apply): the mid-scene depth copy is where the

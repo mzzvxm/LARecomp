@@ -204,7 +204,7 @@ bool IsWorldTrack(Track t) {
 }
 
 constexpr const char* kVerbList =
-    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, split, capture, cam, cut, hud, car, start, world, end, statelog";
+    "hour, weather, traffic, peds, parked, police, timescale, set, label, mark, split, preset, preset_label, capture, cam, cut, hud, car, start, world, end, statelog";
 
 // The slowest and fastest step a capture can take: the engine timer clamps the scaled step to 0.0001 .. 0.1 s.
 constexpr double kMinCaptureFps = 10.0;
@@ -360,6 +360,7 @@ class Parser {
         if (verb == "label") return Label(line, t, a);
         if (verb == "mark") return Mark(line, t, a);
         if (verb == "capture") return Capture(line, t, a);
+        if (verb == "preset" || verb == "preset_label") return PresetKey(line, t, a, verb == "preset_label");
         if (verb == "split") return Split(line, t, a);
         if (verb == "end") return End(line, t, a);
         if (verb == "cam" || verb == "cut" || verb == "hud" || verb == "car" || verb == "start") return Opaque(line, t, verb, a);
@@ -698,6 +699,22 @@ class Parser {
         result_.scene.statelog_dir = dir;
     }
 
+    void PresetKey(int line, double t, const Args& a, bool label) {
+        namespace gfx = mcla::gpu::gfx_preset;
+        Event e;
+        e.line = line;
+        e.t = t;
+        e.track = label ? Track::kPresetLabel : Track::kPreset;
+        gfx::Preset preset;
+        if (a.size() != 1 || (label ? (a[0] != "on" && a[0] != "off") : !gfx::Parse(a[0], &preset))) {
+            Error(line, label ? "preset_label needs on or off" : "preset needs vanilla, enhanced, enhanced_rt or custom");
+            return;
+        }
+        e.state = label ? int(a[0] == "on") : gfx::Col(preset);
+        e.text = a[0];
+        Add(std::move(e));
+    }
+
     // split <x> | split <a>..<b> over <s> [ease <e>] | split off: the renderer's before/after split (gpu/split.h), x in 0..1.
     void Split(int line, double t, const Args& a) {
         if (a.empty()) {
@@ -936,7 +953,7 @@ class Parser {
 
         std::array<const Event*, 16> last{};
         for (const Event& e : events_) {
-            if (!IsWorldTrack(e.track) && e.track != Track::kSplit) continue;
+            if (!IsWorldTrack(e.track) && e.track != Track::kSplit && e.track != Track::kPreset && e.track != Track::kPresetLabel) continue;
             const size_t k = static_cast<size_t>(e.track);
             if (last[k] && std::fabs(last[k]->t - e.t) < kEpsilon) {
                 Warn(e.line, std::string("two ") + TrackName(e.track) + " keys at t=" + Num(e.t) + " (line " +
@@ -1084,6 +1101,8 @@ const char* TrackName(Track track) {
         case Track::kLabel: return "label";
         case Track::kMark: return "mark";
         case Track::kSplit: return "split";
+        case Track::kPreset: return "preset";
+        case Track::kPresetLabel: return "preset_label";
         case Track::kCamera: return "cam";
         case Track::kCut: return "cut";
         case Track::kHud: return "hud";
@@ -1203,7 +1222,7 @@ std::string Summarize(const Scene& scene) {
     constexpr Track kOrder[] = {Track::kHour,   Track::kWeather, Track::kTraffic, Track::kPeds,   Track::kParked,
                                 Track::kPolice, Track::kTimeScale, Track::kCvar,  Track::kLabel,  Track::kMark,
                                 Track::kSplit,  Track::kCapture, Track::kCamera,  Track::kCut,     Track::kHud,     Track::kCar,
-                                Track::kStart};
+                                Track::kStart, Track::kPreset, Track::kPresetLabel};
     std::string out = std::to_string(scene.events.size()) + (scene.events.size() == 1 ? " event" : " events");
     std::string parts;
     for (const Track track : kOrder) {
@@ -1282,6 +1301,19 @@ CaptureWindow EvaluateCapture(const Scene& scene, double t) {
     w.on = true;
     w.fps = scene.capture_fps;
     return w;
+}
+
+PresetTrackState EvaluatePreset(const Scene& scene, double t) {
+    PresetTrackState state;
+    for (const Event& e : scene.events) {
+        if (e.t > t + kEpsilon) break;
+        if (e.track == Track::kPreset) {
+            state.preset = static_cast<mcla::gpu::gfx_preset::Preset>(e.state);
+            state.line = e.line;
+        }
+        if (e.track == Track::kPresetLabel) state.label = e.state != 0;
+    }
+    return state;
 }
 
 SplitState EvaluateSplit(const Scene& scene, double t) {

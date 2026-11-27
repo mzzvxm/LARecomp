@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the ray traced visibility of the top K lights. See rt_lights.h; the rules are rt_lights_rules.h, the trace hlsl/rt_lights_trace_cs.hlsl, the reader hlsl/rt_mask_read.hlsli.
 
 #include "rt_lights.h"
+#include "gfx_preset_apply.h"
 
 #include <algorithm>
 #include <bit>
@@ -800,7 +801,7 @@ void RtLights::OnPresent() {
   }
   if (ran_since_present_) {
     idle_frames_ = 0;
-  } else if (signal_[0].texture && ++idle_frames_ >= rt::kReleaseAfterFrames) {
+  } else if (signal_[0].texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= rt::kReleaseAfterFrames) {
     ReleaseImages();   // the setting turned off, the pause menu, a day: the images go back (made again on the next run)
     idle_frames_ = 0;
   }

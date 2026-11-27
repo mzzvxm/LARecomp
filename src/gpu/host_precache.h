@@ -154,6 +154,7 @@ class HostPrecache {
   // wait), failed (Acquire says null and Device logged why), or already taken; also true for a key nobody
   // listed. False while it waits in the list or is being made. Render thread.
   bool Ready(uint64_t key) const;
+  bool Pending() const;
 
   // The pipeline for `key` (see the note at the top), null when it failed.
   // `name` and `make_unlisted` serve a key nobody listed (or one already given

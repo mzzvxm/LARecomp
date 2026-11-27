@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the probe field's owner. See gi_field.h.
 
 #include "gi_field.h"
+#include "gfx_preset_apply.h"
 #include "gi_setting.h"
 
 #include <algorithm>
@@ -379,7 +380,7 @@ void GiField::BeginFrame(const Inputs& in) {
     }
     const float fade = fade_.Step(dt, false, 0.0f);
     off_frames_ = fade > 0.0f ? 0u : off_frames_ + 1u;
-    if (off_frames_ >= kReleaseAfterOffFrames) {
+    if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && off_frames_ >= kReleaseAfterOffFrames) {
       ReleaseResources("the setting is off");
       return;
     }

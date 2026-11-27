@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the probe field's apply. See gi_apply.h; the rules and the twin of the maths are in gi_apply_rules.h, the passes in hlsl/gi_apply_ps.hlsl.
 
 #include "gi_apply.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -645,7 +646,7 @@ void GiApply::OnPresent() {
     pixel_->OnPresent();  // the per-pixel pass's idle count: its images go back after a spell without a run
   }
   idle_frames_ = ran_this_frame_ ? 0u : idle_frames_ + 1u;
-  if (lookup_.texture && idle_frames_ >= kReleaseAfterIdleFrames) {
+  if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && lookup_.texture && idle_frames_ >= kReleaseAfterIdleFrames) {
     ReleaseImage();  // the pause menu, the setting turned off: the lookup image goes back (made again on the next run)
     idle_frames_ = 0;
   }

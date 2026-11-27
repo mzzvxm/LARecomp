@@ -10,8 +10,13 @@ namespace mc::cinematic::director {
 struct SessionSettle {
     static constexpr uint64_t kDrain = 2;
     std::optional<uint64_t> start;
+    uint64_t generation = 0;
 
-    bool Observe(bool ready, uint64_t present, uint64_t frames) {
+    bool Observe(bool ready, uint64_t present, uint64_t frames, uint64_t current_generation = 0) {
+        if (generation != current_generation) {
+            start.reset();
+            generation = current_generation;
+        }
         if (!ready) {
             start.reset();
             return false;

@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- volumetric light. See volumetrics.h.
 
 #include "volumetrics.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -254,6 +255,7 @@ void Volumetrics::Shutdown() {
   }
   lamp_tiles_.reset();
   lamp_tile_bytes_ = 0;
+  spare_grids_ = {};
   for (auto& image : scatter_) {
     image = HostImage{};
   }
@@ -465,11 +467,13 @@ bool Volumetrics::CaptureEmpty() const {
 }
 
 uint64_t Volumetrics::HeldBytes() const {
-  uint64_t bytes = lamp_tile_bytes_;
-  for (const HostImage* image : {&scatter_[0], &scatter_[1], &accum_, &capture_}) {
-    if (image->texture) {
-      bytes += TextureBytes(image->width, image->height, 1, image->format);
-    }
+  const auto image_bytes = [](const HostImage& image) {
+    return image.texture ? TextureBytes(image.width, image.height, 1, image.format) : 0u;
+  };
+  uint64_t bytes = lamp_tile_bytes_ + image_bytes(scatter_[0]) + image_bytes(scatter_[1]) +
+                   image_bytes(accum_) + image_bytes(capture_);
+  for (const auto& spare : spare_grids_) {
+    bytes += spare.lamp_bytes + image_bytes(spare.scatter[0]) + image_bytes(spare.scatter[1]) + image_bytes(spare.accum);
   }
   return bytes;
 }
@@ -559,12 +563,47 @@ bool Volumetrics::EnsureLampTiles(const vol::GridDesc& grid) {
   return true;
 }
 
+void Volumetrics::SwapGrid(GridResources& spare) {
+  std::swap(made_for_, spare.grid);
+  std::swap(scatter_, spare.scatter);
+  std::swap(accum_, spare.accum);
+  std::swap(uav_sets_, spare.uav);
+  std::swap(fused_sets_, spare.fused);
+  std::swap(lamp_tiles_, spare.lamp_tiles);
+  std::swap(lamp_tile_bytes_, spare.lamp_bytes);
+}
+
+void Volumetrics::ReleaseSpareGrid(GridResources& spare) {
+  if (!spare.grid.valid()) return;
+  SwapGrid(spare);
+  ReleaseResources();
+  SwapGrid(spare);
+}
+
 bool Volumetrics::EnsureResources(const vol::GridDesc& grid) {
   if (!passes_ || !device_) return false;
   const uint32_t w = grid.atlas_width();
   const uint32_t h = grid.atlas_height();
-  const bool same = made_for_.nx == grid.nx && made_for_.ny == grid.ny && made_for_.nz == grid.nz && made_for_.tiles_x == grid.tiles_x;
-  if (!same && made_for_.valid()) ReleaseResources();
+  const auto matches = [&](const vol::GridDesc& old) {
+    return old.nx == grid.nx && old.ny == grid.ny && old.nz == grid.nz && old.tiles_x == grid.tiles_x;
+  };
+  const bool same = matches(made_for_);
+  if (!same) {
+    if (gfx_preset::retain_scene_resources.load(std::memory_order_relaxed)) {
+      // Keep the other preset's images and their descriptor sets intact. Reset the history below.
+      auto spare = std::find_if(spare_grids_.begin(), spare_grids_.end(), [&](const auto& entry) { return matches(entry.grid); });
+      if (spare == spare_grids_.end()) {
+        spare = std::find_if(spare_grids_.begin(), spare_grids_.end(), [](const auto& entry) { return !entry.grid.valid(); });
+        if (spare == spare_grids_.end()) {
+          spare = spare_grids_.begin();
+          ReleaseSpareGrid(*spare);
+        }
+      }
+      SwapGrid(*spare);
+    } else if (made_for_.valid()) {
+      ReleaseResources();
+    }
+  }
   const bool ok = passes_->EnsureImage(scatter_[0], w, h, kVolumeFormat, "volumetrics scatter A", kVolumeFlags) &&
                   passes_->EnsureImage(scatter_[1], w, h, kVolumeFormat, "volumetrics scatter B", kVolumeFlags) &&
                   passes_->EnsureImage(accum_, w, h, kVolumeFormat, "volumetrics accumulated", kVolumeFlags);
@@ -1516,6 +1555,9 @@ void Volumetrics::EndFrame() {
 }
 
 void Volumetrics::OnPresent() {
+  if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed)) {
+    for (auto& spare : spare_grids_) ReleaseSpareGrid(spare);
+  }
   if (level_ != Level::kOff) {
     EndFrame();
   }
@@ -1524,7 +1566,7 @@ void Volumetrics::OnPresent() {
   }
   if (level_ == Level::kOff) {
     // Off for a second: the images go back (they are made again by the first volume after).
-    if (off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
+    if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && off_frames_ < kReleaseAfterFrames && ++off_frames_ == kReleaseAfterFrames) {
       ReleaseResources();
     }
     unused_frames_ = 0;
@@ -1533,7 +1575,7 @@ void Volumetrics::OnPresent() {
     // A noon or a menu gives no volume for long: the images go back after a while.
     if (recorded_this_frame_) {
       unused_frames_ = 0;
-    } else if (unused_frames_ < kReleaseAfterFrames && ++unused_frames_ == kReleaseAfterFrames) {
+    } else if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && unused_frames_ < kReleaseAfterFrames && ++unused_frames_ == kReleaseAfterFrames) {
       ReleaseResources();
     }
   }

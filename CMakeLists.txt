@@ -954,6 +954,13 @@ add_executable(larecomp_split_track_test EXCLUDE_FROM_ALL
     src/mc_engine/cinematic/split_track_test.cpp
     src/mc_engine/cinematic/scene.cpp)
 target_include_directories(larecomp_split_track_test PRIVATE src src/mc_engine/cinematic)
+add_executable(larecomp_preset_track_test EXCLUDE_FROM_ALL
+    src/mc_engine/cinematic/director/preset_track_test.cpp
+    src/mc_engine/cinematic/director/json.cpp
+    src/mc_engine/cinematic/director/scene_edit.cpp
+    src/mc_engine/cinematic/scene.cpp)
+target_include_directories(larecomp_preset_track_test PRIVATE src)
+
 # The Director's pure parts (src/mc_engine/cinematic/director: the JSON of the wire, the command engine and its argument check, the console grammar, the line server over real
 # loopback sockets, the camera projection, the route reducer, the path rule, the PNG writer) have a check that needs no game:
 #   cmake --build <build dir> --target larecomp_director_test, then run <build dir>/larecomp_director_test (exit 0 = passed).

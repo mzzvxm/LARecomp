@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the city's ray traced sun shadows. See city_rt_shadow.h.
 
 #include "city_rt_shadow.h"
+#include "gfx_preset_apply.h"
 
 #include <algorithm>
 #include <atomic>
@@ -225,7 +226,7 @@ void CityRtShadow::BeginFrame(bool contact_on) {
     return;
   }
   // The image goes back once the pass has not run for a while (Record resets the count).
-  if (image_.texture && ++idle_frames_ >= kReleaseAfterFrames) {
+  if (image_.texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= kReleaseAfterFrames) {
     ReleaseImage();
     idle_frames_ = 0;
   }

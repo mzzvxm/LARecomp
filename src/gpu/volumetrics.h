@@ -120,6 +120,7 @@ class Volumetrics {
   void OnComposite() { composite_seen_ = true; }
   // A guest present: the frame boundary.
   void OnPresent();
+  void ResetPresetHistory() { history_ = {}; }
 
   // The game's lamp cones are not drawn while this is true (the volume of this frame holds the lamps).
   bool SkipsLightCones() const { return recorded_this_frame_ && !keep_cones_; }
@@ -204,6 +205,19 @@ class Volumetrics {
     std::unique_ptr<plume::RenderDescriptorSet> set;
     const plume::RenderTexture* texture = nullptr;
   };
+
+  struct GridResources {
+    volumetrics::GridDesc grid;
+    std::array<HostImage, 2> scatter;
+    HostImage accum;
+    std::array<UavSet, 3> uav;
+    std::array<std::unique_ptr<plume::RenderDescriptorSet>, 2> fused;
+    std::unique_ptr<plume::RenderBuffer> lamp_tiles;
+    uint64_t lamp_bytes = 0;
+  };
+
+  void SwapGrid(GridResources& spare);
+  void ReleaseSpareGrid(GridResources& spare);
 
   // The vertex constants' view inverse is the frame's own camera once it matched the anchor's (shafts.cpp, the same numbers).
   bool PoseFromVertexConstants(volumetrics::VolCamera* out) const;
@@ -355,6 +369,7 @@ class Volumetrics {
   bool captured_ = false;
   uint32_t parity_ = 0;  // the scatter written this frame (the other is the history)
   volumetrics::GridDesc made_for_;
+  std::array<GridResources, 2> spare_grids_;
   // One constants buffer and set per frame slot, one UAV set per image.
   std::array<std::unique_ptr<plume::RenderBuffer>, kFramesInFlight> cb_;
   std::array<std::unique_ptr<plume::RenderDescriptorSet>, kFramesInFlight> cb_set_;

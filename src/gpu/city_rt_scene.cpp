@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the city as ray tracing acceleration structures. See city_rt_scene.h.
 
 #include "city_rt_scene.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -307,7 +308,7 @@ void CityRtScene::BeginFrame(city_rt::Level level, float radius_override) {
   CheckBuilds();
   FinishCompaction(false);
   // The structures go back after a while without a request (the setting was switched off, or the pass is gated).
-  if (!built_.empty() && frame_ > last_wanted_frame_ + kIdleReleaseFrames) {
+  if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && !built_.empty() && frame_ > last_wanted_frame_ + kIdleReleaseFrames) {
     ReleaseAll("no request for a while");
   }
 }

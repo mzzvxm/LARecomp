@@ -282,6 +282,8 @@ struct Snapshot {
     int selected_line = 0;           // ui.select: the line an agent pointed at (0 = none)
     std::string ui_request;          // ui.open: the panel an agent asked for ("director", "timeline", ...); the panel acts when ui_request_serial changes
     uint64_t ui_request_serial = 0;
+    std::string preset;
+    bool preset_rt = false, preset_label = false, preset_warming = false;
     bool take_active = false;
     std::string take_name;
     uint64_t take_frames = 0;

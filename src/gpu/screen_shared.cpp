@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- the shared screen-space products: the owner. See screen_shared.h.
 
 #include "screen_shared.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -191,18 +192,18 @@ void ScreenShared::BeginFrame(uint64_t frame_serial) {
   }
   if ((plan_.make & screen::ProductBit(screen::kHizMin)) != 0) {
     hiz_idle_frames_ = 0;
-  } else if (hiz_images_ != 0 && ++hiz_idle_frames_ >= kHizReleaseAfterFrames) {
+  } else if (hiz_images_ != 0 && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++hiz_idle_frames_ >= kHizReleaseAfterFrames) {
     ReleaseHiz();
   }
   // The colour capture's images and the history's go back after a couple of seconds without a plan for them.
   if ((plan_.make & screen::ProductBit(screen::kColourPost)) != 0) {
     post_idle_frames_ = 0;
-  } else if (post_images_ != 0 && ++post_idle_frames_ >= kPostReleaseAfterFrames) {
+  } else if (post_images_ != 0 && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++post_idle_frames_ >= kPostReleaseAfterFrames) {
     ReleaseColourPost();
   }
   if ((plan_.make & screen::ProductBit(screen::kHistory)) != 0) {
     hist_idle_frames_ = 0;
-  } else if (history_.texture && ++hist_idle_frames_ >= kPostReleaseAfterFrames) {
+  } else if (history_.texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++hist_idle_frames_ >= kPostReleaseAfterFrames) {
     passes_->ReleaseImage(history_);
     last_capture_.valid = false;
     ++colour_generation_;

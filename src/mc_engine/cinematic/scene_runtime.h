@@ -114,6 +114,15 @@ void SceneRestartAt(double t);
 // A live Director override owned by the scene, with its value and save provenance restored on unload.
 bool SceneSetLiveSetting(const std::string& name, const std::string& value);
 
+// Director previews are game-thread owned. The label is also read by the overlay.
+bool SceneSetPresetPreview(std::optional<mcla::gpu::gfx_preset::Preset> preset);
+void SceneSetPresetLabel(std::optional<bool> visible);
+bool ScenePresetLabelVisible();
+bool ScenePresetWarming();
+bool ScenePresetActive();
+void SceneRequestPresetCycle();
+void SceneSetTakePreset(std::optional<mcla::gpu::gfx_preset::Preset> preset, unsigned warm_mask = 0);
+
 // The scene is this text now (an edit by the Director, an undo): parsed, and, when a scene runs and the Director asked for it (SetSceneSoftReload), loaded in
 // place. A text with an error changes nothing.
 struct SceneTextResult {

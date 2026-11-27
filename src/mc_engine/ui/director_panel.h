@@ -39,5 +39,6 @@ void StartDirectorPanel(rex::ui::IUISystem& ui);
 
 // The key that flips mcla_director_panel: ui.bind.mcla_director, Ctrl+F12 by default.
 rex::ui::OverlayConfig DirectorOverlayConfig();
+rex::ui::OverlayConfig DirectorPresetOverlayConfig();
 
 }  // namespace mcla::ui

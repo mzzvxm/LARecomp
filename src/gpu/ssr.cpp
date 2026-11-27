@@ -1,6 +1,7 @@
 // MCLA GPU renderer -- screen-space reflections. See ssr.h.
 
 #include "ssr.h"
+#include "gfx_preset_apply.h"
 
 #include "cpu_timing.h"
 
@@ -534,7 +535,8 @@ void ScreenReflections::SetCaptureRoadWanted(bool wanted) {
 }
 
 bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, bool raw, uint32_t render_width, uint32_t render_height) {
-  const auto trace_flags = rt ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET;
+  const bool keep_rt = gfx_preset::retain_scene_rt_resources.load(std::memory_order_relaxed);
+  const auto trace_flags = (rt || keep_rt) ? kTraceRtFlags : plume::RenderTextureFlag::RENDER_TARGET;
   if (capture_hit_.texture && (trace_.width != width || trace_.height != height || trace_.flags != trace_flags)) {
     ReleaseCaptureHit();  // retire the capture framebuffer and UAV set before their attachments
   }
@@ -557,7 +559,7 @@ bool ScreenReflections::EnsureImages(uint32_t width, uint32_t height, bool rt, b
       rt_framebuffer_for_[1] = confidence_.texture.get();
       ok = rt_framebuffer_ != nullptr;
     }
-  } else if (confidence_.texture || rt_framebuffer_) {
+  } else if (!keep_rt && (confidence_.texture || rt_framebuffer_)) {
     passes_->RetireFramebuffer(std::move(rt_framebuffer_));
     rt_framebuffer_for_[0] = rt_framebuffer_for_[1] = nullptr;
     passes_->ReleaseImage(confidence_);
@@ -1436,7 +1438,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
   // The images the mode in use does not need go back after a spell of it: the accumulation's two after kRawReleaseAfter raw frames in a row, the hit image after as many plain ones.
   if (raw) {
     plain_streak_ = 0;
-    if (++raw_streak_ >= ssr::kRawReleaseAfter && (accum_[0].texture || accum_[1].texture)) {
+    if (!gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++raw_streak_ >= ssr::kRawReleaseAfter && (accum_[0].texture || accum_[1].texture)) {
       ReleaseHistory();
       ++images_generation_;
       last_key_.valid = false;
@@ -1451,7 +1453,7 @@ bool ScreenReflections::OnTrigger(const ResolveCache::Summary& summary, plume::R
     raw_streak_ = 0;
     if (plain_streak_ < ssr::kRawReleaseAfter) {
       ++plain_streak_;
-    } else if (hit_.texture) {
+    } else if (hit_.texture && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed)) {
       passes_->ReleaseImage(hit_);
     }
   }
@@ -1582,7 +1584,7 @@ void ScreenReflections::OnPresent() {
   } else {
     last_key_.valid = false;  // a frame without the effect breaks the history
     classify_key_.valid = false;
-    if ((trace_.texture || accum_[0].texture || accum_[1].texture) && ++idle_frames_ >= kReleaseAfterFrames) {
+    if ((trace_.texture || accum_[0].texture || accum_[1].texture) && !gfx_preset::retain_scene_resources.load(std::memory_order_relaxed) && ++idle_frames_ >= kReleaseAfterFrames) {
       ReleaseImages();
       idle_frames_ = 0;
     }

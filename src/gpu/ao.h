@@ -526,6 +526,8 @@ class AmbientOcclusion {
   void OnMainDraw(const MainDraw& draw, const ConstantBanks::Banks& banks);
   // The game's motion blur draw (in the play view and in the pause/map view alike): the camera of
   // this frame, which the next frame's trigger of the same kind of view uses.
+  void ResetPresetHistory() { history_valid_ = false; }
+
   // `requested_cut`: the game asked for a cut at this frame (cut_request.h): the history starts again whatever the cut rule says.
   void OnAnchor(const ConstantBanks::Banks& banks, bool requested_cut = false);
   // A depth clear of the identity `key` (the main view's depth is cleared at the start of the main

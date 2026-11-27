@@ -255,6 +255,10 @@ bool LocalLights::NeonLightReachesPicture() {
   return nl::LitNow(true, true, ll::NeonReachesView(neon_cars_, tier_, neon_gain_, view, neon_reach_scale_, neon_tuned_));
 }
 
+void LocalLights::ResetPresetHistory() {
+  if (rt_lights_) rt_lights_->ResetPresetHistory();
+}
+
 void LocalLights::BeginFrame(gbuffer::PauseFxView pause_fx) {
   const bool garage = pause_fx == gbuffer::PauseFxView::kGarage;
   garage_ = garage;

@@ -105,6 +105,9 @@ uint64_t TickCount();
 bool WorldSettled(uint64_t since_tick, int frames, std::string* waiting_for);
 // transport.get's result.
 Json TransportJson();
+Json PresetJson();
+bool DirectorTakeBusy();
+void StopCaptureHandlers();
 // The camera as the Director last saw it (the hook): for camera.get and key.add.
 struct CameraView {
     bool valid = false;
