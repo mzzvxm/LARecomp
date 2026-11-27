@@ -11,7 +11,7 @@ Several files in one run are one game build: they must carry the same optional m
 the value of launcher-recipe.json, the one place it is edited, when the recipe is among the files). A malformed min_launcher is an error.
 
 Output: one line per finding, `ERROR|WARN|INFO <file>: <where>: <what>`; exit 0 when there is no ERROR (with --strict, no WARN either).
-As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to check the checkout recipe against its codegen manifest and CMake presets.
+As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to check the checkout recipe against its codegen manifest, CMake presets and build targets.
 Pure Python 3, no packages (the JSON Schema
 subset it needs is built in: see SUPPORTED_KEYWORDS; the selftest fails if a schema uses another keyword).
 """
@@ -1414,11 +1414,19 @@ def inherited_cmake_preset_fields(name, presets, fields, ancestors=()):
     if not isinstance(parents, list) or any(not isinstance(parent, str) or not parent for parent in parents):
         raise ValueError(f'preset {name!r} needs a name or an array of names in inherits')
     result = {field: entry[field] for field in fields if field in entry}
+    if 'cacheVariables' in result:
+        if not isinstance(result['cacheVariables'], dict):
+            raise ValueError(f'preset {name!r} needs an object in cacheVariables')
+        result['cacheVariables'] = dict(result['cacheVariables'])
     for parent in parents:
         inherited = inherited_cmake_preset_fields(parent, presets, fields, (*ancestors, name))
         for field, value in inherited.items():
             # A null condition applies only to the preset that declares it.
-            if field != 'condition' or value is not None:
+            if field == 'cacheVariables':
+                cache = result.setdefault(field, {})
+                for key, setting in value.items():
+                    cache.setdefault(key, setting)
+            elif field != 'condition' or value is not None:
                 result.setdefault(field, value)
     return result
 
@@ -1453,13 +1461,16 @@ def lint_checkout_presets(doc, rep, checkout):
         return
 
     hosts = {'windows': 'Windows', 'linux': 'Linux', 'macos': 'Darwin'}
+    routes = {}
     for os_name, name in doc['presets'].items():
+        errors_before = len(rep.errors)
         where = f'presets.{os_name}'
         host = hosts.get(os_name)
         if host is None:
             rep.error(where, 'unknown operating system for CMake host validation')
             continue
-        for kind, indexed, fields in (('configure', configs, ('condition',)), ('build', builds, ('condition', 'configurePreset'))):
+        for kind, indexed, fields in (('configure', configs, ('condition', 'generator', 'toolchainFile', 'cacheVariables')),
+                                      ('build', builds, ('condition', 'configurePreset'))):
             label = f'{filename} {kind} preset {name!r}'
             if name not in indexed:
                 rep.error(where, f'{label} is missing (names are case-sensitive)')
@@ -1474,12 +1485,356 @@ def lint_checkout_presets(doc, rep, checkout):
             except ValueError as error:
                 rep.error(where, f'{label}: {error}')
                 continue
-            if kind == 'build':
+            if kind == 'configure':
+                config = resolved
+            else:
                 target = resolved.get('configurePreset')
                 if not isinstance(target, str) or target not in configs:
                     rep.error(where, f'{label} has a missing or unknown configurePreset {target!r} (names are case-sensitive)')
                 elif target != name:
                     rep.error(where, f'{label} links to {target!r}; setup configures with {name!r}')
+        if len(rep.errors) == errors_before:
+            routes[os_name] = (host, name, config)
+    return routes
+
+
+# Read root-level declarations and their guards. This is a source check for the public setup
+# routes, not CMake configure. In particular, don't execute includes, dependencies or CMake code.
+_CMAKE_TOKEN = re.compile(
+    r'(?P<space>\s+)|(?P<bracket>\#?\[(?P<equals>=*)\[)|(?P<comment>\#[^\n]*)|'
+    r'(?P<quoted>"(?:\\[\s\S]|[^"\\])*")|(?P<paren>[()])|(?P<word>(?:\\[\s\S]|[^\s()"#\\])+)'
+)
+_CMAKE_NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*')
+_CMAKE_TARGET = re.compile(r'[A-Za-z0-9_.+-]+')
+_CMAKE_UNSET = object()
+
+
+def cmake_commands(source):
+    def tokens():
+        pos, line = 0, 1
+        while pos < len(source):
+            match = _CMAKE_TOKEN.match(source, pos)
+            if match is None:
+                raise ValueError(f'line {line}: invalid or unterminated argument')
+            kind, value, end = match.lastgroup, match[0], match.end()
+            if kind == 'bracket':
+                close = ']' + match['equals'] + ']'
+                stop = source.find(close, end)
+                if stop < 0:
+                    raise ValueError(f'line {line}: unterminated bracket argument or comment')
+                if not value.startswith('#'):
+                    yield 'bracket', source[end:stop].removeprefix('\n'), line
+                end = stop + len(close)
+            elif kind not in ('space', 'comment'):
+                yield kind, value[1:-1] if kind == 'quoted' else value, line
+            line += source.count('\n', pos, end)
+            pos = end
+
+    stream = tokens()
+    for kind, name, line in stream:
+        if kind != 'word' or not _CMAKE_NAME.fullmatch(name) or next(stream, ())[:2] != ('paren', '('):
+            raise ValueError(f'line {line}: expected a CMake command')
+        depth, args = 1, []
+        for kind, value, _ in stream:
+            if kind == 'paren':
+                depth += 1 if value == '(' else -1
+                if depth == 0:
+                    break
+            args.append((kind, value))
+        else:
+            raise ValueError(f'line {line}: unterminated {name} command')
+        yield name.lower(), args, line
+
+
+def negate_condition(state):
+    return None if state is None else not state
+
+
+def and_conditions(left, right):
+    if left is False or right is False:
+        return False
+    return None if left is None or right is None else True
+
+
+def or_conditions(left, right):
+    return negate_condition(and_conditions(negate_condition(left), negate_condition(right)))
+
+
+def recipe_option_condition(node, os_name):
+    """Evaluate the host part of a setup condition, keeping runtime facts unknown."""
+    op, *args = node
+    if op == 'lit':
+        return args[1]
+    if op == 'path' and args[0] == ['os', 'name']:
+        return os_name
+    if op in ('and', 'or'):
+        combine = and_conditions if op == 'and' else or_conditions
+        return combine(*(recipe_option_condition(arg, os_name) for arg in args))
+    if op == 'not':
+        return negate_condition(recipe_option_condition(args[0], os_name))
+    if op == 'cmp' and args[0] in ('==', '!='):
+        left, right = (recipe_option_condition(arg, os_name) for arg in args[1:])
+        if left is not None and right is not None:
+            return (left == right) if args[0] == '==' else (left != right)
+    return None
+
+
+def cmake_literal(arg, read):
+    kind, value = arg
+    if kind == 'bracket' or ('$' not in value and '\\' not in value and (kind != 'word' or ';' not in value)):
+        return value
+    expanded = re.fullmatch(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}', value)
+    if kind == 'quoted' and expanded:
+        supplied = read(expanded[1])
+        return '' if supplied is _CMAKE_UNSET else supplied
+    return None
+
+
+def cmake_condition(args, read):
+    """Interpret literal tests and comparisons. None means the route cannot be proven."""
+    tokens = iter(args)
+    current = next(tokens, None)
+
+    def take():
+        nonlocal current
+        if current is None:
+            raise ValueError('expected a condition argument')
+        argument, current = current, next(tokens, None)
+        return argument
+
+    def accept(kind, value):
+        if current == (kind, value):
+            take()
+            return True
+        return False
+
+    def operand(arg):
+        literal = cmake_literal(arg, read)
+        if arg[0] == 'word' and literal is not None and _CMAKE_NAME.fullmatch(literal):
+            value = read(literal)
+            return literal if value is _CMAKE_UNSET else value
+        return literal
+
+    def term():
+        if accept('word', 'NOT'):
+            return negate_condition(term())
+        if accept('paren', '('):
+            result = chain()
+            if not accept('paren', ')'):
+                raise ValueError('expected a closing parenthesis')
+            return result
+        if accept('word', 'DEFINED'):
+            kind, name = take()
+            if kind != 'word' or not _CMAKE_NAME.fullmatch(name):
+                return None
+            value = read(name)
+            return None if value is None else value is not _CMAKE_UNSET
+        left = take()
+        if accept('word', 'STREQUAL'):
+            first, second = operand(left), operand(take())
+            return None if first is None or second is None else first == second
+        literal = cmake_literal(left, read)
+        if literal is None:
+            return None
+        upper = literal.upper()
+        false_words = ('', '0', 'OFF', 'NO', 'FALSE', 'N', 'IGNORE', 'NOTFOUND')
+        if upper in ('1', 'ON', 'YES', 'TRUE', 'Y'):
+            return True
+        if upper in false_words or upper.endswith('-NOTFOUND'):
+            return False
+        if re.fullmatch(r'[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?', literal):
+            return float(literal) != 0
+        if left[0] != 'word':
+            return False
+        value = read(literal)
+        if value is None:
+            return None
+        return value is not _CMAKE_UNSET and value.upper() not in false_words and not value.upper().endswith('-NOTFOUND')
+
+    def chain():
+        result = term()
+        # CMake evaluates AND and OR at the same precedence, left to right.
+        while current in (('word', 'AND'), ('word', 'OR')):
+            combine = and_conditions if take()[1] == 'AND' else or_conditions
+            result = combine(result, term())
+        return result
+
+    try:
+        result = chain()
+    except (ValueError, RecursionError):
+        return None
+    return result if current is None else None
+
+
+def cmake_route_cache(doc, os_name, config):
+    if config.get('generator') != 'Ninja' or config.get('toolchainFile') is not None:
+        raise ValueError('expected the native single-configuration Ninja preset')
+    cache = {}
+    for key, setting in config.get('cacheVariables', {}).items():
+        if isinstance(setting, dict):
+            setting = setting['value'] if 'value' in setting else []
+        if setting is None:
+            continue  # A null entry suppresses inheritance of this cache variable.
+        if isinstance(setting, bool):
+            setting = 'TRUE' if setting else 'FALSE'
+        if not isinstance(setting, str):
+            raise ValueError(f'invalid preset cache variable {key!r}')
+        cache[key] = None if '$' in setting else setting
+    for option in doc.get('options', []):
+        name = option['name']
+        active = recipe_option_condition(parse_expr(option['when']).root, os_name) if 'when' in option else True
+        if active is False:
+            continue
+        value = option.get('value')
+        if (active is None or option.get('only_if_defined')) and cache.get(name) != value:
+            value = None
+        cache[name] = value
+    if {'CMAKE_TOOLCHAIN_FILE', 'CMAKE_SYSTEM_NAME'} & cache.keys():
+        raise ValueError('preset or options can override the native toolchain or target system')
+    return cache
+
+
+def cmake_target_declarations(commands, cache, host, targets):
+    normal = {
+        'WIN32': 'ON' if host == 'Windows' else 'OFF',
+        'UNIX': 'OFF' if host == 'Windows' else 'ON',
+        'APPLE': 'ON' if host == 'Darwin' else 'OFF',
+        'CMAKE_SYSTEM_NAME': host,
+    }
+
+    def read(name):
+        # The separate XEO3 branch is opt-in. On the public setup route the flag starts
+        # unset unless the preset or recipe supplies it. Other unmodeled inputs are unknown.
+        # // CHECK: Confirm the certified setup and Repair configure caches keep XEO3 disabled.
+        default = _CMAKE_UNSET if name == 'REXGLUE_ENABLE_XEO3_TARGET' else None
+        return normal.get(name, cache.get(name, default))
+
+    declarations = {target: [] for target in targets}
+    containers = ('foreach', 'while', 'function', 'macro', 'block')
+    end_commands = {'endif', *(f'end{kind}' for kind in containers)}
+    stack, active, running = [], True, True
+    for command, args, line in commands:
+        if command == 'if':
+            condition = cmake_condition(args, read) if active is not False else False
+            stack.append(('if', active, negate_condition(condition)))
+            active = and_conditions(active, condition)
+        elif command in ('elseif', 'else'):
+            if not stack or stack[-1][0] != 'if' or stack[-1][2] == 'closed':
+                raise ValueError(f'line {line}: unexpected {command}()')
+            _, parent, remaining = stack[-1]
+            condition = cmake_condition(args, read) if command == 'elseif' else True
+            active = and_conditions(parent, and_conditions(remaining, condition))
+            remaining = and_conditions(remaining, negate_condition(condition)) if command == 'elseif' else 'closed'
+            stack[-1] = ('if', parent, remaining)
+        elif command in containers:
+            stack.append((command, active, None))
+            active = and_conditions(active, None)
+        elif command in end_commands:
+            if not stack or stack[-1][0] != command[3:]:
+                raise ValueError(f'line {line}: unexpected {command}()')
+            _, active, _ = stack.pop()
+        elif command in ('add_executable', 'add_library', 'add_custom_target'):
+            if not args:
+                raise ValueError(f'line {line}: missing {command} target name')
+            target = cmake_literal(args[0], read)
+            state = and_conditions(active, running)
+            if target is None and state is not False:
+                for entries in declarations.values():
+                    entries.append((None, line, 'nonliteral target declaration'))
+            elif target in declarations:
+                issue = ''
+                if command != 'add_executable':
+                    issue = f'{command} is not a setup executable'
+                else:
+                    for _, arg in args[1:]:
+                        if arg in ('WIN32', 'MACOSX_BUNDLE'):
+                            continue
+                        if arg in ('EXCLUDE_FROM_ALL', 'IMPORTED', 'ALIAS'):
+                            issue = f'{arg} is not a setup executable'
+                        break
+                declarations[target].append((state, line, issue))
+        elif (command in ('set', 'option', 'unset', 'return') and active is not False and running is not False
+              and all(frame[0] not in ('function', 'macro') for frame in stack)):
+            state = and_conditions(active, running)
+            if command == 'return':
+                running = and_conditions(running, negate_condition(state))
+                continue
+            if not args or not _CMAKE_NAME.fullmatch(args[0][1]):
+                continue
+            name, tail = args[0][1], args[1:]
+            if command == 'option':
+                if name in normal or name in cache:
+                    continue
+                variables = cache
+                value = cmake_literal(tail[1], read) if len(tail) == 2 else 'OFF'
+            elif command == 'unset' or not tail:
+                variables = cache if tail == [('word', 'CACHE')] else normal
+                value = _CMAKE_UNSET if not tail or variables is cache else None
+            elif len(tail) >= 2 and tail[1] == ('word', 'CACHE'):
+                if name in cache and tail[-1] != ('word', 'FORCE'):
+                    continue
+                variables = cache
+                value = cmake_literal(tail[0], read)
+            else:
+                variables = normal
+                value = cmake_literal(tail[0], read) if len(tail) == 1 else None
+            if state is None and value != read(name):
+                value = None
+            if value is _CMAKE_UNSET:
+                variables.pop(name, None)
+            else:
+                variables[name] = value
+    if stack:
+        raise ValueError(f'unterminated {stack[-1][0]}() block')
+    return declarations
+
+
+def lint_checkout_targets(doc, rep, checkout, routes):
+    targets = {}
+    for index, target in enumerate(doc['targets']):
+        where = f'targets[{index}]'
+        if not _CMAKE_TARGET.fullmatch(target):
+            rep.error(where, f'{target!r} is not a literal CMake target name')
+        elif target in targets:
+            rep.error(where, f'{target!r} duplicates {targets[target]}')
+        else:
+            targets[target] = where
+    if not routes or not targets:
+        return
+    filename = 'CMakeLists.txt'
+    try:
+        commands = list(cmake_commands((checkout / filename).read_text(encoding='utf-8-sig')))
+    except (OSError, ValueError) as error:
+        rep.error('targets', f'cannot verify checkout target declarations in {filename}: {error}')
+        return
+    for os_name, (host, preset, config) in routes.items():
+        route = f'presets.{os_name} ({preset!r})'
+        try:
+            cache = cmake_route_cache(doc, os_name, config)
+            declarations = cmake_target_declarations(commands, cache, host, targets)
+        except ValueError as error:
+            rep.error('targets', f'cannot verify {route} in {filename}: {error}')
+            continue
+        for target, entries in declarations.items():
+            enabled = [(line, issue) for state, line, issue in entries if state is True]
+            uncertain = [(line, issue) for state, line, issue in entries if state is None]
+            where = targets[target]
+            error = f'{target!r} on {route}'
+            if len(enabled) > 1:
+                lines = ', '.join(str(line) for line, _ in enabled)
+                rep.error(where, f'{error} has multiple active declarations in {filename} (lines {lines})')
+            elif uncertain:
+                line, issue = uncertain[0]
+                detail = issue or 'the declaration guard depends on an unsupported condition or value'
+                rep.error(where, f'cannot verify {error} at {filename}:{line}: {detail}')
+            elif enabled:
+                line, issue = enabled[0]
+                if issue:
+                    rep.error(where, f'{error} at {filename}:{line}: {issue}')
+            elif entries:
+                rep.error(where, f'{error} has no active declaration in {filename}')
+            else:
+                rep.error(where, f'{error} has no declaration in {filename} (names are case-sensitive)')
 
 
 def lint_describe(doc, rep, facts, strict=False):
@@ -1563,7 +1918,8 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False, *, recipe_root=N
     rep.used = used
     if kind == 'launcher-recipe' and recipe_root is not None and not rep.errors:
         lint_codegen_placement(doc, rep, recipe_root)
-        lint_checkout_presets(doc, rep, recipe_root)
+        routes = lint_checkout_presets(doc, rep, recipe_root)
+        lint_checkout_targets(doc, rep, recipe_root, routes)
     return rep
 
 
@@ -1587,6 +1943,7 @@ def selftest_codegen_placement(check):
     with TemporaryDirectory(prefix='lfg-codegen-') as temp:
         checkout = Path(temp).resolve()
         (checkout / 'CMakePresets.json').write_bytes((REPO_ROOT / 'CMakePresets.json').read_bytes())
+        (checkout / 'CMakeLists.txt').write_bytes((REPO_ROOT / 'CMakeLists.txt').read_bytes())
         (checkout / 'setup').mkdir()
         (checkout / 'setup/fixture.toml').write_text(
             '[project]\nname = "fixture"\n'
@@ -1652,8 +2009,8 @@ def selftest_recipe_presets(check):
         'configurePresets': [
             {'name': 'test-windows', 'inherits': 'win-base'},
             {'name': 'test-linux', 'inherits': ['linux-base', 'win-base']},
-            {'name': 'win-base', 'hidden': True, 'condition': windows},
-            {'name': 'linux-base', 'hidden': True, 'condition': linux},
+            {'name': 'win-base', 'hidden': True, 'condition': windows, 'generator': 'Ninja'},
+            {'name': 'linux-base', 'hidden': True, 'condition': linux, 'generator': 'Ninja'},
         ],
         'buildPresets': [
             {'name': 'test-windows', 'configurePreset': 'test-windows'},
@@ -1663,6 +2020,7 @@ def selftest_recipe_presets(check):
     }
     with TemporaryDirectory(prefix='lfg-presets-') as temp:
         checkout = Path(temp).resolve()
+        (checkout / 'CMakeLists.txt').write_bytes((REPO_ROOT / 'CMakeLists.txt').read_bytes())
         manifest_arg = recipe['codegen']['args'][1]
         manifest = checkout / manifest_arg
         manifest.parent.mkdir(parents=True, exist_ok=True)
@@ -1729,6 +2087,138 @@ def selftest_recipe_presets(check):
             case = copy.deepcopy(presets)
             mutate(case, case['configurePresets'], case['buildPresets'])
             verify(label, recipe, json.dumps(case), expected)
+
+
+def selftest_recipe_targets(check):
+    from tempfile import TemporaryDirectory
+
+    recipe = load_json(REPO_ROOT / 'launcher-recipe.json')
+    presets = load_json(REPO_ROOT / 'CMakePresets.json')
+    source = (REPO_ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
+    with TemporaryDirectory(prefix='lfg-targets-') as temp:
+        checkout = Path(temp).resolve()
+        manifest = recipe['codegen']['args'][1]
+        (checkout / manifest).parent.mkdir(parents=True, exist_ok=True)
+        (checkout / manifest).write_bytes((REPO_ROOT / manifest).read_bytes())
+        path = checkout / 'CMakeLists.txt'
+
+        def verify(label, *, candidate=recipe, cmake=source, preset_doc=presets, expected=()):
+            (checkout / 'CMakePresets.json').write_text(json.dumps(preset_doc), encoding='utf-8')
+            if cmake is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(cmake, encoding='utf-8')
+            rep = validate(candidate, strict=True, recipe_root=checkout)
+            pending = rep.errors.copy()
+            for fragments in expected:
+                match = next((item for item in pending if all(text in item for text in fragments)), None)
+                if match is not None:
+                    pending.remove(match)
+            passed = len(rep.errors) == len(expected) and not pending and not rep.warnings
+            check(passed, f'checkout targets {label}: {rep.errors + rep.warnings}')
+
+        def both(fragment):
+            return [(f'presets.{os_name}', fragment) for os_name in ('windows', 'linux')]
+
+        def with_option(name, **entry):
+            options = [o for o in recipe['options'] if o['name'] != name]
+            return {**recipe, 'options': [*options, {'name': name, **entry}]}
+
+        verify('actual Windows and Linux routes')
+        verify('renamed declaration', cmake=source.replace('add_executable(larecomp_online_tool\n',
+                                                           'add_executable(renamed_online_tool\n'),
+               expected=both('has no declaration'))
+        for label, target, expected in (
+            ('misspelling', 'larecomp_online_too', both('has no declaration')),
+            ('wrong case', 'LARECOMP_ONLINE_TOOL', both('names are case-sensitive')),
+            ('duplicate', 'larecomp', [('targets[1]', 'duplicates targets[0]')]),
+            ('command argument', 'larecomp --clean-first', [('targets[1]', 'not a literal CMake target name')]),
+            ('explicit test executable', 'larecomp_online_tool_test', both('EXCLUDE_FROM_ALL')),
+            ('custom target', 'larecomp_race_line_twin', both('add_custom_target')),
+            ('library target', 'larecomp_o1heap', both('add_library')),
+        ):
+            candidate = {**recipe, 'targets': ['larecomp', target]}
+            verify(label, candidate=candidate, expected=expected)
+            rep = validate(candidate, strict=True)
+            check(not rep.errors and not rep.warnings, f'standalone v1 targets {label}: {rep.errors + rep.warnings}')
+
+        probe = {**recipe, 'targets': [*recipe['targets'], 'setup_probe']}
+        decl = 'add_executable(setup_probe probe.cpp)\n'
+        for label, cmake, expected in (
+            ('new literal target', 'ADD_EXECUTABLE(\n  "setup_probe" WIN32 probe.cpp)\n', ()),
+            ('bracket argument', 'add_executable([=[setup_probe]=] probe.cpp)\n', ()),
+            ('irrelevant declarations', decl + '# add_executable(setup_probe test.cpp)\n'
+             '#[=[\nadd_executable(setup_probe test.cpp)\n]=]\n'
+             'message(STATUS "add_executable(setup_probe test.cpp)")\n'
+             'message(STATUS [=[\nadd_executable(setup_probe test.cpp)\n]=])\n'
+             'if(OFF)\n  add_executable(setup_probe EXCLUDE_FROM_ALL test.cpp)\nendif()\n', ()),
+            ('false occurrences only', '# add_executable(setup_probe probe.cpp)\n'
+             '#[[\nadd_executable(setup_probe probe.cpp)\n]]\n'
+             'message(STATUS "add_executable(setup_probe probe.cpp)")\n', both('has no declaration')),
+            ('exclusive declarations', 'if(WIN32)\n' + decl + 'elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")\n'
+             + decl + 'else()\nadd_executable(setup_probe EXCLUDE_FROM_ALL test.cpp)\nendif()\n', ()),
+            ('grouped guards', 'if((WIN32 OR UNIX) AND NOT APPLE)\n' + decl + 'endif()\n', ()),
+            ('left-to-right AND/OR', 'if(ON OR OFF AND OFF)\n' + decl + 'endif()\n', both('no active declaration')),
+            ('Debug only', 'if(CMAKE_BUILD_TYPE STREQUAL "Debug")\n' + decl + 'endif()\n', both('no active declaration')),
+            ('Windows only', 'if(WIN32)\n' + decl + 'endif()\n', [('presets.linux', 'no active declaration')]),
+            ('Linux only', 'if(WIN32)\nelseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")\n' + decl + 'endif()\n',
+             [('presets.windows', 'no active declaration')]),
+            ('developer-only route', 'if(LARECOMP_DEV_TOOLS)\n' + decl + 'endif()\n', both('no active declaration')),
+            ('built Release', 'if("${CMAKE_BUILD_TYPE}" STREQUAL "Release")\n' + decl + 'endif()\n', ()),
+            ('normal variable', 'set(FIXTURE ON)\nif(FIXTURE)\n' + decl + 'endif()\n', ()),
+            ('forced cache', 'set(LARECOMP_GPU OFF CACHE BOOL "test" FORCE)\nif(LARECOMP_GPU)\n' + decl + 'endif()\n',
+             both('no active declaration')),
+            ('excluded Windows executable', 'add_executable(setup_probe WIN32 EXCLUDE_FROM_ALL probe.cpp)\n',
+             both('EXCLUDE_FROM_ALL')),
+            ('quoted exclusion flag', 'add_executable(setup_probe "EXCLUDE_FROM_ALL" probe.cpp)\n',
+             both('EXCLUDE_FROM_ALL')),
+            ('import', 'add_executable(setup_probe IMPORTED)\n', both('IMPORTED')),
+            ('alias', 'add_executable(setup_probe ALIAS larecomp)\n', both('ALIAS')),
+            ('duplicate active declarations', decl + decl, both('multiple active declarations')),
+            ('unsupported guard', 'if(TARGET external::provided)\n' + decl + 'endif()\n', both('cannot verify')),
+            ('possible duplicate', decl + 'if(UNKNOWN_FLAG)\n' + decl + 'endif()\n', both('cannot verify')),
+            ('dynamic target', 'add_executable(${EXTERNAL_NAME} probe.cpp)\n' + decl,
+             [('nonliteral target declaration',)] * 6),
+            ('unsupported loop', 'foreach(PROBE IN ITEMS ON)\n' + decl + 'endforeach()\n', both('cannot verify')),
+            ('unterminated command', 'add_executable(setup_probe', [('unterminated add_executable',)]),
+            ('unterminated block', 'if(ON)\n' + decl, both('unterminated if() block')),
+        ):
+            verify(label, candidate=probe, cmake=source + '\n' + cmake, expected=expected)
+
+        verify('missing CMakeLists', cmake=None, expected=[('cannot verify', 'CMakeLists.txt')])
+        verify('XEO3 configuration', candidate=with_option('REXGLUE_ENABLE_XEO3_TARGET', value='ON'),
+               expected=both('no active declaration') * 2)
+        gpu_source = source + '\nif(LARECOMP_GPU)\n' + decl + 'endif()\n'
+        for label, option, expected in (
+            ('recipe option takes precedence', {'value': 'OFF'}, both('no active declaration')),
+            ('conditional OS override', {'value': 'OFF', 'when': "os.name == 'windows'"},
+             [('presets.windows', 'no active declaration')]),
+            ('conditional GPU override', {'value': 'OFF', 'when': "os.name == 'windows' && gpu.vendor != 'nvidia'"},
+             [('presets.windows', 'cannot verify')]),
+            ('launcher-supplied option', {'from': 'launcher.cpu_level'}, both('cannot verify')),
+        ):
+            candidate = {**with_option('LARECOMP_GPU', **option), 'targets': probe['targets']}
+            verify(label, candidate=candidate, cmake=gpu_source, expected=expected)
+        verify('actual GPU option', candidate=probe, cmake=gpu_source)
+
+        inherited = copy.deepcopy(presets)
+        by_name = {p['name']: p for p in inherited['configurePresets']}
+        windows = by_name[recipe['presets']['windows']]
+        parent = by_name[windows['inherits']]
+        parent['cacheVariables'].update(CMAKE_BUILD_TYPE={'type': 'STRING', 'value': 'Debug'}, FIXTURE=True)
+        if_release = source + '\nif(CMAKE_BUILD_TYPE STREQUAL "Release")\n' + decl + 'endif()\n'
+        verify('child cache overrides parent', candidate=probe, cmake=if_release, preset_doc=inherited)
+        del windows['cacheVariables']['CMAKE_BUILD_TYPE']
+        verify('inherited typed Debug cache', candidate=probe, cmake=if_release, preset_doc=inherited,
+               expected=[('presets.windows', 'no active declaration')])
+        on_parent = source + '\noption(FIXTURE "fixture default" OFF)\nif(UNIX OR FIXTURE)\n' + decl + 'endif()\n'
+        verify('inherited boolean cache', candidate=probe, cmake=on_parent, preset_doc=inherited)
+        windows['cacheVariables']['FIXTURE'] = None
+        verify('null masks parent cache', candidate=probe, cmake=on_parent, preset_doc=inherited,
+               expected=[('presets.windows', 'no active declaration')])
+        windows['toolchainFile'] = 'cross.cmake'
+        verify('unsupported cross-toolchain route', preset_doc=inherited,
+               expected=[('cannot verify presets.windows', 'native single-configuration Ninja')])
 
 
 def selftest():
@@ -1975,6 +2465,7 @@ def selftest():
     check(not any('needs a ?? fallback' in m for m in rep.errors), 'live_only on a rule must silence lint 3')
     selftest_codegen_placement(check)
     selftest_recipe_presets(check)
+    selftest_recipe_targets(check)
     if failures:
         print('SELFTEST FAILED')
         for f in failures:
