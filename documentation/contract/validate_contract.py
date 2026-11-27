@@ -11,7 +11,7 @@ Several files in one run are one game build: they must carry the same optional m
 the value of launcher-recipe.json, the one place it is edited, when the recipe is among the files). A malformed min_launcher is an error.
 
 Output: one line per finding, `ERROR|WARN|INFO <file>: <where>: <what>`; exit 0 when there is no ERROR (with --strict, no WARN either).
-As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to check the checkout recipe against its codegen manifest, CMake presets and build targets.
+As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to check the checkout recipe against its codegen manifest, CMake presets, build targets and dependency kits.
 Pure Python 3, no packages (the JSON Schema
 subset it needs is built in: see SUPPORTED_KEYWORDS; the selftest fails if a schema uses another keyword).
 """
@@ -48,6 +48,9 @@ SCHEMA_FILES = {
 MIN_LAUNCHER = re.compile(r'[0-9]+(\.[0-9]+){0,3}')
 SDK_COMMIT = re.compile(r'[0-9a-f]{40}')
 SDK_PIN_FILE = 'tools/release/lar-rxsdk.pin'
+CMAKE_DEPS_FILE = 'cmake/deps.json'
+DXC_HOST_SOURCE = 'cmake/FetchDxcHost.cmake'
+DXC_HOST_ARCHIVE = 'LARECOMP_DXC_HOST_ARCHIVE'
 FACT_NAMESPACES = ('gpu', 'api', 'features', 'os', 'display', 'cpu', 'build', 'install', 'live')
 FUNCTIONS = {'resolved': 1, 'auto_of': 1, 'known': 1, 'contains': 2, 'min': 2, 'max': 2}
 KNOWN_KINDS = ('choice', 'bool', 'number', 'text', 'color', 'action', 'link', 'carbon')
@@ -1560,23 +1563,47 @@ def or_conditions(left, right):
     return negate_condition(and_conditions(negate_condition(left), negate_condition(right)))
 
 
-def recipe_option_condition(node, os_name):
-    """Evaluate the host part of a setup condition, keeping runtime facts unknown."""
-    op, *args = node
-    if op == 'lit':
-        return args[1]
-    if op == 'path' and args[0] == ['os', 'name']:
-        return os_name
-    if op in ('and', 'or'):
-        combine = and_conditions if op == 'and' else or_conditions
-        return combine(*(recipe_option_condition(arg, os_name) for arg in args))
-    if op == 'not':
-        return negate_condition(recipe_option_condition(args[0], os_name))
-    if op == 'cmp' and args[0] in ('==', '!='):
-        left, right = (recipe_option_condition(arg, os_name) for arg in args[1:])
-        if left is not None and right is not None:
-            return (left == right) if args[0] == '==' else (left != right)
-    return None
+def recipe_option_condition(node, os_name, gpu_vendor=None):
+    """Return true/false when the known setup facts decide whether a guard matches."""
+    unknown = object()
+    known = {('os', 'name'): os_name}
+    if gpu_vendor is not None:
+        known['gpu', 'vendor'] = gpu_vendor
+
+    def boolean(operator, *values):
+        result = operator(*(value if type(value) is bool else None for value in values))
+        return unknown if result is None and any(value is unknown for value in values) else result
+
+    def evaluate(expr):
+        op, *args = expr
+        if op == 'lit':
+            return args[1]
+        if op == 'path':
+            return known.get(tuple(args[0]), unknown)
+        if op in ('and', 'or'):
+            combine = and_conditions if op == 'and' else or_conditions
+            return boolean(combine, evaluate(args[0]), evaluate(args[1]))
+        if op == 'not':
+            return boolean(negate_condition, evaluate(args[0]))
+        if op == 'coalesce':
+            left = evaluate(args[0])
+            return evaluate(args[1]) if left is None else left
+        if op == 'cmp' and args[0] in ('==', '!='):
+            left, right = (evaluate(arg) for arg in args[1:])
+            if left is unknown or right is unknown:
+                return unknown
+            if left is not None and type(left) is type(right):
+                return (left == right) if args[0] == '==' else (left != right)
+            return None
+        if op == 'in':
+            state = False
+            for item in args[1]:
+                state = boolean(or_conditions, state, evaluate(('cmp', '==', args[0], item)))
+            return state
+        return unknown
+
+    value = evaluate(node)
+    return None if value is unknown else value is True
 
 
 def cmake_literal(arg, read):
@@ -1837,6 +1864,123 @@ def lint_checkout_targets(doc, rep, checkout, routes):
                 rep.error(where, f'{error} has no declaration in {filename} (names are case-sensitive)')
 
 
+def dxc_host_archive_kit(checkout):
+    source = (checkout / DXC_HOST_SOURCE).read_text(encoding='utf-8-sig')
+    reads = [args for name, args, _ in cmake_commands(source) if name == 'larecomp_read_kit']
+    if len(reads) != 1 or len(reads[0]) != 2 or not re.fullmatch(r'[a-z][a-z0-9_]*', reads[0][0][1]):
+        raise ValueError('expected one literal larecomp_read_kit declaration')
+    return reads[0][0][1]
+
+
+def lint_checkout_kits(doc, rep, checkout, routes, facts, dictionary_doc, strict):
+    vendors = facts.facts.get('gpu.vendor', {}).get('enum') or (None,)
+    references = []
+    for option in doc.get('options', []):
+        source = option.get('from', '')
+        if not source.startswith('kit:'):
+            continue
+        when = parse_expr(option['when']).root if 'when' in option else ('lit', 'bool', True)
+        active = {os_name: [vendor for vendor in vendors if recipe_option_condition(when, os_name, vendor) is not False]
+                  for os_name in routes}
+        active = {os_name: vendors for os_name, vendors in active.items() if vendors}
+        if active:
+            references.append((option['name'], source.removeprefix('kit:'), when, active))
+
+    filename = doc.get('kits')
+    if filename is None:
+        for name, kit_id, _, _ in references:
+            rep.error('kits', f'options[{name}].from kit:{kit_id} requires a dependency file')
+        return
+    if not is_relative_file(filename):
+        rep.error('kits', f'{filename!r} must be a checkout-relative dependency file path')
+        return
+    try:
+        path = (checkout / filename).resolve(strict=True)
+        if path.relative_to(checkout).as_posix() != filename:
+            raise ValueError('use the exact checkout path and case')
+        deps = load_json(path)
+        if not isinstance(deps, dict):
+            raise ValueError('expected a larecomp.deps object')
+    except (OSError, RuntimeError, ValueError) as error:
+        rep.error('kits', f'cannot read dependency file {filename!r}: {error}')
+        return
+
+    deps_report = validate(deps, 'deps', dictionary_doc, strict)
+    for finding in deps_report.errors:
+        rep.error('kits', f'{filename}: {finding}')
+    for finding in deps_report.warnings:
+        rep.warn('kits', f'{filename}: {finding}')
+    if deps_report.errors:
+        return
+
+    for name, kit_id, when, active in references:
+        where = f'options[{name}].from'
+        kit = deps['kits'].get(kit_id)
+        if kit is None:
+            rep.error(where, f'kit:{kit_id} is missing in {filename} (kit IDs are case-sensitive)')
+            continue
+        # The deps schema makes zip_sha256 and zip_size an indivisible pair.
+        if 'zip_sha256' not in kit:
+            rep.error(where, f'kit:{kit_id} in {filename} must declare a pinned archive')
+            continue
+        if name == DXC_HOST_ARCHIVE:
+            # The Windows consumer reads the shared pins via cmake/ReadDeps.cmake.
+            # CHECK: The tester rehearsal must witness the staged zip and compiler CMake selects.
+            if filename != CMAKE_DEPS_FILE:
+                rep.error(where, f'{DXC_HOST_SOURCE} reads the shared pins from {CMAKE_DEPS_FILE}')
+                continue
+            try:
+                expected_kit = dxc_host_archive_kit(checkout)
+            except (OSError, ValueError) as error:
+                rep.error(where, f'cannot verify the kit read by {DXC_HOST_SOURCE}: {error}')
+                continue
+            if kit_id != expected_kit:
+                rep.error(where, f'{DXC_HOST_SOURCE} reads kit:{expected_kit}, got kit:{kit_id}')
+                continue
+            for os_name in active:
+                if os_name != 'windows':
+                    rep.error(where, f'{DXC_HOST_SOURCE} only consumes this archive option on Windows, active on presets.{os_name}')
+            active = {os_name: vendors for os_name, vendors in active.items() if os_name == 'windows'}
+
+        lint_kit_routes(rep, facts, where, kit_id, kit, when, active, routes)
+
+
+def lint_kit_routes(rep, facts, where, kit_id, kit, when, active, routes):
+    groups = kit['groups']
+    used = {file['group'] for file in kit['files']}
+    undeclared = used - groups.keys()
+    if undeclared:
+        rep.error(where, f'kit:{kit_id} files refer to undeclared groups: {", ".join(sorted(undeclared))}')
+        return
+    # The schema describes core as the gate for using the whole kit. Kits without
+    # core can supply an archive if any populated group applies.
+    names = ('core',) if 'core' in groups else sorted(used)
+    checker = ExprChecker(rep, facts, allow_live=False, allow_settings=False, l0_only=True)
+    before = len(rep.errors)
+    conditions = {group: checker.check(entry['when'], f'{where} kit:{kit_id}.groups.{group}.when', rule_name='when').root
+                  for group, entry in groups.items() if 'when' in entry}
+    if len(rep.errors) != before:
+        return
+    for os_name, vendors in active.items():
+        route = f'presets.{os_name} ({routes[os_name][1]!r})'
+        for vendor in vendors:
+            available = False
+            for group in names:
+                entry = groups[group]
+                if group not in used or vendor is not None and entry.get('gpu_vendor', vendor) != vendor:
+                    continue
+                condition = conditions.get(group)
+                applies = True if condition is None or condition == when else recipe_option_condition(condition, os_name, vendor)
+                if 'gpu_name' in entry or vendor is None and 'gpu_vendor' in entry:
+                    applies = and_conditions(applies, None)
+                available = or_conditions(available, applies)
+            if available is not True:
+                issue = 'has no applicable file group' if available is False else 'has file group applicability that cannot be verified offline'
+                context = '' if vendor is None else f' with gpu.vendor {vendor!r}'
+                rep.error(where, f'kit:{kit_id} {issue} on {route}{context}')
+                break
+
+
 def lint_describe(doc, rep, facts, strict=False):
     pass
 
@@ -1920,6 +2064,7 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False, *, recipe_root=N
         lint_codegen_placement(doc, rep, recipe_root)
         routes = lint_checkout_presets(doc, rep, recipe_root)
         lint_checkout_targets(doc, rep, recipe_root, routes)
+        lint_checkout_kits(doc, rep, recipe_root, routes or {}, facts, dictionary_doc, strict)
     return rep
 
 
@@ -1933,6 +2078,13 @@ def facts_used_of(doc):
 
 # ---- selftest ------------------------------------------------------------------------------------------------------------------------------
 
+def copy_recipe_kit_fixtures(checkout):
+    for name in (CMAKE_DEPS_FILE, DXC_HOST_SOURCE):
+        path = checkout / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes((REPO_ROOT / name).read_bytes())
+
+
 def selftest_codegen_placement(check):
     from tempfile import TemporaryDirectory
 
@@ -1942,6 +2094,7 @@ def selftest_codegen_placement(check):
 
     with TemporaryDirectory(prefix='lfg-codegen-') as temp:
         checkout = Path(temp).resolve()
+        copy_recipe_kit_fixtures(checkout)
         (checkout / 'CMakePresets.json').write_bytes((REPO_ROOT / 'CMakePresets.json').read_bytes())
         (checkout / 'CMakeLists.txt').write_bytes((REPO_ROOT / 'CMakeLists.txt').read_bytes())
         (checkout / 'setup').mkdir()
@@ -2020,6 +2173,7 @@ def selftest_recipe_presets(check):
     }
     with TemporaryDirectory(prefix='lfg-presets-') as temp:
         checkout = Path(temp).resolve()
+        copy_recipe_kit_fixtures(checkout)
         (checkout / 'CMakeLists.txt').write_bytes((REPO_ROOT / 'CMakeLists.txt').read_bytes())
         manifest_arg = recipe['codegen']['args'][1]
         manifest = checkout / manifest_arg
@@ -2097,6 +2251,7 @@ def selftest_recipe_targets(check):
     source = (REPO_ROOT / 'CMakeLists.txt').read_text(encoding='utf-8')
     with TemporaryDirectory(prefix='lfg-targets-') as temp:
         checkout = Path(temp).resolve()
+        copy_recipe_kit_fixtures(checkout)
         manifest = recipe['codegen']['args'][1]
         (checkout / manifest).parent.mkdir(parents=True, exist_ok=True)
         (checkout / manifest).write_bytes((REPO_ROOT / manifest).read_bytes())
@@ -2219,6 +2374,146 @@ def selftest_recipe_targets(check):
         windows['toolchainFile'] = 'cross.cmake'
         verify('unsupported cross-toolchain route', preset_doc=inherited,
                expected=[('cannot verify presets.windows', 'native single-configuration Ninja')])
+
+
+def selftest_recipe_kits(check):
+    from tempfile import TemporaryDirectory
+
+    recipe = load_json(REPO_ROOT / 'launcher-recipe.json')
+    deps = load_json(REPO_ROOT / CMAKE_DEPS_FILE)
+    describe = load_json(Path(HERE) / 'examples/describe.example.json')
+    win = "os.name == 'windows'"
+    linux = "os.name == 'linux'"
+    amd = "gpu.vendor == 'amd'"
+    with TemporaryDirectory(prefix='lfg-kits-') as temp:
+        checkout = Path(temp).resolve()
+        for name in ('CMakePresets.json', 'CMakeLists.txt', recipe['codegen']['args'][1]):
+            path = checkout / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes((REPO_ROOT / name).read_bytes())
+        copy_recipe_kit_fixtures(checkout)
+        path = checkout / CMAKE_DEPS_FILE
+        cmake = checkout / DXC_HOST_SOURCE
+        cmake_source = cmake.read_text(encoding='utf-8')
+
+        def verify(label, expected=(), *, change_recipe=None, change_deps=None, dep_text=None, source=cmake_source):
+            candidate, dependency = copy.deepcopy(recipe), copy.deepcopy(deps)
+            option = next(o for o in candidate['options'] if o['name'] == DXC_HOST_ARCHIVE)
+            if change_recipe:
+                change_recipe(candidate, option)
+            if change_deps:
+                change_deps(dependency['kits'], dependency['kits']['dxc_host'])
+            path.unlink(missing_ok=True)
+            if dep_text is not False:
+                path.write_text(json.dumps(dependency) if dep_text is None else dep_text, encoding='utf-8')
+            cmake.write_text(source, encoding='utf-8')
+            rep = validate(candidate, strict=True, recipe_root=checkout)
+            passed = (not rep.warnings and len(rep.errors) == bool(expected)
+                      and (not expected or all(text in rep.errors[0] for text in expected)))
+            check(passed, f'checkout kits {label}: {rep.errors + rep.warnings}')
+            rep = validate(candidate, strict=True)
+            check(not rep.errors and not rep.warnings, f'standalone v1 kits {label}: {rep.errors + rep.warnings}')
+
+        def one_route(candidate, host):
+            candidate['presets'] = {host: recipe['presets'][host]}
+
+        def group(**fields):
+            return lambda kits, kit: kit['groups']['core'].update(fields)
+
+        def rename_core(kits, kit):
+            kit['groups']['setup'] = kit['groups'].pop('core')
+            for file in kit['files']:
+                file['group'] = 'setup'
+
+        def empty_core(kits, kit):
+            kit['groups']['extra'] = {}
+            for file in kit['files']:
+                file['group'] = 'extra'
+
+        def alternate_path(candidate, _):
+            candidate['kits'] = 'cmake/other-deps.json'
+            (checkout / candidate['kits']).write_text(json.dumps(deps), encoding='utf-8')
+
+        verify('both pinned Release routes')
+        verify('pinned Windows Release', change_recipe=lambda r, o: one_route(r, 'windows'))
+        verify('pinned Linux Release', change_recipe=lambda r, o: one_route(r, 'linux'))
+        verify('Linux skips inactive Windows kit reference',
+               change_recipe=lambda r, o: (one_route(r, 'linux'), o.update({'from': 'kit:absent'})))
+        verify('inactive options do not require the optional kits property',
+               change_recipe=lambda r, o: (one_route(r, 'linux'), r.pop('kits')))
+        verify('literal false skips a reference on every route',
+               change_recipe=lambda r, o: o.update({'from': 'kit:absent', 'when': 'false'}))
+        verify('known null result leaves the option inactive',
+               change_recipe=lambda r, o: o.update({'from': 'kit:absent', 'when': 'null == true'}))
+        verify('equivalent Windows membership condition',
+               change_recipe=lambda r, o: o.update(when="os.name in ['windows']"))
+        verify('equivalent negated Windows condition',
+               change_recipe=lambda r, o: o.update(when="!(os.name != 'windows')"))
+        verify('coalescing a known host fact', change_recipe=lambda r, o: o.update(when="(os.name ?? 'windows') == 'windows'"))
+        verify('coalescing a known null', change_recipe=lambda r, o: o.update(when="(null ?? os.name) == 'windows'"))
+        verify('source changes the kit name',
+               change_recipe=lambda r, o: o.update({'from': 'kit:renamed_host'}),
+               change_deps=lambda kits, k: kits.update(renamed_host=kits.pop('dxc_host')),
+               source=cmake_source.replace('larecomp_read_kit(dxc_host ', 'larecomp_read_kit(renamed_host '))
+        verify('generic Linux archive option', change_recipe=lambda r, o: o.update(name='FIXTURE_ARCHIVE', when="os.name in ['linux']"),
+               change_deps=group(when=linux))
+        verify('group vendor matches the option', change_recipe=lambda r, o: o.update(when=f'{win} && {amd}'),
+               change_deps=group(when=win, gpu_vendor='amd'))
+        shared_guard = f"{win} && gpu.name == 'Fixture adapter'"
+        verify('kit and option use the same runtime guard', change_recipe=lambda r, o: o.update(when=shared_guard),
+               change_deps=group(when=shared_guard))
+        verify('a populated group with no core gate', change_deps=rename_core)
+        verify('exact alternate file used by a generic option',
+               change_recipe=lambda r, o: (alternate_path(r, o), o.update(name='FIXTURE_ARCHIVE')))
+
+        for wrong_path in ('', '/cmake/deps.json', 'C:cmake/deps.json', 'cmake/../cmake/deps.json', 'cmake\\deps.json'):
+            verify(f'noncanonical path {wrong_path!r}', ('kits:', 'checkout-relative'),
+                   change_recipe=lambda r, o: r.update(kits=wrong_path))
+        for wrong_path in ('cmake/dep.json', 'CMake/deps.json', 'cmake/Deps.json', 'cmake'):
+            verify(f'unreadable exact path {wrong_path!r}', ('kits:', 'cannot read dependency file'),
+                   change_recipe=lambda r, o: r.update(kits=wrong_path))
+        verify('active option without kits path', ('requires a dependency file',), change_recipe=lambda r, o: r.pop('kits'))
+        verify('DXC alternate pins file', ('reads the shared pins from', CMAKE_DEPS_FILE), change_recipe=alternate_path)
+        verify('actual file missing', ('cannot read dependency file',), dep_text=False)
+        verify('invalid dependency JSON', ('cannot read dependency file',), dep_text='{')
+        verify('non-object dependency JSON', ('expected a larecomp.deps object',), dep_text='[]')
+        verify('valid document of another kind', ('$.schema', 'larecomp.deps'),
+               dep_text=json.dumps({**deps, **describe}))
+        verify('missing declaration', ('kit:dxc_host is missing',), change_deps=lambda kits, k: kits.pop('dxc_host'))
+        verify('case of declaration', ('kit:dxc_host is missing', 'case-sensitive'),
+               change_deps=lambda kits, k: kits.update(Dxc_host=kits.pop('dxc_host')))
+        verify('mistyped active reference', ('kit:dxc_hosts is missing',),
+               change_recipe=lambda r, o: o.update({'from': 'kit:dxc_hosts'}))
+        verify('missing kit on a possible runtime branch', ('kit:absent is missing',),
+               change_recipe=lambda r, o: o.update({'from': 'kit:absent', 'when': shared_guard}))
+        verify('a null fallback activates a reference on Windows', ('kit:absent is missing',),
+               change_recipe=lambda r, o: o.update({'from': 'kit:absent', 'when': "(null ?? os.name) == 'windows'"}))
+        verify('another applicable archive belongs to a different option', ('reads kit:dxc_host, got kit:other_archive',),
+               change_recipe=lambda r, o: o.update({'from': 'kit:other_archive'}),
+               change_deps=lambda kits, k: kits.update(other_archive={**k, 'zip_sha256': '0' * 64}))
+        verify('existing but wrong archive', ('reads kit:dxc_host, got kit:streamline',),
+               change_recipe=lambda r, o: o.update({'from': 'kit:streamline'}))
+        verify('consumer without a literal kit', ('cannot verify the kit', 'one literal'),
+               source=cmake_source.replace('larecomp_read_kit(dxc_host ', 'larecomp_read_kit(${kit} '))
+        verify('only one archive pin', ('$.kits.dxc_host', 'exactly one'), change_deps=lambda kits, k: k.pop('zip_size'))
+        verify('individual-file kit', ('must declare a pinned archive',), change_deps=lambda kits, k: (k.pop('zip_size'), k.pop('zip_sha256')))
+        verify('kit guarded for the other host', ('no applicable file group', 'presets.windows'), change_deps=group(when=linux))
+        verify('kit group never applies', ('no applicable file group', 'presets.windows'), change_deps=group(when='false'))
+        verify('invalid kit condition', ('groups.core.when', 'does not parse'), change_deps=group(when='os.name =='))
+        verify('kit condition needs the first probe', ('groups.core.when', 'before the first probe'),
+               change_deps=group(when="gpu.class == 'high'"))
+        verify('kit group vendor mismatch', ('no applicable file group', "gpu.vendor 'nvidia'"), change_deps=group(gpu_vendor='amd'))
+        verify('kit group name requires adapter evidence', ('applicability that cannot be verified offline',),
+               change_deps=group(gpu_name='RTX'))
+        verify('literal true activates the Windows archive on Linux', ('only consumes this archive option on Windows', 'presets.linux'),
+               change_recipe=lambda r, o: o.update(when='true'))
+        verify('Windows guard with a runtime-dependent Linux arm', ('only consumes this archive option on Windows', 'presets.linux'),
+               change_recipe=lambda r, o: o.update(when=f'{win} || {amd}'))
+        verify('file group declared with the wrong case', ('files refer to undeclared groups: core',),
+               change_deps=lambda kits, k: k['groups'].update(Core=k['groups'].pop('core')))
+        verify('optional group cannot override core', ('no applicable file group', 'presets.windows'),
+               change_deps=lambda kits, k: (k['groups'].update(extra={}, core={'when': linux}), k['files'][0].update(group='extra')))
+        verify('core without any pinned files', ('no applicable file group', 'presets.windows'), change_deps=empty_core)
 
 
 def selftest():
@@ -2466,6 +2761,7 @@ def selftest():
     selftest_codegen_placement(check)
     selftest_recipe_presets(check)
     selftest_recipe_targets(check)
+    selftest_recipe_kits(check)
     if failures:
         print('SELFTEST FAILED')
         for f in failures:
