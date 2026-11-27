@@ -399,6 +399,17 @@
       "check": "-Wlifetime-safety-invalidation"
     },
     {
+      "id": "5329cd929aee89611344619674cb66fd2b81728a25a9f5de591942d92f849414",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "At lines 180-184, assignments and appends use the live std::string object. No character view, iterator, or reference into its buffer survives an append.",
+      "path": "src/gpu/backend.cpp",
+      "lines": [
+        173
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
       "id": "ef3ff492dc5dbb6db52646d89383adc86bd976675f4e5cb09387015c65b75692",
       "count": 1,
       "category": "false-positive",
@@ -862,6 +873,28 @@
       "check": "-Wlifetime-safety-invalidation"
     },
     {
+      "id": "f527b19fc569f0678ddd2d40396953770c537f1a6b12e9c5f5e1b4fb480c7347",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "At line 945, each append uses the live instances vector and copies a local instance. No pointer, iterator, or element reference into instances survives a push_back.",
+      "path": "src/gpu/city_rt_scene.cpp",
+      "lines": [
+        876
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
+      "id": "60f00913eaa25a6de811431bd229330764533f2d2236a686c7db697283d2fc31",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "At line 946, each append uses the live keys vector and receives a value from the local instance. No pointer, iterator, or element reference into keys survives a push_back.",
+      "path": "src/gpu/city_rt_scene.cpp",
+      "lines": [
+        877
+      ],
+      "check": "-Wlifetime-safety-invalidation"
+    },
+    {
       "id": "5b3c094caa027acacdf47664817fcde71f18b08faed374b41c6b237e9248fb2c",
       "count": 1,
       "category": "false-positive",
@@ -1093,6 +1126,17 @@
         433
       ],
       "check": "bugprone-suspicious-stringview-data-usage"
+    },
+    {
+      "id": "6eb4cc787ea52fcf947655826cce8fd4c0c954d004b1df8d766d6a973322663b",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "The clear on line 48 precedes every append on lines 51 and 65. The sort on line 68 takes fresh iterators after the last append. No borrow into lights crosses a mutation.",
+      "path": "src/gpu/gi_update.cpp",
+      "lines": [
+        47
+      ],
+      "check": "-Wlifetime-safety-invalidation"
     },
     {
       "id": "37965b0be6fa42825190ba0408dc6dbf7fe91394eec24a3e9cea56eb600da2ee",
@@ -2431,6 +2475,17 @@
         1370
       ],
       "check": "-Wlifetime-safety-return-stack-addr-moved"
+    },
+    {
+      "id": "2b8f206980b31e224f59efcd6c664c2edbcbe1eca9645b1b5202566adcaceeb6",
+      "count": 1,
+      "category": "false-positive",
+      "reason": "Line 550 replaces only the unique_ptr pointee. The unique_ptr remains at the same address in the fixed std::array through lines 551-554, and the reference ends before the array is moved on line 556.",
+      "path": "src/gpu/volumetrics.cpp",
+      "lines": [
+        549
+      ],
+      "check": "-Wlifetime-safety-invalidation"
     },
     {
       "id": "0d0c319796375d4b80dfde5ad018977ca13b55d31fbfa94c08882dc0b80afb86",

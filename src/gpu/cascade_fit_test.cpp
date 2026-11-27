@@ -14,7 +14,8 @@ void Check(bool ok, const char* what) {
   ++checks;
   if (ok) return;
   std::fprintf(stderr, "FAIL: %s\n", what);
-  std::exit(1);
+  std::fflush(stderr);
+  std::_Exit(1);
 }
 bool Near(double actual, double expected) { return std::abs(actual - expected) < 1e-8; }
 double Cos(double degrees) { return std::cos(degrees * std::numbers::pi / 180.0); }

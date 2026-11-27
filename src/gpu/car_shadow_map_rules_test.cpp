@@ -8,9 +8,10 @@
 //   <build dir>/src/gpu/larecomp_car_shadow_map_rules_test
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -706,7 +707,9 @@ void TestRasterReuse() {
   cs::PartKey original{1, 256, 0}, translated{1, 256, 0};
   cs::ModelToClip(parked_fit, parked, original.clip);
   cs::ModelToClip(cs::AttachFit(saved, moved_pose), moved, translated.clip);
-  Check(std::memcmp(original.clip, translated.clip, sizeof(original.clip)) == 0, "reattaching preserves bit-identical clip coordinates in a straight drive");
+  Check(std::ranges::equal(original.clip, translated.clip, [](float a, float b) {
+          return std::bit_cast<uint32_t>(a) == std::bit_cast<uint32_t>(b);
+        }), "reattaching preserves bit-identical clip coordinates in a straight drive");
   const double extent[3] = {1.0, 0.4, 0.6};
   Check(cs::SamePart(original, translated, extent, moved_fit), "unchanged body can reuse its depth");
   translated.clip[4] += 0.01f;
