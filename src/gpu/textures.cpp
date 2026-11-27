@@ -1274,7 +1274,13 @@ bool TextureCache::Upload(Entry& e, plume::RenderCommandList* list, std::string*
       }
     }
   }
-  list->barriers(plume::RenderBarrierStage::GRAPHICS,
+  // The cached SRV can be read by either guest shader stage, even if its first
+  // draw is pixel-only. Plume maps GRAPHICS alone to pixel-only on D3D12.
+  // CHECK: replay the startup vertex fetch with D3D12 GPU-based validation.
+  namespace Stage = plume::RenderBarrierStage;
+  const plume::RenderBarrierStages shader_read_stages =
+      ActiveBackend() == Backend::kD3D12 ? Stage::GRAPHICS | Stage::COMPUTE : Stage::GRAPHICS;
+  list->barriers(shader_read_stages,
                  plume::RenderTextureBarrier(e.texture.get(), plume::RenderTextureLayout::SHADER_READ));
   e.layout = plume::RenderTextureLayout::SHADER_READ;
   ++stats_.uploads;
