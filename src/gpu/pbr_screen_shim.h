@@ -7,12 +7,12 @@
 // it does not, this one is used.
 //
 // Needs, before it: float2, float3 (x, y, z members, a constructor of three floats), and on floats: saturate, min, max, sqrt.
+// Also needs <cmath> and <type_traits> included at GLOBAL scope before the test opens its namespace: this header is included inside
+// `namespace hlsl_shim`, so it includes no standard header itself (libc++ breaks when <type_traits> first appears inside a namespace;
+// the Linux gate failed on rt_denoise_test, rr_guides_test and ssr_test, 2026-11-27).
 
 #ifndef MCLA_PBR_SCREEN_SHIM_H
 #define MCLA_PBR_SCREEN_SHIM_H
-
-#include <cmath>
-#include <type_traits>
 
 template <class V, class = std::enable_if_t<std::is_same_v<V, float3>>>
 inline V operator+(V a, V b) { return V(a.x + b.x, a.y + b.y, a.z + b.z); }
