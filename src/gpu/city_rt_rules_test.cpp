@@ -764,8 +764,9 @@ void TestCoveragePressure() {
   sectors[kFar].box_min[0] = sectors[kFar].box_max[0] = -7100;
   sectors[kFar].lod_triangles = 128;
   states[kFar].lod = Residency::kResident;
-  const auto repeat = [&](CoveragePressure expected, const std::vector<Request>& loads,
-                          uint64_t charged, float safe, size_t evicted = 1) {
+  const auto repeat = [&in](const std::vector<SectorInfo>& sectors, const std::vector<SectorState>& states,
+                            CoveragePressure expected, const std::vector<Request>& loads,
+                            uint64_t charged, float safe, size_t evicted = 1) {
     auto control = states;
     for (auto& state : control) state.hi_build_pressure = state.lod_build_pressure = kNone;
     const Plan reference = PlanStreaming(in, sectors, control);
@@ -806,10 +807,10 @@ void TestCoveragePressure() {
   };
 
   constexpr uint64_t kHoldCharge = 268387200;
-  repeat(kBlasCap, {}, kHoldCharge + EstimateStructureBytes(128), 666);
+  repeat(sectors, states, kBlasCap, {}, kHoldCharge + EstimateStructureBytes(128), 666);
   states[kNear].hi_refusal = {true, false};
   CHECK(PlanStreaming(in, sectors, states).cap_changes.empty());
-  repeat(kBlasCap, {}, kHoldCharge + EstimateStructureBytes(128), 666);
+  repeat(sectors, states, kBlasCap, {}, kHoldCharge + EstimateStructureBytes(128), 666);
 
   // Normal turnover evicts an old LOD and admits the new Hi. A full read
   // queue also delays a request without proving a cap refusal.
@@ -817,59 +818,59 @@ void TestCoveragePressure() {
   sectors[0].hi_triangles = 0;
   const uint64_t smaller_charge = kHoldCharge + EstimateStructureBytes(128) - 24 * kMiB;
   const std::vector<Request> load_hi{{kNear, Detail::kHi, 666}};
-  repeat(kNone, load_hi, smaller_charge, 666);
+  repeat(sectors, states, kNone, load_hi, smaller_charge, 666);
   in.loading = in.budget.loads_in_flight;
-  repeat(kNone, {}, smaller_charge, 666);
+  repeat(sectors, states, kNone, {}, smaller_charge, 666);
   in.loading = 0;
   sectors.push_back(SectorInfo{});
   states.push_back(SectorState{});
   sectors.back().box_min[0] = sectors.back().box_max[0] = 5900;
   sectors.back().lod_triangles = 128;
-  repeat(kNone, {{13, Detail::kLod, 5900}, {kNear, Detail::kHi, 666}}, smaller_charge, 666);
+  repeat(sectors, states, kNone, {{13, Detail::kLod, 5900}, {kNear, Detail::kHi, 666}}, smaller_charge, 666);
   sectors.pop_back();
   states.pop_back();
 
   states[1].hi_pool_held = in.budget.pool_cap;
-  repeat(kHitPool, {}, smaller_charge, 666);
+  repeat(sectors, states, kHitPool, {}, smaller_charge, 666);
   states[1].hi_pool_held = 0;
   states[kNear].hi = Residency::kFailed;
   states[kNear].hi_retry_frame = 8;
   states[kNear].hi_build_pressure = kHitPool;  // the hit pool had no suitable free range
-  repeat(kHitPool, {}, smaller_charge, 666);
+  repeat(sectors, states, kHitPool, {}, smaller_charge, 666);
   const auto pool_cap = in.budget.pool_cap;
   in.budget.pool_cap = 0;
-  repeat(kNone, {}, smaller_charge, 666);
+  repeat(sectors, states, kNone, {}, smaller_charge, 666);
   in.budget.pool_cap = pool_cap;
   in.frame = 8;
-  repeat(kHitPool, load_hi, smaller_charge, 666);
+  repeat(sectors, states, kHitPool, load_hi, smaller_charge, 666);
   states[kNear].hi = Residency::kLoading;
-  repeat(kHitPool, {}, smaller_charge, 666);
+  repeat(sectors, states, kHitPool, {}, smaller_charge, 666);
   states[kNear].hi = Residency::kFailed;
   states[kNear].hi_build_pressure = kAllocation;
-  repeat(kAllocation, load_hi, smaller_charge, 666);
+  repeat(sectors, states, kAllocation, load_hi, smaller_charge, 666);
   sectors[kNear].box_min[0] = sectors[kNear].box_max[0] = 1501;
-  repeat(kNone, {}, smaller_charge, 1500);
+  repeat(sectors, states, kNone, {}, smaller_charge, 1500);
   sectors[kNear].box_min[0] = sectors[kNear].box_max[0] = 666;
   states[kNear].hi = Residency::kResident;
-  repeat(kNone, {}, smaller_charge + 5281920, 1500);
+  repeat(sectors, states, kNone, {}, smaller_charge + 5281920, 1500);
   states[kNear].hi = Residency::kFailed;
   states[kNear].hi_build_pressure = kNone;  // a failed read alone proves no memory pressure
-  repeat(kNone, load_hi, smaller_charge, 666);
+  repeat(sectors, states, kNone, load_hi, smaller_charge, 666);
   states[kNear].hi = Residency::kResident;
-  repeat(kNone, {}, smaller_charge + 5281920, 1500);
+  repeat(sectors, states, kNone, {}, smaller_charge + 5281920, 1500);
 
   // A refused LOD is redundant while this sector has Hi, and otherwise
   // leaves a gap in the requested geometry.
   sectors[kNear].lod_triangles = 128;
   sectors[kNear].lod_pool = in.budget.pool_cap + 1;
   CHECK(PlanStreaming(in, sectors, states).over_pool_cap);
-  repeat(kNone, {}, smaller_charge + 5281920, 1500);
+  repeat(sectors, states, kNone, {}, smaller_charge + 5281920, 1500);
   sectors[kNear].hi_triangles = 0;
   states[kNear].hi = Residency::kNone;
-  repeat(kHitPool, {}, smaller_charge, 1500);
+  repeat(sectors, states, kHitPool, {}, smaller_charge, 1500);
 
   in.budget = {};
-  repeat(kNone, {}, 0, 0, 11);
+  repeat(sectors, states, kNone, {}, 0, 0, 11);
 }
 
 void TestCoverageWarning() {
