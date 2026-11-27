@@ -19,7 +19,7 @@
 // the map's centre, so a world snap would slide the texel grid across the car as it drives and make its own self-shadows crawl.
 // The centre here is a fixed point of the CAR (a held offset from its root along its own axes), and the two axes of the map are
 // the car's own horizontal axis projected on the plane at right angles to the sun, so with the sun fixed in the car's frame (a
-// straight drive) every triangle lands on the same texel positions in every frame, bit for bit. A turn rotates the sun in the car's
+// straight drive) every triangle keeps its texel position to subtexel precision. A turn rotates the sun in the car's
 // frame, which moves the shadow smoothly, as it should. The size of the map (its half extent) is a held number too, in steps of
 // kRadiusQuantum, so the texel size never creeps.
 //
