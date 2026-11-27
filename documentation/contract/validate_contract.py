@@ -11,7 +11,7 @@ Several files in one run are one game build: they must carry the same optional m
 the value of launcher-recipe.json, the one place it is edited, when the recipe is among the files). A malformed min_launcher is an error.
 
 Output: one line per finding, `ERROR|WARN|INFO <file>: <where>: <what>`; exit 0 when there is no ERROR (with --strict, no WARN either).
-As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to certify the checkout recipe against its codegen manifest.
+As a module: validate(doc, kind=None, dictionary_doc=None, strict=False) -> Report(errors, warnings, infos). Pass recipe_root to check the checkout recipe against its codegen manifest and CMake presets.
 Pure Python 3, no packages (the JSON Schema
 subset it needs is built in: see SUPPORTED_KEYWORDS; the selftest fails if a schema uses another keyword).
 """
@@ -1385,6 +1385,103 @@ def lint_codegen_placement(doc, rep, checkout):
                   f'{destination!r} must match {manifest_arg!r} [entrypoint].file_path ({expected!r} from checkout)')
 
 
+def index_cmake_presets(presets, kind):
+    entries = presets.get(kind, [])
+    if not isinstance(entries, list):
+        raise ValueError(f'{kind} must be an array')
+    indexed = {}
+    for index, entry in enumerate(entries):
+        name = entry.get('name') if isinstance(entry, dict) else None
+        if not isinstance(name, str) or not name:
+            raise ValueError(f'{kind}[{index}] needs a nonempty name')
+        if name in indexed:
+            raise ValueError(f'{kind} has a duplicate name {name!r}')
+        if not isinstance(entry.get('hidden', False), bool):
+            raise ValueError(f'{kind}[{name!r}].hidden must be a boolean')
+        indexed[name] = entry
+    return indexed
+
+
+def inherited_cmake_preset_fields(name, presets, fields, ancestors=()):
+    if name in ancestors:
+        raise ValueError(f'inheritance cycle at preset {name!r}')
+    if name not in presets:
+        raise ValueError(f'unknown inherited preset {name!r} (names are case-sensitive)')
+    entry = presets[name]
+    parents = entry.get('inherits', [])
+    if isinstance(parents, str):
+        parents = [parents]
+    if not isinstance(parents, list) or any(not isinstance(parent, str) or not parent for parent in parents):
+        raise ValueError(f'preset {name!r} needs a name or an array of names in inherits')
+    result = {field: entry[field] for field in fields if field in entry}
+    for parent in parents:
+        inherited = inherited_cmake_preset_fields(parent, presets, fields, (*ancestors, name))
+        for field, value in inherited.items():
+            # A null condition applies only to the preset that declares it.
+            if field != 'condition' or value is not None:
+                result.setdefault(field, value)
+    return result
+
+
+def cmake_preset_enabled(condition, host):
+    if condition is None or isinstance(condition, bool):
+        return condition is not False
+    if isinstance(condition, dict) and condition.get('type') == 'equals' and condition.get('lhs') == '${hostSystemName}':
+        target = condition.get('rhs')
+        if isinstance(target, str) and '$' not in target:
+            return host == target
+    raise ValueError('unsupported condition; expected a boolean, null, or equality of ${hostSystemName} to a literal')
+
+
+def lint_checkout_presets(doc, rep, checkout):
+    """Check the named configure/build pairs in the checked-in project preset file."""
+    filename = 'CMakePresets.json'
+    try:
+        presets = load_json(checkout / filename)
+    except (OSError, ValueError) as error:
+        rep.error(filename, f'cannot read checkout presets: {error}')
+        return
+    try:
+        if not isinstance(presets, dict):
+            raise ValueError('expected an object')
+        if presets.get('include', []) != []:
+            raise ValueError('unsupported include; the checkout preset check requires a single project file')
+        configs = index_cmake_presets(presets, 'configurePresets')
+        builds = index_cmake_presets(presets, 'buildPresets')
+    except ValueError as error:
+        rep.error(filename, str(error))
+        return
+
+    hosts = {'windows': 'Windows', 'linux': 'Linux', 'macos': 'Darwin'}
+    for os_name, name in doc['presets'].items():
+        where = f'presets.{os_name}'
+        host = hosts.get(os_name)
+        if host is None:
+            rep.error(where, 'unknown operating system for CMake host validation')
+            continue
+        for kind, indexed, fields in (('configure', configs, ('condition',)), ('build', builds, ('condition', 'configurePreset'))):
+            label = f'{filename} {kind} preset {name!r}'
+            if name not in indexed:
+                rep.error(where, f'{label} is missing (names are case-sensitive)')
+                continue
+            if indexed[name].get('hidden'):
+                rep.error(where, f'{label} is hidden')
+                continue
+            try:
+                resolved = inherited_cmake_preset_fields(name, indexed, fields)
+                if not cmake_preset_enabled(resolved.get('condition'), host):
+                    rep.error(where, f'{label} is disabled on host {host!r}')
+            except ValueError as error:
+                rep.error(where, f'{label}: {error}')
+                continue
+            if kind == 'build':
+                target = resolved.get('configurePreset')
+                if not isinstance(target, str) or target not in configs:
+                    rep.error(where, f'{label} has a missing or unknown configurePreset {target!r} (names are case-sensitive)')
+                elif target != name:
+                    rep.error(where, f'{label} links to {target!r}; setup configures with {name!r}')
+
+
 def lint_describe(doc, rep, facts, strict=False):
     pass
 
@@ -1466,6 +1563,7 @@ def validate(doc, kind=None, dictionary_doc=None, strict=False, *, recipe_root=N
     rep.used = used
     if kind == 'launcher-recipe' and recipe_root is not None and not rep.errors:
         lint_codegen_placement(doc, rep, recipe_root)
+        lint_checkout_presets(doc, rep, recipe_root)
     return rep
 
 
@@ -1488,6 +1586,7 @@ def selftest_codegen_placement(check):
 
     with TemporaryDirectory(prefix='lfg-codegen-') as temp:
         checkout = Path(temp).resolve()
+        (checkout / 'CMakePresets.json').write_bytes((REPO_ROOT / 'CMakePresets.json').read_bytes())
         (checkout / 'setup').mkdir()
         (checkout / 'setup/fixture.toml').write_text(
             '[project]\nname = "fixture"\n'
@@ -1539,6 +1638,97 @@ def selftest_codegen_placement(check):
         check(any('must match' in error for error in rep.errors), 'legacy placement must also match the manifest')
         rep = validate({**recipe, 'codegen': legacy}, strict=True)
         check(not rep.errors and not rep.warnings, f'generic recipe validation: {rep.errors + rep.warnings}')
+
+
+def selftest_recipe_presets(check):
+    from tempfile import TemporaryDirectory
+
+    recipe = load_json(REPO_ROOT / 'launcher-recipe.json')
+    recipe['presets'] = {'windows': 'test-windows', 'linux': 'test-linux'}
+    windows = {'type': 'equals', 'lhs': '${hostSystemName}', 'rhs': 'Windows'}
+    linux = {**windows, 'rhs': 'Linux'}
+    presets = {
+        'version': 6,
+        'configurePresets': [
+            {'name': 'test-windows', 'inherits': 'win-base'},
+            {'name': 'test-linux', 'inherits': ['linux-base', 'win-base']},
+            {'name': 'win-base', 'hidden': True, 'condition': windows},
+            {'name': 'linux-base', 'hidden': True, 'condition': linux},
+        ],
+        'buildPresets': [
+            {'name': 'test-windows', 'configurePreset': 'test-windows'},
+            {'name': 'test-linux', 'inherits': 'linux-build'},
+            {'name': 'linux-build', 'hidden': True, 'configurePreset': 'test-linux', 'condition': linux},
+        ],
+    }
+    with TemporaryDirectory(prefix='lfg-presets-') as temp:
+        checkout = Path(temp).resolve()
+        manifest_arg = recipe['codegen']['args'][1]
+        manifest = checkout / manifest_arg
+        manifest.parent.mkdir(parents=True, exist_ok=True)
+        manifest.write_bytes((REPO_ROOT / manifest_arg).read_bytes())
+        path = checkout / 'CMakePresets.json'
+
+        def verify(label, candidate, contents, expected=''):
+            if contents is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_text(contents, encoding='utf-8')
+            rep = validate(candidate, strict=True, recipe_root=checkout)
+            passed = any(expected in error for error in rep.errors) if expected else not rep.errors and not rep.warnings
+            check(passed, f'checkout presets {label}: {rep.errors + rep.warnings}')
+
+        verify('same-name configure/build pairs with hidden parents', recipe, json.dumps(presets))
+        verify('missing file', recipe, None, 'cannot read checkout presets')
+        verify('invalid JSON', recipe, '{', 'cannot read checkout presets')
+        verify('invalid root', recipe, '[]', 'expected an object')
+        for name, expected in (
+            ('test-missing', "configure preset 'test-missing' is missing"),
+            ('Test-windows', "configure preset 'Test-windows' is missing"),
+            ('win-base', "configure preset 'win-base' is hidden"),
+            ('test-linux', "configure preset 'test-linux' is disabled on host 'Windows'"),
+        ):
+            candidate = {**recipe, 'presets': {**recipe['presets'], 'windows': name}}
+            verify(name, candidate, json.dumps(presets), expected)
+            rep = validate(candidate, strict=True)
+            check(not rep.errors and not rep.warnings, f'no checkout for preset {name!r}: {rep.errors + rep.warnings}')
+        candidate = {**recipe, 'presets': {**recipe['presets'], 'linux': 'test-windows'}}
+        verify('Windows preset on Linux', candidate, json.dumps(presets), "presets.linux: CMakePresets.json configure preset 'test-windows' is disabled on host 'Linux'")
+        candidate = {**recipe, 'presets': {'macos': 'test-windows'}}
+        verify('Windows preset on macOS', candidate, json.dumps(presets), "disabled on host 'Darwin'")
+        candidate = {**recipe, 'presets': {'unknown-os': 'test-windows'}}
+        verify('unknown recipe OS', candidate, json.dumps(presets), 'unknown operating system')
+
+        for label, mutate, expected in (
+            ('absent configure', lambda p, c, b: c.pop(0), "configure preset 'test-windows' is missing"),
+            ('case of build name', lambda p, c, b: b[0].update(name='Test-windows'), "build preset 'test-windows' is missing"),
+            ('absent build', lambda p, c, b: b.pop(0), "build preset 'test-windows' is missing"),
+            ('unnamed entry', lambda p, c, b: c[0].pop('name'), 'needs a nonempty name'),
+            ('duplicate configure', lambda p, c, b: c.append(dict(c[0])), "configurePresets has a duplicate name 'test-windows'"),
+            ('duplicate build', lambda p, c, b: b.append(dict(b[0])), "buildPresets has a duplicate name 'test-windows'"),
+            ('hidden build', lambda p, c, b: b[0].update(hidden=True), "build preset 'test-windows' is hidden"),
+            ('malformed hidden', lambda p, c, b: b[0].update(hidden='false'), '.hidden must be a boolean'),
+            ('wrong build host', lambda p, c, b: b[2].update(condition=windows), "build preset 'test-linux' is disabled on host 'Linux'"),
+            ('false condition', lambda p, c, b: c[0].update(condition=False), "configure preset 'test-windows' is disabled"),
+            ('true overrides host', lambda p, c, b: c[0].update(condition=True, inherits='linux-base'), ''),
+            ('null overrides host', lambda p, c, b: c[0].update(condition=None, inherits='linux-base'), ''),
+            ('null is not inherited', lambda p, c, b: c[3].update(condition=None), "configure preset 'test-linux' is disabled"),
+            ('unsupported condition', lambda p, c, b: c[0].update(condition={**windows, 'rhs': '$env{HOST}'}), 'unsupported condition'),
+            ('wrong-case host', lambda p, c, b: c[2].update(condition={**windows, 'rhs': 'windows'}), "disabled on host 'Windows'"),
+            ('missing inherited preset', lambda p, c, b: c[0].update(inherits='Win-base'), "unknown inherited preset 'Win-base'"),
+            ('malformed inheritance', lambda p, c, b: c[0].update(inherits=[1]), 'needs a name or an array of names in inherits'),
+            ('inheritance cycle', lambda p, c, b: c[2].update(inherits='test-windows'), "inheritance cycle at preset 'test-windows'"),
+            ('missing build target', lambda p, c, b: b[0].pop('configurePreset'), 'missing or unknown configurePreset None'),
+            ('malformed build target', lambda p, c, b: b[0].update(configurePreset=[]), 'missing or unknown configurePreset []'),
+            ('unknown inherited build target', lambda p, c, b: b[2].update(configurePreset='deleted'), "unknown configurePreset 'deleted'"),
+            ('wrong-case build target', lambda p, c, b: b[0].update(configurePreset='Test-windows'), "unknown configurePreset 'Test-windows'"),
+            ('different configure preset', lambda p, c, b: b[0].update(configurePreset='test-linux'), "links to 'test-linux'; setup configures with 'test-windows'"),
+            ('malformed array', lambda p, c, b: p.update(buildPresets={}), 'buildPresets must be an array'),
+            ('unsupported include', lambda p, c, b: p.update(include=['other.json']), 'unsupported include'),
+        ):
+            case = copy.deepcopy(presets)
+            mutate(case, case['configurePresets'], case['buildPresets'])
+            verify(label, recipe, json.dumps(case), expected)
 
 
 def selftest():
@@ -1784,6 +1974,7 @@ def selftest():
     rep = mutate(lambda d: row(d, 'PM_RxFpsCap')['states'][0].update(when="live.city_data == 'ready'", live_only=True))
     check(not any('needs a ?? fallback' in m for m in rep.errors), 'live_only on a rule must silence lint 3')
     selftest_codegen_placement(check)
+    selftest_recipe_presets(check)
     if failures:
         print('SELFTEST FAILED')
         for f in failures:
