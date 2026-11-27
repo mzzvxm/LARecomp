@@ -1153,6 +1153,16 @@ else()
         "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/tomlplusplus/include")
     target_link_libraries(larecomp PRIVATE larecomp_tomlplusplus)
 
+    # Real registry and config I/O with no game or GPU. The test's save and read
+    # phases run in separate processes, just like closing and reopening the game.
+    add_executable(larecomp_preset_roundtrip_test EXCLUDE_FROM_ALL
+        src/gpu/gfx_preset_roundtrip_test.cpp src/gpu/gfx_preset_apply.cpp
+        src/mc_engine/core/config_save.cpp src/profile/larecomp_profile_store.cpp
+        src/settings/larecomp_settings.cpp)
+    target_include_directories(larecomp_preset_roundtrip_test PRIVATE src)
+    target_link_libraries(larecomp_preset_roundtrip_test PRIVATE rex::base larecomp_tomlplusplus)
+    rexglue_link_host_allocator(larecomp_preset_roundtrip_test)
+
     # Embed the same rule overlays the settings UI exporter reads.
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS src/settings/ui_rules.toml)
     file(READ "${CMAKE_CURRENT_SOURCE_DIR}/src/settings/ui_rules.toml" LARECOMP_PAUSE_MENU_RULES)
