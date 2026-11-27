@@ -1,0 +1,13 @@
+# CHECK: Selma curb pose from rr6-ssr-wet-night.scene. Confirm the lamps are visible and rain does not jump at a wipe.
+scene showcase-06-selma-rain-lights fps 30 step 1/30
+world hour 23 hold weather stormy traffic off peds off parked off police off timescale 0.01
+hud off
+car player at 820.53,17.2,-795.42 heading 62
+car hero spawn vp_lam_murcielago_06 at 846.48,17.6,-778.28 heading 242
+cam 0 pos 814.10 18.80 -791.50 look 836.00 18.30 -787.00 fov 50 ease inout
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+cam 6 pos 815.80 18.55 -790.60 look 838.00 18.20 -785.90 fov 48
+end 6

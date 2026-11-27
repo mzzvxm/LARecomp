@@ -1,0 +1,13 @@
+# CHECK: Front-to-close move between showcase-rt-night.scene cameras. Check the paint catches the neighboring Camaro and the camera clears both cars.
+scene showcase-04-sunset-chrome fps 30 step 1/30
+world hour 23 hold weather nice traffic off peds off parked off police off timescale 0.01
+hud off
+car player at 1028.60,15.03,-568.90 heading 90
+car neighbor spawn vp_chv_camaross_69 at 1027.60,15.33,-571.75 heading 90 paint 2
+cam 0 pos 1031.22 15.46 -570.20 look 1027.25 15.55 -569.82 fov 32 near 0.1 ease inout
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+cam 5 pos 1031.60 15.42 -570.35 look 1029.20 15.58 -569.90 fov 34 near 0.1
+end 5

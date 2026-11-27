@@ -1,0 +1,12 @@
+# CHECK: Westbound sunset-w pose from rtao-wheels-day.scene and the spot list. Check the sun and a palm shadow are both visible.
+scene showcase-05-sunset-boulevard fps 30 step 1/30
+world hour 17 hold weather nice traffic off peds off parked off police off timescale 0.01
+hud off
+car player at -608.5,18.1,-645.17 heading 272
+cam 0 pos -602.50 20.20 -644.25 look -668.00 19.80 -642.90 fov 51 ease inout
+preset vanilla
+preset_label on
+at 1.8 preset enhanced
+at 3.8 preset enhanced_rt
+cam 7 pos -607.10 19.55 -643.20 look -668.00 19.60 -642.90 fov 48
+end 7

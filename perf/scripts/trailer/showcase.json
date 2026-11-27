@@ -1,0 +1,19 @@
+{
+  "item": "TRAILER-SHOWCASE-SCENES",
+  "question": "Can the seven frozen Director shots carry two clean preset wipes in the graphics showcase trailer?",
+  "decision": "LAND/DROP/PARK TRAILER-SHOWCASE-SCENES. LAND shots with three exact 4K30 plates, zero lost frames, cross-pass time within 1 microsecond and player position within 0.10 m per axis, and two readable wipes on review. DROP valid shots with no readable change. PARK unresolved shots after round 2.",
+  "expires": "2026-11-29T18:00:00-05:00",
+  "fps": 30,
+  "presets": ["vanilla", "enhanced", "enhanced_rt"],
+  "wipe_starts": [1.5, 3.5],
+  "wipe_duration": 0.6,
+  "shots": [
+    {"id": "01-broadway-night", "seconds": 6},
+    {"id": "02-wilshire-wet-dusk", "seconds": 6},
+    {"id": "03-cockpit-night", "seconds": 5, "rig": 1},
+    {"id": "04-sunset-chrome", "seconds": 5},
+    {"id": "05-sunset-boulevard", "seconds": 7},
+    {"id": "06-selma-rain-lights", "seconds": 6},
+    {"id": "07-covered-underpass", "seconds": 5}
+  ]
+}
