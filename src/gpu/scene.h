@@ -123,6 +123,7 @@ class CarRtScene;
 class MirrorGlass;
 class GBuffer;
 class PostAa;
+class TitlePuddleCapture;
 class ResolveCache;
 class Samplers;
 class TemporalSystem;
@@ -152,6 +153,7 @@ class Scene {
   // The temporal groundwork (temporal.h): called at the frame's start, for every prepared draw,
   // at the composite marker and at the present. Null: none.
   void SetTemporal(TemporalSystem* temporal) { temporal_ = temporal; }
+  void SetTitlePuddleCapture(TitlePuddleCapture* probe) { title_puddle_capture_ = probe; }
   // The screen-space ambient occlusion (ao.h): told of the main view's draws, the camera, the
   // depth clears and the resolves, and run at the mid-scene depth resolve. Null: none.
   void SetAmbientOcclusion(AmbientOcclusion* ao) { ao_ = ao; }
@@ -551,6 +553,7 @@ class Scene {
   InputLayouts input_layouts_;
   ConstantBanks banks_;
   UploadRing* upload_ = nullptr;
+  TitlePuddleCapture* title_puddle_capture_ = nullptr;
   Pipelines* pipelines_ = nullptr;
   Samplers* samplers_ = nullptr;
   GeometryCache* geometry_ = nullptr;

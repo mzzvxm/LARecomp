@@ -75,6 +75,7 @@
 #include "temporal.h"
 #include "texture_names.h"
 #include "textures.h"
+#include "title_puddle_capture.h"
 #include "thread_load.h"
 #include "upscaler_math.h"
 #include "variant_wait.h"
@@ -825,6 +826,7 @@ void Scene::BeginFrame(plume::RenderCommandList* list, uint32_t slot) {
     last_fetch_.fill(nullptr);
   }
   ++frame_serial_;
+  if (title_puddle_capture_) title_puddle_capture_->BeginFrame(frame_serial_);
   sample_env_light_ = false;
   anchor_cut_ = false;
   visual_mask_ = mc::cinematic::CaptureVisualMask();
@@ -2047,8 +2049,14 @@ Scene::Skip Scene::Prepare(const DrawView& view, const ConstantBanks::Banks& ban
       PrepareUpscalerMask(d, inputs, kind);
     }
   }
-  const uint32_t fetch_mask = d.vs->texture_fetch_mask | (d.ps ? d.ps->texture_fetch_mask : 0u);
+  const uint32_t ps_fetch_mask = d.ps ? d.ps->texture_fetch_mask : 0u;
+  const uint32_t fetch_mask = d.vs->texture_fetch_mask | ps_fetch_mask;
   FillTextureTables(view, fetch_mask, scale, shared, d.scene ? SceneBias() : 0);
+  if (title_puddle_capture_ && title_puddle_capture_->Wants(r.ps_identity) && list_ && resolve_ && upload_) {
+    if (title_puddle_capture_->NeedsUpload()) BindFramebuffer(list_, nullptr);
+    title_puddle_capture_->Record(*list_, *resolve_, *upload_, slot_, view,
+                                  d.vs->texture_fetch_mask, ps_fetch_mask, shared);
+  }
   Lap(Stage::kTextures);
   if (temporal_ && temporal_->active()) {
     NoteTemporal(view, banks, d, shared);
@@ -4345,8 +4353,14 @@ void Scene::OnResolve(const ResolveRecord& record, plume::RenderCommandList* lis
   // A frame that can carry the HDR float scene keeps the range of a 7e3 colour (resolve.h).
   const bool float_scene =
       hdr_tone_ && hdr_tone_->FloatSceneLikely(temporal_ && temporal_->HoldsAaOff(false));
+  ResolveCache::CaptureWrite capture;
+  const bool sample = list && title_puddle_capture_ && title_puddle_capture_->sampling();
   const ResolveCache::Summary summary = resolve_->Execute(record, list, float_scene,
-                                                          visual_mask_ & vis::Bit(vis::kHdr));
+                                                          visual_mask_ & vis::Bit(vis::kHdr),
+                                                          sample ? &capture : nullptr);
+  if (list && title_puddle_capture_ && capture.product) {
+    title_puddle_capture_->RecordResolve(*list, record, capture);
+  }
   if (summary.visual_scene) {
     if (summary.visual_y0 == 0) {
       visual_hdr_key_ = summary.visual_scene->key;
@@ -4824,6 +4838,7 @@ void Scene::CollectVisualSources(VisualSources& sources) const {
 
 void Scene::OnPresent() {
   cpu_timing::Scope cpu_scope(cpu_timing::Section::kPresentBookkeeping);
+  if (title_puddle_capture_) title_puddle_capture_->EndFrame();
   pipelines_->EndFrame();  // takes the background builds that finished, then autosaves
   const uint64_t now = cycles::Now();
   if (last_present_) {

@@ -240,6 +240,8 @@
 {"mcla_freecam_out", "MCLA/Cinematic"},
 {"mcla_freecam_record", "MCLA/Cinematic"},
 {"mcla_freecam_speed", "MCLA/Cinematic"},
+{"mcla_dbg_capture_at", "MCLA/Debug"},
+{"mcla_dbg_capture_pass", "MCLA/Debug"},
 {"mcla_gfx_probe", "MCLA/Debug"},
 {"mcla_gfx_probe_frames", "MCLA/Debug"},
 {"mcla_gpu_a2c_dither_all", "MCLA/GPU"},

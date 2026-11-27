@@ -24,6 +24,13 @@ class DebugSettings final : public rex::SettingOwner {
   REX_SETTING(i32, mcla_gfx_probe_frames, 900, "Milestone 0: number of guest frames to capture before the probe dumps its "
                      "report and goes idle (0 = never stop).", rex::kDebugOnly, rex::Range{0, 100000});
 
+  REX_SETTING(std::string, mcla_dbg_capture_pass, "", "Title DDS capture. Comma-separated side-view names, "
+      "EDRAM labels (pitch samples format@tile), or rt:tile IDs. Use scene for pre-tone-map colour alone. "
+      "Empty disables capture. Read at start.", rex::kDebugOnly, rex::kRequiresRestart);
+
+  REX_SETTING(std::string, mcla_dbg_capture_at, "0,30", "Title DDS capture times in whole seconds after the title is ready. "
+      "Separate times with commas. Read at start.", rex::kDebugOnly, rex::kRequiresRestart);
+
   REX_SETTING(std::string, mcla_test_crash, "", "Crash test for the Linux crash logger: MODE or MODE:SECONDS (5 seconds by default), a few "
     "seconds after the game has started. segv writes to address 0x10 on a worker thread; guest "
     "reads the guest's null page (the runtime logs 'Unhandled guest access violation' first, as for "
@@ -40,6 +47,8 @@ inline DebugSettings& g_debug = larecomp::Leak<DebugSettings>();
 inline auto& lzx_stats = g_debug.lzx_stats;
 inline auto& mcla_gfx_probe = g_debug.mcla_gfx_probe;
 inline auto& mcla_gfx_probe_frames = g_debug.mcla_gfx_probe_frames;
+inline auto& mcla_dbg_capture_at = g_debug.mcla_dbg_capture_at;
+inline auto& mcla_dbg_capture_pass = g_debug.mcla_dbg_capture_pass;
 inline auto& mcla_test_crash = g_debug.mcla_test_crash;
 
 }  // namespace larecomp::settings

@@ -710,6 +710,9 @@ target_include_directories(larecomp_browser_join_core_test PRIVATE src/mc_engine
 
 add_executable(larecomp_run_ready_test EXCLUDE_FROM_ALL
     src/mc_engine/hooks/run_ready_test.cpp)
+add_executable(larecomp_title_puddle_probe_test EXCLUDE_FROM_ALL
+    src/mc_engine/hooks/title_puddle_probe_test.cpp)
+target_include_directories(larecomp_title_puddle_probe_test PRIVATE src)
 
 # The --join_server launch argument (src/mc_engine/online/server_browser/join_server_core.h: the grammar, the room match, the status file the
 # launcher reads) has a check that needs no game and no server:
