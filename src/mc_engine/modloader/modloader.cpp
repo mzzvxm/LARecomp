@@ -5170,6 +5170,23 @@ void Init() {
                     continue;
                 }
                 bytes = std::move(packed);
+            } else {
+                // Shipped as it is, so check the one thing the game stops on. A
+                // refused file is left out and the game keeps its own copy.
+                uint32_t marker = 0;
+                std::string marker_error;
+                const MarkerFix fix = FixXCompressMarker(bytes, flag, marker, marker_error);
+                if (fix == MarkerFix::kRefused) {
+                    LARECOMP_APP_ERROR("[mods] {}/files/{}: compressed resource with XCompress "
+                                       "marker {:#010x} left out: {}",
+                                       file.mod_name, file.archive_path, marker, marker_error);
+                    continue;
+                }
+                if (fix == MarkerFix::kRepaired) {
+                    LARECOMP_APP_INFO("[mods] {}/files/{}: XCompress marker {:#010x} rewritten "
+                                      "to 0x0ff512ef (the stream decompresses whole)",
+                                      file.mod_name, file.archive_path, marker);
+                }
             }
         }
 

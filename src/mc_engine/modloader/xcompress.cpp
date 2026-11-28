@@ -121,4 +121,46 @@ bool LzxDecompress(const uint8_t* src, size_t src_len, std::vector<uint8_t>& dst
     return DecodeBitstream(bitstream.data(), bitstream.size(), dst.data(), dst_len, kWindowSize) == 0;
 }
 
+MarkerFix FixXCompressMarker(std::vector<uint8_t>& file, uint32_t flag, uint32_t& found,
+                             std::string& error) {
+    constexpr uint32_t kMarker = 0x0FF512EFu;
+    constexpr size_t kHeader = 20;  // magic, type, flag, marker, stream length
+    const auto load = [&file](size_t at) {
+        return (uint32_t(file[at]) << 24) | (uint32_t(file[at + 1]) << 16) |
+               (uint32_t(file[at + 2]) << 8) | uint32_t(file[at + 3]);
+    };
+
+    found = 0;
+    if (file.size() <= kHeader) {
+        error = "too short to hold a compressed resource";
+        return MarkerFix::kRefused;
+    }
+    found = load(12);
+    if (found == kMarker) return MarkerFix::kUnchanged;
+
+    const size_t length = load(16);
+    if (length == 0 || length > file.size() - kHeader) {
+        error = "the stream length at +16 does not fit the file";
+        return MarkerFix::kRefused;
+    }
+
+    const size_t virtual_size = size_t(flag & 0x7FFu) << (((flag >> 11) & 0xFu) + 8);
+    const size_t physical_size = size_t((flag >> 15) & 0x7FFu) << (((flag >> 26) & 0xFu) + 8);
+    // 64 MiB is far past anything the game's heaps hold, and keeps a corrupt
+    // flag word from sizing the buffer below.
+    const size_t total = virtual_size + physical_size;
+    std::vector<uint8_t> decoded;
+    if (total == 0 || total > (size_t(64) << 20) ||
+        !LzxDecompress(file.data() + kHeader, length, decoded, total)) {
+        error = "the stream does not decompress to the sizes in the flag word";
+        return MarkerFix::kRefused;
+    }
+
+    file[12] = static_cast<uint8_t>(kMarker >> 24);
+    file[13] = static_cast<uint8_t>(kMarker >> 16);
+    file[14] = static_cast<uint8_t>(kMarker >> 8);
+    file[15] = static_cast<uint8_t>(kMarker);
+    return MarkerFix::kRepaired;
+}
+
 }  // namespace mc::modloader

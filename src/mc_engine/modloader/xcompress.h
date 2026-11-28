@@ -18,9 +18,26 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace mc::modloader {
+
+enum class MarkerFix {
+    kUnchanged,  // already carries 0x0FF512EF
+    kRepaired,   // another marker over a stream that decodes whole: now 0x0FF512EF
+    kRefused,    // not something the game could stream; `error` says why
+};
+
+// `file` is a whole compressed RSC5 file (header, marker, length word, stream)
+// and `flag` its flag word. zlibInflater::InflateBegin (sub_821D5E10) compares
+// the marker with 0x0FF512EF alone and stops the game on anything else, and some
+// packing tools write another one (0x0FF512F1 has been seen in a mod). The
+// marker is not part of the stream, so it is rewritten -- but only after the
+// stream has decoded, with the game's window, to exactly the segment sizes the
+// flag declares. `found` receives the marker the file arrived with.
+MarkerFix FixXCompressMarker(std::vector<uint8_t>& file, uint32_t flag, uint32_t& found,
+                             std::string& error);
 
 // `src` is the XCompress stream as it follows the RSC5 header (no RSC5 header,
 // no 0x0FF512EF marker, no length word): a run of chunks, each a big-endian
